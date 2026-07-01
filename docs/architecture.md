@@ -144,7 +144,7 @@ Traceability: every node's `source_ref` → a `Block`/offset; `fidelity_hash` pr
 
 | Phase | Goal | Scope / IO | LLM | Risks | Definition of Done |
 |---|---|---|---|---|---|
-| **0** Foundations | Monorepo skeleton, docker-compose, config, Postgres+Prisma+Redis, CI, mock ADO backend, GUI shell, **app login + RBAC** | config/env schema; `MockAdoBackend`; app login (users/roles) + per-user PAT capture (header, not persisted); DocGen-style app shell | None | Over-scaffolding | `docker-compose up` runs all services; tests green; app login + role guard works; PAT validates ADO conn via `connectionData`; mock backend creates+links |
+| **0** Foundations | Monorepo skeleton, docker-compose, config, Postgres+Prisma+Redis, CI, mock ADO backend, GUI shell, **app login + RBAC** | config/env schema; `MockAdoBackend`; app login (users/roles) + per-user PAT capture (header, not persisted); DocGen-style app shell | None | Over-scaffolding | `docker-compose up` runs all services; tests green; app login + role guard works; PAT validates ADO conn via `connectionData`[^pat-validate-deferred]; mock backend creates+links |
 | **1** Ingestion + redaction | **All** loaders → CanonicalDoc; redaction | file → CanonicalDoc (tables→grids, figures→placeholders, OCR fallback); redaction pass | Vision (opt) scanned/diagrams | OCR/docx/pdf edge cases | Golden CanonicalDoc per format; redaction strips part#/host/url/email/GUID; OCR path covered; runs as FastAPI service |
 | **2** Hierarchy + auto-detect leveling | Numbering + heading-depth + profile auto-detect → WorkItemTree | CanonicalDoc → WorkItemTree; heuristic (BASELINE) / LLM (SURVEY) | Chat (SURVEY) via redaction proxy | Wrong level/profile | Golden trees both profiles; same-depth→different-type case; BASELINE deterministic w/ LLM off |
 | **3** Distillation | Title strategies + 256-char guard; description assembly | node text → title+description | Chat (SURVEY only) | Truncation correctness | 255/256/257 + multibyte tests; BASELINE title = extracted substring; description verbatim |
@@ -153,6 +153,8 @@ Traceability: every node's `source_ref` → a `Block`/offset; `fidelity_hash` pr
 | **6** Dedup | Embeddings + ≥0.90 skip, Chroma, scoped by Area Path | new tree + corpus → skip decisions | Embeddings via proxy | Threshold tuning | 0.89 keep / 0.91 skip tests; Area-Path scoping; local store only |
 | **7** MCP server + write-back | Our ADO MCP server (HTTP Streamable): create/set-fields/link/update/dry-run; idempotent | WorkItemTree → ADO items via MCP | None | Dup writes; on-prem api-version | MCP tools unit+integration tested vs mock; dry-run diff; re-run zero dupes; parent links correct; 429 backoff; api-version fallback |
 | **8** Scale, security, docs, validation | Job queue+workers hardening; security pass; full docs + in-app wiki/tooltips; E2E golden | synthetic corpus → full pipeline under load | As configured | Coverage/perf gaps | Load test (N concurrent jobs) stable; security checklist passed; TSDoc/docstrings complete; in-app Wiki + tooltips shipped; full golden E2E green |
+
+[^pat-validate-deferred]: PAT-connection-validation (`connectionData` round-trip) is DEFERRED until the orchestrator's real `/connection/validate` route + MCP client integration lands in Phase 7 — tracked as a Phase 0 follow-up, not a Phase 0 blocker.
 
 ---
 
@@ -348,6 +350,8 @@ export interface LlmClient {
 | `ado_update_work_item` | Update-by-id (idempotent re-run reconciliation). |
 
 Transport Streamable HTTP + bearer. Backend swappable: `realAdo` (on-prem REST) / `mockAdo` (SQLite/JSON). Shared client: Basic PAT auth, CA-trust TLS, retry/backoff, batch@200, api-version ladder.
+
+> Note: `ado_ping` (the only tool actually built in Phase 0) is a liveness/health check, not part of the pipeline contract above.
 
 ### 2f. Security & Docs (cross-cutting, hardened in Phase 8)
 

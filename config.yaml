@@ -22,7 +22,7 @@ ado:
   batch_size: 200
   concurrency: 8
   dry_run: true # always default to safe
-  backend: real # real | mock
+  backend: mock # real | mock — Phase 0 default; switch to real once ADO_BACKEND=real + on-prem creds are configured (Phase 7)
 
 mcp:
   url: ${MCP_URL}

@@ -22,7 +22,11 @@ export interface AdoCredential {
   pat: string;
 }
 
-/** Redacts a PAT-bearing string for safe logging (never log the raw token). */
+/**
+ * Redacts a PAT-bearing string for safe logging (never log the raw token).
+ * No caller yet in Phase 0 — this is a documented, tested seam for the
+ * future real ADO REST client's request/response logging (Phase 7).
+ */
 export function redactPat(value: string): string {
   return value.replace(/[A-Za-z0-9]{20,}/g, '<redacted>');
 }

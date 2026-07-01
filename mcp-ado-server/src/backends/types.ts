@@ -22,6 +22,10 @@ export interface AdoBackend {
   createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord>;
   getWorkItem(id: number): Promise<WorkItemRecord | null>;
   linkParentChild(childId: number, parentId: number): Promise<void>;
-  /** Exact-match field query, used for dedup/idempotency lookups (later phases) and tests here. */
+  /**
+   * Exact-match field query, used for dedup/idempotency lookups (later phases) and tests here.
+   * Note: this exact-full-match mock semantics diverges from the documented Phase 7
+   * area-path-scoped dedup contract (docs/architecture.md) and will need revisiting then.
+   */
   queryIds(fieldMatch: Record<string, string>): Promise<number[]>;
 }

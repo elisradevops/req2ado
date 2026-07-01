@@ -20,6 +20,9 @@ export function createMcpApp(backend: AdoBackend, cfg: AdoMcpConfig): express.Ex
 
   app.use('/mcp', (req, res, next) => {
     const header = req.header('authorization') ?? '';
+    // Plain string equality is acceptable for a Phase 0 shared infra secret over HTTP;
+    // move to a constant-time compare (e.g. Node's crypto.timingSafeEqual) during
+    // Phase 8 security hardening.
     if (header !== `Bearer ${cfg.mcpBearer}`) {
       res.status(401).json({ error: 'unauthorized' });
       return;
