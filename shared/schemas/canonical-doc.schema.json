@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://req2ado/schemas/canonical-doc.schema.json",
+  "title": "CanonicalDoc",
+  "description": "Normalized representation of an ingested source document. Single source of truth — generate TS types (shared/ts) and pydantic models (shared/py) from this file; never hand-edit the generated code.",
+  "type": "object",
+  "required": ["document", "blocks", "tables", "figures"],
+  "properties": {
+    "document": {
+      "type": "object",
+      "required": ["path", "format", "sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "format": {
+          "type": "string",
+          "enum": ["txt", "md", "docx", "pdf", "pdf_scanned", "xlsx"]
+        },
+        "sha256": { "type": "string" }
+      }
+    },
+    "blocks": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Block" }
+    },
+    "tables": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Table" }
+    },
+    "figures": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Figure" }
+    }
+  },
+  "definitions": {
+    "SourceRef": {
+      "type": "object",
+      "required": ["document_path", "start_offset", "end_offset"],
+      "properties": {
+        "document_path": { "type": "string" },
+        "start_offset": { "type": "integer", "minimum": 0 },
+        "end_offset": { "type": "integer", "minimum": 0 },
+        "page": { "type": ["integer", "null"] }
+      }
+    },
+    "Block": {
+      "type": "object",
+      "required": ["id", "kind", "text", "source_ref"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "enum": ["heading", "paragraph", "list_item", "table", "figure", "note", "open_tbd"]
+        },
+        "text": { "type": "string" },
+        "heading_level": { "type": ["integer", "null"], "minimum": 1 },
+        "number_label": { "type": ["string", "null"], "description": "e.g. '1.1.1', '1.1.1.a'" },
+        "source_ref": { "$ref": "#/definitions/SourceRef" }
+      }
+    },
+    "Table": {
+      "type": "object",
+      "required": ["id", "rows", "source_ref"],
+      "properties": {
+        "id": { "type": "string" },
+        "rows": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "string" } }
+        },
+        "caption": { "type": ["string", "null"] },
+        "source_ref": { "$ref": "#/definitions/SourceRef" }
+      }
+    },
+    "Figure": {
+      "type": "object",
+      "required": ["id", "source_ref"],
+      "properties": {
+        "id": { "type": "string" },
+        "caption": { "type": ["string", "null"] },
+        "source_ref": { "$ref": "#/definitions/SourceRef" }
+      }
+    }
+  }
+}

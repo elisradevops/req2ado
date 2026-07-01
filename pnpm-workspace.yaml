@@ -1,0 +1,5 @@
+packages:
+  - "frontend"
+  - "orchestrator"
+  - "mcp-ado-server"
+  - "shared/ts"

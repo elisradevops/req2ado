@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://req2ado/schemas/work-item-tree.schema.json",
+  "title": "WorkItemTree",
+  "description": "Canonical hierarchy produced by the leveling engine, ready for distillation and MCP write-back. Single source of truth — generate TS types (shared/ts) and pydantic models (shared/py) from this file.",
+  "type": "object",
+  "required": ["nodes"],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/WorkItemNode" }
+    }
+  },
+  "definitions": {
+    "WorkItemNode": {
+      "type": "object",
+      "required": ["local_id", "type", "parent_local_id", "title", "description", "source_ref", "mode"],
+      "properties": {
+        "local_id": { "type": "string" },
+        "type": { "type": "string", "enum": ["Epic", "Feature", "Requirement"] },
+        "parent_local_id": { "type": ["string", "null"] },
+        "title": { "type": "string", "maxLength": 256 },
+        "description": { "type": "string" },
+        "customer_id": { "type": ["string", "null"] },
+        "source_ref": {
+          "type": "object",
+          "required": ["document_path", "start_offset", "end_offset"],
+          "properties": {
+            "document_path": { "type": "string" },
+            "start_offset": { "type": "integer", "minimum": 0 },
+            "end_offset": { "type": "integer", "minimum": 0 },
+            "page": { "type": ["integer", "null"] }
+          }
+        },
+        "fidelity_hash": {
+          "type": ["string", "null"],
+          "description": "sha256 over the normalized verbatim source span. Required in BASELINE mode, null in SURVEY."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "functional", "non_functional", "interface", "performance",
+              "regulatory", "safety", "security", "operation", "maintenance",
+              "feature", "behavior"
+            ]
+          }
+        },
+        "mode": { "type": "string", "enum": ["BASELINE", "SURVEY"] }
+      }
+    }
+  }
+}

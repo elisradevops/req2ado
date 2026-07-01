@@ -1,0 +1,66 @@
+# req2ado default configuration. No secrets — those come from .env / environment.
+mode: baseline # baseline | survey
+
+llm:
+  provider: openai_compatible
+  base_url: ${LLM_BASE_URL}
+  api_key: ${LLM_API_KEY}
+  chat_model: ${LLM_CHAT_MODEL}
+  embed_model: ${LLM_EMBED_MODEL}
+  vision_model: ${LLM_VISION_MODEL}
+  temperature: 0
+  trusted_local: false # true => relax pre-egress redaction guard
+  enabled_in_baseline: false # LLM stays off in baseline unless explicitly enabled (extraction only)
+
+ado:
+  base_url: ${ADO_BASE_URL}
+  project: ${ADO_PROJECT}
+  area_path: ${ADO_AREA_PATH}
+  api_version: "7.1" # ladder: 7.1 -> 5.1 -> none
+  ca_cert_path: ${ADO_CA_CERT} # on-prem self-signed CA trust
+  bypass_rules: false
+  batch_size: 200
+  concurrency: 8
+  dry_run: true # always default to safe
+  backend: real # real | mock
+
+mcp:
+  url: ${MCP_URL}
+  bearer: ${MCP_BEARER}
+
+fields:
+  title: System.Title
+  description: System.Description
+  state: System.State
+  state_value: Proposed
+  area_path: System.AreaPath
+  customer_id: System.CustomerId # verify at runtime via ado_discover_fields
+  requirement_type: Microsoft.VSTS.CMMI.RequirementType
+  parent_link: System.LinkTypes.Hierarchy-Reverse
+
+leveling:
+  profile: auto # auto | tv_style | icd_style | custom
+  auto_baseline_strategy: heuristic # heuristic (deterministic) | llm (opt-in)
+
+dedup:
+  store: chroma
+  path: ./.req2ado/vectors
+  threshold: 0.90
+  scope_by_area_path: true
+
+queue:
+  redis_url: ${REDIS_URL}
+  concurrency: 4
+
+db:
+  url: ${DATABASE_URL}
+
+redaction:
+  patterns: [part_number, hostname, url, email, guid]
+
+audit:
+  log_path: ./.req2ado/audit.jsonl
+
+auth:
+  provider: azure_ad # azure_ad | local
+  roles: [admin, operator, viewer]
