@@ -14,7 +14,7 @@ from app.loaders.xlsx_loader import load_xlsx
 _SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".xlsx", ".pdf"}
 
 
-def dispatch_by_extension(filename: str, tmp_path: str) -> CanonicalDoc:
+def dispatch_by_extension(filename: str, tmp_path: str, languages: str = "eng") -> CanonicalDoc:
     extension = Path(filename).suffix.lower()
     if extension not in _SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file extension: {extension}")
@@ -27,4 +27,4 @@ def dispatch_by_extension(filename: str, tmp_path: str) -> CanonicalDoc:
         return load_docx(tmp_path)
     if extension == ".xlsx":
         return load_xlsx(tmp_path)
-    return load_pdf_with_ocr_fallback(tmp_path)
+    return load_pdf_with_ocr_fallback(tmp_path, languages=languages)

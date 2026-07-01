@@ -17,14 +17,14 @@ def health() -> dict[str, bool]:
 
 
 @app.post("/ingest", response_model=CanonicalDoc)
-async def ingest(file: UploadFile, redact: bool = False) -> CanonicalDoc:
+async def ingest(file: UploadFile, redact: bool = False, languages: str = "eng") -> CanonicalDoc:
     suffix = Path(file.filename or "").suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
 
     try:
-        doc = dispatch_by_extension(file.filename or "", tmp_path)
+        doc = dispatch_by_extension(file.filename or "", tmp_path, languages=languages)
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 

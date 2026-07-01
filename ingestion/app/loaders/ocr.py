@@ -14,12 +14,17 @@ from app.loaders.pdf_loader import load_pdf, page_has_extractable_text
 _OPEN_TBD_PATTERN = re.compile(r"\b(OPEN|TBD)\b[:\s]", re.IGNORECASE)
 
 
-def ocr_page_to_text(path: str, page_index: int) -> str:
+def ocr_page_to_text(path: str, page_index: int, languages: str = "eng") -> str:
+    """`languages` is passed directly to Tesseract's `lang` parameter; join
+    multiple language codes with '+' for mixed-script documents, e.g.
+    'heb+eng' for Hebrew narrative with embedded English part numbers.
+    Requires the corresponding Tesseract language pack to be installed
+    (e.g. `tesseract-ocr-heb` on Debian/Ubuntu for 'heb')."""
     images = convert_from_path(path, first_page=page_index + 1, last_page=page_index + 1)
-    return pytesseract.image_to_string(images[0])
+    return pytesseract.image_to_string(images[0], lang=languages)
 
 
-def load_pdf_with_ocr_fallback(path: str) -> CanonicalDoc:
+def load_pdf_with_ocr_fallback(path: str, languages: str = "eng") -> CanonicalDoc:
     reader = PdfReader(path)
     num_pages = len(reader.pages)
 
@@ -38,7 +43,7 @@ def load_pdf_with_ocr_fallback(path: str) -> CanonicalDoc:
     for page_index in range(num_pages):
         if page_has_extractable_text(path, page_index):
             continue
-        ocr_text = ocr_page_to_text(path, page_index).strip()
+        ocr_text = ocr_page_to_text(path, page_index, languages=languages).strip()
         if not ocr_text:
             continue
         kind = BlockKind.OPEN_TBD if _OPEN_TBD_PATTERN.search(ocr_text) else BlockKind.PARAGRAPH
