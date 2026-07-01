@@ -17,12 +17,13 @@ services:
     ports:
       - "6379:6379"
 
-  chroma:
-    image: chromadb/chroma:latest
-    ports:
-      - "8001:8000"
-    volumes:
-      - req2ado_chroma:/chroma/chroma
+  # Phase 1+ — not built in Phase 0
+  # chroma:
+  #   image: chromadb/chroma:latest
+  #   ports:
+  #     - "8001:8000"
+  #   volumes:
+  #     - req2ado_chroma:/chroma/chroma
 
   mcp-ado-server:
     build: ./mcp-ado-server
@@ -32,15 +33,16 @@ services:
     ports:
       - "4100:4100"
 
-  ingestion:
-    build: ./ingestion
-    env_file: .env
-    environment:
-      PORT: 8000
-    ports:
-      - "8000:8000"
-    depends_on:
-      - chroma
+  # Phase 1+ — not built in Phase 0
+  # ingestion:
+  #   build: ./ingestion
+  #   env_file: .env
+  #   environment:
+  #     PORT: 8000
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     - chroma
 
   orchestrator:
     build: ./orchestrator
@@ -57,16 +59,16 @@ services:
       - postgres
       - redis
       - mcp-ado-server
-      - ingestion
 
-  frontend:
-    build: ./frontend
-    environment:
-      API_BASE_URL: http://orchestrator:3001
-    ports:
-      - "4080:80"
-    depends_on:
-      - orchestrator
+  # Phase 1+ — not built in Phase 0
+  # frontend:
+  #   build: ./frontend
+  #   environment:
+  #     API_BASE_URL: http://orchestrator:3001
+  #   ports:
+  #     - "4080:80"
+  #   depends_on:
+  #     - orchestrator
 
 volumes:
   req2ado_pg:
