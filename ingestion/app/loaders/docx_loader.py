@@ -5,9 +5,10 @@ from pathlib import Path
 
 from docx import Document as DocxDocument
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table
 
 _STYLE_HEADING_PREFIX = "Heading "
+_IMAGE_RELTYPE_MARKER = "image"
 
 
 def load_docx(path: str) -> CanonicalDoc:
@@ -62,4 +63,15 @@ def load_docx(path: str) -> CanonicalDoc:
             )
         )
 
-    return CanonicalDoc(document=document, blocks=blocks, tables=tables)
+    figures: list[Figure] = []
+    for figure_index, rel in enumerate(docx_doc.part.rels.values()):
+        if _IMAGE_RELTYPE_MARKER in rel.reltype:
+            figures.append(
+                Figure(
+                    id=f"f{figure_index}",
+                    caption=None,
+                    source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
+                )
+            )
+
+    return CanonicalDoc(document=document, blocks=blocks, tables=tables, figures=figures)
