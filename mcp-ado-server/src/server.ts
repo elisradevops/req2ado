@@ -27,11 +27,22 @@ export function createMcpApp(backend: AdoBackend, cfg: AdoMcpConfig): express.Ex
     next();
   });
 
-  const mcpServer = new McpServer({ name: 'req2ado-ado-mcp-server', version: '0.1.0' });
-  registerPingTool(mcpServer, backend);
-
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  // Stateless mode (`sessionIdGenerator: undefined`): per the MCP SDK, a
+  // StreamableHTTPServerTransport in stateless mode can only ever handle a
+  // single request — reusing one across requests throws internally. The SDK's
+  // own stateless example (examples/server/simpleStatelessStreamableHttp.ts)
+  // creates a fresh McpServer + transport per request; we follow that pattern
+  // here instead of connecting once for the app's lifetime.
   app.post('/mcp', async (req, res) => {
+    const mcpServer = new McpServer({ name: 'req2ado-ado-mcp-server', version: '0.1.0' });
+    registerPingTool(mcpServer, backend);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+
+    res.on('close', () => {
+      void transport.close();
+      void mcpServer.close();
+    });
+
     await mcpServer.connect(transport);
     await transport.handleRequest(req, res, req.body);
   });
