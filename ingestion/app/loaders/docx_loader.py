@@ -66,12 +66,22 @@ def load_docx(path: str) -> CanonicalDoc:
     figures: list[Figure] = []
     for figure_index, rel in enumerate(docx_doc.part.rels.values()):
         if _IMAGE_RELTYPE_MARKER in rel.reltype:
+            caption = None
             figures.append(
                 Figure(
                     id=f"f{figure_index}",
-                    caption=None,
+                    caption=caption,
                     source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
                 )
             )
+            blocks.append(
+                Block(
+                    id=f"b{block_id}",
+                    kind=BlockKind.FIGURE,
+                    text=f"[FIGURE: {caption or 'none'}]",
+                    source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
+                )
+            )
+            block_id += 1
 
     return CanonicalDoc(document=document, blocks=blocks, tables=tables, figures=figures)

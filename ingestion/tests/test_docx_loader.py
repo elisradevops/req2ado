@@ -38,3 +38,10 @@ def test_load_docx_format_is_docx() -> None:
 def test_load_docx_detects_embedded_image_as_figure() -> None:
     doc = load_docx(str(FIXTURES / "sample.docx"))
     assert len(doc.figures) == 1
+
+
+def test_load_docx_renders_figure_placeholder_block() -> None:
+    doc = load_docx(str(FIXTURES / "sample.docx"))
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 1
+    assert figure_blocks[0].text == "[FIGURE: none]"
