@@ -1,5 +1,14 @@
 # ingestion/tests/test_redaction.py
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
+from app.canonical.model import (
+    Block,
+    BlockKind,
+    CanonicalDoc,
+    Document,
+    DocumentFormat,
+    Figure,
+    SourceRef,
+    Table,
+)
 from app.redaction.redactor import redact_canonical_doc
 
 
@@ -59,3 +68,34 @@ def test_redaction_never_mutates_the_original_doc() -> None:
     original_text = doc.blocks[0].text
     redact_canonical_doc(doc)
     assert doc.blocks[0].text == original_text
+
+
+def test_redacts_table_cell_content() -> None:
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="abc"),
+        tables=[
+            Table(
+                id="t0",
+                rows=[["Contact", "jane.doe@example.com"]],
+                source_ref=SourceRef(document_path="x.txt", start_offset=0, end_offset=0),
+            )
+        ],
+    )
+    redacted = redact_canonical_doc(doc)
+    assert "jane.doe@example.com" not in redacted.tables[0].rows[0][1]
+    assert "<redacted>" in redacted.tables[0].rows[0][1]
+
+
+def test_redacts_figure_caption() -> None:
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="abc"),
+        figures=[
+            Figure(
+                id="f0",
+                caption="See connector PN-4471-A2 for wiring",
+                source_ref=SourceRef(document_path="x.txt", start_offset=0, end_offset=0),
+            )
+        ],
+    )
+    redacted = redact_canonical_doc(doc)
+    assert "PN-4471-A2" not in (redacted.figures[0].caption or "")

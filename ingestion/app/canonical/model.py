@@ -26,6 +26,19 @@ class BlockKind(str, Enum):
 
 
 class SourceRef(BaseModel):
+    """
+    Offset semantics are loader-specific, not a uniform byte/char contract:
+    - text/markdown loaders: real character offsets into the source file.
+    - pdf loader: real character offsets, but relative to each page's
+      independently-extracted text (not document-global).
+    - docx loader: a synthetic running counter over extracted paragraph
+      text, NOT an offset into the underlying .docx XML/zip structure.
+    - all Table objects (every loader): placeholder (0, 0) — no extraction
+      library exposes a natural text offset for a table region.
+    A later phase (BASELINE fidelity hashing) must account for these
+    per-loader differences rather than assuming a single offset contract.
+    """
+
     document_path: str
     start_offset: int = Field(ge=0)
     end_offset: int = Field(ge=0)
