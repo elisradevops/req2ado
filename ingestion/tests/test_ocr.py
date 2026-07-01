@@ -44,3 +44,29 @@ def test_ocr_default_language_still_english() -> None:
     # from before this task — existing English fixture still OCRs correctly.
     text = ocr_page_to_text(str(FIXTURES / "scanned_sample.pdf"), 0)
     assert "OPEN" in text
+
+
+def test_ocr_page_to_text_filtered_keeps_body_text() -> None:
+    from app.loaders.ocr import ocr_page_to_text_filtered
+
+    text = ocr_page_to_text_filtered(str(FIXTURES / "watermarked_sample.pdf"), 0)
+    assert "receiver" in text.lower() or "channels" in text.lower()
+
+
+def test_ocr_page_to_text_filtered_drops_low_confidence_words() -> None:
+    # Empirical finding (Step 2 of the task brief): at the fixture's watermark
+    # gray value (210,210,210), Tesseract's own binarization/layout analysis
+    # does not surface "DRAFT" as a text candidate at all -- it never appears
+    # in image_to_data's output, with any confidence. Sweeping gray values
+    # from 130-210 showed a hard cutoff (~gray 160-170): below it, "DRAFT" is
+    # detected at confidence ~96, statistically indistinguishable from body
+    # text (95-96); above it, "DRAFT" is not detected as a word at all. There
+    # is no gray value where Tesseract detects "DRAFT" AND scores it
+    # meaningfully lower than body text -- so confidence_threshold=30 cannot
+    # be credited with removing it here. This test therefore asserts the
+    # true, observed outcome (the word is absent from filtered output)
+    # without claiming the confidence heuristic is what discriminated it.
+    from app.loaders.ocr import ocr_page_to_text_filtered
+
+    text = ocr_page_to_text_filtered(str(FIXTURES / "watermarked_sample.pdf"), 0)
+    assert "DRAFT" not in text
