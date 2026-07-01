@@ -1,0 +1,54 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  role      Role     @default(VIEWER)
+  createdAt DateTime @default(now())
+  jobs      Job[]
+}
+
+model Job {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  mode        String // "baseline" | "survey"
+  status      String // "pending" | "running" | "succeeded" | "failed"
+  sourceHash  String
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+  auditEntries AuditEntry[]
+}
+
+model AuditEntry {
+  id        String   @id @default(uuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id])
+  message   String
+  createdAt DateTime @default(now())
+}
+
+// Idempotency map: prevents duplicate ADO writes on job re-run.
+// See docs/architecture.md 1c: (source_hash, customer_id, area_path) -> System.Id
+model IdempotencyMapping {
+  id           String @id @default(uuid())
+  sourceHash   String
+  customerId   String
+  areaPath     String
+  adoWorkItemId Int
+
+  @@unique([sourceHash, customerId, areaPath])
+}
