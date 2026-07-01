@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from app.canonical.model import BlockKind
 from app.loaders.ocr import load_pdf_with_ocr_fallback, ocr_page_to_text
@@ -70,3 +71,27 @@ def test_ocr_page_to_text_filtered_drops_low_confidence_words() -> None:
 
     text = ocr_page_to_text_filtered(str(FIXTURES / "watermarked_sample.pdf"), 0)
     assert "DRAFT" not in text
+
+
+@patch("app.loaders.ocr.pytesseract.image_to_data")
+@patch("app.loaders.ocr.convert_from_path")
+def test_ocr_page_to_text_filtered_excludes_low_confidence_words(
+    mock_convert_from_path: MagicMock, mock_image_to_data: MagicMock
+) -> None:
+    # Isolates the `conf >= confidence_threshold` comparison itself, independent of
+    # whether any real fixture/Tesseract combination happens to exercise it (see the
+    # note on test_ocr_page_to_text_filtered_drops_low_confidence_words above -- the
+    # committed watermark fixture does not). Fully mocked: no Docker/Tesseract needed.
+    from app.loaders.ocr import ocr_page_to_text_filtered
+
+    mock_convert_from_path.return_value = [MagicMock()]
+    mock_image_to_data.return_value = {
+        "text": ["", "Hello", "world", "faintword"],
+        "conf": ["-1", "95", "92", "12"],
+    }
+
+    result = ocr_page_to_text_filtered("fake_path.pdf", 0, confidence_threshold=30)
+
+    assert "Hello" in result
+    assert "world" in result
+    assert "faintword" not in result
