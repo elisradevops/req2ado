@@ -31,3 +31,19 @@ def test_load_markdown_produces_heading_depth_blocks() -> None:
 def test_load_txt_sha256_is_populated() -> None:
     doc = load_txt(str(FIXTURES / "sample.txt"))
     assert len(doc.document.sha256) == 64
+
+
+def test_load_markdown_duplicated_heading_gets_distinct_offsets(tmp_path: Path) -> None:
+    # Regression test: load_markdown previously used `text.index(content)`
+    # (always searching from position 0), so a heading/paragraph repeated
+    # later in the document resolved to the FIRST occurrence's offset.
+    md_path = tmp_path / "duplicate.md"
+    md_path.write_text(
+        "# Overview\n\nSome text.\n\n# Overview\n\nMore text.\n",
+        encoding="utf-8",
+    )
+    doc = load_markdown(str(md_path))
+    headings = [b for b in doc.blocks if b.kind == BlockKind.HEADING]
+    assert len(headings) == 2
+    assert headings[0].text == headings[1].text == "Overview"
+    assert headings[1].source_ref.start_offset > headings[0].source_ref.start_offset

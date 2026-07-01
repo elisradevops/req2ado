@@ -44,6 +44,7 @@ def load_markdown(path: str) -> CanonicalDoc:
 
     blocks: list[Block] = []
     block_id = 0
+    offset = 0
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -51,16 +52,16 @@ def load_markdown(path: str) -> CanonicalDoc:
             level = int(token.tag[1])
             inline = tokens[i + 1]
             content = inline.content
-            start = text.index(content)
+            start = text.index(content, offset)
+            end = start + len(content)
+            offset = end
             blocks.append(
                 Block(
                     id=f"b{block_id}",
                     kind=BlockKind.HEADING,
                     text=content,
                     heading_level=level,
-                    source_ref=SourceRef(
-                        document_path=path, start_offset=start, end_offset=start + len(content)
-                    ),
+                    source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                 )
             )
             block_id += 1
@@ -73,15 +74,15 @@ def load_markdown(path: str) -> CanonicalDoc:
             in_list_item = i > 0 and tokens[i - 1].type == "list_item_open"
             inline = tokens[i + 1]
             content = inline.content
-            start = text.index(content)
+            start = text.index(content, offset)
+            end = start + len(content)
+            offset = end
             blocks.append(
                 Block(
                     id=f"b{block_id}",
                     kind=BlockKind.LIST_ITEM if in_list_item else BlockKind.PARAGRAPH,
                     text=content,
-                    source_ref=SourceRef(
-                        document_path=path, start_offset=start, end_offset=start + len(content)
-                    ),
+                    source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                 )
             )
             block_id += 1
