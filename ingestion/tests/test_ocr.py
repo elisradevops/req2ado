@@ -95,3 +95,26 @@ def test_ocr_page_to_text_filtered_excludes_low_confidence_words(
     assert "Hello" in result
     assert "world" in result
     assert "faintword" not in result
+
+
+@patch("app.loaders.ocr.pytesseract.image_to_data")
+@patch("app.loaders.ocr.convert_from_path")
+def test_ocr_page_to_text_filtered_forwards_languages_to_image_to_data(
+    mock_convert_from_path: MagicMock, mock_image_to_data: MagicMock
+) -> None:
+    # Closes the gap between Task A (languages, tested via ocr_page_to_text) and
+    # Task B (confidence_threshold, tested via ocr_page_to_text_filtered): the real
+    # default production path is load_pdf_with_ocr_fallback -> ocr_page_to_text_filtered,
+    # so we need direct proof that `languages` forwards correctly through THIS function,
+    # not just through ocr_page_to_text. Fully mocked: no Docker/Tesseract needed.
+    from app.loaders.ocr import ocr_page_to_text_filtered
+
+    mock_convert_from_path.return_value = [MagicMock()]
+    mock_image_to_data.return_value = {
+        "text": ["", "Hello"],
+        "conf": ["-1", "95"],
+    }
+
+    ocr_page_to_text_filtered("fake.pdf", 0, languages="heb", confidence_threshold=30)
+
+    assert mock_image_to_data.call_args.kwargs["lang"] == "heb"
