@@ -6,7 +6,7 @@
 
 **Architecture:** Phase 0 already built the hard infrastructure decisions for this package: the stateless-per-request `StreamableHTTPServerTransport` pattern (`server.ts`), the backend-agnostic `AdoBackend` interface (`backends/types.ts`), a fully working `MockAdoBackend` (SQLite), PAT auth helpers (`auth/patAuth.ts`), and one working tool (`ado_ping`). This phase does NOT redesign any of that — it adds a sibling `RealAdoBackend implements AdoBackend` (Task 1-4: api-version fallback, JSON-Patch writes, retry/backoff, batching), a `discover_fields` capability for the already-designed Customer ID candidate-list resolution (Task 5, closing the loop deferred from the "Customer ID Field Resolution" section of `docs/architecture.md` and from Phase 4's own explicit deferral), the remaining MCP tools beyond `ado_ping` (Task 6-8: `ado_create_work_item`, `ado_link_parent_child`, `ado_set_fields`, `ado_query_ids`), and dry-run + idempotent write-back orchestration (Task 9-10) that ties a `WorkItemTree` (from Phases 2-6) to real ADO writes via the idempotency map already specified in `docs/architecture.md` (`(source_hash, customer_id, area_path) → System.Id`).
 
-**Tech Stack:** Same as Phase 0's `mcp-ado-server` package — TS, `@modelcontextprotocol/sdk`, `axios` (already a listed dependency, unused until now), `p-limit` (already listed, for bounded concurrency), `vitest`. **New: Prisma** for the idempotency map (Task 10) — the orchestrator already has Prisma/Postgres from Phase 0; this phase adds the specific `IdempotencyMap` table and queries it from the orchestrator side (not from `mcp-ado-server`, which stays stateless and has no database — the idempotency check happens in the orchestrator BEFORE calling the MCP tool, not inside the MCP server itself).
+**Tech Stack:** Same as Phase 0's `mcp-ado-server` package — TS, `@modelcontextprotocol/sdk`, `axios` (already a listed dependency, unused until now), `p-limit` (already listed, for bounded concurrency), `vitest`. **Prisma** for the idempotency map (Task 9) — the orchestrator already has Prisma/Postgres from Phase 0, including an already-existing (unused, speculative) `IdempotencyMapping` model this phase corrects and puts to real use, queried from the orchestrator side (not from `mcp-ado-server`, which stays stateless and has no database — the idempotency check happens in the orchestrator BEFORE calling the MCP tool, not inside the MCP server itself).
 
 ## Global Constraints
 
@@ -1508,35 +1508,39 @@ git commit -m "docs(mcp-ado-server): flag per-request ADO credential wiring as a
 
 ### Task 9: Orchestrator idempotency map (Prisma) + dry-run diff
 
+**IMPORTANT — reuse existing schema, do not duplicate:** `orchestrator/prisma/schema.prisma` already has an `IdempotencyMapping` model (built speculatively in Phase 0, currently unused by any code) with exactly the shape this task needs, EXCEPT `customerId` is currently `String` (required) — it must become `String?` (nullable) to match Phase 4's `customer_id: str | None` design in the Python ingestion service (a document can have no resolved customer). This task corrects that one field, it does NOT create a new model.
+
 **Files:**
-- Modify: `orchestrator/prisma/schema.prisma` (add `IdempotencyMap` model)
+- Modify: `orchestrator/prisma/schema.prisma` (make `IdempotencyMapping.customerId` nullable — one-line change to the existing model, not a new model)
 - Create: `orchestrator/src/modules/writeback/idempotency.service.ts`
 - Create: `orchestrator/src/modules/writeback/dry-run.service.ts`
 - Test: `orchestrator/test/idempotency.service.spec.ts`, `orchestrator/test/dry-run.service.spec.ts`
 
 **Interfaces:**
-- Produces: Prisma model `IdempotencyMap { sourceHash: String, customerId: String?, areaPath: String, adoWorkItemId: Int }` with a compound unique constraint on `(sourceHash, customerId, areaPath)`, per `docs/architecture.md`'s already-locked idempotency key.
+- Modifies: the EXISTING `IdempotencyMapping { sourceHash: String, customerId: String?, areaPath: String, adoWorkItemId: Int }` (only `customerId`'s nullability changes) — compound unique constraint on `(sourceHash, customerId, areaPath)` already exists and is unchanged, matching `docs/architecture.md`'s already-locked idempotency key.
 - Produces: `IdempotencyService.lookup(sourceHash: string, customerId: string | null, areaPath: string): Promise<number | null>` and `IdempotencyService.record(sourceHash, customerId, areaPath, adoWorkItemId): Promise<void>`.
 - Produces: `DryRunService.diff(tree: WorkItemTreeNode[], idempotencyService: IdempotencyService): Promise<DryRunDiffEntry[]>` where `DryRunDiffEntry = { localId: string, action: 'create' | 'reuse', existingAdoId: number | null }` — per node, determines whether this run would create a new ADO item or reuse an existing one, WITHOUT calling any MCP tool (pure diff against the idempotency map, matching `config.yaml`'s `dry_run: true` default and Phase 7's DoD "dry-run diff").
 
-**Boundary:** Only touch the four files listed (plus the Prisma schema and its generated migration).
+**Boundary:** Only touch the four files listed (plus the Prisma schema and its generated migration). Do not touch the existing `Job`, `User`, or `AuditEntry` models (Phase 0, already correct and about to be used for real by Phase 7.5's pipeline driver).
 
-- [ ] **Step 1: Add the Prisma model**
+- [ ] **Step 1: Correct the existing Prisma model's nullability**
+
+Find the existing `IdempotencyMapping` model in `orchestrator/prisma/schema.prisma` (added speculatively in Phase 0) and change only its `customerId` line:
 
 ```prisma
-// orchestrator/prisma/schema.prisma — add this model (check the exact existing model block style/imports before appending, to match conventions)
-model IdempotencyMap {
-  id            Int     @id @default(autoincrement())
-  sourceHash    String
-  customerId    String?
-  areaPath      String
+// orchestrator/prisma/schema.prisma — find the EXISTING model and change only this one line:
+model IdempotencyMapping {
+  id           String @id @default(uuid())
+  sourceHash   String
+  customerId   String?   // was: String (required) — now nullable, matching Phase 4's customer_id: str | None
+  areaPath     String
   adoWorkItemId Int
 
   @@unique([sourceHash, customerId, areaPath])
 }
 ```
 
-Run: `cd orchestrator && npx prisma migrate dev --name add_idempotency_map` (requires a running local Postgres per this project's existing dev setup — if unavailable, generate the migration SQL file manually following the existing migration files' format, and note this in the task report for the user to apply against a real Postgres instance).
+Run: `cd orchestrator && npx prisma migrate dev --name make_idempotency_customer_id_nullable` (requires a running local Postgres per this project's existing dev setup — if unavailable, generate the migration SQL file manually following the existing migration files' format, and note this in the task report for the user to apply against a real Postgres instance).
 
 - [ ] **Step 2: Write the failing tests for `IdempotencyService`**
 
@@ -1546,7 +1550,7 @@ import { IdempotencyService } from '../src/modules/writeback/idempotency.service
 
 describe('IdempotencyService', () => {
   const fakePrisma = {
-    idempotencyMap: {
+    idempotencyMapping: {
       findUnique: jest.fn(),
       create: jest.fn(),
     },
@@ -1557,7 +1561,7 @@ describe('IdempotencyService', () => {
   });
 
   it('lookup returns null when no matching record exists', async () => {
-    fakePrisma.idempotencyMap.findUnique.mockResolvedValue(null);
+    fakePrisma.idempotencyMapping.findUnique.mockResolvedValue(null);
     // @ts-expect-error -- fake Prisma client for the test
     const service = new IdempotencyService(fakePrisma);
     const result = await service.lookup('hash1', 'CUST-1', 'Project\\Area1');
@@ -1565,7 +1569,7 @@ describe('IdempotencyService', () => {
   });
 
   it('lookup returns the ADO work item id when a record exists', async () => {
-    fakePrisma.idempotencyMap.findUnique.mockResolvedValue({ adoWorkItemId: 42 });
+    fakePrisma.idempotencyMapping.findUnique.mockResolvedValue({ adoWorkItemId: 42 });
     // @ts-expect-error -- fake Prisma client for the test
     const service = new IdempotencyService(fakePrisma);
     const result = await service.lookup('hash1', 'CUST-1', 'Project\\Area1');
@@ -1573,11 +1577,11 @@ describe('IdempotencyService', () => {
   });
 
   it('lookup queries on the exact compound key', async () => {
-    fakePrisma.idempotencyMap.findUnique.mockResolvedValue(null);
+    fakePrisma.idempotencyMapping.findUnique.mockResolvedValue(null);
     // @ts-expect-error -- fake Prisma client for the test
     const service = new IdempotencyService(fakePrisma);
     await service.lookup('hash1', 'CUST-1', 'Project\\Area1');
-    expect(fakePrisma.idempotencyMap.findUnique).toHaveBeenCalledWith({
+    expect(fakePrisma.idempotencyMapping.findUnique).toHaveBeenCalledWith({
       where: {
         sourceHash_customerId_areaPath: { sourceHash: 'hash1', customerId: 'CUST-1', areaPath: 'Project\\Area1' },
       },
@@ -1588,17 +1592,17 @@ describe('IdempotencyService', () => {
     // @ts-expect-error -- fake Prisma client for the test
     const service = new IdempotencyService(fakePrisma);
     await service.record('hash1', 'CUST-1', 'Project\\Area1', 42);
-    expect(fakePrisma.idempotencyMap.create).toHaveBeenCalledWith({
+    expect(fakePrisma.idempotencyMapping.create).toHaveBeenCalledWith({
       data: { sourceHash: 'hash1', customerId: 'CUST-1', areaPath: 'Project\\Area1', adoWorkItemId: 42 },
     });
   });
 
   it('lookup and record both accept a null customerId', async () => {
-    fakePrisma.idempotencyMap.findUnique.mockResolvedValue(null);
+    fakePrisma.idempotencyMapping.findUnique.mockResolvedValue(null);
     // @ts-expect-error -- fake Prisma client for the test
     const service = new IdempotencyService(fakePrisma);
     await service.lookup('hash1', null, 'Project\\Area1');
-    expect(fakePrisma.idempotencyMap.findUnique).toHaveBeenCalledWith({
+    expect(fakePrisma.idempotencyMapping.findUnique).toHaveBeenCalledWith({
       where: { sourceHash_customerId_areaPath: { sourceHash: 'hash1', customerId: null, areaPath: 'Project\\Area1' } },
     });
   });
@@ -1629,14 +1633,14 @@ export class IdempotencyService {
   constructor(private readonly prisma: PrismaClient) {}
 
   async lookup(sourceHash: string, customerId: string | null, areaPath: string): Promise<number | null> {
-    const record = await this.prisma.idempotencyMap.findUnique({
+    const record = await this.prisma.idempotencyMapping.findUnique({
       where: { sourceHash_customerId_areaPath: { sourceHash, customerId, areaPath } },
     });
     return record?.adoWorkItemId ?? null;
   }
 
   async record(sourceHash: string, customerId: string | null, areaPath: string, adoWorkItemId: number): Promise<void> {
-    await this.prisma.idempotencyMap.create({ data: { sourceHash, customerId, areaPath, adoWorkItemId } });
+    await this.prisma.idempotencyMapping.create({ data: { sourceHash, customerId, areaPath, adoWorkItemId } });
   }
 }
 ```
@@ -1773,7 +1777,7 @@ Expected: all pass, no regressions.
 
 ```bash
 git add orchestrator/prisma/schema.prisma orchestrator/src/modules/writeback/idempotency.service.ts orchestrator/src/modules/writeback/dry-run.service.ts orchestrator/test/idempotency.service.spec.ts orchestrator/test/dry-run.service.spec.ts
-git commit -m "feat(orchestrator): add IdempotencyMap Prisma model, IdempotencyService, and DryRunService"
+git commit -m "feat(orchestrator): make IdempotencyMapping.customerId nullable, add IdempotencyService and DryRunService"
 ```
 
 ---
