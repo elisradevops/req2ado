@@ -9,6 +9,7 @@ const BASE_ENV = {
   LLM_BASE_URL: 'http://localhost:11434/v1',
   LLM_CHAT_MODEL: 'llama3.1',
   LLM_PROXY_BEARER: 'test-llm-proxy-bearer',
+  EMBED_MODEL: 'nomic-embed-text',
 };
 
 describe('configSchema LLM fields', () => {
@@ -38,5 +39,43 @@ describe('configSchema LLM fields', () => {
   it('parses LLM_TRUSTED_LOCAL=false as boolean false, not true', () => {
     const result = configSchema.parse({ ...BASE_ENV, LLM_TRUSTED_LOCAL: 'false' });
     expect(result.LLM_TRUSTED_LOCAL).toBe(false);
+  });
+});
+
+describe('configSchema embed fields', () => {
+  const BASE_ENV_WITH_LLM = {
+    DATABASE_URL: 'postgresql://req2ado:req2ado@localhost:5432/req2ado',
+    REDIS_URL: 'redis://localhost:6379',
+    MCP_URL: 'http://localhost:4100',
+    MCP_BEARER: 'test-bearer',
+    AUTH_JWT_SECRET: 'test-jwt-secret',
+    LLM_BASE_URL: 'http://localhost:11434/v1',
+    LLM_CHAT_MODEL: 'llama3.1',
+    LLM_PROXY_BEARER: 'test-llm-proxy-bearer',
+    EMBED_MODEL: 'nomic-embed-text',
+  };
+
+  it('defaults EMBED_TRANSPORT to ollama', () => {
+    const result = configSchema.parse(BASE_ENV_WITH_LLM);
+    expect(result.EMBED_TRANSPORT).toBe('ollama');
+  });
+
+  it('accepts an explicit EMBED_TRANSPORT of openai', () => {
+    const result = configSchema.parse({ ...BASE_ENV_WITH_LLM, EMBED_TRANSPORT: 'openai' });
+    expect(result.EMBED_TRANSPORT).toBe('openai');
+  });
+
+  it('rejects an invalid EMBED_TRANSPORT value', () => {
+    expect(() => configSchema.parse({ ...BASE_ENV_WITH_LLM, EMBED_TRANSPORT: 'bogus' })).toThrow();
+  });
+
+  it('rejects missing EMBED_MODEL', () => {
+    const { EMBED_MODEL, ...rest } = BASE_ENV_WITH_LLM;
+    expect(() => configSchema.parse(rest)).toThrow();
+  });
+
+  it('leaves EMBED_BASE_URL undefined when not set', () => {
+    const result = configSchema.parse(BASE_ENV_WITH_LLM);
+    expect(result.EMBED_BASE_URL).toBeUndefined();
   });
 });

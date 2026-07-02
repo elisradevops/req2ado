@@ -25,6 +25,9 @@ export const configSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   LLM_PROXY_BEARER: z.string().min(1),
+  EMBED_TRANSPORT: z.enum(['ollama', 'openai']).default('ollama'),
+  EMBED_BASE_URL: z.string().optional(),
+  EMBED_MODEL: z.string().min(1),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

@@ -14,6 +14,7 @@ describe('HealthController (e2e)', () => {
     process.env.LLM_BASE_URL = 'http://localhost:11434/v1';
     process.env.LLM_CHAT_MODEL = 'test-model';
     process.env.LLM_PROXY_BEARER = 'test-llm-proxy-bearer';
+    process.env.EMBED_MODEL = 'test-embed-model';
 
     // AppModule (and its ConfigModule.forRoot() validation) must be imported only
     // after the env vars above are set, since @Module() decorator arguments are

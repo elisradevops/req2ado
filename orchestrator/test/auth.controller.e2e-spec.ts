@@ -25,6 +25,7 @@ describe('AuthController (e2e)', () => {
     process.env.LLM_BASE_URL = 'http://localhost:11434/v1';
     process.env.LLM_CHAT_MODEL = 'test-model';
     process.env.LLM_PROXY_BEARER = 'test-llm-proxy-bearer';
+    process.env.EMBED_MODEL = 'test-embed-model';
 
     const { AppModule } = await import('../src/app.module');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
