@@ -34,4 +34,9 @@ describe('configSchema LLM fields', () => {
     const result = configSchema.parse({ ...BASE_ENV, LLM_TRUSTED_LOCAL: 'true' });
     expect(result.LLM_TRUSTED_LOCAL).toBe(true);
   });
+
+  it('parses LLM_TRUSTED_LOCAL=false as boolean false, not true', () => {
+    const result = configSchema.parse({ ...BASE_ENV, LLM_TRUSTED_LOCAL: 'false' });
+    expect(result.LLM_TRUSTED_LOCAL).toBe(false);
+  });
 });

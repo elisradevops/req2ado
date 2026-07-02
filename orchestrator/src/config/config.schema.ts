@@ -20,7 +20,10 @@ export const configSchema = z.object({
   LLM_BASE_URL: z.string().min(1),
   LLM_API_KEY: z.string().optional(),
   LLM_CHAT_MODEL: z.string().min(1),
-  LLM_TRUSTED_LOCAL: z.coerce.boolean().default(false),
+  LLM_TRUSTED_LOCAL: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   LLM_PROXY_BEARER: z.string().min(1),
 });
 
