@@ -60,11 +60,21 @@ class FakeLlmLevelingClient:
         ]
 
 
+class FakeTitleDistillationClient:
+    """Hand-written test double for TitleDistillationClient — mirrors the
+    fake used in tests/test_llm_leveling.py to prove SURVEY-mode output
+    also conforms to the shared work-item-tree schema after Phase 3 wired
+    real title distillation into build_survey_tree."""
+
+    def distill_title(self, text: str, max_length: int) -> str:
+        return text
+
+
 def test_baseline_tree_matches_work_item_tree_schema(schema) -> None:
     tree = build_baseline_tree(_baseline_doc())
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
 def test_survey_tree_matches_work_item_tree_schema(schema) -> None:
-    tree = build_survey_tree(_survey_doc(), FakeLlmLevelingClient())
+    tree = build_survey_tree(_survey_doc(), FakeLlmLevelingClient(), FakeTitleDistillationClient())
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
