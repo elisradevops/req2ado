@@ -6,7 +6,9 @@ from fastapi import FastAPI, UploadFile
 
 from app.canonical.model import CanonicalDoc
 from app.dispatch import dispatch_by_extension
+from app.leveling.tree_builder import build_baseline_tree
 from app.redaction.redactor import redact_canonical_doc
+from app.workitem.model import WorkItemTree
 
 app = FastAPI(title="req2ado-ingestion")
 
@@ -31,3 +33,8 @@ async def ingest(file: UploadFile, redact: bool = False, languages: str = "eng")
     if redact:
         doc = redact_canonical_doc(doc)
     return doc
+
+
+@app.post("/level", response_model=WorkItemTree)
+async def level(doc: CanonicalDoc) -> WorkItemTree:
+    return build_baseline_tree(doc)
