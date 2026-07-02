@@ -16,6 +16,7 @@ export const configSchema = z.object({
   AZURE_AD_TENANT_ID: z.string().optional(),
   AZURE_AD_CLIENT_ID: z.string().optional(),
   AZURE_AD_CLIENT_SECRET: z.string().optional(),
+  ADO_CA_CERT: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
