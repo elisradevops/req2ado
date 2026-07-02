@@ -7,6 +7,8 @@ llm:
   api_key: ${LLM_API_KEY}
   chat_model: ${LLM_CHAT_MODEL}
   embed_model: ${LLM_EMBED_MODEL}
+  embed_transport: ollama # ollama | openai — Open WebUI does not expose an OpenAI-shaped /embeddings endpoint; it only proxies Ollama-shaped /ollama/api/embed. Default to 'ollama' until/unless a real OpenAI-shaped embeddings backend is configured separately.
+  embed_base_url: ${EMBED_BASE_URL} # optional override; defaults to llm.base_url (Open WebUI) if unset
   vision_model: ${LLM_VISION_MODEL}
   temperature: 0
   trusted_local: false # true => relax pre-egress redaction guard
@@ -62,5 +64,5 @@ audit:
   log_path: ./.req2ado/audit.jsonl
 
 auth:
-  provider: azure_ad # azure_ad | local
-  roles: [admin, operator, viewer]
+  provider: ado_pat # ado_pat | azure_ad — ado_pat validates the PAT against the ADO Server itself (no external IdP needed); azure_ad requires an App Registration, kept as a future option
+  roles: [admin, operator, viewer] # RBAC machinery exists but is unused today — every ado_pat login gets 'operator'; ADO's own permissions are the real gate

@@ -29,7 +29,7 @@
 | Docs | Full TSDoc/docstrings + in-app **Wiki/Help page** (renders `docs/user-guide.md`) + **tooltips/popovers** on every non-trivial control. |
 | Backend fw | **NestJS** (DI, guards, validation) for the scalable/secured goal. |
 | Database | **Postgres + Prisma** (jobs, audit, idempotency map, users/roles). |
-| App auth | **App-level login + roles** (in addition to per-user ADO PAT). Azure AD (DocGen runtime-config precedent) or local users; roles e.g. Admin / Operator / Viewer. NestJS guards enforce RBAC on routes. ADO PAT remains per-user, in-memory. |
+| App auth | **ADO PAT is the sole credential for both identity and permissions.** Login validates `{orgUrl, pat}` against the ADO Server's own `connectionData` endpoint — no external IdP (Azure AD requires an App Registration, unavailable in this deployment; kept in the codebase as an unused future option). Every authenticated user gets a single role (`Operator`) — ADO's own permission system is the real access-control gate, not app-level RBAC. NestJS `RolesGuard`/`Role` enum machinery exists (built, tested) for a future multi-user RBAC scenario if ever needed. |
 
 **Generic ADO REST conventions reused as knowledge (ported into our MCP server):**
 - PAT = HTTP Basic, empty username. On-prem TLS = CA-trust (not `rejectUnauthorized:false`).
@@ -150,7 +150,7 @@ Traceability: every node's `source_ref` → a `Block`/offset; `fidelity_hash` pr
 | **3** Distillation | Title strategies + 256-char guard; description assembly | node text → title+description | Chat (SURVEY only) | Truncation correctness | 255/256/257 + multibyte tests; BASELINE title = extracted substring; description verbatim |
 | **4** BASELINE mode | Verbatim + fidelity hashing + Customer ID | WorkItemTree(BASELINE) w/ hashes+customer_id | Off by default | Hidden mutation | Fidelity test byte-for-byte; re-hash stable; TBD/OPEN preserved; deterministic |
 | **5** SURVEY mode | Generative "shall" reqs + taxonomy tags | informal narrative → formal reqs + tags | Chat (temp 0) via proxy | Hallucination | Golden survey output; taxonomy tags applied; each req individually verifiable |
-| **6** Dedup | Embeddings + ≥0.90 skip, Chroma, scoped by Area Path | new tree + corpus → skip decisions | Embeddings via proxy | Threshold tuning | 0.89 keep / 0.91 skip tests; Area-Path scoping; local store only |
+| **6** Dedup | Embeddings + ≥0.90 skip, Chroma, scoped by Area Path | new tree + corpus → skip decisions | Embeddings via configurable transport (Ollama-shaped default) | Threshold tuning | 0.89 keep / 0.91 skip tests; Area-Path scoping; local store only |
 | **7** MCP server + write-back | Our ADO MCP server (HTTP Streamable): create/set-fields/link/update/dry-run; idempotent | WorkItemTree → ADO items via MCP | None | Dup writes; on-prem api-version | MCP tools unit+integration tested vs mock; dry-run diff; re-run zero dupes; parent links correct; 429 backoff; api-version fallback |
 | **8** Scale, security, docs, validation | Job queue+workers hardening; security pass; full docs + in-app wiki/tooltips; E2E golden | synthetic corpus → full pipeline under load | As configured | Coverage/perf gaps | Load test (N concurrent jobs) stable; security checklist passed; TSDoc/docstrings complete; in-app Wiki + tooltips shipped; full golden E2E green |
 
@@ -164,7 +164,7 @@ Traceability: every node's `source_ref` → a `Block`/offset; `fidelity_hash` pr
 
 **Orchestrator** — Node 22 + TypeScript, NestJS (or Express) — DI, validation, structured; BullMQ (jobs), Prisma + Postgres (durable state), pino logging, zod DTO validation, `@modelcontextprotocol/sdk` client (HTTP), OpenAI SDK (LLM proxy → Open WebUI base_url).
 
-**Ingestion (Python 3.11 + FastAPI)** — `python-docx`, `pypdf`+`pdfplumber`, `pytesseract`+`pdf2image` (OCR) / vision model, `openpyxl`, `markdown-it-py`; `chromadb` (dedup); embeddings via Open WebUI. Scaled by uvicorn workers / replicas.
+**Ingestion (Python 3.11 + FastAPI)** — `python-docx`, `pypdf`+`pdfplumber`, `pytesseract`+`pdf2image` (OCR) / vision model, `openpyxl`, `markdown-it-py`; `chromadb` (dedup); embeddings via a configurable transport (Ollama-shaped by default, since Open WebUI doesn't expose OpenAI-shaped embeddings — see section 2c). Scaled by uvicorn workers / replicas.
 
 **MCP server (Node/TS)** — `@modelcontextprotocol/sdk` StreamableHTTP transport; `httpx`/axios ADO client (Basic auth, CA-trust TLS, retry, batch, api-version ladder); mock backend adapter.
 
@@ -326,6 +326,12 @@ export interface LlmClient {
   vision(prompt: string, images: Buffer[], opts?: { model?: string }): Promise<string>;
 }
 // Models always from config (never hardcoded). base_url = Open WebUI.
+// Embeddings use a SEPARATE transport from chat: Open WebUI does not expose
+// an OpenAI-shaped /embeddings endpoint (confirmed via research) — only an
+// Ollama-shaped /ollama/api/embed proxy exists. EMBED_TRANSPORT ('ollama' |
+// 'openai', default 'ollama') and EMBED_BASE_URL select the real backend;
+// this public embed() signature is unchanged, only the internal transport
+// adapter differs. Not implemented yet — Phase 6 (dedup) is unbuilt.
 // Every method wrapped by redactor.ts unless cfg.trusted_local.
 ```
 
@@ -381,7 +387,7 @@ Transport Streamable HTTP + bearer. Backend swappable: `realAdo` (on-prem REST) 
 
 ## Remaining Minor Questions (safe defaults chosen; confirm at Phase 0 or override)
 
-1. **App login mechanism:** **Azure AD** (DocGen runtime-config precedent) vs local username/password users. Default: **Azure AD** — confirm, or want local users too?
+1. **App login mechanism:** RESOLVED — ADO PAT validated against the ADO Server's own `connectionData` endpoint (see "Locked Decisions" above). Azure AD remains available as a backend config option (`AUTH_PROVIDER=azure_ad`) for deployments that can register an app, but is not the default and is not surfaced in the current login UI.
 2. **Roles set:** default **Admin / Operator / Viewer** (Admin=config+users, Operator=ingest+write, Viewer=read/preview only). OK?
 3. **Customer ID field:** default ref `System.CustomerId` — confirm it exists in target project or supply the correct custom ref name.
 4. **Shared types single-source:** JSON Schema → generate TS + pydantic. Default: **JSON Schema single-source**.
