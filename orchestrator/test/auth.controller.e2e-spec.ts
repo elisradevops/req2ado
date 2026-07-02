@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import * as jwt from 'jsonwebtoken';
 import { AdoPatProvider } from '../src/modules/auth/ado-pat.provider';
 import { PrismaService } from '../src/modules/auth/prisma.service';
 
@@ -63,6 +64,10 @@ describe('AuthController (e2e)', () => {
       update: {},
       create: { email: 'Microsoft.TeamFoundation.Identity;S-1-5-21-000', role: 'OPERATOR' },
     });
+
+    const decoded = jwt.verify(res.body.token, 'test-jwt-secret') as { userId: string; role: string };
+    expect(decoded.userId).toBe('user-1');
+    expect(decoded.role).toBe('operator');
   });
 
   it('POST /auth/login returns 401 on an invalid PAT', async () => {
@@ -73,5 +78,21 @@ describe('AuthController (e2e)', () => {
       .send({ adoOrgUrl: 'https://tfs.internal/tfs/Collection', pat: 'bad-pat' });
 
     expect(res.status).toBe(401);
+  });
+
+  it('POST /auth/login returns 400 when adoOrgUrl is missing', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ pat: 'fake-pat' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /auth/login returns 400 when adoOrgUrl is not a valid URL', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ adoOrgUrl: 'not-a-url', pat: 'fake-pat' });
+
+    expect(res.status).toBe(400);
   });
 });
