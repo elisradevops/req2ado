@@ -78,4 +78,14 @@ describe('configSchema embed fields', () => {
     const result = configSchema.parse(BASE_ENV_WITH_LLM);
     expect(result.EMBED_BASE_URL).toBeUndefined();
   });
+
+  it('defaults EMBED_PATH to /api/embed when unset', () => {
+    const result = configSchema.parse(BASE_ENV_WITH_LLM);
+    expect(result.EMBED_PATH).toBe('/api/embed');
+  });
+
+  it('respects an explicit EMBED_PATH override', () => {
+    const result = configSchema.parse({ ...BASE_ENV_WITH_LLM, EMBED_PATH: '/ollama/api/embed' });
+    expect(result.EMBED_PATH).toBe('/ollama/api/embed');
+  });
 });

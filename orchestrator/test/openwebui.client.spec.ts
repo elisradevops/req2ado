@@ -12,6 +12,7 @@ describe('OpenWebUiClient', () => {
     EMBED_TRANSPORT: 'openai' as const,
     EMBED_BASE_URL: undefined,
     EMBED_MODEL: 'nomic-embed-text',
+    EMBED_PATH: '/api/embed',
   };
 
   it('redacts messages before sending, by default', async () => {
@@ -83,6 +84,7 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     EMBED_TRANSPORT: 'ollama' as const,
     EMBED_BASE_URL: undefined,
     EMBED_MODEL: 'nomic-embed-text',
+    EMBED_PATH: '/api/embed',
   };
 
   beforeEach(() => {
@@ -142,5 +144,13 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
   it('throws not-implemented for EMBED_TRANSPORT=openai', async () => {
     const client = new OpenWebUiClient({ ...config, EMBED_TRANSPORT: 'openai' as const });
     await expect(client.embed(['text'])).rejects.toThrow(/not implemented/i);
+  });
+
+  it('uses EMBED_PATH when set to the Open WebUI proxy path, instead of /api/embed', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ embeddings: [[0.1]] }) });
+    const client = new OpenWebUiClient({ ...config, EMBED_PATH: '/ollama/api/embed' });
+    await client.embed(['text']);
+    const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
+    expect(calledUrl).toBe('http://localhost:11434/ollama/api/embed');
   });
 });

@@ -11,6 +11,7 @@ export interface OpenWebUiClientConfig {
   EMBED_TRANSPORT: 'ollama' | 'openai';
   EMBED_BASE_URL?: string;
   EMBED_MODEL: string;
+  EMBED_PATH: string;
 }
 
 @Injectable()
@@ -42,7 +43,7 @@ export class OpenWebUiClient implements LlmClient {
     }
     const outboundTexts = this.config.LLM_TRUSTED_LOCAL ? texts : texts.map(redactText);
     const baseUrl = (this.config.EMBED_BASE_URL ?? this.config.LLM_BASE_URL).replace(/\/v1\/?$/, '');
-    const response = await fetch(`${baseUrl}/api/embed`, {
+    const response = await fetch(`${baseUrl}${this.config.EMBED_PATH}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: outboundTexts }),

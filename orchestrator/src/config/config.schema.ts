@@ -28,6 +28,7 @@ export const configSchema = z.object({
   EMBED_TRANSPORT: z.enum(['ollama', 'openai']).default('ollama'),
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),
+  EMBED_PATH: z.string().default('/api/embed'),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

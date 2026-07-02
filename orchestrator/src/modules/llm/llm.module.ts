@@ -21,6 +21,7 @@ import { OpenWebUiClient } from './openwebui.client';
           EMBED_TRANSPORT: config.get<'ollama' | 'openai'>('EMBED_TRANSPORT')!,
           EMBED_BASE_URL: config.get<string>('EMBED_BASE_URL'),
           EMBED_MODEL: config.get<string>('EMBED_MODEL')!,
+          EMBED_PATH: config.get<string>('EMBED_PATH')!,
         }),
     },
   ],
