@@ -1,5 +1,6 @@
 import { BadRequestException, Body, Controller, Post, UseGuards } from '@nestjs/common';
 import { llmChatRequestSchema } from './llm-chat.dto';
+import { llmEmbedRequestSchema } from './llm-embed.dto';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClient } from './openwebui.client';
 
@@ -20,5 +21,15 @@ export class LlmController {
       body.temperature !== undefined ? { temperature: body.temperature } : undefined,
     );
     return { content };
+  }
+
+  @Post('embed')
+  async embed(@Body() rawBody: unknown): Promise<{ embeddings: number[][] }> {
+    const parseResult = llmEmbedRequestSchema.safeParse(rawBody);
+    if (!parseResult.success) {
+      throw new BadRequestException('Invalid request body: texts must be a non-empty array of strings');
+    }
+    const embeddings = await this.llmClient.embed(parseResult.data.texts);
+    return { embeddings };
   }
 }

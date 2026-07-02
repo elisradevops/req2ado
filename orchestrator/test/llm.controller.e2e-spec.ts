@@ -79,4 +79,29 @@ describe('LlmController (e2e)', () => {
       { temperature: 0 },
     );
   });
+
+  describe('POST /llm/embed', () => {
+    it('returns 401 with no Authorization header', async () => {
+      const res = await request(app.getHttpServer()).post('/llm/embed').send({ texts: ['hi'] });
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 400 on a malformed body (missing texts)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/llm/embed')
+        .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .send({});
+      expect(res.status).toBe(400);
+    });
+
+    it('returns embeddings on a valid request', async () => {
+      fakeOpenWebUiClient.embed.mockResolvedValue([[0.1, 0.2, 0.3]]);
+      const res = await request(app.getHttpServer())
+        .post('/llm/embed')
+        .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .send({ texts: ['The unit shall survive a drop.'] });
+      expect(res.status).toBe(201);
+      expect(res.body).toEqual({ embeddings: [[0.1, 0.2, 0.3]] });
+    });
+  });
 });
