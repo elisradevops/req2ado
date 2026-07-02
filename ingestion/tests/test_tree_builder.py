@@ -1,4 +1,4 @@
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table
 from app.leveling.tree_builder import build_baseline_tree
 from app.workitem.model import WorkItemType
 
@@ -127,3 +127,13 @@ def test_title_is_truncated_to_256_chars() -> None:
     )
     tree = build_baseline_tree(long_text_doc)
     assert len(tree.nodes[0].title) == 256
+
+
+def test_empty_blocks_produces_empty_tree() -> None:
+    doc = CanonicalDoc(
+        document=Document(path="empty.xlsx", format=DocumentFormat.XLSX, sha256="h"),
+        blocks=[],
+        tables=[Table(id="t0", rows=[["a", "b"]], source_ref=_sr("empty.xlsx", 0, 0))],
+    )
+    tree = build_baseline_tree(doc)
+    assert tree.nodes == []

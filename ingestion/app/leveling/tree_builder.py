@@ -30,7 +30,11 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     depth stack to assign parent/child relationships. Unleveled blocks
     (plain paragraphs, list items, notes, OPEN/TBD markers, inline figure
     placeholders) extend the nearest currently-open node's description
-    rather than becoming their own node."""
+    rather than becoming their own node.
+
+    Only doc.blocks are leveled — doc.tables are not yet converted to work
+    items (table-only documents, e.g. from the xlsx loader, currently
+    produce an empty tree; this is a known scope gap for a later phase)."""
     nodes: list[WorkItemNode] = []
     nodes_by_id: dict[str, WorkItemNode] = {}
     node_counter = 0
