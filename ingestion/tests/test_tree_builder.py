@@ -137,3 +137,59 @@ def test_empty_blocks_produces_empty_tree() -> None:
     )
     tree = build_baseline_tree(doc)
     assert tree.nodes == []
+
+
+def test_long_unbroken_title_matches_extract_baseline_title_hard_cut_behavior() -> None:
+    # Same fixture as the existing test_title_is_truncated_to_256_chars, but
+    # asserting the actual word-boundary-aware algorithm is now in use (not
+    # just a coincidentally-identical result from naive slicing).
+    from app.distillation.title import extract_baseline_title
+
+    long_text_doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="1 " + ("A" * 300),
+                source_ref=_sr("x.txt", 0, 302),
+            )
+        ],
+    )
+    tree = build_baseline_tree(long_text_doc)
+    expected = extract_baseline_title("A" * 300)
+    assert tree.nodes[0].title == expected
+
+
+def test_long_title_with_word_boundaries_is_trimmed_not_hard_cut() -> None:
+    # A long block whose text has word boundaries before char 256 — proves
+    # the new algorithm's boundary-aware behavior is actually wired in (the
+    # OLD naive display_text.strip()[:256] slice would hard-cut mid-word
+    # here; the new extract_baseline_title must not).
+    long_sentence = ("The receiver shall support " + "channel " * 40).strip()
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 " + long_sentence, source_ref=_sr("x.txt", 0, 10)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    assert len(tree.nodes[0].title) <= 256
+    assert not tree.nodes[0].title.endswith("chann")  # not a mid-word hard cut
+
+
+def test_description_assembly_is_used_for_unleveled_block_folding() -> None:
+    # ICD-style fixture already proves OPEN:/[FIGURE:] text lands in the
+    # description (Phase 2's test_icd_style_branch_... test) — this test
+    # additionally proves the exact newline-joined shape matches
+    # assemble_description's contract precisely (not just "contains").
+    from app.distillation.description import assemble_description
+
+    icd_doc = _icd_style_doc()
+    tree = build_baseline_tree(icd_doc)
+    requirement_node = tree.nodes[1]
+    expected = assemble_description(
+        assemble_description("3.3V Rail Requirements", "OPEN: confirm connector part number before release."),
+        "[FIGURE: none]",
+    )
+    assert requirement_node.description == expected

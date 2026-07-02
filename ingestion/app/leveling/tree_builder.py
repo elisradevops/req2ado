@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 
 from app.canonical.model import Block, CanonicalDoc
+from app.distillation.description import assemble_description
+from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import detect_profile_for_branch
 from app.leveling.depth import resolve_block_depth
 from app.leveling.profiles import type_for_depth
@@ -32,6 +34,11 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     placeholders) extend the nearest currently-open node's description
     rather than becoming their own node.
 
+    Title extraction (extract_baseline_title) and description assembly
+    (assemble_description) are real, tested BASELINE-mode logic as of
+    Phase 3 — never summarizes/paraphrases, only extracts/truncates and
+    verbatim-joins.
+
     Only doc.blocks are leveled — doc.tables are not yet converted to work
     items (table-only documents, e.g. from the xlsx loader, currently
     produce an empty tree; this is a known scope gap for a later phase)."""
@@ -48,7 +55,8 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
 
             if depth is None:
                 if stack:
-                    nodes_by_id[stack[-1][1]].description += "\n" + display_text
+                    open_node = nodes_by_id[stack[-1][1]]
+                    open_node.description = assemble_description(open_node.description, display_text)
                 continue
 
             while stack and stack[-1][0] >= depth:
@@ -62,7 +70,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 local_id=local_id,
                 type=type_for_depth(profile, depth),
                 parent_local_id=parent_local_id,
-                title=display_text.strip()[:256],
+                title=extract_baseline_title(display_text),
                 description=display_text,
                 customer_id=None,
                 source_ref=block.source_ref,
