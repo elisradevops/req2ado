@@ -10,6 +10,7 @@ describe('HealthController (e2e)', () => {
     process.env.REDIS_URL = 'redis://localhost:6379';
     process.env.MCP_URL = 'http://localhost:4100';
     process.env.MCP_BEARER = 'test-bearer';
+    process.env.AUTH_JWT_SECRET = 'test-jwt-secret';
 
     // AppModule (and its ConfigModule.forRoot() validation) must be imported only
     // after the env vars above are set, since @Module() decorator arguments are
