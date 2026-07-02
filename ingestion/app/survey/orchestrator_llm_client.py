@@ -17,10 +17,9 @@ class OrchestratorLlmClient:
     silently returning an empty/wrong result, since a caller acting on
     invalid generated requirements is worse than a loud failure."""
 
-    def __init__(self, base_url: str, bearer_token: str, model: str) -> None:
+    def __init__(self, base_url: str, bearer_token: str) -> None:
         self._base_url = base_url.rstrip("/")
         self._bearer_token = bearer_token
-        self._model = model
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
     def generate_requirements(self, block_text: str) -> list[dict]:

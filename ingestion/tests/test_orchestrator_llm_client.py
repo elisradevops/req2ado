@@ -19,7 +19,7 @@ def test_generate_requirements_parses_valid_json_response() -> None:
         "content": '[{"text": "The unit shall survive a 1m drop.", "tags": ["safety"]}]'
     }
     client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer", model="llama3.1"
+        base_url="http://orchestrator.internal", bearer_token="test-bearer"
     )
     client._transport = _mock_transport(response_json)  # test-only seam, see implementation
 
@@ -37,7 +37,7 @@ def test_generate_requirements_sends_temperature_zero() -> None:
         captured["temperature"] = body["temperature"]
         return httpx.Response(200, json={"content": "[]"})
 
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="llama3.1")
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
 
     client.generate_requirements("some block")
@@ -46,7 +46,7 @@ def test_generate_requirements_sends_temperature_zero() -> None:
 
 def test_generate_requirements_raises_on_malformed_json_content() -> None:
     response_json = {"content": "not valid json"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="llama3.1")
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = _mock_transport(response_json)
 
     with pytest.raises(ValueError, match="malformed"):
@@ -54,7 +54,7 @@ def test_generate_requirements_raises_on_malformed_json_content() -> None:
 
 
 def test_generate_requirements_raises_on_non_200_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="llama3.1")
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = _mock_transport({"content": "[]"}, expected_status=401)
 
     with pytest.raises(httpx.HTTPStatusError):
