@@ -36,5 +36,5 @@ async def ingest(file: UploadFile, redact: bool = False, languages: str = "eng")
 
 
 @app.post("/level", response_model=WorkItemTree)
-async def level(doc: CanonicalDoc) -> WorkItemTree:
-    return build_baseline_tree(doc)
+async def level(doc: CanonicalDoc, customer_id: str | None = None) -> WorkItemTree:
+    return build_baseline_tree(doc, customer_id=customer_id)

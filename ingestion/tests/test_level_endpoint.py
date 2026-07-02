@@ -26,3 +26,16 @@ def test_level_endpoint_returns_worktree_json() -> None:
     assert body["nodes"][0]["type"] == "Epic"
     assert body["nodes"][1]["type"] == "Epic"
     assert body["nodes"][2]["type"] == "Feature"
+
+
+def test_level_endpoint_accepts_and_stamps_customer_id() -> None:
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt")),
+        ],
+    )
+    response = client.post("/level", params={"customer_id": "CUST-042"}, json=doc.model_dump(mode="json"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["nodes"][0]["customer_id"] == "CUST-042"

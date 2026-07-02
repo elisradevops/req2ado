@@ -29,7 +29,7 @@ def _hash_description(description: str) -> str:
     return hashlib.sha256(description.encode()).hexdigest()
 
 
-def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
+def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> WorkItemTree:
     """Deterministic BASELINE-mode leveling: no LLM involved. Splits the
     document into top-level branches, auto-detects a profile per branch
     (see autodetect.py), then walks each branch's blocks maintaining a
@@ -47,7 +47,13 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
 
     Only doc.blocks are leveled — doc.tables are not yet converted to work
     items (table-only documents, e.g. from the xlsx loader, currently
-    produce an empty tree; this is a known scope gap for a later phase)."""
+    produce an empty tree; this is a known scope gap for a later phase).
+
+    customer_id is a single value applied uniformly to every node in this
+    call — one ingestion run corresponds to one customer's document, per
+    docs/architecture.md's idempotency key (source_hash, customer_id,
+    area_path) -> System.Id. It is NOT parsed or extracted from document
+    content."""
     nodes: list[WorkItemNode] = []
     nodes_by_id: dict[str, WorkItemNode] = {}
     node_counter = 0
@@ -79,7 +85,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 parent_local_id=parent_local_id,
                 title=extract_baseline_title(display_text),
                 description=display_text,
-                customer_id=None,
+                customer_id=customer_id,
                 source_ref=block.source_ref,
                 fidelity_hash=_hash_description(display_text),
                 tags=[],

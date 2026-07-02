@@ -208,3 +208,18 @@ def test_fidelity_hash_reflects_folded_description_not_just_the_initiating_block
     requirement_node = tree.nodes[1]
     expected_hash = hashlib.sha256(requirement_node.description.encode()).hexdigest()
     assert requirement_node.fidelity_hash == expected_hash
+
+
+def test_customer_id_is_stamped_on_every_node_when_provided() -> None:
+    icd_doc = _icd_style_doc()
+    tree = build_baseline_tree(icd_doc, customer_id="CUST-042")
+    assert len(tree.nodes) > 0
+    for node in tree.nodes:
+        assert node.customer_id == "CUST-042"
+
+
+def test_customer_id_defaults_to_none_when_not_provided() -> None:
+    icd_doc = _icd_style_doc()
+    tree = build_baseline_tree(icd_doc)
+    for node in tree.nodes:
+        assert node.customer_id is None
