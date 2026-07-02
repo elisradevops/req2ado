@@ -6,35 +6,39 @@ import { httpClient } from '../api/httpClient';
 describe('Login page', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('disables the validate button until both fields are filled', () => {
+  it('disables the sign-in button until both fields are filled', () => {
     render(<Login />);
-    expect(screen.getByText('Validate connection')).toBeDisabled();
+    expect(screen.getByText('Sign in')).toBeDisabled();
   });
 
-  it('shows a success alert when validation succeeds', async () => {
-    vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { ok: true } });
+  it('does not render an Azure AD sign-in option', () => {
+    render(<Login />);
+    expect(screen.queryByText(/Azure AD/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a success alert and calls /auth/login when sign-in succeeds', async () => {
+    vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { token: 'fake-jwt' } });
 
     render(<Login />);
     fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
-    fireEvent.click(screen.getByText('Validate connection'));
+    fireEvent.click(screen.getByText('Sign in'));
 
-    await waitFor(() => expect(screen.getByText('Connection validated.')).toBeInTheDocument());
-    expect(httpClient.post).toHaveBeenCalledWith(
-      '/connection/validate',
-      {},
-      { headers: { 'X-Ado-Org-Url': 'https://tfs.internal/tfs/Collection', 'X-Ado-Pat': 'fake-pat' } },
-    );
+    await waitFor(() => expect(screen.getByText('Signed in successfully.')).toBeInTheDocument());
+    expect(httpClient.post).toHaveBeenCalledWith('/auth/login', {
+      adoOrgUrl: 'https://tfs.internal/tfs/Collection',
+      pat: 'fake-pat',
+    });
   });
 
-  it('shows an error alert when validation fails', async () => {
-    vi.spyOn(httpClient, 'post').mockRejectedValueOnce(new Error('bad credentials'));
+  it('shows an error alert when sign-in fails', async () => {
+    vi.spyOn(httpClient, 'post').mockRejectedValueOnce(new Error('Invalid ADO organization URL or Personal Access Token'));
 
     render(<Login />);
     fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
-    fireEvent.click(screen.getByText('Validate connection'));
+    fireEvent.click(screen.getByText('Sign in'));
 
-    await waitFor(() => expect(screen.getByText('bad credentials')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Invalid ADO organization URL or Personal Access Token')).toBeInTheDocument());
   });
 });
