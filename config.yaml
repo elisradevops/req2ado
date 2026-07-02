@@ -36,7 +36,7 @@ fields:
   state: System.State
   state_value: Proposed
   area_path: System.AreaPath
-  customer_id: System.CustomerId # verify at runtime via ado_discover_fields
+  customer_id: null # unset = auto-resolve via candidate list (Custom.CustomerId, Custom.CustomerRequirementId, Custom.CustomerID), verified at runtime via ado_discover_fields; set explicitly to override
   requirement_type: Microsoft.VSTS.CMMI.RequirementType
   parent_link: System.LinkTypes.Hierarchy-Reverse
 

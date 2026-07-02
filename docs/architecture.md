@@ -37,7 +37,7 @@
 - Retry/backoff on 429/5xx + network errors, exp backoff + jitter.
 - Bounded concurrency + `workitemsbatch` chunk at **200**.
 - Write = JSON-Patch: `POST/PATCH {org}/{project}/_apis/wit/workitems/${type}`, `Content-Type: application/json-patch+json`, body `[{op:'add', path:'/fields/<RefName>', value}]`; parent link via relation op `/relations/-` with `System.LinkTypes.Hierarchy-Reverse` (child→parent).
-- Field ref names: `System.Title/Description/State/AreaPath`, custom `System.CustomerId`, `Microsoft.VSTS.CMMI.RequirementType`. Verify exact custom ref names at runtime via `GET workitemtypes/{type}/fields` — do not hardcode.
+- Field ref names: `System.Title/Description/State/AreaPath`, `Microsoft.VSTS.CMMI.RequirementType`. Customer ID ref name is resolved via a verified candidate list, not hardcoded — see "Customer ID Field Resolution" below. Verify exact custom ref names at runtime via `GET workitemtypes/{type}/fields` — do not hardcode.
 
 ---
 
@@ -49,7 +49,7 @@
 - On-prem ADO only. Dev off-network via a **mock ADO backend** (SQLite/JSON) behind the same MCP tool contract.
 - LLM only via OpenAI-compatible Open WebUI endpoint; model names always from config; backend-proxied with redaction.
 - BASELINE runs with LLM disabled and still produces a tree (deterministic parsers + heuristic auto-detect).
-- Custom `System.CustomerId` exists in target project (configurable ref name, verified at runtime).
+- A custom Customer ID field exists in target project under one of a known set of candidate ref names, resolved and verified at runtime (see "Customer ID Field Resolution" below) — not assumed to be `System.CustomerId`.
 - Vector store local (Chroma) — no external cloud.
 - Postgres for durable state (jobs, audit trail, idempotency mapping). Redis for queue + LLM/embed cache.
 
@@ -281,7 +281,7 @@ fields:
   state: System.State
   state_value: Proposed
   area_path: System.AreaPath
-  customer_id: System.CustomerId       # verified at runtime
+  customer_id: null                    # unset = auto-resolve via candidate list (Custom.CustomerId, Custom.CustomerRequirementId, Custom.CustomerID), verified at runtime; set explicitly to override
   requirement_type: Microsoft.VSTS.CMMI.RequirementType
   parent_link: System.LinkTypes.Hierarchy-Reverse
 leveling:
@@ -385,10 +385,28 @@ Transport Streamable HTTP + bearer. Backend swappable: `realAdo` (on-prem REST) 
 
 - Orchestrator = **NestJS**. DB = **Postgres + Prisma**. App auth = **login + roles (RBAC)**. Docs = **in-app Wiki page (user-guide) + tooltips/popovers**.
 
+## Customer ID Field Resolution
+
+**Why this needs a design, not a hardcoded name.** DocGen (the sibling app in this workspace, same org/ADO instance) was investigated for its Customer ID handling to reuse — it turned out to have **no single canonical mechanism**: four independently-hardcoded strategies across different code paths (`docgen-data-provider-package/src/modules/TicketsDataProvider.ts:191` reads a literal `wi.fields['System.CustomerId']`; a WIQL-column display-name match on `'CustomerRequirementId'` relabels whatever field is actually named `Custom.CustomerRequirementId`; an open substring scan `key.toLowerCase().includes('customer')` picks the first match non-deterministically; a stricter MEWP-only allow-list matches normalized keys `customerid`/`customcustomerid`, corresponding to real ref name `Custom.CustomerID`). **None of DocGen's strategies verify the field exists via ADO's Fields API before use** — they just probe `wi.fields` and silently omit the value if absent.
+
+req2ado's own commitment (see "Field ref names" above: "Verify exact custom ref names at runtime via `GET workitemtypes/{type}/fields` — do not hardcode") is stricter than anything DocGen does, so the field is NOT simply hardcoded to `System.CustomerId` (which is likely wrong or vestigial anyway — `System.*` is ADO's reserved namespace for built-in fields, not custom ones; DocGen's own real, working custom fields are all under `Custom.*`).
+
+**Resolution algorithm (used by the MCP server's `ado_discover_fields` tool, `mcp-ado-server/`):**
+1. Call `GET {org}/{project}/_apis/wit/workitemtypes/{type}/fields` for the target work-item type.
+2. Check `config.yaml`'s `fields.customer_id` value first — if the operator has explicitly configured a ref name, use it and verify it appears in the fields response (fail loudly if it doesn't, rather than silently falling through).
+3. If unset/left at default, check candidates in this priority order against the fields response, reusing DocGen's real-world discovered naming conventions as candidates (not blindly trusting them — each is verified to actually exist before use):
+   - `Custom.CustomerId`
+   - `Custom.CustomerRequirementId`
+   - `Custom.CustomerID`
+4. Use the first candidate confirmed present. If none match, `customer_id` is left `null` on written work items (not a hard failure) — Customer ID is traceability metadata, not a required field for a valid ADO write.
+5. Cache the resolved ref name per (org, project, work-item-type) for the duration of a run — don't re-call the Fields API per work item.
+
+This keeps the "verify at runtime, don't hardcode" architecture commitment while reusing DocGen's field-naming conventions as a starting candidate list rather than as unverified truth.
+
 ## Remaining Minor Questions (safe defaults chosen; confirm at Phase 0 or override)
 
 1. **App login mechanism:** RESOLVED — ADO PAT validated against the ADO Server's own `connectionData` endpoint (see "Locked Decisions" above). Azure AD remains available as a backend config option (`AUTH_PROVIDER=azure_ad`) for deployments that can register an app, but is not the default and is not surfaced in the current login UI.
 2. **Roles set:** default **Admin / Operator / Viewer** (Admin=config+users, Operator=ingest+write, Viewer=read/preview only). OK?
-3. **Customer ID field:** default ref `System.CustomerId` — confirm it exists in target project or supply the correct custom ref name.
+3. **Customer ID field:** RESOLVED — see "Customer ID Field Resolution" below. Runtime-verified candidate list, not a single hardcoded ref name.
 4. **Shared types single-source:** JSON Schema → generate TS + pydantic. Default: **JSON Schema single-source**.
 5. **Vision/OCR:** local Tesseract default + optional Open WebUI vision model (config switch). OK?
