@@ -25,6 +25,10 @@ def _split_into_branches(doc: CanonicalDoc) -> list[list[Block]]:
     return branches
 
 
+def _hash_description(description: str) -> str:
+    return hashlib.sha256(description.encode()).hexdigest()
+
+
 def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     """Deterministic BASELINE-mode leveling: no LLM involved. Splits the
     document into top-level branches, auto-detects a profile per branch
@@ -34,10 +38,12 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     placeholders) extend the nearest currently-open node's description
     rather than becoming their own node.
 
-    Title extraction (extract_baseline_title) and description assembly
-    (assemble_description) are real, tested BASELINE-mode logic as of
-    Phase 3 — never summarizes/paraphrases, only extracts/truncates and
-    verbatim-joins.
+    fidelity_hash is recomputed every time a node's description changes
+    (both at creation and on every subsequent fold), so it always equals
+    sha256(description) for the node's FINAL, fully-folded description —
+    not just the block that originally created the node. See
+    app/workitem/fidelity.py's verify_fidelity for the standalone
+    drift-detection check this invariant enables.
 
     Only doc.blocks are leveled — doc.tables are not yet converted to work
     items (table-only documents, e.g. from the xlsx loader, currently
@@ -57,6 +63,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 if stack:
                     open_node = nodes_by_id[stack[-1][1]]
                     open_node.description = assemble_description(open_node.description, display_text)
+                    open_node.fidelity_hash = _hash_description(open_node.description)
                 continue
 
             while stack and stack[-1][0] >= depth:
@@ -74,7 +81,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                 description=display_text,
                 customer_id=None,
                 source_ref=block.source_ref,
-                fidelity_hash=hashlib.sha256(display_text.encode()).hexdigest(),
+                fidelity_hash=_hash_description(display_text),
                 tags=[],
                 mode=WorkItemMode.BASELINE,
             )

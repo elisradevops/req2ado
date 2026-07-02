@@ -193,3 +193,18 @@ def test_description_assembly_is_used_for_unleveled_block_folding() -> None:
         "[FIGURE: none]",
     )
     assert requirement_node.description == expected
+
+
+def test_fidelity_hash_reflects_folded_description_not_just_the_initiating_block() -> None:
+    # Reproduces the Phase 4 bug: fidelity_hash was frozen at node-creation
+    # time using only the FIRST block's text, but description keeps growing
+    # as subsequent unleveled blocks fold in via assemble_description. After
+    # folding, fidelity_hash must match the FINAL, fully-folded description —
+    # not the single block that created the node.
+    import hashlib
+
+    icd_doc = _icd_style_doc()
+    tree = build_baseline_tree(icd_doc)
+    requirement_node = tree.nodes[1]
+    expected_hash = hashlib.sha256(requirement_node.description.encode()).hexdigest()
+    assert requirement_node.fidelity_hash == expected_hash
