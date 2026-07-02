@@ -17,6 +17,11 @@ export const configSchema = z.object({
   AZURE_AD_CLIENT_ID: z.string().optional(),
   AZURE_AD_CLIENT_SECRET: z.string().optional(),
   ADO_CA_CERT: z.string().optional(),
+  LLM_BASE_URL: z.string().min(1),
+  LLM_API_KEY: z.string().optional(),
+  LLM_CHAT_MODEL: z.string().min(1),
+  LLM_TRUSTED_LOCAL: z.coerce.boolean().default(false),
+  LLM_PROXY_BEARER: z.string().min(1),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
