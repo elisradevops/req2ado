@@ -24,12 +24,14 @@ export function Login(): JSX.Element {
   const [pat, setPat] = useState('');
   const [status, setStatus] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [, setToken] = useState<string | null>(null);
 
   const handleLogin = async (): Promise<void> => {
     setStatus('checking');
     setErrorMessage(null);
     try {
-      await httpClient.post('/auth/login', { adoOrgUrl, pat });
+      const response = await httpClient.post('/auth/login', { adoOrgUrl, pat });
+      setToken(response.data.token);
       setStatus('ok');
     } catch (err) {
       setStatus('error');
