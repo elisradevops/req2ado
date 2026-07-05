@@ -75,6 +75,21 @@ describe('resolveApiVersion', () => {
     const expectedHeader = `Basic ${Buffer.from(':fake-pat').toString('base64')}`;
     expect(getSpy.mock.calls[0][1]?.headers?.Authorization).toBe(expectedHeader);
   });
+
+  it('retries the same ladder candidate on a 503 before resolving it (does not fall through to the next rung)', async () => {
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockResolvedValueOnce({ status: 200, data: {} });
+
+    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
+
+    expect(result).toBe('7.1');
+    expect(getSpy).toHaveBeenCalledTimes(2);
+    expect(getSpy.mock.calls[0][0]).toContain('api-version=7.1');
+    expect(getSpy.mock.calls[1][0]).toContain('api-version=7.1');
+  });
 });
 
 describe('RealAdoBackend.createWorkItem', () => {

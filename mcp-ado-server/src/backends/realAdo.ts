@@ -26,7 +26,7 @@ export async function resolveApiVersion(
         ? `${orgUrl.replace(/\/$/, '')}/_apis/connectionData`
         : `${orgUrl.replace(/\/$/, '')}/_apis/connectionData?api-version=${version}`;
     try {
-      const response = await httpClient.get(url, { headers: { Authorization: authHeader } });
+      const response = await retryWithBackoff(() => httpClient.get(url, { headers: { Authorization: authHeader } }));
       if (response.status === 200) {
         return version;
       }
