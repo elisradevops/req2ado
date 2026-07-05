@@ -46,7 +46,7 @@ model AuditEntry {
 model IdempotencyMapping {
   id           String @id @default(uuid())
   sourceHash   String
-  customerId   String
+  customerId   String?
   areaPath     String
   adoWorkItemId Int
 
