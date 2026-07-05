@@ -4,14 +4,23 @@
 #
 # Runs the REAL full pipeline (ingestion service, mcp-ado-server with
 # ADO_BACKEND=mock, orchestrator HTTP API, orchestrator pipeline worker) as
-# LOCAL PROCESSES (not docker-compose — see task brief for why: ingestion has
-# no Dockerfile/compose entry, and the pipeline worker was never added as its
-# own compose service). Drives: upload -> dry-run diff -> confirm -> re-run
-# with the identical fixture and asserts the second run's diff is 100% reuse
-# (proving idempotent re-run, the actual golden-path assertion).
+# LOCAL PROCESSES rather than docker-compose. Drives: upload -> dry-run diff
+# -> confirm -> re-run with the identical fixture and asserts the second
+# run's diff is 100% reuse (proving idempotent re-run, the actual golden-path
+# assertion).
 #
 # All processes/containers this script itself starts are torn down in the
 # EXIT trap, on both success and failure.
+#
+# Note (Phase 8, Task 6): `ingestion` now has a Dockerfile and `pipeline-worker`
+# is now a docker-compose service too (see docker-compose.yml) — the exact
+# same upload -> diff -> confirm -> re-run -> 100%-reuse assertions have been
+# verified to hold when the stack is driven entirely through
+# `docker compose up -d --build` instead of local processes. This script is
+# intentionally left targeting local processes: it's faster for local dev
+# iteration (no image rebuilds) and doesn't need Docker running at all; use
+# `docker compose up -d --build` directly for full-stack/production parity
+# checks. Both paths are proven-equivalent — pick whichever fits the task.
 
 set -euo pipefail
 

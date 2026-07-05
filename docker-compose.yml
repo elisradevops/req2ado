@@ -6,14 +6,21 @@ services:
       POSTGRES_PASSWORD: req2ado
       POSTGRES_DB: req2ado
     ports:
-      - "5432:5432"
+      # Host 5432 is occupied by a leftover container from a prior
+      # local-process golden-e2e run on this dev machine (see
+      # scripts/run-golden-e2e.sh's temp postgres container) — map to a free
+      # host port instead. Internal service-to-service traffic is unaffected
+      # (DATABASE_URL below uses the compose-internal `postgres:5432`).
+      - "5434:5432"
     volumes:
       - req2ado_pg:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Same reasoning as postgres above — host 6379 is occupied by a
+      # leftover temp container; REDIS_URL below uses `redis:6379` internally.
+      - "6381:6379"
 
   # Phase 1+ — not built in Phase 0
   # chroma:
@@ -31,16 +38,16 @@ services:
     ports:
       - "4100:4100"
 
-  # Phase 1+ — not built in Phase 0
-  # ingestion:
-  #   build: ./ingestion
-  #   env_file: .env
-  #   environment:
-  #     PORT: 8000
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     - chroma
+  ingestion:
+    build: ./ingestion
+    env_file: .env
+    environment:
+      PORT: 8000
+    ports:
+      # Host port 8000 is taken by an unrelated container on dev machines
+      # (see scripts/run-golden-e2e.sh) — map to 8010 instead, matching the
+      # local-process golden E2E script's port for consistency.
+      - "8010:8000"
 
   orchestrator:
     build: ./orchestrator
@@ -50,8 +57,23 @@ services:
       MCP_URL: http://mcp-ado-server:4100
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://req2ado:req2ado@postgres:5432/req2ado
+      INGESTION_BASE_URL: http://ingestion:8000
     ports:
       - "3001:3001"
+    depends_on:
+      - postgres
+      - redis
+      - mcp-ado-server
+
+  pipeline-worker:
+    build: ./orchestrator
+    env_file: .env
+    environment:
+      MCP_URL: http://mcp-ado-server:4100
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://req2ado:req2ado@postgres:5432/req2ado
+      INGESTION_BASE_URL: http://ingestion:8000
+    command: ["node", "dist/modules/pipeline/pipeline-worker.main.js"]
     depends_on:
       - postgres
       - redis
