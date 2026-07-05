@@ -136,7 +136,7 @@ log "Building orchestrator (prisma generate + nest build)..."
 
 log "Seeding placeholder user row (JobsController hardcodes userId: 'placeholder-user-id')..."
 docker exec "$PG_CONTAINER" psql -U req2ado -d req2ado -c \
-  "INSERT INTO \"User\" (id, email, role) VALUES ('placeholder-user-id', 'golden-e2e@example.com', 'VIEWER') ON CONFLICT (id) DO NOTHING;" \
+  "INSERT INTO \"User\" (id, email) VALUES ('placeholder-user-id', 'golden-e2e@example.com') ON CONFLICT (id) DO NOTHING;" \
   >"$LOG_DIR/seed-user.log" 2>&1
 
 # ---------------------------------------------------------------------------
