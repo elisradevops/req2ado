@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from app.canonical.model import BlockKind
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.loaders.ocr import load_pdf_with_ocr_fallback, ocr_page_to_text
 from app.loaders.pdf_loader import page_has_extractable_text
 
@@ -95,6 +95,53 @@ def test_ocr_page_to_text_filtered_excludes_low_confidence_words(
     assert "Hello" in result
     assert "world" in result
     assert "faintword" not in result
+
+
+@patch("app.loaders.ocr.PdfReader")
+@patch("app.loaders.ocr.ocr_page_to_text_filtered")
+@patch("app.loaders.ocr.page_has_extractable_text")
+@patch("app.loaders.ocr.load_pdf")
+def test_load_pdf_with_ocr_fallback_preserves_page_order_for_mixed_documents(
+    mock_load_pdf: MagicMock,
+    mock_page_has_extractable_text: MagicMock,
+    mock_ocr_page_to_text_filtered: MagicMock,
+    mock_pdf_reader: MagicMock,
+) -> None:
+    # Regression test for a real ordering bug: OCR blocks for scanned pages
+    # used to be appended after ALL text-extracted blocks regardless of
+    # actual page position, so a [text, scanned, text] document came out as
+    # [page1, page3, page2-OCR] instead of [page1, page2-OCR, page3]. Fully
+    # mocked (no Docker/Tesseract/poppler needed) to isolate the ordering
+    # logic from real OCR/extraction behavior.
+    mock_pdf_reader.return_value.pages = [MagicMock(), MagicMock(), MagicMock()]
+    # Page 2 (index 1) is the only scanned page.
+    mock_page_has_extractable_text.side_effect = lambda _path, i: i != 1
+
+    path = str(FIXTURES / "sample.pdf")
+    mock_load_pdf.return_value = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.PDF, sha256="fake"),
+        blocks=[
+            Block(
+                id="b0",
+                kind=BlockKind.PARAGRAPH,
+                text="page one text",
+                source_ref=SourceRef(document_path=path, start_offset=0, end_offset=1, page=1),
+            ),
+            Block(
+                id="b1",
+                kind=BlockKind.PARAGRAPH,
+                text="page three text",
+                source_ref=SourceRef(document_path=path, start_offset=0, end_offset=1, page=3),
+            ),
+        ],
+        tables=[],
+    )
+    mock_ocr_page_to_text_filtered.return_value = "page two ocr text"
+
+    doc = load_pdf_with_ocr_fallback(path)
+
+    assert [b.text for b in doc.blocks] == ["page one text", "page two ocr text", "page three text"]
+    assert [b.source_ref.page for b in doc.blocks] == [1, 2, 3]
 
 
 @patch("app.loaders.ocr.pytesseract.image_to_data")

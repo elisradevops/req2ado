@@ -67,7 +67,6 @@ def load_pdf_with_ocr_fallback(path: str, languages: str = "eng") -> CanonicalDo
 
     text_doc = load_pdf(path)
     blocks: list[Block] = list(text_doc.blocks)
-    block_id = len(blocks)
 
     for page_index in range(num_pages):
         if page_has_extractable_text(path, page_index):
@@ -78,7 +77,7 @@ def load_pdf_with_ocr_fallback(path: str, languages: str = "eng") -> CanonicalDo
         kind = BlockKind.OPEN_TBD if _OPEN_TBD_PATTERN.search(ocr_text) else BlockKind.PARAGRAPH
         blocks.append(
             Block(
-                id=f"b{block_id}",
+                id="",
                 kind=kind,
                 text=ocr_text,
                 source_ref=SourceRef(
@@ -86,6 +85,16 @@ def load_pdf_with_ocr_fallback(path: str, languages: str = "eng") -> CanonicalDo
                 ),
             )
         )
-        block_id += 1
+
+    # text_doc.blocks is page-ordered but only covers pages with extractable
+    # text; OCR blocks for scanned pages were appended above in a separate
+    # pass, so a document like [text, scanned, text] would otherwise end up
+    # as [page1, page3, page2-OCR] instead of [page1, page2-OCR, page3].
+    # Re-sort by page (stable, so same-page block order is preserved) and
+    # reassign sequential ids — nothing downstream keys off a block's
+    # original id value beyond uniqueness.
+    blocks.sort(key=lambda b: b.source_ref.page or 0)
+    for i, block in enumerate(blocks):
+        block.id = f"b{i}"
 
     return CanonicalDoc(document=document, blocks=blocks, tables=text_doc.tables)
