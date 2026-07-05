@@ -7,6 +7,8 @@ import { registerPingTool } from './tools/pingTool.js';
 import { registerDiscoverFieldsTool } from './tools/discoverFieldsTool.js';
 import { registerCreateWorkItemTool } from './tools/createWorkItemTool.js';
 import { registerLinkParentChildTool } from './tools/linkParentChildTool.js';
+import { registerSetFieldsTool } from './tools/setFieldsTool.js';
+import { registerQueryIdsTool } from './tools/queryIdsTool.js';
 
 /**
  * Builds the Express app hosting the MCP Streamable HTTP transport.
@@ -45,6 +47,8 @@ export function createMcpApp(backend: AdoBackend, cfg: AdoMcpConfig): express.Ex
     registerDiscoverFieldsTool(mcpServer, backend);
     registerCreateWorkItemTool(mcpServer, backend);
     registerLinkParentChildTool(mcpServer, backend);
+    registerSetFieldsTool(mcpServer, backend);
+    registerQueryIdsTool(mcpServer, backend);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     res.on('close', () => {

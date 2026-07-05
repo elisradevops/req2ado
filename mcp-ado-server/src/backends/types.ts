@@ -35,4 +35,6 @@ export interface AdoBackend {
    * itself lives in the caller (see Task 9's write-back driver), not here.
    */
   discoverFields(workItemType: WorkItemType): Promise<string[]>;
+  /** Updates (merges) fields on an existing work item without changing its type or parent link. */
+  setFields(id: number, fields: Record<string, string>): Promise<void>;
 }

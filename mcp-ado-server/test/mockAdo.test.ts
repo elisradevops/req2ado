@@ -46,3 +46,25 @@ describe('MockAdoBackend.discoverFields', () => {
     expect(fields).toContain('Custom.CustomerId');
   });
 });
+
+describe('MockAdoBackend.setFields', () => {
+  it('updates the fields of an existing work item', async () => {
+    const backend = new MockAdoBackend(':memory:');
+    const created = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'Original' } });
+    await backend.setFields(created.id, { 'System.Title': 'Updated' });
+    const updated = await backend.getWorkItem(created.id);
+    expect(updated?.fields['System.Title']).toBe('Updated');
+  });
+
+  it('merges new fields with existing ones rather than replacing the whole fields object', async () => {
+    const backend = new MockAdoBackend(':memory:');
+    const created = await backend.createWorkItem({
+      type: 'Requirement',
+      fields: { 'System.Title': 'Title', 'System.State': 'Proposed' },
+    });
+    await backend.setFields(created.id, { 'System.State': 'Active' });
+    const updated = await backend.getWorkItem(created.id);
+    expect(updated?.fields['System.Title']).toBe('Title');
+    expect(updated?.fields['System.State']).toBe('Active');
+  });
+});

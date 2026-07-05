@@ -274,6 +274,22 @@ describe('RealAdoBackend.queryIds', () => {
   });
 });
 
+describe('RealAdoBackend.setFields', () => {
+  it('PATCHes a JSON-Patch add op per field', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const patchSpy = vi.spyOn(httpClient, 'patch').mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.setFields(42, { 'System.State': 'Active' });
+
+    expect(patchSpy.mock.calls[0][0]).toContain('/wit/workitems/42');
+    expect(patchSpy.mock.calls[0][1]).toEqual([{ op: 'add', path: '/fields/System.State', value: 'Active' }]);
+  });
+});
+
 describe('RealAdoBackend.discoverFields', () => {
   it('GETs the work-item-type fields endpoint and returns the reference names', async () => {
     const backend = new RealAdoBackend(testConfig, credential);

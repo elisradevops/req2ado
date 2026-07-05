@@ -56,6 +56,15 @@ export class MockAdoBackend implements AdoBackend {
       .map((row) => row.id);
   }
 
+  async setFields(id: number, fields: Record<string, string>): Promise<void> {
+    const existing = this.db.prepare('SELECT fields FROM work_items WHERE id = ?').get(id) as
+      | { fields: string }
+      | undefined;
+    if (!existing) return;
+    const merged = { ...JSON.parse(existing.fields), ...fields };
+    this.db.prepare('UPDATE work_items SET fields = ? WHERE id = ?').run(JSON.stringify(merged), id);
+  }
+
   async discoverFields(_workItemType: WorkItemType): Promise<string[]> {
     // Hardcoded, realistic field set for off-network dev/tests — good enough
     // to exercise the Customer ID candidate-matching logic without a real

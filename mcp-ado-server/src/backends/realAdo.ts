@@ -167,6 +167,16 @@ export class RealAdoBackend implements AdoBackend {
     return response.data.workItems.map((item: { id: number }) => item.id);
   }
 
+  async setFields(id: number, fields: Record<string, string>): Promise<void> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems/${id}${versionQueryParam(version)}`;
+    await retryWithBackoff(() =>
+      this.httpClient.patch(url, toJsonPatch(fields), {
+        headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' },
+      }),
+    );
+  }
+
   async discoverFields(workItemType: WorkItemType): Promise<string[]> {
     const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/workitemtypes/${workItemType}/fields${versionQueryParam(version)}`;
