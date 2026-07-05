@@ -172,3 +172,43 @@ describe('RealAdoBackend.getWorkItem', () => {
     expect(result?.parentId).toBe(7);
   });
 });
+
+describe('RealAdoBackend.linkParentChild', () => {
+  it('PATCHes a Hierarchy-Reverse relation add op onto the child work item', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const patchSpy = vi.spyOn(httpClient, 'patch').mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.linkParentChild(42, 7);
+
+    expect(patchSpy.mock.calls[0][0]).toContain('/wit/workitems/42');
+    expect(patchSpy.mock.calls[0][1]).toEqual([
+      {
+        op: 'add',
+        path: '/relations/-',
+        value: {
+          rel: 'System.LinkTypes.Hierarchy-Reverse',
+          url: expect.stringContaining('/workItems/7'),
+        },
+      },
+    ]);
+  });
+
+  it('retries on a 429 before succeeding', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const patchSpy = vi
+      .spyOn(httpClient, 'patch')
+      .mockRejectedValueOnce({ response: { status: 429 } })
+      .mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.linkParentChild(42, 7);
+    expect(patchSpy).toHaveBeenCalledTimes(2);
+  });
+});

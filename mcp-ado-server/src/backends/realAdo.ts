@@ -3,6 +3,7 @@ import axios from 'axios';
 import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
 import type { AdoBackend, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
 import type { AdoMcpConfig } from '../config/env.js';
+import { retryWithBackoff } from './retryWithBackoff.js';
 
 /**
  * Probes the api-version fallback ladder (docs/architecture.md: "7.1 -> 5.1
@@ -90,9 +91,11 @@ export class RealAdoBackend implements AdoBackend {
   async createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord> {
     const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/workitems/$${input.type}${versionQueryParam(version)}`;
-    const response = await this.httpClient.post(url, toJsonPatch(input.fields), {
-      headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' },
-    });
+    const response = await retryWithBackoff(() =>
+      this.httpClient.post(url, toJsonPatch(input.fields), {
+        headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' },
+      }),
+    );
     return {
       id: response.data.id,
       type: input.type,
@@ -105,7 +108,9 @@ export class RealAdoBackend implements AdoBackend {
     const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems/${id}?$expand=relations${version === 'none' ? '' : `&api-version=${version}`}`;
     try {
-      const response = await this.httpClient.get(url, { headers: { Authorization: this.authHeader() } });
+      const response = await retryWithBackoff(() =>
+        this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+      );
       const data = response.data;
       return {
         id: data.id,
@@ -119,8 +124,23 @@ export class RealAdoBackend implements AdoBackend {
     }
   }
 
-  async linkParentChild(_childId: number, _parentId: number): Promise<void> {
-    throw new Error('RealAdoBackend.linkParentChild not implemented yet — see Task 3');
+  async linkParentChild(childId: number, parentId: number): Promise<void> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems/${childId}${versionQueryParam(version)}`;
+    const parentUrl = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workItems/${parentId}`;
+    await retryWithBackoff(() =>
+      this.httpClient.patch(
+        url,
+        [
+          {
+            op: 'add',
+            path: '/relations/-',
+            value: { rel: 'System.LinkTypes.Hierarchy-Reverse', url: parentUrl },
+          },
+        ],
+        { headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' } },
+      ),
+    );
   }
 
   async queryIds(_fieldMatch: Record<string, string>): Promise<number[]> {
