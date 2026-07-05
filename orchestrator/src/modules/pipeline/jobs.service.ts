@@ -76,14 +76,46 @@ export class JobsService {
     // re-run idempotency (found via the golden E2E script: job #2's re-run
     // always showed 'create' since the recorded key never matched the
     // per-node key diff() looks up by).
-    const diff = job.dryRunDiff as { localId: string; action: string; sourceHash: string; customerId: string | null }[];
+    const diff = job.dryRunDiff as {
+      localId: string;
+      parentLocalId: string | null;
+      type: string;
+      title: string;
+      description: string;
+      action: string;
+      existingAdoId: number | null;
+      sourceHash: string;
+      customerId: string | null;
+    }[];
+
+    // Tree order from ingestion (parents appear before children — see
+    // tree_builder.py's stack-based construction) means a single left-to-right
+    // pass is sufficient: every entry's parentLocalId, if non-null, already
+    // has its ADO id in this map by the time we reach the child.
+    const adoIdByLocalId = new Map<string, number>();
     let createdCount = 0;
+
     for (const entry of diff) {
-      if (entry.action === 'create') {
-        const created = await this.mcpClient.createWorkItem('Requirement', {});
-        await this.idempotencyService.record(entry.sourceHash, entry.customerId, job.areaPath, created.id);
-        createdCount += 1;
+      if (entry.action === 'reuse' && entry.existingAdoId !== null) {
+        adoIdByLocalId.set(entry.localId, entry.existingAdoId);
+        continue;
       }
+      const created = await this.mcpClient.createWorkItem(
+        entry.type,
+        { 'System.Title': entry.title, 'System.Description': entry.description },
+        credential,
+      );
+      adoIdByLocalId.set(entry.localId, created.id);
+      await this.idempotencyService.record(entry.sourceHash, entry.customerId, job.areaPath, created.id);
+      createdCount += 1;
+    }
+
+    for (const entry of diff) {
+      if (entry.parentLocalId === null) continue;
+      const childAdoId = adoIdByLocalId.get(entry.localId);
+      const parentAdoId = adoIdByLocalId.get(entry.parentLocalId);
+      if (childAdoId === undefined || parentAdoId === undefined) continue; // defensive — should not happen given tree order
+      await this.mcpClient.linkParentChild(childAdoId, parentAdoId, credential);
     }
 
     await this.prisma.job.update({

@@ -99,4 +99,67 @@ describe('runPipelineJob', () => {
       fakeIdempotencyService,
     );
   });
+
+  it('carries parent_local_id/type/title/description from ingestion through to the dry-run diff input', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        {
+          local_id: 'n0',
+          parent_local_id: null,
+          type: 'Feature',
+          title: 'Parent Title',
+          description: 'Parent Desc',
+          fidelity_hash: 'hashA',
+          customer_id: 'CUST-1',
+        },
+        {
+          local_id: 'n1',
+          parent_local_id: 'n0',
+          type: 'Requirement',
+          title: 'Child Title',
+          description: 'Child Desc',
+          fidelity_hash: 'hashB',
+          customer_id: 'CUST-1',
+        },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', customerId: 'CUST-1', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+      },
+    );
+
+    expect(fakeDryRunService.diff).toHaveBeenCalledWith(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Feature',
+          title: 'Parent Title',
+          description: 'Parent Desc',
+          sourceHash: 'hashA',
+          customerId: 'CUST-1',
+          areaPath: 'Project\\Area1',
+        },
+        {
+          localId: 'n1',
+          parentLocalId: 'n0',
+          type: 'Requirement',
+          title: 'Child Title',
+          description: 'Child Desc',
+          sourceHash: 'hashB',
+          customerId: 'CUST-1',
+          areaPath: 'Project\\Area1',
+        },
+      ],
+      fakeIdempotencyService,
+    );
+  });
 });

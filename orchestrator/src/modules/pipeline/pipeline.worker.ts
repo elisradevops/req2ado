@@ -20,6 +20,10 @@ export interface PipelineWorkerDeps {
 
 interface LeveledNode {
   local_id: string;
+  parent_local_id: string | null;
+  type: string;
+  title: string;
+  description: string;
   fidelity_hash: string;
   customer_id: string | null;
 }
@@ -41,6 +45,10 @@ export async function runPipelineJob(
 
     const diffInputs: DryRunTreeNode[] = tree.nodes.map((node) => ({
       localId: node.local_id,
+      parentLocalId: node.parent_local_id,
+      type: node.type,
+      title: node.title,
+      description: node.description,
       sourceHash: node.fidelity_hash,
       customerId: node.customer_id,
       areaPath: job.areaPath,

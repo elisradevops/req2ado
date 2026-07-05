@@ -12,11 +12,32 @@ describe('DryRunService', () => {
     (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const result = await service.diff(
-      [{ localId: 'n0', sourceHash: 'hash1', customerId: null, areaPath: 'Project\\Area1' }],
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+        },
+      ],
       fakeIdempotencyService,
     );
     expect(result).toEqual([
-      { localId: 'n0', action: 'create', existingAdoId: null, sourceHash: 'hash1', customerId: null },
+      {
+        localId: 'n0',
+        parentLocalId: null,
+        type: 'Requirement',
+        title: 'Title 0',
+        description: 'Desc 0',
+        action: 'create',
+        existingAdoId: null,
+        sourceHash: 'hash1',
+        customerId: null,
+      },
     ]);
   });
 
@@ -24,11 +45,32 @@ describe('DryRunService', () => {
     (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(42);
     const service = new DryRunService();
     const result = await service.diff(
-      [{ localId: 'n0', sourceHash: 'hash1', customerId: 'CUST-1', areaPath: 'Project\\Area1' }],
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: 'CUST-1',
+          areaPath: 'Project\\Area1',
+        },
+      ],
       fakeIdempotencyService,
     );
     expect(result).toEqual([
-      { localId: 'n0', action: 'reuse', existingAdoId: 42, sourceHash: 'hash1', customerId: 'CUST-1' },
+      {
+        localId: 'n0',
+        parentLocalId: null,
+        type: 'Requirement',
+        title: 'Title 0',
+        description: 'Desc 0',
+        action: 'reuse',
+        existingAdoId: 42,
+        sourceHash: 'hash1',
+        customerId: 'CUST-1',
+      },
     ]);
   });
 
@@ -37,14 +79,52 @@ describe('DryRunService', () => {
     const service = new DryRunService();
     const result = await service.diff(
       [
-        { localId: 'n0', sourceHash: 'hash1', customerId: null, areaPath: 'Project\\Area1' },
-        { localId: 'n1', sourceHash: 'hash2', customerId: null, areaPath: 'Project\\Area1' },
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Feature',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+        },
+        {
+          localId: 'n1',
+          parentLocalId: 'n0',
+          type: 'Requirement',
+          title: 'Title 1',
+          description: 'Desc 1',
+          sourceHash: 'hash2',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+        },
       ],
       fakeIdempotencyService,
     );
     expect(result).toEqual([
-      { localId: 'n0', action: 'create', existingAdoId: null, sourceHash: 'hash1', customerId: null },
-      { localId: 'n1', action: 'reuse', existingAdoId: 7, sourceHash: 'hash2', customerId: null },
+      {
+        localId: 'n0',
+        parentLocalId: null,
+        type: 'Feature',
+        title: 'Title 0',
+        description: 'Desc 0',
+        action: 'create',
+        existingAdoId: null,
+        sourceHash: 'hash1',
+        customerId: null,
+      },
+      {
+        localId: 'n1',
+        parentLocalId: 'n0',
+        type: 'Requirement',
+        title: 'Title 1',
+        description: 'Desc 1',
+        action: 'reuse',
+        existingAdoId: 7,
+        sourceHash: 'hash2',
+        customerId: null,
+      },
     ]);
   });
 
@@ -52,7 +132,18 @@ describe('DryRunService', () => {
     (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     await service.diff(
-      [{ localId: 'n0', sourceHash: 'hash1', customerId: null, areaPath: 'Project\\Area1' }],
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+        },
+      ],
       fakeIdempotencyService,
     );
     // No assertion needed beyond "this test exists and only calls lookup()"

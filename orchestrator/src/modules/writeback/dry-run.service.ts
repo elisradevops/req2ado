@@ -3,6 +3,10 @@ import type { IdempotencyService } from './idempotency.service';
 
 export interface DryRunTreeNode {
   localId: string;
+  parentLocalId: string | null;
+  type: string;
+  title: string;
+  description: string;
   sourceHash: string;
   customerId: string | null;
   areaPath: string;
@@ -10,6 +14,10 @@ export interface DryRunTreeNode {
 
 export interface DryRunDiffEntry {
   localId: string;
+  parentLocalId: string | null;
+  type: string;
+  title: string;
+  description: string;
   action: 'create' | 'reuse';
   existingAdoId: number | null;
   // Carried forward from the source node so confirm() can record idempotency
@@ -36,6 +44,10 @@ export class DryRunService {
       const existingAdoId = await idempotencyService.lookup(node.sourceHash, node.customerId, node.areaPath);
       results.push({
         localId: node.localId,
+        parentLocalId: node.parentLocalId,
+        type: node.type,
+        title: node.title,
+        description: node.description,
         action: existingAdoId === null ? 'create' : 'reuse',
         existingAdoId,
         sourceHash: node.sourceHash,
