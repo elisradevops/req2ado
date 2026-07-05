@@ -40,8 +40,16 @@ export function createMcpApp(backendFactory: BackendFactory, cfg: AdoMcpConfig):
   app.use(express.json());
 
   app.get('/health', async (_req, res) => {
-    // Health check never needs a real credential — mock/no-op ping is fine
-    // even when backend===real, since this only proves the process is up.
+    // Liveness check must never depend on a credentialed downstream call —
+    // when backend===real, backendFactory(undefined) would construct a
+    // RealAdoBackend with no credential and its ping() would dereference
+    // credential.orgUrl, throwing on every single health check. Only the
+    // mock backend (credential-less by design) is safe to actually ping;
+    // for real, report liveness without touching the backend at all.
+    if (cfg.backend === 'real') {
+      res.json({ ok: true, backend: 'real' });
+      return;
+    }
     res.json(await backendFactory(undefined).ping());
   });
 

@@ -90,6 +90,22 @@ describe('MCP server HTTP transport', () => {
     const res = await request(app).post('/mcp').set('Authorization', `Bearer ${testConfig.mcpBearer}`).send({});
     expect(res.status).toBe(401);
   });
+
+  it('GET /health never constructs a credentialed backend when backend=real', async () => {
+    // Regression test: /health used to call backendFactory(undefined) even
+    // when backend===real, constructing a RealAdoBackend with no credential
+    // and immediately calling its ping() — which dereferences
+    // credential.orgUrl and throws on every single health check, breaking
+    // container/orchestrator liveness probes for the exact configuration
+    // this whole task exists to unblock. The factory below throwing proves
+    // /health never invokes it at all when backend===real.
+    const app = createMcpApp(() => {
+      throw new Error('should not be called for /health when backend=real');
+    }, { ...testConfig, backend: 'real' });
+    const res = await request(app).get('/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, backend: 'real' });
+  });
 });
 
 describe('timingSafeEqualBearer', () => {
