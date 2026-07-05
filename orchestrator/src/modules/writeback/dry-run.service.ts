@@ -12,6 +12,14 @@ export interface DryRunDiffEntry {
   localId: string;
   action: 'create' | 'reuse';
   existingAdoId: number | null;
+  // Carried forward from the source node so confirm() can record idempotency
+  // at the correct (per-node) granularity — Job.sourceHash is a whole-file
+  // hash and cannot be used here; each node's own content hash is what the
+  // idempotency map is actually keyed on. Found via the golden E2E script:
+  // without this, a re-run always showed 'create' since confirm() had no
+  // way to record the mapping using the same key diff() looks it up by.
+  sourceHash: string;
+  customerId: string | null;
 }
 
 /**
@@ -30,6 +38,8 @@ export class DryRunService {
         localId: node.localId,
         action: existingAdoId === null ? 'create' : 'reuse',
         existingAdoId,
+        sourceHash: node.sourceHash,
+        customerId: node.customerId,
       });
     }
     return results;

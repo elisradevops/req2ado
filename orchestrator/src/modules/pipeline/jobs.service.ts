@@ -38,11 +38,17 @@ export class JobsService {
         originalFilename: input.filename,
       },
     });
+    // BullMQ persists job data as JSON in Redis. JSON.stringify(Buffer)
+    // produces {type:'Buffer', data:[...]}, which is NOT a Buffer instance
+    // once read back on the worker side — base64-encoding here and decoding
+    // in pipeline-worker.main.ts round-trips the exact bytes through JSON
+    // safely. Found via the golden E2E script: every real upload was
+    // silently producing an empty WorkItemTree with no error surfaced.
     await this.queue.add('ingest-and-level', {
       id: job.id,
       areaPath: input.areaPath,
       customerId: input.customerId,
-      fileBuffer: input.fileBuffer,
+      fileBufferBase64: input.fileBuffer.toString('base64'),
       filename: input.filename,
     });
     return { jobId: job.id };
@@ -61,12 +67,18 @@ export class JobsService {
     }
     await this.prisma.job.update({ where: { id }, data: { status: 'writing' } });
 
-    const diff = job.dryRunDiff as { localId: string; action: string }[];
+    // Each diff entry carries its own sourceHash/customerId (per-node content
+    // hash), NOT job.sourceHash (a whole-file hash) — see DryRunDiffEntry's
+    // doc comment for why recording at job-level granularity silently broke
+    // re-run idempotency (found via the golden E2E script: job #2's re-run
+    // always showed 'create' since the recorded key never matched the
+    // per-node key diff() looks up by).
+    const diff = job.dryRunDiff as { localId: string; action: string; sourceHash: string; customerId: string | null }[];
     let createdCount = 0;
     for (const entry of diff) {
       if (entry.action === 'create') {
         const created = await this.mcpClient.createWorkItem('Requirement', {});
-        await this.idempotencyService.record(job.sourceHash, job.customerId, job.areaPath, created.id);
+        await this.idempotencyService.record(entry.sourceHash, entry.customerId, job.areaPath, created.id);
         createdCount += 1;
       }
     }

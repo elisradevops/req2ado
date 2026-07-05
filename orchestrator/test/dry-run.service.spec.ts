@@ -15,7 +15,9 @@ describe('DryRunService', () => {
       [{ localId: 'n0', sourceHash: 'hash1', customerId: null, areaPath: 'Project\\Area1' }],
       fakeIdempotencyService,
     );
-    expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
+    expect(result).toEqual([
+      { localId: 'n0', action: 'create', existingAdoId: null, sourceHash: 'hash1', customerId: null },
+    ]);
   });
 
   it('marks a node as "reuse" when an existing mapping is found', async () => {
@@ -25,7 +27,9 @@ describe('DryRunService', () => {
       [{ localId: 'n0', sourceHash: 'hash1', customerId: 'CUST-1', areaPath: 'Project\\Area1' }],
       fakeIdempotencyService,
     );
-    expect(result).toEqual([{ localId: 'n0', action: 'reuse', existingAdoId: 42 }]);
+    expect(result).toEqual([
+      { localId: 'n0', action: 'reuse', existingAdoId: 42, sourceHash: 'hash1', customerId: 'CUST-1' },
+    ]);
   });
 
   it('diffs every node in a multi-node tree independently', async () => {
@@ -39,8 +43,8 @@ describe('DryRunService', () => {
       fakeIdempotencyService,
     );
     expect(result).toEqual([
-      { localId: 'n0', action: 'create', existingAdoId: null },
-      { localId: 'n1', action: 'reuse', existingAdoId: 7 },
+      { localId: 'n0', action: 'create', existingAdoId: null, sourceHash: 'hash1', customerId: null },
+      { localId: 'n1', action: 'reuse', existingAdoId: 7, sourceHash: 'hash2', customerId: null },
     ]);
   });
 

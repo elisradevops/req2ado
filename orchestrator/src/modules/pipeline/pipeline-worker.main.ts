@@ -19,9 +19,18 @@ const ingestionClient = new IngestionHttpClient(process.env.INGESTION_BASE_URL ?
 const dryRunService = new DryRunService();
 const idempotencyService = new IdempotencyService(prisma);
 
-const worker = new Worker<PipelineJobInput>(
+// Queued job data carries the file as base64, not a raw Buffer — see the
+// comment in JobsService.submit for why (BullMQ's Redis JSON round-trip
+// corrupts a raw Buffer into a plain {type, data} object).
+type QueuedJobData = Omit<PipelineJobInput, 'fileBuffer'> & { fileBufferBase64: string };
+
+const worker = new Worker<QueuedJobData>(
   'req2ado-pipeline',
-  async (job) => runPipelineJob(job.data, { ingestionClient, dryRunService, idempotencyService, prisma }),
+  async (job) => {
+    const { fileBufferBase64, ...rest } = job.data;
+    const jobInput: PipelineJobInput = { ...rest, fileBuffer: Buffer.from(fileBufferBase64, 'base64') };
+    return runPipelineJob(jobInput, { ingestionClient, dryRunService, idempotencyService, prisma });
+  },
   { connection: { url: config.REDIS_URL } as any },
 );
 
