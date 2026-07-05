@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 echo "=== TypeScript: exported symbols without a preceding /** doc block ==="
 for dir in orchestrator/src mcp-ado-server/src frontend/src; do
   find "$dir" -name "*.ts" -o -name "*.tsx" | while read -r file; do
-    grep -n "^export \(class\|function\|interface\)" "$file" | while IFS=: read -r lineno _; do
+    { grep -n "^export \(class\|function\|interface\)" "$file" || true; } | while IFS=: read -r lineno _; do
       prev_line=$((lineno - 1))
       prev_content=$(sed -n "${prev_line}p" "$file")
       if [[ "$prev_content" != *"*/"* ]]; then
