@@ -1,7 +1,7 @@
 import type { AxiosInstance } from 'axios';
 import axios from 'axios';
 import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
-import type { AdoBackend, CreateWorkItemInput, WorkItemRecord } from './types.js';
+import type { AdoBackend, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
 import type { AdoMcpConfig } from '../config/env.js';
 
 /**
@@ -36,10 +36,26 @@ export async function resolveApiVersion(
   throw new Error(`No api-version in the ladder [${apiVersionLadder.join(', ')}] succeeded against ${orgUrl}`);
 }
 
+function versionQueryParam(version: string): string {
+  return version === 'none' ? '' : `?api-version=${version}`;
+}
+
+function toJsonPatch(fields: Record<string, string>): { op: string; path: string; value: string }[] {
+  return Object.entries(fields).map(([key, value]) => ({ op: 'add', path: `/fields/${key}`, value }));
+}
+
+function parentIdFromRelations(relations: { rel: string; url: string }[] | undefined): number | null {
+  const parentRelation = relations?.find((relation) => relation.rel === 'System.LinkTypes.Hierarchy-Reverse');
+  if (!parentRelation) return null;
+  const match = parentRelation.url.match(/\/workItems\/(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
 /**
  * On-prem ADO REST implementation of AdoBackend (Phase 0's interface,
- * unchanged). Work-item methods are implemented in Tasks 2-4; this task
- * only establishes the skeleton and api-version resolution.
+ * unchanged). createWorkItem/getWorkItem are implemented here via the
+ * JSON-Patch work-item API; linkParentChild/queryIds remain stubs for
+ * Tasks 3-4.
  */
 export class RealAdoBackend implements AdoBackend {
   private httpClient: AxiosInstance = axios.create();
@@ -49,6 +65,10 @@ export class RealAdoBackend implements AdoBackend {
     private readonly config: AdoMcpConfig,
     private readonly credential: AdoCredential,
   ) {}
+
+  private authHeader(): string {
+    return buildBasicAuthHeader(this.credential.pat);
+  }
 
   private async getApiVersion(): Promise<string> {
     if (this.resolvedApiVersion === null) {
@@ -67,12 +87,36 @@ export class RealAdoBackend implements AdoBackend {
     return { ok: true, backend: 'real' };
   }
 
-  async createWorkItem(_input: CreateWorkItemInput): Promise<WorkItemRecord> {
-    throw new Error('RealAdoBackend.createWorkItem not implemented yet — see Task 2');
+  async createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/workitems/$${input.type}${versionQueryParam(version)}`;
+    const response = await this.httpClient.post(url, toJsonPatch(input.fields), {
+      headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' },
+    });
+    return {
+      id: response.data.id,
+      type: input.type,
+      fields: input.fields,
+      parentId: null,
+    };
   }
 
-  async getWorkItem(_id: number): Promise<WorkItemRecord | null> {
-    throw new Error('RealAdoBackend.getWorkItem not implemented yet — see Task 2');
+  async getWorkItem(id: number): Promise<WorkItemRecord | null> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems/${id}?$expand=relations${version === 'none' ? '' : `&api-version=${version}`}`;
+    try {
+      const response = await this.httpClient.get(url, { headers: { Authorization: this.authHeader() } });
+      const data = response.data;
+      return {
+        id: data.id,
+        type: data.fields['System.WorkItemType'] as WorkItemType,
+        fields: data.fields,
+        parentId: parentIdFromRelations(data.relations),
+      };
+    } catch (error: any) {
+      if (error?.response?.status === 404) return null;
+      throw error;
+    }
   }
 
   async linkParentChild(_childId: number, _parentId: number): Promise<void> {
