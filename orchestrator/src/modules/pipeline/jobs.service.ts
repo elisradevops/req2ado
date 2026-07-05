@@ -60,7 +60,10 @@ export class JobsService {
     return { id: job.id, status: job.status, dryRunDiff: job.dryRunDiff };
   }
 
-  async confirm(id: string): Promise<{ status: string; createdCount: number }> {
+  async confirm(
+    id: string,
+    credential?: { orgUrl: string; pat: string },
+  ): Promise<{ status: string; createdCount: number }> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job || job.status !== 'diff_ready') {
       throw new Error(`Job ${id} is not in a confirmable state`);

@@ -76,5 +76,28 @@ describe('JobsController (e2e)', () => {
     const res = await request(app.getHttpServer()).post('/jobs/job-1/confirm');
     expect(res.status).toBe(201);
     expect(res.body).toEqual({ status: 'succeeded', createdCount: 2 });
+    expect(fakeJobsService.confirm).toHaveBeenCalledWith('job-1', undefined);
+  });
+
+  it('POST /jobs/:id/confirm forwards X-Ado-Org-Url / X-Ado-Pat headers as a credential', async () => {
+    fakeJobsService.confirm.mockResolvedValue({ status: 'succeeded', createdCount: 1 });
+    const res = await request(app.getHttpServer())
+      .post('/jobs/job-1/confirm')
+      .set('X-Ado-Org-Url', 'https://ado.example.com/tfs')
+      .set('X-Ado-Pat', 'secret-pat');
+    expect(res.status).toBe(201);
+    expect(fakeJobsService.confirm).toHaveBeenCalledWith('job-1', {
+      orgUrl: 'https://ado.example.com/tfs',
+      pat: 'secret-pat',
+    });
+  });
+
+  it('POST /jobs/:id/confirm treats a partial credential (only one header) as no credential', async () => {
+    fakeJobsService.confirm.mockResolvedValue({ status: 'succeeded', createdCount: 0 });
+    const res = await request(app.getHttpServer())
+      .post('/jobs/job-1/confirm')
+      .set('X-Ado-Org-Url', 'https://ado.example.com/tfs');
+    expect(res.status).toBe(201);
+    expect(fakeJobsService.confirm).toHaveBeenCalledWith('job-1', undefined);
   });
 });

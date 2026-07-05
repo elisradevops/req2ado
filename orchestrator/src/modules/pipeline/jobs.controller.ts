@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, NotFoundException, Param, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Headers, NotFoundException, Param, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
 import { JobsService } from './jobs.service';
@@ -48,7 +48,12 @@ export class JobsController {
   }
 
   @Post(':id/confirm')
-  async confirm(@Param('id') id: string): Promise<{ status: string; createdCount: number }> {
-    return this.jobsService.confirm(id);
+  async confirm(
+    @Param('id') id: string,
+    @Headers('x-ado-org-url') orgUrl: string | undefined,
+    @Headers('x-ado-pat') pat: string | undefined,
+  ): Promise<{ status: string; createdCount: number }> {
+    const credential = orgUrl && pat ? { orgUrl, pat } : undefined;
+    return this.jobsService.confirm(id, credential);
   }
 }

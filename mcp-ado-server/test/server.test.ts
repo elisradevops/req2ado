@@ -19,26 +19,26 @@ const testConfig: AdoMcpConfig = {
 
 describe('MCP server HTTP transport', () => {
   it('rejects requests without a bearer token', async () => {
-    const app = createMcpApp(new MockAdoBackend(':memory:'), testConfig);
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
     const res = await request(app).post('/mcp').send({});
     expect(res.status).toBe(401);
   });
 
   it('rejects requests with the wrong bearer token', async () => {
-    const app = createMcpApp(new MockAdoBackend(':memory:'), testConfig);
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
     const res = await request(app).post('/mcp').set('Authorization', 'Bearer wrong').send({});
     expect(res.status).toBe(401);
   });
 
   it('exposes a plain health endpoint with no auth required', async () => {
-    const app = createMcpApp(new MockAdoBackend(':memory:'), testConfig);
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true, backend: 'mock' });
   });
 
   it('accepts an initialize request with the correct bearer token, and allows a second request afterwards', async () => {
-    const app = createMcpApp(new MockAdoBackend(':memory:'), testConfig);
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
 
     const initializeRequest = {
       jsonrpc: '2.0',
@@ -81,6 +81,14 @@ describe('MCP server HTTP transport', () => {
       .send(toolsListRequest);
     expect(second.status).not.toBe(401);
     expect(second.status).toBeLessThan(500);
+  });
+
+  it('rejects a /mcp request with no ADO credential headers when backend=real', async () => {
+    const app = createMcpApp(() => {
+      throw new Error('should not be called');
+    }, { ...testConfig, backend: 'real' });
+    const res = await request(app).post('/mcp').set('Authorization', `Bearer ${testConfig.mcpBearer}`).send({});
+    expect(res.status).toBe(401);
   });
 });
 

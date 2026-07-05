@@ -2,6 +2,7 @@ import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { AdoBackend } from './backends/types.js';
+import type { AdoCredential } from './auth/patAuth.js';
 import type { AdoMcpConfig } from './config/env.js';
 import { registerPingTool } from './tools/pingTool.js';
 import { registerDiscoverFieldsTool } from './tools/discoverFieldsTool.js';
@@ -12,22 +13,46 @@ import { registerQueryIdsTool } from './tools/queryIdsTool.js';
 import { timingSafeEqualBearer } from './auth/timingSafeEqualBearer.js';
 
 /**
+ * `backendFactory` is called once per /mcp request, given the request's
+ * per-user AdoCredential (undefined when backend===mock, which needs none).
+ * Real backend: a fresh RealAdoBackend per request, scoped to that user's
+ * own PAT — never a shared, process-lifetime credential. Mock backend: the
+ * SAME shared MockAdoBackend instance every time (it's a stateful SQLite
+ * store meant to simulate ADO's persistence across requests/tests, not a
+ * per-user resource).
+ */
+export type BackendFactory = (credential: AdoCredential | undefined) => AdoBackend;
+
+function readCredential(req: express.Request): AdoCredential | undefined {
+  const orgUrl = req.header('x-ado-org-url');
+  const pat = req.header('x-ado-pat');
+  if (!orgUrl || !pat) return undefined;
+  return { orgUrl, pat };
+}
+
+/**
  * Builds the Express app hosting the MCP Streamable HTTP transport.
  * `/health` is unauthenticated (container/orchestrator health checks).
  * `/mcp` requires `Authorization: Bearer <cfg.mcpBearer>` on every request.
  */
-export function createMcpApp(backend: AdoBackend, cfg: AdoMcpConfig): express.Express {
+export function createMcpApp(backendFactory: BackendFactory, cfg: AdoMcpConfig): express.Express {
   const app = express();
   app.use(express.json());
 
   app.get('/health', async (_req, res) => {
-    res.json(await backend.ping());
+    // Health check never needs a real credential — mock/no-op ping is fine
+    // even when backend===real, since this only proves the process is up.
+    res.json(await backendFactory(undefined).ping());
   });
 
   app.use('/mcp', (req, res, next) => {
     const header = req.header('authorization') ?? '';
     if (!timingSafeEqualBearer(header, `Bearer ${cfg.mcpBearer}`)) {
       res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    if (cfg.backend === 'real' && !readCredential(req)) {
+      res.status(401).json({ error: 'missing X-Ado-Org-Url / X-Ado-Pat headers for real backend' });
       return;
     }
     next();
@@ -40,6 +65,7 @@ export function createMcpApp(backend: AdoBackend, cfg: AdoMcpConfig): express.Ex
   // creates a fresh McpServer + transport per request; we follow that pattern
   // here instead of connecting once for the app's lifetime.
   app.post('/mcp', async (req, res) => {
+    const backend = backendFactory(readCredential(req));
     const mcpServer = new McpServer({ name: 'req2ado-ado-mcp-server', version: '0.1.0' });
     registerPingTool(mcpServer, backend);
     registerDiscoverFieldsTool(mcpServer, backend);

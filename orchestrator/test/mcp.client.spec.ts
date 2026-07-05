@@ -14,6 +14,13 @@ jest.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   })),
 }));
 
+// Captures the requestInit headers passed to the transport, so we can assert
+// that an optional credential is (or isn't) forwarded as the two ADO headers
+// without needing a real HTTP transport.
+jest.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+  StreamableHTTPClientTransport: jest.fn().mockImplementation((_url, opts) => ({ __opts: opts })),
+}));
+
 describe('McpClient', () => {
   afterEach(() => {
     jest.clearAllMocks();
@@ -92,6 +99,46 @@ describe('McpClient', () => {
     expect(mockCallTool).toHaveBeenCalledWith({
       name: 'ado_discover_fields',
       arguments: { workItemType: 'Requirement' },
+    });
+  });
+
+  it('omits the ADO credential headers when no credential is passed (mock-backend default)', async () => {
+    const { StreamableHTTPClientTransport } = jest.requireMock(
+      '@modelcontextprotocol/sdk/client/streamableHttp.js',
+    );
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"id":1}' }] }),
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    await client.createWorkItem('Requirement', {});
+
+    const headers = StreamableHTTPClientTransport.mock.calls[0][1].requestInit.headers;
+    expect(headers).toEqual({ Authorization: 'Bearer test-bearer' });
+  });
+
+  it('forwards X-Ado-Org-Url / X-Ado-Pat headers when a credential is passed', async () => {
+    const { StreamableHTTPClientTransport } = jest.requireMock(
+      '@modelcontextprotocol/sdk/client/streamableHttp.js',
+    );
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"id":1}' }] }),
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    await client.createWorkItem('Requirement', {}, { orgUrl: 'https://ado.example.com/tfs', pat: 'secret-pat' });
+
+    const headers = StreamableHTTPClientTransport.mock.calls[0][1].requestInit.headers;
+    expect(headers).toEqual({
+      Authorization: 'Bearer test-bearer',
+      'X-Ado-Org-Url': 'https://ado.example.com/tfs',
+      'X-Ado-Pat': 'secret-pat',
     });
   });
 });

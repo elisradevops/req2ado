@@ -3,6 +3,16 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 /**
+ * Per-request ADO credential forwarded to mcp-ado-server as the
+ * X-Ado-Org-Url / X-Ado-Pat headers. Optional on every McpClient method —
+ * omitted entirely when the backend is mock (no credential needed).
+ */
+export interface AdoRequestCredential {
+  orgUrl: string;
+  pat: string;
+}
+
+/**
  * Real MCP protocol client for mcp-ado-server — the first place in this
  * project that uses the SDK's CLIENT-side APIs (every prior phase only
  * built the SERVER side, inside mcp-ado-server itself). Connects and
@@ -17,11 +27,17 @@ export class McpClient {
     private readonly bearerToken: string,
   ) {}
 
-  private async withClient<T>(fn: (client: Client) => Promise<T>): Promise<T> {
+  private async withClient<T>(
+    credential: AdoRequestCredential | undefined,
+    fn: (client: Client) => Promise<T>,
+  ): Promise<T> {
     const client = new Client({ name: 'req2ado-orchestrator', version: '0.1.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), {
-      requestInit: { headers: { Authorization: `Bearer ${this.bearerToken}` } },
-    });
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.bearerToken}` };
+    if (credential) {
+      headers['X-Ado-Org-Url'] = credential.orgUrl;
+      headers['X-Ado-Pat'] = credential.pat;
+    }
+    const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), { requestInit: { headers } });
     await client.connect(transport);
     try {
       return await fn(client);
@@ -35,21 +51,25 @@ export class McpClient {
     return JSON.parse(textContent?.text ?? 'null') as T;
   }
 
-  async createWorkItem(type: string, fields: Record<string, string>): Promise<{ id: number }> {
-    return this.withClient(async (client) => {
+  async createWorkItem(
+    type: string,
+    fields: Record<string, string>,
+    credential?: AdoRequestCredential,
+  ): Promise<{ id: number }> {
+    return this.withClient(credential, async (client) => {
       const result = await client.callTool({ name: 'ado_create_work_item', arguments: { type, fields } });
       return this.parseToolTextResult(result as any);
     });
   }
 
-  async linkParentChild(childId: number, parentId: number): Promise<void> {
-    await this.withClient(async (client) => {
+  async linkParentChild(childId: number, parentId: number, credential?: AdoRequestCredential): Promise<void> {
+    await this.withClient(credential, async (client) => {
       await client.callTool({ name: 'ado_link_parent_child', arguments: { childId, parentId } });
     });
   }
 
-  async discoverFields(workItemType: string): Promise<string[]> {
-    return this.withClient(async (client) => {
+  async discoverFields(workItemType: string, credential?: AdoRequestCredential): Promise<string[]> {
+    return this.withClient(credential, async (client) => {
       const result = await client.callTool({ name: 'ado_discover_fields', arguments: { workItemType } });
       return this.parseToolTextResult(result as any);
     });
