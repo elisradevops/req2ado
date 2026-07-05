@@ -5,6 +5,8 @@ import type { AdoBackend } from './backends/types.js';
 import type { AdoMcpConfig } from './config/env.js';
 import { registerPingTool } from './tools/pingTool.js';
 import { registerDiscoverFieldsTool } from './tools/discoverFieldsTool.js';
+import { registerCreateWorkItemTool } from './tools/createWorkItemTool.js';
+import { registerLinkParentChildTool } from './tools/linkParentChildTool.js';
 
 /**
  * Builds the Express app hosting the MCP Streamable HTTP transport.
@@ -41,6 +43,8 @@ export function createMcpApp(backend: AdoBackend, cfg: AdoMcpConfig): express.Ex
     const mcpServer = new McpServer({ name: 'req2ado-ado-mcp-server', version: '0.1.0' });
     registerPingTool(mcpServer, backend);
     registerDiscoverFieldsTool(mcpServer, backend);
+    registerCreateWorkItemTool(mcpServer, backend);
+    registerLinkParentChildTool(mcpServer, backend);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     res.on('close', () => {
