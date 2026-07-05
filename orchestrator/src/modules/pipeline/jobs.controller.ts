@@ -22,6 +22,16 @@ import { createHash } from 'crypto';
 // robustness), only a cheap reject-obviously-wrong-format-early gate.
 const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
 
+// Multer's own decorator-time limit must be evaluated BEFORE NestJS DI
+// resolves anything (decorator arguments run at class-definition time), so
+// it can't read the real MAX_UPLOAD_SIZE_MB config value. Set generously
+// high here (500MB) so it never becomes the effective ceiling itself — the
+// real, configurable enforcement is the `file.size > this.maxUploadSizeBytes`
+// check below, which DOES see the DI-resolved value. Without this generous
+// gap, raising MAX_UPLOAD_SIZE_MB above this literal would silently have no
+// effect, since Multer would already have rejected the upload first.
+const MULTER_SAFETY_CEILING_BYTES = 500 * 1024 * 1024;
+
 @Controller('jobs')
 export class JobsController {
   constructor(
@@ -32,7 +42,7 @@ export class JobsController {
   @Post()
   @UseInterceptors(
     FileInterceptor('file', {
-      limits: { fileSize: 25 * 1024 * 1024 }, // static upper bound; real configurable limit enforced below via DI
+      limits: { fileSize: MULTER_SAFETY_CEILING_BYTES },
     }),
   )
   async submit(
