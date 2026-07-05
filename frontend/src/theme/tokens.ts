@@ -1,21 +1,33 @@
 /**
- * Design tokens shared across the app — mirrors the token-based approach
- * used by docgen-frontend's src/theme/tokens.js and
- * ado-hierarchy-viewer/frontend's MUI theme. Never inline hex colors in
+ * Design tokens shared across the app — matches docgen-frontend's actual
+ * theme (src/theme/tokens.js: primary #1B458F, Inter font, 8px grid, 10px
+ * card radius) per docs/architecture.md's "DocGen visual language" decision.
+ * The mono font is req2ado-specific: BASELINE mode's core value is verbatim
+ * fidelity, so technical artifacts (ADO ids, source hashes) get a distinct
+ * face that reads as data, not prose. Never inline hex colors in
  * components; import from here.
  */
 export const themeTokens = {
   color: {
-    primary: '#2451B7',
-    primaryDark: '#173a8a',
+    primary: '#1B458F',
+    primaryDark: '#102951',
+    primaryLight: '#3B60C0',
+    accent: '#FDE134',
+    background: '#f8fafc',
     surface: '#FFFFFF',
     surfaceAlt: '#F4F6FB',
     border: '#D8DEE9',
-    textPrimary: '#1B2430',
-    textSecondary: '#5B6472',
-    danger: '#C4314B',
-    success: '#2E7D32',
+    textPrimary: '#0f172a',
+    textSecondary: '#334155',
+    danger: '#D1434B',
+    success: '#15803d',
+    info: '#2563eb',
   },
-  radius: { sm: 4, md: 8, lg: 16 },
+  font: {
+    family: "'Inter', 'Roboto', 'Helvetica', 'Arial', sans-serif",
+    mono: "ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+  },
+  radius: { sm: 6, md: 10, lg: 16 },
+  shadow: { medium: '0px 6px 20px rgba(15, 23, 42, 0.12)' },
   spacing: (multiplier: number): number => multiplier * 8,
 } as const;
