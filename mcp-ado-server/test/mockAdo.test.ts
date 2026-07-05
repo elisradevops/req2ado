@@ -36,3 +36,13 @@ describe('MockAdoBackend', () => {
     expect(await backend.ping()).toEqual({ ok: true, backend: 'mock' });
   });
 });
+
+describe('MockAdoBackend.discoverFields', () => {
+  it('returns a hardcoded, realistic set of field ref names for Requirement', async () => {
+    const backend = new MockAdoBackend(':memory:');
+    const fields = await backend.discoverFields('Requirement');
+    expect(fields).toContain('System.Title');
+    expect(fields).toContain('System.Description');
+    expect(fields).toContain('Custom.CustomerId');
+  });
+});

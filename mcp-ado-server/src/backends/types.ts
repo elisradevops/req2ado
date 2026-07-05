@@ -28,4 +28,11 @@ export interface AdoBackend {
    * area-path-scoped dedup contract (docs/architecture.md) and will need revisiting then.
    */
   queryIds(fieldMatch: Record<string, string>): Promise<number[]>;
+  /**
+   * Returns the field reference names available on a given work-item type —
+   * real backing for docs/architecture.md's "Customer ID Field Resolution"
+   * candidate-list algorithm (Phase 4/7). The priority-list matching logic
+   * itself lives in the caller (see Task 9's write-back driver), not here.
+   */
+  discoverFields(workItemType: WorkItemType): Promise<string[]>;
 }

@@ -273,3 +273,27 @@ describe('RealAdoBackend.queryIds', () => {
     expect(query).toContain("O''Brien''s spec");
   });
 });
+
+describe('RealAdoBackend.discoverFields', () => {
+  it('GETs the work-item-type fields endpoint and returns the reference names', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          fields: [
+            { referenceName: 'System.Title' },
+            { referenceName: 'Custom.CustomerRequirementId' },
+            { referenceName: 'Microsoft.VSTS.CMMI.RequirementType' },
+          ],
+        },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.discoverFields('Requirement');
+    expect(result).toEqual(['System.Title', 'Custom.CustomerRequirementId', 'Microsoft.VSTS.CMMI.RequirementType']);
+  });
+});

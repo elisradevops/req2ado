@@ -55,4 +55,19 @@ export class MockAdoBackend implements AdoBackend {
       })
       .map((row) => row.id);
   }
+
+  async discoverFields(_workItemType: WorkItemType): Promise<string[]> {
+    // Hardcoded, realistic field set for off-network dev/tests — good enough
+    // to exercise the Customer ID candidate-matching logic without a real
+    // ADO server. Includes one of the three real candidate names so callers
+    // can test the "found" path against the mock.
+    return [
+      'System.Title',
+      'System.Description',
+      'System.State',
+      'System.AreaPath',
+      'Microsoft.VSTS.CMMI.RequirementType',
+      'Custom.CustomerId',
+    ];
+  }
 }
