@@ -13,20 +13,16 @@ export class IdempotencyService {
   constructor(private readonly prisma: PrismaClient) {}
 
   async lookup(sourceHash: string, customerId: string | null, areaPath: string): Promise<number | null> {
-    const record = await this.prisma.idempotencyMapping.findUnique({
-      where: {
-        // Prisma's generated compound-unique-key input type requires a
-        // non-null `customerId` even though the column itself is nullable
-        // (Prisma does not support `null` in @@unique compound key lookups
-        // — see prisma/prisma#3197). Cast is required to compile; see
-        // task-9 report for the runtime implication when customerId is
-        // actually null against a real Prisma client/Postgres instance.
-        sourceHash_customerId_areaPath: { sourceHash, customerId, areaPath } as {
-          sourceHash: string;
-          customerId: string;
-          areaPath: string;
-        },
-      },
+    // findUnique's generated compound-unique-key input type rejects `null`
+    // for any field at runtime, even though `customerId` is a nullable
+    // column (Prisma does not support `null` in @@unique compound key
+    // lookups — see prisma/prisma#3197). findFirst has no such restriction
+    // and works correctly with null values in a plain `where` filter; the
+    // (sourceHash, customerId, areaPath) unique constraint still guarantees
+    // at most one matching row. See task-9 report for the empirical
+    // verification against a real Prisma client/Postgres instance.
+    const record = await this.prisma.idempotencyMapping.findFirst({
+      where: { sourceHash, customerId, areaPath },
     });
     return record?.adoWorkItemId ?? null;
   }
