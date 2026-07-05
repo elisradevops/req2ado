@@ -52,6 +52,17 @@ function parentIdFromRelations(relations: { rel: string; url: string }[] | undef
   return match ? Number(match[1]) : null;
 }
 
+function escapeWiqlValue(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+function buildWiqlQuery(fieldMatch: Record<string, string>): string {
+  const conditions = Object.entries(fieldMatch)
+    .map(([field, value]) => `[${field}] = '${escapeWiqlValue(value)}'`)
+    .join(' AND ');
+  return `SELECT [System.Id] FROM WorkItems WHERE ${conditions}`;
+}
+
 /**
  * On-prem ADO REST implementation of AdoBackend (Phase 0's interface,
  * unchanged). createWorkItem/getWorkItem are implemented here via the
@@ -143,7 +154,16 @@ export class RealAdoBackend implements AdoBackend {
     );
   }
 
-  async queryIds(_fieldMatch: Record<string, string>): Promise<number[]> {
-    throw new Error('RealAdoBackend.queryIds not implemented yet — see Task 4');
+  async queryIds(fieldMatch: Record<string, string>): Promise<number[]> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/wiql${versionQueryParam(version)}`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.post(
+        url,
+        { query: buildWiqlQuery(fieldMatch) },
+        { headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json' } },
+      ),
+    );
+    return response.data.workItems.map((item: { id: number }) => item.id);
   }
 }

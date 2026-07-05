@@ -212,3 +212,64 @@ describe('RealAdoBackend.linkParentChild', () => {
     expect(patchSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('RealAdoBackend.queryIds', () => {
+  it('runs a WIQL query built from the field-match map and returns matching ids', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} }); // api-version probe
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({
+      status: 200,
+      data: { workItems: [{ id: 1 }, { id: 2 }] },
+    });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.queryIds({ 'Custom.SourceHash': 'abc123' });
+
+    expect(result).toEqual([1, 2]);
+    expect(postSpy.mock.calls[0][0]).toContain('/wit/wiql');
+    expect(postSpy.mock.calls[0][1].query).toContain("[Custom.SourceHash] = 'abc123'");
+  });
+
+  it('combines multiple field-match entries with AND', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { workItems: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.queryIds({ 'Custom.SourceHash': 'abc123', 'System.AreaPath': 'Project\\Area1' });
+
+    const query = postSpy.mock.calls[0][1].query;
+    expect(query).toContain("[Custom.SourceHash] = 'abc123'");
+    expect(query).toContain("[System.AreaPath] = 'Project\\Area1'");
+    expect(query).toContain(' AND ');
+  });
+
+  it('returns an empty array when nothing matches', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { workItems: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.queryIds({ 'Custom.SourceHash': 'nonexistent' });
+    expect(result).toEqual([]);
+  });
+
+  it('escapes single quotes in field values to prevent WIQL injection', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { workItems: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.queryIds({ 'System.Title': "O'Brien's spec" });
+    const query = postSpy.mock.calls[0][1].query;
+    expect(query).toContain("O''Brien''s spec");
+  });
+});
