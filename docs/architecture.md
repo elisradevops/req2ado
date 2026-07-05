@@ -29,7 +29,7 @@
 | Docs | Full TSDoc/docstrings + in-app **Wiki/Help page** (renders `docs/user-guide.md`) + **tooltips/popovers** on every non-trivial control. |
 | Backend fw | **NestJS** (DI, guards, validation) for the scalable/secured goal. |
 | Database | **Postgres + Prisma** (jobs, audit, idempotency map, users/roles). |
-| App auth | **ADO PAT is the sole credential for both identity and permissions.** Login validates `{orgUrl, pat}` against the ADO Server's own `connectionData` endpoint — no external IdP (Azure AD requires an App Registration, unavailable in this deployment; kept in the codebase as an unused future option). Every authenticated user gets a single role (`Operator`) — ADO's own permission system is the real access-control gate, not app-level RBAC. NestJS `RolesGuard`/`Role` enum machinery exists (built, tested) for a future multi-user RBAC scenario if ever needed. |
+| App auth | **ADO PAT is the sole credential for both identity AND permissions — no app-level RBAC.** Login validates `{orgUrl, pat}` against the ADO Server's own `connectionData` endpoint — no external IdP (Azure AD requires an App Registration, unavailable in this deployment; kept in the codebase as an unused future option). Every authenticated user is just a `User` row keyed by ADO identity, with no role field — ADO's own permission system (whatever the PAT's account can do in ADO) is the sole access-control gate. **Resolved in Phase 9: the NestJS `RolesGuard`/`Role` enum scaffolding from Phase 0 was removed entirely** (confirmed dead code with zero runtime authorization effect — no route ever used `@Roles()`, and nothing ever read `.role` back off a decoded session JWT), rather than building it out further. |
 
 **Generic ADO REST conventions reused as knowledge (ported into our MCP server):**
 - PAT = HTTP Basic, empty username. On-prem TLS = CA-trust (not `rejectUnauthorized:false`).
@@ -69,7 +69,7 @@
                 ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Orchestrator API — Node/TS (Express/NestJS)                               │
-│  · App login + RBAC (Admin/Operator/Viewer) — NestJS guards               │
+│  · App login (ADO PAT identity, no app-level RBAC — see Locked Decisions) │
 │  · Per-user ADO PAT handling (never persisted/logged)                      │
 │  · REST + job submission + SSE progress stream                             │
 │  · LLM Proxy:  redact → Open WebUI (config URL) → response                 │
@@ -144,7 +144,7 @@ Traceability: every node's `source_ref` → a `Block`/offset; `fidelity_hash` pr
 
 | Phase | Goal | Scope / IO | LLM | Risks | Definition of Done |
 |---|---|---|---|---|---|
-| **0** Foundations | Monorepo skeleton, docker-compose, config, Postgres+Prisma+Redis, CI, mock ADO backend, GUI shell, **app login + RBAC** | config/env schema; `MockAdoBackend`; app login (users/roles) + per-user PAT capture (header, not persisted); DocGen-style app shell | None | Over-scaffolding | `docker-compose up` runs all services; tests green; app login + role guard works; PAT validates ADO conn via `connectionData`[^pat-validate-deferred]; mock backend creates+links |
+| **0** Foundations | Monorepo skeleton, docker-compose, config, Postgres+Prisma+Redis, CI, mock ADO backend, GUI shell, **app login + RBAC[^rbac-removed]** | config/env schema; `MockAdoBackend`; app login (users/roles) + per-user PAT capture (header, not persisted); DocGen-style app shell | None | Over-scaffolding | `docker-compose up` runs all services; tests green; app login + role guard works; PAT validates ADO conn via `connectionData`[^pat-validate-deferred]; mock backend creates+links |
 | **1** Ingestion + redaction | **All** loaders → CanonicalDoc; redaction | file → CanonicalDoc (tables→grids, figures→placeholders, OCR fallback); redaction pass | Vision (opt) scanned/diagrams | OCR/docx/pdf edge cases | Golden CanonicalDoc per format; redaction strips part#/host/url/email/GUID; OCR path covered; runs as FastAPI service |
 | **2** Hierarchy + auto-detect leveling | Numbering + heading-depth + profile auto-detect → WorkItemTree | CanonicalDoc → WorkItemTree; heuristic (BASELINE) / LLM (SURVEY) | Chat (SURVEY) via redaction proxy | Wrong level/profile | Golden trees both profiles; same-depth→different-type case; BASELINE deterministic w/ LLM off |
 | **3** Distillation | Title strategies + 256-char guard; description assembly | node text → title+description | Chat (SURVEY only) | Truncation correctness | 255/256/257 + multibyte tests; BASELINE title = extracted substring; description verbatim |
@@ -155,6 +155,8 @@ Traceability: every node's `source_ref` → a `Block`/offset; `fidelity_hash` pr
 | **8** Scale, security, docs, validation | Job queue+workers hardening; security pass; full docs + in-app wiki/tooltips; E2E golden | synthetic corpus → full pipeline under load | As configured | Coverage/perf gaps | Load test (N concurrent jobs) stable; security checklist passed; TSDoc/docstrings complete; in-app Wiki + tooltips shipped; full golden E2E green |
 
 [^pat-validate-deferred]: PAT-connection-validation (`connectionData` round-trip) is DEFERRED until the orchestrator's real `/connection/validate` route + MCP client integration lands in Phase 7 — tracked as a Phase 0 follow-up, not a Phase 0 blocker.
+
+[^rbac-removed]: The RBAC guard/role scaffolding built in Phase 0 was REMOVED in Phase 9 — confirmed dead code with zero runtime authorization effect (no route ever used `@Roles()`, nothing ever read a decoded session JWT's `.role` field), per the "App auth" locked decision above: ADO's own permission system is the sole access-control gate, not app-level RBAC.
 
 ---
 
@@ -214,7 +216,7 @@ req2ado/
 ├─ orchestrator/
 │   ├─ src/
 │   │   ├─ main.ts
-│   │   ├─ modules/ auth(login+RBAC)  users  jobs  llm-proxy  mcp-client  ingestion-client  audit
+│   │   ├─ modules/ auth(login, no RBAC)  users  jobs  llm-proxy  mcp-client  ingestion-client  audit
 │   │   ├─ pipeline/  worker.ts  stages/*      # BullMQ worker drives pipeline
 │   │   ├─ llm/  redactor.ts  openwebuiClient.ts
 │   │   ├─ prisma/  schema.prisma  migrations/
@@ -383,7 +385,7 @@ Transport Streamable HTTP + bearer. Backend swappable: `realAdo` (on-prem REST) 
 
 ## Resolved Decisions (Q&A round 2)
 
-- Orchestrator = **NestJS**. DB = **Postgres + Prisma**. App auth = **login + roles (RBAC)**. Docs = **in-app Wiki page (user-guide) + tooltips/popovers**.
+- Orchestrator = **NestJS**. DB = **Postgres + Prisma**. App auth = **login only, no app-level RBAC (superseded — see Phase 9)**. Docs = **in-app Wiki page (user-guide) + tooltips/popovers**.
 
 ## Customer ID Field Resolution
 
@@ -406,7 +408,7 @@ This keeps the "verify at runtime, don't hardcode" architecture commitment while
 ## Remaining Minor Questions (safe defaults chosen; confirm at Phase 0 or override)
 
 1. **App login mechanism:** RESOLVED — ADO PAT validated against the ADO Server's own `connectionData` endpoint (see "Locked Decisions" above). Azure AD remains available as a backend config option (`AUTH_PROVIDER=azure_ad`) for deployments that can register an app, but is not the default and is not surfaced in the current login UI.
-2. **Roles set:** default **Admin / Operator / Viewer** (Admin=config+users, Operator=ingest+write, Viewer=read/preview only). OK?
+2. **Roles set:** RESOLVED — no app-level roles at all. Phase 0 built an `Admin/Operator/Viewer` `RolesGuard` scaffold as a hedge; Phase 9 removed it after confirming it had zero runtime authorization effect. ADO's own permission system (whatever the PAT's account can do in ADO) is the sole access-control gate.
 3. **Customer ID field:** RESOLVED — see "Customer ID Field Resolution" below. Runtime-verified candidate list, not a single hardcoded ref name.
 4. **Shared types single-source:** JSON Schema → generate TS + pydantic. Default: **JSON Schema single-source**.
 5. **Vision/OCR:** local Tesseract default + optional Open WebUI vision model (config switch). OK?
