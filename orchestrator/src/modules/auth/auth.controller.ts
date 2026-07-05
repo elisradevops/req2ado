@@ -1,9 +1,7 @@
 import { BadRequestException, Body, Controller, Post, UnauthorizedException } from '@nestjs/common';
-import { Role as PrismaRole } from '@prisma/client';
 import { AdoPatProvider } from './ado-pat.provider';
 import { loginRequestSchema } from './login.dto';
 import { PrismaService } from './prisma.service';
-import { toDomainRole } from './roles.enum';
 import { SessionService } from './session.service';
 
 @Controller('auth')
@@ -32,10 +30,10 @@ export class AuthController {
     const user = await this.prisma.user.upsert({
       where: { email: identity.identity },
       update: {},
-      create: { email: identity.identity, role: PrismaRole.OPERATOR },
+      create: { email: identity.identity },
     });
 
-    const token = this.sessionService.issue({ userId: user.id, role: toDomainRole(user.role) });
+    const token = this.sessionService.issue({ userId: user.id });
     return { token };
   }
 }

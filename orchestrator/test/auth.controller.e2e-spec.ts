@@ -54,7 +54,6 @@ describe('AuthController (e2e)', () => {
     fakePrismaService.user.upsert.mockResolvedValue({
       id: 'user-1',
       email: 'Microsoft.TeamFoundation.Identity;S-1-5-21-000',
-      role: 'OPERATOR',
     });
 
     const res = await request(app.getHttpServer())
@@ -66,12 +65,11 @@ describe('AuthController (e2e)', () => {
     expect(fakePrismaService.user.upsert).toHaveBeenCalledWith({
       where: { email: 'Microsoft.TeamFoundation.Identity;S-1-5-21-000' },
       update: {},
-      create: { email: 'Microsoft.TeamFoundation.Identity;S-1-5-21-000', role: 'OPERATOR' },
+      create: { email: 'Microsoft.TeamFoundation.Identity;S-1-5-21-000' },
     });
 
-    const decoded = jwt.verify(res.body.token, 'test-jwt-secret') as { userId: string; role: string };
+    const decoded = jwt.verify(res.body.token, 'test-jwt-secret') as { userId: string };
     expect(decoded.userId).toBe('user-1');
-    expect(decoded.role).toBe('operator');
   });
 
   it('POST /auth/login returns 401 on an invalid PAT', async () => {

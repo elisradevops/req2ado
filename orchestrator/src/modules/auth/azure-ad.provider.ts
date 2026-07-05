@@ -1,9 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { Role } from './roles.enum';
 
 export interface AzureAdUser {
   email: string;
-  role: Role;
 }
 
 /**
@@ -20,6 +18,6 @@ export class AzureAdProvider {
       throw new Error('Missing authorization code');
     }
     // TODO(Phase 0 follow-up, real tenant): replace with ConfidentialClientApplication.acquireTokenByCode
-    return { email: 'dev-user@example.com', role: Role.Operator };
+    return { email: 'dev-user@example.com' };
   }
 }
