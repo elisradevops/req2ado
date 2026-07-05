@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import request from 'supertest';
 import { createMcpApp } from '../src/server';
 import { MockAdoBackend } from '../src/backends/mockAdo';
+import { timingSafeEqualBearer } from '../src/auth/timingSafeEqualBearer';
 import type { AdoMcpConfig } from '../src/config/env';
 
 const testConfig: AdoMcpConfig = {
@@ -80,5 +81,23 @@ describe('MCP server HTTP transport', () => {
       .send(toolsListRequest);
     expect(second.status).not.toBe(401);
     expect(second.status).toBeLessThan(500);
+  });
+});
+
+describe('timingSafeEqualBearer', () => {
+  it('returns true for an exact match', () => {
+    expect(timingSafeEqualBearer('Bearer abc123', 'Bearer abc123')).toBe(true);
+  });
+
+  it('returns false for a mismatch', () => {
+    expect(timingSafeEqualBearer('Bearer abc123', 'Bearer wrong')).toBe(false);
+  });
+
+  it('returns false when lengths differ (no length-based short-circuit crash)', () => {
+    expect(timingSafeEqualBearer('Bearer short', 'Bearer a-much-longer-token-value')).toBe(false);
+  });
+
+  it('returns false for an empty header', () => {
+    expect(timingSafeEqualBearer('', 'Bearer abc123')).toBe(false);
   });
 });
