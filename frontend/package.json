@@ -16,7 +16,8 @@
     "mobx": "^6.13.3",
     "mobx-react-lite": "^4.0.7",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^9.0.1"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.5.0",

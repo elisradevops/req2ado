@@ -18,7 +18,10 @@ describe('Upload', () => {
 
     const file = new File(['spec content'], 'spec.txt', { type: 'text/plain' });
     fireEvent.change(screen.getByLabelText(/file/i), { target: { files: [file] } });
-    fireEvent.change(screen.getByLabelText(/area path/i), { target: { value: 'Project\\Area1' } });
+    // Exact match: the Tooltip wrapping this field adds its own aria-label
+    // ("The ADO Area Path work items...") to the wrapper div, which also
+    // matches a loose /area path/i regex — use the exact input label instead.
+    fireEvent.change(screen.getByLabelText('Area Path'), { target: { value: 'Project\\Area1' } });
     fireEvent.click(screen.getByRole('button', { name: /upload/i }));
 
     await waitFor(() => expect(onJobSubmitted).toHaveBeenCalledWith('job-1'));
@@ -31,7 +34,7 @@ describe('Upload', () => {
 
     const file = new File(['spec content'], 'spec.txt', { type: 'text/plain' });
     fireEvent.change(screen.getByLabelText(/file/i), { target: { files: [file] } });
-    fireEvent.change(screen.getByLabelText(/area path/i), { target: { value: 'Project\\Area1' } });
+    fireEvent.change(screen.getByLabelText('Area Path'), { target: { value: 'Project\\Area1' } });
     fireEvent.click(screen.getByRole('button', { name: /upload/i }));
 
     await waitFor(() => expect(screen.getByText(/upload failed/i)).toBeInTheDocument());

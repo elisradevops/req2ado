@@ -9,6 +9,7 @@ import {
   Radio,
   RadioGroup,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { httpClient } from '../api/httpClient.js';
@@ -49,17 +50,23 @@ export function Upload({ onJobSubmitted }: UploadProps): JSX.Element {
         <CardContent sx={{ p: 4 }}>
           <RadioGroup value="baseline" sx={{ mb: 3 }}>
             <FormControlLabel value="baseline" control={<Radio />} label="Baseline — verbatim, deterministic" />
-            <FormControlLabel value="survey" control={<Radio />} label="Survey — coming soon" disabled />
+            <Tooltip title="Generative mode is not yet available in this build">
+              <span>
+                <FormControlLabel value="survey" control={<Radio />} label="Survey — coming soon" disabled />
+              </span>
+            </Tooltip>
           </RadioGroup>
 
-          <TextField
-            fullWidth
-            label="Area Path"
-            placeholder="Project\\Area1"
-            value={areaPath}
-            onChange={(event) => setAreaPath(event.target.value)}
-            sx={{ mb: 3 }}
-          />
+          <Tooltip title="The ADO Area Path work items will be created under, e.g. MyProject\Requirements">
+            <TextField
+              fullWidth
+              label="Area Path"
+              placeholder="Project\\Area1"
+              value={areaPath}
+              onChange={(event) => setAreaPath(event.target.value)}
+              sx={{ mb: 3 }}
+            />
+          </Tooltip>
 
           <Box
             sx={{

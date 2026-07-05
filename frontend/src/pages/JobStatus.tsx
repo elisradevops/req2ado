@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
-import { Box, Button, CircularProgress, Stack, Typography } from '@mui/material';
+import { Box, Button, CircularProgress, Stack, Tooltip, Typography } from '@mui/material';
 import { httpClient } from '../api/httpClient.js';
 import { themeTokens } from '../theme/tokens.js';
 
@@ -123,9 +123,13 @@ export function JobStatus({ jobId }: JobStatusProps): JSX.Element {
       )}
 
       {job.status === 'diff_ready' && !confirmResult && (
-        <Button variant="contained" onClick={handleConfirm} disabled={isConfirming}>
-          Confirm Write
-        </Button>
+        <Tooltip title="This will write the 'create' rows above to Azure DevOps. This cannot be automatically undone.">
+          <span>
+            <Button variant="contained" onClick={handleConfirm} disabled={isConfirming}>
+              Confirm Write
+            </Button>
+          </span>
+        </Tooltip>
       )}
       {confirmResult && (
         <Typography sx={{ mt: 2 }}>

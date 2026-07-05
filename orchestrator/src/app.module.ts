@@ -6,6 +6,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { LlmModule } from './modules/llm/llm.module';
 import { JobsModule } from './modules/pipeline/jobs.module';
+import { WikiModule } from './modules/wiki/wiki.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { JobsModule } from './modules/pipeline/jobs.module';
     AuthModule,
     LlmModule,
     JobsModule,
+    WikiModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
