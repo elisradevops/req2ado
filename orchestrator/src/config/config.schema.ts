@@ -29,6 +29,7 @@ export const configSchema = z.object({
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),
   EMBED_PATH: z.string().default('/api/embed'),
+  MAX_UPLOAD_SIZE_MB: z.coerce.number().default(25),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

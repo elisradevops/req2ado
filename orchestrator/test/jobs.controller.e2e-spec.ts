@@ -58,6 +58,23 @@ describe('JobsController (e2e)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('POST /jobs rejects a file exceeding the configured size limit', async () => {
+    const oversized = Buffer.alloc(30 * 1024 * 1024); // exceeds the 25MB default
+    const res = await request(app.getHttpServer())
+      .post('/jobs')
+      .attach('file', oversized, 'big.txt')
+      .field('areaPath', 'Project\\Area1');
+    expect(res.status).toBe(413);
+  });
+
+  it('POST /jobs rejects an unsupported file extension', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/jobs')
+      .attach('file', Buffer.from('fake'), 'malware.exe')
+      .field('areaPath', 'Project\\Area1');
+    expect(res.status).toBe(400);
+  });
+
   it('GET /jobs/:id returns the job status', async () => {
     fakeJobsService.getById.mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [] });
     const res = await request(app.getHttpServer()).get('/jobs/job-1');

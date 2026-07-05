@@ -1,15 +1,40 @@
-import { BadRequestException, Controller, Get, Headers, NotFoundException, Param, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Headers,
+  Inject,
+  NotFoundException,
+  Param,
+  PayloadTooLargeException,
+  Post,
+  UploadedFile,
+  UseInterceptors,
+} from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
 import { JobsService } from './jobs.service';
 import { createHash } from 'crypto';
 
+// Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
+// md, docx, pdf (incl. scanned/OCR, same extension), xlsx. Not a security
+// boundary against malicious file CONTENT (that's ingestion's own parsing
+// robustness), only a cheap reject-obviously-wrong-format-early gate.
+const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
+
 @Controller('jobs')
 export class JobsController {
-  constructor(private readonly jobsService: JobsService) {}
+  constructor(
+    private readonly jobsService: JobsService,
+    @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
+  ) {}
 
   @Post()
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 25 * 1024 * 1024 }, // static upper bound; real configurable limit enforced below via DI
+    }),
+  )
   async submit(
     @UploadedFile() file: Express.Multer.File | undefined,
     @Body('areaPath') areaPath: string | undefined,
@@ -17,6 +42,15 @@ export class JobsController {
   ): Promise<{ jobId: string }> {
     if (!file) {
       throw new BadRequestException('file is required');
+    }
+    if (file.size > this.maxUploadSizeBytes) {
+      throw new PayloadTooLargeException(
+        `file exceeds the ${Math.round(this.maxUploadSizeBytes / 1024 / 1024)}MB upload limit`,
+      );
+    }
+    const ext = file.originalname.slice(file.originalname.lastIndexOf('.')).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      throw new BadRequestException(`unsupported file type: ${ext}`);
     }
     if (!areaPath) {
       throw new BadRequestException('areaPath is required');

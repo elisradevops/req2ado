@@ -38,6 +38,11 @@ import { IdempotencyService } from '../writeback/idempotency.service';
       useFactory: (prisma: PrismaClient, mcpClient: McpClient, idempotencyService: IdempotencyService, config: ConfigService) =>
         new JobsService(prisma, mcpClient, idempotencyService, config.get<string>('REDIS_URL')!),
     },
+    {
+      provide: 'MAX_UPLOAD_SIZE_BYTES',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => config.get<number>('MAX_UPLOAD_SIZE_MB')! * 1024 * 1024,
+    },
   ],
 })
 export class JobsModule {}
