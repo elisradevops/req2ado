@@ -22,15 +22,20 @@ model User {
 }
 
 model Job {
-  id          String    @id @default(uuid())
-  userId      String
-  user        User      @relation(fields: [userId], references: [id])
-  mode        String // "baseline" | "survey"
-  status      String // "pending" | "running" | "succeeded" | "failed"
-  sourceHash  String
-  createdAt   DateTime  @default(now())
-  completedAt DateTime?
-  auditEntries AuditEntry[]
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
+  mode             String // "baseline" | "survey"
+  status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed"
+  sourceHash       String
+  areaPath         String
+  customerId       String?
+  originalFilename String
+  dryRunDiff       Json?
+  createdAt        DateTime  @default(now())
+  confirmedAt      DateTime?
+  completedAt      DateTime?
+  auditEntries     AuditEntry[]
 }
 
 model AuditEntry {
