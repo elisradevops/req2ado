@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import axios from 'axios';
+import { readFileSync } from 'fs';
 import { resolveApiVersion, RealAdoBackend } from '../src/backends/realAdo';
 import type { AdoCredential } from '../src/auth/patAuth';
 import type { AdoMcpConfig } from '../src/config/env';
+
+vi.mock('fs', () => ({ readFileSync: vi.fn() }));
 
 const credential: AdoCredential = { orgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fake-pat' };
 
@@ -326,5 +329,27 @@ describe('RealAdoBackend.discoverFields', () => {
 
     const result = await backend.discoverFields('Requirement');
     expect(result).toEqual(['System.Title', 'Custom.CustomerRequirementId', 'Microsoft.VSTS.CMMI.RequirementType']);
+  });
+});
+
+describe('RealAdoBackend CA-trust TLS construction', () => {
+  it('constructs an https.Agent with the CA bundle when caCertPath is configured', () => {
+    vi.mocked(readFileSync).mockReturnValue(Buffer.from('fake-ca-cert-content'));
+
+    const backend = new RealAdoBackend({ ...testConfig, caCertPath: '/fake/ca.pem' }, credential);
+
+    expect(readFileSync).toHaveBeenCalledWith('/fake/ca.pem');
+    // @ts-expect-error -- inspecting the private client's constructed agent
+    expect(backend.httpClient.defaults.httpsAgent).toBeDefined();
+  });
+
+  it('uses the default axios instance (no custom agent) when caCertPath is unset', () => {
+    vi.mocked(readFileSync).mockClear();
+
+    const backend = new RealAdoBackend({ ...testConfig, caCertPath: undefined }, credential);
+
+    expect(readFileSync).not.toHaveBeenCalled();
+    // @ts-expect-error -- inspecting the private client's constructed agent
+    expect(backend.httpClient.defaults.httpsAgent).toBeUndefined();
   });
 });

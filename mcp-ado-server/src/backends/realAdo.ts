@@ -1,9 +1,28 @@
 import type { AxiosInstance } from 'axios';
 import axios from 'axios';
+import { readFileSync } from 'fs';
+import https from 'https';
 import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
 import type { AdoBackend, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
 import type { AdoMcpConfig } from '../config/env.js';
 import { retryWithBackoff } from './retryWithBackoff.js';
+
+/**
+ * Builds the axios client used for all real ADO calls. When `caCertPath` is
+ * configured (on-prem ADO behind a self-signed cert), trusts ONLY that
+ * specific CA bundle via a dedicated https.Agent — never
+ * `rejectUnauthorized: false`, which disables TLS trust entirely and is an
+ * explicit anti-pattern per docs/architecture.md. When unset (CA-issued
+ * cert, or dev/mock use), the default axios instance's default trust store
+ * is correct as-is.
+ */
+function buildHttpClient(config: AdoMcpConfig): AxiosInstance {
+  if (!config.caCertPath) {
+    return axios.create();
+  }
+  const ca = readFileSync(config.caCertPath);
+  return axios.create({ httpsAgent: new https.Agent({ ca }) });
+}
 
 /**
  * Probes the api-version fallback ladder (docs/architecture.md: "7.1 -> 5.1
@@ -70,13 +89,15 @@ function buildWiqlQuery(fieldMatch: Record<string, string>): string {
  * Tasks 3-4.
  */
 export class RealAdoBackend implements AdoBackend {
-  private httpClient: AxiosInstance = axios.create();
+  private httpClient: AxiosInstance;
   private resolvedApiVersion: string | null = null;
 
   constructor(
     private readonly config: AdoMcpConfig,
     private readonly credential: AdoCredential,
-  ) {}
+  ) {
+    this.httpClient = buildHttpClient(config);
+  }
 
   private authHeader(): string {
     return buildBasicAuthHeader(this.credential.pat);
