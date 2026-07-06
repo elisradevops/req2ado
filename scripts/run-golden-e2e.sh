@@ -191,7 +191,10 @@ log "Starting orchestrator HTTP app on :$ORCH_PORT"
   export LLM_BASE_URL="http://localhost:11434/v1"
   export LLM_CHAT_MODEL=llama3.2:1b
   export LLM_PROXY_BEARER=dev-only-llm-proxy-bearer
-  export EMBED_MODEL=dev-unused-embed-model
+  # EMBED_MODEL: real, locally-pulled Ollama embedding model — the dedup
+  # scenario (job #4, Task 9) calls this via the /llm/embed proxy. A
+  # placeholder name here 404s against a real Ollama instance.
+  export EMBED_MODEL=all-minilm
   export EMBED_TRANSPORT=ollama
   export EMBED_PATH=/api/embed
   export INGESTION_BASE_URL="http://localhost:${INGESTION_PORT}"
@@ -214,7 +217,7 @@ log "Starting orchestrator pipeline worker (separate process)"
   export LLM_BASE_URL="http://localhost:9999"
   export LLM_CHAT_MODEL=dev-unused-chat-model
   export LLM_PROXY_BEARER=dev-only-llm-proxy-bearer
-  export EMBED_MODEL=dev-unused-embed-model
+  export EMBED_MODEL=all-minilm
   export EMBED_TRANSPORT=ollama
   export EMBED_PATH=/api/embed
   export INGESTION_BASE_URL="http://localhost:${INGESTION_PORT}"
