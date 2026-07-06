@@ -1,0 +1,3 @@
+the receiver needs to handle at least 4 channels at once, and honestly the power draw
+should probably stay under 2 watts or the thermal budget gets tight. also whatever
+we ship needs to survive a basic drop test, nothing fancy.

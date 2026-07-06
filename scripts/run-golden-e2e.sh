@@ -145,6 +145,12 @@ docker exec "$PG_CONTAINER" psql -U req2ado -d req2ado -c \
 log "Starting ingestion service on :$INGESTION_PORT"
 (
   cd "$ROOT_DIR/ingestion"
+  # ORCHESTRATOR_URL/LLM_PROXY_BEARER: SURVEY mode (job #3, added for the
+  # SURVEY golden scenario) calls back into the orchestrator's /llm/chat
+  # proxy — LLM_PROXY_BEARER here must match the value the orchestrator
+  # process below checks incoming requests against.
+  export ORCHESTRATOR_URL="http://localhost:${ORCH_PORT}"
+  export LLM_PROXY_BEARER=dev-only-llm-proxy-bearer
   # shellcheck disable=SC1091
   source .venv/bin/activate
   exec uvicorn app.main:app --port "$INGESTION_PORT" --host 127.0.0.1
@@ -178,8 +184,12 @@ log "Starting orchestrator HTTP app on :$ORCH_PORT"
   export MCP_BEARER=dev-local-only
   export AUTH_PROVIDER=ado_pat
   export AUTH_JWT_SECRET=dev-only-jwt-secret
-  export LLM_BASE_URL="http://localhost:9999"
-  export LLM_CHAT_MODEL=dev-unused-chat-model
+  # LLM_BASE_URL/LLM_CHAT_MODEL: point at a real local Ollama so the SURVEY
+  # scenario (job #3) below can genuinely generate hierarchy + requirement
+  # text, not a fake/unreachable placeholder. BASELINE jobs #1/#2 never call
+  # the LLM proxy, so this has no effect on them.
+  export LLM_BASE_URL="http://localhost:11434/v1"
+  export LLM_CHAT_MODEL=llama3.2:1b
   export LLM_PROXY_BEARER=dev-only-llm-proxy-bearer
   export EMBED_MODEL=dev-unused-embed-model
   export EMBED_TRANSPORT=ollama
@@ -318,3 +328,33 @@ if [ "$JOB2_NON_REUSE_COUNT" -ne 0 ]; then
 fi
 
 log "GOLDEN E2E PASSED: job #1 created $CONFIRM1_CREATED_COUNT work item(s); job #2's re-run diff was 100% reuse ($JOB2_ENTRY_COUNT/$JOB2_ENTRY_COUNT entries)."
+
+# ---------------------------------------------------------------------------
+# 10. Third job: SURVEY mode against an informal, unstructured fixture —
+#     proves Tasks 1-4 (LLM hierarchy inference + batched requirement
+#     formalization + mode threading) compose end-to-end against the real
+#     mock ADO backend and a real local LLM.
+# ---------------------------------------------------------------------------
+log "Submitting job #3 (SURVEY mode, informal fixture)"
+JOB3_RESPONSE=$(curl -sf -X POST "http://localhost:${ORCH_PORT}/jobs" \
+  -F "file=@${ROOT_DIR}/docs/golden-e2e-survey-fixture.txt" \
+  -F "areaPath=${AREA_PATH}" \
+  -F "mode=survey")
+JOB3_ID="$(echo "$JOB3_RESPONSE" | jq -r '.jobId')"
+log "Job #3 id: $JOB3_ID"
+
+JOB3_BODY="$(poll_job_status "$JOB3_ID")"
+JOB3_STATUS="$(echo "$JOB3_BODY" | jq -r '.status')"
+if [ "$JOB3_STATUS" != "diff_ready" ]; then
+  log "Job #3 (SURVEY) did not reach diff_ready. Body: $JOB3_BODY"
+  exit 1
+fi
+
+JOB3_TITLES="$(echo "$JOB3_BODY" | jq -r '.dryRunDiff[].title')"
+log "Job #3 (SURVEY) generated titles: $JOB3_TITLES"
+if [ -z "$JOB3_TITLES" ]; then
+  log "ASSERTION FAILED: SURVEY job produced no titled nodes at all"
+  exit 1
+fi
+
+log "GOLDEN E2E (SURVEY) PASSED: job #3 produced $(echo "$JOB3_BODY" | jq '.dryRunDiff | length') node(s) from an informal fixture."
