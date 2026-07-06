@@ -22,6 +22,7 @@ export const themeTokens = {
     danger: '#D1434B',
     success: '#15803d',
     info: '#2563eb',
+    warning: '#B45309',
   },
   font: {
     family: "'Inter', 'Roboto', 'Helvetica', 'Arial', sans-serif",

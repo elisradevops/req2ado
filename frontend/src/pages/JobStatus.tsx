@@ -6,8 +6,9 @@ import { themeTokens } from '../theme/tokens.js';
 
 interface DryRunDiffEntry {
   localId: string;
-  action: 'create' | 'reuse';
+  action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId: number | null;
+  similarity: number | null;
 }
 
 interface JobData {
@@ -24,8 +25,17 @@ export interface JobStatusProps {
   credential?: AdoCredential;
 }
 
-function DiffMarker({ action }: { action: 'create' | 'reuse' }): JSX.Element {
-  const isCreate = action === 'create';
+function DiffMarker({ action }: { action: 'create' | 'reuse' | 'dedup_skip' }): JSX.Element {
+  // 'dedup_skip' gets its own amber/warning marker, distinct from both
+  // 'create' (solid green) and 'reuse' (hollow) — it is a probabilistic
+  // similarity match, not the certain exact-hash match 'reuse' represents,
+  // and a reviewer needs to be able to tell the two apart at a glance.
+  const style =
+    action === 'create'
+      ? { bgcolor: 'success.main', border: 'none' }
+      : action === 'dedup_skip'
+        ? { bgcolor: themeTokens.color.warning, border: 'none' }
+        : { bgcolor: 'transparent', border: `2px solid ${themeTokens.color.textSecondary}` };
   return (
     <Box
       aria-hidden="true"
@@ -34,8 +44,7 @@ function DiffMarker({ action }: { action: 'create' | 'reuse' }): JSX.Element {
         height: 10,
         borderRadius: '50%',
         flexShrink: 0,
-        bgcolor: isCreate ? 'success.main' : 'transparent',
-        border: isCreate ? 'none' : `2px solid ${themeTokens.color.textSecondary}`,
+        ...style,
       }}
     />
   );
@@ -92,6 +101,7 @@ export function JobStatus({ jobId, credential }: JobStatusProps): JSX.Element {
 
   const createCount = job.dryRunDiff?.filter((e) => e.action === 'create').length ?? 0;
   const reuseCount = job.dryRunDiff?.filter((e) => e.action === 'reuse').length ?? 0;
+  const dedupSkipCount = job.dryRunDiff?.filter((e) => e.action === 'dedup_skip').length ?? 0;
 
   return (
     <Box sx={{ maxWidth: 720, mx: 'auto' }}>
@@ -115,6 +125,11 @@ export function JobStatus({ jobId, credential }: JobStatusProps): JSX.Element {
                   {entry.localId}
                 </Typography>
                 <Typography sx={{ flexGrow: 1 }}>{entry.action}</Typography>
+                {entry.action === 'dedup_skip' && entry.similarity !== null && (
+                  <Typography sx={{ fontFamily: themeTokens.font.mono, fontSize: '0.85rem', color: themeTokens.color.warning }}>
+                    {Math.round(entry.similarity * 100)}% match
+                  </Typography>
+                )}
                 {entry.existingAdoId !== null && (
                   <Typography sx={{ fontFamily: themeTokens.font.mono, fontSize: '0.85rem', color: 'text.secondary' }}>
                     → ADO #{entry.existingAdoId}
@@ -126,6 +141,7 @@ export function JobStatus({ jobId, credential }: JobStatusProps): JSX.Element {
 
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
             {createCount} new · {reuseCount} reused
+            {dedupSkipCount > 0 ? ` · ${dedupSkipCount} probable duplicate${dedupSkipCount === 1 ? '' : 's'} skipped` : ''}
           </Typography>
         </>
       )}

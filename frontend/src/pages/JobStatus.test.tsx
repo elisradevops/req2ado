@@ -43,6 +43,24 @@ describe('JobStatus', () => {
     await waitFor(() => expect(screen.getByText(/1 item.*written/i)).toBeInTheDocument());
   });
 
+  it('renders a dedup_skip entry with its similarity score, distinct from reuse/create', async () => {
+    (httpClient.get as any).mockResolvedValue({
+      data: {
+        id: 'job-1',
+        status: 'diff_ready',
+        dryRunDiff: [
+          { localId: 'n0', action: 'create', existingAdoId: null, similarity: null },
+          { localId: 'n1', action: 'dedup_skip', existingAdoId: 42, similarity: 0.95 },
+        ],
+      },
+    });
+    render(<JobStatus jobId="job-1" />);
+
+    await waitFor(() => expect(screen.getByText('dedup_skip')).toBeInTheDocument());
+    expect(screen.getByText('95% match')).toBeInTheDocument();
+    expect(screen.getByText(/1 probable duplicate skipped/i)).toBeInTheDocument();
+  });
+
   it('sends X-Ado-Org-Url / X-Ado-Pat headers on confirm when a credential is provided', async () => {
     (httpClient.get as any).mockResolvedValue({
       data: { id: 'job-1', status: 'diff_ready', dryRunDiff: [{ localId: 'n0', action: 'create', existingAdoId: null }] },
