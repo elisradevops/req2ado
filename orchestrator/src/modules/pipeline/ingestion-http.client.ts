@@ -23,11 +23,14 @@ export class IngestionHttpClient {
     return (await response.json()) as Record<string, unknown>;
   }
 
-  async level(doc: Record<string, unknown>, customerId: string | null): Promise<Record<string, unknown>> {
-    const url = customerId
-      ? `${this.baseUrl}/level?customer_id=${encodeURIComponent(customerId)}`
-      : `${this.baseUrl}/level`;
-    const response = await fetch(url, {
+  async level(
+    doc: Record<string, unknown>,
+    customerId: string | null,
+    mode: 'baseline' | 'survey' = 'baseline',
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams({ mode });
+    if (customerId) params.set('customer_id', customerId);
+    const response = await fetch(`${this.baseUrl}/level?${params.toString()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(doc),

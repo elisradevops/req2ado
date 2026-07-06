@@ -7,6 +7,7 @@ export interface PipelineJobInput {
   id: string;
   areaPath: string;
   customerId: string | null;
+  mode: 'baseline' | 'survey';
   fileBuffer: Buffer;
   filename: string;
 }
@@ -32,8 +33,9 @@ interface LeveledNode {
  * The actual pipeline glue that Phases 1-7 never built: chains the real
  * ingestion service (/ingest -> /level, Phase 1/4) into Phase 7's
  * DryRunService, persisting progress on the Job row (Phase 0's model,
- * unused until this task). BASELINE mode only — see this plan's header for
- * why SURVEY-mode wiring is explicitly out of scope here.
+ * unused until this task). `job.mode` is threaded straight through to
+ * `ingestionClient.level()`, which defaults to 'baseline' — no BASELINE-path
+ * behavior changes as a result.
  */
 export async function runPipelineJob(
   job: PipelineJobInput,
@@ -41,7 +43,7 @@ export async function runPipelineJob(
 ): Promise<ReturnType<DryRunService['diff']> extends Promise<infer T> ? T : never> {
   try {
     const doc = await deps.ingestionClient.ingest(job.fileBuffer, job.filename);
-    const tree = (await deps.ingestionClient.level(doc, job.customerId)) as { nodes: LeveledNode[] };
+    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode)) as { nodes: LeveledNode[] };
 
     const diffInputs: DryRunTreeNode[] = tree.nodes.map((node) => ({
       localId: node.local_id,

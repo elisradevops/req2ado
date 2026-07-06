@@ -21,6 +21,7 @@ export interface UploadProps {
 export function Upload({ onJobSubmitted }: UploadProps): JSX.Element {
   const [file, setFile] = useState<File | null>(null);
   const [areaPath, setAreaPath] = useState('');
+  const [mode, setMode] = useState<'baseline' | 'survey'>('baseline');
   const [status, setStatus] = useState<'idle' | 'submitting' | 'error'>('idle');
 
   const handleSubmit = async (): Promise<void> => {
@@ -30,6 +31,7 @@ export function Upload({ onJobSubmitted }: UploadProps): JSX.Element {
       const form = new FormData();
       form.append('file', file);
       form.append('areaPath', areaPath);
+      form.append('mode', mode);
       const response = await httpClient.post('/jobs', form, { headers: { 'Content-Type': 'multipart/form-data' } });
       onJobSubmitted(response.data.jobId);
     } catch {
@@ -48,13 +50,9 @@ export function Upload({ onJobSubmitted }: UploadProps): JSX.Element {
 
       <Card>
         <CardContent sx={{ p: 4 }}>
-          <RadioGroup value="baseline" sx={{ mb: 3 }}>
+          <RadioGroup value={mode} onChange={(event) => setMode(event.target.value as 'baseline' | 'survey')} sx={{ mb: 3 }}>
             <FormControlLabel value="baseline" control={<Radio />} label="Baseline — verbatim, deterministic" />
-            <Tooltip title="Generative mode is not yet available in this build">
-              <span>
-                <FormControlLabel value="survey" control={<Radio />} label="Survey — coming soon" disabled />
-              </span>
-            </Tooltip>
+            <FormControlLabel value="survey" control={<Radio />} label="Survey — generative, formalized requirements" />
           </RadioGroup>
 
           <Tooltip title="The ADO Area Path work items will be created under, e.g. MyProject\Requirements">

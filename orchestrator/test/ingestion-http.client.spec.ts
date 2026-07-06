@@ -32,17 +32,35 @@ describe('IngestionHttpClient', () => {
     await client.level({ blocks: [] }, 'CUST-1');
 
     const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(url).toBe('http://ingestion.internal/level?customer_id=CUST-1');
+    expect(url).toBe('http://ingestion.internal/level?mode=baseline&customer_id=CUST-1');
     expect(JSON.parse(options.body)).toEqual({ blocks: [] });
   });
 
-  it('omits the customer_id query param when null', async () => {
+  it('omits the customer_id query param when null, but always includes mode', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
     await client.level({ blocks: [] }, null);
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(url).toBe('http://ingestion.internal/level');
+    expect(url).toBe('http://ingestion.internal/level?mode=baseline');
+  });
+
+  it('defaults mode to baseline when not provided', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level({ blocks: [] }, null);
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toContain('mode=baseline');
+  });
+
+  it('passes mode=survey through as a query param when specified', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level({ blocks: [] }, 'CUST-1', 'survey');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1');
   });
 
   it('throws on a non-ok /level response', async () => {

@@ -54,6 +54,39 @@ describe('JobsController (e2e)', () => {
     );
   });
 
+  it('POST /jobs defaults mode to baseline when not provided', async () => {
+    fakeJobsService.submit.mockResolvedValue({ jobId: 'job-1' });
+    const res = await request(app.getHttpServer())
+      .post('/jobs')
+      .field('areaPath', 'Project\\Area1')
+      .attach('file', Buffer.from('hello world'), 'spec.txt');
+
+    expect(res.status).toBe(201);
+    expect(fakeJobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline' }));
+  });
+
+  it('POST /jobs passes mode=survey through when specified', async () => {
+    fakeJobsService.submit.mockResolvedValue({ jobId: 'job-1' });
+    const res = await request(app.getHttpServer())
+      .post('/jobs')
+      .field('areaPath', 'Project\\Area1')
+      .field('mode', 'survey')
+      .attach('file', Buffer.from('hello world'), 'spec.txt');
+
+    expect(res.status).toBe(201);
+    expect(fakeJobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ mode: 'survey' }));
+  });
+
+  it('POST /jobs rejects an invalid mode value', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/jobs')
+      .field('areaPath', 'Project\\Area1')
+      .field('mode', 'invalid-mode')
+      .attach('file', Buffer.from('hello world'), 'spec.txt');
+
+    expect(res.status).toBe(400);
+  });
+
   it('POST /jobs returns 400 when no file is attached', async () => {
     const res = await request(app.getHttpServer()).post('/jobs').field('areaPath', 'Project\\Area1');
     expect(res.status).toBe(400);

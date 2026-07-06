@@ -49,6 +49,7 @@ export class JobsController {
     @UploadedFile() file: Express.Multer.File | undefined,
     @Body('areaPath') areaPath: string | undefined,
     @Body('customerId') customerId: string | undefined,
+    @Body('mode') mode: string | undefined,
   ): Promise<{ jobId: string }> {
     if (!file) {
       throw new BadRequestException('file is required');
@@ -65,6 +66,9 @@ export class JobsController {
     if (!areaPath) {
       throw new BadRequestException('areaPath is required');
     }
+    if (mode !== undefined && mode !== 'baseline' && mode !== 'survey') {
+      throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
+    }
     const sourceHash = createHash('sha256').update(file.buffer).digest('hex');
     return this.jobsService.submit({
       // NOTE: userId is hardcoded as a placeholder here because the
@@ -76,6 +80,7 @@ export class JobsController {
       userId: 'placeholder-user-id',
       areaPath,
       customerId: customerId ?? null,
+      mode: (mode as 'baseline' | 'survey' | undefined) ?? 'baseline',
       fileBuffer: file.buffer,
       filename: file.originalname,
       sourceHash,

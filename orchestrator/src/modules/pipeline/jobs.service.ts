@@ -8,6 +8,7 @@ export interface SubmitJobInput {
   userId: string;
   areaPath: string;
   customerId: string | null;
+  mode: 'baseline' | 'survey';
   fileBuffer: Buffer;
   filename: string;
   sourceHash: string;
@@ -30,7 +31,7 @@ export class JobsService {
     const job = await this.prisma.job.create({
       data: {
         userId: input.userId,
-        mode: 'baseline',
+        mode: input.mode,
         status: 'pending',
         sourceHash: input.sourceHash,
         areaPath: input.areaPath,
@@ -48,6 +49,7 @@ export class JobsService {
       id: job.id,
       areaPath: input.areaPath,
       customerId: input.customerId,
+      mode: input.mode,
       fileBufferBase64: input.fileBuffer.toString('base64'),
       filename: input.filename,
     });
