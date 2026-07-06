@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { Box, Button, CircularProgress, Stack, Tooltip, Typography } from '@mui/material';
 import { httpClient } from '../api/httpClient.js';
+import type { AdoCredential } from './Login.js';
 import { themeTokens } from '../theme/tokens.js';
 
 interface DryRunDiffEntry {
@@ -17,6 +18,10 @@ interface JobData {
 
 export interface JobStatusProps {
   jobId: string;
+  // Optional so existing/standalone renders of this component keep working
+  // unchanged (e.g. against ADO_BACKEND=mock, which needs no credential) —
+  // required only for a real ADO_BACKEND=real write to succeed.
+  credential?: AdoCredential;
 }
 
 function DiffMarker({ action }: { action: 'create' | 'reuse' }): JSX.Element {
@@ -36,7 +41,7 @@ function DiffMarker({ action }: { action: 'create' | 'reuse' }): JSX.Element {
   );
 }
 
-export function JobStatus({ jobId }: JobStatusProps): JSX.Element {
+export function JobStatus({ jobId, credential }: JobStatusProps): JSX.Element {
   const [job, setJob] = useState<JobData | null>(null);
   const [confirmResult, setConfirmResult] = useState<{ createdCount: number } | null>(null);
   const isConfirmingRef = useRef(false);
@@ -65,7 +70,10 @@ export function JobStatus({ jobId }: JobStatusProps): JSX.Element {
     isConfirmingRef.current = true;
     setIsConfirming(true);
     try {
-      const response = await httpClient.post(`/jobs/${jobId}/confirm`);
+      const headers = credential
+        ? { 'X-Ado-Org-Url': credential.orgUrl, 'X-Ado-Pat': credential.pat }
+        : undefined;
+      const response = await httpClient.post(`/jobs/${jobId}/confirm`, undefined, { headers });
       setConfirmResult({ createdCount: response.data.createdCount });
     } finally {
       isConfirmingRef.current = false;

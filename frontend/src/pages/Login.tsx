@@ -10,17 +10,25 @@ import { httpClient } from '../api/httpClient.js';
  * and identifies the user — no separate app-level identity system (e.g.
  * Azure AD) is needed for this deployment. The PAT lives only in this
  * component's state — never persisted to localStorage/sessionStorage/disk —
- * and continues to be sent as a header on ADO-bound requests, unchanged from
- * Phase 0. The returned session token is held in memory only, for app-level
- * RBAC identity (see docs/architecture.md "PAT entry" / auth corrections).
+ * and is handed to the caller via onLoginSuccess so it can be resent as a
+ * per-request header on ADO-write-triggering calls later (POST
+ * /jobs/:id/confirm) — the app never stores a copy anywhere beyond React
+ * state held by the component that owns it. The returned session token is
+ * held in memory only, for app-level RBAC identity (see
+ * docs/architecture.md "PAT entry" / auth corrections).
  *
  * Azure AD remains a supported backend option (AUTH_PROVIDER=azure_ad) for
  * deployments that can register an app, but is not surfaced in this UI,
  * which targets the local-ADO-account-only case. A provider-switchable UI
  * is a future enhancement, not built now.
  */
+export interface AdoCredential {
+  orgUrl: string;
+  pat: string;
+}
+
 export interface LoginProps {
-  onLoginSuccess?: () => void;
+  onLoginSuccess?: (credential: AdoCredential) => void;
 }
 
 export function Login({ onLoginSuccess }: LoginProps = {}): JSX.Element {
@@ -37,7 +45,7 @@ export function Login({ onLoginSuccess }: LoginProps = {}): JSX.Element {
       const response = await httpClient.post('/auth/login', { adoOrgUrl, pat });
       setToken(response.data.token);
       setStatus('ok');
-      onLoginSuccess?.();
+      onLoginSuccess?.({ orgUrl: adoOrgUrl, pat });
     } catch (err) {
       setStatus('error');
       setErrorMessage(err instanceof Error ? err.message : 'Sign-in failed');
