@@ -84,13 +84,23 @@ def build_survey_tree(
         display_text = blocks_by_node_id[node_id]
         raw_generated = generated_by_node_id.get(node_id, [])
 
-        if raw_generated:
-            description = "\n\n".join(item["text"] for item in raw_generated)
+        # Tolerant of LLM non-compliance, same philosophy as _strip_json_fence:
+        # a single malformed item (missing 'text', or a 'tags' value outside
+        # RequirementTag) must not abort formalization for the whole document.
+        texts = [item["text"] for item in raw_generated if item.get("text")]
+        valid_tag_values = {t.value for t in RequirementTag}
+        if texts:
+            description = "\n\n".join(texts)
             tags = sorted(
-                {RequirementTag(tag) for item in raw_generated for tag in item.get("tags", [])},
+                {
+                    RequirementTag(tag)
+                    for item in raw_generated
+                    for tag in item.get("tags", [])
+                    if tag in valid_tag_values
+                },
                 key=lambda t: t.value,
             )
-            title = extract_baseline_title(raw_generated[0]["text"])
+            title = extract_baseline_title(texts[0])
         else:
             # No formal requirement extracted (e.g. a heading-only block) —
             # fall back to the raw display text rather than an empty

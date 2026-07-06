@@ -151,6 +151,11 @@ log "Starting ingestion service on :$INGESTION_PORT"
   # process below checks incoming requests against.
   export ORCHESTRATOR_URL="http://localhost:${ORCH_PORT}"
   export LLM_PROXY_BEARER=dev-only-llm-proxy-bearer
+  # CHROMA_PERSIST_PATH: isolate this run's vector store under LOG_DIR (which
+  # the EXIT trap removes) rather than ingestion's default ./.req2ado/vectors
+  # — otherwise job #1's items persist across script runs and can produce
+  # spurious dedup_skip matches on what should be a clean-state job #1.
+  export CHROMA_PERSIST_PATH="$LOG_DIR/vectors"
   # shellcheck disable=SC1091
   source .venv/bin/activate
   exec uvicorn app.main:app --port "$INGESTION_PORT" --host 127.0.0.1
