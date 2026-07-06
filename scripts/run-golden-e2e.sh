@@ -360,4 +360,36 @@ if [ -z "$JOB3_TITLES" ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# 11. Fourth job: BASELINE mode, a NEAR-duplicate (not identical) of job #1's
+#     fixture against the same areaPath — proves Tasks 6-8 (embedding dedup
+#     check wired into the dry-run diff, real vector-store upsert on confirm)
+#     compose end-to-end. A near-duplicate misses the exact-hash idempotency
+#     lookup (different bytes, different sourceHash) but should still match
+#     job #1's already-upserted embedding above the 0.90 similarity threshold.
+# ---------------------------------------------------------------------------
+log "Submitting job #4 (BASELINE mode, near-duplicate of job #1's fixture — dedup check)"
+JOB4_RESPONSE="$(curl -sf -X POST "http://localhost:${ORCH_PORT}/jobs" \
+  -F "file=@${ROOT_DIR}/docs/golden-e2e-near-duplicate-fixture.txt" \
+  -F "areaPath=${AREA_PATH}")"
+JOB4_ID="$(echo "$JOB4_RESPONSE" | jq -r '.jobId')"
+log "Job #4 id: $JOB4_ID"
+
+JOB4_BODY="$(poll_job_status "$JOB4_ID")"
+JOB4_STATUS="$(echo "$JOB4_BODY" | jq -r '.status')"
+if [ "$JOB4_STATUS" != "diff_ready" ]; then
+  log "Job #4 (dedup) did not reach diff_ready. Body: $JOB4_BODY"
+  exit 1
+fi
+
+JOB4_DIFF="$(echo "$JOB4_BODY" | jq -c '.dryRunDiff')"
+JOB4_DEDUP_SKIP_COUNT="$(echo "$JOB4_BODY" | jq '[.dryRunDiff[] | select(.action == "dedup_skip")] | length')"
+log "Job #4 dry-run diff: $JOB4_DIFF"
+if [ "$JOB4_DEDUP_SKIP_COUNT" -lt 1 ]; then
+  log "ASSERTION FAILED: expected job #4's near-duplicate diff to contain at least one 'dedup_skip' action"
+  exit 1
+fi
+
+log "GOLDEN E2E PASSED (dedup): job #4's near-duplicate diff flagged $JOB4_DEDUP_SKIP_COUNT node(s) as dedup_skip."
+
 log "GOLDEN E2E (SURVEY) PASSED: job #3 produced $(echo "$JOB3_BODY" | jq '.dryRunDiff | length') node(s) from an informal fixture."
