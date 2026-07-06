@@ -9,6 +9,7 @@ describe('JobsController (e2e)', () => {
     submit: jest.fn(),
     getById: jest.fn(),
     confirm: jest.fn(),
+    getAuditTrail: jest.fn(),
   };
 
   beforeAll(async () => {
@@ -116,5 +117,12 @@ describe('JobsController (e2e)', () => {
       .set('X-Ado-Org-Url', 'https://ado.example.com/tfs');
     expect(res.status).toBe(201);
     expect(fakeJobsService.confirm).toHaveBeenCalledWith('job-1', undefined);
+  });
+
+  it('GET /jobs/:id/audit returns the audit trail', async () => {
+    fakeJobsService.getAuditTrail.mockResolvedValue([{ id: 'a1', message: 'Job submitted: x.txt', createdAt: new Date() }]);
+    const res = await request(app.getHttpServer()).get('/jobs/job-1/audit');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
   });
 });

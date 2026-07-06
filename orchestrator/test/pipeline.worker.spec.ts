@@ -4,7 +4,7 @@ describe('runPipelineJob', () => {
   const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn() };
   const fakeDryRunService = { diff: jest.fn() };
   const fakeIdempotencyService = { lookup: jest.fn(), record: jest.fn() };
-  const fakePrisma = { job: { update: jest.fn() } };
+  const fakePrisma = { job: { update: jest.fn() }, auditEntry: { create: jest.fn() } };
 
   afterEach(() => {
     jest.clearAllMocks();

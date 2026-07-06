@@ -64,9 +64,18 @@ export async function runPipelineJob(
       where: { id: job.id },
       data: { status: 'diff_ready', dryRunDiff: diff as any },
     });
+    await deps.prisma.auditEntry.create({
+      data: {
+        jobId: job.id,
+        message: `Dry-run diff ready: ${diff.length} node(s), ${diff.filter((e) => e.action === 'create').length} to create`,
+      },
+    });
     return diff;
   } catch (error) {
     await deps.prisma.job.update({ where: { id: job.id }, data: { status: 'failed' } });
+    await deps.prisma.auditEntry.create({
+      data: { jobId: job.id, message: `Pipeline failed: ${error instanceof Error ? error.message : String(error)}` },
+    });
     throw error;
   }
 }

@@ -51,7 +51,14 @@ export class JobsService {
       fileBufferBase64: input.fileBuffer.toString('base64'),
       filename: input.filename,
     });
+    await this.prisma.auditEntry.create({
+      data: { jobId: job.id, message: `Job submitted: ${input.filename}, areaPath=${input.areaPath}` },
+    });
     return { jobId: job.id };
+  }
+
+  async getAuditTrail(id: string): Promise<{ id: string; message: string; createdAt: Date }[]> {
+    return this.prisma.auditEntry.findMany({ where: { jobId: id }, orderBy: { createdAt: 'asc' } });
   }
 
   async getById(id: string): Promise<{ id: string; status: string; dryRunDiff: unknown } | null> {
@@ -121,6 +128,9 @@ export class JobsService {
     await this.prisma.job.update({
       where: { id },
       data: { status: 'succeeded', confirmedAt: new Date(), completedAt: new Date() },
+    });
+    await this.prisma.auditEntry.create({
+      data: { jobId: id, message: `Job confirmed: ${createdCount} work item(s) created` },
     });
     return { status: 'succeeded', createdCount };
   }

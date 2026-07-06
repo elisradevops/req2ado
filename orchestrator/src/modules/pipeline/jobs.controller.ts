@@ -100,4 +100,9 @@ export class JobsController {
     const credential = orgUrl && pat ? { orgUrl, pat } : undefined;
     return this.jobsService.confirm(id, credential);
   }
+
+  @Get(':id/audit')
+  async getAudit(@Param('id') id: string): Promise<{ id: string; message: string; createdAt: Date }[]> {
+    return this.jobsService.getAuditTrail(id);
+  }
 }

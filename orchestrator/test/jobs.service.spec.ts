@@ -20,6 +20,7 @@ describe('JobsService.confirm', () => {
         }),
         update: jest.fn().mockResolvedValue(undefined),
       },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
     };
     const service = new JobsService(prisma as any, { createWorkItem, linkParentChild } as any, { record } as any, 'redis://unused');
 
@@ -43,6 +44,7 @@ describe('JobsService.confirm', () => {
         }),
         update: jest.fn().mockResolvedValue(undefined),
       },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
     };
     const service = new JobsService(prisma as any, { createWorkItem, linkParentChild } as any, { record: jest.fn() } as any, 'redis://unused');
 
