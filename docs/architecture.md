@@ -395,7 +395,7 @@ req2ado's own commitment (see "Field ref names" above: "Verify exact custom ref 
 
 **Resolution algorithm (used by the MCP server's `ado_discover_fields` tool, `mcp-ado-server/`):**
 1. Call `GET {org}/{project}/_apis/wit/workitemtypes/{type}/fields` for the target work-item type.
-2. Check `config.yaml`'s `fields.customer_id` value first — if the operator has explicitly configured a ref name, use it and verify it appears in the fields response (fail loudly if it doesn't, rather than silently falling through).
+2. Check `config.yaml`'s `fields.customer_id` value first — if the operator has explicitly configured a ref name, use it and verify it appears in the fields response (fail loudly if it doesn't, rather than silently falling through). **Not yet wired** — Phase 9's `JobsService.resolveCustomerIdField` implements steps 1/3/4/5 (runtime candidate-list resolution against `ado_discover_fields`) but this explicit-override step requires a `fields.customer_id`-equivalent config surface that doesn't exist yet in `orchestrator`'s config schema. Tracked as a follow-up, not silently dropped.
 3. If unset/left at default, check candidates in this priority order against the fields response, reusing DocGen's real-world discovered naming conventions as candidates (not blindly trusting them — each is verified to actually exist before use):
    - `Custom.CustomerId`
    - `Custom.CustomerRequirementId`
