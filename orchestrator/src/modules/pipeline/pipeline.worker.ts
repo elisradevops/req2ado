@@ -56,7 +56,11 @@ export async function runPipelineJob(
       areaPath: job.areaPath,
     }));
 
-    const diff = await deps.dryRunService.diff(diffInputs, deps.idempotencyService);
+    const diff = await deps.dryRunService.diff(
+      diffInputs,
+      deps.idempotencyService,
+      (text, areaPath) => deps.ingestionClient.checkDuplicate(text, areaPath),
+    );
 
     // `diff` is a plain JSON-serializable array of DryRunDiffEntry; cast past
     // Prisma's generated InputJsonValue type (its structural check does not

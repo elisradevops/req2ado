@@ -40,4 +40,17 @@ export class IngestionHttpClient {
     }
     return (await response.json()) as Record<string, unknown>;
   }
+
+  async checkDuplicate(text: string, areaPath: string): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
+    const response = await fetch(`${this.baseUrl}/dedup/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, area_path: areaPath }),
+    });
+    if (!response.ok) {
+      throw new Error(`Ingestion /dedup/check request failed: ${response.status}`);
+    }
+    const body = (await response.json()) as { is_duplicate: boolean; matched_item_id: string | null; similarity: number | null };
+    return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
+  }
 }

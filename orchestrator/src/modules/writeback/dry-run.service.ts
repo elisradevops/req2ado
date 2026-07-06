@@ -18,8 +18,14 @@ export interface DryRunDiffEntry {
   type: string;
   title: string;
   description: string;
-  action: 'create' | 'reuse';
+  action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId: number | null;
+  // Distinct from 'reuse': an exact-hash match (idempotency lookup) is a
+  // certain fact, while a 'dedup_skip' match comes from the embedding
+  // service's probabilistic similarity judgment. similarity is populated
+  // only for 'dedup_skip' entries so a reviewer can tell which kind of
+  // match they're looking at.
+  similarity: number | null;
   // Carried forward from the source node so confirm() can record idempotency
   // at the correct (per-node) granularity — Job.sourceHash is a whole-file
   // hash and cannot be used here; each node's own content hash is what the
@@ -38,20 +44,50 @@ export interface DryRunDiffEntry {
  */
 @Injectable()
 export class DryRunService {
-  async diff(nodes: DryRunTreeNode[], idempotencyService: IdempotencyService): Promise<DryRunDiffEntry[]> {
+  async diff(
+    nodes: DryRunTreeNode[],
+    idempotencyService: IdempotencyService,
+    dedupCheck?: (text: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+  ): Promise<DryRunDiffEntry[]> {
     const results: DryRunDiffEntry[] = [];
     for (const node of nodes) {
       const existingAdoId = await idempotencyService.lookup(node.sourceHash, node.customerId, node.areaPath);
+      if (existingAdoId !== null) {
+        results.push({
+          localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
+          title: node.title, description: node.description, action: 'reuse',
+          existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
+        });
+        continue;
+      }
+      if (dedupCheck) {
+        // Fail OPEN, never closed: an embedding-service outage must not fail
+        // BASELINE jobs, which had zero LLM/embed dependency before this
+        // phase — that would be a straight regression introduced by an
+        // unrelated feature. On any dedup-check error, log it and fall
+        // through to the same 'create' path as if dedup were never enabled;
+        // creating a possible duplicate is always safer than blocking every
+        // submission on a dedup-service hiccup.
+        try {
+          const dedupResult = await dedupCheck(node.description, node.areaPath);
+          if (dedupResult.isDuplicate && dedupResult.matchedItemId !== null) {
+            results.push({
+              localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
+              title: node.title, description: node.description, action: 'dedup_skip',
+              existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
+              sourceHash: node.sourceHash, customerId: node.customerId,
+            });
+            continue;
+          }
+        } catch (error) {
+          // eslint-disable-next-line no-console -- operational visibility for a fail-open path, not app logging
+          console.error(`Dedup check failed for node ${node.localId}, falling through to 'create':`, error);
+        }
+      }
       results.push({
-        localId: node.localId,
-        parentLocalId: node.parentLocalId,
-        type: node.type,
-        title: node.title,
-        description: node.description,
-        action: existingAdoId === null ? 'create' : 'reuse',
-        existingAdoId,
-        sourceHash: node.sourceHash,
-        customerId: node.customerId,
+        localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
+        title: node.title, description: node.description, action: 'create',
+        existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
       });
     }
     return results;

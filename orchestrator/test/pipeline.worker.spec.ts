@@ -1,7 +1,7 @@
 import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
 
 describe('runPipelineJob', () => {
-  const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn() };
+  const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn(), checkDuplicate: jest.fn() };
   const fakeDryRunService = { diff: jest.fn() };
   const fakeIdempotencyService = { lookup: jest.fn(), record: jest.fn() };
   const fakePrisma = { job: { update: jest.fn() }, auditEntry: { create: jest.fn() } };
@@ -115,6 +115,7 @@ describe('runPipelineJob', () => {
         { localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1' },
       ],
       fakeIdempotencyService,
+      expect.any(Function),
     );
   });
 
@@ -178,6 +179,40 @@ describe('runPipelineJob', () => {
         },
       ],
       fakeIdempotencyService,
+      expect.any(Function),
     );
+  });
+
+  it('supplies a dedupCheck callback to dryRunService.diff that calls ingestionClient.checkDuplicate with (description, areaPath)', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        {
+          local_id: 'n0',
+          parent_local_id: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          fidelity_hash: 'hashA',
+          customer_id: 'CUST-1',
+        },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+    fakeIngestionClient.checkDuplicate.mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', customerId: 'CUST-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+      },
+    );
+
+    const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
+    await dedupCheckArg('Desc 0', 'Project\\Area1');
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Project\\Area1');
   });
 });
