@@ -1,6 +1,5 @@
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
-from app.distillation.survey_title import TitleDistillationClient
-from app.leveling.llm_leveling import LlmLevelingClient, build_survey_tree
+from app.leveling.llm_leveling import BatchedRequirementClient, LlmLevelingClient, build_survey_tree
 from app.workitem.model import WorkItemMode, WorkItemType
 
 
@@ -33,18 +32,30 @@ class FakeLlmLevelingClient:
         ]
 
 
-class FakeTitleDistillationClient:
-    """Hand-written test double for title distillation, matching Task 4's
-    survey_title.py pattern — no real LLM call, proves wiring only."""
+class FakeBatchedRequirementClient:
+    """Hand-written test double for the batched (whole-document) requirement
+    generation call — proves build_survey_tree calls
+    generate_requirements_for_document exactly once for the whole document,
+    not once per node. Result defaults to one formal requirement per node,
+    keyed by node_id, but can be overridden via `results` for tests that need
+    to exercise the empty-list fallback path."""
 
-    def distill_title(self, text: str, max_length: int) -> str:
-        if "Display" == text:
-            return "Display"
-        return "HDR support"
+    def __init__(self, results: dict[str, list[dict]] | None = None) -> None:
+        self._results = results
+        self.calls: list[dict[str, str]] = []
+
+    def generate_requirements_for_document(self, blocks_by_node_id: dict[str, str]) -> dict[str, list[dict]]:
+        self.calls.append(blocks_by_node_id)
+        if self._results is not None:
+            return self._results
+        return {
+            node_id: [{"text": f"The system shall handle: {text}", "tags": ["functional"]}]
+            for node_id, text in blocks_by_node_id.items()
+        }
 
 
 def test_build_survey_tree_uses_injected_llm_client() -> None:
-    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeTitleDistillationClient())
+    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
     assert len(tree.nodes) == 2
     assert tree.nodes[0].type == WorkItemType.FEATURE
     assert tree.nodes[0].parent_local_id is None
@@ -52,11 +63,19 @@ def test_build_survey_tree_uses_injected_llm_client() -> None:
     assert tree.nodes[1].parent_local_id == "0"
 
 
-def test_survey_tree_nodes_have_survey_mode_and_no_fidelity_hash() -> None:
-    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeTitleDistillationClient())
+def test_survey_tree_nodes_have_survey_mode_and_real_fidelity_hash() -> None:
+    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
     for node in tree.nodes:
         assert node.mode == WorkItemMode.SURVEY
-        assert node.fidelity_hash is None
+        assert node.fidelity_hash is not None
+
+
+def test_fidelity_hash_is_stable_across_identical_calls() -> None:
+    tree_a = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
+    tree_b = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
+    hashes_a = [node.fidelity_hash for node in tree_a.nodes]
+    hashes_b = [node.fidelity_hash for node in tree_b.nodes]
+    assert hashes_a == hashes_b
 
 
 def test_llm_leveling_client_is_a_protocol_satisfied_by_the_fake() -> None:
@@ -65,16 +84,31 @@ def test_llm_leveling_client_is_a_protocol_satisfied_by_the_fake() -> None:
     assert isinstance(result, list)
 
 
-def test_build_survey_tree_uses_distilled_titles_not_raw_display_text() -> None:
-    # Phase 2's placeholder set title = raw display_text; Phase 3 must use
-    # the injected title_client's real (here: fake) distillation instead.
-    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeTitleDistillationClient())
-    assert tree.nodes[0].title == "Display"
-    assert tree.nodes[1].title == "HDR support"
+def test_batched_requirement_client_is_a_protocol_satisfied_by_the_fake() -> None:
+    client: BatchedRequirementClient = FakeBatchedRequirementClient()
+    result = client.generate_requirements_for_document({"0": "Display"})
+    assert isinstance(result, dict)
+
+
+def test_build_survey_tree_derives_title_from_generated_requirement_not_raw_display_text() -> None:
+    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
+    assert tree.nodes[0].title == "The system shall handle: Display"
     assert tree.nodes[1].title != "The display shall support HDR."
 
 
-def test_build_survey_tree_title_client_is_a_protocol_satisfied_by_the_fake() -> None:
-    client: TitleDistillationClient = FakeTitleDistillationClient()
-    result = client.distill_title("Display", 256)
-    assert isinstance(result, str)
+def test_generate_requirements_for_document_called_exactly_once_regardless_of_node_count() -> None:
+    # Proves the batching actually happened (one whole-document call), not
+    # just that the code compiles against the new signature — a regression
+    # to a per-node call pattern would make this call count equal len(nodes).
+    fake_requirement_client = FakeBatchedRequirementClient()
+    build_survey_tree(_small_doc(), FakeLlmLevelingClient(), fake_requirement_client)
+    assert len(fake_requirement_client.calls) == 1
+
+
+def test_node_with_no_generated_requirements_falls_back_to_raw_display_text() -> None:
+    fake_requirement_client = FakeBatchedRequirementClient(results={"0": [], "1": []})
+    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), fake_requirement_client)
+    assert tree.nodes[0].description == "Display"
+    assert tree.nodes[1].description == "The display shall support HDR."
+    assert tree.nodes[0].description != ""
+    assert tree.nodes[1].description != ""
