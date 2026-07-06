@@ -1,0 +1,67 @@
+import json
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+import app.main as main
+from app.dedup.vector_store import ChromaVectorStore
+
+client = TestClient(main.app)
+
+
+def _mock_embed_handler(request: httpx.Request) -> httpx.Response:
+    texts = json.loads(request.content)["texts"]
+    # Deterministic embedding derived from text content so identical texts
+    # produce identical vectors and different texts produce different ones.
+    embeddings = [[float(len(text)), 0.0, 1.0] for text in texts]
+    return httpx.Response(200, json={"embeddings": embeddings})
+
+
+def test_dedup_check_against_an_empty_store_returns_not_a_duplicate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+
+    response = client.post("/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_duplicate"] is False
+
+
+def test_dedup_upsert_then_check_with_the_same_text_returns_a_duplicate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+
+    upsert_response = client.post(
+        "/dedup/upsert",
+        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+    )
+    assert upsert_response.status_code == 200
+    assert upsert_response.json() == {"ok": True}
+
+    check_response = client.post(
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+    )
+    assert check_response.status_code == 200
+    body = check_response.json()
+    assert body["is_duplicate"] is True
+    assert body["matched_item_id"] == "item-1"
+    assert body["similarity"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_dedup_check_scopes_by_area_path_and_finds_no_match_across_area_paths(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+
+    upsert_response = client.post(
+        "/dedup/upsert",
+        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+    )
+    assert upsert_response.status_code == 200
+
+    check_response = client.post(
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area2"}
+    )
+    assert check_response.status_code == 200
+    body = check_response.json()
+    assert body["is_duplicate"] is False
