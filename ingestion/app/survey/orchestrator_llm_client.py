@@ -2,8 +2,20 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
+
+_JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
+
+
+def _strip_json_fence(content: str) -> str:
+    """Local models (Ollama included — the golden test's real target) often
+    wrap JSON in markdown fences despite being explicitly told not to. Strip
+    a single leading/trailing fence if present; otherwise return unchanged.
+    Cheap insurance against a single fenced response failing an entire job."""
+    match = _JSON_FENCE_PATTERN.match(content.strip())
+    return match.group(1).strip() if match else content.strip()
 
 
 class OrchestratorLlmClient:
@@ -51,3 +63,78 @@ class OrchestratorLlmClient:
         except json.JSONDecodeError as exc:
             raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
         return parsed
+
+    def infer_hierarchy(self, outline: str, profile_hint: object | None) -> list[dict]:
+        # profile_hint is currently unused by the real prompt — LlmLevelingClient's
+        # Protocol declares it for future profile-aware prompting, not exercised yet.
+        system_prompt = (
+            "You infer a work-item hierarchy from an outline of requirement text. "
+            "Each line of the outline is one candidate node, addressed by its "
+            "0-based line index as a string. Return ONLY a JSON array of objects, "
+            "each with 'node_id' (the line index as a string), 'type' (one of: "
+            "Epic, Feature, Requirement), and 'parent_id' (the node_id of its "
+            "parent, or null for a root node). Honor 'same depth, different type "
+            "per branch' when the content implies it. Never invent a node_id not "
+            "present in the outline. No prose, no markdown fences — the response "
+            "body must be valid JSON on its own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": outline},
+            ],
+            "temperature": 0,
+        }
+        with httpx.Client(transport=self._transport) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
+
+    def generate_requirements_for_document(self, blocks_by_node_id: dict[str, str]) -> dict[str, list[dict]]:
+        """Batched sibling of generate_requirements: one LLM call for every
+        node in the tree, not one call per node. A first draft of this
+        wiring made ~2 LLM calls per node (title distillation + per-block
+        requirement generation) — for a 50-block document, ~101 sequential
+        blocking calls. This method and dropping title distillation entirely
+        (see llm_leveling.py) cut that to ~2 total calls per document,
+        mirroring how infer_hierarchy already sends the whole outline in one
+        call rather than one call per line."""
+        system_prompt = (
+            "You convert several informal requirement blocks into formal 'shall' "
+            "statements. You are given a JSON object mapping each block's node_id "
+            "to its raw text. Return ONLY a JSON object with the SAME node_id keys, "
+            "each mapped to a list of objects with 'text' (a single formal "
+            "shall-style requirement sentence) and 'tags' (a list of zero or more "
+            "of: functional, non_functional, interface, performance, regulatory, "
+            "safety, security, operation, maintenance, feature, behavior). A block "
+            "that yields no formal requirement (e.g. a heading) maps to an empty "
+            "list. Never invent a node_id not present in the input. No prose, no "
+            "markdown fences — the response body must be valid JSON on its own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(blocks_by_node_id)},
+            ],
+            "temperature": 0,
+        }
+        with httpx.Client(transport=self._transport) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc

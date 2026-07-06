@@ -1,4 +1,6 @@
 # ingestion/tests/test_orchestrator_llm_client.py
+import json
+
 import httpx
 import pytest
 
@@ -59,3 +61,73 @@ def test_generate_requirements_raises_on_non_200_response() -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         client.generate_requirements("some block")
+
+
+def test_infer_hierarchy_parses_the_response_into_a_hierarchy_list() -> None:
+    hierarchy = [
+        {"node_id": "0", "type": "Epic", "parent_id": None},
+        {"node_id": "1", "type": "Requirement", "parent_id": "0"},
+    ]
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        captured["body"] = json.loads(request.content)
+        captured["auth"] = request.headers["authorization"]
+        return httpx.Response(200, json={"content": json.dumps(hierarchy)})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.infer_hierarchy("line 0\nline 1", None)
+
+    assert result == hierarchy
+    assert captured["auth"] == "Bearer test-bearer"
+    assert captured["body"]["temperature"] == 0
+    assert captured["body"]["messages"][1]["content"] == "line 0\nline 1"
+
+
+def test_infer_hierarchy_raises_on_malformed_json() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "not valid json"})
+
+    with pytest.raises(ValueError, match="malformed"):
+        client.infer_hierarchy("line 0", None)
+
+
+def test_infer_hierarchy_strips_a_markdown_json_fence() -> None:
+    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
+    response_json = {"content": "```json\n" + json.dumps(hierarchy) + "\n```"}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.infer_hierarchy("line 0", None)
+    assert result == hierarchy
+
+
+def test_generate_requirements_for_document_sends_all_blocks_in_one_call() -> None:
+    call_count = {"n": 0}
+    response_body = {"n0": [{"text": "The unit shall power on.", "tags": ["functional"]}], "n1": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200, json={"content": json.dumps(response_body)})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.generate_requirements_for_document({"n0": "block 0 text", "n1": "block 1 text"})
+
+    assert result == response_body
+    assert call_count["n"] == 1
+
+
+def test_generate_requirements_for_document_strips_a_markdown_json_fence() -> None:
+    response_body = {"n0": [{"text": "The unit shall power on.", "tags": ["functional"]}]}
+    response_json = {"content": "```json\n" + json.dumps(response_body) + "\n```"}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.generate_requirements_for_document({"n0": "block 0 text"})
+    assert result == response_body
