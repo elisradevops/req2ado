@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import type { McpClient } from './mcp.client';
+import type { IngestionHttpClient } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 
 export interface SubmitJobInput {
@@ -22,6 +23,7 @@ export class JobsService {
     private readonly prisma: PrismaClient,
     private readonly mcpClient: McpClient,
     private readonly idempotencyService: IdempotencyService,
+    private readonly ingestionClient: IngestionHttpClient,
     redisUrl: string,
   ) {
     this.queue = new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any });
@@ -126,7 +128,11 @@ export class JobsService {
     let createdCount = 0;
 
     for (const entry of diff) {
-      if (entry.action === 'reuse' && entry.existingAdoId !== null) {
+      // 'dedup_skip' is skipped the same as 'reuse': both already have a
+      // real ADO id to point at, just with different certainty (exact-hash
+      // fact vs embedding-similarity judgment) — see DryRunDiffEntry's doc
+      // comment. Neither should trigger a create.
+      if ((entry.action === 'reuse' || entry.action === 'dedup_skip') && entry.existingAdoId !== null) {
         adoIdByLocalId.set(entry.localId, entry.existingAdoId);
         continue;
       }
@@ -151,11 +157,26 @@ export class JobsService {
       const created = await this.mcpClient.createWorkItem(entry.type, fields, credential);
       adoIdByLocalId.set(entry.localId, created.id);
       await this.idempotencyService.record(entry.sourceHash, entry.customerId, job.areaPath, created.id);
+      // Backstop future dedup checks against this newly-real item. Best-effort:
+      // an upsert failure here must not fail the write that already succeeded
+      // in ADO — it only means a future near-duplicate might not be caught.
+      try {
+        await this.ingestionClient.upsertDedupEntry(String(created.id), entry.description, job.areaPath);
+      } catch (error) {
+        // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+        console.error(`Dedup upsert failed for newly-created item ${created.id}:`, error);
+      }
       createdCount += 1;
     }
 
     for (const entry of diff) {
       if (entry.parentLocalId === null) continue;
+      // Never re-parent an existing ADO item based on a probabilistic
+      // dedup match — that would silently mutate real ADO hierarchy off a
+      // similarity guess, not a certainty. A NEW child linking UP to a
+      // dedup_skip parent is fine (parentAdoId lookup still resolves); only
+      // the skip-node-as-a-CHILD case is suppressed here.
+      if (entry.action === 'dedup_skip') continue;
       const childAdoId = adoIdByLocalId.get(entry.localId);
       const parentAdoId = adoIdByLocalId.get(entry.parentLocalId);
       if (childAdoId === undefined || parentAdoId === undefined) continue; // defensive — should not happen given tree order

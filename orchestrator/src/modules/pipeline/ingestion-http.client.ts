@@ -53,4 +53,15 @@ export class IngestionHttpClient {
     const body = (await response.json()) as { is_duplicate: boolean; matched_item_id: string | null; similarity: number | null };
     return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
   }
+
+  async upsertDedupEntry(itemId: string, text: string, areaPath: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/dedup/upsert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, text, area_path: areaPath }),
+    });
+    if (!response.ok) {
+      throw new Error(`Ingestion /dedup/upsert request failed: ${response.status}`);
+    }
+  }
 }

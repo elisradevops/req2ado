@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { JobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
+import { IngestionHttpClient } from './ingestion-http.client';
 import { IdempotencyService } from '../writeback/idempotency.service';
 
 @Module({
@@ -33,10 +34,20 @@ import { IdempotencyService } from '../writeback/idempotency.service';
       useFactory: (prisma: PrismaClient) => new IdempotencyService(prisma),
     },
     {
+      provide: IngestionHttpClient,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => new IngestionHttpClient(config.get<string>('INGESTION_BASE_URL')!),
+    },
+    {
       provide: JobsService,
-      inject: [PrismaClient, McpClient, IdempotencyService, ConfigService],
-      useFactory: (prisma: PrismaClient, mcpClient: McpClient, idempotencyService: IdempotencyService, config: ConfigService) =>
-        new JobsService(prisma, mcpClient, idempotencyService, config.get<string>('REDIS_URL')!),
+      inject: [PrismaClient, McpClient, IdempotencyService, IngestionHttpClient, ConfigService],
+      useFactory: (
+        prisma: PrismaClient,
+        mcpClient: McpClient,
+        idempotencyService: IdempotencyService,
+        ingestionClient: IngestionHttpClient,
+        config: ConfigService,
+      ) => new JobsService(prisma, mcpClient, idempotencyService, ingestionClient, config.get<string>('REDIS_URL')!),
     },
     {
       provide: 'MAX_UPLOAD_SIZE_BYTES',
