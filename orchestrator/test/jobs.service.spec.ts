@@ -52,4 +52,80 @@ describe('JobsService.confirm', () => {
 
     expect(linkParentChild).toHaveBeenCalledWith(101, 42, undefined);
   });
+
+  it('writes AreaPath, State, and a runtime-resolved Customer ID field on every created item', async () => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 200 });
+    const discoverFields = jest
+      .fn()
+      .mockResolvedValue(['System.Title', 'System.Description', 'Custom.CustomerRequirementId']);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1' },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { record: jest.fn() } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(discoverFields).toHaveBeenCalledWith('Requirement', undefined);
+    expect(createWorkItem).toHaveBeenCalledWith(
+      'Requirement',
+      {
+        'System.Title': 'T',
+        'System.Description': 'D',
+        'System.State': 'Proposed',
+        'System.AreaPath': 'Project\\Area1',
+        'Custom.CustomerRequirementId': 'CUST-1',
+      },
+      undefined,
+    );
+  });
+
+  it('leaves Customer ID off the written item when no candidate field is discovered, rather than failing', async () => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 201 });
+    const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1' },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { record: jest.fn() } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(createWorkItem).toHaveBeenCalledWith(
+      'Requirement',
+      {
+        'System.Title': 'T',
+        'System.Description': 'D',
+        'System.State': 'Proposed',
+        'System.AreaPath': 'Project\\Area1',
+      },
+      undefined,
+    );
+  });
 });

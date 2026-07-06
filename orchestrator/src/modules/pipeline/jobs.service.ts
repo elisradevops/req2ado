@@ -61,6 +61,22 @@ export class JobsService {
     return this.prisma.auditEntry.findMany({ where: { jobId: id }, orderBy: { createdAt: 'asc' } });
   }
 
+  // docs/architecture.md's "Customer ID Field Resolution": verified at
+  // runtime against ado_discover_fields, never hardcoded to System.CustomerId
+  // (System.* is ADO's reserved built-in namespace, not custom fields).
+  // Candidate priority list matches DocGen's real-world discovered naming
+  // conventions, each verified present before use rather than trusted blind.
+  // If none match, customerId is left off the written item (traceability
+  // metadata, not a required field for a valid ADO write) — not a hard failure.
+  private async resolveCustomerIdField(
+    workItemType: string,
+    credential?: { orgUrl: string; pat: string },
+  ): Promise<string | null> {
+    const candidates = ['Custom.CustomerId', 'Custom.CustomerRequirementId', 'Custom.CustomerID'];
+    const availableFields = await this.mcpClient.discoverFields(workItemType, credential);
+    return candidates.find((candidate) => availableFields.includes(candidate)) ?? null;
+  }
+
   async getById(id: string): Promise<{ id: string; status: string; dryRunDiff: unknown } | null> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
@@ -100,6 +116,11 @@ export class JobsService {
     // pass is sufficient: every entry's parentLocalId, if non-null, already
     // has its ADO id in this map by the time we reach the child.
     const adoIdByLocalId = new Map<string, number>();
+    // Customer ID's real ref name is runtime-verified per work-item type, not
+    // hardcoded (docs/architecture.md's "Customer ID Field Resolution") —
+    // cached per type for this confirm() call so discoverFields is called at
+    // most once per distinct type in the diff, not once per node.
+    const customerIdFieldByType = new Map<string, string | null>();
     let createdCount = 0;
 
     for (const entry of diff) {
@@ -107,11 +128,25 @@ export class JobsService {
         adoIdByLocalId.set(entry.localId, entry.existingAdoId);
         continue;
       }
-      const created = await this.mcpClient.createWorkItem(
-        entry.type,
-        { 'System.Title': entry.title, 'System.Description': entry.description },
-        credential,
-      );
+      const fields: Record<string, string> = {
+        'System.Title': entry.title,
+        'System.Description': entry.description,
+        'System.State': 'Proposed',
+        'System.AreaPath': job.areaPath,
+      };
+      if (entry.customerId !== null) {
+        if (!customerIdFieldByType.has(entry.type)) {
+          customerIdFieldByType.set(
+            entry.type,
+            await this.resolveCustomerIdField(entry.type, credential),
+          );
+        }
+        const customerIdField = customerIdFieldByType.get(entry.type);
+        if (customerIdField !== null && customerIdField !== undefined) {
+          fields[customerIdField] = entry.customerId;
+        }
+      }
+      const created = await this.mcpClient.createWorkItem(entry.type, fields, credential);
       adoIdByLocalId.set(entry.localId, created.id);
       await this.idempotencyService.record(entry.sourceHash, entry.customerId, job.areaPath, created.id);
       createdCount += 1;
