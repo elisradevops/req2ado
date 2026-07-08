@@ -66,6 +66,14 @@ def build_survey_tree(
     re-run. Embedding dedup partially backstops this; it is not a substitute."""
     outline = _build_outline(doc)
     hierarchy = llm_client.infer_hierarchy(outline, profile_hint=None)
+    # Tolerant of LLM non-compliance: the prompt asks for a JSON ARRAY, but a
+    # small local model (observed with llama3.2:1b against a short outline)
+    # sometimes collapses to a single JSON object instead of a one-element
+    # array. Normalize rather than let a single well-formed-but-unwrapped
+    # object crash the whole job with a cryptic "string indices must be
+    # integers" (iterating a dict yields its string keys, not its values).
+    if isinstance(hierarchy, dict):
+        hierarchy = [hierarchy]
 
     block_by_index = {str(i): block for i, block in enumerate(doc.blocks)}
     hierarchy_by_node_id = {entry["node_id"]: entry for entry in hierarchy}

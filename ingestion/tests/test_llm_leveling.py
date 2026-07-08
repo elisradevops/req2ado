@@ -1,6 +1,6 @@
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.leveling.llm_leveling import BatchedRequirementClient, LlmLevelingClient, build_survey_tree
-from app.workitem.model import WorkItemMode, WorkItemType
+from app.workitem.model import RequirementTag, WorkItemMode, WorkItemType
 
 
 def _sr(path: str) -> SourceRef:
@@ -112,3 +112,64 @@ def test_node_with_no_generated_requirements_falls_back_to_raw_display_text() ->
     assert tree.nodes[1].description == "The display shall support HDR."
     assert tree.nodes[0].description != ""
     assert tree.nodes[1].description != ""
+
+
+def test_survey_tree_can_jointly_produce_every_requirement_tag_in_the_taxonomy() -> None:
+    # CR6 of the corrected work plan: the original request's full taxonomy
+    # (functional, non-functional, interface, performance, regulation,
+    # security, safety, operation, maintenance, features,
+    # behavioral/process) has 11 members (RequirementTag). No prior test
+    # asserted all 11 can flow through build_survey_tree jointly — each
+    # existing test only exercises 2-3 tags.
+    all_tags = list(RequirementTag)
+    path = "taxonomy_survey_input.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="taxonomyhash"),
+        blocks=[
+            Block(id=f"b{i}", kind=BlockKind.PARAGRAPH, text=f"informal note {i}", source_ref=_sr(path))
+            for i in range(len(all_tags))
+        ],
+    )
+
+    class _FlatHierarchyClient:
+        def infer_hierarchy(self, outline: str, profile_hint: str | None) -> list[dict]:
+            return [
+                {"node_id": str(i), "type": "Requirement", "parent_id": None}
+                for i in range(len(all_tags))
+            ]
+
+    requirement_client = FakeBatchedRequirementClient(
+        results={
+            str(i): [{"text": f"The system shall satisfy note {i}.", "tags": [tag.value]}]
+            for i, tag in enumerate(all_tags)
+        }
+    )
+
+    tree = build_survey_tree(doc, _FlatHierarchyClient(), requirement_client)
+
+    produced_tags = {tag for node in tree.nodes for tag in node.tags}
+    assert produced_tags == set(RequirementTag)
+
+
+def test_build_survey_tree_tolerates_a_single_object_instead_of_an_array_from_infer_hierarchy() -> None:
+    # Reproduces a real failure observed running the golden E2E script
+    # against a real local model (llama3.2:1b): for a short outline the
+    # model sometimes collapses the requested JSON ARRAY into a single JSON
+    # OBJECT. Before the fix, iterating that dict in
+    # hierarchy_by_node_id = {entry["node_id"]: entry for entry in hierarchy}
+    # iterates its string KEYS (not the dict itself), and entry["node_id"]
+    # then raises "string indices must be integers" — a whole job crash from
+    # one non-compliant response shape.
+    path = "single_line.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="singlehash"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="Single requirement line.", source_ref=_sr(path))],
+    )
+
+    class _SingleObjectHierarchyClient:
+        def infer_hierarchy(self, outline: str, profile_hint: str | None) -> dict:
+            return {"node_id": "0", "type": "Requirement", "parent_id": None}
+
+    tree = build_survey_tree(doc, _SingleObjectHierarchyClient(), FakeBatchedRequirementClient())
+    assert len(tree.nodes) == 1
+    assert tree.nodes[0].type == WorkItemType.REQUIREMENT
