@@ -187,6 +187,17 @@ Traceability: every node's `source_ref` → a `Block`/offset; `fidelity_hash` pr
 - **Redaction:** each pattern stripped before egress; trusted_local bypass honored.
 - **Security:** PAT never logged/persisted (assert on logs); MCP bearer required; input validation rejects malformed uploads.
 - **Scale/E2E:** N concurrent jobs through the queue complete without corruption; determinism run (BASELINE, LLM off) identical twice.
+- **Golden files** (mock reference docs): `ingestion/tests/fixtures/build_mock_icd_docx.py` / `build_mock_tv_remote_docx.py` / `build_mock_flat_docx.py` generate real `.docx` files embodying the real ICD/TV-Remote/headingless conventions named in the original request (the real reference material itself lives in a production environment and cannot be brought into this repo — see "Leveling Resolution" below). `ingestion/tests/test_mock_reference_golden.py` proves leveling/fidelity against these, not just hand-built in-memory `Block` lists.
+
+---
+
+## 1g. Leveling Resolution — Context-Dependent Depth (Scope Confirmed Against Mock Reference Docs)
+
+A Scope & Gap review of this project against the ORIGINAL request found that the "same heading depth resolves to a different work-item type in different branches" requirement (the "Title 2 dual-role" case) needed to be checked against something closer to a real document than a synthetic in-memory fixture. `ingestion/tests/test_mock_reference_golden.py` (built from `mock_tv_remote.docx`, a mock stand-in for the real TV-Receiver + Remote-Control worked example) confirms:
+
+- **What IS solved (BASELINE, deterministic):** `detect_profile_for_branch` (`ingestion/app/leveling/autodetect.py`) auto-detects a leveling profile PER TOP-LEVEL BRANCH, not once globally — proven with two branches in the same document where the identical nominal depth-1 position resolves to `Epic` in one branch (5 levels deep → `tv_style`) and `Feature` in the other (2 levels deep → `icd_style`). This is branch-granularity dual-role resolution, and it is genuinely context-dependent (based on that branch's own structure), not a single document-wide setting.
+- **What is NOT solved:** true intra-branch semantic dual-role — inferring differing intent from local CONTENT within a single branch at the same depth — is not attempted in BASELINE. `autodetect.py`'s own docstring is explicit that this is SURVEY/LLM territory. This is an accepted BASELINE limitation, not a gap to close deterministically: content-driven type inference without an LLM would require heuristics with no principled stopping point.
+- **A related, previously undocumented limitation surfaced by the mock ICD fixture:** the `max_depth <= 2` → `icd_style` / `max_depth >= 3` → `tv_style` heuristic means a genuine ICD-style sub-requirement (a depth-3 node under a Feature/Requirement branch) is unreachable — any depth-3 heading in a branch flips the WHOLE branch to `tv_style` (Epic/Epic/Feature) instead. `mock_icd.docx` is deliberately built without a depth-3 level for this reason (see its build script's docstring). If the real ICD document ever has genuine sub-requirements, this heuristic needs a follow-up fix (e.g. distinguishing "one extra depth level past an otherwise-icd_style branch" from "a genuinely deep tv_style branch") — flagged here rather than silently assumed away, since it cannot be checked against the real ICD document from within this repo.
 
 ---
 
