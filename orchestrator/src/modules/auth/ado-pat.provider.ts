@@ -15,6 +15,20 @@ function buildBasicAuthHeader(pat: string): string {
   return `Basic ${Buffer.from(`:${pat}`).toString('base64')}`;
 }
 
+// Mirrors mcp-ado-server's own api-version ladder (src/config/env.ts) —
+// confirmed against a real on-prem Azure DevOps Server 2022.1: its GA REST
+// API tops out at 7.0. 7.1 is preview-only there and is REJECTED with a 400
+// VssInvalidPreviewVersionException, not authenticated at all. Only a 400
+// advances to the next version in the ladder; a 401 means the PAT itself
+// is bad/expired and must fail immediately — retrying other api-versions
+// would never fix an auth problem and would only hide the real error.
+const API_VERSION_LADDER = ['7.1', '7.0', '5.1', 'none'];
+
+function connectionDataUrl(orgUrl: string, version: string): string {
+  const base = `${orgUrl.replace(/\/$/, '')}/_apis/connectionData`;
+  return version === 'none' ? base : `${base}?api-version=${version}`;
+}
+
 @Injectable()
 export class AdoPatProvider {
   /**
@@ -34,26 +48,48 @@ export class AdoPatProvider {
    * out of scope for this round.
    */
   async validateAndIdentify(orgUrl: string, pat: string): Promise<AdoIdentity> {
-    const url = `${orgUrl.replace(/\/$/, '')}/_apis/connectionData?api-version=7.1`;
-    const response = await fetch(url, {
-      headers: { Authorization: buildBasicAuthHeader(pat) },
-    });
+    const authHeader = buildBasicAuthHeader(pat);
+    let lastFailure: { status: number; url: string; bodyText: string } | null = null;
 
-    if (!response.ok) {
-      throw new Error(`ADO connectionData validation failed: ${response.status}`);
+    for (const version of API_VERSION_LADDER) {
+      const url = connectionDataUrl(orgUrl, version);
+      const response = await fetch(url, { headers: { Authorization: authHeader } });
+
+      if (response.ok) {
+        const body = (await response.json()) as {
+          authenticatedUser?: { descriptor?: string; providerDisplayName?: string };
+        };
+        const descriptor = body.authenticatedUser?.descriptor;
+        if (!descriptor) {
+          throw new Error('ADO connectionData response missing authenticatedUser.descriptor');
+        }
+        return {
+          identity: descriptor,
+          displayName: body.authenticatedUser?.providerDisplayName ?? descriptor,
+        };
+      }
+
+      const bodyText = await response.text().catch(() => '<unreadable body>');
+      lastFailure = { status: response.status, url, bodyText };
+
+      // Only a 400 (e.g. VssInvalidPreviewVersionException) means THIS
+      // api-version is wrong for this server — try the next one. Any other
+      // status (401 expired/invalid PAT, network error, etc.) is not fixed
+      // by trying a different api-version — fail immediately with the real
+      // error rather than exhausting the whole ladder pointlessly.
+      if (response.status !== 400) {
+        break;
+      }
     }
 
-    const body = (await response.json()) as {
-      authenticatedUser?: { descriptor?: string; providerDisplayName?: string };
-    };
-    const descriptor = body.authenticatedUser?.descriptor;
-    if (!descriptor) {
-      throw new Error('ADO connectionData response missing authenticatedUser.descriptor');
-    }
-
-    return {
-      identity: descriptor,
-      displayName: body.authenticatedUser?.providerDisplayName ?? descriptor,
-    };
+    // Diagnostic logging — never logs the PAT itself, only the ADO server's
+    // own response, which is what actually explains login failures (expired
+    // PAT, wrong api-version, network/TLS issues) that a bare "Unauthorized"
+    // from this route would otherwise hide completely.
+    // eslint-disable-next-line no-console
+    console.error(
+      `ADO connectionData validation failed: ${lastFailure?.status} at ${lastFailure?.url}\nBody (first 500 chars): ${lastFailure?.bodyText.slice(0, 500)}`,
+    );
+    throw new Error(`ADO connectionData validation failed: ${lastFailure?.status}`);
   }
 }

@@ -9,7 +9,14 @@ export interface AdoMcpConfig {
   adoBaseUrl: string;
   /** Target project name. */
   adoProject: string;
-  /** api-version fallback ladder, tried in order. On-prem ADO Server tops out at 7.1. */
+  /**
+   * api-version fallback ladder, tried in order. Confirmed against a real
+   * on-prem Azure DevOps Server 2022.1: its GA REST API tops out at 7.0 —
+   * 7.1 exists only as a preview resource there and is rejected outright
+   * (VssInvalidPreviewVersionException) unless requested as "7.1-preview".
+   * 7.0 is tried before 5.1 so a real 2022.1-class server resolves to its
+   * correct GA version rather than falling further than necessary.
+   */
   apiVersionLadder: string[];
   /** Path to a CA bundle for on-prem self-signed TLS (NODE_EXTRA_CA_CERTS-style trust). */
   caCertPath?: string;
@@ -41,7 +48,7 @@ export function loadConfig(): AdoMcpConfig {
   return {
     adoBaseUrl: backend === 'real' ? requireEnv('ADO_BASE_URL') : (process.env.ADO_BASE_URL ?? ''),
     adoProject: backend === 'real' ? requireEnv('ADO_PROJECT') : (process.env.ADO_PROJECT ?? ''),
-    apiVersionLadder: (process.env.ADO_API_VERSION_LADDER ?? '7.1,5.1,none').split(','),
+    apiVersionLadder: (process.env.ADO_API_VERSION_LADDER ?? '7.1,7.0,5.1,none').split(','),
     caCertPath: process.env.ADO_CA_CERT,
     batchSize: Number(process.env.ADO_BATCH_SIZE ?? 200),
     concurrency: Number(process.env.ADO_CONCURRENCY ?? 8),
