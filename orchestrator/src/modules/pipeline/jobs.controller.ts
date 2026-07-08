@@ -71,13 +71,6 @@ export class JobsController {
     }
     const sourceHash = createHash('sha256').update(file.buffer).digest('hex');
     return this.jobsService.submit({
-      // NOTE: userId is hardcoded as a placeholder here because the
-      // req2ado session-JWT auth guard (SessionService, built in the
-      // auth-corrections round) is not yet wired as an @UseGuards() on
-      // this or any non-/auth route — a documented, pre-existing gap from
-      // that round, not introduced by this task. Replace with the
-      // authenticated request's userId once that guard is applied.
-      userId: 'placeholder-user-id',
       areaPath,
       customerId: customerId ?? null,
       mode: (mode as 'baseline' | 'survey' | undefined) ?? 'baseline',

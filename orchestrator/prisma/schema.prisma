@@ -7,17 +7,8 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  createdAt DateTime @default(now())
-  jobs      Job[]
-}
-
 model Job {
   id               String    @id @default(uuid())
-  userId           String
-  user             User      @relation(fields: [userId], references: [id])
   mode             String // "baseline" | "survey"
   status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed"
   sourceHash       String

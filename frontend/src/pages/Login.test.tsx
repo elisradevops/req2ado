@@ -17,14 +17,14 @@ describe('Login page', () => {
   });
 
   it('shows a success alert and calls /auth/login when sign-in succeeds', async () => {
-    vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { token: 'fake-jwt' } });
+    vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { displayName: 'Jane Doe' } });
 
     render(<Login />);
     fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
     fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
     fireEvent.click(screen.getByText('Sign in'));
 
-    await waitFor(() => expect(screen.getByText('Signed in successfully.')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Signed in as Jane Doe.')).toBeInTheDocument());
     expect(httpClient.post).toHaveBeenCalledWith('/auth/login', {
       adoOrgUrl: 'https://tfs.internal/tfs/Collection',
       pat: 'fake-pat',

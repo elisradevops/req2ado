@@ -7,20 +7,15 @@ import { httpClient } from '../api/httpClient.js';
  * Single-step login: the ADO Server itself is the identity provider. The
  * entered PAT is validated against ADO's own connectionData endpoint
  * (orchestrator's POST /auth/login), which both proves the credential works
- * and identifies the user — no separate app-level identity system (e.g.
- * Azure AD) is needed for this deployment. The PAT lives only in this
- * component's state — never persisted to localStorage/sessionStorage/disk —
- * and is handed to the caller via onLoginSuccess so it can be resent as a
- * per-request header on ADO-write-triggering calls later (POST
+ * and identifies the user — no separate app-level identity system, no
+ * session/JWT, no app-level RBAC (see docs/architecture.md "App auth" /
+ * CR4 of the corrected work plan: the org URL + PAT ARE the identity AND
+ * the permissions, matching DocGen's login pattern). The PAT lives only in
+ * this component's state — never persisted to localStorage/sessionStorage/
+ * disk — and is handed to the caller via onLoginSuccess so it can be resent
+ * as a per-request header on ADO-write-triggering calls later (POST
  * /jobs/:id/confirm) — the app never stores a copy anywhere beyond React
- * state held by the component that owns it. The returned session token is
- * held in memory only, for app-level RBAC identity (see
- * docs/architecture.md "PAT entry" / auth corrections).
- *
- * Azure AD remains a supported backend option (AUTH_PROVIDER=azure_ad) for
- * deployments that can register an app, but is not surfaced in this UI,
- * which targets the local-ADO-account-only case. A provider-switchable UI
- * is a future enhancement, not built now.
+ * state held by the component that owns it.
  */
 export interface AdoCredential {
   orgUrl: string;
@@ -36,14 +31,14 @@ export function Login({ onLoginSuccess }: LoginProps = {}): JSX.Element {
   const [pat, setPat] = useState('');
   const [status, setStatus] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [, setToken] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState<string | null>(null);
 
   const handleLogin = async (): Promise<void> => {
     setStatus('checking');
     setErrorMessage(null);
     try {
       const response = await httpClient.post('/auth/login', { adoOrgUrl, pat });
-      setToken(response.data.token);
+      setDisplayName(response.data.displayName);
       setStatus('ok');
       onLoginSuccess?.({ orgUrl: adoOrgUrl, pat });
     } catch (err) {
@@ -80,7 +75,7 @@ export function Login({ onLoginSuccess }: LoginProps = {}): JSX.Element {
             <Button variant="contained" onClick={handleLogin} disabled={!adoOrgUrl || !pat || status === 'checking'}>
               Sign in
             </Button>
-            {status === 'ok' && <Alert severity="success">Signed in successfully.</Alert>}
+            {status === 'ok' && <Alert severity="success">Signed in as {displayName}.</Alert>}
             {status === 'error' && <Alert severity="error">{errorMessage}</Alert>}
           </Stack>
         </CardContent>

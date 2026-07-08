@@ -6,7 +6,6 @@ import type { IngestionHttpClient } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 
 export interface SubmitJobInput {
-  userId: string;
   areaPath: string;
   customerId: string | null;
   mode: 'baseline' | 'survey';
@@ -32,7 +31,6 @@ export class JobsService {
   async submit(input: SubmitJobInput): Promise<{ jobId: string }> {
     const job = await this.prisma.job.create({
       data: {
-        userId: input.userId,
         mode: input.mode,
         status: 'pending',
         sourceHash: input.sourceHash,

@@ -1,32 +1,16 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
-import { JwtModule } from '@nestjs/jwt';
 import { AdoPatProvider } from './ado-pat.provider';
 import { AuthController } from './auth.controller';
-import { AzureAdProvider } from './azure-ad.provider';
-import { PrismaService } from './prisma.service';
-import { SessionService } from './session.service';
 
+/** DocGen-pattern login: the ADO org URL + PAT ARE the identity and the
+ * permissions (see AdoPatProvider) — no app-level session/JWT, no Azure AD,
+ * no User table. Dropped in the login-simplification round (see CR4 of the
+ * corrected work plan) after confirming the prior JWT session token was
+ * issued but never consumed by any route guard. */
 @Module({
-  imports: [
-    JwtModule.registerAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        secret: config.get<string>('AUTH_JWT_SECRET'),
-        signOptions: { expiresIn: '8h' },
-      }),
-    }),
-  ],
   controllers: [AuthController],
-  providers: [
-    AzureAdProvider,
-    AdoPatProvider,
-    PrismaService,
-    SessionService,
-    Reflector,
-  ],
-  exports: [AzureAdProvider, AdoPatProvider],
+  providers: [AdoPatProvider, Reflector],
+  exports: [AdoPatProvider],
 })
 export class AuthModule {}

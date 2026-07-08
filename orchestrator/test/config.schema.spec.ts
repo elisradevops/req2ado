@@ -5,7 +5,6 @@ const BASE_ENV = {
   REDIS_URL: 'redis://localhost:6379',
   MCP_URL: 'http://localhost:4100',
   MCP_BEARER: 'test-bearer',
-  AUTH_JWT_SECRET: 'test-jwt-secret',
   LLM_BASE_URL: 'http://localhost:11434/v1',
   LLM_CHAT_MODEL: 'llama3.1',
   LLM_PROXY_BEARER: 'test-llm-proxy-bearer',
