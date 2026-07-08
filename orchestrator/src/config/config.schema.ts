@@ -26,6 +26,11 @@ export const configSchema = z.object({
   EMBED_PATH: z.string().default('/api/embed'),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().default(25),
   INGESTION_BASE_URL: z.string().min(1).default('http://localhost:8000'),
+  // Unset in production topology (frontend served same-origin behind nginx,
+  // per docs/architecture.md — never actually built, see docker-compose.yml's
+  // commented-out frontend service). Set for local dev, where Vite serves the
+  // frontend on its own origin/port (5173) against this API (3001).
+  CORS_ORIGIN: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;
