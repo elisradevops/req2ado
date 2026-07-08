@@ -223,3 +223,98 @@ def test_customer_id_defaults_to_none_when_not_provided() -> None:
     tree = build_baseline_tree(icd_doc)
     for node in tree.nodes:
         assert node.customer_id is None
+
+
+def _headingless_doc() -> CanonicalDoc:
+    path = "flat_notes.txt"
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="flathash"),
+        blocks=[
+            Block(
+                id="f0",
+                kind=BlockKind.PARAGRAPH,
+                text="The system shall support at least four simultaneous audio channels.",
+                source_ref=_sr(path, 0, 68),
+            ),
+            Block(
+                id="f1",
+                kind=BlockKind.PARAGRAPH,
+                text="Startup power draw should stay under two watts.",
+                source_ref=_sr(path, 69, 118),
+            ),
+            Block(
+                id="f2",
+                kind=BlockKind.PARAGRAPH,
+                text="The unit shall survive a one-meter drop onto a hard surface.",
+                source_ref=_sr(path, 119, 181),
+            ),
+        ],
+    )
+
+
+def test_headingless_document_synthesizes_epic_feature_and_requirements() -> None:
+    # Grouping-without-headings rule: a document with NO heading/numbering
+    # structure at all must NOT produce zero nodes (the pre-fix behavior —
+    # every block resolved depth=None and the stack never opened). It must
+    # synthesize one Epic -> one Feature, with every paragraph folded in as
+    # its own Requirement child.
+    tree = build_baseline_tree(_headingless_doc())
+
+    assert len(tree.nodes) == 5  # 1 Epic + 1 Feature + 3 Requirements
+    epic, feature = tree.nodes[0], tree.nodes[1]
+    assert epic.type == WorkItemType.EPIC
+    assert epic.parent_local_id is None
+    assert feature.type == WorkItemType.FEATURE
+    assert feature.parent_local_id == epic.local_id
+
+    requirements = tree.nodes[2:]
+    assert all(r.type == WorkItemType.REQUIREMENT for r in requirements)
+    assert all(r.parent_local_id == feature.local_id for r in requirements)
+    # Requirement descriptions are verbatim — untouched by the synthetic
+    # grouping, unlike the two synthetic parent nodes above them.
+    assert requirements[0].description == "The system shall support at least four simultaneous audio channels."
+    assert requirements[1].description == "Startup power draw should stay under two watts."
+    assert requirements[2].description == "The unit shall survive a one-meter drop onto a hard surface."
+
+
+def test_headingless_document_title_is_derived_from_filename() -> None:
+    tree = build_baseline_tree(_headingless_doc())
+    epic, feature = tree.nodes[0], tree.nodes[1]
+    assert epic.title == "flat notes"
+    assert feature.title == "flat notes"
+
+
+def test_headingless_document_nodes_pass_fidelity_verification() -> None:
+    from app.workitem.fidelity import verify_fidelity
+
+    tree = build_baseline_tree(_headingless_doc())
+    for node in tree.nodes:
+        assert verify_fidelity(node)
+
+
+def test_structured_document_is_unaffected_by_the_headingless_fallback() -> None:
+    # Regression guard: any document with at least one resolvable depth
+    # (heading or numbering) must take the ORIGINAL structured path, not
+    # the synthetic Epic/Feature fallback.
+    tv_tree = build_baseline_tree(_tv_style_doc())
+    icd_tree = build_baseline_tree(_icd_style_doc())
+    assert tv_tree.nodes[0].type == WorkItemType.EPIC
+    assert icd_tree.nodes[0].type == WorkItemType.FEATURE
+
+
+def test_mock_flat_docx_end_to_end_through_the_headingless_fallback() -> None:
+    # End-to-end golden case (see tests/fixtures/build_mock_flat_docx.py):
+    # a REAL parsed .docx with no heading styles and no numbering anywhere,
+    # not just a hand-built in-memory Block list.
+    from pathlib import Path
+
+    from app.loaders.docx_loader import load_docx
+
+    fixture_path = Path(__file__).parent / "fixtures" / "mock_flat.docx"
+    doc = load_docx(str(fixture_path))
+    tree = build_baseline_tree(doc)
+
+    assert len(tree.nodes) == 5  # 1 Epic + 1 Feature + 3 Requirements
+    assert tree.nodes[0].type == WorkItemType.EPIC
+    assert tree.nodes[1].type == WorkItemType.FEATURE
+    assert all(n.type == WorkItemType.REQUIREMENT for n in tree.nodes[2:])

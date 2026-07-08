@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 from app.canonical.model import Block, CanonicalDoc
 from app.distillation.description import assemble_description
@@ -8,7 +9,7 @@ from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import detect_profile_for_branch
 from app.leveling.depth import resolve_block_depth
 from app.leveling.profiles import type_for_depth
-from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemTree
+from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
 
 
 def _split_into_branches(doc: CanonicalDoc) -> list[list[Block]]:
@@ -27,6 +28,79 @@ def _split_into_branches(doc: CanonicalDoc) -> list[list[Block]]:
 
 def _hash_description(description: str) -> str:
     return hashlib.sha256(description.encode()).hexdigest()
+
+
+def _derive_doc_title(doc: CanonicalDoc) -> str:
+    """Filename-derived title for a document with no heading structure at
+    all — there is no heading/numbered-line text to extract a title from,
+    so this is the one BASELINE code path where a title is not a verbatim
+    source-span extraction. See _build_headingless_tree."""
+    stem = Path(doc.document.path).stem.replace("_", " ").replace("-", " ").strip()
+    return extract_baseline_title(stem or "Untitled Document")
+
+
+def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkItemTree:
+    """Grouping-without-headings rule (original request, BASELINE mode):
+    when a document has NO internal heading structure at all — every block
+    resolves to depth=None via resolve_block_depth (no headings, no
+    numbering labels) — it must still be organized into an Epic/Feature
+    grouping rather than producing zero nodes (the prior behavior: with no
+    depth==1 block ever appearing, the stack in build_baseline_tree's main
+    loop never opens, so every unleveled block had nothing to fold into and
+    was silently dropped).
+
+    Synthesizes exactly one Epic and one child Feature — title/description
+    derived from the document's filename (see _derive_doc_title), since
+    there is no heading text to extract a title from — then folds every
+    block into its own Requirement child of that Feature, each verbatim
+    (title/description extracted from the block exactly as in the
+    structured path; only the two synthetic parent nodes are non-verbatim).
+    """
+    doc_title = _derive_doc_title(doc)
+    first_source_ref = doc.blocks[0].source_ref
+
+    epic = WorkItemNode(
+        local_id="n0",
+        type=WorkItemType.EPIC,
+        parent_local_id=None,
+        title=doc_title,
+        description=doc_title,
+        customer_id=customer_id,
+        source_ref=first_source_ref,
+        fidelity_hash=_hash_description(doc_title),
+        tags=[],
+        mode=WorkItemMode.BASELINE,
+    )
+    feature = WorkItemNode(
+        local_id="n1",
+        type=WorkItemType.FEATURE,
+        parent_local_id=epic.local_id,
+        title=doc_title,
+        description=doc_title,
+        customer_id=customer_id,
+        source_ref=first_source_ref,
+        fidelity_hash=_hash_description(doc_title),
+        tags=[],
+        mode=WorkItemMode.BASELINE,
+    )
+    nodes: list[WorkItemNode] = [epic, feature]
+    for index, block in enumerate(doc.blocks):
+        description = block.text
+        nodes.append(
+            WorkItemNode(
+                local_id=f"n{index + 2}",
+                type=WorkItemType.REQUIREMENT,
+                parent_local_id=feature.local_id,
+                title=extract_baseline_title(description),
+                description=description,
+                customer_id=customer_id,
+                source_ref=block.source_ref,
+                fidelity_hash=_hash_description(description),
+                tags=[],
+                mode=WorkItemMode.BASELINE,
+            )
+        )
+    return WorkItemTree(nodes=nodes)
 
 
 def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> WorkItemTree:
@@ -53,7 +127,16 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     call — one ingestion run corresponds to one customer's document, per
     docs/architecture.md's idempotency key (source_hash, customer_id,
     area_path) -> System.Id. It is NOT parsed or extracted from document
-    content."""
+    content.
+
+    Grouping-without-headings rule: if the document has no heading/numbering
+    structure at all (every block resolves depth=None), this delegates to
+    _build_headingless_tree rather than falling through to the structured
+    path below, which would silently produce zero nodes for such a
+    document."""
+    if doc.blocks and all(resolve_block_depth(b)[0] is None for b in doc.blocks):
+        return _build_headingless_tree(doc, customer_id)
+
     nodes: list[WorkItemNode] = []
     nodes_by_id: dict[str, WorkItemNode] = {}
     node_counter = 0
