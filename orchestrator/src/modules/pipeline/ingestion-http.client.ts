@@ -1,4 +1,14 @@
 import { Injectable } from '@nestjs/common';
+import { Agent } from 'undici';
+
+// undici's default headersTimeout (300s) is shorter than a real local LLM
+// can take for SURVEY mode's two sequential calls (infer_hierarchy +
+// generate_requirements_for_document) on CPU/GPU-constrained hardware —
+// observed directly: a 12b-class Ollama model took several minutes per
+// call. Only /level can run this long (BASELINE never touches an LLM;
+// /ingest, /dedup/check, /dedup/upsert are all fast); scoped to a dedicated
+// Agent rather than raising the timeout for every ingestion call.
+const LONG_RUNNING_AGENT = new Agent({ headersTimeout: 1_800_000, bodyTimeout: 1_800_000 });
 
 /**
  * Calls the Python ingestion service's real /ingest and /level endpoints
@@ -34,6 +44,7 @@ export class IngestionHttpClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(doc),
+      dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {
       throw new Error(`Ingestion /level request failed: ${response.status}`);

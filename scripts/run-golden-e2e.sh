@@ -127,17 +127,17 @@ export DATABASE_URL="postgresql://req2ado:req2ado@localhost:${PG_PORT}/req2ado"
 export REDIS_URL="redis://localhost:${REDIS_PORT}"
 
 # ---------------------------------------------------------------------------
-# 2. Orchestrator: build, migrate, seed
+# 2. Orchestrator: build, migrate
 # ---------------------------------------------------------------------------
 log "Building orchestrator (prisma generate + nest build)..."
 (cd "$ROOT_DIR/orchestrator" && npx prisma generate >"$LOG_DIR/prisma-generate.log" 2>&1)
 (cd "$ROOT_DIR/orchestrator" && npx prisma migrate deploy >"$LOG_DIR/prisma-migrate.log" 2>&1)
 (cd "$ROOT_DIR/orchestrator" && npx nest build >"$LOG_DIR/nest-build.log" 2>&1)
 
-log "Seeding placeholder user row (JobsController hardcodes userId: 'placeholder-user-id')..."
-docker exec "$PG_CONTAINER" psql -U req2ado -d req2ado -c \
-  "INSERT INTO \"User\" (id, email) VALUES ('placeholder-user-id', 'golden-e2e@example.com') ON CONFLICT (id) DO NOTHING;" \
-  >"$LOG_DIR/seed-user.log" 2>&1
+# No user seed step: the User table was dropped in the login-simplification
+# round (CR4 of the corrected work plan) — Job no longer has a userId column
+# at all, since the ADO org URL + PAT ARE the identity (DocGen pattern), not
+# an app-level session/user row.
 
 # ---------------------------------------------------------------------------
 # 3. Ingestion service (Python/FastAPI)
@@ -187,14 +187,19 @@ log "Starting orchestrator HTTP app on :$ORCH_PORT"
   export REDIS_URL
   export MCP_URL="http://localhost:${MCP_PORT}"
   export MCP_BEARER=dev-local-only
-  export AUTH_PROVIDER=ado_pat
-  export AUTH_JWT_SECRET=dev-only-jwt-secret
   # LLM_BASE_URL/LLM_CHAT_MODEL: point at a real local Ollama so the SURVEY
   # scenario (job #3) below can genuinely generate hierarchy + requirement
   # text, not a fake/unreachable placeholder. BASELINE jobs #1/#2 never call
-  # the LLM proxy, so this has no effect on them.
+  # the LLM proxy, so this has no effect on them. llama3.2:1b was tried first
+  # and is NOT reliable enough for infer_hierarchy on real (non-trivial)
+  # text — observed wrapping the JSON array in a {"nodes": [...]} object and
+  # hallucinating node types/ids outside the real outline. gemma4:12b follows
+  # the prompt correctly (clean array, valid enum types, no invented ids) —
+  # confirmed by direct testing against this exact fixture's outline before
+  # wiring it in here. Slower (~7 min cold-start on this CPU-only box; see
+  # poll_job_status's tries below), but correct.
   export LLM_BASE_URL="http://localhost:11434/v1"
-  export LLM_CHAT_MODEL=llama3.2:1b
+  export LLM_CHAT_MODEL=gemma4:12b
   export LLM_PROXY_BEARER=dev-only-llm-proxy-bearer
   # EMBED_MODEL: real, locally-pulled Ollama embedding model — the dedup
   # scenario (job #4, Task 9) calls this via the /llm/embed proxy. A
@@ -217,8 +222,6 @@ log "Starting orchestrator pipeline worker (separate process)"
   export REDIS_URL
   export MCP_URL="http://localhost:${MCP_PORT}"
   export MCP_BEARER=dev-local-only
-  export AUTH_PROVIDER=ado_pat
-  export AUTH_JWT_SECRET=dev-only-jwt-secret
   export LLM_BASE_URL="http://localhost:9999"
   export LLM_CHAT_MODEL=dev-unused-chat-model
   export LLM_PROXY_BEARER=dev-only-llm-proxy-bearer
@@ -253,7 +256,12 @@ AREA_PATH="Project\\GoldenE2E"
 # ---------------------------------------------------------------------------
 poll_job_status() {
   local job_id="$1"
-  local tries=60
+  # 3900 tries * 1s = 65 min. BASELINE jobs (#1/#2) finish in well under
+  # this; the SURVEY job (#3) needs the headroom — gemma4:12b's two
+  # sequential LLM calls (infer_hierarchy + generate_requirements_for_document)
+  # took anywhere from ~7 min to 10+ min per call cold-start during
+  # verification on GPU/CPU-contended local hardware.
+  local tries=3900
   for ((i = 0; i < tries; i++)); do
     local body
     body="$(curl -sf "http://localhost:${ORCH_PORT}/jobs/${job_id}")"

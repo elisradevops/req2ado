@@ -8,6 +8,14 @@ import httpx
 
 _JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 
+# httpx's default timeout (5s total) is far too short for a real local LLM —
+# observed directly: a 12b-class Ollama model took several minutes to over
+# ten minutes for a single cold-start inference depending on GPU/CPU
+# contention on this box (subsequent warm calls are much faster, but the
+# first call in a job's lifetime is not guaranteed warm, and Ollama evicts
+# an idle model from memory after a few minutes by default).
+_LLM_REQUEST_TIMEOUT_SECONDS = 1800.0
+
 
 def _strip_json_fence(content: str) -> str:
     """Local models (Ollama included — the golden test's real target) often
@@ -50,7 +58,7 @@ class OrchestratorLlmClient:
             ],
             "temperature": 0,
         }
-        with httpx.Client(transport=self._transport) as client:
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/chat",
                 json=payload,
@@ -85,7 +93,7 @@ class OrchestratorLlmClient:
             ],
             "temperature": 0,
         }
-        with httpx.Client(transport=self._transport) as client:
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/chat",
                 json=payload,
@@ -126,7 +134,7 @@ class OrchestratorLlmClient:
             ],
             "temperature": 0,
         }
-        with httpx.Client(transport=self._transport) as client:
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/chat",
                 json=payload,
