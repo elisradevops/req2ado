@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -16,6 +16,7 @@ export function JobsList(): React.ReactElement {
   const jobs = useJobs();
   const setJobs = useJobsStore((state) => state.setJobs);
   const [loaded, setLoaded] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let cancelled = false;
@@ -52,7 +53,7 @@ export function JobsList(): React.ReactElement {
       </TableHead>
       <TableBody>
         {jobs.map((job) => (
-          <TableRow key={job.id} component={Link} to={`/jobs/${job.id}`} sx={{ cursor: 'pointer' }}>
+          <TableRow key={job.id} onClick={() => navigate(`/jobs/${job.id}`)} sx={{ cursor: 'pointer' }}>
             <TableCell><ModeBadge mode={job.mode as 'baseline' | 'survey'} /></TableCell>
             <TableCell><StatusChip status={job.status} /></TableCell>
             <TableCell>{job.itemCount}</TableCell>
