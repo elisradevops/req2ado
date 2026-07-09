@@ -12,6 +12,8 @@ export interface SubmitJobInput {
   fileBuffer: Buffer;
   filename: string;
   sourceHash: string;
+  state: string;
+  iterationPath: string | null;
 }
 
 @Injectable()
@@ -35,6 +37,8 @@ export class JobsService {
         status: 'pending',
         sourceHash: input.sourceHash,
         areaPath: input.areaPath,
+        state: input.state,
+        iterationPath: input.iterationPath,
         customerId: input.customerId,
         originalFilename: input.filename,
       },
@@ -137,9 +141,12 @@ export class JobsService {
       const fields: Record<string, string> = {
         'System.Title': entry.title,
         'System.Description': entry.description,
-        'System.State': 'Proposed',
+        'System.State': job.state,
         'System.AreaPath': job.areaPath,
       };
+      if (job.iterationPath) {
+        fields['System.IterationPath'] = job.iterationPath;
+      }
       if (entry.customerId !== null) {
         if (!customerIdFieldByType.has(entry.type)) {
           customerIdFieldByType.set(

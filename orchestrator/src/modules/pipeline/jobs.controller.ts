@@ -50,6 +50,8 @@ export class JobsController {
     @Body('areaPath') areaPath: string | undefined,
     @Body('customerId') customerId: string | undefined,
     @Body('mode') mode: string | undefined,
+    @Body('state') state: string | undefined,
+    @Body('iterationPath') iterationPath: string | undefined,
   ): Promise<{ jobId: string }> {
     if (!file) {
       throw new BadRequestException('file is required');
@@ -77,6 +79,8 @@ export class JobsController {
       fileBuffer: file.buffer,
       filename: file.originalname,
       sourceHash,
+      state: state ?? 'Proposed',
+      iterationPath: iterationPath ?? null,
     });
   }
 

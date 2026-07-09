@@ -13,6 +13,8 @@ model Job {
   status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed"
   sourceHash       String
   areaPath         String
+  state            String    @default("Proposed")
+  iterationPath    String?
   customerId       String?
   originalFilename String
   dryRunDiff       Json?

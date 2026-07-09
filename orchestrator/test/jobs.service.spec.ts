@@ -73,7 +73,7 @@ describe('JobsService.confirm', () => {
     const prisma = {
       job: {
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', areaPath: 'Project\\Area1', state: 'Proposed',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1' },
           ],
@@ -112,7 +112,7 @@ describe('JobsService.confirm', () => {
     const prisma = {
       job: {
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', areaPath: 'Project\\Area1', state: 'Proposed',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1' },
           ],
@@ -265,5 +265,45 @@ describe('JobsService.confirm', () => {
     const result = await service.confirm('job-1');
 
     expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+  });
+
+  it('writes the job-configured state and iteration path onto created work items', async () => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 501 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-state-1',
+          status: 'diff_ready',
+          areaPath: 'Proj\\Area',
+          state: 'Active',
+          iterationPath: 'Proj\\Sprint 3',
+          customerId: null,
+          dryRunDiff: [
+            { localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'CREATE', customerId: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntry: jest.fn() } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-state-1', { orgUrl: 'https://ado.example', pat: 'x' });
+
+    expect(createWorkItem).toHaveBeenCalledWith(
+      'Requirement',
+      expect.objectContaining({
+        'System.State': 'Active',
+        'System.IterationPath': 'Proj\\Sprint 3',
+      }),
+      { orgUrl: 'https://ado.example', pat: 'x' },
+    );
   });
 });
