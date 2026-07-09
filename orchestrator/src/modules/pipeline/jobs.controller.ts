@@ -14,6 +14,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
 import { JobsService, JobSummary } from './jobs.service';
+import { IngestionHttpClient } from './ingestion-http.client';
 import { createHash } from 'crypto';
 
 // Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
@@ -37,6 +38,7 @@ export class JobsController {
   constructor(
     private readonly jobsService: JobsService,
     @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
+    private readonly ingestionClient: IngestionHttpClient,
   ) {}
 
   @Get()
@@ -87,6 +89,34 @@ export class JobsController {
       state: state ?? 'Proposed',
       iterationPath: iterationPath ?? null,
     });
+  }
+
+  @Post('preview')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MULTER_SAFETY_CEILING_BYTES },
+    }),
+  )
+  async preview(
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ): Promise<{ blockCount: number; sectionCount: number; fileType: string }> {
+    if (!file) {
+      throw new BadRequestException('file is required');
+    }
+    // CanonicalDoc (ingestion/app/canonical/model.py) has no top-level
+    // `sections` field — only `document`, `blocks`, `tables`, `figures`.
+    // Each Block carries a `kind` (BlockKind str-enum). Section count is
+    // derived as the number of blocks whose kind is "heading".
+    const doc = (await this.ingestionClient.ingest(file.buffer, file.originalname)) as {
+      blocks?: { kind?: string }[];
+    };
+    const blocks = doc.blocks ?? [];
+    const ext = file.originalname.slice(file.originalname.lastIndexOf('.') + 1).toLowerCase();
+    return {
+      blockCount: blocks.length,
+      sectionCount: blocks.filter((b) => b.kind === 'heading').length,
+      fileType: ext,
+    };
   }
 
   @Get(':id')
