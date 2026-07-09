@@ -10,10 +10,14 @@ interface AuthState {
   logout: () => void;
 }
 
-function loadFromSessionStorage(): Pick<AuthState, 'orgUrl' | 'pat' | 'displayName'> {
+export function loadFromSessionStorage(): Pick<AuthState, 'orgUrl' | 'pat' | 'displayName'> {
   const raw = sessionStorage.getItem(STORAGE_KEY);
   if (!raw) return { orgUrl: null, pat: null, displayName: null };
-  return JSON.parse(raw) as { orgUrl: string; pat: string; displayName: string };
+  try {
+    return JSON.parse(raw) as { orgUrl: string; pat: string; displayName: string };
+  } catch {
+    return { orgUrl: null, pat: null, displayName: null };
+  }
 }
 
 export const useAuthStore = create<AuthState>((set) => ({

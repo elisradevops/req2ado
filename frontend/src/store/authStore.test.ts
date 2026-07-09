@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useAuthStore } from './authStore';
+import { useAuthStore, loadFromSessionStorage } from './authStore';
 
 describe('authStore', () => {
   beforeEach(() => {
@@ -25,5 +25,13 @@ describe('authStore', () => {
     useAuthStore.getState().logout();
     expect(useAuthStore.getState().orgUrl).toBeNull();
     expect(sessionStorage.getItem('req2ado-auth')).toBeNull();
+  });
+
+  it('loadFromSessionStorage handles malformed JSON gracefully', () => {
+    sessionStorage.setItem('req2ado-auth', 'not valid json{{{');
+    const result = loadFromSessionStorage();
+    expect(result.orgUrl).toBeNull();
+    expect(result.pat).toBeNull();
+    expect(result.displayName).toBeNull();
   });
 });
