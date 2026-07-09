@@ -13,6 +13,8 @@ export const themeTokens = {
     primaryDark: '#102951',
     primaryLight: '#3B60C0',
     accent: '#FDE134',
+    railBackground: '#0F1B3D',
+    liveAccent: '#06B6D4',
     background: '#f8fafc',
     surface: '#FFFFFF',
     surfaceAlt: '#F4F6FB',
