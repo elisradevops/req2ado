@@ -113,6 +113,9 @@ services:
         # Vite bakes this in at build time — the browser (running on the
         # host, not inside the compose network) reaches the orchestrator via
         # its published host port, not the internal service DNS name.
+        # Note: the frontend now reads its API base URL from the runtime-
+        # fetched /config.json (frontend/public/config.json) at startup;
+        # this build arg is kept as a compose-file fallback artifact only.
         VITE_API_BASE_URL: http://localhost:3001
     ports:
       # Host 4080/4081 are occupied by unrelated containers on this dev
