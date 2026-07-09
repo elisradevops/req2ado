@@ -3,7 +3,7 @@ import axios from 'axios';
 import { readFileSync } from 'fs';
 import https from 'https';
 import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
-import type { AdoBackend, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
+import type { AdoBackend, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
 import type { AdoMcpConfig } from '../config/env.js';
 import { retryWithBackoff } from './retryWithBackoff.js';
 
@@ -205,5 +205,20 @@ export class RealAdoBackend implements AdoBackend {
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
     );
     return response.data.fields.map((field: { referenceName: string }) => field.referenceName);
+  }
+
+  async readAreaPaths(depth: number): Promise<AreaPathNode> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/classificationnodes/areas${versionQueryParam(version)}${version === 'none' ? '?' : '&'}$depth=${depth}`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+    );
+    return this.toAreaPathNode(response.data, this.config.adoProject);
+  }
+
+  private toAreaPathNode(raw: { name: string; children?: unknown[] }, pathPrefix: string): AreaPathNode {
+    const path = pathPrefix;
+    const children = (raw.children ?? []).map((child: any) => this.toAreaPathNode(child, `${path}\\${child.name}`));
+    return { path, children };
   }
 }

@@ -6,6 +6,7 @@ import type { AdoCredential } from './auth/patAuth.js';
 import type { AdoMcpConfig } from './config/env.js';
 import { registerPingTool } from './tools/pingTool.js';
 import { registerDiscoverFieldsTool } from './tools/discoverFieldsTool.js';
+import { registerReadAreaPathsTool } from './tools/readAreaPathsTool.js';
 import { registerCreateWorkItemTool } from './tools/createWorkItemTool.js';
 import { registerLinkParentChildTool } from './tools/linkParentChildTool.js';
 import { registerSetFieldsTool } from './tools/setFieldsTool.js';
@@ -77,6 +78,7 @@ export function createMcpApp(backendFactory: BackendFactory, cfg: AdoMcpConfig):
     const mcpServer = new McpServer({ name: 'req2ado-ado-mcp-server', version: '0.1.0' });
     registerPingTool(mcpServer, backend);
     registerDiscoverFieldsTool(mcpServer, backend);
+    registerReadAreaPathsTool(mcpServer, backend);
     registerCreateWorkItemTool(mcpServer, backend);
     registerLinkParentChildTool(mcpServer, backend);
     registerSetFieldsTool(mcpServer, backend);

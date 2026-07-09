@@ -47,6 +47,20 @@ describe('MockAdoBackend.discoverFields', () => {
   });
 });
 
+describe('MockAdoBackend.readAreaPaths', () => {
+  it('returns a fixed area-path tree from readAreaPaths', async () => {
+    const backend = new MockAdoBackend(':memory:');
+    const tree = await backend.readAreaPaths(2);
+    expect(tree).toEqual({
+      path: 'Project',
+      children: [
+        { path: 'Project\\Frontend', children: [] },
+        { path: 'Project\\Backend', children: [] },
+      ],
+    });
+  });
+});
+
 describe('MockAdoBackend.setFields', () => {
   it('updates the fields of an existing work item', async () => {
     const backend = new MockAdoBackend(':memory:');

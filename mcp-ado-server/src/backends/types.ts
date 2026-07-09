@@ -17,6 +17,11 @@ export interface CreateWorkItemInput {
   fields: Record<string, string>;
 }
 
+export interface AreaPathNode {
+  path: string;
+  children: AreaPathNode[];
+}
+
 export interface AdoBackend {
   ping(): Promise<{ ok: true; backend: 'mock' | 'real' }>;
   createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord>;
@@ -37,4 +42,6 @@ export interface AdoBackend {
   discoverFields(workItemType: WorkItemType): Promise<string[]>;
   /** Updates (merges) fields on an existing work item without changing its type or parent link. */
   setFields(id: number, fields: Record<string, string>): Promise<void>;
+  /** Reads the ADO classification-node area-path tree, nested to `depth` levels. */
+  readAreaPaths(depth: number): Promise<AreaPathNode>;
 }

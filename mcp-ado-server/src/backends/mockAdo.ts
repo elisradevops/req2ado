@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { AdoBackend, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
+import type { AdoBackend, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
 
 /**
  * SQLite-backed ADO stand-in for off-network development and tests.
@@ -78,5 +78,15 @@ export class MockAdoBackend implements AdoBackend {
       'Microsoft.VSTS.CMMI.RequirementType',
       'Custom.CustomerId',
     ];
+  }
+
+  async readAreaPaths(_depth: number): Promise<AreaPathNode> {
+    return {
+      path: 'Project',
+      children: [
+        { path: 'Project\\Frontend', children: [] },
+        { path: 'Project\\Backend', children: [] },
+      ],
+    };
   }
 }
