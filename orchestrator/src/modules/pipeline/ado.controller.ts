@@ -1,4 +1,4 @@
-import { Controller, Get, Headers, Query } from '@nestjs/common';
+import { Controller, DefaultValuePipe, Get, Headers, ParseIntPipe, Query } from '@nestjs/common';
 import { McpClient } from './mcp.client';
 import { readAdoCredential } from './credential.util';
 import type { AreaPathNode } from './area-path.types';
@@ -11,9 +11,9 @@ export class AdoController {
   async getAreaPaths(
     @Headers('x-ado-org-url') orgUrl: string | undefined,
     @Headers('x-ado-pat') pat: string | undefined,
-    @Query('depth') depth?: number,
+    @Query('depth', new DefaultValuePipe(5), ParseIntPipe) depth: number,
   ): Promise<AreaPathNode> {
     const credential = readAdoCredential(orgUrl, pat);
-    return this.mcpClient.readAreaPaths(depth ?? 5, credential) as Promise<AreaPathNode>;
+    return this.mcpClient.readAreaPaths(depth, credential) as Promise<AreaPathNode>;
   }
 }
