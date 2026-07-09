@@ -1,9 +1,11 @@
 import { Worker } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
+import Redis from 'ioredis';
 import { configSchema } from '../../config/config.schema';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { DryRunService } from '../writeback/dry-run.service';
 import { IdempotencyService } from '../writeback/idempotency.service';
+import { JobEventsPublisher } from './job-events.publisher';
 import { runPipelineJob, type PipelineJobInput } from './pipeline.worker';
 
 /**
@@ -18,6 +20,12 @@ const prisma = new PrismaClient();
 const ingestionClient = new IngestionHttpClient(process.env.INGESTION_BASE_URL ?? 'http://localhost:8000');
 const dryRunService = new DryRunService();
 const idempotencyService = new IdempotencyService(prisma);
+// Same Redis instance the worker's BullMQ Worker connection below and the
+// orchestrator HTTP process's JobEventsController/JobsService use (REDIS_URL,
+// redis://redis:6379 in docker-compose.yml) — pub/sub is the only
+// cross-process signaling channel between this worker container and the
+// orchestrator's HTTP server container.
+const jobEventsPublisher = new JobEventsPublisher(new Redis(config.REDIS_URL) as any);
 
 // Queued job data carries the file as base64, not a raw Buffer — see the
 // comment in JobsService.submit for why (BullMQ's Redis JSON round-trip
@@ -29,7 +37,7 @@ const worker = new Worker<QueuedJobData>(
   async (job) => {
     const { fileBufferBase64, ...rest } = job.data;
     const jobInput: PipelineJobInput = { ...rest, fileBuffer: Buffer.from(fileBufferBase64, 'base64') };
-    return runPipelineJob(jobInput, { ingestionClient, dryRunService, idempotencyService, prisma });
+    return runPipelineJob(jobInput, { ingestionClient, dryRunService, idempotencyService, prisma, jobEventsPublisher });
   },
   { connection: { url: config.REDIS_URL } as any },
 );

@@ -5,6 +5,7 @@ describe('runPipelineJob', () => {
   const fakeDryRunService = { diff: jest.fn() };
   const fakeIdempotencyService = { lookup: jest.fn(), record: jest.fn() };
   const fakePrisma = { job: { update: jest.fn() }, auditEntry: { create: jest.fn() } };
+  const fakeJobEventsPublisher = { publish: jest.fn() };
 
   afterEach(() => {
     jest.clearAllMocks();
@@ -24,6 +25,7 @@ describe('runPipelineJob', () => {
         dryRunService: fakeDryRunService as any,
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
       },
     );
 
@@ -44,6 +46,7 @@ describe('runPipelineJob', () => {
         dryRunService: fakeDryRunService as any,
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
       },
     );
 
@@ -62,6 +65,7 @@ describe('runPipelineJob', () => {
         dryRunService: fakeDryRunService as any,
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
       },
     );
 
@@ -82,6 +86,7 @@ describe('runPipelineJob', () => {
           dryRunService: fakeDryRunService as any,
           idempotencyService: fakeIdempotencyService as any,
           prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
         },
       ),
     ).rejects.toThrow('ingestion service down');
@@ -106,6 +111,7 @@ describe('runPipelineJob', () => {
         dryRunService: fakeDryRunService as any,
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
       },
     );
 
@@ -152,6 +158,7 @@ describe('runPipelineJob', () => {
         dryRunService: fakeDryRunService as any,
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
       },
     );
 
@@ -210,11 +217,55 @@ describe('runPipelineJob', () => {
         dryRunService: fakeDryRunService as any,
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
       },
     );
 
     const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
     await dedupCheckArg('Desc 0', 'Project\\Area1');
     expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Project\\Area1');
+  });
+
+  it('publishes parse, infer_hierarchy_start, generate_requirements_done, and diff_ready in order', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+      },
+    );
+
+    expect(fakeJobEventsPublisher.publish.mock.calls.map((call: unknown[]) => call[1])).toEqual([
+      'parse',
+      'infer_hierarchy_start',
+      'generate_requirements_done',
+      'diff_ready',
+    ]);
+  });
+
+  it('publishes failed if the pipeline throws', async () => {
+    fakeIngestionClient.ingest.mockRejectedValue(new Error('ingestion service down'));
+
+    await expect(
+      runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+        },
+      ),
+    ).rejects.toThrow('ingestion service down');
+
+    expect(fakeJobEventsPublisher.publish.mock.calls.map((call: unknown[]) => call[1])).toEqual(['parse', 'failed']);
   });
 });

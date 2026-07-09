@@ -1,16 +1,19 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
+import Redis from 'ioredis';
 import { JobsController } from './jobs.controller';
 import { AdoController } from './ado.controller';
+import { JobEventsController, REDIS_SUBSCRIBER_FACTORY } from './job-events.controller';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { IdempotencyService } from '../writeback/idempotency.service';
+import { JobEventsPublisher } from './job-events.publisher';
 
 @Module({
   imports: [ConfigModule],
-  controllers: [JobsController, AdoController],
+  controllers: [JobsController, AdoController, JobEventsController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
     {
@@ -54,6 +57,26 @@ import { IdempotencyService } from '../writeback/idempotency.service';
       provide: 'MAX_UPLOAD_SIZE_BYTES',
       inject: [ConfigService],
       useFactory: (config: ConfigService) => config.get<number>('MAX_UPLOAD_SIZE_MB')! * 1024 * 1024,
+    },
+    {
+      // Constructed with `import type Redis` erased at runtime the same way
+      // IdempotencyService's `prisma` param is (see the comment above) — a
+      // concrete `new Redis(...)` instance is provided via useFactory rather
+      // than relying on Nest's constructor-param token resolution.
+      provide: JobEventsPublisher,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => new JobEventsPublisher(new Redis(config.get<string>('REDIS_URL')!) as any),
+    },
+    {
+      // Each SSE connection needs its own dedicated Redis client: once
+      // `.subscribe()` is called on an ioredis connection, that connection
+      // can no longer issue any other command, so a shared singleton can't
+      // be reused across concurrent SSE clients. This factory constructs a
+      // fresh connection per `JobEventsController.streamEvents` call,
+      // against the same `REDIS_URL` the BullMQ `Queue` in JobsService uses.
+      provide: REDIS_SUBSCRIBER_FACTORY,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => () => new Redis(config.get<string>('REDIS_URL')!),
     },
   ],
 })

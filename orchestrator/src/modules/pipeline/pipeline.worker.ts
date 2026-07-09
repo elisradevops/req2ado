@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
+import type { JobEventsPublisher } from './job-events.publisher';
 
 export interface PipelineJobInput {
   id: string;
@@ -17,6 +18,7 @@ export interface PipelineWorkerDeps {
   dryRunService: DryRunService;
   idempotencyService: IdempotencyService;
   prisma: PrismaClient;
+  jobEventsPublisher: JobEventsPublisher;
 }
 
 interface LeveledNode {
@@ -43,8 +45,19 @@ export async function runPipelineJob(
   deps: PipelineWorkerDeps,
 ): Promise<ReturnType<DryRunService['diff']> extends Promise<infer T> ? T : never> {
   try {
+    await deps.jobEventsPublisher.publish(job.id, 'parse');
     const doc = await deps.ingestionClient.ingest(job.fileBuffer, job.filename);
+
+    // ingestion's /level call runs infer_hierarchy + generate_requirements
+    // internally in one HTTP round trip with no intermediate signal back to
+    // the orchestrator (SURVEY mode included) — see job-events.publisher.ts's
+    // doc comment. The achievable stage granularity is therefore
+    // parse -> infer_hierarchy_start -> generate_requirements_done ->
+    // diff_ready, not the finer 4-point sequence the JobStage union's other
+    // members would imply.
+    await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
     const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode)) as { nodes: LeveledNode[] };
+    await deps.jobEventsPublisher.publish(job.id, 'generate_requirements_done');
 
     const diffInputs: DryRunTreeNode[] = tree.nodes.map((node) => ({
       localId: node.local_id,
@@ -78,12 +91,14 @@ export async function runPipelineJob(
         message: `Dry-run diff ready: ${diff.length} node(s), ${diff.filter((e) => e.action === 'create').length} to create`,
       },
     });
+    await deps.jobEventsPublisher.publish(job.id, 'diff_ready');
     return diff;
   } catch (error) {
     await deps.prisma.job.update({ where: { id: job.id }, data: { status: 'failed' } });
     await deps.prisma.auditEntry.create({
       data: { jobId: job.id, message: `Pipeline failed: ${error instanceof Error ? error.message : String(error)}` },
     });
+    await deps.jobEventsPublisher.publish(job.id, 'failed');
     throw error;
   }
 }
