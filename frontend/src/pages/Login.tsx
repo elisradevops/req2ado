@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Box, Button, Card, CardContent, Stack, TextField, Typography, Alert } from '@mui/material';
 import { httpClient } from '../api/httpClient.js';
+import { useAuthStore } from '../store/authStore.js';
 
 /**
  * Single-step login: the ADO Server itself is the identity provider. The
@@ -12,21 +14,19 @@ import { httpClient } from '../api/httpClient.js';
  * CR4 of the corrected work plan: the org URL + PAT ARE the identity AND
  * the permissions, matching DocGen's login pattern). The PAT lives only in
  * this component's state — never persisted to localStorage/sessionStorage/
- * disk — and is handed to the caller via onLoginSuccess so it can be resent
- * as a per-request header on ADO-write-triggering calls later (POST
- * /jobs/:id/confirm) — the app never stores a copy anywhere beyond React
- * state held by the component that owns it.
+ * disk directly by this component — and is handed to the app-wide authStore
+ * (session-storage-backed, see store/authStore.ts) on success so it can be
+ * resent as a per-request header on ADO-write-triggering calls later (POST
+ * /jobs/:id/confirm) — the app never stores a copy anywhere beyond that
+ * single store.
  */
 export interface AdoCredential {
   orgUrl: string;
   pat: string;
 }
 
-export interface LoginProps {
-  onLoginSuccess?: (credential: AdoCredential) => void;
-}
-
-export function Login({ onLoginSuccess }: LoginProps = {}): JSX.Element {
+export function Login(): JSX.Element {
+  const navigate = useNavigate();
   const [adoOrgUrl, setAdoOrgUrl] = useState('');
   const [pat, setPat] = useState('');
   const [status, setStatus] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
@@ -40,7 +40,8 @@ export function Login({ onLoginSuccess }: LoginProps = {}): JSX.Element {
       const response = await httpClient.post('/auth/login', { adoOrgUrl, pat });
       setDisplayName(response.data.displayName);
       setStatus('ok');
-      onLoginSuccess?.({ orgUrl: adoOrgUrl, pat });
+      useAuthStore.getState().login(adoOrgUrl, pat, response.data.displayName);
+      navigate('/jobs');
     } catch (err) {
       setStatus('error');
       setErrorMessage(err instanceof Error ? err.message : 'Sign-in failed');
