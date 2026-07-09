@@ -53,7 +53,20 @@ export function JobsList(): React.ReactElement {
       </TableHead>
       <TableBody>
         {jobs.map((job) => (
-          <TableRow key={job.id} onClick={() => navigate(`/jobs/${job.id}`)} sx={{ cursor: 'pointer' }}>
+          <TableRow
+            key={job.id}
+            onClick={() => navigate(`/jobs/${job.id}`)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                navigate(`/jobs/${job.id}`);
+              }
+            }}
+            tabIndex={0}
+            role="link"
+            aria-label={`View job ${job.id}`}
+            sx={{ cursor: 'pointer' }}
+          >
             <TableCell><ModeBadge mode={job.mode as 'baseline' | 'survey'} /></TableCell>
             <TableCell><StatusChip status={job.status} /></TableCell>
             <TableCell>{job.itemCount}</TableCell>
