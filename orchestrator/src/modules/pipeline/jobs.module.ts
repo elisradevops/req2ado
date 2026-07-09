@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import { JobsController } from './jobs.controller';
+import { AdoController } from './ado.controller';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { IngestionHttpClient } from './ingestion-http.client';
@@ -9,7 +10,7 @@ import { IdempotencyService } from '../writeback/idempotency.service';
 
 @Module({
   imports: [ConfigModule],
-  controllers: [JobsController],
+  controllers: [JobsController, AdoController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
     {

@@ -74,4 +74,11 @@ export class McpClient {
       return this.parseToolTextResult(result as any);
     });
   }
+
+  async readAreaPaths(depth: number, credential?: AdoRequestCredential): Promise<unknown> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({ name: 'ado_read_area_paths', arguments: { depth } });
+      return this.parseToolTextResult(result as any);
+    });
+  }
 }

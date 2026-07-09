@@ -102,6 +102,27 @@ describe('McpClient', () => {
     });
   });
 
+  it('calls the ado_read_area_paths tool and parses the result', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const mockCallTool = jest.fn().mockResolvedValue({
+      content: [{ type: 'text', text: '{"path":"Project","children":[]}' }],
+    });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    const result = await client.readAreaPaths(3);
+
+    expect(result).toEqual({ path: 'Project', children: [] });
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'ado_read_area_paths',
+      arguments: { depth: 3 },
+    });
+  });
+
   it('omits the ADO credential headers when no credential is passed (mock-backend default)', async () => {
     const { StreamableHTTPClientTransport } = jest.requireMock(
       '@modelcontextprotocol/sdk/client/streamableHttp.js',

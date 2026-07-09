@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
 import { JobsService, JobSummary } from './jobs.service';
 import { IngestionHttpClient } from './ingestion-http.client';
+import { readAdoCredential } from './credential.util';
 import { createHash } from 'crypto';
 
 // Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
@@ -143,7 +144,7 @@ export class JobsController {
     @Headers('x-ado-org-url') orgUrl: string | undefined,
     @Headers('x-ado-pat') pat: string | undefined,
   ): Promise<{ status: string; createdCount: number }> {
-    const credential = orgUrl && pat ? { orgUrl, pat } : undefined;
+    const credential = readAdoCredential(orgUrl, pat);
     return this.jobsService.confirm(id, credential);
   }
 
