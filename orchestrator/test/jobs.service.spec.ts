@@ -338,3 +338,25 @@ describe('JobsService.confirm', () => {
     );
   });
 });
+
+describe('JobsService.list', () => {
+  it('lists jobs newest-first with item counts derived from dryRunDiff length', async () => {
+    const prisma = {
+      job: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', dryRunDiff: [{}, {}, {}], createdAt: new Date('2026-07-09T10:00:00Z') },
+          { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', dryRunDiff: [{}], createdAt: new Date('2026-07-08T10:00:00Z') },
+        ]),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.list();
+
+    expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { createdAt: 'desc' } }));
+    expect(result).toEqual([
+      { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', itemCount: 3, createdAt: new Date('2026-07-09T10:00:00Z') },
+      { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', itemCount: 1, createdAt: new Date('2026-07-08T10:00:00Z') },
+    ]);
+  });
+});

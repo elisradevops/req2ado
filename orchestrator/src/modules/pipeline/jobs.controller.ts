@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
-import { JobsService } from './jobs.service';
+import { JobsService, JobSummary } from './jobs.service';
 import { createHash } from 'crypto';
 
 // Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
@@ -38,6 +38,11 @@ export class JobsController {
     private readonly jobsService: JobsService,
     @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
   ) {}
+
+  @Get()
+  async list(): Promise<JobSummary[]> {
+    return this.jobsService.list();
+  }
 
   @Post()
   @UseInterceptors(

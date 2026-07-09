@@ -16,6 +16,15 @@ export interface SubmitJobInput {
   iterationPath: string | null;
 }
 
+export interface JobSummary {
+  id: string;
+  mode: string;
+  status: string;
+  areaPath: string;
+  itemCount: number;
+  createdAt: Date;
+}
+
 @Injectable()
 export class JobsService {
   private readonly queue: Queue;
@@ -87,6 +96,21 @@ export class JobsService {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
     return { id: job.id, status: job.status, dryRunDiff: job.dryRunDiff };
+  }
+
+  async list(): Promise<JobSummary[]> {
+    const rows = await this.prisma.job.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, mode: true, status: true, areaPath: true, dryRunDiff: true, createdAt: true },
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      mode: row.mode,
+      status: row.status,
+      areaPath: row.areaPath,
+      itemCount: Array.isArray(row.dryRunDiff) ? row.dryRunDiff.length : 0,
+      createdAt: row.createdAt,
+    }));
   }
 
   async confirm(
