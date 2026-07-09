@@ -36,4 +36,27 @@ describe('JobsController.preview', () => {
     await expect(controller.preview(undefined)).rejects.toThrow('file is required');
     expect(ingestionClient.ingest).not.toHaveBeenCalled();
   });
+
+  it('throws PayloadTooLargeException when file exceeds maxUploadSizeBytes', async () => {
+    const jobsService = { submit: jest.fn() };
+    const ingestionClient = { ingest: jest.fn() };
+    const maxUploadSize = 10 * 1024 * 1024; // 10MB
+    const controller = new JobsController(jobsService as any, maxUploadSize, ingestionClient as any);
+
+    const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 20 * 1024 * 1024 } as Express.Multer.File;
+
+    await expect(controller.preview(file)).rejects.toThrow('file exceeds the 10MB upload limit');
+    expect(ingestionClient.ingest).not.toHaveBeenCalled();
+  });
+
+  it('throws BadRequestException when file has unsupported extension', async () => {
+    const jobsService = { submit: jest.fn() };
+    const ingestionClient = { ingest: jest.fn() };
+    const controller = new JobsController(jobsService as any, 500 * 1024 * 1024, ingestionClient as any);
+
+    const file = { buffer: Buffer.from('x'), originalname: 'req.exe', size: 4 } as Express.Multer.File;
+
+    await expect(controller.preview(file)).rejects.toThrow('unsupported file type: .exe');
+    expect(ingestionClient.ingest).not.toHaveBeenCalled();
+  });
 });

@@ -103,6 +103,15 @@ export class JobsController {
     if (!file) {
       throw new BadRequestException('file is required');
     }
+    if (file.size > this.maxUploadSizeBytes) {
+      throw new PayloadTooLargeException(
+        `file exceeds the ${Math.round(this.maxUploadSizeBytes / 1024 / 1024)}MB upload limit`,
+      );
+    }
+    const ext = file.originalname.slice(file.originalname.lastIndexOf('.')).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      throw new BadRequestException(`unsupported file type: ${ext}`);
+    }
     // CanonicalDoc (ingestion/app/canonical/model.py) has no top-level
     // `sections` field — only `document`, `blocks`, `tables`, `figures`.
     // Each Block carries a `kind` (BlockKind str-enum). Section count is
@@ -111,11 +120,11 @@ export class JobsController {
       blocks?: { kind?: string }[];
     };
     const blocks = doc.blocks ?? [];
-    const ext = file.originalname.slice(file.originalname.lastIndexOf('.') + 1).toLowerCase();
+    const fileType = ext.slice(1).toLowerCase();
     return {
       blockCount: blocks.length,
       sectionCount: blocks.filter((b) => b.kind === 'heading').length,
-      fileType: ext,
+      fileType,
     };
   }
 
