@@ -115,6 +115,7 @@ export class JobsService {
       existingAdoId: number | null;
       sourceHash: string;
       customerId: string | null;
+      tags?: string[];
     }[];
 
     // Tree order from ingestion (parents appear before children — see
@@ -146,6 +147,9 @@ export class JobsService {
       };
       if (job.iterationPath) {
         fields['System.IterationPath'] = job.iterationPath;
+      }
+      if (entry.tags && entry.tags.length > 0) {
+        fields['System.Tags'] = entry.tags.join(';');
       }
       if (entry.customerId !== null) {
         if (!customerIdFieldByType.has(entry.type)) {

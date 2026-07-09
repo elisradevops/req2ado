@@ -10,6 +10,7 @@ export interface DryRunTreeNode {
   sourceHash: string;
   customerId: string | null;
   areaPath: string;
+  tags: string[];
 }
 
 export interface DryRunDiffEntry {
@@ -34,6 +35,7 @@ export interface DryRunDiffEntry {
   // way to record the mapping using the same key diff() looks it up by.
   sourceHash: string;
   customerId: string | null;
+  tags: string[];
 }
 
 /**
@@ -57,6 +59,7 @@ export class DryRunService {
           localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
           title: node.title, description: node.description, action: 'reuse',
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
+          tags: node.tags,
         });
         continue;
       }
@@ -75,7 +78,7 @@ export class DryRunService {
               localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
               title: node.title, description: node.description, action: 'dedup_skip',
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
-              sourceHash: node.sourceHash, customerId: node.customerId,
+              sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
             });
             continue;
           }
@@ -88,6 +91,7 @@ export class DryRunService {
         localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
         title: node.title, description: node.description, action: 'create',
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
+        tags: node.tags,
       });
     }
     return results;

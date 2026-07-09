@@ -111,8 +111,8 @@ describe('runPipelineJob', () => {
 
     expect(fakeDryRunService.diff).toHaveBeenCalledWith(
       [
-        { localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1' },
-        { localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1' },
+        { localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [] },
+        { localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [] },
       ],
       fakeIdempotencyService,
       expect.any(Function),
@@ -166,6 +166,7 @@ describe('runPipelineJob', () => {
           sourceHash: 'hashA',
           customerId: 'CUST-1',
           areaPath: 'Project\\Area1',
+          tags: [],
         },
         {
           localId: 'n1',
@@ -176,6 +177,7 @@ describe('runPipelineJob', () => {
           sourceHash: 'hashB',
           customerId: 'CUST-1',
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,

@@ -306,4 +306,35 @@ describe('JobsService.confirm', () => {
       { orgUrl: 'https://ado.example', pat: 'x' },
     );
   });
+
+  it('joins tags with a semicolon into System.Tags on create', async () => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 502 });
+    const linkParentChild = jest.fn();
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-tags-1',
+          status: 'diff_ready',
+          areaPath: 'Proj\\Area',
+          state: 'Proposed',
+          iterationPath: null,
+          customerId: null,
+          dryRunDiff: [
+            { localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'CREATE', customerId: null, tags: ['functional', 'safety'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const service = new JobsService(prisma as any, { createWorkItem, linkParentChild } as any, { record: jest.fn() } as any, { upsertDedupEntry: jest.fn() } as any, 'redis://unused');
+
+    await service.confirm('job-tags-1', { orgUrl: 'https://ado.example', pat: 'x' });
+
+    expect(createWorkItem).toHaveBeenCalledWith(
+      'Requirement',
+      expect.objectContaining({ 'System.Tags': 'functional;safety' }),
+      { orgUrl: 'https://ado.example', pat: 'x' },
+    );
+  });
 });

@@ -22,6 +22,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -38,6 +39,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        tags: [],
       },
     ]);
   });
@@ -56,6 +58,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: 'CUST-1',
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -72,6 +75,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: 'CUST-1',
+        tags: [],
       },
     ]);
   });
@@ -90,6 +94,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
         {
           localId: 'n1',
@@ -100,6 +105,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash2',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -116,6 +122,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        tags: [],
       },
       {
         localId: 'n1',
@@ -128,6 +135,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash2',
         customerId: null,
+        tags: [],
       },
     ]);
   });
@@ -146,6 +154,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -171,6 +180,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -188,6 +198,7 @@ describe('DryRunService', () => {
         similarity: 0.94,
         sourceHash: 'hash1',
         customerId: null,
+        tags: [],
       },
     ]);
     expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Project\\Area1');
@@ -208,6 +219,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -225,6 +237,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        tags: [],
       },
     ]);
   });
@@ -244,6 +257,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -268,6 +282,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -284,6 +299,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        tags: [],
       },
     ]);
   });
@@ -304,6 +320,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
         {
           localId: 'n1',
@@ -314,6 +331,7 @@ describe('DryRunService', () => {
           sourceHash: 'hash2',
           customerId: null,
           areaPath: 'Project\\Area1',
+          tags: [],
         },
       ],
       fakeIdempotencyService,
@@ -331,6 +349,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        tags: [],
       },
       {
         localId: 'n1',
@@ -343,9 +362,22 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash2',
         customerId: null,
+        tags: [],
       },
     ]);
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
+  });
+
+  it('carries tags through from tree node to diff entry', async () => {
+    const nodes = [
+      {
+        localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+        sourceHash: 'h1', customerId: null, areaPath: 'Proj\\Area', tags: ['functional', 'safety'],
+      },
+    ];
+    const service = new DryRunService();
+    const diff = await service.diff(nodes as any, { lookup: jest.fn().mockResolvedValue(null) } as any);
+    expect(diff[0].tags).toEqual(['functional', 'safety']);
   });
 });
