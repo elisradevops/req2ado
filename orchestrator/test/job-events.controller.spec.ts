@@ -91,4 +91,49 @@ describe('JobEventsController', () => {
     expect(subscriber.unsubscribe).toHaveBeenCalled();
     expect(subscriber.quit).toHaveBeenCalled();
   });
+
+  it('registers an error listener on the subscriber to avoid unhandled EventEmitter throws', async () => {
+    const subscriber = makeSubscriber();
+    const factory = jest.fn().mockReturnValue(subscriber);
+    const controller = new JobEventsController(factory as any);
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any);
+
+    expect(subscriber.__handlers.error).toBeInstanceOf(Function);
+    // Should not throw when invoked.
+    expect(() => subscriber.__handlers.error(new Error('boom'))).not.toThrow();
+  });
+
+  it('runs cleanup exactly once even when the terminal-stage message and the close event both fire', async () => {
+    const subscriber = makeSubscriber();
+    const factory = jest.fn().mockReturnValue(subscriber);
+    const controller = new JobEventsController(factory as any);
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any);
+    // Terminal-stage branch fires cleanup + res.end(), which in a real
+    // response triggers res.on('close') asynchronously afterwards — both
+    // paths race to clean up the same subscriber connection.
+    subscriber.__handlers.message('job-events:job-1', JSON.stringify({ stage: 'diff_ready' }));
+    res.__handlers.close();
+
+    expect(subscriber.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(subscriber.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it('quits the leaked subscriber connection when subscribe() rejects', async () => {
+    const subscriber = makeSubscriber();
+    subscriber.subscribe.mockRejectedValue(new Error('connection refused'));
+    const factory = jest.fn().mockReturnValue(subscriber);
+    const controller = new JobEventsController(factory as any);
+    const res = makeRes();
+
+    await expect(controller.streamEvents('job-1', res as any)).rejects.toThrow('connection refused');
+
+    expect(subscriber.quit).toHaveBeenCalledTimes(1);
+    // res.on('close') should never have been registered — streamEvents
+    // threw before reaching that point.
+    expect(res.__handlers.close).toBeUndefined();
+  });
 });

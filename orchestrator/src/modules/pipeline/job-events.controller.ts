@@ -23,22 +23,48 @@ export class JobEventsController {
     res.flushHeaders();
 
     const subscriber = this.redisSubscriberFactory();
-    await subscriber.subscribe(`job-events:${id}`);
+    // ioredis clients are plain EventEmitters — an 'error' event with zero
+    // listeners throws synchronously and crashes the whole process. Attach
+    // a no-op/log-only handler immediately after construction.
+    subscriber.on('error', (err: Error) => {
+      // eslint-disable-next-line no-console -- no structured logger in this module yet
+      console.error(`Redis subscriber error for job ${id}:`, err);
+    });
+
+    try {
+      await subscriber.subscribe(`job-events:${id}`);
+    } catch (err) {
+      // subscribe() rejected before res.on('close') was registered — the
+      // just-created connection would otherwise leak, never .quit()'d.
+      await subscriber.quit().catch(() => undefined);
+      throw err;
+    }
+
+    // Both the terminal-stage branch below and res.on('close') can race to
+    // clean up the same subscriber connection (res.end() triggers 'close'
+    // after the response finishes). Guard so unsubscribe()/quit() each run
+    // exactly once — a second .quit() on an already-closing ioredis client
+    // can reject with an unhandled rejection and crash the process.
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      void subscriber.unsubscribe().catch(() => undefined);
+      void subscriber.quit().catch(() => undefined);
+    };
 
     const terminalStages = new Set(['diff_ready', 'failed']);
     subscriber.on('message', (_channel: string, message: string) => {
       const payload = JSON.parse(message) as { stage: string };
       res.write(`event: stage\ndata: ${JSON.stringify(payload)}\n\n`);
       if (terminalStages.has(payload.stage)) {
-        void subscriber.unsubscribe();
-        void subscriber.quit();
+        cleanup();
         res.end();
       }
     });
 
     res.on('close', () => {
-      void subscriber.unsubscribe();
-      void subscriber.quit();
+      cleanup();
     });
   }
 }

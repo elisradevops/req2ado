@@ -25,7 +25,14 @@ const idempotencyService = new IdempotencyService(prisma);
 // redis://redis:6379 in docker-compose.yml) — pub/sub is the only
 // cross-process signaling channel between this worker container and the
 // orchestrator's HTTP server container.
-const jobEventsPublisher = new JobEventsPublisher(new Redis(config.REDIS_URL) as any);
+const jobEventsPublisherRedis = new Redis(config.REDIS_URL);
+// ioredis clients are plain EventEmitters — an 'error' event with zero
+// listeners throws synchronously and crashes the whole worker process.
+jobEventsPublisherRedis.on('error', (err) => {
+  // eslint-disable-next-line no-console -- worker process logging, not app logging
+  console.error('JobEventsPublisher Redis error:', err);
+});
+const jobEventsPublisher = new JobEventsPublisher(jobEventsPublisherRedis as any);
 
 // Queued job data carries the file as base64, not a raw Buffer — see the
 // comment in JobsService.submit for why (BullMQ's Redis JSON round-trip

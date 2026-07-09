@@ -65,7 +65,14 @@ import { JobEventsPublisher } from './job-events.publisher';
       // than relying on Nest's constructor-param token resolution.
       provide: JobEventsPublisher,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => new JobEventsPublisher(new Redis(config.get<string>('REDIS_URL')!) as any),
+      useFactory: (config: ConfigService) => {
+        const redis = new Redis(config.get<string>('REDIS_URL')!);
+        // ioredis clients are plain EventEmitters — an 'error' event with
+        // zero listeners throws synchronously and crashes the process.
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        redis.on('error', (err) => console.error('JobEventsPublisher Redis error:', err));
+        return new JobEventsPublisher(redis as any);
+      },
     },
     {
       // Each SSE connection needs its own dedicated Redis client: once
