@@ -1,37 +1,36 @@
-import { useState, type JSX } from 'react';
-import { Button } from '@mui/material';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AppThemeProvider } from './theme/AppThemeProvider.js';
-import { AppShell } from './components/AppShell.js';
-import { Login, type AdoCredential } from './pages/Login.js';
-import { Upload } from './pages/Upload.js';
-import { JobStatus } from './pages/JobStatus.js';
-import { Wiki } from './pages/Wiki.js';
+import { RouteGuard } from './components/RouteGuard';
+import { AppShell } from './components/AppShell';
+import { Login } from './pages/Login';
+import { JobsList } from './pages/JobsList';
+import { NewJobWizard } from './pages/NewJobWizard';
+import { JobDetail } from './pages/JobDetail';
+import { Wiki } from './pages/Wiki';
 
-export function App(): JSX.Element {
-  // Held only in top-level component state — never persisted to
-  // localStorage/sessionStorage/disk — so JobStatus can resend it as a
-  // per-request header on POST /jobs/:id/confirm (the only route that
-  // actually needs an ADO credential; Upload/GET status don't).
-  const [credential, setCredential] = useState<AdoCredential | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [showWiki, setShowWiki] = useState(false);
-
+export function App(): React.ReactElement {
   return (
     <AppThemeProvider>
-      {!credential && <Login onLoginSuccess={setCredential} />}
-      {credential && (
-        <AppShell
-          headerActions={
-            <Button color="inherit" onClick={() => setShowWiki((prev) => !prev)}>
-              {showWiki ? 'Back' : 'Help / Wiki'}
-            </Button>
-          }
-        >
-          {showWiki && <Wiki />}
-          {!showWiki && !jobId && <Upload onJobSubmitted={setJobId} />}
-          {!showWiki && jobId && <JobStatus jobId={jobId} credential={credential} />}
-        </AppShell>
-      )}
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/*"
+            element={
+              <RouteGuard>
+                <AppShell>
+                  <Routes>
+                    <Route path="/jobs" element={<JobsList />} />
+                    <Route path="/jobs/new" element={<NewJobWizard />} />
+                    <Route path="/jobs/:id" element={<JobDetail />} />
+                    <Route path="/help" element={<Wiki />} />
+                  </Routes>
+                </AppShell>
+              </RouteGuard>
+            }
+          />
+        </Routes>
+      </BrowserRouter>
     </AppThemeProvider>
   );
 }
