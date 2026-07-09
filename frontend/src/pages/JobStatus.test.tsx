@@ -61,6 +61,33 @@ describe('JobStatus', () => {
     expect(screen.getByText(/1 probable duplicate skipped/i)).toBeInTheDocument();
   });
 
+  it('renders type, title, and description so the diff can actually be reviewed before confirming', async () => {
+    (httpClient.get as any).mockResolvedValue({
+      data: {
+        id: 'job-1',
+        status: 'diff_ready',
+        dryRunDiff: [
+          {
+            localId: 'n0',
+            type: 'Requirement',
+            title: 'The system shall detect intrusions within 2 seconds',
+            description: 'Full verbatim requirement text goes here.',
+            action: 'create',
+            existingAdoId: null,
+            similarity: null,
+          },
+        ],
+      },
+    });
+    render(<JobStatus jobId="job-1" />);
+
+    await waitFor(() => expect(screen.getByText('Requirement')).toBeInTheDocument());
+    expect(screen.getByText('The system shall detect intrusions within 2 seconds')).toBeInTheDocument();
+    expect(screen.getByText('Full verbatim requirement text goes here.')).toBeInTheDocument();
+    // The action label still renders alongside the title, not replaced by it.
+    expect(screen.getByText('create')).toBeInTheDocument();
+  });
+
   it('sends X-Ado-Org-Url / X-Ado-Pat headers on confirm when a credential is provided', async () => {
     (httpClient.get as any).mockResolvedValue({
       data: { id: 'job-1', status: 'diff_ready', dryRunDiff: [{ localId: 'n0', action: 'create', existingAdoId: null }] },

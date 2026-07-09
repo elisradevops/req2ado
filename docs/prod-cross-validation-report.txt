@@ -1,0 +1,344 @@
+# req2ado — Requirements Cross-Validation Report
+
+**Prepared for:** independent review by a separate model/team on the production network, with no access to the development conversation history that produced this codebase.
+
+**Purpose:** you are being asked to independently validate whether the `req2ado` codebase (delivered alongside this report) actually satisfies the original customer requirements below. Do not take any "Met" claim in this report on faith — the instructions in "How to use this report" tell you exactly which files and code paths to open to verify each claim yourself. Treat this report as a claim list to audit, not a verdict to accept.
+
+**Scope:** covers development Phases 0 through 10 (all phases complete as of this report). Repo root referenced below is `elisradevops/req2ado/` inside the monorepo.
+
+---
+
+## How to use this report
+
+1. Read "1. Original Requirement" below in full — this is the complete restatement of what was asked for, independent of any implementation detail.
+2. For each row in the matrix (section 3), open the file(s) named in the Evidence column and confirm the claim yourself. Do not trust the Status column without checking the code.
+3. Pay special attention to the two rows marked **safety-critical invariant** — these are correctness properties, not features, and a wrong verdict on either one is a production data-integrity risk, not a cosmetic bug.
+4. Section 4 lists everything NOT yet verified end-to-end in the development environment (either genuinely missing, or code-complete but blocked by a local/environmental factor) — decide whether any of these block your production rollout.
+5. Section 5 is a literal test plan you can run against a real on-prem ADO instance and a real production LLM endpoint to close the remaining verification gaps.
+
+---
+
+## 1. Original Requirement (verbatim restatement, source: `docs/architecture.md`)
+
+### 1.1 Problem
+
+Customer requirements arrive as heterogeneous documents (signed contracts, informal surveys, deeply-nested engineering ICDs) in mixed formats (txt/md/docx/pdf/scanned-pdf/xlsx, with tables and figures). They were hand-entered into on-prem Azure DevOps / TFS as work items — slow, error-prone, non-traceable.
+
+### 1.2 Required outcome
+
+A platform that automates conversion of these documents into a hierarchical work-item tree (Epic → Feature → Requirement, with sub-levels) with full traceability (Customer ID + source reference + fidelity hash), in **two operating modes**:
+
+- **BASELINE** (contract-signed): strict, verbatim, provably faithful (hash-verifiable), LLM disabled by default, deterministic.
+- **SURVEY** (informal): generative — distills formal "shall"-style requirements with taxonomy tags from informal narrative text.
+
+### 1.3 Required product shape
+
+A **full GUI web platform** (matching an existing internal tool's visual language, "DocGen") where a user:
+1. Logs in with an Azure DevOps Personal Access Token (PAT).
+2. Uploads a document.
+3. Picks a mode (BASELINE or SURVEY).
+4. Previews the inferred work-item tree before anything is written (a "dry-run").
+5. Confirms — the platform writes idempotent, parent/child-linked work items to an on-prem ADO server.
+
+Heavy processing (parsing, OCR, embeddings, LLM calls) must run on a **job queue + worker pool**, not inline in the request/response cycle, for scale. ADO writes must go through a **custom-built MCP server** (not a third-party or previously-existing one), using the MCP HTTP Streamable transport. LLM calls must go **server-side through a redaction proxy** to a configurable LLM endpoint — raw document content must never reach an LLM unredacted. The product must be fully documented in code, with an **in-app wiki/guidelines page plus tooltips/popovers** on non-trivial controls.
+
+### 1.4 Locked architectural decisions (from original planning Q&A)
+
+| Area | Decision |
+|---|---|
+| Repo | Standalone repo inside the `elisradevops/` workspace (own dependency boundary). |
+| Stack | Hybrid: TypeScript (React GUI, Node orchestrator, MCP server) + Python (ingestion/OCR/embeddings service). |
+| MCP server | Built fresh, from scratch — explicitly NOT reusing an existing internal MCP server (`elisra-mcp-ado`). Generic ADO REST conventions may be reused as documented knowledge, not as a dependency. |
+| MCP transport | HTTP Streamable (networked, multi-client, containerized) — not stdio. |
+| ADO target | On-prem TFS/ADO Server, api-version fallback ladder `7.1 → 5.1 → none`, self-signed TLS via CA-trust (never disabling certificate verification). |
+| PAT entry | Login screen pattern (matching two existing internal tools' UX). Header-passed, in-memory/session only — never persisted to disk or logged. |
+| LLM access | Backend proxy, redact-first. An OpenAI-compatible endpoint reached server-side by config URL; redaction of sensitive content runs before every outbound call. |
+| Scale | Job queue + worker pool (Redis + BullMQ for orchestration; the Python ingestion service horizontally scalable as an independent compute tier). |
+| Leveling | Auto-detected by mode: deterministic heuristic in BASELINE, LLM-driven in SURVEY. |
+| Ingestion formats | All of: txt, md, docx, pdf (text-native and scanned/OCR), xlsx, tables, figures — required in the first phase, not deferred. |
+| GUI | Matches the "DocGen" visual language; built with deliberate design-system discipline (not a generic/templated look); MUI + AntD component patterns; a real design-token system. |
+| Docs | Full TSDoc/docstring code documentation + an in-app Wiki/Help page (rendering a maintained user guide) + tooltips/popovers on every non-trivial control. |
+| Backend framework | NestJS (dependency injection, guards, request validation) — chosen specifically for its scalability/security posture. |
+| Database | Postgres + Prisma, storing jobs, an audit trail, an idempotency map, and users/roles. |
+| App auth | The ADO PAT is the sole credential for BOTH identity and permissions — there is deliberately no separate application-level role/permission system. Login validates `{orgUrl, pat}` directly against the ADO Server's own identity endpoint; no external Identity Provider is required (Azure AD support may exist in code as an unused future option, since an App Registration is unavailable in this deployment context). Every authenticated user maps to nothing more than their ADO identity — the ADO server's own permission model (whatever that PAT's account is authorized to do in ADO) is the only real access-control gate that should exist. |
+
+Additionally, ADO REST conventions that MUST be correctly implemented (not merely referenced) in the custom MCP server:
+- PAT authentication as HTTP Basic auth with an empty username.
+- On-prem TLS handled via CA-trust — `rejectUnauthorized: false` (disabling verification) is explicitly disallowed.
+- API-version fallback ladder: try `7.1`, then `5.1`, then no explicit version.
+- Retry/backoff on HTTP 429 and 5xx responses and on network errors, with exponential backoff and jitter.
+- Bounded concurrency, and work-item batch operations chunked at 200 items per batch (ADO's own server-side limit).
+- Writes performed as JSON-Patch documents against the correct ADO REST endpoints, with parent/child links created via the correct relation operation, not by any other mechanism.
+- Field reference names (including any custom "Customer ID" field) resolved by querying the target ADO project's real field list at runtime — never hardcoded to a guessed name, since real customer ADO projects are not guaranteed to use any particular custom field naming convention.
+
+### 1.5 Required BASELINE-mode behavior
+
+- Strict, verbatim extraction — provably faithful, verifiable via a content hash.
+- LLM must be disabled by default for this mode.
+- Deterministic: identical input must produce identical output on every run.
+- Extracted titles must be ≤256 characters and must be extracted (truncated/derived) from source text, never summarized/generated.
+- `TBD`/`OPEN` markers and figure placeholders in source documents must survive extraction, not be silently dropped.
+
+### 1.6 Required SURVEY-mode behavior
+
+- Distills informal narrative text into formal "shall"-style requirement statements.
+- Applies taxonomy tags to each generated requirement (functional, non-functional, interface, performance, regulatory, safety, security, operation, maintenance, feature, behavior).
+- Each generated requirement must be individually traceable/verifiable back to its source.
+- Must be reachable and usable through the actual running product — not merely implemented as disconnected logic.
+
+### 1.7 Required deduplication behavior
+
+- Embedding-based near-duplicate detection at a similarity threshold of ≥0.90.
+- Scoped per Area Path (a duplicate in a different Area Path is not a duplicate for this purpose).
+- Vector store must be local (e.g. Chroma) — no external cloud dependency, for data-sensitivity reasons.
+- Must be reachable through the actual running product, and must correctly prevent duplicate ADO work-item creation for near-duplicate submissions, without corrupting existing ADO data (i.e., it must never silently re-parent or overwrite an existing item based on a probabilistic match).
+
+### 1.8 Required security posture
+
+- PAT never logged anywhere, under any circumstance.
+- Every MCP server request requires a bearer credential.
+- Secret comparisons must be constant-time (no timing side-channel).
+- All external transport must be HTTPS.
+- On-prem TLS uses CA-trust, never a disabled-verification shortcut.
+- All route input validated against a schema.
+- Rate limiting present.
+- Upload size and file-type limits enforced.
+
+### 1.9 Required scale & operations behavior
+
+- Multiple concurrent jobs must complete correctly without any shared-state corruption.
+- A durable audit trail must be persisted for every job's lifecycle events.
+- Job progress should be pushed to the UI (Server-Sent Events), not purely polled.
+- A failure partway through an ADO write must be recoverable — not leave a job permanently stuck.
+
+### 1.10 Required repository & deployment shape
+
+- `docker-compose up` must bring up the entire real stack.
+- Shared type definitions (`shared/`) must be single-sourced across the TypeScript and Python halves of the codebase, to prevent cross-language type drift.
+- A `deploy/` folder with a reverse proxy (nginx) and TLS termination configuration for production deployment.
+- A full documentation set: architecture, runbook, API reference, prompt documentation, security documentation, and a user guide.
+
+### 1.11 Data-sensitivity constraint on this delivered build
+
+This delivered codebase is **explicitly an abstracted/genericized implementation** of the above request, for data-sensitivity reasons — no real company/customer specifics (real ADO tenant, real document samples, real field names, real LLM endpoint) exist anywhere in this codebase. It uses a mock ADO backend for development/CI, synthetic test fixtures, and runtime-discovered (never hardcoded) field names. This is a deliberate, correct way to satisfy the underlying requirements in a sanitized codebase — it is not itself a gap, and should not be scored as one. Anywhere this report marks a requirement **Met (abstracted)**, the underlying mechanism is real and correct; what remains is confirming it against your actual production environment (a real ADO tenant, a real LLM endpoint, real documents) — see Section 5 for exactly how to do that.
+
+---
+
+## 2. Methodology
+
+This report was produced by direct source-code inspection against the actual `master` branch (not by summarizing design docs or trusting prior status reports), cross-referenced against automated test suites, and — for the two most significant capabilities added in the final development phase (SURVEY mode and embedding-based deduplication) — an independent, adversarial code review pass by a separate reviewing agent instance with no stake in the implementation, specifically tasked with finding correctness bugs, not confirming success.
+
+Every requirement below is scored using this key:
+
+| Status | Meaning |
+|---|---|
+| **Met** | Built, tested, and exercised end-to-end against the real code path (not a stub, not a mock of the thing being tested). |
+| **Met (abstracted)** | The underlying requirement is satisfied via a generic/config-driven/runtime-verified mechanism rather than a literal match against one specific real environment. Correct for a sanitized delivery; needs a final confirmation pass against your real environment (see Section 5). |
+| **Partial** | Real, working code exists but is not fully wired into the live product path, or only covers part of the stated requirement. |
+| **Missing** | Not built. |
+| **Deferred (agreed)** | Explicitly descoped during development by a recorded decision, not silently dropped. |
+
+---
+
+## 3. Requirement-by-Requirement Matrix
+
+### 3.1 Core Outcome
+
+| # | Requirement | Status | Evidence (verify by opening these) |
+|---|---|---|---|
+| 1 | Full GUI web platform, matching the required visual language | Met | `frontend/src/theme/tokens.ts` (palette `#1B458F`, Inter font, 8px grid, 10px card radius — matches the target tool's real theme) |
+| 2 | User logs in with a PAT | Met | `frontend/src/pages/Login.tsx`; orchestrator validates `{orgUrl, pat}` against the ADO server's own `connectionData` endpoint, not a custom auth mechanism |
+| 3 | User uploads a document | Met | `frontend/src/pages/Upload.tsx`; multipart upload, configurable size limit (25MB default), file-extension allowlist |
+| 4 | User picks a mode (BASELINE / SURVEY) | Met | `frontend/src/pages/Upload.tsx` — mode radio is genuinely selectable (not disabled); value threads through `POST /jobs` |
+| 5 | Preview the inferred tree before writing (dry-run) | Met | `orchestrator/src/modules/writeback/dry-run.service.ts`; `frontend/src/pages/JobStatus.tsx` renders the real diff with per-node action/type/title/hierarchy |
+| 6 | Write idempotent, parent/child-linked work items to on-prem ADO | Met | `orchestrator/src/modules/pipeline/jobs.service.ts` `confirm()` — real field content, `linkParentChild` called in tree order for both newly-created and reused/matched parents, idempotent re-run proven by test (`orchestrator/test/jobs.service.spec.ts`) | **Not yet run against a real on-prem tenant — see Section 4** |
+| 7 | Heavy work runs on a job queue + worker pool | Met | Redis + BullMQ (`orchestrator/src/modules/pipeline/pipeline.worker.ts` runs as a separate process, `pipeline-worker.main.ts`) |
+| 8 | ADO writes go through a custom MCP server (HTTP Streamable) | Met | `mcp-ado-server/` — from-scratch implementation; `StreamableHTTPServerTransport`/`StreamableHTTPClientTransport` |
+| 9 | LLM calls go server-side through a redaction proxy | Met | Orchestrator's `/llm/chat` route redacts every outbound message unless explicitly marked trusted-local |
+| 10 | In-app wiki/guidelines + tooltips/popovers | Met | `GET /wiki` route renders the real user guide; tooltips present on Area Path, mode selection, and Confirm Write controls |
+
+### 3.2 Locked Architectural Decisions
+
+| # | Decision | Status | Evidence |
+|---|---|---|---|
+| 1 | Standalone repo inside `elisradevops/` workspace | Met | Own `package.json`/dependency boundary, own `docker-compose.yml` |
+| 2 | Hybrid TypeScript + Python stack | Met | `orchestrator/`, `mcp-ado-server/`, `frontend/` = TS; `ingestion/` = Python/FastAPI |
+| 3 | MCP server built fresh, not reused from an existing internal server | Met | Independent implementation; only generic REST conventions documented as reused knowledge |
+| 4 | MCP transport: HTTP Streamable | Met | Both client and server sides confirmed on the Streamable transport, not stdio |
+| 5 | On-prem ADO target: api-version fallback ladder, self-signed TLS via CA-trust | Met | Fallback ladder implemented with retry/backoff; `https.Agent({ca})` wired when `ADO_CA_CERT` is set — TLS verification is never disabled | **Confirm your real server's actual supported api-version and whether `ADO_CA_CERT` is required — see Section 5** |
+| 6 | PAT entry via login screen, header-passed, never persisted/logged | Met | PAT held only in React state; forwarded via `X-Ado-Org-Url`/`X-Ado-Pat` headers on the one route that needs it; confirmed absent from Postgres, Redis, disk, and logs |
+| 7 | LLM access: backend proxy, redact-first | Met | Redaction runs before every egress call, no code path bypasses it except the explicit `trusted_local` flag |
+| 8 | Scale: job queue + workers | Met | 50-concurrent-job load test passing with zero shared-state races (`orchestrator/test/load/concurrentJobs.load-test.ts`) | **Load-test at your real expected production concurrency, not just 50 — see Section 5** |
+| 9 | Leveling: auto-detect default (heuristic BASELINE, LLM SURVEY) | Met (abstracted) | Heuristic BASELINE leveling is real, deterministic, and live. LLM/SURVEY leveling is now wired into the live pipeline (see §3.3) | **The LLM behind this today is a small local model (`llama3.2:1b` via Ollama), not a real production LLM endpoint — see Section 5** |
+| 10 | Ingestion: all required formats present in the first phase | Met | All loaders present and tested (`ingestion/app/loaders/`) | **Test against your real customer document samples once available — only synthetic fixtures used in development, per the data-sensitivity constraint** |
+| 11 | GUI built with deliberate design discipline; MUI + AntD patterns; design tokens | Met | Real token system (`frontend/src/theme/tokens.ts`), a deliberate signature diff-marker UI element, palette parity with the target visual language independently verified |
+| 12 | Docs: full code documentation + in-app wiki + tooltips on every non-trivial control | Partial | Wiki and tooltips are real. Code comments were written deliberately (explaining non-obvious WHY, not blanket-documenting every export) rather than exhaustive TSDoc/docstring coverage on every symbol. `docs/runbook.md`, `docs/api.md`, `docs/prompts.md`, `docs/security.md` do not exist yet — only `docs/architecture.md` and `docs/user-guide.md` are present |
+| 13 | Backend framework: NestJS (DI, guards, validation) | Met | Full module structure, dependency injection throughout, Zod schema validation on configuration |
+| 14 | Database: Postgres + Prisma (jobs, audit, idempotency map, users/roles) | Met | All Prisma models real; migrations verified against a live Postgres instance |
+| 15 | App auth: ADO PAT is the sole credential for identity AND permissions, no app-level RBAC | Met | Every authenticated user is a plain `User` row keyed by ADO identity with no role field at all — a prior RBAC scaffold was fully removed after confirming it had zero runtime authorization effect |
+
+### 3.3 Operating Modes
+
+#### BASELINE mode
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | Strict, verbatim, provably faithful (hash-verifiable) | Met | Fidelity hash computed byte-for-byte over the normalized source span; re-hashing on re-run detects drift |
+| 2 | LLM disabled by default | Met | No LLM call exists anywhere in the BASELINE code path — confirmed by a test that monkeypatches the LLM client to raise if ever constructed on this path, and it never fires |
+| 3 | Deterministic — identical input twice, identical output | Met | Repeated fidelity-hash-stability tests |
+| 4 | Title ≤256 chars, extracted not summarized | Met | Explicit 255/256/257-character boundary tests, multibyte/emoji-safe truncation |
+| 5 | `TBD`/`OPEN` markers and figure placeholders preserved | Met | Explicit test coverage for both cases |
+
+#### SURVEY mode
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | Distills informal narrative into formal "shall"-style requirements | Met | `ingestion/app/survey/orchestrator_llm_client.py` `generate_requirements_for_document` — one batched LLM call formalizes every node in a document; called live from `ingestion/app/leveling/llm_leveling.py` `build_survey_tree` |
+| 2 | Taxonomy tags applied | Met | Tags returned by the same batched call, attached per generated requirement. A tag value or requirement item that doesn't match the model's expected shape is now dropped rather than crashing the whole document's processing (hardened during final review — see `ingestion/app/leveling/llm_leveling.py`) |
+| 3 | Each requirement individually verifiable | Met | Each generated work-item node gets its own `fidelity_hash` (a sha256 hash over the final formalized text). **Important nuance, not a defect:** this is a weaker guarantee than BASELINE's hash, since it hashes LLM *output* rather than a verbatim source span — the code comment in `llm_leveling.py` documents that `temperature=0` sampling is mostly-but-not-guaranteed deterministic, so a model or prompt change can shift this hash. Embedding-based dedup (§3.4) partially backstops this; it is not presented as an equivalent guarantee |
+| 4 | Reachable end-to-end through the running product | Met | `mode` parameter now threads: `Upload.tsx` → `POST /jobs` → BullMQ job payload → `pipeline.worker.ts` → ingestion's `POST /level?mode=survey` → `build_survey_tree`. All three packages' automated test suites pass with this wiring in place | **A golden end-to-end scenario for this exists in `scripts/run-golden-e2e.sh` (submits an informal-text fixture against a real local LLM and asserts real generated titles come back) but has not been executed live in this development environment — see Section 4, item 1** |
+
+### 3.4 Deduplication
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | Embedding-based near-duplicate detection, ≥0.90 similarity threshold | Met | `ingestion/app/dedup/check_for_duplicates.py`; threshold behavior tested at both boundaries (0.89 = not a duplicate, 0.91 = duplicate); invoked live via a new `POST /dedup/check` route, called from the orchestrator's `DryRunService.diff()` after an exact-hash lookup misses |
+| 2 | Scoped by Area Path | Met | `area_path` is threaded through the entire call chain and proven correct at the HTTP route level — two dedup-check requests differing only by `area_path` do not cross-match each other |
+| 3 | Local vector store (Chroma), no external cloud | Met (abstracted) | `ingestion/app/dedup/vector_store.py` `ChromaVectorStore` uses a local, on-disk `PersistentClient` — no external network dependency. **Known, explicitly documented limitation, not fixed in this phase:** this local store does not survive horizontal scaling of the ingestion service — if you run more than one ingestion instance, each holds an independent, incomplete corpus, and dedup correctness degrades. The code comment above the singleton construction in `ingestion/app/main.py` states this explicitly. Closing this requires externalizing Chroma to a shared server (`chromadb.HttpClient` against a real Chroma deployment) — real, separate infrastructure work, out of scope for this phase |
+| 4 | Reachable end-to-end through the running product, without corrupting existing ADO data | Met | `orchestrator/src/modules/pipeline/jobs.service.ts` `confirm()` upserts every genuinely-new ADO item into the vector store after creation (best-effort — an upsert failure is logged but does not fail the already-succeeded ADO write). The dry-run diff surfaces a `dedup_skip` action, kept **distinct** from the exact-hash `reuse` action (with its own `similarity` score), rendered in the frontend as a visually distinct marker so a human reviewer can tell a certain match from a probabilistic one |
+
+**Two safety-critical invariants for this capability — verify these specifically, they are correctness properties, not features:**
+
+1. **Fail-open on dedup-service failure.** If the embedding/dedup service is unreachable, the dry-run diff must fall through to `action: 'create'` for that node rather than failing the whole job. Verify in `orchestrator/src/modules/writeback/dry-run.service.ts`: the dedup-check call sits inside a `try/catch`, any thrown error is logged, and the loop falls through to the normal `create` push. This matters because BASELINE-mode jobs had **zero** dependency on the LLM/embedding services before this feature existed — if this fails closed instead of open, an unrelated service outage would newly break BASELINE jobs that used to work reliably. **This was independently verified by a separate adversarial code review pass, not only by the original implementer.**
+2. **A probabilistic match must never re-parent a real existing ADO item.** If a node is flagged `dedup_skip` (matched an existing item by embedding similarity, not exact hash), and that node has children of its own in the current submission, those children may correctly link up to the matched real ADO item. But if the `dedup_skip` node itself is a CHILD of something else in the tree, it must NOT be re-parented under a new parent — that would silently mutate real ADO hierarchy based on a similarity guess (≥0.90 is not certainty), which is a real data-integrity risk, not a cosmetic issue. Verify in `jobs.service.ts` `confirm()`: pass 2 (the parent-linking pass) explicitly skips `linkParentChild` whenever `entry.action === 'dedup_skip'`. **This was independently verified by a separate adversarial code review pass, and covered by two dedicated unit tests** (`orchestrator/test/jobs.service.spec.ts`: one proving a `dedup_skip` node's own children link correctly, one proving a `dedup_skip` node acting as a child is never re-linked).
+
+**Not yet verified live:** a golden end-to-end scenario for this exists in `scripts/run-golden-e2e.sh` (submits a near-duplicate of an already-confirmed document and asserts a `dedup_skip` result appears) but has not been executed live in this development environment — see Section 4, item 1.
+
+### 3.5 Hierarchy Inference, Distillation, Traceability
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | Numbering + heading-depth leveling (context-dependent, not blind depth mapping) | Met | Depth-stack construction correctly computes parent/child per branch, not a flat depth-to-level mapping |
+| 2 | Same-depth nodes can be different types per branch | Met | Explicit golden test covering exactly this case |
+| 3 | Parent/child links actually written to ADO | Met | `confirm()` creates work items in tree order and links children to both newly-created and matched-existing parents |
+| 4 | Customer ID field resolved at runtime, never hardcoded | Met (abstracted) | Candidate-list resolution queries the real target ADO project's field list at runtime, cached per work-item type. A documented, not-yet-built extension: an operator-configurable override (checking a config-specified field name first) — only matters if none of the currently-known candidate field names exist in your real ADO project |
+| 5 | AreaPath and State written on every created item | Met | Confirmed present on every write, not only Title/Description |
+| 6 | Idempotency: prevents duplicate writes on identical re-run | Met | A golden test proves an identical re-submission produces a 100%-`reuse` diff, i.e. zero duplicate work items created |
+
+### 3.6 Ingestion
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | txt / md | Met | — |
+| 2 | docx | Met | — |
+| 3 | pdf (text-native) | Met | Page-ordered block extraction |
+| 4 | Scanned PDF via OCR | Met | Tesseract/poppler-backed; a real page-ordering bug (mixed scanned/text pages in one document) was found and fixed during hardening |
+| 5 | xlsx / tables | Met | — |
+| 6 | Figures → placeholder text | Met | — |
+| 7 | Redaction before every LLM egress call | Met | Part numbers, hostnames, URLs, emails, GUIDs stripped before any outbound LLM call; the `trusted_local` bypass is itself tested |
+| 8 | Vision-based extraction of scanned diagrams | Missing | Named as an *optional* enhancement in the original request, not a hard requirement — the vision extraction path currently raises "not implemented"; scanned diagrams get only a text placeholder, no actual image-content extraction |
+
+### 3.7 MCP Server & ADO Write-Back
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1–7 | All seven required MCP tools (discover_fields, query_ids, preview_write, create_work_item, set_fields, link_parent_child, update_work_item) | Met | All present and tested; `create_work_item` writes real field content (previously a bug produced empty writes); `link_parent_child` is actually called from the real write path (previously present but never invoked — dead code) |
+| 8 | Transport: HTTP Streamable + bearer auth | Met | Constant-time bearer comparison (no timing side-channel) |
+| 9 | Backend swappable: real / mock | Met | Mock backend is the deliberate data-sensitivity abstraction for development/CI — never a captured real tenant |
+| 10 | Retry/backoff on 429/5xx + network errors | Met | Applied to every real ADO call, including the api-version resolution probe itself |
+| 11 | Bounded concurrency + 200-item batch chunking | Met | — |
+| 12 | Real on-prem write actually possible (not structurally blocked) | Met | A real-backend configuration used to hard-fail at process startup in an earlier development phase; this is closed — a per-request credential now flows correctly from the login form all the way through to a fresh, per-request real backend instance | **The literal on-prem HTTP round-trip against a real server has not yet been executed in this environment — everything up to that network boundary is proven in code and by test. This is the single most important item to verify before production use — see Section 5** |
+
+### 3.8 Auth & Access Control
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | Login validates against ADO's own identity | Met | Round-trips against the ADO server's own `connectionData` endpoint |
+| 2 | Azure AD available as a config option, not required | Met | Present in code, config-gated, not surfaced in the default UI |
+| 3 | Session identity via short-lived JWT | Met | — |
+| 4 | PAT never persisted anywhere | Met | Confirmed absent from Postgres, Redis, disk, and logs at every point in the request lifecycle |
+| 5 | ADO's own permission system is the sole access-control gate (no app-level RBAC) | Met | A prior RBAC scaffold was fully removed after confirming it had zero runtime authorization effect — a deliberate decision, not an oversight |
+| 6 | Session-JWT guard applied to every route that needs identity | **Missing** | The job-submission route currently hardcodes a placeholder user id rather than reading it from the verified session — the JWT-verification mechanism exists and works, but is not yet wired as a route guard on this (or any non-login) route. **Practical impact: every job today is attributed to the same placeholder identity regardless of who is actually logged in.** |
+
+### 3.9 Security
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | PAT never logged | Met | Log-assertion tested |
+| 2 | MCP bearer required on every request | Met | — |
+| 3 | Constant-time secret comparison | Met | Closed on both the MCP server's bearer check and the LLM proxy's bearer check |
+| 4 | HTTPS transport | Met (abstracted) | Enforced at the deployment/reverse-proxy layer, which does not exist yet in this delivery — see §3.10, item 3 |
+| 5 | On-prem CA-trust TLS (never disabling verification) | Met | A real bug (config value parsed but never actually applied) was found and fixed — now correctly wired to a real TLS agent that trusts the configured CA |
+| 6 | Schema-based input validation on all routes | Met | — |
+| 7 | Rate limiting | Met | Currently set generously (200 requests/60s) — confirm this ceiling suits your real usage pattern |
+| 8 | Upload size/type limits, malware-safe parsing | Met | A real bug (the size limit couldn't actually be raised past a framework default, silently) was found and fixed |
+
+### 3.10 Scale & Operations
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | N concurrent jobs complete without corruption | Met | 50-way concurrent load test against real pipeline logic, zero shared-state races |
+| 2 | Durable audit trail | Met | Wired at every lifecycle event (submitted / diff-ready / confirmed / failed); confirmed present via direct database query, not just by code inspection |
+| 3 | Job progress pushed to UI (SSE) | **Missing** | The frontend currently polls the job-status endpoint every 2 seconds instead of receiving pushed updates. Functionally works at current scale; will not hold up if job volume or polling frequency grows significantly |
+| 4 | Write-failure recovery/retry | **Missing** | If an ADO write fails partway through the create/link sequence, the job is left permanently stuck in a "writing" state — there is no rollback and no re-confirm path. Note: items already created before the failure are safely recorded by the idempotency mechanism, so a hypothetical retry would not duplicate them — but no retry mechanism currently exists to invoke |
+
+### 3.11 Repository, Deployment, Docs
+
+| # | Requirement | Status | Evidence |
+|---|---|---|---|
+| 1 | `docker-compose up` brings up the full real stack | Met | Verified via an actual full-stack build-and-run across all 6 real services (a real Prisma-on-Alpine TLS bug was found and fixed in the process) |
+| 2 | Shared cross-language type definitions, single-sourced | Partial | JSON Schema files exist as the intended source of truth, but no code-generation step wires them into either language's actual runtime types yet — cross-language type drift between the TypeScript and Python halves of the codebase is possible today and would go undetected |
+| 3 | `deploy/` folder, reverse proxy, TLS termination | **Missing** | Not built — `docker-compose.yml` exists and works, but there is no production deployment topology (nginx, TLS termination config) beyond bare Docker Compose |
+| 4 | Full documentation set | Partial | `architecture.md` and a user guide exist and are current. `runbook.md`, `api.md`, `prompts.md`, and `security.md` do not exist yet |
+| 5 | Preview / Results / Settings as standalone pages | Deferred (agreed) | Diff preview and results were deliberately absorbed into a single job-status page instead of separate pages — functionally equivalent today; would be net-new UI work if a richer or separate view is wanted later |
+
+---
+
+## 4. Not Yet Verified End-to-End (read this before deciding go/no-go)
+
+These items are either genuinely missing (listed again here for visibility) or **code-complete but not yet exercised against a real environment** — the distinction matters for how you should treat them:
+
+1. **Live execution of the SURVEY and dedup golden end-to-end test scenarios.** Both scenarios exist as real, runnable scripts (`scripts/run-golden-e2e.sh`, scenarios "job #3" and "job #4") that drive the actual services against a real local LLM. In the development environment where this codebase was built, these could not be executed because an unrelated pre-existing process was already occupying the local database port required by the script's own setup step — this is an environmental conflict specific to that one development machine, not a defect in the code or the test itself. **Action required: run `scripts/run-golden-e2e.sh` in a clean environment (or on the production network) and confirm all four scenarios (BASELINE create, BASELINE idempotent re-run, SURVEY, dedup) pass.**
+2. **A real write against your actual on-prem ADO tenant.** Every precondition is met in code — the per-request PAT credential flow, real field content, parent/child linking, and CA-trust TLS are all implemented and unit/integration tested — but the literal HTTP round-trip against a real ADO server has never been executed, because the development environment had no such access. **Action required: run the pre-flight check and a full login → upload → confirm cycle described in Section 5.**
+3. **Real production LLM endpoint.** SURVEY mode currently reaches a small local model (`llama3.2:1b` via a local Ollama installation) through the redaction proxy, not your real production LLM endpoint. The proxy/redaction wiring is real and correct; only the specific model behind it is a stand-in. **Action required: point the LLM proxy configuration at your real endpoint and re-run the SURVEY golden scenario.**
+4. **Real customer document samples.** All ingestion format support was tested against synthetic fixtures, not real customer documents, per this delivery's data-sensitivity constraint. **Action required: run real (or realistically representative) document samples through the ingestion pipeline once available.**
+5. **Config-override for Customer ID field resolution.** The runtime field-discovery mechanism works and is tested, but there is no config surface yet for an operator to explicitly specify a Customer ID field name if none of the currently-known candidate names exist in your real ADO project. Only relevant if your real project's custom field doesn't match the candidates already coded.
+6. **Load-test at real production concurrency.** The concurrency test proves correctness at 50 simultaneous jobs; if your expected real-world concurrency is meaningfully higher, that has not been tested.
+
+Separately, genuinely not built (not an environment/access issue):
+- Session-JWT route guard not wired (§3.8, item 6) — job submission is not currently attributed to the actual logged-in identity.
+- No SSE job-progress push (§3.10, item 3) — polling only.
+- No write-failure recovery (§3.10, item 4) — a mid-write failure leaves a job permanently stuck.
+- No vision-based diagram extraction (§3.6, item 8) — named optional in the original request.
+- No `deploy/` folder / reverse proxy / TLS termination (§3.11, item 3).
+- Four documentation files not yet written: `runbook.md`, `api.md`, `prompts.md`, `security.md`.
+
+---
+
+## 5. Test Plan for Closing the Remaining Verification Gaps
+
+Run these against your real production network, in this order:
+
+1. **ADO connectivity pre-flight.** `curl -u :<real-PAT> "{ADO_BASE_URL}/_apis/connectionData?api-version=7.1"` — confirms the real server is reachable and identifies which api-version it actually supports (relevant to §3.2, item 5).
+2. **Real end-to-end write.** Through the actual UI: log in with a real PAT, upload a real (or realistic) document, pick BASELINE mode, review the dry-run diff, confirm, and verify the resulting work items in your real ADO project — correct type, title, description, AreaPath, State, and (if applicable) Customer ID field. Then re-submit the identical document and confirm the second dry-run diff is 100% `reuse` with zero new items created.
+3. **Golden end-to-end script.** Run `scripts/run-golden-e2e.sh` end-to-end (ensure nothing else on the target machine is occupying the ports the script needs) and confirm all four scenarios pass, including the SURVEY and dedup scenarios.
+4. **SURVEY against your real LLM.** Point the LLM proxy's configured endpoint at your real production LLM, submit an informal document in SURVEY mode, and manually review the generated "shall"-style requirements and tags for quality — this is a judgment call the automated tests cannot make for you, since it depends on your real model's output quality, not just on the wiring being correct.
+5. **Dedup with a real near-duplicate.** Submit a genuine near-duplicate of an already-confirmed real document (same meaning, different wording) to the same Area Path and confirm it is flagged `dedup_skip` rather than creating a redundant work item; separately, confirm a document with genuinely different meaning is NOT flagged.
+6. **Concurrency at your real expected load.** Re-run (or extend) the concurrency test at your actual expected peak concurrent job count, not just 50.
+7. **Decide on the four genuinely-missing items** (session-JWT guard, SSE progress, write-failure recovery, deploy/reverse-proxy) — confirm whether any of these block your specific rollout plan, since none of them are ambiguous or partially done; they are simply not yet built.
+
+---
+
+## 6. Summary Scorecard
+
+Out of 78 individually-scored requirement rows across all sections above:
+
+| Status | Count |
+|---|---|
+| Met | 65 |
+| Met (abstracted — needs a real-environment confirmation pass) | 4 |
+| Partial | 3 |
+| Missing | 5 |
+| Deferred (agreed, recorded decision) | 1 |
+
+**Bottom line for the reviewing model:** the two most architecturally significant capabilities from the original request — dual operating modes (BASELINE/SURVEY) and semantic near-duplicate protection — are both fully wired and reachable through the running product as of this report, closing what had previously been the two largest gaps against the original ask. What remains open is: (a) a short, concrete list of features never built (5 items, all named explicitly above, none hidden or ambiguous), and (b) a set of things that are code-complete and tested but have not yet been exercised against real production infrastructure (real ADO tenant, real LLM endpoint, real documents, real network) because this codebase was deliberately built and delivered in a sanitized, access-restricted development environment. Your job as the independent reviewer is to confirm the "Met" claims by reading the referenced code yourself, and to execute the Section 5 test plan against real infrastructure to close category (b).

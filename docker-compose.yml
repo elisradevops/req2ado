@@ -35,6 +35,14 @@ services:
     env_file: .env
     environment:
       PORT: 4100
+      # Only used when ADO_BACKEND=real (currently mock) — RealAdoBackend
+      # trusts this CA bundle for on-prem TLS, per its own caCertPath config
+      # (a separate mechanism from NODE_EXTRA_CA_CERTS, see orchestrator's
+      # comment on the same cert). Mounted proactively so flipping to
+      # ADO_BACKEND=real doesn't also require a compose change.
+      ADO_CA_CERT: /certs/cato-ca-bundle.pem
+    volumes:
+      - ./.certs/cato-ca-bundle.pem:/certs/cato-ca-bundle.pem:ro
     ports:
       - "4100:4100"
 
@@ -50,7 +58,11 @@ services:
       - "8010:8000"
 
   orchestrator:
-    build: ./orchestrator
+    build:
+      # Root context, not ./orchestrator — the Dockerfile also needs the
+      # root docs/ folder (WikiController reads it at runtime).
+      context: .
+      dockerfile: orchestrator/Dockerfile
     env_file: .env
     environment:
       PORT: 3001
@@ -58,6 +70,19 @@ services:
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://req2ado:req2ado@postgres:5432/req2ado
       INGESTION_BASE_URL: http://ingestion:8000
+      # Frontend is served on its own origin/port (4082) below, not
+      # same-origin behind a reverse proxy — CORS must be enabled for it.
+      CORS_ORIGIN: http://localhost:4082
+      # Corporate network runs outbound HTTPS through a Cato Networks
+      # TLS-inspecting proxy (confirmed by inspecting the real cert's issuer:
+      # CN=Cato-Networks-Server-tlvcatod4). The host trusts it because Cato's
+      # client installs its root CA into macOS's system keychain — containers
+      # never see that CA on their own, so any outbound HTTPS call (e.g. the
+      # login route's connectionData check) fails cert verification with
+      # "fetch failed" unless this CA bundle is trusted here too.
+      NODE_EXTRA_CA_CERTS: /certs/cato-ca-bundle.pem
+    volumes:
+      - ./.certs/cato-ca-bundle.pem:/certs/cato-ca-bundle.pem:ro
     ports:
       - "3001:3001"
     depends_on:
@@ -66,7 +91,9 @@ services:
       - mcp-ado-server
 
   pipeline-worker:
-    build: ./orchestrator
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
     env_file: .env
     environment:
       MCP_URL: http://mcp-ado-server:4100
@@ -79,15 +106,20 @@ services:
       - redis
       - mcp-ado-server
 
-  # Phase 1+ — not built in Phase 0
-  # frontend:
-  #   build: ./frontend
-  #   environment:
-  #     API_BASE_URL: http://orchestrator:3001
-  #   ports:
-  #     - "4080:80"
-  #   depends_on:
-  #     - orchestrator
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Vite bakes this in at build time — the browser (running on the
+        # host, not inside the compose network) reaches the orchestrator via
+        # its published host port, not the internal service DNS name.
+        VITE_API_BASE_URL: http://localhost:3001
+    ports:
+      # Host 4080/4081 are occupied by unrelated containers on this dev
+      # machine — map to a free host port instead.
+      - "4082:80"
+    depends_on:
+      - orchestrator
 
 volumes:
   req2ado_pg:

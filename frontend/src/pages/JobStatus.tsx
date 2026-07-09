@@ -6,6 +6,10 @@ import { themeTokens } from '../theme/tokens.js';
 
 interface DryRunDiffEntry {
   localId: string;
+  parentLocalId?: string | null;
+  type?: string;
+  title?: string;
+  description?: string;
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId: number | null;
   similarity: number | null;
@@ -115,24 +119,48 @@ export function JobStatus({ jobId, credential }: JobStatusProps): JSX.Element {
             {job.dryRunDiff.map((entry) => (
               <Stack
                 key={entry.localId}
-                direction="row"
-                spacing={2}
-                alignItems="center"
+                spacing={0.5}
                 sx={{ p: 1.5, bgcolor: 'background.paper', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}
               >
-                <DiffMarker action={entry.action} />
-                <Typography sx={{ fontFamily: themeTokens.font.mono, fontSize: '0.85rem', minWidth: 48 }}>
-                  {entry.localId}
-                </Typography>
-                <Typography sx={{ flexGrow: 1 }}>{entry.action}</Typography>
-                {entry.action === 'dedup_skip' && entry.similarity !== null && (
-                  <Typography sx={{ fontFamily: themeTokens.font.mono, fontSize: '0.85rem', color: themeTokens.color.warning }}>
-                    {Math.round(entry.similarity * 100)}% match
+                <Stack direction="row" spacing={2} alignItems="center">
+                  <DiffMarker action={entry.action} />
+                  <Typography sx={{ fontFamily: themeTokens.font.mono, fontSize: '0.85rem', minWidth: 48 }}>
+                    {entry.localId}
                   </Typography>
-                )}
-                {entry.existingAdoId !== null && (
-                  <Typography sx={{ fontFamily: themeTokens.font.mono, fontSize: '0.85rem', color: 'text.secondary' }}>
-                    → ADO #{entry.existingAdoId}
+                  {entry.type && (
+                    <Typography
+                      sx={{
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        px: 0.75,
+                        py: 0.25,
+                        borderRadius: 0.5,
+                        bgcolor: 'action.selected',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {entry.type}
+                    </Typography>
+                  )}
+                  {entry.title && <Typography sx={{ flexGrow: 1, fontWeight: 500 }}>{entry.title}</Typography>}
+                  <Typography sx={{ flexGrow: entry.title ? 0 : 1, fontFamily: themeTokens.font.mono, fontSize: '0.8rem', color: 'text.secondary' }}>
+                    {entry.action}
+                  </Typography>
+                  {entry.action === 'dedup_skip' && entry.similarity !== null && (
+                    <Typography sx={{ fontFamily: themeTokens.font.mono, fontSize: '0.85rem', color: themeTokens.color.warning }}>
+                      {Math.round(entry.similarity * 100)}% match
+                    </Typography>
+                  )}
+                  {entry.existingAdoId !== null && (
+                    <Typography sx={{ fontFamily: themeTokens.font.mono, fontSize: '0.85rem', color: 'text.secondary' }}>
+                      → ADO #{entry.existingAdoId}
+                    </Typography>
+                  )}
+                </Stack>
+                {entry.description && (
+                  <Typography sx={{ fontSize: '0.85rem', color: 'text.secondary', pl: '76px', whiteSpace: 'pre-wrap' }}>
+                    {entry.description}
                   </Typography>
                 )}
               </Stack>
