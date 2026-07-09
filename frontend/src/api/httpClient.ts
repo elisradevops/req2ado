@@ -11,3 +11,13 @@ httpClient.interceptors.request.use(async (config) => {
   }
   return config;
 });
+
+httpClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (!error.response) {
+      error.message = 'Network error — check your connection.';
+    }
+    return Promise.reject(error);
+  },
+);
