@@ -1,6 +1,13 @@
 import axios from 'axios';
+import { loadRuntimeConfig } from './config';
 
 /** Base axios instance for the orchestrator API. PAT/org-url are attached per-request by callers — never stored here. */
-export const httpClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001',
+export const httpClient = axios.create();
+
+httpClient.interceptors.request.use(async (config) => {
+  if (!config.baseURL) {
+    const runtimeConfig = await loadRuntimeConfig();
+    config.baseURL = runtimeConfig.apiBaseUrl;
+  }
+  return config;
 });
