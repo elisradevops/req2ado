@@ -29,7 +29,7 @@ describe('JobDetail', () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-2',
       status: 'diff_ready',
-      dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root', description: '', action: 'CREATE', customerId: null, tags: [] }],
+      dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root', description: '', action: 'create', customerId: null, tags: [] }],
     } as any);
     renderAt('job-2');
     await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());

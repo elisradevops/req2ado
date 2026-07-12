@@ -4,9 +4,9 @@ import { DiffTree } from './DiffTree';
 import type { DryRunDiffEntry } from './DiffTree';
 
 const ENTRIES: DryRunDiffEntry[] = [
-  { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root Epic', description: '', action: 'CREATE', customerId: null, tags: [] },
-  { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Child Feature', description: '', action: 'CREATE', customerId: null, tags: [] },
-  { localId: 'orphan1', parentLocalId: 'missing-parent', type: 'Requirement', title: 'Orphan Req', description: '', action: 'CREATE', customerId: null, tags: [] },
+  { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root Epic', description: '', action: 'create', customerId: null, tags: [] },
+  { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Child Feature', description: '', action: 'create', customerId: null, tags: [] },
+  { localId: 'orphan1', parentLocalId: 'missing-parent', type: 'Requirement', title: 'Orphan Req', description: '', action: 'create', customerId: null, tags: [] },
 ];
 
 describe('DiffTree', () => {

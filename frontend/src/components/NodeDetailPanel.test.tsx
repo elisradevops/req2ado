@@ -11,7 +11,7 @@ describe('NodeDetailPanel', () => {
   it('renders the entry title, description, type, and tags when selected', () => {
     render(
       <NodeDetailPanel
-        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'CREATE', customerId: null, tags: ['functional'] }}
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: ['functional'] }}
       />,
     );
     expect(screen.getByText('Req Title')).toBeInTheDocument();

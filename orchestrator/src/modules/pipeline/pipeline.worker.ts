@@ -45,6 +45,12 @@ export async function runPipelineJob(
   deps: PipelineWorkerDeps,
 ): Promise<ReturnType<DryRunService['diff']> extends Promise<infer T> ? T : never> {
   try {
+    // Real lifecycle: 'pending' (set on submit) -> 'running' (here) ->
+    // 'diff_ready'/'failed'. Without this write the Job row sits at
+    // 'pending' for the entire worker run, so the frontend's
+    // status === 'running' gate (JobDetail.tsx's SSE subscription and
+    // ProgressBanner) never activates.
+    await deps.prisma.job.update({ where: { id: job.id }, data: { status: 'running' } });
     await deps.jobEventsPublisher.publish(job.id, 'parse');
     const doc = await deps.ingestionClient.ingest(job.fileBuffer, job.filename);
 

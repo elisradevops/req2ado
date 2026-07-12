@@ -11,8 +11,8 @@ export interface DryRunDiffEntry {
   type: string;
   title: string;
   description: string;
-  action: 'CREATE' | 'REUSE' | 'SKIP';
-  reuseId?: number;
+  action: 'create' | 'reuse' | 'dedup_skip';
+  existingAdoId?: number | null;
   customerId: string | null;
   tags: string[];
 }
@@ -75,7 +75,7 @@ export function DiffTree({
             selected={row.entry.localId === selectedId}
             onClick={() => onSelect(row.entry.localId)}
           >
-            <ActionBadge action={row.entry.action} reuseId={row.entry.reuseId} />
+            <ActionBadge action={row.entry.action} existingAdoId={row.entry.existingAdoId} />
             <ListItemText primary={row.entry.title} secondary={<TagChips tags={row.entry.tags} />} />
           </ListItemButton>
         );

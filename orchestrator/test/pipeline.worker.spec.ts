@@ -75,6 +75,26 @@ describe('runPipelineJob', () => {
     });
   });
 
+  it('sets Job status to running before publishing the parse stage event', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+      },
+    );
+
+    expect(fakePrisma.job.update).toHaveBeenNthCalledWith(1, { where: { id: 'job-1' }, data: { status: 'running' } });
+    expect(fakeJobEventsPublisher.publish).toHaveBeenNthCalledWith(1, 'job-1', 'parse');
+  });
+
   it('sets Job status to failed and rethrows if ingestion fails', async () => {
     fakeIngestionClient.ingest.mockRejectedValue(new Error('ingestion service down'));
 
