@@ -12,6 +12,8 @@ from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_dupli
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
+from app.kb.kb_vector_store import KbVectorStore
+from app.kb.sync_service import KbSyncResult, sync_kb_source
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.tree_builder import build_baseline_tree
 from app.redaction.redactor import redact_canonical_doc
@@ -28,6 +30,7 @@ app = FastAPI(title="req2ado-ingestion")
 # Matches the current Dockerfile (single uvicorn worker, no shared volume).
 _embed_client = OrchestratorEmbedClient(settings.orchestrator_url, settings.llm_proxy_bearer)
 _vector_store = ChromaVectorStore(settings.chroma_persist_path)
+_kb_vector_store = KbVectorStore(settings.chroma_persist_path)
 
 
 class DedupCheckRequest(BaseModel):
@@ -39,6 +42,15 @@ class DedupUpsertRequest(BaseModel):
     item_id: str
     text: str
     area_path: str
+
+
+class KbSyncRequest(BaseModel):
+    site_url: str
+    library: str
+    folder: str
+    area_path: str
+    source_id: str
+    bearer_token: str
 
 
 @app.get("/health")
@@ -91,3 +103,22 @@ async def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
     [embedding] = _embed_client.embed([body.text])
     _vector_store.upsert(body.item_id, embedding, body.area_path)
     return {"ok": True}
+
+
+@app.post("/kb/sync", response_model=KbSyncResult)
+async def kb_sync(body: KbSyncRequest) -> KbSyncResult:
+    # sync_kb_source makes synchronous httpx calls in a loop (SharePoint
+    # fetch + embed per chunk) — same run_in_threadpool reasoning as /level:
+    # without it, this would block ingestion's single-worker event loop for
+    # the whole sync's duration.
+    return await run_in_threadpool(
+        sync_kb_source,
+        body.site_url,
+        body.library,
+        body.folder,
+        body.area_path,
+        body.source_id,
+        body.bearer_token,
+        _embed_client,
+        _kb_vector_store,
+    )

@@ -5,7 +5,8 @@ import { Agent } from 'undici';
 // can take for SURVEY mode's two sequential calls (infer_hierarchy +
 // generate_requirements_for_document) on CPU/GPU-constrained hardware —
 // observed directly: a 12b-class Ollama model took several minutes per
-// call. Only /level can run this long (BASELINE never touches an LLM;
+// call. /level and /kb/sync (SharePoint folder crawl + per-chunk embedding)
+// are the only calls that can run this long (BASELINE never touches an LLM;
 // /ingest, /dedup/check, /dedup/upsert are all fast); scoped to a dedicated
 // Agent rather than raising the timeout for every ingestion call.
 const LONG_RUNNING_AGENT = new Agent({ headersTimeout: 1_800_000, bodyTimeout: 1_800_000 });
@@ -74,5 +75,48 @@ export class IngestionHttpClient {
     if (!response.ok) {
       throw new Error(`Ingestion /dedup/upsert request failed: ${response.status}`);
     }
+  }
+
+  async syncKb(
+    siteUrl: string,
+    library: string,
+    folder: string,
+    areaPath: string,
+    sourceId: string,
+    bearerToken: string,
+  ): Promise<{
+    filesProcessed: number;
+    filesSkipped: number;
+    filesFailed: { file: string; reason: string }[];
+    chunksStored: number;
+  }> {
+    const response = await fetch(`${this.baseUrl}/kb/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        site_url: siteUrl,
+        library,
+        folder,
+        area_path: areaPath,
+        source_id: sourceId,
+        bearer_token: bearerToken,
+      }),
+      dispatcher: LONG_RUNNING_AGENT,
+    });
+    if (!response.ok) {
+      throw new Error(`Ingestion /kb/sync request failed: ${response.status}`);
+    }
+    const body = (await response.json()) as {
+      files_processed: number;
+      files_skipped: number;
+      files_failed: { file: string; reason: string }[];
+      chunks_stored: number;
+    };
+    return {
+      filesProcessed: body.files_processed,
+      filesSkipped: body.files_skipped,
+      filesFailed: body.files_failed,
+      chunksStored: body.chunks_stored,
+    };
   }
 }

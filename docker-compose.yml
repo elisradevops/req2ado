@@ -56,6 +56,14 @@ services:
       # (see scripts/run-golden-e2e.sh) — map to 8010 instead, matching the
       # local-process golden E2E script's port for consistency.
       - "8010:8000"
+    volumes:
+      # Chroma's PersistentClient (dedup vectors + P2a's KB chunks) writes
+      # to settings.chroma_persist_path ("./.req2ado/vectors", resolved
+      # against the Dockerfile's WORKDIR /app) — without a volume this
+      # resets on every `docker compose up --build`. Reuses the
+      # already-declared (previously unused) req2ado_chroma volume rather
+      # than adding a new one.
+      - req2ado_chroma:/app/.req2ado/vectors
 
   orchestrator:
     build:

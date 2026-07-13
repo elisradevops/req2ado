@@ -9,6 +9,7 @@ import { JobsList } from './pages/JobsList';
 import { NewJobWizard } from './pages/NewJobWizard';
 import { JobDetail } from './pages/JobDetail';
 import { Wiki } from './pages/Wiki';
+import { KnowledgeBase } from './pages/KnowledgeBase';
 
 export function App(): React.ReactElement {
   return (
@@ -27,6 +28,7 @@ export function App(): React.ReactElement {
                         <Route path="/jobs" element={<JobsList />} />
                         <Route path="/jobs/new" element={<NewJobWizard />} />
                         <Route path="/jobs/:id" element={<JobDetail />} />
+                        <Route path="/knowledge-base" element={<KnowledgeBase />} />
                         <Route path="/help" element={<Wiki />} />
                       </Routes>
                     </AppShell>

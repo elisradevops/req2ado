@@ -13,6 +13,7 @@ import Avatar from '@mui/material/Avatar';
 import WorkIcon from '@mui/icons-material/Work';
 import AddIcon from '@mui/icons-material/Add';
 import HelpIcon from '@mui/icons-material/Help';
+import StorageIcon from '@mui/icons-material/Storage';
 import MenuIcon from '@mui/icons-material/Menu';
 import { Link, useLocation } from 'react-router-dom';
 import { themeTokens } from '../theme/tokens';
@@ -24,6 +25,7 @@ const RAIL_COLLAPSED_WIDTH = 64;
 const NAV_ITEMS = [
   { to: '/jobs', label: 'Jobs', icon: <WorkIcon /> },
   { to: '/jobs/new', label: 'New Job', icon: <AddIcon /> },
+  { to: '/knowledge-base', label: 'Knowledge Base', icon: <StorageIcon /> },
   { to: '/help', label: 'Help', icon: <HelpIcon /> },
 ];
 

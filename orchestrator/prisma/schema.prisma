@@ -43,3 +43,17 @@ model IdempotencyMapping {
 
   @@unique([sourceHash, customerId, areaPath])
 }
+
+// Non-secret SharePoint connector config only — the bearer token used to
+// Sync is never persisted, matching docs/docgen-connection-pattern.md's
+// "only non-secret config persists server-side" rule.
+model KbSource {
+  id           String    @id @default(uuid())
+  areaPath     String
+  siteUrl      String
+  library      String
+  folder       String
+  displayName  String
+  lastSyncedAt DateTime?
+  createdAt    DateTime  @default(now())
+}

@@ -6,6 +6,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { LlmModule } from './modules/llm/llm.module';
 import { JobsModule } from './modules/pipeline/jobs.module';
+import { KbModule } from './modules/kb/kb.module';
 import { WikiModule } from './modules/wiki/wiki.module';
 
 @Module({
@@ -20,6 +21,7 @@ import { WikiModule } from './modules/wiki/wiki.module';
     AuthModule,
     LlmModule,
     JobsModule,
+    KbModule,
     WikiModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
