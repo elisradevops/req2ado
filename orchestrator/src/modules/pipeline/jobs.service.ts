@@ -92,10 +92,10 @@ export class JobsService {
     return candidates.find((candidate) => availableFields.includes(candidate)) ?? null;
   }
 
-  async getById(id: string): Promise<{ id: string; status: string; dryRunDiff: unknown } | null> {
+  async getById(id: string): Promise<{ id: string; status: string; mode: string; dryRunDiff: unknown } | null> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
-    return { id: job.id, status: job.status, dryRunDiff: job.dryRunDiff };
+    return { id: job.id, status: job.status, mode: job.mode, dryRunDiff: job.dryRunDiff };
   }
 
   async list(): Promise<JobSummary[]> {

@@ -12,6 +12,7 @@ export interface JobSummary {
 export interface JobDetail {
   id: string;
   status: string;
+  mode: string;
   dryRunDiff: unknown;
 }
 

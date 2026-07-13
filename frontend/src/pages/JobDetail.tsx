@@ -20,6 +20,7 @@ export function JobDetail(): React.ReactElement {
   const orgUrl = useOrgUrl();
   const pat = usePat();
   const [status, setStatus] = useState<string | null>(null);
+  const [mode, setMode] = useState<string | null>(null);
   const [diff, setDiff] = useState<DryRunDiffEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [stage, setStage] = useState<JobStage | null>(null);
@@ -33,6 +34,7 @@ export function JobDetail(): React.ReactElement {
     getJob(id).then((job) => {
       if (cancelled) return;
       setStatus(job.status);
+      setMode(job.mode);
       setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
     });
     return () => {
@@ -41,13 +43,14 @@ export function JobDetail(): React.ReactElement {
   }, [id]);
 
   useEffect(() => {
-    if (!id || status !== 'running') return;
+    if (!id || (status !== 'pending' && status !== 'running')) return;
     let unsubscribe: (() => void) | undefined;
     let cancelled = false;
     loadRuntimeConfig().then((config) => {
       if (cancelled) return;
       unsubscribe = subscribeToJobEvents(id, config.apiBaseUrl, (nextStage) => {
         setStage(nextStage);
+        setStatus((current) => (current === 'pending' ? 'running' : current));
         if (nextStage === 'diff_ready' || nextStage === 'failed') {
           getJob(id).then((job) => {
             setStatus(job.status);
@@ -96,7 +99,9 @@ export function JobDetail(): React.ReactElement {
           </Button>
         )}
       </Box>
-      {status === 'running' && stage && <ProgressBanner stage={stage} startedAt={startedAt} mode="survey" />}
+      {status === 'running' && stage && mode && (
+        <ProgressBanner stage={stage} startedAt={startedAt} mode={mode as 'baseline' | 'survey'} />
+      )}
       <Tabs value={tab} onChange={(_event, value) => (value === 'audit' ? handleShowAudit() : setTab(value))}>
         <Tab value="tree" label="Diff" />
         <Tab value="audit" label="Audit" />
