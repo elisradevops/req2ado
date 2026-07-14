@@ -299,3 +299,127 @@ def test_build_survey_tree_end_to_end_injects_real_ingested_kb_chunk(tmp_path) -
 
     assert captured["hierarchy_kb_context"] == "The receiver shall decode HDR10 metadata."
     assert captured["requirements_kb_context"] == "The receiver shall decode HDR10 metadata."
+
+
+class FakeBatchedScoringClient:
+    """Hand-written test double for the batched (whole-document) scoring
+    call — proves build_survey_tree calls score_requirements_for_document
+    exactly once for the whole document, not once per node. Result
+    defaults to a perfect score with no issues per node, but can be
+    overridden via `results` to exercise the tolerant-parsing fallback
+    paths."""
+
+    def __init__(self, results: dict[str, dict] | None = None) -> None:
+        self._results = results
+        self.calls: list[dict[str, str]] = []
+
+    def score_requirements_for_document(
+        self, descriptions_by_node_id: dict[str, str], kb_context: str | None = None
+    ) -> dict[str, dict]:
+        self.calls.append(descriptions_by_node_id)
+        if self._results is not None:
+            return self._results
+        return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
+
+
+def test_build_survey_tree_without_scoring_client_leaves_quality_fields_unset() -> None:
+    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
+    for node in tree.nodes:
+        assert node.quality_score is None
+        assert node.quality_issues == []
+
+
+def test_build_survey_tree_threads_scores_and_issues_into_nodes() -> None:
+    from app.workitem.model import RequirementQualityIssue
+
+    fake_scoring_client = FakeBatchedScoringClient(
+        results={
+            "0": {"score": 90, "issues": ["vague_term"]},
+            "1": {"score": 40, "issues": ["not_testable", "compound"]},
+        }
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(), scoring_client=fake_scoring_client
+    )
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["0"].quality_score == 90
+    assert by_id["0"].quality_issues == [RequirementQualityIssue.VAGUE_TERM]
+    assert by_id["1"].quality_score == 40
+    assert sorted(i.value for i in by_id["1"].quality_issues) == ["compound", "not_testable"]
+
+
+def test_build_survey_tree_calls_scoring_exactly_once_regardless_of_node_count() -> None:
+    fake_scoring_client = FakeBatchedScoringClient()
+    build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(), scoring_client=fake_scoring_client)
+    assert len(fake_scoring_client.calls) == 1
+
+
+def test_build_survey_tree_passes_final_descriptions_not_raw_block_text_to_scoring() -> None:
+    fake_scoring_client = FakeBatchedScoringClient()
+    build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(), scoring_client=fake_scoring_client)
+    # FakeBatchedRequirementClient's default result is "The system shall handle: {text}"
+    # — scoring must receive that FINAL formalized text, not the raw block text.
+    assert fake_scoring_client.calls[0]["0"] == "The system shall handle: Display"
+
+
+def test_build_survey_tree_reuses_same_kb_context_for_scoring_as_other_calls(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    captured: dict[str, str | None] = {}
+
+    class _CapturingScoringClient:
+        def score_requirements_for_document(
+            self, descriptions_by_node_id: dict[str, str], kb_context: str | None = None
+        ) -> dict[str, dict]:
+            captured["scoring_kb_context"] = kb_context
+            return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
+
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.retrieve_context",
+        lambda area_path, query_text, embed_client, vector_store, **_: "injected KB text",
+    )
+
+    build_survey_tree(
+        _small_doc(),
+        FakeLlmLevelingClient(),
+        FakeBatchedRequirementClient(),
+        area_path="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        scoring_client=_CapturingScoringClient(),
+    )
+    assert captured["scoring_kb_context"] == "injected KB text"
+
+
+def test_build_survey_tree_tolerates_malformed_score_and_issues_per_node() -> None:
+    # A non-int score, an out-of-range score, a non-list issues value, and an
+    # issue string outside RequirementQualityIssue must each fall back
+    # gracefully — never crash, never affect sibling nodes.
+    fake_scoring_client = FakeBatchedScoringClient(
+        results={
+            "0": {"score": "not-a-number", "issues": "not-a-list"},
+            "1": {"score": 150, "issues": ["not_testable", "made_up_issue"]},
+        }
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(), scoring_client=fake_scoring_client
+    )
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["0"].quality_score is None
+    assert by_id["0"].quality_issues == []
+    assert by_id["1"].quality_score is None  # 150 is out of the 0-100 range
+    assert [i.value for i in by_id["1"].quality_issues] == ["not_testable"]
+
+
+def test_build_survey_tree_tolerates_a_non_dict_per_node_scoring_entry() -> None:
+    # Reproduces what happens if a caller's LLM proxy mock/fixture returns a
+    # value shaped like generate_requirements_for_document's response (a
+    # list) instead of scoring's {"score":.., "issues":..} dict for some
+    # node_id — must be treated as "no entry", not crash on list.get(...).
+    fake_scoring_client = FakeBatchedScoringClient(results={"0": [{"text": "wrong shape"}]})
+    tree = build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(), scoring_client=fake_scoring_client
+    )
+    node0 = next(node for node in tree.nodes if node.local_id == "0")
+    assert node0.quality_score is None
+    assert node0.quality_issues == []

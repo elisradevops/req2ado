@@ -9,7 +9,7 @@ from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import retrieve_context
 from app.leveling.depth import resolve_block_depth
 from app.leveling.profiles import LevelingProfile
-from app.workitem.model import RequirementTag, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
+from app.workitem.model import RequirementQualityIssue, RequirementTag, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
 
 
 class LlmLevelingClient(Protocol):
@@ -38,6 +38,18 @@ class BatchedRequirementClient(Protocol):
     ) -> dict[str, list[dict]]: ...
 
 
+class BatchedScoringClient(Protocol):
+    """Interface for whole-document SURVEY quality scoring — one call
+    covering every node's FINAL formalized description, mirroring
+    BatchedRequirementClient's one-call-per-document rationale. Runs
+    after formalization (build_survey_tree calls it with each node's
+    already-formalized description, not the raw block text)."""
+
+    def score_requirements_for_document(
+        self, descriptions_by_node_id: dict[str, str], kb_context: str | None = None
+    ) -> dict[str, dict]: ...
+
+
 def _build_outline(doc: CanonicalDoc) -> str:
     lines = []
     for block in doc.blocks:
@@ -53,6 +65,7 @@ def build_survey_tree(
     area_path: str | None = None,
     embed_client: object | None = None,
     vector_store: KbVectorStore | None = None,
+    scoring_client: BatchedScoringClient | None = None,
 ) -> WorkItemTree:
     """SURVEY-mode leveling: infers hierarchy, then formalizes every node's
     description into 'shall'-style requirement text + taxonomy tags via ONE
@@ -75,7 +88,13 @@ def build_survey_tree(
     retrieval call grounds both the hierarchy and requirement-generation
     calls with the same retrieved context; when any is omitted, retrieval is
     skipped entirely (kb_context stays None), matching pre-KB behavior
-    exactly."""
+    exactly. When scoring_client is supplied, one additional batched call
+    scores every node's FINAL formalized description using the SAME
+    kb_context already computed for the other two calls; when scoring_client
+    is omitted, every node's quality_score stays None and quality_issues
+    stays empty — matching pre-scoring behavior exactly. Per-node scoring
+    entries that are missing, malformed, or out of the 0-100 range are
+    tolerated individually and never abort the batch."""
     outline = _build_outline(doc)
     kb_context: str | None = None
     if area_path is not None and embed_client is not None and vector_store is not None:
@@ -146,4 +165,27 @@ def build_survey_tree(
                 mode=WorkItemMode.SURVEY,
             )
         )
+
+    if scoring_client is not None:
+        descriptions_by_node_id = {node.local_id: node.description for node in nodes}
+        scoring_by_node_id = scoring_client.score_requirements_for_document(descriptions_by_node_id, kb_context=kb_context)
+        valid_issue_values = {issue.value for issue in RequirementQualityIssue}
+        for node in nodes:
+            raw_entry = scoring_by_node_id.get(node.local_id, {})
+            if not isinstance(raw_entry, dict):
+                raw_entry = {}
+            raw_score = raw_entry.get("score")
+            if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100:
+                node.quality_score = raw_score
+            raw_issues = raw_entry.get("issues", [])
+            if isinstance(raw_issues, list):
+                node.quality_issues = sorted(
+                    {
+                        RequirementQualityIssue(issue)
+                        for issue in raw_issues
+                        if isinstance(issue, str) and issue in valid_issue_values
+                    },
+                    key=lambda issue: issue.value,
+                )
+
     return WorkItemTree(nodes=nodes)
