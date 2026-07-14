@@ -155,12 +155,13 @@ All routes on the orchestrator (`http://localhost:3001` in dev):
 
 ## 8. What's next (per `docs/req2ado-roadmap.md`)
 
-- **Phase 2, P2b — RAG-first retrieval-injection** (next up): prepend retrieve+inject to `infer_hierarchy`, `generate_requirements`, and future chat — grounds each LLM call when relevant KB material exists, falls back to the model's baseline knowledge when it doesn't. The KB store + ingest path exist, but nothing reads from the `req2ado_kb_<hash>` collection yet. Note the `doc_type` metadata key is sparse (absent when not supplied at ingest) — retrieval filters must handle key-absent.
-- **P2c — RAG-grounded quality scoring**, **P2d — learning loop** (write confirmed items back into the KB).
-- **Phase 3 — Review power** (editable dry-run diff, AI assist/chat per item).
+- **Phase 2, P2b — RAG-first retrieval-injection** — done (§4b). `infer_hierarchy` and `generate_requirements_for_document` are grounded by a per-document `kb_context` retrieved once from the KB, falling back to baseline model knowledge when no KB material exists. Retrieval into a future chat feature remains out of scope (no chat feature exists yet).
+- **P2c — RAG-grounded quality scoring** — done (§4c). Every SURVEY node gets a 0-100 quality score + issue chips, reusing the same `kb_context` P2b computes — zero new retrieval calls.
+- **P2d — learning loop** (write confirmed items back into the KB) — **deferred**, see `docs/req2ado-roadmap.md`'s P2d entry for the full rationale: the signal available today (P2c's own `quality_score`/`quality_issues`) is circular for deriving "learned rules" — a second LLM call grading the first LLM's grading mostly restates generic advice, not genuine org-specific learning. The real signal is a diff between an LLM-generated item and what a human actually edited it to, which needs Phase 3's per-item edit/accept/reject flow to exist first. Revisit P2d once Phase 3 ships.
+- **Phase 3 — Review power** (next up): editable dry-run diff (inline edit/delete/add before confirm), AI assist/chat per item, accept/reject, source provenance. Also unblocks P2d (above).
 - **Phase 4 — Traceability** (Covers/CoveredBy/Affects link types, diff-vs-live-ADO, baselining).
 
-The KB ingest happy path has now been verified against a real Graph token/tenant (§4a) — the fetch→chunk→embed→store path works against real document content, which is what P2b's retrieval will build on.
+The KB ingest happy path is verified against a real Graph token/tenant (§4a), and P2b's retrieval + P2c's scoring are both verified end-to-end against real ingested KB content (§4b, §4c) — the whole RAG-first knowledge layer (Phase 2) is now feature-complete except for the deferred P2d.
 
 ## 9. Testing conventions (established, keep using)
 
