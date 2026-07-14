@@ -81,11 +81,13 @@ Foundation for Phase 2's RAG-first knowledge layer. **No retrieval is wired into
 
 **Also worth knowing:** `IngestedDocument` uniqueness is `[areaPath, driveItemId]` — a document is identified by its Graph driveItem id, so the same file re-shared under a new link (same driveItem) correctly updates in place; a genuinely different copy (different driveItem) is a distinct row.
 
-**Known gaps in the folder-crawl addition (flagged by independent review, not fixed — low severity, deferred):**
-- `KbService.ingestFolderUrl`'s DB-persistence step uses `Promise.all`, not `allSettled` — if one file's Prisma upsert rejects, the whole call throws even though the KB (Chroma) side already succeeded for all files, so the user could see a false "failed" for an otherwise-fully-ingested folder, with some rows persisted and others not. Also unbounded (no concurrency cap) for very large folders.
-- A user checking "This is a folder" on a link to a single file returns a **502** rather than a clean 400 (Graph's `/children` call on a non-folder driveItem maps to a generic error).
-- `driveitemId` (ingest-result types) vs `driveItemId` (Prisma column/persisted-summary type) — consistently mapped end-to-end, just an odd casing mismatch to be aware of if extending this code.
-- An empty folder (or one with only subfolders) reports `0 ingested, 0 skipped` as a *success* toast — no distinct empty-state messaging.
+**Known gaps in the folder-crawl addition — 3 of 4 fixed this round (commit `d02f779`):**
+- ~~`KbService.ingestFolderUrl`'s DB-persistence step uses `Promise.all`, not `allSettled`~~ — **fixed**: now `allSettled`; a rejected Prisma upsert flips only that file's status to `failed` (reason: `KB store succeeded but database persistence failed: ...`) instead of throwing away the whole batch's already-committed results. Still unbounded (no concurrency cap) for very large folders — not addressed, low risk at current expected folder sizes.
+- ~~A user checking "This is a folder" on a link to a single file returns a **502** rather than a clean 400~~ — **fixed**: `/kb/ingest-folder-url` now passes Graph's own 400 (non-folder driveItem) through as-is instead of folding it into the generic 502 bucket.
+- ~~An empty folder reports `0 ingested, 0 skipped` as a *success* toast~~ — **fixed**: distinct `info`-severity toast ("Folder is empty — no files were found to ingest.") when the folder yields zero files.
+- `driveitemId` (ingest-result types) vs `driveItemId` (Prisma column/persisted-summary type) — **still open**, cosmetic only. Consistently mapped end-to-end, just an odd casing mismatch to be aware of if extending this code.
+
+Regression tests added for all three: `orchestrator/test/kb.service.spec.ts` (allSettled), `ingestion/tests/kb/test_ingest_folder_route.py` (400 passthrough, new file), `frontend/src/pages/KnowledgeBase.test.tsx` (empty-folder toast). Full suites green: orchestrator 159/159, frontend 61/61, ingestion 227/234 (7 pre-existing OCR/`pdf2image` failures on this machine — missing `poppler` binary, unrelated to KB).
 
 ## 5. Backend API surface (current)
 
