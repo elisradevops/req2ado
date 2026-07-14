@@ -199,3 +199,71 @@ def test_generate_requirements_for_document_prompt_unchanged_when_kb_context_is_
     client.generate_requirements_for_document({"0": "text"})
     assert captured["system_prompt"].startswith("You convert several informal requirement blocks")
     assert "Reference material from the knowledge base" not in captured["system_prompt"]
+
+
+def test_score_requirements_for_document_parses_valid_json_response() -> None:
+    response_json = {
+        "content": json.dumps({"0": {"score": 85, "issues": ["vague_term"]}})
+    }
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.score_requirements_for_document({"0": "The system shall be fast."})
+    assert result == {"0": {"score": 85, "issues": ["vague_term"]}}
+
+
+def test_score_requirements_for_document_sends_temperature_zero() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured["temperature"] = body["temperature"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"0": "text"})
+    assert captured["temperature"] == 0
+
+
+def test_score_requirements_for_document_raises_on_malformed_json_content() -> None:
+    response_json = {"content": "not valid json"}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    with pytest.raises(ValueError, match="malformed"):
+        client.score_requirements_for_document({"0": "text"})
+
+
+def test_score_requirements_for_document_prepends_kb_context_when_present() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"0": "text"}, kb_context="Org rule: always specify units.")
+    assert captured["system_prompt"].startswith(
+        "Reference material from the knowledge base (may be incomplete or "
+        "irrelevant — use only what's genuinely helpful):\n\n"
+        "Org rule: always specify units.\n\n"
+    )
+    assert "EARS" in captured["system_prompt"] or "INCOSE" in captured["system_prompt"]
+
+
+def test_score_requirements_for_document_prompt_unchanged_when_kb_context_is_none() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"0": "text"})
+    assert "Reference material from the knowledge base" not in captured["system_prompt"]

@@ -161,3 +161,50 @@ class OrchestratorLlmClient:
             return json.loads(content)
         except json.JSONDecodeError as exc:
             raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
+
+    def score_requirements_for_document(
+        self, descriptions_by_node_id: dict[str, str], kb_context: str | None = None
+    ) -> dict[str, dict]:
+        """Batched whole-document quality scoring: one call scoring every
+        node's FINAL formalized description, matching the same
+        one-call-per-document rationale as generate_requirements_for_document.
+        Runs as a separate call (not merged into generate_requirements_for_document)
+        so formalization and scoring stay distinct concerns/prompts. The
+        EARS/INCOSE/ISO-29148 criteria are always present in the system
+        prompt — the model's general knowledge of these public standards is
+        the baseline; kb_context, when supplied, is prepended as additive
+        org-specific rules, not a replacement branch."""
+        system_prompt = (
+            "You score requirement quality against EARS, INCOSE, and ISO/IEC/IEEE "
+            "29148 criteria: is it unambiguous, individually testable, atomic "
+            "(a single requirement per statement), in active voice, and does it "
+            "include acceptance criteria and a clear rationale. You are given a "
+            "JSON object mapping each node_id to its final formalized requirement "
+            "text. Return ONLY a JSON object with the SAME node_id keys, each "
+            "mapped to an object with 'score' (an integer 0-100, where 100 is "
+            "fully compliant) and 'issues' (a list of zero or more of: ambiguous, "
+            "not_testable, compound, missing_acceptance_criteria, vague_term, "
+            "passive_voice, missing_rationale). Never invent a node_id not present "
+            "in the input. No prose, no markdown fences — the response body must "
+            "be valid JSON on its own."
+        )
+        system_prompt = _with_kb_context(system_prompt, kb_context)
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(descriptions_by_node_id)},
+            ],
+            "temperature": 0,
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
