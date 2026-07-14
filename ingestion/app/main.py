@@ -13,7 +13,7 @@ from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
 from app.kb.graph_client import GraphApiError, GraphClient
-from app.kb.ingest_service import IngestResult, ingest_document_from_url
+from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.tree_builder import build_baseline_tree
@@ -125,5 +125,30 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GraphApiError as exc:
         # Surface Graph's own status where it maps cleanly; else 502.
+        status = exc.status if exc.status in (401, 403, 404) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/kb/ingest-folder-url", response_model=FolderIngestResult)
+async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
+    # Same token/threadpool reasoning as /kb/ingest-url. Unlike the
+    # single-document route, per-file failures are collected into the
+    # response rather than raised — one bad file must not abort the batch.
+    # Listing the folder itself (validate_share_url, list_folder_children)
+    # can still fail with ValueError/GraphApiError, mapped the same way.
+    try:
+        graph_client = GraphClient(settings.sharepoint_token or "", settings.graph_base_url)
+        return await run_in_threadpool(
+            ingest_folder_from_url,
+            body.url,
+            body.area_path,
+            body.doc_type,
+            graph_client,
+            _embed_client,
+            _kb_vector_store,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except GraphApiError as exc:
         status = exc.status if exc.status in (401, 403, 404) else 502
         raise HTTPException(status_code=status, detail=str(exc)) from exc

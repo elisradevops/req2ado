@@ -65,6 +65,38 @@ describe('KbController', () => {
     }
   });
 
+  it('ingestFolderUrl() 400s on a bad host without calling the service', async () => {
+    const kbService = { ingestFolderUrl: jest.fn() };
+    const controller = new KbController(kbService as any);
+
+    await expect(controller.ingestFolderUrl('https://evil.com/folder', 'Project\\Area1', undefined)).rejects.toThrow();
+    expect(kbService.ingestFolderUrl).not.toHaveBeenCalled();
+  });
+
+  it('ingestFolderUrl() delegates to the service on a valid sharepoint folder url', async () => {
+    const folderResult = { files: [{ file: 'a.docx', status: 'ingested', chunksStored: 1, driveitemId: 'drive-a', mimeType: null, sizeBytes: 10, reason: null }] };
+    const kbService = { ingestFolderUrl: jest.fn().mockResolvedValue(folderResult) };
+    const controller = new KbController(kbService as any);
+
+    const result = await controller.ingestFolderUrl('https://contoso.sharepoint.com/sites/s/folder', 'Project\\Area1', 'SRD');
+
+    expect(kbService.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/sites/s/folder', 'Project\\Area1', 'SRD');
+    expect(result).toBe(folderResult);
+  });
+
+  it('ingestFolderUrl() re-maps an IngestionHttpError from the service to an HttpException with the same status', async () => {
+    const kbService = { ingestFolderUrl: jest.fn().mockRejectedValue(new IngestionHttpError(403, 'forbidden')) };
+    const controller = new KbController(kbService as any);
+
+    try {
+      await controller.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', undefined);
+      fail('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(HttpException);
+      expect((err as HttpException).getStatus()).toBe(403);
+    }
+  });
+
   it('listDocuments() delegates to the service with the areaPath query param', async () => {
     const documents = [{ id: 'doc-1' }];
     const kbService = { listDocuments: jest.fn().mockResolvedValue(documents) };

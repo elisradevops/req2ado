@@ -20,8 +20,27 @@ export interface IngestedDocument {
   ingestedAt: string;
 }
 
+export interface FolderIngestFile {
+  file: string;
+  status: string;
+  chunksStored: number;
+  driveitemId: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  reason: string | null;
+}
+
+export interface FolderIngestResult {
+  files: FolderIngestFile[];
+}
+
 export async function ingestUrl(url: string, areaPath: string, docType?: string): Promise<IngestResult> {
   const response = await httpClient.post<IngestResult>('/kb/ingest-url', { url, areaPath, docType });
+  return response.data;
+}
+
+export async function ingestFolderUrl(url: string, areaPath: string, docType?: string): Promise<FolderIngestResult> {
+  const response = await httpClient.post<FolderIngestResult>('/kb/ingest-folder-url', { url, areaPath, docType });
   return response.data;
 }
 

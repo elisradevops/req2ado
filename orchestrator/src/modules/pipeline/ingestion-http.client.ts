@@ -121,4 +121,52 @@ export class IngestionHttpClient {
       skippedUnchanged: body.skipped_unchanged,
     };
   }
+
+  async ingestFolderUrl(
+    url: string,
+    areaPath: string,
+    docType: string | null,
+  ): Promise<{
+    files: {
+      file: string;
+      status: string;
+      chunksStored: number;
+      driveitemId: string | null;
+      mimeType: string | null;
+      sizeBytes: number | null;
+      reason: string | null;
+    }[];
+  }> {
+    const response = await fetch(`${this.baseUrl}/kb/ingest-folder-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, area_path: areaPath, doc_type: docType }),
+      dispatcher: LONG_RUNNING_AGENT,
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-folder-url request failed: ${response.status}`);
+    }
+    const body = (await response.json()) as {
+      files: {
+        file: string;
+        status: string;
+        chunks_stored: number;
+        driveitem_id: string | null;
+        mime_type: string | null;
+        size_bytes: number | null;
+        reason: string | null;
+      }[];
+    };
+    return {
+      files: body.files.map((f) => ({
+        file: f.file,
+        status: f.status,
+        chunksStored: f.chunks_stored,
+        driveitemId: f.driveitem_id,
+        mimeType: f.mime_type,
+        sizeBytes: f.size_bytes,
+        reason: f.reason,
+      })),
+    };
+  }
 }

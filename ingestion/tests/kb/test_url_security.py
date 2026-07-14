@@ -1,6 +1,23 @@
 import pytest
 
-from app.kb.url_security import validate_share_url, verify_supported_content
+from app.kb.url_security import validate_fetch_url, validate_share_url, verify_supported_content
+
+
+class TestValidateFetchUrl:
+    def test_accepts_an_https_cdn_style_url_not_on_the_share_allowlist(self):
+        validate_fetch_url("https://public-blob.example.net/download?tempauth=xyz")
+
+    def test_rejects_non_https_scheme(self):
+        with pytest.raises(ValueError):
+            validate_fetch_url("http://public-blob.example.net/download")
+
+    def test_rejects_private_ip_literal(self):
+        with pytest.raises(ValueError):
+            validate_fetch_url("https://169.254.169.254/latest/meta-data")
+
+    def test_rejects_loopback_ip_literal(self):
+        with pytest.raises(ValueError):
+            validate_fetch_url("https://127.0.0.1/secret")
 
 
 class TestValidateShareUrl:

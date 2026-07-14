@@ -3,7 +3,7 @@ import base64
 import httpx
 import pytest
 
-from app.kb.graph_client import GraphApiError, GraphClient, GraphDriveItem, encode_share_id
+from app.kb.graph_client import GraphApiError, GraphClient, GraphDriveItem, GraphFolderChild, encode_share_id
 
 
 def _patch_transport(monkeypatch, transport: httpx.MockTransport) -> None:
@@ -128,3 +128,100 @@ def test_transport_failure_maps_to_a_502_graph_api_error(monkeypatch) -> None:
     assert excinfo.value.status == 502
     # The token must never appear in the error message.
     assert "tok-1" not in str(excinfo.value)
+
+
+def test_list_folder_children_parses_files_and_folders(monkeypatch) -> None:
+    body = {
+        "value": [
+            {"id": "item-1", "name": "a.docx", "size": 10, "file": {"mimeType": "application/x"}, "@microsoft.graph.downloadUrl": "https://dl/a"},
+            {"id": "item-2", "name": "Subfolder", "size": 0, "folder": {"childCount": 1}},
+        ]
+    }
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers["Authorization"]
+        return httpx.Response(200, json=body)
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    children = client.list_folder_children("https://contoso.sharepoint.com/sites/s/folder")
+
+    assert children == [
+        GraphFolderChild(id="item-1", name="a.docx", mime_type="application/x", size=10, is_folder=False, download_url="https://dl/a"),
+        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None),
+    ]
+    assert "/children" in captured["url"]
+    assert captured["auth"] == "Bearer tok-1"
+
+
+def test_list_folder_children_raises_graph_api_error_on_404(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "not found"})
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.list_folder_children("https://contoso.sharepoint.com/sites/s/folder")
+
+    assert excinfo.value.status == 404
+
+
+def test_fetch_child_content_gets_the_download_url_without_an_auth_header(monkeypatch) -> None:
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["has_auth_header"] = "Authorization" in request.headers
+        return httpx.Response(200, content=b"child file bytes")
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    content = client.fetch_child_content("https://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz")
+
+    assert content == b"child file bytes"
+    # The pre-signed download URL must NOT carry our bearer token — Graph
+    # already authorized it via the URL's own embedded token.
+    assert captured["has_auth_header"] is False
+
+
+def test_fetch_child_content_raises_graph_api_error_on_non_200(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.fetch_child_content("https://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz")
+
+    assert excinfo.value.status == 403
+
+
+def test_fetch_child_content_rejects_a_private_ip_download_url_without_a_network_call(monkeypatch) -> None:
+    # Regression: a tampered/compromised Graph response (or a redirect
+    # chain) must not be able to point ingestion at an internal address.
+    called = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called["count"] += 1
+        return httpx.Response(200, content=b"should never be reached")
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(ValueError):
+        client.fetch_child_content("http://169.254.169.254/latest/meta-data")
+
+    assert called["count"] == 0
+
+
+def test_fetch_child_content_rejects_a_non_https_download_url(monkeypatch) -> None:
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(ValueError):
+        client.fetch_child_content("http://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz")

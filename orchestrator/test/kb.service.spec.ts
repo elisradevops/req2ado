@@ -42,4 +42,29 @@ describe('KbService', () => {
 
     expect(prisma.ingestedDocument.findMany).toHaveBeenCalledWith({ where: {}, orderBy: { ingestedAt: 'desc' } });
   });
+
+  it('ingestFolderUrl() persists a row per ingested/skipped file and skips failed ones', async () => {
+    const folderResult = {
+      files: [
+        { file: 'a.docx', status: 'ingested', chunksStored: 2, driveitemId: 'drive-a', mimeType: 'application/a', sizeBytes: 100, reason: null },
+        { file: 'b.docx', status: 'skipped_unchanged', chunksStored: 0, driveitemId: 'drive-b', mimeType: 'application/b', sizeBytes: 200, reason: null },
+        { file: 'bad.docx', status: 'failed', chunksStored: 0, driveitemId: null, mimeType: null, sizeBytes: null, reason: 'corrupt' },
+      ],
+    };
+    const ingestionClient = { ingestFolderUrl: jest.fn().mockResolvedValue(folderResult) };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
+    const service = new KbService(prisma as any, ingestionClient as any);
+
+    const result = await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD');
+
+    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD');
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { areaPath_driveItemId: { areaPath: 'Project\\Area1', driveItemId: 'drive-a' } } }),
+    );
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { areaPath_driveItemId: { areaPath: 'Project\\Area1', driveItemId: 'drive-b' } } }),
+    );
+    expect(result).toEqual(folderResult);
+  });
 });

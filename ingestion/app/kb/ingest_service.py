@@ -22,49 +22,52 @@ class IngestResult(BaseModel):
     skipped_unchanged: bool
 
 
-def ingest_document_from_url(
-    url: str,
+class FolderIngestFileResult(BaseModel):
+    file: str
+    status: str  # "ingested" | "skipped_unchanged" | "failed"
+    chunks_stored: int
+    driveitem_id: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    reason: str | None = None
+
+
+class FolderIngestResult(BaseModel):
+    files: list[FolderIngestFileResult]
+
+
+def _store_document(
+    name: str,
+    item_id: str,
+    content: bytes,
     area_path: str,
     doc_type: str | None,
-    graph_client,
     embed_client,
     vector_store: KbVectorStore,
 ) -> IngestResult:
-    """Ingests a single document from a SharePoint/OneDrive sharing URL via
-    the Microsoft Graph client: validate -> fetch metadata + bytes -> verify
-    size/content-type -> skip if unchanged -> parse -> chunk -> embed ->
-    store. Unlike the folder-crawl sync_kb_source, this handles exactly one
-    document, so any failure (ValueError, GraphApiError) propagates to the
-    caller instead of being collected into a failures list."""
-    validate_share_url(url)
-
-    item = graph_client.get_drive_item(url)
-    if item.size > MAX_FILE_SIZE_BYTES:
-        raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {item.size}")
-
-    content = graph_client.fetch_content(url)
-    if len(content) > MAX_FILE_SIZE_BYTES:
-        raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
-
-    verify_supported_content(item.name, content)
+    """Shared core once a document's bytes are in hand, regardless of
+    whether they came from a single-document share link or a folder
+    child's pre-signed download URL: verify content-type -> hash ->
+    skip-if-unchanged -> parse -> chunk -> embed -> store."""
+    verify_supported_content(name, content)
 
     file_hash = hashlib.sha256(content).hexdigest()
-    if vector_store.existing_file_hash(area_path, item.name, item.id) == file_hash:
+    if vector_store.existing_file_hash(area_path, name, item_id) == file_hash:
         return IngestResult(
-            document_name=item.name,
-            driveitem_id=item.id,
-            mime_type=item.mime_type,
+            document_name=name,
+            driveitem_id=item_id,
+            mime_type=None,
             size_bytes=len(content),
             chunks_stored=0,
             skipped_unchanged=True,
         )
 
-    suffix = Path(item.name).suffix
+    suffix = Path(name).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
     try:
-        doc = dispatch_by_extension(item.name, tmp_path)
+        doc = dispatch_by_extension(name, tmp_path)
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -77,25 +80,101 @@ def ingest_document_from_url(
     # partially-overwritten document.
     embedded = [(chunk, embed_client.embed([chunk.text])[0]) for chunk in chunks]
 
-    vector_store.delete_file_chunks(area_path, item.name, item.id)
+    vector_store.delete_file_chunks(area_path, name, item_id)
     for chunk, embedding in embedded:
         vector_store.upsert_chunk(
-            chunk_id=f"{item.id}:{item.name}:{chunk.chunk_index}",
+            chunk_id=f"{item_id}:{name}:{chunk.chunk_index}",
             embedding=embedding,
             text=chunk.text,
             area_path=area_path,
-            source_file=item.name,
-            source_id=item.id,
+            source_file=name,
+            source_id=item_id,
             chunk_index=chunk.chunk_index,
             file_hash=file_hash,
             doc_type=doc_type,
         )
 
     return IngestResult(
-        document_name=item.name,
-        driveitem_id=item.id,
-        mime_type=item.mime_type,
+        document_name=name,
+        driveitem_id=item_id,
+        mime_type=None,
         size_bytes=len(content),
         chunks_stored=len(embedded),
         skipped_unchanged=False,
     )
+
+
+def ingest_document_from_url(
+    url: str,
+    area_path: str,
+    doc_type: str | None,
+    graph_client,
+    embed_client,
+    vector_store: KbVectorStore,
+) -> IngestResult:
+    """Ingests a single document from a SharePoint/OneDrive sharing URL via
+    the Microsoft Graph client: validate -> fetch metadata + bytes -> verify
+    size/content-type -> skip if unchanged -> parse -> chunk -> embed ->
+    store. This handles exactly one document, so any failure (ValueError,
+    GraphApiError) propagates to the caller instead of being collected into
+    a failures list."""
+    validate_share_url(url)
+
+    item = graph_client.get_drive_item(url)
+    if item.size > MAX_FILE_SIZE_BYTES:
+        raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {item.size}")
+
+    content = graph_client.fetch_content(url)
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
+
+    result = _store_document(item.name, item.id, content, area_path, doc_type, embed_client, vector_store)
+    return result.model_copy(update={"mime_type": item.mime_type})
+
+
+def ingest_folder_from_url(
+    url: str,
+    area_path: str,
+    doc_type: str | None,
+    graph_client,
+    embed_client,
+    vector_store: KbVectorStore,
+) -> FolderIngestResult:
+    """Ingests every file directly inside a shared SharePoint/OneDrive
+    folder (single level, no recursion into subfolders). Unlike the
+    single-document path, one file's failure must not abort the batch —
+    each file's outcome (ingested / skipped_unchanged / failed) is
+    collected and returned, mirroring the old folder-crawl connector's
+    per-file isolation."""
+    validate_share_url(url)
+    children = graph_client.list_folder_children(url)
+
+    results: list[FolderIngestFileResult] = []
+    for child in children:
+        if child.is_folder:
+            continue  # single-level only; subfolders are listed but not recursed
+        try:
+            if child.size > MAX_FILE_SIZE_BYTES:
+                raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {child.size}")
+            if not child.download_url:
+                raise ValueError("no download URL available for this file")
+
+            content = graph_client.fetch_child_content(child.download_url)
+            if len(content) > MAX_FILE_SIZE_BYTES:
+                raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
+
+            result = _store_document(child.name, child.id, content, area_path, doc_type, embed_client, vector_store)
+            results.append(
+                FolderIngestFileResult(
+                    file=child.name,
+                    status="skipped_unchanged" if result.skipped_unchanged else "ingested",
+                    chunks_stored=result.chunks_stored,
+                    driveitem_id=child.id,
+                    mime_type=child.mime_type,
+                    size_bytes=len(content),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - one file's failure must not abort the batch
+            results.append(FolderIngestFileResult(file=child.name, status="failed", chunks_stored=0, reason=str(exc)))
+
+    return FolderIngestResult(files=results)

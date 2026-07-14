@@ -51,6 +51,31 @@ def validate_share_url(url: str) -> None:
         raise ValueError(f"host {host!r} resolves to a private/internal address")
 
 
+def validate_fetch_url(url: str) -> None:
+    """Raise ValueError unless `url` is safe to fetch, for URLs that Graph
+    itself supplies (e.g. a folder child's pre-signed downloadUrl) rather
+    than a user-typed sharing link. No host allowlist here — Graph's
+    download/CDN hosts legitimately don't match ALLOWED_HOST_SUFFIXES — but
+    still enforces https and rejects private/loopback/link-local IP-literal
+    hosts, so a tampered/compromised Graph response (or a redirect chain)
+    can't be used to make ingestion fetch an internal address."""
+    if not url.startswith("https://"):
+        raise ValueError(f"unsupported URL scheme: {url!r}")
+
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError(f"URL has no hostname: {url!r}")
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+
+    if ip is not None and (ip.is_private or ip.is_loopback or ip.is_link_local):
+        raise ValueError(f"host {host!r} resolves to a private/internal address")
+
+
 def verify_supported_content(filename: str, content: bytes) -> None:
     """Raise ValueError if content's magic bytes don't match the filename extension."""
     ext = "." + filename.lower().rsplit(".", 1)[-1]

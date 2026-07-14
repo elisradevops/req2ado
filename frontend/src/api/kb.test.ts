@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { httpClient } from './httpClient';
-import { ingestUrl, listIngestedDocuments } from './kb';
+import { ingestFolderUrl, ingestUrl, listIngestedDocuments } from './kb';
 
 vi.mock('./httpClient');
 
@@ -44,5 +44,19 @@ describe('kb api', () => {
 
     expect(httpClient.get).toHaveBeenCalledWith('/kb/documents', { params: { areaPath: 'Area1' } });
     expect(result).toEqual(docs);
+  });
+
+  it('ingestFolderUrl POSTs the url, areaPath, and docType to /kb/ingest-folder-url', async () => {
+    const result = { files: [{ file: 'a.docx', status: 'ingested', chunksStored: 2, driveitemId: 'd1', mimeType: null, sizeBytes: 100, reason: null }] };
+    (httpClient.post as any).mockResolvedValue({ data: result });
+
+    const response = await ingestFolderUrl('https://share.example/folder', 'Project\\Area1', 'spec');
+
+    expect(httpClient.post).toHaveBeenCalledWith('/kb/ingest-folder-url', {
+      url: 'https://share.example/folder',
+      areaPath: 'Project\\Area1',
+      docType: 'spec',
+    });
+    expect(response).toEqual(result);
   });
 });

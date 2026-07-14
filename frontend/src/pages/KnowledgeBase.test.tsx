@@ -56,6 +56,25 @@ describe('KnowledgeBase', () => {
     await waitFor(() => expect(screen.getByText(/ingest failed — check the sharing link and try again/i)).toBeInTheDocument());
   });
 
+  it('ingests a folder when "This is a folder" is checked, shows a summary toast', async () => {
+    vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
+    vi.spyOn(kbApi, 'ingestFolderUrl').mockResolvedValue({
+      files: [
+        { file: 'a.docx', status: 'ingested', chunksStored: 2, driveitemId: 'd1', mimeType: null, sizeBytes: 100, reason: null },
+        { file: 'b.pdf', status: 'skipped_unchanged', chunksStored: 0, driveitemId: 'd2', mimeType: null, sizeBytes: 200, reason: null },
+      ],
+    });
+    renderPage();
+
+    await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+    await userEvent.click(screen.getByLabelText(/this is a folder/i));
+    await userEvent.type(screen.getByLabelText(/^area path$/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /ingest folder/i }));
+
+    await waitFor(() => expect(kbApi.ingestFolderUrl).toHaveBeenCalledWith('https://share.example/folder', 'Project\\Area1', undefined));
+    await waitFor(() => expect(screen.getByText(/folder ingest: 1 ingested, 1 skipped/i)).toBeInTheDocument());
+  });
+
   it('does not render a bearer-token / password field', async () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
     renderPage();

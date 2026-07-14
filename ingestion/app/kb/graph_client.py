@@ -5,12 +5,23 @@ import base64
 import httpx
 from pydantic import BaseModel
 
+from app.kb.url_security import validate_fetch_url
+
 
 class GraphDriveItem(BaseModel):
     id: str
     name: str
     mime_type: str | None
     size: int
+
+
+class GraphFolderChild(BaseModel):
+    id: str
+    name: str
+    mime_type: str | None
+    size: int
+    is_folder: bool
+    download_url: str | None
 
 
 class GraphApiError(Exception):
@@ -76,6 +87,49 @@ class GraphClient:
         share_id = encode_share_id(url)
         request_url = f"{self.base_url}/shares/{share_id}/driveItem/content"
         response = self._get(request_url)
+        if response.status_code != 200:
+            raise _error_for_status(response.status_code)
+        return response.content
+
+    def list_folder_children(self, url: str) -> list[GraphFolderChild]:
+        """Lists the immediate children of a shared folder. Each file child
+        carries Graph's own pre-signed `@microsoft.graph.downloadUrl` —
+        fetching that URL needs no Authorization header (Graph itself already
+        authorized it), so `fetch_child_content` never sends the bearer
+        token to that host. Subfolders are listed but not recursed into
+        (single-level only, matching the plan's scope)."""
+        share_id = encode_share_id(url)
+        request_url = f"{self.base_url}/shares/{share_id}/driveItem/children"
+        response = self._get(request_url)
+        if response.status_code != 200:
+            raise _error_for_status(response.status_code)
+        return [
+            GraphFolderChild(
+                id=item["id"],
+                name=item["name"],
+                mime_type=item.get("file", {}).get("mimeType"),
+                size=item.get("size", 0),
+                is_folder="folder" in item,
+                download_url=item.get("@microsoft.graph.downloadUrl"),
+            )
+            for item in response.json().get("value", [])
+        ]
+
+    def fetch_child_content(self, download_url: str) -> bytes:
+        # download_url is Graph's own pre-signed URL, already scoped to this
+        # specific item — no Authorization header sent (the URL itself
+        # carries a short-lived token embedded by Graph, not our bearer
+        # token, so nothing of ours leaks to this host). Still validated
+        # (https + not a private/loopback/link-local IP) rather than trusted
+        # blindly: a tampered/compromised Graph response, or a redirect
+        # chain (follow_redirects=True below), must not be able to point
+        # ingestion at an internal address.
+        validate_fetch_url(download_url)
+        try:
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                response = client.get(download_url)
+        except httpx.HTTPError as exc:
+            raise GraphApiError(502, "could not reach Microsoft Graph") from exc
         if response.status_code != 200:
             raise _error_for_status(response.status_code)
         return response.content

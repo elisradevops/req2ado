@@ -22,6 +22,20 @@ export interface IngestedDocumentSummary {
   ingestedAt: Date;
 }
 
+export interface FolderIngestFile {
+  file: string;
+  status: string;
+  chunksStored: number;
+  driveitemId: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  reason: string | null;
+}
+
+export interface FolderIngestUrlResult {
+  files: FolderIngestFile[];
+}
+
 @Injectable()
 export class KbService {
   constructor(
@@ -57,5 +71,37 @@ export class KbService {
       where: areaPath ? { areaPath } : {},
       orderBy: { ingestedAt: 'desc' },
     });
+  }
+
+  async ingestFolderUrl(url: string, areaPath: string, docType: string | null): Promise<FolderIngestUrlResult> {
+    const result = await this.ingestionClient.ingestFolderUrl(url, areaPath, docType);
+    // Persist a row for every file that actually landed in the KB
+    // (ingested or skipped-unchanged) — mirrors ingestUrl's single-doc
+    // persistence. Failed files have no driveitemId and are not persisted.
+    await Promise.all(
+      result.files
+        .filter((f) => f.status !== 'failed' && f.driveitemId)
+        .map((f) =>
+          this.prisma.ingestedDocument.upsert({
+            where: { areaPath_driveItemId: { areaPath, driveItemId: f.driveitemId! } },
+            create: {
+              areaPath,
+              driveItemId: f.driveitemId!,
+              name: f.file,
+              sizeBytes: f.sizeBytes ?? 0,
+              mimeType: f.mimeType,
+              docType,
+            },
+            update: {
+              name: f.file,
+              sizeBytes: f.sizeBytes ?? 0,
+              mimeType: f.mimeType,
+              docType,
+              ingestedAt: new Date(),
+            },
+          }),
+        ),
+    );
+    return result;
   }
 }
