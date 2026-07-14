@@ -75,7 +75,9 @@ async def ingest(file: UploadFile, redact: bool = False, languages: str = "eng")
 
 
 @app.post("/level", response_model=WorkItemTree)
-async def level(doc: CanonicalDoc, customer_id: str | None = None, mode: str = "baseline") -> WorkItemTree:
+async def level(
+    doc: CanonicalDoc, customer_id: str | None = None, mode: str = "baseline", area_path: str | None = None
+) -> WorkItemTree:
     if mode == "survey":
         # One real client instance satisfies both Protocols build_survey_tree
         # needs (LlmLevelingClient, BatchedRequirementClient) — see Task 1's
@@ -85,8 +87,19 @@ async def level(doc: CanonicalDoc, customer_id: str | None = None, mode: str = "
         # single-worker event loop for the whole job's duration, starving
         # every other concurrent request (including /health). Moving the
         # blocking work to FastAPI's threadpool keeps the loop free.
+        # area_path is optional here: when the caller omits it (no KB scope
+        # known yet), build_survey_tree skips retrieval entirely and behaves
+        # exactly as it did before KB retrieval existed.
         client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
-        return await run_in_threadpool(build_survey_tree, doc, llm_client=client, requirement_client=client)
+        return await run_in_threadpool(
+            build_survey_tree,
+            doc,
+            llm_client=client,
+            requirement_client=client,
+            area_path=area_path,
+            embed_client=_embed_client,
+            vector_store=_kb_vector_store,
+        )
     return build_baseline_tree(doc, customer_id=customer_id)
 
 

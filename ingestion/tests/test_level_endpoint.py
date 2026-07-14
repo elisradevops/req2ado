@@ -104,3 +104,78 @@ def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch) -> 
     assert len(body["nodes"]) == 1
     assert body["nodes"][0]["mode"] == "SURVEY"
     assert "shall" in body["nodes"][0]["description"]
+
+
+def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatch) -> None:
+    captured_system_prompts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        system_prompt = json.loads(request.content)["messages"][0]["content"]
+        captured_system_prompts.append(system_prompt)
+        if "hierarchy" in system_prompt:
+            return httpx.Response(200, json={"content": json.dumps([{"node_id": "0", "type": "Epic", "parent_id": None}])})
+        return httpx.Response(
+            200,
+            json={"content": json.dumps({"0": [{"text": "The system shall power on.", "tags": ["functional"]}]})},
+        )
+
+    original_init = OrchestratorLlmClient.__init__
+
+    def patched_init(self, base_url, bearer_token):
+        original_init(self, base_url, bearer_token)
+        self._transport = httpx.MockTransport(handler)
+
+    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
+    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
+    # retrieve_context is called from app.leveling.llm_leveling (build_survey_tree's
+    # module), not from app.main — main.py only forwards area_path/embed_client/
+    # vector_store through, it never calls retrieve_context itself.
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.retrieve_context",
+        lambda area_path, query_text, embed_client, vector_store, **_: "Injected KB reference text.",
+    )
+
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+    )
+    response = client.post(
+        "/level", params={"mode": "survey", "area_path": "Project\\Area1"}, json=doc.model_dump(mode="json")
+    )
+    assert response.status_code == 200
+    assert all("Injected KB reference text." in prompt for prompt in captured_system_prompts)
+
+
+def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeypatch) -> None:
+    # Regression guard: omitting area_path (every pre-existing caller) must
+    # never even attempt retrieval.
+    def _fail_retrieve(*args, **kwargs):  # pragma: no cover - should never run
+        raise AssertionError("retrieve_context must not be called when area_path is omitted")
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fail_retrieve)
+
+    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
+    requirements_by_node = {"0": [{"text": "The system shall power on.", "tags": ["functional"]}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        system_prompt = body["messages"][0]["content"]
+        if "hierarchy" in system_prompt:
+            return httpx.Response(200, json={"content": json.dumps(hierarchy)})
+        return httpx.Response(200, json={"content": json.dumps(requirements_by_node)})
+
+    original_init = OrchestratorLlmClient.__init__
+
+    def patched_init(self, base_url, bearer_token):
+        original_init(self, base_url, bearer_token)
+        self._transport = httpx.MockTransport(handler)
+
+    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
+    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
+
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+    )
+    response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
+    assert response.status_code == 200
