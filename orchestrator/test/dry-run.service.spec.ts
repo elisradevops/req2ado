@@ -380,4 +380,31 @@ describe('DryRunService', () => {
     const diff = await service.diff(nodes as any, { lookup: jest.fn().mockResolvedValue(null) } as any);
     expect(diff[0].tags).toEqual(['functional', 'safety']);
   });
+
+  it('carries qualityScore and qualityIssues through from tree node to diff entry', async () => {
+    const nodes = [
+      {
+        localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+        sourceHash: 'h1', customerId: null, areaPath: 'Proj\\Area', tags: [],
+        qualityScore: 72, qualityIssues: ['vague_term'],
+      },
+    ];
+    const service = new DryRunService();
+    const diff = await service.diff(nodes as any, { lookup: jest.fn().mockResolvedValue(null) } as any);
+    expect(diff[0].qualityScore).toBe(72);
+    expect(diff[0].qualityIssues).toEqual(['vague_term']);
+  });
+
+  it('leaves qualityScore/qualityIssues undefined when the tree node omits them (byte-identical pre-P2c behavior)', async () => {
+    const nodes = [
+      {
+        localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+        sourceHash: 'h1', customerId: null, areaPath: 'Proj\\Area', tags: [],
+      },
+    ];
+    const service = new DryRunService();
+    const diff = await service.diff(nodes as any, { lookup: jest.fn().mockResolvedValue(null) } as any);
+    expect(diff[0].qualityScore).toBeUndefined();
+    expect(diff[0].qualityIssues).toBeUndefined();
+  });
 });

@@ -11,6 +11,8 @@ export interface DryRunTreeNode {
   customerId: string | null;
   areaPath: string;
   tags: string[];
+  qualityScore?: number | null;
+  qualityIssues?: string[];
 }
 
 export interface DryRunDiffEntry {
@@ -36,6 +38,8 @@ export interface DryRunDiffEntry {
   sourceHash: string;
   customerId: string | null;
   tags: string[];
+  qualityScore?: number | null;
+  qualityIssues?: string[];
 }
 
 /**
@@ -59,7 +63,7 @@ export class DryRunService {
           localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
           title: node.title, description: node.description, action: 'reuse',
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
-          tags: node.tags,
+          tags: node.tags, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
         });
         continue;
       }
@@ -79,6 +83,7 @@ export class DryRunService {
               title: node.title, description: node.description, action: 'dedup_skip',
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
+              qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
             });
             continue;
           }
@@ -91,7 +96,7 @@ export class DryRunService {
         localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
         title: node.title, description: node.description, action: 'create',
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
-        tags: node.tags,
+        tags: node.tags, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
       });
     }
     return results;

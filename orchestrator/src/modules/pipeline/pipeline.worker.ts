@@ -30,6 +30,8 @@ interface LeveledNode {
   fidelity_hash: string;
   customer_id: string | null;
   tags: string[];
+  quality_score?: number | null;
+  quality_issues?: string[];
 }
 
 /**
@@ -75,6 +77,8 @@ export async function runPipelineJob(
       customerId: node.customer_id,
       areaPath: job.areaPath,
       tags: node.tags ?? [],
+      qualityScore: node.quality_score,
+      qualityIssues: node.quality_issues,
     }));
 
     const diff = await deps.dryRunService.diff(

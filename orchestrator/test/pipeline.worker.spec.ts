@@ -212,6 +212,53 @@ describe('runPipelineJob', () => {
     );
   });
 
+  it('carries quality_score/quality_issues from ingestion through to the dry-run diff input', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        {
+          local_id: 'n0',
+          fidelity_hash: 'hashA',
+          customer_id: 'CUST-1',
+          quality_score: 72,
+          quality_issues: ['vague_term'],
+        },
+        {
+          local_id: 'n1',
+          fidelity_hash: 'hashB',
+          customer_id: 'CUST-1',
+        },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+      },
+    );
+
+    expect(fakeDryRunService.diff).toHaveBeenCalledWith(
+      [
+        {
+          localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [],
+          qualityScore: 72, qualityIssues: ['vague_term'],
+        },
+        {
+          localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [],
+          qualityScore: undefined, qualityIssues: undefined,
+        },
+      ],
+      fakeIdempotencyService,
+      expect.any(Function),
+    );
+  });
+
   it('supplies a dedupCheck callback to dryRunService.diff that calls ingestionClient.checkDuplicate with (description, areaPath)', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({
