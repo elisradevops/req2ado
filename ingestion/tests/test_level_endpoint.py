@@ -179,3 +179,35 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
     )
     response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
     assert response.status_code == 200
+
+
+def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        system_prompt = json.loads(request.content)["messages"][0]["content"]
+        if "hierarchy" in system_prompt:
+            return httpx.Response(200, json={"content": json.dumps([{"node_id": "0", "type": "Epic", "parent_id": None}])})
+        if "score" in system_prompt.lower() and "EARS" in system_prompt:
+            return httpx.Response(200, json={"content": json.dumps({"0": {"score": 72, "issues": ["vague_term"]}})})
+        return httpx.Response(
+            200,
+            json={"content": json.dumps({"0": [{"text": "The system shall power on.", "tags": ["functional"]}]})},
+        )
+
+    original_init = OrchestratorLlmClient.__init__
+
+    def patched_init(self, base_url, bearer_token):
+        original_init(self, base_url, bearer_token)
+        self._transport = httpx.MockTransport(handler)
+
+    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
+    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
+
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+    )
+    response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["nodes"][0]["quality_score"] == 72
+    assert body["nodes"][0]["quality_issues"] == ["vague_term"]

@@ -99,6 +99,7 @@ async def level(
             area_path=area_path,
             embed_client=_embed_client,
             vector_store=_kb_vector_store,
+            scoring_client=client,
         )
     return build_baseline_tree(doc, customer_id=customer_id)
 
