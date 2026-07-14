@@ -1,38 +1,48 @@
 import { describe, it, expect, vi } from 'vitest';
 import { httpClient } from './httpClient';
-import { listKbSources, createKbSource, syncKbSource } from './kb';
+import { ingestUrl, listIngestedDocuments } from './kb';
 
 vi.mock('./httpClient');
 
 describe('kb api', () => {
-  it('listKbSources GETs /kb/sources', async () => {
-    const sources = [{ id: 'kb-1', areaPath: 'Project', siteUrl: 'https://s', library: 'Lib', folder: 'Folder', displayName: 'Docs', lastSyncedAt: null, createdAt: '2026-07-12T00:00:00Z' }];
-    (httpClient.get as any).mockResolvedValue({ data: sources });
+  it('ingestUrl POSTs the url, areaPath, and docType to /kb/ingest-url', async () => {
+    const result = {
+      documentName: 'spec.docx',
+      driveitemId: 'drive-1',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      sizeBytes: 1024,
+      chunksStored: 3,
+      skippedUnchanged: false,
+    };
+    (httpClient.post as any).mockResolvedValue({ data: result });
 
-    const result = await listKbSources();
+    const response = await ingestUrl('https://share.example/spec.docx', 'Project\\Area1', 'spec');
 
-    expect(httpClient.get).toHaveBeenCalledWith('/kb/sources');
-    expect(result).toEqual(sources);
+    expect(httpClient.post).toHaveBeenCalledWith('/kb/ingest-url', {
+      url: 'https://share.example/spec.docx',
+      areaPath: 'Project\\Area1',
+      docType: 'spec',
+    });
+    expect(response).toEqual(result);
   });
 
-  it('createKbSource POSTs the input to /kb/sources', async () => {
-    const created = { id: 'kb-1' };
-    (httpClient.post as any).mockResolvedValue({ data: created });
-    const input = { areaPath: 'Project', siteUrl: 'https://s', library: 'Lib', folder: 'Folder', displayName: 'Docs' };
+  it('listIngestedDocuments() GETs /kb/documents with no params', async () => {
+    const docs = [{ id: 'doc-1', areaPath: 'Project\\Area1', driveItemId: 'drive-1', name: 'spec.docx', sizeBytes: 1024, mimeType: null, docType: null, ingestedAt: '2026-07-12T00:00:00Z' }];
+    (httpClient.get as any).mockResolvedValue({ data: docs });
 
-    const result = await createKbSource(input);
+    const result = await listIngestedDocuments();
 
-    expect(httpClient.post).toHaveBeenCalledWith('/kb/sources', input);
-    expect(result).toEqual(created);
+    expect(httpClient.get).toHaveBeenCalledWith('/kb/documents', { params: {} });
+    expect(result).toEqual(docs);
   });
 
-  it('syncKbSource POSTs the bearer token to /kb/sources/:id/sync', async () => {
-    const syncResult = { filesProcessed: 1, filesSkipped: 0, filesFailed: [], chunksStored: 2 };
-    (httpClient.post as any).mockResolvedValue({ data: syncResult });
+  it('listIngestedDocuments("Area1") GETs /kb/documents with params: { areaPath: "Area1" }', async () => {
+    const docs: any[] = [];
+    (httpClient.get as any).mockResolvedValue({ data: docs });
 
-    const result = await syncKbSource('kb-1', 'tok-1');
+    const result = await listIngestedDocuments('Area1');
 
-    expect(httpClient.post).toHaveBeenCalledWith('/kb/sources/kb-1/sync', { bearerToken: 'tok-1' });
-    expect(result).toEqual(syncResult);
+    expect(httpClient.get).toHaveBeenCalledWith('/kb/documents', { params: { areaPath: 'Area1' } });
+    expect(result).toEqual(docs);
   });
 });

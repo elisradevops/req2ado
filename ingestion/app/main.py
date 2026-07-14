@@ -2,7 +2,7 @@
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -12,8 +12,9 @@ from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_dupli
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
+from app.kb.graph_client import GraphApiError, GraphClient
+from app.kb.ingest_service import IngestResult, ingest_document_from_url
 from app.kb.kb_vector_store import KbVectorStore
-from app.kb.sync_service import KbSyncResult, sync_kb_source
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.tree_builder import build_baseline_tree
 from app.redaction.redactor import redact_canonical_doc
@@ -44,13 +45,10 @@ class DedupUpsertRequest(BaseModel):
     area_path: str
 
 
-class KbSyncRequest(BaseModel):
-    site_url: str
-    library: str
-    folder: str
+class KbIngestUrlRequest(BaseModel):
+    url: str
     area_path: str
-    source_id: str
-    bearer_token: str
+    doc_type: str | None = None
 
 
 @app.get("/health")
@@ -105,20 +103,27 @@ async def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
     return {"ok": True}
 
 
-@app.post("/kb/sync", response_model=KbSyncResult)
-async def kb_sync(body: KbSyncRequest) -> KbSyncResult:
-    # sync_kb_source makes synchronous httpx calls in a loop (SharePoint
-    # fetch + embed per chunk) — same run_in_threadpool reasoning as /level:
-    # without it, this would block ingestion's single-worker event loop for
-    # the whole sync's duration.
-    return await run_in_threadpool(
-        sync_kb_source,
-        body.site_url,
-        body.library,
-        body.folder,
-        body.area_path,
-        body.source_id,
-        body.bearer_token,
-        _embed_client,
-        _kb_vector_store,
-    )
+@app.post("/kb/ingest-url", response_model=IngestResult)
+async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
+    # Token from env (SHAREPOINT_TOKEN / GRAPH_TOKEN). GraphClient raises
+    # ValueError if unset — mapped to 400 below. ingest_document_from_url
+    # makes synchronous httpx calls; run in the threadpool like /level and
+    # the old /kb/sync so it never blocks the single-worker event loop.
+    try:
+        graph_client = GraphClient(settings.sharepoint_token or "", settings.graph_base_url)
+        return await run_in_threadpool(
+            ingest_document_from_url,
+            body.url,
+            body.area_path,
+            body.doc_type,
+            graph_client,
+            _embed_client,
+            _kb_vector_store,
+        )
+    except ValueError as exc:
+        # SSRF/scheme/host/size/content-type violation, or missing token.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except GraphApiError as exc:
+        # Surface Graph's own status where it maps cleanly; else 502.
+        status = exc.status if exc.status in (401, 403, 404) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc

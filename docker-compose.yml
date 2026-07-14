@@ -48,6 +48,10 @@ services:
 
   ingestion:
     build: ./ingestion
+    # env_file loads .env, which now also carries SHAREPOINT_TOKEN /
+    # GRAPH_TOKEN (Microsoft Graph bearer for KB doc ingest via
+    # POST /kb/ingest-url). Absent token → ingestion still boots; the ingest
+    # route just 400s until one is set. See .env.template.
     env_file: .env
     environment:
       PORT: 8000

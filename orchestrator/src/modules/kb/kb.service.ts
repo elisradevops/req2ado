@@ -2,30 +2,24 @@ import { Injectable } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from '../pipeline/ingestion-http.client';
 
-export interface KbSourceInput {
-  areaPath: string;
-  siteUrl: string;
-  library: string;
-  folder: string;
-  displayName: string;
+export interface IngestUrlResult {
+  documentName: string;
+  driveitemId: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  chunksStored: number;
+  skippedUnchanged: boolean;
 }
 
-export interface KbSourceSummary {
+export interface IngestedDocumentSummary {
   id: string;
   areaPath: string;
-  siteUrl: string;
-  library: string;
-  folder: string;
-  displayName: string;
-  lastSyncedAt: Date | null;
-  createdAt: Date;
-}
-
-export interface KbSyncResult {
-  filesProcessed: number;
-  filesSkipped: number;
-  filesFailed: { file: string; reason: string }[];
-  chunksStored: number;
+  driveItemId: string;
+  name: string;
+  sizeBytes: number;
+  mimeType: string | null;
+  docType: string | null;
+  ingestedAt: Date;
 }
 
 @Injectable()
@@ -35,19 +29,33 @@ export class KbService {
     private readonly ingestionClient: IngestionHttpClient,
   ) {}
 
-  async create(input: KbSourceInput): Promise<KbSourceSummary> {
-    return this.prisma.kbSource.create({ data: input });
-  }
-
-  async list(): Promise<KbSourceSummary[]> {
-    return this.prisma.kbSource.findMany({ orderBy: { createdAt: 'desc' } });
-  }
-
-  async sync(id: string, bearerToken: string): Promise<KbSyncResult | null> {
-    const source = await this.prisma.kbSource.findUnique({ where: { id } });
-    if (!source) return null;
-    const result = await this.ingestionClient.syncKb(source.siteUrl, source.library, source.folder, source.areaPath, id, bearerToken);
-    await this.prisma.kbSource.update({ where: { id }, data: { lastSyncedAt: new Date() } });
+  async ingestUrl(url: string, areaPath: string, docType: string | null): Promise<IngestUrlResult> {
+    const result = await this.ingestionClient.ingestUrl(url, areaPath, docType);
+    await this.prisma.ingestedDocument.upsert({
+      where: { areaPath_driveItemId: { areaPath, driveItemId: result.driveitemId } },
+      create: {
+        areaPath,
+        driveItemId: result.driveitemId,
+        name: result.documentName,
+        sizeBytes: result.sizeBytes,
+        mimeType: result.mimeType,
+        docType,
+      },
+      update: {
+        name: result.documentName,
+        sizeBytes: result.sizeBytes,
+        mimeType: result.mimeType,
+        docType,
+        ingestedAt: new Date(),
+      },
+    });
     return result;
+  }
+
+  async listDocuments(areaPath?: string): Promise<IngestedDocumentSummary[]> {
+    return this.prisma.ingestedDocument.findMany({
+      where: areaPath ? { areaPath } : {},
+      orderBy: { ingestedAt: 'desc' },
+    });
   }
 }

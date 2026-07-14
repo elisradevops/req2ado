@@ -44,16 +44,21 @@ model IdempotencyMapping {
   @@unique([sourceHash, customerId, areaPath])
 }
 
-// Non-secret SharePoint connector config only — the bearer token used to
-// Sync is never persisted, matching docs/docgen-connection-pattern.md's
-// "only non-secret config persists server-side" rule.
-model KbSource {
-  id           String    @id @default(uuid())
-  areaPath     String
-  siteUrl      String
-  library      String
-  folder       String
-  displayName  String
-  lastSyncedAt DateTime?
-  createdAt    DateTime  @default(now())
+// Non-secret metadata for a document ingested into the KB from a
+// SharePoint/OneDrive sharing link via Microsoft Graph. No token or content
+// is stored here — chunk text + embeddings live in the Chroma KB collection;
+// this table only records what has been ingested, for display/listing.
+// Keyed [areaPath, driveItemId] so re-ingesting the same document updates
+// the same row rather than duplicating it.
+model IngestedDocument {
+  id          String   @id @default(uuid())
+  areaPath    String
+  driveItemId String
+  name        String
+  sizeBytes   Int
+  mimeType    String?
+  docType     String?
+  ingestedAt  DateTime @default(now())
+
+  @@unique([areaPath, driveItemId])
 }

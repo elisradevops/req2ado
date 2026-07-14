@@ -5,11 +5,17 @@ import { Agent } from 'undici';
 // can take for SURVEY mode's two sequential calls (infer_hierarchy +
 // generate_requirements_for_document) on CPU/GPU-constrained hardware —
 // observed directly: a 12b-class Ollama model took several minutes per
-// call. /level and /kb/sync (SharePoint folder crawl + per-chunk embedding)
+// call. /level and /kb/ingest-url (Graph fetch + parse + per-chunk embedding)
 // are the only calls that can run this long (BASELINE never touches an LLM;
 // /ingest, /dedup/check, /dedup/upsert are all fast); scoped to a dedicated
 // Agent rather than raising the timeout for every ingestion call.
 const LONG_RUNNING_AGENT = new Agent({ headersTimeout: 1_800_000, bodyTimeout: 1_800_000 });
+
+export class IngestionHttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
 
 /**
  * Calls the Python ingestion service's real /ingest and /level endpoints
@@ -77,46 +83,42 @@ export class IngestionHttpClient {
     }
   }
 
-  async syncKb(
-    siteUrl: string,
-    library: string,
-    folder: string,
+  async ingestUrl(
+    url: string,
     areaPath: string,
-    sourceId: string,
-    bearerToken: string,
+    docType: string | null,
   ): Promise<{
-    filesProcessed: number;
-    filesSkipped: number;
-    filesFailed: { file: string; reason: string }[];
+    documentName: string;
+    driveitemId: string;
+    mimeType: string | null;
+    sizeBytes: number;
     chunksStored: number;
+    skippedUnchanged: boolean;
   }> {
-    const response = await fetch(`${this.baseUrl}/kb/sync`, {
+    const response = await fetch(`${this.baseUrl}/kb/ingest-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        site_url: siteUrl,
-        library,
-        folder,
-        area_path: areaPath,
-        source_id: sourceId,
-        bearer_token: bearerToken,
-      }),
+      body: JSON.stringify({ url, area_path: areaPath, doc_type: docType }),
       dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {
-      throw new Error(`Ingestion /kb/sync request failed: ${response.status}`);
+      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-url request failed: ${response.status}`);
     }
     const body = (await response.json()) as {
-      files_processed: number;
-      files_skipped: number;
-      files_failed: { file: string; reason: string }[];
+      document_name: string;
+      driveitem_id: string;
+      mime_type: string | null;
+      size_bytes: number;
       chunks_stored: number;
+      skipped_unchanged: boolean;
     };
     return {
-      filesProcessed: body.files_processed,
-      filesSkipped: body.files_skipped,
-      filesFailed: body.files_failed,
+      documentName: body.document_name,
+      driveitemId: body.driveitem_id,
+      mimeType: body.mime_type,
+      sizeBytes: body.size_bytes,
       chunksStored: body.chunks_stored,
+      skippedUnchanged: body.skipped_unchanged,
     };
   }
 }

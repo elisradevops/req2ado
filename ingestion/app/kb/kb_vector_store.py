@@ -40,20 +40,25 @@ class KbVectorStore:
         source_id: str,
         chunk_index: int,
         file_hash: str,
+        doc_type: str | None = None,
     ) -> None:
         collection = self._get_collection(area_path)
+        metadata = {
+            "source_file": source_file,
+            "source_id": source_id,
+            "chunk_index": chunk_index,
+            "file_hash": file_hash,
+        }
+        # chromadb rejects None metadata values, so only include doc_type
+        # when the caller actually supplied one (existing callers that don't
+        # pass doc_type keep working unchanged).
+        if doc_type is not None:
+            metadata["doc_type"] = doc_type
         collection.upsert(
             ids=[chunk_id],
             embeddings=[embedding],
             documents=[text],
-            metadatas=[
-                {
-                    "source_file": source_file,
-                    "source_id": source_id,
-                    "chunk_index": chunk_index,
-                    "file_hash": file_hash,
-                }
-            ],
+            metadatas=[metadata],
         )
 
     def existing_file_hash(self, area_path: str, source_file: str, source_id: str) -> str | None:

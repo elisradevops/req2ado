@@ -1,42 +1,78 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { HttpException } from '@nestjs/common';
 import { KbController } from '../src/modules/kb/kb.controller';
+import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 
 describe('KbController', () => {
-  it('create() throws BadRequestException when any required field is missing', async () => {
+  it('ingestUrl() 400s when url is missing', async () => {
     const controller = new KbController({} as any);
-    await expect(controller.create(undefined, 'https://s', 'Lib', 'Folder', 'Docs')).rejects.toThrow(BadRequestException);
+    await expect(controller.ingestUrl(undefined, 'Project\\Area1', undefined)).rejects.toThrow(/url/i);
   });
 
-  it('create() delegates to KbService.create when all fields are present', async () => {
-    const created = { id: 'kb-1' };
-    const kbService = { create: jest.fn().mockResolvedValue(created) };
-    const controller = new KbController(kbService as any);
-
-    const result = await controller.create('Project\\Area1', 'https://s', 'Lib', 'Folder', 'Docs');
-
-    expect(kbService.create).toHaveBeenCalledWith({ areaPath: 'Project\\Area1', siteUrl: 'https://s', library: 'Lib', folder: 'Folder', displayName: 'Docs' });
-    expect(result).toBe(created);
-  });
-
-  it('sync() throws BadRequestException when bearerToken is missing', async () => {
+  it('ingestUrl() 400s when areaPath is missing', async () => {
     const controller = new KbController({} as any);
-    await expect(controller.sync('kb-1', undefined)).rejects.toThrow(BadRequestException);
+    await expect(controller.ingestUrl('https://contoso.sharepoint.com/x', undefined, undefined)).rejects.toThrow(/areaPath/i);
   });
 
-  it('sync() throws NotFoundException when KbService.sync returns null', async () => {
-    const kbService = { sync: jest.fn().mockResolvedValue(null) };
+  it('ingestUrl() 400s on a bad host without calling the service', async () => {
+    const kbService = { ingestUrl: jest.fn() };
     const controller = new KbController(kbService as any);
-    await expect(controller.sync('missing-id', 'tok-1')).rejects.toThrow(NotFoundException);
+
+    await expect(controller.ingestUrl('https://evil.com/x', 'Project\\Area1', undefined)).rejects.toThrow();
+    expect(kbService.ingestUrl).not.toHaveBeenCalled();
   });
 
-  it('sync() returns the result when KbService.sync succeeds', async () => {
-    const syncResult = { filesProcessed: 1, filesSkipped: 0, filesFailed: [], chunksStored: 2 };
-    const kbService = { sync: jest.fn().mockResolvedValue(syncResult) };
+  it('ingestUrl() 400s on a lookalike host without calling the service', async () => {
+    const kbService = { ingestUrl: jest.fn() };
     const controller = new KbController(kbService as any);
 
-    const result = await controller.sync('kb-1', 'tok-1');
+    await expect(controller.ingestUrl('https://fakeonedrive.com/x', 'Project\\Area1', undefined)).rejects.toThrow();
+    expect(kbService.ingestUrl).not.toHaveBeenCalled();
+  });
 
-    expect(kbService.sync).toHaveBeenCalledWith('kb-1', 'tok-1');
-    expect(result).toBe(syncResult);
+  it('ingestUrl() delegates to the service on a valid sharepoint url', async () => {
+    const ingestResult = { documentName: 'doc.pdf', driveitemId: 'drive-1', mimeType: null, sizeBytes: 10, chunksStored: 1, skippedUnchanged: false };
+    const kbService = { ingestUrl: jest.fn().mockResolvedValue(ingestResult) };
+    const controller = new KbController(kbService as any);
+
+    const result = await controller.ingestUrl('https://contoso.sharepoint.com/sites/s/doc.pdf', 'Project\\Area1', 'SRD');
+
+    expect(kbService.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/sites/s/doc.pdf', 'Project\\Area1', 'SRD');
+    expect(result).toBe(ingestResult);
+  });
+
+  it('ingestUrl() accepts a 1drv.ms short link', async () => {
+    const ingestResult = { documentName: 'doc.pdf', driveitemId: 'drive-1', mimeType: null, sizeBytes: 10, chunksStored: 1, skippedUnchanged: false };
+    const kbService = { ingestUrl: jest.fn().mockResolvedValue(ingestResult) };
+    const controller = new KbController(kbService as any);
+
+    const result = await controller.ingestUrl('https://1drv.ms/w/s!AbCdEf', 'Project\\Area1', undefined);
+
+    expect(kbService.ingestUrl).toHaveBeenCalledWith('https://1drv.ms/w/s!AbCdEf', 'Project\\Area1', null);
+    expect(result).toBe(ingestResult);
+  });
+
+  it('ingestUrl() re-maps an IngestionHttpError from the service to an HttpException with the same status', async () => {
+    const kbService = { ingestUrl: jest.fn().mockRejectedValue(new IngestionHttpError(404, 'not found')) };
+    const controller = new KbController(kbService as any);
+
+    await expect(controller.ingestUrl('https://contoso.sharepoint.com/x', 'Project\\Area1', undefined)).rejects.toThrow(HttpException);
+    try {
+      await controller.ingestUrl('https://contoso.sharepoint.com/x', 'Project\\Area1', undefined);
+      fail('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(HttpException);
+      expect((err as HttpException).getStatus()).toBe(404);
+    }
+  });
+
+  it('listDocuments() delegates to the service with the areaPath query param', async () => {
+    const documents = [{ id: 'doc-1' }];
+    const kbService = { listDocuments: jest.fn().mockResolvedValue(documents) };
+    const controller = new KbController(kbService as any);
+
+    const result = await controller.listDocuments('Project\\Area1');
+
+    expect(kbService.listDocuments).toHaveBeenCalledWith('Project\\Area1');
+    expect(result).toBe(documents);
   });
 });

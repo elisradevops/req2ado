@@ -1,6 +1,7 @@
 # ingestion/app/config.py
 from __future__ import annotations
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -17,6 +18,10 @@ class Settings(BaseSettings):
     orchestrator_url: str = "http://localhost:3001"
     llm_proxy_bearer: str = "dev-local-only"
     chroma_persist_path: str = "./.req2ado/vectors"
+    sharepoint_token: str | None = Field(
+        default=None, validation_alias=AliasChoices("SHAREPOINT_TOKEN", "GRAPH_TOKEN")
+    )
+    graph_base_url: str = "https://graph.microsoft.com/v1.0"
 
     class Config:
         env_prefix = ""

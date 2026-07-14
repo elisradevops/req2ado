@@ -1,42 +1,31 @@
 import { httpClient } from './httpClient';
 
-export interface KbSourceSummary {
+export interface IngestResult {
+  documentName: string;
+  driveitemId: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  chunksStored: number;
+  skippedUnchanged: boolean;
+}
+
+export interface IngestedDocument {
   id: string;
   areaPath: string;
-  siteUrl: string;
-  library: string;
-  folder: string;
-  displayName: string;
-  lastSyncedAt: string | null;
-  createdAt: string;
+  driveItemId: string;
+  name: string;
+  sizeBytes: number;
+  mimeType: string | null;
+  docType: string | null;
+  ingestedAt: string;
 }
 
-export interface KbSourceInput {
-  areaPath: string;
-  siteUrl: string;
-  library: string;
-  folder: string;
-  displayName: string;
-}
-
-export interface KbSyncResult {
-  filesProcessed: number;
-  filesSkipped: number;
-  filesFailed: { file: string; reason: string }[];
-  chunksStored: number;
-}
-
-export async function listKbSources(): Promise<KbSourceSummary[]> {
-  const response = await httpClient.get<KbSourceSummary[]>('/kb/sources');
+export async function ingestUrl(url: string, areaPath: string, docType?: string): Promise<IngestResult> {
+  const response = await httpClient.post<IngestResult>('/kb/ingest-url', { url, areaPath, docType });
   return response.data;
 }
 
-export async function createKbSource(input: KbSourceInput): Promise<KbSourceSummary> {
-  const response = await httpClient.post<KbSourceSummary>('/kb/sources', input);
-  return response.data;
-}
-
-export async function syncKbSource(id: string, bearerToken: string): Promise<KbSyncResult> {
-  const response = await httpClient.post<KbSyncResult>(`/kb/sources/${id}/sync`, { bearerToken });
+export async function listIngestedDocuments(areaPath?: string): Promise<IngestedDocument[]> {
+  const response = await httpClient.get<IngestedDocument[]>('/kb/documents', { params: areaPath ? { areaPath } : {} });
   return response.data;
 }

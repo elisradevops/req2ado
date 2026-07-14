@@ -1,4 +1,4 @@
-import { IngestionHttpClient } from '../src/modules/pipeline/ingestion-http.client';
+import { IngestionHttpClient, IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 
 describe('IngestionHttpClient', () => {
   beforeEach(() => {
@@ -70,54 +70,64 @@ describe('IngestionHttpClient', () => {
   });
 });
 
-describe('IngestionHttpClient.syncKb', () => {
+describe('IngestionHttpClient.ingestUrl', () => {
   const originalFetch = global.fetch;
   afterEach(() => {
     global.fetch = originalFetch;
   });
 
-  it('posts snake_case fields to /kb/sync and maps the snake_case response to camelCase', async () => {
+  it('posts snake_case fields to /kb/ingest-url and maps the snake_case response to camelCase', async () => {
     const mockFetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        files_processed: 2,
-        files_skipped: 1,
-        files_failed: [{ file: 'bad.txt', reason: 'corrupt' }],
-        chunks_stored: 5,
+        document_name: 'doc.pdf',
+        driveitem_id: 'drive-1',
+        mime_type: 'application/pdf',
+        size_bytes: 1024,
+        chunks_stored: 3,
+        skipped_unchanged: false,
       }),
     });
     global.fetch = mockFetch as any;
 
     const client = new IngestionHttpClient('http://ingestion:8000');
-    const result = await client.syncKb('https://contoso.sharepoint.com/sites/s', 'Lib', 'Folder', 'Project\\Area1', 'kb-1', 'tok-1');
+    const result = await client.ingestUrl('https://contoso.sharepoint.com/sites/s/doc.pdf', 'Project\\Area1', 'SRD');
 
     expect(mockFetch).toHaveBeenCalledWith(
-      'http://ingestion:8000/kb/sync',
+      'http://ingestion:8000/kb/ingest-url',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          site_url: 'https://contoso.sharepoint.com/sites/s',
-          library: 'Lib',
-          folder: 'Folder',
+          url: 'https://contoso.sharepoint.com/sites/s/doc.pdf',
           area_path: 'Project\\Area1',
-          source_id: 'kb-1',
-          bearer_token: 'tok-1',
+          doc_type: 'SRD',
         }),
       }),
     );
     expect(result).toEqual({
-      filesProcessed: 2,
-      filesSkipped: 1,
-      filesFailed: [{ file: 'bad.txt', reason: 'corrupt' }],
-      chunksStored: 5,
+      documentName: 'doc.pdf',
+      driveitemId: 'drive-1',
+      mimeType: 'application/pdf',
+      sizeBytes: 1024,
+      chunksStored: 3,
+      skippedUnchanged: false,
     });
   });
 
-  it('throws when ingestion responds with a non-ok status', async () => {
-    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 502 }) as any;
+  it('throws an IngestionHttpError carrying the status on a non-ok response', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 400 }) as any;
     const client = new IngestionHttpClient('http://ingestion:8000');
     await expect(
-      client.syncKb('https://contoso.sharepoint.com/sites/s', 'Lib', 'Folder', 'Project\\Area1', 'kb-1', 'tok-1'),
-    ).rejects.toThrow('Ingestion /kb/sync request failed: 502');
+      client.ingestUrl('https://contoso.sharepoint.com/sites/s/doc.pdf', 'Project\\Area1', null),
+    ).rejects.toThrow(IngestionHttpError);
+
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 400 }) as any;
+    try {
+      await client.ingestUrl('https://contoso.sharepoint.com/sites/s/doc.pdf', 'Project\\Area1', null);
+      fail('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(IngestionHttpError);
+      expect((err as IngestionHttpError).status).toBe(400);
+    }
   });
 });
