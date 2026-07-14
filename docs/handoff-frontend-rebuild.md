@@ -93,6 +93,18 @@ Regression tests added for all three: `orchestrator/test/kb.service.spec.ts` (al
 
 **Real-tenant verified.** Rebuilt/recreated the `ingestion`+`orchestrator` containers, then ingested the real `Custom Test Project CMMI\Test` KB root folder with `recursive: true`: a new PDF the user had just dropped into a real subfolder (`Sub Items/03_CMMI_Project_Engineering_Principles.pdf`) was descended into, chunked (2 chunks), and stored — confirmed both at the ingestion layer (direct curl, `chunks_stored: 2`) and end-to-end through the orchestrator (`GET /kb/documents` shows the row with `name: "Sub Items/03_CMMI_Project_Engineering_Principles.pdf"`, correct `driveItemId`/`sizeBytes`/`mimeType`). Sibling top-level docs correctly reported `skipped_unchanged`; a second recursive call correctly skip-unchanged'd the new file too.
 
+## 4b. P2b — RAG retrieval-injection into SURVEY (current)
+
+Wires the read side of the KB store into SURVEY mode's two whole-document LLM calls. `build_survey_tree` (`ingestion/app/leveling/llm_leveling.py`) now accepts optional `area_path`/`embed_client`/`vector_store` params; when all three are supplied it calls the new `retrieve_context()` (`ingestion/app/kb/retrieval.py`) exactly once per document — embeds the outline, queries `KbVectorStore.query()` (new method, `ingestion/app/kb/kb_vector_store.py`) for the area_path's KB collection, keeps hits at cosine similarity ≥ 0.3 (distance ≤ 0.7) out of top-5, and joins survivors into one context string. That same string is threaded into both `infer_hierarchy` and `generate_requirements_for_document` (`ingestion/app/survey/orchestrator_llm_client.py`), each prepending it to their system prompt as a labeled "reference material, may be irrelevant" block when present.
+
+**Fully additive, fully optional.** Every new parameter defaults to `None`; when `area_path` is omitted (as every pre-KB caller does), retrieval is skipped entirely and behavior is byte-for-byte identical to before this phase. `POST /level` gained an optional `area_path` query param for this reason — omitted, it behaves exactly as before.
+
+**Failure-safe by construction.** `retrieve_context` catches any exception from the embed call or the Chroma query and returns `None` (logged as a warning) — a KB outage never blocks or fails a SURVEY job, it just falls back to the model's baseline knowledge, identical to the empty-collection case.
+
+**No doc_type filtering** — queries the whole area_path collection regardless of doc_type (which is sparse metadata to begin with, see §4a). **One retrieval per document**, not per node/block — matches the batching philosophy `generate_requirements_for_document` was already built around.
+
+**Not yet done:** no chat feature exists to retrieve into (roadmap mentions it as a future target). P2c (RAG-grounded quality scoring) and P2d (learning-loop write-back) are separate, later phases.
+
 ## 5. Backend API surface (current)
 
 All routes on the orchestrator (`http://localhost:3001` in dev):
