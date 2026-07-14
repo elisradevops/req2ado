@@ -14,3 +14,5 @@ coverage/
 *.sqlite
 .DS_Store
 .certs/
+.worktrees/
+.superpowers/
