@@ -18,4 +18,26 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText('Req body')).toBeInTheDocument();
     expect(screen.getByText('functional')).toBeInTheDocument();
   });
+
+  it('renders the quality score and issue chips when present', () => {
+    render(
+      <NodeDetailPanel
+        entry={{
+          localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+          action: 'create', customerId: null, tags: [], qualityScore: 72, qualityIssues: ['vague_term'],
+        }}
+      />,
+    );
+    expect(screen.getByText(/72\s*\/\s*100/)).toBeInTheDocument();
+    expect(screen.getByText('vague_term')).toBeInTheDocument();
+  });
+
+  it('renders no score line when qualityScore is absent', () => {
+    render(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.queryByText(/\/\s*100/)).not.toBeInTheDocument();
+  });
 });

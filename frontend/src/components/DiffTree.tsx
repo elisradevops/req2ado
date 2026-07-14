@@ -15,6 +15,8 @@ export interface DryRunDiffEntry {
   existingAdoId?: number | null;
   customerId: string | null;
   tags?: string[];
+  qualityScore?: number | null;
+  qualityIssues?: string[];
 }
 
 interface FlatRow {

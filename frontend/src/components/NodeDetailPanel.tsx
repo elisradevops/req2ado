@@ -1,6 +1,7 @@
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import { TagChips } from './TagChips';
+import { IssueChips } from './IssueChips';
 import type { DryRunDiffEntry } from './DiffTree';
 
 export function NodeDetailPanel({ entry }: { entry: DryRunDiffEntry | null }): React.ReactElement {
@@ -13,6 +14,12 @@ export function NodeDetailPanel({ entry }: { entry: DryRunDiffEntry | null }): R
       <Typography variant="h6">{entry.title}</Typography>
       <Typography variant="body2">{entry.description}</Typography>
       <TagChips tags={entry.tags} />
+      {entry.qualityScore != null && (
+        <>
+          <Typography variant="body2">Quality score: {entry.qualityScore} / 100</Typography>
+          <IssueChips issues={entry.qualityIssues} />
+        </>
+      )}
     </Box>
   );
 }
