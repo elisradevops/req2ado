@@ -105,6 +105,18 @@ Wires the read side of the KB store into SURVEY mode's two whole-document LLM ca
 
 **Not yet done:** no chat feature exists to retrieve into (roadmap mentions it as a future target). P2c (RAG-grounded quality scoring) and P2d (learning-loop write-back) are separate, later phases.
 
+## 4c. P2c — RAG-grounded quality scoring (current)
+
+Every SURVEY-mode node now gets a 0-100 quality score and zero or more flagged issue labels, judged against org rules retrieved from the KB when available, falling back to EARS/INCOSE/ISO-29148 criteria baked into the prompt (the model's general knowledge of these public standards, not a second retrieval) when it isn't. A new batched whole-document call, `OrchestratorLlmClient.score_requirements_for_document` (`ingestion/app/survey/orchestrator_llm_client.py`), runs inside `build_survey_tree` (`ingestion/app/leveling/llm_leveling.py`) after the existing formalization loop, scoring every node's FINAL formalized description in one call. It reuses the SAME `kb_context` string already computed once per document by P2b's `retrieve_context` — zero new retrieval calls, one new LLM round-trip per document.
+
+**Fully additive.** `build_survey_tree` gained a new optional `scoring_client` param defaulting to `None` — every pre-existing test call site needed zero changes. `POST /level`'s production caller (`app/main.py`) always supplies the real `OrchestratorLlmClient` instance as `scoring_client` (the same instance already used for `llm_client`/`requirement_client`).
+
+**Tolerant per-node parsing.** A missing, malformed (non-int, out of 0-100 range), or wrongly-shaped (e.g. not even a dict) scoring entry for one node_id falls back to `quality_score=None`/`quality_issues=[]` for that node only — never crashes the batch or affects sibling nodes. `RequirementQualityIssue` (`ingestion/app/workitem/model.py`) is a closed 7-value enum (`ambiguous`, `not_testable`, `compound`, `missing_acceptance_criteria`, `vague_term`, `passive_voice`, `missing_rationale`); an issue string from the LLM outside this set is silently dropped, same tolerant philosophy as `RequirementTag` today.
+
+**Data flow.** `WorkItemNode.quality_score`/`quality_issues` (ingestion) → `DryRunTreeNode`/`DryRunDiffEntry.qualityScore`/`qualityIssues` (orchestrator, `pipeline.worker.ts` + `dry-run.service.ts`) → `NodeDetailPanel` (frontend), which renders a `{score}/100` line plus a new `IssueChips` component (mirrors `TagChips`, own color mapping via `issueColors.ts`) — detail-panel-only, the `DiffTree` tree rows are unchanged.
+
+**Not yet done:** P2d (learning-loop write-back of confirmed/accepted items into the KB). Editable/re-scoreable items from the review UI (Phase 3's per-item chat/refine work may eventually trigger re-scoring; not this phase). Org-authored custom scoring rubrics beyond what's already retrievable via the existing per-document `kb_context`.
+
 ## 5. Backend API surface (current)
 
 All routes on the orchestrator (`http://localhost:3001` in dev):
