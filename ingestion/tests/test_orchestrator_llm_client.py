@@ -131,3 +131,71 @@ def test_generate_requirements_for_document_strips_a_markdown_json_fence() -> No
 
     result = client.generate_requirements_for_document({"n0": "block 0 text"})
     assert result == response_body
+
+
+def test_infer_hierarchy_prepends_kb_context_when_present() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.infer_hierarchy("some outline", None, kb_context="Reference chunk about displays.")
+    assert captured["system_prompt"].startswith(
+        "Reference material from the knowledge base (may be incomplete or "
+        "irrelevant — use only what's genuinely helpful):\n\n"
+        "Reference chunk about displays.\n\n"
+    )
+    assert "You infer a work-item hierarchy" in captured["system_prompt"]
+
+
+def test_infer_hierarchy_prompt_unchanged_when_kb_context_is_none() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.infer_hierarchy("some outline", None)
+    assert captured["system_prompt"].startswith("You infer a work-item hierarchy")
+    assert "Reference material from the knowledge base" not in captured["system_prompt"]
+
+
+def test_generate_requirements_for_document_prepends_kb_context_when_present() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.generate_requirements_for_document({"0": "text"}, kb_context="Reference chunk about displays.")
+    assert captured["system_prompt"].startswith(
+        "Reference material from the knowledge base (may be incomplete or "
+        "irrelevant — use only what's genuinely helpful):\n\n"
+        "Reference chunk about displays.\n\n"
+    )
+    assert "You convert several informal requirement blocks" in captured["system_prompt"]
+
+
+def test_generate_requirements_for_document_prompt_unchanged_when_kb_context_is_none() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.generate_requirements_for_document({"0": "text"})
+    assert captured["system_prompt"].startswith("You convert several informal requirement blocks")
+    assert "Reference material from the knowledge base" not in captured["system_prompt"]

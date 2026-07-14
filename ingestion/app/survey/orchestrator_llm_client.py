@@ -26,6 +26,17 @@ def _strip_json_fence(content: str) -> str:
     return match.group(1).strip() if match else content.strip()
 
 
+def _with_kb_context(system_prompt: str, kb_context: str | None) -> str:
+    if kb_context is None:
+        return system_prompt
+    return (
+        "Reference material from the knowledge base (may be incomplete or "
+        "irrelevant — use only what's genuinely helpful):\n\n"
+        f"{kb_context}\n\n"
+        f"{system_prompt}"
+    )
+
+
 class OrchestratorLlmClient:
     """First REAL (non-fake) implementation of SurveyRequirementClient. Calls
     the orchestrator's POST /llm/chat proxy (Part A of this phase) — NEVER
@@ -72,7 +83,7 @@ class OrchestratorLlmClient:
             raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
         return parsed
 
-    def infer_hierarchy(self, outline: str, profile_hint: object | None) -> list[dict]:
+    def infer_hierarchy(self, outline: str, profile_hint: object | None, kb_context: str | None = None) -> list[dict]:
         # profile_hint is currently unused by the real prompt — LlmLevelingClient's
         # Protocol declares it for future profile-aware prompting, not exercised yet.
         system_prompt = (
@@ -86,6 +97,7 @@ class OrchestratorLlmClient:
             "present in the outline. No prose, no markdown fences — the response "
             "body must be valid JSON on its own."
         )
+        system_prompt = _with_kb_context(system_prompt, kb_context)
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -106,7 +118,9 @@ class OrchestratorLlmClient:
         except json.JSONDecodeError as exc:
             raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
 
-    def generate_requirements_for_document(self, blocks_by_node_id: dict[str, str]) -> dict[str, list[dict]]:
+    def generate_requirements_for_document(
+        self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
+    ) -> dict[str, list[dict]]:
         """Batched sibling of generate_requirements: one LLM call for every
         node in the tree, not one call per node. A first draft of this
         wiring made ~2 LLM calls per node (title distillation + per-block
@@ -127,6 +141,7 @@ class OrchestratorLlmClient:
             "list. Never invent a node_id not present in the input. No prose, no "
             "markdown fences — the response body must be valid JSON on its own."
         )
+        system_prompt = _with_kb_context(system_prompt, kb_context)
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
