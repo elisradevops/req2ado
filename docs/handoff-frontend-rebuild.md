@@ -16,7 +16,7 @@ Converts a customer requirements document (contract-signed spec, informal narrat
 - **Phase 1 gap closures merged** (commit `c68a122`): the five gaps flagged in the previous version of this doc are now closed — see §4.
 - **KB connector, first cut** (commit `375da94`, "P2a"): SharePoint-REST folder-crawl + `KbSource` config + Sync button. **Superseded — do not build on it.**
 - **KB connector, current** (commit `8f22cec`): replaced the folder-crawl with a Microsoft Graph single-share-link document ingest. This is the live model — see §4a.
-- **Full docker-compose stack** (7 services incl. frontend) — live-verified end-to-end this round: login-session bypass → upload → wizard → reload-driven diff → confirm → audit, and separately the `/knowledge-base` Graph-ingest flow (paste sharing link → real graph.microsoft.com call → clean error handling; happy path needs a real token, see §4a).
+- **Full docker-compose stack** (7 services incl. frontend) — live-verified end-to-end this round: login-session bypass → upload → wizard → reload-driven diff → confirm → audit, and separately the full `/knowledge-base` Graph-ingest flow (paste sharing link → real graph.microsoft.com call → real document parsed/chunked/stored → skip-unchanged on re-ingest → renders in the UI — see §4a).
 - **`docs/architecture.md`** — the original (aspirational, over-scoped) design doc. Still treat with skepticism.
 - **`~/.claude/plans/glowing-prancing-valiant.md`** — the approved design/plan for the Graph-ingest replacement (the current KB model).
 - **`docs/superpowers/specs/2026-07-12-p2a-sharepoint-kb-connector-design.md`** + **`docs/superpowers/plans/2026-07-12-p2a-sharepoint-kb-connector.md`** — the *superseded* P2a folder-crawl design/plan. Historical only; the connector they describe was deleted in `8f22cec`.
@@ -74,7 +74,7 @@ Foundation for Phase 2's RAG-first knowledge layer. **No retrieval is wired into
 
 **Reviews caught & fixed (both with regression tests):** (1) a **Critical SSRF host-spoofing bypass** — the initial allowlist used a raw `endswith`, so `fakeonedrive.com` passed; fixed by anchoring at a domain-label boundary (`host === s || host.endsWith('.'+s)`), applied at **both** the ingestion and orchestrator allowlist layers. (2) an **Important robustness gap** — Graph network/timeout errors were uncaught → opaque 500; now wrapped as `GraphApiError(502)`.
 
-**Known gap, same class as `/auth/login`'s real-ADO dependency:** no real Graph token/tenant in local dev. Live verification reached **real** `graph.microsoft.com` and got a genuine 401 for a fake token (proving share-id encoding, auth header, endpoint, and status mapping end-to-end), but the **happy path (valid token → actual document ingested + chunks stored) is unverified**. Do it once before P2b depends on the corpus.
+**Real-tenant happy path — verified.** Ingested a real `.docx` (1.4MB) via a real `graph.microsoft.com` sharing link: parsed content confirmed in the KB Chroma collection (correct `source_id`/`doc_type`/`file_hash` metadata), `IngestedDocument` row persisted, re-ingest correctly returned `skippedUnchanged: true`, and it renders on `/knowledge-base`. Also confirmed the 403 path against real Graph along the way (a token with only `openid profile User.Read email` scopes → genuine Graph `accessDenied` → cleanly surfaced as HTTP 403). **Scope note:** `Files.Read` (not `Files.Read.All`) was sufficient — the tenant didn't allow `.All`, and a delegated `Files.Read` token covers files the signed-in user can access via a sharing link, which is the only case this connector needs.
 
 **Also worth knowing:** `IngestedDocument` uniqueness is `[areaPath, driveItemId]` — a document is identified by its Graph driveItem id, so the same file re-shared under a new link (same driveItem) correctly updates in place; a genuinely different copy (different driveItem) is a distinct row.
 
@@ -120,7 +120,7 @@ All routes on the orchestrator (`http://localhost:3001` in dev):
 - **Phase 3 — Review power** (editable dry-run diff, AI assist/chat per item).
 - **Phase 4 — Traceability** (Covers/CoveredBy/Affects link types, diff-vs-live-ADO, baselining).
 
-Before P2b, verify the KB ingest happy path against a **real** Graph token/tenant at least once (§4a known gap) — P2b's retrieval quality depends on the fetch→chunk→embed→store path actually working against real document content, which the live verification so far only exercised up to the Graph 401.
+The KB ingest happy path has now been verified against a real Graph token/tenant (§4a) — the fetch→chunk→embed→store path works against real document content, which is what P2b's retrieval will build on.
 
 ## 9. Testing conventions (established, keep using)
 
