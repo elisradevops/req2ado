@@ -76,13 +76,21 @@ for node_id in ...}` and calls `scoring_client.score_requirements_for_document(d
 kb_context=kb_context)` once — reusing the same `kb_context` variable
 already computed for the other two calls (P2b's Global Constraint "one
 retrieval per document" is honored: scoring adds zero new retrieval
-calls, only one new LLM call). Gains a new required constructor-shaped
-parameter `scoring_client: BatchedScoringClient` (required, not optional
-— unlike P2b's KB params, this one has no "skip" branch, since every
-SURVEY node gets scored regardless of KB availability; existing test
-call sites and the one real caller in `app/main.py`'s `/level` route
-must supply it — `OrchestratorLlmClient` satisfies all three Protocols
-with one instance, same as today).
+calls, only one new LLM call). Gains a new optional parameter `scoring_client: BatchedScoringClient
+| None = None`. (Correction from an earlier draft of this spec: a
+required param would have forced touching all ~15 existing
+`build_survey_tree` call sites in tests for no real benefit — optional
+is fully additive, matching P2b's precedent. Semantically, scoring still
+has no KB-availability-dependent skip branch — it runs whenever a
+`scoring_client` is supplied, independent of `kb_context` being `None`
+or not — this is just about whether the Python parameter itself is
+required.) When `scoring_client` is `None` (as every pre-existing test
+call site is), scoring is skipped entirely: every node's `quality_score`
+stays `None` and `quality_issues` stays `[]`. `app/main.py`'s `/level`
+route (the one real production caller) always supplies a real
+`OrchestratorLlmClient` instance as `scoring_client` — the same instance
+already used for `llm_client`/`requirement_client`, since one instance
+satisfies all three Protocols.
 
 ### `WorkItemNode` (modified, `app/workitem/model.py`)
 
