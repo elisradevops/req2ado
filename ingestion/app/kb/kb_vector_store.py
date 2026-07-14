@@ -87,3 +87,22 @@ class KbVectorStore:
         same-named file's chunks when two sources share an area_path."""
         collection = self._get_collection(area_path)
         collection.delete(where={"$and": [{"source_file": source_file}, {"source_id": source_id}]})
+
+    def query(self, area_path: str, embedding: list[float], top_k: int) -> list[dict]:
+        """Returns up to top_k nearest chunks for this area_path's KB
+        collection, ordered nearest-first, each as {text, distance,
+        source_file}. distance is chromadb's cosine distance (lower =
+        closer) — callers apply their own similarity cutoff. Empty list
+        if the collection has no chunks (mirrors ChromaVectorStore.
+        query_nearest's empty-collection guard)."""
+        collection = self._get_collection(area_path)
+        if collection.count() == 0:
+            return []
+        result = collection.query(query_embeddings=[embedding], n_results=top_k)
+        documents = result["documents"][0]
+        distances = result["distances"][0]
+        metadatas = result["metadatas"][0]
+        return [
+            {"text": documents[i], "distance": distances[i], "source_file": metadatas[i]["source_file"]}
+            for i in range(len(documents))
+        ]

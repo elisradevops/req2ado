@@ -95,3 +95,42 @@ def test_two_sources_sharing_an_area_path_do_not_clobber_same_named_files() -> N
         # Source A's original hash/chunks must be untouched.
         assert store.existing_file_hash("Shared\\Area", "spec.docx", "source-A") == "hash-A"
         assert store.existing_file_hash("Shared\\Area", "spec.docx", "source-B") == "hash-B"
+
+
+def test_query_returns_empty_list_for_a_never_ingested_area_path() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        assert store.query("Project\\Area1", embedding=[1.0, 0.0, 0.0], top_k=5) == []
+
+
+def test_query_returns_nearest_chunks_ordered_by_distance() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="near chunk",
+            area_path="Project\\Area1", source_file="doc.txt", source_id="source-1",
+            chunk_index=0, file_hash="hash-1",
+        )
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:1", embedding=[0.0, 1.0, 0.0], text="far chunk",
+            area_path="Project\\Area1", source_file="doc.txt", source_id="source-1",
+            chunk_index=1, file_hash="hash-1",
+        )
+        results = store.query("Project\\Area1", embedding=[1.0, 0.0, 0.0], top_k=5)
+        assert len(results) == 2
+        assert results[0]["text"] == "near chunk"
+        assert results[0]["source_file"] == "doc.txt"
+        assert results[0]["distance"] < results[1]["distance"]
+
+
+def test_query_respects_top_k() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        for i in range(3):
+            store.upsert_chunk(
+                chunk_id=f"source-1:doc.txt:{i}", embedding=[1.0, float(i), 0.0], text=f"chunk {i}",
+                area_path="Project\\Area1", source_file="doc.txt", source_id="source-1",
+                chunk_index=i, file_hash="hash-1",
+            )
+        results = store.query("Project\\Area1", embedding=[1.0, 0.0, 0.0], top_k=2)
+        assert len(results) == 2
