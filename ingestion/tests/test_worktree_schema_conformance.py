@@ -53,7 +53,7 @@ class FakeLlmLevelingClient:
     in tests/test_llm_leveling.py to prove SURVEY-mode output also conforms
     to the shared work-item-tree schema."""
 
-    def infer_hierarchy(self, outline: str, profile_hint: str | None) -> list[dict]:
+    def infer_hierarchy(self, outline: str, profile_hint: str | None, kb_context: str | None = None) -> list[dict]:
         return [
             {"node_id": "0", "type": "Feature", "parent_id": None},
             {"node_id": "1", "type": "Requirement", "parent_id": "0"},
@@ -66,7 +66,9 @@ class FakeBatchedRequirementClient:
     also conforms to the shared work-item-tree schema after this phase wired
     batched requirement generation into build_survey_tree."""
 
-    def generate_requirements_for_document(self, blocks_by_node_id: dict[str, str]) -> dict[str, list[dict]]:
+    def generate_requirements_for_document(
+        self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
+    ) -> dict[str, list[dict]]:
         return {
             node_id: [{"text": f"The system shall handle: {text}", "tags": []}]
             for node_id, text in blocks_by_node_id.items()

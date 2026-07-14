@@ -23,7 +23,7 @@ class FakeLlmLevelingClient:
     works end-to-end. No real Open WebUI call exists yet in this phase — the
     orchestrator's LLM proxy is separate, not-yet-built infrastructure."""
 
-    def infer_hierarchy(self, outline: str, profile_hint: str | None) -> list[dict]:
+    def infer_hierarchy(self, outline: str, profile_hint: str | None, kb_context: str | None = None) -> list[dict]:
         assert "Display" in outline
         assert "HDR" in outline
         return [
@@ -44,7 +44,9 @@ class FakeBatchedRequirementClient:
         self._results = results
         self.calls: list[dict[str, str]] = []
 
-    def generate_requirements_for_document(self, blocks_by_node_id: dict[str, str]) -> dict[str, list[dict]]:
+    def generate_requirements_for_document(
+        self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
+    ) -> dict[str, list[dict]]:
         self.calls.append(blocks_by_node_id)
         if self._results is not None:
             return self._results
@@ -132,7 +134,7 @@ def test_survey_tree_can_jointly_produce_every_requirement_tag_in_the_taxonomy()
     )
 
     class _FlatHierarchyClient:
-        def infer_hierarchy(self, outline: str, profile_hint: str | None) -> list[dict]:
+        def infer_hierarchy(self, outline: str, profile_hint: str | None, kb_context: str | None = None) -> list[dict]:
             return [
                 {"node_id": str(i), "type": "Requirement", "parent_id": None}
                 for i in range(len(all_tags))
@@ -167,9 +169,78 @@ def test_build_survey_tree_tolerates_a_single_object_instead_of_an_array_from_in
     )
 
     class _SingleObjectHierarchyClient:
-        def infer_hierarchy(self, outline: str, profile_hint: str | None) -> dict:
+        def infer_hierarchy(self, outline: str, profile_hint: str | None, kb_context: str | None = None) -> dict:
             return {"node_id": "0", "type": "Requirement", "parent_id": None}
 
     tree = build_survey_tree(doc, _SingleObjectHierarchyClient(), FakeBatchedRequirementClient())
     assert len(tree.nodes) == 1
     assert tree.nodes[0].type == WorkItemType.REQUIREMENT
+
+
+def test_build_survey_tree_without_area_path_skips_retrieval_entirely() -> None:
+    # No area_path/embed_client/vector_store supplied -> retrieval must not
+    # even be attempted. Proven by the fake raising if kb_context ever
+    # arrives non-None (it never should, since retrieval was skipped).
+    class _AssertingHierarchyClient:
+        def infer_hierarchy(self, outline: str, profile_hint: str | None, kb_context: str | None = None) -> list[dict]:
+            assert kb_context is None
+            return [{"node_id": "0", "type": "Feature", "parent_id": None}, {"node_id": "1", "type": "Requirement", "parent_id": "0"}]
+
+    tree = build_survey_tree(_small_doc(), _AssertingHierarchyClient(), FakeBatchedRequirementClient())
+    assert len(tree.nodes) == 2
+
+
+def test_build_survey_tree_threads_kb_context_into_both_calls(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    captured: dict[str, str | None] = {}
+
+    class _CapturingHierarchyClient:
+        def infer_hierarchy(self, outline: str, profile_hint: str | None, kb_context: str | None = None) -> list[dict]:
+            captured["hierarchy_kb_context"] = kb_context
+            return [{"node_id": "0", "type": "Feature", "parent_id": None}, {"node_id": "1", "type": "Requirement", "parent_id": "0"}]
+
+    class _CapturingRequirementClient:
+        def generate_requirements_for_document(
+            self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
+        ) -> dict[str, list[dict]]:
+            captured["requirements_kb_context"] = kb_context
+            return {node_id: [{"text": f"shall {text}", "tags": []}] for node_id, text in blocks_by_node_id.items()}
+
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.retrieve_context",
+        lambda area_path, query_text, embed_client, vector_store, **_: "injected KB text",
+    )
+
+    build_survey_tree(
+        _small_doc(),
+        _CapturingHierarchyClient(),
+        _CapturingRequirementClient(),
+        area_path="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert captured["hierarchy_kb_context"] == "injected KB text"
+    assert captured["requirements_kb_context"] == "injected KB text"
+
+
+def test_build_survey_tree_calls_retrieve_context_exactly_once(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    call_count = {"n": 0}
+
+    def _fake_retrieve_context(area_path, query_text, embed_client, vector_store, **_):
+        call_count["n"] += 1
+        return None
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    build_survey_tree(
+        _small_doc(),
+        FakeLlmLevelingClient(),
+        FakeBatchedRequirementClient(),
+        area_path="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert call_count["n"] == 1

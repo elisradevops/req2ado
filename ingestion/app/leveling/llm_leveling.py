@@ -5,6 +5,8 @@ from typing import Protocol
 
 from app.canonical.model import CanonicalDoc
 from app.distillation.title import extract_baseline_title
+from app.kb.kb_vector_store import KbVectorStore
+from app.kb.retrieval import retrieve_context
 from app.leveling.depth import resolve_block_depth
 from app.leveling.profiles import LevelingProfile
 from app.workitem.model import RequirementTag, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
@@ -18,7 +20,7 @@ class LlmLevelingClient(Protocol):
     conforming client. Matches the runtime prompt contract documented in
     docs/architecture.md: strict JSON {node_id,type,parent_id}[]."""
 
-    def infer_hierarchy(self, outline: str, profile_hint: LevelingProfile | None) -> list[dict]: ...
+    def infer_hierarchy(self, outline: str, profile_hint: LevelingProfile | None, kb_context: str | None = None) -> list[dict]: ...
 
 
 class BatchedRequirementClient(Protocol):
@@ -31,7 +33,9 @@ class BatchedRequirementClient(Protocol):
     callers, untouched by this phase) — this Protocol's single method takes
     ALL blocks at once."""
 
-    def generate_requirements_for_document(self, blocks_by_node_id: dict[str, str]) -> dict[str, list[dict]]: ...
+    def generate_requirements_for_document(
+        self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
+    ) -> dict[str, list[dict]]: ...
 
 
 def _build_outline(doc: CanonicalDoc) -> str:
@@ -46,6 +50,9 @@ def build_survey_tree(
     doc: CanonicalDoc,
     llm_client: LlmLevelingClient,
     requirement_client: BatchedRequirementClient,
+    area_path: str | None = None,
+    embed_client: object | None = None,
+    vector_store: KbVectorStore | None = None,
 ) -> WorkItemTree:
     """SURVEY-mode leveling: infers hierarchy, then formalizes every node's
     description into 'shall'-style requirement text + taxonomy tags via ONE
@@ -63,9 +70,17 @@ def build_survey_tree(
     this is a WEAKER guarantee than BASELINE's verbatim-source-span hash:
     temperature=0 is mostly-but-not-guaranteed deterministic, so a model or
     prompt change can shift this hash and produce a duplicate create on
-    re-run. Embedding dedup partially backstops this; it is not a substitute."""
+    re-run. Embedding dedup partially backstops this; it is not a substitute.
+    When area_path, embed_client, and vector_store are all supplied, one KB
+    retrieval call grounds both the hierarchy and requirement-generation
+    calls with the same retrieved context; when any is omitted, retrieval is
+    skipped entirely (kb_context stays None), matching pre-KB behavior
+    exactly."""
     outline = _build_outline(doc)
-    hierarchy = llm_client.infer_hierarchy(outline, profile_hint=None)
+    kb_context: str | None = None
+    if area_path is not None and embed_client is not None and vector_store is not None:
+        kb_context = retrieve_context(area_path, outline, embed_client, vector_store)
+    hierarchy = llm_client.infer_hierarchy(outline, profile_hint=None, kb_context=kb_context)
     # Tolerant of LLM non-compliance: the prompt asks for a JSON ARRAY, but a
     # small local model (observed with llama3.2:1b against a short outline)
     # sometimes collapses to a single JSON object instead of a one-element
@@ -82,7 +97,7 @@ def build_survey_tree(
         for node_id in hierarchy_by_node_id
         if node_id in block_by_index
     }
-    generated_by_node_id = requirement_client.generate_requirements_for_document(blocks_by_node_id)
+    generated_by_node_id = requirement_client.generate_requirements_for_document(blocks_by_node_id, kb_context=kb_context)
 
     nodes: list[WorkItemNode] = []
     for node_id, entry in hierarchy_by_node_id.items():
