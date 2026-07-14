@@ -75,33 +75,39 @@ export class KbService {
 
   async ingestFolderUrl(url: string, areaPath: string, docType: string | null): Promise<FolderIngestUrlResult> {
     const result = await this.ingestionClient.ingestFolderUrl(url, areaPath, docType);
-    // Persist a row for every file that actually landed in the KB
-    // (ingested or skipped-unchanged) — mirrors ingestUrl's single-doc
-    // persistence. Failed files have no driveitemId and are not persisted.
-    await Promise.all(
-      result.files
-        .filter((f) => f.status !== 'failed' && f.driveitemId)
-        .map((f) =>
-          this.prisma.ingestedDocument.upsert({
-            where: { areaPath_driveItemId: { areaPath, driveItemId: f.driveitemId! } },
-            create: {
-              areaPath,
-              driveItemId: f.driveitemId!,
-              name: f.file,
-              sizeBytes: f.sizeBytes ?? 0,
-              mimeType: f.mimeType,
-              docType,
-            },
-            update: {
-              name: f.file,
-              sizeBytes: f.sizeBytes ?? 0,
-              mimeType: f.mimeType,
-              docType,
-              ingestedAt: new Date(),
-            },
-          }),
-        ),
+    const toPersist = result.files.filter((f) => f.status !== 'failed' && f.driveitemId);
+    // allSettled: the KB (Chroma) side already succeeded for every file in
+    // toPersist, so one file's Prisma upsert rejecting must not throw away
+    // the others' already-committed results or mark them failed.
+    const settled = await Promise.allSettled(
+      toPersist.map((f) =>
+        this.prisma.ingestedDocument.upsert({
+          where: { areaPath_driveItemId: { areaPath, driveItemId: f.driveitemId! } },
+          create: {
+            areaPath,
+            driveItemId: f.driveitemId!,
+            name: f.file,
+            sizeBytes: f.sizeBytes ?? 0,
+            mimeType: f.mimeType,
+            docType,
+          },
+          update: {
+            name: f.file,
+            sizeBytes: f.sizeBytes ?? 0,
+            mimeType: f.mimeType,
+            docType,
+            ingestedAt: new Date(),
+          },
+        }),
+      ),
     );
+    settled.forEach((outcome, i) => {
+      if (outcome.status === 'rejected') {
+        const file = toPersist[i];
+        file.status = 'failed';
+        file.reason = `KB store succeeded but database persistence failed: ${outcome.reason?.message ?? outcome.reason}`;
+      }
+    });
     return result;
   }
 }

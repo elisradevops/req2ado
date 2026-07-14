@@ -67,4 +67,32 @@ describe('KbService', () => {
     );
     expect(result).toEqual(folderResult);
   });
+
+  it("ingestFolderUrl() does not let one file's DB-persist rejection fail the whole batch", async () => {
+    const folderResult = {
+      files: [
+        { file: 'a.docx', status: 'ingested', chunksStored: 2, driveitemId: 'drive-a', mimeType: 'application/a', sizeBytes: 100, reason: null },
+        { file: 'b.docx', status: 'ingested', chunksStored: 1, driveitemId: 'drive-b', mimeType: 'application/b', sizeBytes: 200, reason: null },
+      ],
+    };
+    const ingestionClient = { ingestFolderUrl: jest.fn().mockResolvedValue(folderResult) };
+    const prisma = {
+      ingestedDocument: {
+        upsert: jest
+          .fn()
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('db unavailable')),
+      },
+    };
+    const service = new KbService(prisma as any, ingestionClient as any);
+
+    const result = await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD');
+
+    expect(result.files.find((f) => f.file === 'a.docx')).toEqual(
+      expect.objectContaining({ status: 'ingested' }),
+    );
+    expect(result.files.find((f) => f.file === 'b.docx')).toEqual(
+      expect.objectContaining({ status: 'failed', reason: expect.stringContaining('db unavailable') }),
+    );
+  });
 });

@@ -45,7 +45,9 @@ export function KnowledgeBase(): React.ReactElement {
         const ingested = result.files.filter((f) => f.status === 'ingested').length;
         const skipped = result.files.filter((f) => f.status === 'skipped_unchanged').length;
         const failed = result.files.filter((f) => f.status === 'failed');
-        if (failed.length > 0) {
+        if (result.files.length === 0) {
+          showToast('Folder is empty — no files were found to ingest.', 'info');
+        } else if (failed.length > 0) {
           showToast(
             `Folder ingest: ${ingested} ingested, ${skipped} skipped, ${failed.length} failed (${failed.map((f) => f.file).join(', ')}).`,
             'error',

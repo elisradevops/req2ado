@@ -75,6 +75,20 @@ describe('KnowledgeBase', () => {
     await waitFor(() => expect(screen.getByText(/folder ingest: 1 ingested, 1 skipped/i)).toBeInTheDocument());
   });
 
+  it('shows a distinct empty-state message for a folder with no ingestable files', async () => {
+    vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
+    vi.spyOn(kbApi, 'ingestFolderUrl').mockResolvedValue({ files: [] });
+    renderPage();
+
+    await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/empty-folder');
+    await userEvent.click(screen.getByLabelText(/this is a folder/i));
+    await userEvent.type(screen.getByLabelText(/^area path$/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /ingest folder/i }));
+
+    await waitFor(() => expect(kbApi.ingestFolderUrl).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText(/folder is empty — no files were found to ingest/i)).toBeInTheDocument());
+  });
+
   it('does not render a bearer-token / password field', async () => {
     vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
     renderPage();

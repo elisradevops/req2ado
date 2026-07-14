@@ -150,5 +150,9 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GraphApiError as exc:
-        status = exc.status if exc.status in (401, 403, 404) else 502
+        # 400 included here (unlike the single-doc route): Graph's own
+        # response to /children on a non-folder driveItem is a 400, and that
+        # is a client input error ("this link isn't a folder"), not a
+        # Graph-unreachable 502.
+        status = exc.status if exc.status in (400, 401, 403, 404) else 502
         raise HTTPException(status_code=status, detail=str(exc)) from exc
