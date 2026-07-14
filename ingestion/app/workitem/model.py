@@ -32,6 +32,16 @@ class RequirementTag(str, Enum):
     BEHAVIOR = "behavior"
 
 
+class RequirementQualityIssue(str, Enum):
+    AMBIGUOUS = "ambiguous"
+    NOT_TESTABLE = "not_testable"
+    COMPOUND = "compound"
+    MISSING_ACCEPTANCE_CRITERIA = "missing_acceptance_criteria"
+    VAGUE_TERM = "vague_term"
+    PASSIVE_VOICE = "passive_voice"
+    MISSING_RATIONALE = "missing_rationale"
+
+
 class WorkItemNode(BaseModel):
     local_id: str
     type: WorkItemType
@@ -42,6 +52,8 @@ class WorkItemNode(BaseModel):
     source_ref: SourceRef
     fidelity_hash: str | None = None
     tags: list[RequirementTag] = Field(default_factory=list)
+    quality_score: int | None = None
+    quality_issues: list[RequirementQualityIssue] = Field(default_factory=list)
     mode: WorkItemMode
 
 
