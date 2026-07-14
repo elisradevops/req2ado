@@ -244,3 +244,58 @@ def test_build_survey_tree_calls_retrieve_context_exactly_once(monkeypatch) -> N
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
     )
     assert call_count["n"] == 1
+
+
+def test_build_survey_tree_end_to_end_injects_real_ingested_kb_chunk(tmp_path) -> None:
+    # Integration test: exercises the real retrieve_context + real KbVectorStore
+    # (no monkeypatching of retrieve_context, unlike the tests above), proving the
+    # full chain — build_survey_tree -> retrieve_context -> KbVectorStore.query ->
+    # back into both LLM client calls — actually delivers a previously-ingested
+    # chunk's text into kb_context, not just that each seam's contract is honored
+    # in isolation.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    store = KbVectorStore(persist_path=str(tmp_path))
+    store.upsert_chunk(
+        chunk_id="source-1:spec.docx:0",
+        embedding=[1.0, 0.0, 0.0],
+        text="The receiver shall decode HDR10 metadata.",
+        area_path="Project\\Area1",
+        source_file="spec.docx",
+        source_id="source-1",
+        chunk_index=0,
+        file_hash="hash-1",
+    )
+
+    class _FakeEmbedClient:
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0, 0.0]]
+
+    captured: dict[str, str | None] = {}
+
+    class _CapturingHierarchyClient:
+        def infer_hierarchy(self, outline: str, profile_hint: str | None, kb_context: str | None = None) -> list[dict]:
+            captured["hierarchy_kb_context"] = kb_context
+            return [
+                {"node_id": "0", "type": "Feature", "parent_id": None},
+                {"node_id": "1", "type": "Requirement", "parent_id": "0"},
+            ]
+
+    class _CapturingRequirementClient:
+        def generate_requirements_for_document(
+            self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
+        ) -> dict[str, list[dict]]:
+            captured["requirements_kb_context"] = kb_context
+            return {node_id: [{"text": f"shall {text}", "tags": []}] for node_id, text in blocks_by_node_id.items()}
+
+    build_survey_tree(
+        _small_doc(),
+        _CapturingHierarchyClient(),
+        _CapturingRequirementClient(),
+        area_path="Project\\Area1",
+        embed_client=_FakeEmbedClient(),
+        vector_store=store,
+    )
+
+    assert captured["hierarchy_kb_context"] == "The receiver shall decode HDR10 metadata."
+    assert captured["requirements_kb_context"] == "The receiver shall decode HDR10 metadata."
