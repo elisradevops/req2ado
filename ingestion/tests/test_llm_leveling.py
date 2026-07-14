@@ -411,6 +411,25 @@ def test_build_survey_tree_tolerates_malformed_score_and_issues_per_node() -> No
     assert [i.value for i in by_id["1"].quality_issues] == ["not_testable"]
 
 
+def test_build_survey_tree_rejects_boolean_score_values() -> None:
+    # A boolean score must be rejected even though bool is a subclass of int
+    # in Python — `isinstance(True, int)` returns True, but the guard
+    # explicitly checks `not isinstance(raw_score, bool)` to prevent confusion
+    # between True/False (semantic booleans) and valid 0-100 integer scores.
+    fake_scoring_client = FakeBatchedScoringClient(
+        results={
+            "0": {"score": True, "issues": []},
+            "1": {"score": 85, "issues": []},
+        }
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(), scoring_client=fake_scoring_client
+    )
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["0"].quality_score is None  # bool is rejected despite isinstance(True, int) == True
+    assert by_id["1"].quality_score == 85
+
+
 def test_build_survey_tree_tolerates_a_non_dict_per_node_scoring_entry() -> None:
     # Reproduces what happens if a caller's LLM proxy mock/fixture returns a
     # value shaped like generate_requirements_for_document's response (a
