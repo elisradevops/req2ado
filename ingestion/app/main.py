@@ -49,6 +49,7 @@ class KbIngestUrlRequest(BaseModel):
     url: str
     area_path: str
     doc_type: str | None = None
+    recursive: bool = False  # ignored by /kb/ingest-url (single doc); folder route only
 
 
 @app.get("/health")
@@ -146,6 +147,7 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
             graph_client,
             _embed_client,
             _kb_vector_store,
+            body.recursive,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -18,6 +18,7 @@ export function KnowledgeBase(): React.ReactElement {
   const [areaPath, setAreaPath] = useState('');
   const [docType, setDocType] = useState('');
   const [isFolder, setIsFolder] = useState(false);
+  const [recursive, setRecursive] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const isIngestingRef = useRef(false);
 
@@ -41,7 +42,7 @@ export function KnowledgeBase(): React.ReactElement {
     setIngesting(true);
     try {
       if (isFolder) {
-        const result = await ingestFolderUrl(url, areaPath, docType || undefined);
+        const result = await ingestFolderUrl(url, areaPath, docType || undefined, recursive);
         const ingested = result.files.filter((f) => f.status === 'ingested').length;
         const skipped = result.files.filter((f) => f.status === 'skipped_unchanged').length;
         const failed = result.files.filter((f) => f.status === 'failed');
@@ -92,6 +93,12 @@ export function KnowledgeBase(): React.ReactElement {
           control={<Checkbox checked={isFolder} onChange={(event) => setIsFolder(event.target.checked)} />}
           label="This is a folder"
         />
+        {isFolder && (
+          <FormControlLabel
+            control={<Checkbox checked={recursive} onChange={(event) => setRecursive(event.target.checked)} />}
+            label="Include subfolders"
+          />
+        )}
         <TextField label="Area Path" value={areaPath} onChange={(event) => setAreaPath(event.target.value)} />
         <TextField label="Doc Type (optional)" value={docType} onChange={(event) => setDocType(event.target.value)} />
         <Button

@@ -30,6 +30,7 @@ export interface FolderIngestFile {
   mimeType: string | null;
   sizeBytes: number | null;
   reason: string | null;
+  relativePath: string | null;
 }
 
 export interface FolderIngestUrlResult {
@@ -73,8 +74,13 @@ export class KbService {
     });
   }
 
-  async ingestFolderUrl(url: string, areaPath: string, docType: string | null): Promise<FolderIngestUrlResult> {
-    const result = await this.ingestionClient.ingestFolderUrl(url, areaPath, docType);
+  async ingestFolderUrl(
+    url: string,
+    areaPath: string,
+    docType: string | null,
+    recursive = false,
+  ): Promise<FolderIngestUrlResult> {
+    const result = await this.ingestionClient.ingestFolderUrl(url, areaPath, docType, recursive);
     const toPersist = result.files.filter((f) => f.status !== 'failed' && f.driveitemId);
     // allSettled: the KB (Chroma) side already succeeded for every file in
     // toPersist, so one file's Prisma upsert rejecting must not throw away
@@ -86,13 +92,13 @@ export class KbService {
           create: {
             areaPath,
             driveItemId: f.driveitemId!,
-            name: f.file,
+            name: f.relativePath ?? f.file,
             sizeBytes: f.sizeBytes ?? 0,
             mimeType: f.mimeType,
             docType,
           },
           update: {
-            name: f.file,
+            name: f.relativePath ?? f.file,
             sizeBytes: f.sizeBytes ?? 0,
             mimeType: f.mimeType,
             docType,

@@ -57,7 +57,7 @@ describe('KbService', () => {
 
     const result = await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD');
 
-    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD');
+    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', false);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledTimes(2);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ where: { areaPath_driveItemId: { areaPath: 'Project\\Area1', driveItemId: 'drive-a' } } }),
@@ -66,6 +66,24 @@ describe('KbService', () => {
       expect.objectContaining({ where: { areaPath_driveItemId: { areaPath: 'Project\\Area1', driveItemId: 'drive-b' } } }),
     );
     expect(result).toEqual(folderResult);
+  });
+
+  it('ingestFolderUrl() forwards recursive to the ingestion client and persists relativePath as the document name', async () => {
+    const folderResult = {
+      files: [
+        { file: 'nested.docx', status: 'ingested', chunksStored: 1, driveitemId: 'drive-n', mimeType: 'application/n', sizeBytes: 50, reason: null, relativePath: 'Sub/nested.docx' },
+      ],
+    };
+    const ingestionClient = { ingestFolderUrl: jest.fn().mockResolvedValue(folderResult) };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
+    const service = new KbService(prisma as any, ingestionClient as any);
+
+    await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', true);
+
+    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', true);
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ name: 'Sub/nested.docx' }) }),
+    );
   });
 
   it("ingestFolderUrl() does not let one file's DB-persist rejection fail the whole batch", async () => {

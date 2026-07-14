@@ -22,6 +22,10 @@ class GraphFolderChild(BaseModel):
     size: int
     is_folder: bool
     download_url: str | None
+    # Populated from Graph's `parentReference.driveId` — needed to descend
+    # into this child via list_children_by_id when it's a folder (the
+    # by-share-link /shares/{id}/... path only works for the shared root).
+    drive_id: str | None = None
 
 
 class GraphApiError(Exception):
@@ -111,6 +115,29 @@ class GraphClient:
                 size=item.get("size", 0),
                 is_folder="folder" in item,
                 download_url=item.get("@microsoft.graph.downloadUrl"),
+                drive_id=item.get("parentReference", {}).get("driveId"),
+            )
+            for item in response.json().get("value", [])
+        ]
+
+    def list_children_by_id(self, drive_id: str, item_id: str) -> list[GraphFolderChild]:
+        """Lists the immediate children of a subfolder reached during
+        recursive descent, addressed by drive+item id rather than a share
+        link (the /shares/{shareId}/... path only resolves the shared
+        root). Same mapping/error handling as list_folder_children."""
+        request_url = f"{self.base_url}/drives/{drive_id}/items/{item_id}/children"
+        response = self._get(request_url)
+        if response.status_code != 200:
+            raise _error_for_status(response.status_code)
+        return [
+            GraphFolderChild(
+                id=item["id"],
+                name=item["name"],
+                mime_type=item.get("file", {}).get("mimeType"),
+                size=item.get("size", 0),
+                is_folder="folder" in item,
+                download_url=item.get("@microsoft.graph.downloadUrl"),
+                drive_id=item.get("parentReference", {}).get("driveId"),
             )
             for item in response.json().get("value", [])
         ]

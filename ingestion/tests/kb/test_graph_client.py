@@ -225,3 +225,81 @@ def test_fetch_child_content_rejects_a_non_https_download_url(monkeypatch) -> No
     client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
     with pytest.raises(ValueError):
         client.fetch_child_content("http://contoso.sharepoint.com/_layouts/download.aspx?tempauth=xyz")
+
+
+def test_list_folder_children_populates_drive_id_from_parent_reference(monkeypatch) -> None:
+    body = {
+        "value": [
+            {
+                "id": "item-2",
+                "name": "Subfolder",
+                "size": 0,
+                "folder": {"childCount": 1},
+                "parentReference": {"driveId": "drive-xyz"},
+            },
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    children = client.list_folder_children("https://contoso.sharepoint.com/sites/s/folder")
+
+    assert children[0].drive_id == "drive-xyz"
+
+
+def test_list_children_by_id_requests_the_drive_item_children_endpoint(monkeypatch) -> None:
+    body = {
+        "value": [
+            {
+                "id": "item-3",
+                "name": "nested.pdf",
+                "size": 20,
+                "file": {"mimeType": "application/pdf"},
+                "@microsoft.graph.downloadUrl": "https://dl/nested",
+                "parentReference": {"driveId": "drive-xyz"},
+            },
+        ]
+    }
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers["Authorization"]
+        return httpx.Response(200, json=body)
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    children = client.list_children_by_id("drive-xyz", "item-2")
+
+    assert children == [
+        GraphFolderChild(
+            id="item-3",
+            name="nested.pdf",
+            mime_type="application/pdf",
+            size=20,
+            is_folder=False,
+            download_url="https://dl/nested",
+            drive_id="drive-xyz",
+        ),
+    ]
+    assert "/drives/drive-xyz/items/item-2/children" in captured["url"]
+    assert captured["auth"] == "Bearer tok-1"
+
+
+def test_list_children_by_id_raises_graph_api_error_on_404(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "not found"})
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.list_children_by_id("drive-xyz", "item-2")
+
+    assert excinfo.value.status == 404

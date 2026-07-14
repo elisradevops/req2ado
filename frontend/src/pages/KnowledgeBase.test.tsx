@@ -71,8 +71,28 @@ describe('KnowledgeBase', () => {
     await userEvent.type(screen.getByLabelText(/^area path$/i), 'Project\\Area1');
     await userEvent.click(screen.getByRole('button', { name: /ingest folder/i }));
 
-    await waitFor(() => expect(kbApi.ingestFolderUrl).toHaveBeenCalledWith('https://share.example/folder', 'Project\\Area1', undefined));
+    await waitFor(() => expect(kbApi.ingestFolderUrl).toHaveBeenCalledWith('https://share.example/folder', 'Project\\Area1', undefined, false));
     await waitFor(() => expect(screen.getByText(/folder ingest: 1 ingested, 1 skipped/i)).toBeInTheDocument());
+  });
+
+  it('shows "Include subfolders" only when "This is a folder" is checked, and forwards recursive', async () => {
+    vi.spyOn(kbApi, 'listIngestedDocuments').mockResolvedValue([]);
+    vi.spyOn(kbApi, 'ingestFolderUrl').mockResolvedValue({ files: [] });
+    renderPage();
+
+    expect(screen.queryByLabelText(/include subfolders/i)).toBeNull();
+
+    await userEvent.click(screen.getByLabelText(/this is a folder/i));
+    expect(screen.getByLabelText(/include subfolders/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText(/include subfolders/i));
+    await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+    await userEvent.type(screen.getByLabelText(/^area path$/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /ingest folder/i }));
+
+    await waitFor(() =>
+      expect(kbApi.ingestFolderUrl).toHaveBeenCalledWith('https://share.example/folder', 'Project\\Area1', undefined, true),
+    );
   });
 
   it('shows a distinct empty-state message for a folder with no ingestable files', async () => {

@@ -143,8 +143,8 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
       ok: true,
       json: async () => ({
         files: [
-          { file: 'a.docx', status: 'ingested', chunks_stored: 2, driveitem_id: 'drive-a', mime_type: 'application/a', size_bytes: 100, reason: null },
-          { file: 'bad.docx', status: 'failed', chunks_stored: 0, driveitem_id: null, mime_type: null, size_bytes: null, reason: 'corrupt' },
+          { file: 'a.docx', status: 'ingested', chunks_stored: 2, driveitem_id: 'drive-a', mime_type: 'application/a', size_bytes: 100, reason: null, relative_path: 'a.docx' },
+          { file: 'bad.docx', status: 'failed', chunks_stored: 0, driveitem_id: null, mime_type: null, size_bytes: null, reason: 'corrupt', relative_path: null },
         ],
       }),
     });
@@ -157,15 +157,30 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
       'http://ingestion:8000/kb/ingest-folder-url',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', area_path: 'Project\\Area1', doc_type: 'SRD' }),
+        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', area_path: 'Project\\Area1', doc_type: 'SRD', recursive: false }),
       }),
     );
     expect(result).toEqual({
       files: [
-        { file: 'a.docx', status: 'ingested', chunksStored: 2, driveitemId: 'drive-a', mimeType: 'application/a', sizeBytes: 100, reason: null },
-        { file: 'bad.docx', status: 'failed', chunksStored: 0, driveitemId: null, mimeType: null, sizeBytes: null, reason: 'corrupt' },
+        { file: 'a.docx', status: 'ingested', chunksStored: 2, driveitemId: 'drive-a', mimeType: 'application/a', sizeBytes: 100, reason: null, relativePath: 'a.docx' },
+        { file: 'bad.docx', status: 'failed', chunksStored: 0, driveitemId: null, mimeType: null, sizeBytes: null, reason: 'corrupt', relativePath: null },
       ],
     });
+  });
+
+  it('sends recursive:true when requested', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ files: [] }) });
+    global.fetch = mockFetch as any;
+
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    await client.ingestFolderUrl('https://contoso.sharepoint.com/sites/s/folder', 'Project\\Area1', 'SRD', true);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://ingestion:8000/kb/ingest-folder-url',
+      expect.objectContaining({
+        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', area_path: 'Project\\Area1', doc_type: 'SRD', recursive: true }),
+      }),
+    );
   });
 
   it('throws an IngestionHttpError carrying the status on a non-ok response', async () => {

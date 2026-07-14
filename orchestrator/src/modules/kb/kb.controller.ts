@@ -38,6 +38,7 @@ export class KbController {
     @Body('url') url: string | undefined,
     @Body('areaPath') areaPath: string | undefined,
     @Body('docType') docType: string | undefined,
+    @Body('recursive') recursive?: boolean,
   ): Promise<FolderIngestUrlResult> {
     if (!url) {
       throw new BadRequestException('url is required');
@@ -49,7 +50,7 @@ export class KbController {
       throw new BadRequestException('url must be a SharePoint/OneDrive URL');
     }
     try {
-      return await this.kbService.ingestFolderUrl(url, areaPath, docType ?? null);
+      return await this.kbService.ingestFolderUrl(url, areaPath, docType ?? null, recursive ?? false);
     } catch (err) {
       if (err instanceof IngestionHttpError) {
         throw new HttpException(err.message, err.status);

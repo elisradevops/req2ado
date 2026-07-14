@@ -192,6 +192,122 @@ def test_ingest_folder_isolates_one_files_failure_from_the_rest(mock_dispatch, t
     assert by_name["good.docx"].chunks_stored == 1
 
 
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_folder_recursive_descends_into_subfolders_with_relative_path(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [
+        GraphFolderChild(id="item-1", name="a.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/a"),
+        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+    ]
+    graph_client.list_children_by_id.return_value = [
+        GraphFolderChild(id="item-3", name="nested.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/nested"),
+    ]
+    graph_client.fetch_child_content.side_effect = [DOCX_CONTENT, DOCX_CONTENT]
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    result = ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        area_path="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        recursive=True,
+    )
+
+    graph_client.list_children_by_id.assert_called_once_with("drive-1", "item-2")
+    by_name = {f.file: f for f in result.files}
+    assert by_name["a.docx"].relative_path == "a.docx"
+    assert by_name["nested.docx"].relative_path == "Subfolder/nested.docx"
+    assert by_name["nested.docx"].status == "ingested"
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_folder_non_recursive_still_skips_subfolders(mock_dispatch, tmp_path) -> None:
+    # Regression: recursive defaults to False, preserving today's behavior.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [
+        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+    ]
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    result = ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        area_path="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+    )
+
+    assert result.files == []
+    graph_client.list_children_by_id.assert_not_called()
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_folder_recursive_stops_at_max_depth(mock_dispatch, tmp_path) -> None:
+    # 6 levels of nested single-subfolder chains; MAX_FOLDER_DEPTH is 5, so
+    # list_children_by_id must be called exactly 4 times (depths 1-4 recurse
+    # into depths 2-5; the folder found at depth 5 is not descended into).
+    mock_dispatch.return_value = _fake_doc("text")
+    graph_client = MagicMock()
+
+    def make_subfolder(n: int) -> GraphFolderChild:
+        return GraphFolderChild(id=f"item-{n}", name=f"L{n}", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1")
+
+    graph_client.list_folder_children.return_value = [make_subfolder(1)]
+    graph_client.list_children_by_id.side_effect = [
+        [make_subfolder(2)],
+        [make_subfolder(3)],
+        [make_subfolder(4)],
+        [make_subfolder(5)],
+    ]
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    result = ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        area_path="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        recursive=True,
+    )
+
+    assert result.files == []  # every level is a folder, no files anywhere
+    assert graph_client.list_children_by_id.call_count == 4
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_folder_recursive_isolates_a_subfolder_listing_failure(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [
+        GraphFolderChild(id="item-1", name="a.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/a"),
+        GraphFolderChild(id="item-2", name="BrokenSubfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+    ]
+    graph_client.list_children_by_id.side_effect = RuntimeError("transient Graph error")
+    graph_client.fetch_child_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    result = ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        area_path="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        recursive=True,
+    )
+
+    by_name = {f.file: f for f in result.files}
+    assert by_name["a.docx"].status == "ingested"  # sibling unaffected
+    assert by_name["BrokenSubfolder"].status == "failed"
+    assert "transient Graph error" in by_name["BrokenSubfolder"].reason
+
+
 def test_ingest_folder_rejects_ssrf_url_before_listing_children(tmp_path) -> None:
     graph_client = MagicMock()
     vector_store = KbVectorStore(persist_path=str(tmp_path))

@@ -126,6 +126,7 @@ export class IngestionHttpClient {
     url: string,
     areaPath: string,
     docType: string | null,
+    recursive = false,
   ): Promise<{
     files: {
       file: string;
@@ -135,12 +136,13 @@ export class IngestionHttpClient {
       mimeType: string | null;
       sizeBytes: number | null;
       reason: string | null;
+      relativePath: string | null;
     }[];
   }> {
     const response = await fetch(`${this.baseUrl}/kb/ingest-folder-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, area_path: areaPath, doc_type: docType }),
+      body: JSON.stringify({ url, area_path: areaPath, doc_type: docType, recursive }),
       dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {
@@ -155,6 +157,7 @@ export class IngestionHttpClient {
         mime_type: string | null;
         size_bytes: number | null;
         reason: string | null;
+        relative_path: string | null;
       }[];
     };
     return {
@@ -166,6 +169,7 @@ export class IngestionHttpClient {
         mimeType: f.mime_type,
         sizeBytes: f.size_bytes,
         reason: f.reason,
+        relativePath: f.relative_path,
       })),
     };
   }

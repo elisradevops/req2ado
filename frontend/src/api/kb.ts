@@ -28,6 +28,7 @@ export interface FolderIngestFile {
   mimeType: string | null;
   sizeBytes: number | null;
   reason: string | null;
+  relativePath: string | null;
 }
 
 export interface FolderIngestResult {
@@ -39,8 +40,13 @@ export async function ingestUrl(url: string, areaPath: string, docType?: string)
   return response.data;
 }
 
-export async function ingestFolderUrl(url: string, areaPath: string, docType?: string): Promise<FolderIngestResult> {
-  const response = await httpClient.post<FolderIngestResult>('/kb/ingest-folder-url', { url, areaPath, docType });
+export async function ingestFolderUrl(
+  url: string,
+  areaPath: string,
+  docType?: string,
+  recursive?: boolean,
+): Promise<FolderIngestResult> {
+  const response = await httpClient.post<FolderIngestResult>('/kb/ingest-folder-url', { url, areaPath, docType, recursive });
   return response.data;
 }
 

@@ -78,10 +78,21 @@ describe('KbController', () => {
     const kbService = { ingestFolderUrl: jest.fn().mockResolvedValue(folderResult) };
     const controller = new KbController(kbService as any);
 
-    const result = await controller.ingestFolderUrl('https://contoso.sharepoint.com/sites/s/folder', 'Project\\Area1', 'SRD');
+    const result = await controller.ingestFolderUrl('https://contoso.sharepoint.com/sites/s/folder', 'Project\\Area1', 'SRD', undefined);
 
-    expect(kbService.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/sites/s/folder', 'Project\\Area1', 'SRD');
+    expect(kbService.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/sites/s/folder', 'Project\\Area1', 'SRD', false);
     expect(result).toBe(folderResult);
+  });
+
+  it('ingestFolderUrl() forwards the recursive flag to the service, defaulting to false', async () => {
+    const kbService = { ingestFolderUrl: jest.fn().mockResolvedValue({ files: [] }) };
+    const controller = new KbController(kbService as any);
+
+    await controller.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', undefined, true);
+    expect(kbService.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', null, true);
+
+    await controller.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', undefined, undefined);
+    expect(kbService.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', null, false);
   });
 
   it('ingestFolderUrl() re-maps an IngestionHttpError from the service to an HttpException with the same status', async () => {
