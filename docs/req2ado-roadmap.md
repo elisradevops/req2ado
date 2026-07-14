@@ -71,8 +71,16 @@ detailed spec for phases beyond 1.
   - **P2c — Quality score, RAG-grounded when possible**: per-item score judged against org
     rules/definitions retrieved from the KB when available; falls back to general EARS/INCOSE/29148
     checks (public standards) when no KB or no relevant rules exist. Shown as chips + score.
-  - **P2d — Learning loop**: write confirmed/accepted requirements back into the KB with
-    dedup/curation.
+  - **P2d — Learning loop** *(deferred — see rationale below, revisit after Phase 3)*: write
+    confirmed/accepted requirements back into the KB with dedup/curation.
+    **Deferred 2026-07-14** after brainstorming: the naive version (derive "rules" from confirmed
+    items' P2c quality_score/quality_issues) is circular — P2c's own LLM call already produced
+    those issue flags, so a second LLM deriving "rules" from them mostly restates generic advice,
+    not genuine org-specific learning. "Confirmed" today is also a whole-job action, not a
+    per-item human endorsement of substance. The real learning signal is the diff between an
+    LLM-generated item and what a human actually edited it to (Phase 3's not-yet-built per-item
+    edit/accept/reject flow) — that reveals genuine org preference, not restated grading. Revisit
+    P2d once Phase 3 ships and real edit-diffs exist to learn from.
 
 - **Phase 3 — Review power**: editable dry-run diff (inline edit/delete/add before confirm — not
   possible today, confirmed by investigation: confirm re-reads the DB blob and reads no request
