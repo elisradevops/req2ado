@@ -66,15 +66,26 @@ def retrieve_context(
 
 ### `llm_leveling.build_survey_tree` (signature change)
 
-Gains a required `area_path: str` parameter (the one non-additive
-signature change in this phase — existing callers/tests must be updated).
-Calls `retrieve_context` once using the outline text already built for
-`infer_hierarchy`, and threads the resulting `kb_context: str | None` into
-both `llm_client.infer_hierarchy(outline, profile_hint=None, kb_context=...)`
+Gains three new optional parameters, all defaulting to `None`:
+`area_path: str | None`, `embed_client: object | None`,
+`vector_store: KbVectorStore | None`. Retrieval only runs when all three
+are supplied; when any is omitted, `kb_context` stays `None` and behavior
+is byte-for-byte identical to before this phase — fully additive, no
+existing caller or test needs to change. (Correction from an earlier
+draft of this spec: `/level`'s request body is `CanonicalDoc` directly,
+with `mode`/`customer_id` as query params — there is no pre-existing
+`area_path` on it to reuse, so a required param would have forced
+touching every caller for no benefit. Optional/additive is both less
+invasive and sufficient.)
+
+Calls `retrieve_context` once (only when the three params above are all
+present) using the outline text already built for `infer_hierarchy`, and
+threads the resulting `kb_context: str | None` into both
+`llm_client.infer_hierarchy(outline, profile_hint=None, kb_context=...)`
 and `requirement_client.generate_requirements_for_document(blocks_by_node_id, kb_context=...)`.
 
 The `LlmLevelingClient` and `BatchedRequirementClient` Protocols both gain
-the new `kb_context: str | None` parameter on their single method.
+the new `kb_context: str | None = None` parameter on their single method.
 
 ### `OrchestratorLlmClient` (prompt construction)
 
@@ -96,15 +107,14 @@ area paths with no KB material.
 
 ### `main.py` wiring
 
-The `/level` route already receives `body.area_path` (used elsewhere) but
-today's `build_survey_tree(doc, llm_client=client, requirement_client=client)`
-call doesn't thread it through. This becomes
-`build_survey_tree(doc, llm_client=client, requirement_client=client, area_path=body.area_path)`,
-and `build_survey_tree` internally constructs its `retrieve_context` call
-using the existing module-level `_embed_client` / `_kb_vector_store`
-singletons (passed in as new parameters, following the same
-dependency-injection pattern already used for `llm_client`/
-`requirement_client`).
+`POST /level` takes `CanonicalDoc` as its body with `customer_id`/`mode`
+as query params — no `area_path` exists on it today. It gains a new
+optional query param `area_path: str | None = None`. The `mode == "survey"`
+branch's `build_survey_tree` call forwards it, plus the existing
+module-level `_embed_client` / `_kb_vector_store` singletons, as the three
+new optional parameters:
+`build_survey_tree(doc, llm_client=client, requirement_client=client, area_path=area_path, embed_client=_embed_client, vector_store=_kb_vector_store)`.
+Omitting `area_path` (every pre-existing caller) skips retrieval entirely.
 
 ## Error handling
 
@@ -123,8 +133,9 @@ dependency-injection pattern already used for `llm_client`/
   empty collection → `None`, embed-client-raises → `None` + warning
   logged, query-raises → `None` + warning logged.
 - `build_survey_tree`: KB context threaded into both LLM client calls
-  when present; `area_path` is now a required param (update existing
-  tests' call sites).
+  when `area_path`/`embed_client`/`vector_store` are all supplied;
+  retrieval skipped (and `retrieve_context` never called) when any is
+  omitted — existing test call sites are unaffected.
 - `OrchestratorLlmClient`: prompt-construction tests — `kb_context`
   prepended verbatim when present, prompt byte-identical to current
   behavior when `None`.
