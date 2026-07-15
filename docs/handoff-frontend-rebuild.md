@@ -117,6 +117,44 @@ Every SURVEY-mode node now gets a 0-100 quality score and zero or more flagged i
 
 **Not yet done:** P2d (learning-loop write-back of confirmed/accepted items into the KB). Editable/re-scoreable items from the review UI (Phase 3's per-item chat/refine work may eventually trigger re-scoring; not this phase). Org-authored custom scoring rubrics beyond what's already retrievable via the existing per-document `kb_context`.
 
+## 4d. P3a — Editable dry-run diff (current, branch merged `dcae359`)
+
+First of Phase 3's three sub-specs (editable diff, AI assist/chat, source provenance — see
+`docs/superpowers/specs/2026-07-14-p3a-editable-dry-run-diff-design.md`). Lets a user exclude,
+edit, or add diff entries before confirming a job — previously `POST /jobs/:id/confirm` took no
+request body and re-read `job.dryRunDiff` as-is.
+
+- **Exclude/reject unified into one `excluded: boolean` flag** on `DryRunDiffEntry` — no separate
+  delete op. Cascades **transitively at read time**: `confirm()` walks `parentLocalId` ancestry and
+  skips a node if it or any ancestor is excluded — never written to descendant rows, so there's no
+  stale-cascade-flag risk from a partial recursive write.
+- **Edit is create-only** — `reuse`/`dedup_skip` entries point at an existing ADO item, so editing
+  their local copy would be a silent no-op on confirm; the endpoint 400s instead.
+- **Manually-added entries** get `isManual: true`, `childType: null`, and a server-computed
+  `sourceHash = sha256(description)` (matching `fidelity_hash`'s exact scheme) so idempotency/dedup
+  keep working. They can't themselves be an Add target (`isManual` gates this — `childType === null`
+  alone can't, since it's *also* true for every real SURVEY node, see below).
+- **BASELINE vs SURVEY type validation differs** — BASELINE has a fixed ladder (`WorkItemNode` gains
+  `child_type`, computed once in ingestion via `type_for_depth(profile, depth + 1)` and passed
+  through untouched, same pattern as `tags`/`qualityScore`), so a manual Add must match
+  `parentEntry.childType` exactly. SURVEY has no such ladder — the LLM assigns each node's type
+  freely — so `childType` stays `null` for every SURVEY node and Add accepts any of
+  `Epic`/`Feature`/`Requirement`.
+- **Frontend**: `DiffTree` rows get an exclude/include checkbox (dims + strikes the row). Edit moved
+  into `NodeDetailPanel` (an Edit button switches to editable title/description fields + Save/Cancel)
+  rather than a tree-row icon. Add is a separate `AddChildForm` component below the panel — fixed,
+  disabled type field for BASELINE, free dropdown for SURVEY.
+- **Verified end-to-end** against a real docker-compose stack (`ADO_BACKEND=mock`), cross-checked at
+  the mock ADO backend's own SQLite store, not just API responses: excluded subtree never written,
+  manually-added node created and linked correctly, negative paths (409 post-confirm, 400 type
+  mismatch, 400 nesting under a manual node) all matched spec.
+- **One bug caught in final review, fixed**: `editDiffEntry` originally spread `{ title, description }`
+  from the controller unconditionally, so a partial PATCH (title only) sent `description: undefined`
+  through to the stored entry and silently wiped it via object-spread semantics. Fixed to only apply
+  fields actually provided. Not reachable via the shipped UI (Save always sends both fields), but a
+  real data-loss bug on the documented `{ title?, description? }` contract — worth knowing if a
+  future caller (e.g. Phase 3's AI-assist chat) ever sends a genuinely partial patch.
+
 ## 5. Backend API surface (current)
 
 All routes on the orchestrator (`http://localhost:3001` in dev):
@@ -129,6 +167,13 @@ All routes on the orchestrator (`http://localhost:3001` in dev):
 - `GET /ado/area-paths?depth=5` — headers `X-Ado-Org-Url`/`X-Ado-Pat` → nested `{ path, children }` tree.
 - `GET /jobs/:id/events` — SSE stream, `event: stage\ndata: {"stage":"..."}\n\n` frames.
 - `POST /jobs/:id/confirm` — headers `X-Ado-Org-Url`, `X-Ado-Pat` → `{ status, createdCount }`.
+- `PATCH /jobs/:id/diff/:localId` — body `{ title?, description? }` → `{ dryRunDiff }`. Create-only
+  (400 on `reuse`/`dedup_skip`), 409 if `status !== 'diff_ready'`. See §4d.
+- `PATCH /jobs/:id/diff/:localId/exclude` — body `{ excluded: boolean }` → `{ dryRunDiff }`. Any
+  action type. See §4d.
+- `POST /jobs/:id/diff` — body `{ parentLocalId, type, title, description }` → `{ dryRunDiff }`.
+  Mode-aware type validation (BASELINE exact-match, SURVEY any of the 3 types), 400 on adding under
+  a manually-added parent. See §4d.
 - `GET /jobs/:id/audit` → array of `{ id, message, createdAt }`.
 - `POST /kb/ingest-url` — body `{ url, areaPath, docType? }` → `{ documentName, driveitemId, mimeType, sizeBytes, chunksStored, skippedUnchanged }` (single document). No token in the request (server-side env). 400 on bad/lookalike host or SSRF URL; 401/403/404 passed through from Graph; 502 on Graph unreachable. *(The old `/kb/sources` + `/kb/sources/:id/sync` routes were removed in `8f22cec`.)*
 - `POST /kb/ingest-folder-url` — body `{ url, areaPath, docType?, recursive? }` (`recursive` default `false`, commit `4c701f0`) → `{ files: [{ file, status: 'ingested'|'skipped_unchanged'|'failed', chunksStored, driveitemId, mimeType, sizeBytes, reason, relativePath }] }`. `relativePath` (e.g. `"Sub/nested.docx"`) distinguishes nested files when `recursive: true`; equals `file` at the top level. One file's (or one subfolder's, when recursive) failure never aborts the batch — see §4a for the `allSettled` persistence note and the depth-5 cap.
@@ -136,7 +181,7 @@ All routes on the orchestrator (`http://localhost:3001` in dev):
 - `GET /wiki` → raw markdown string.
 - `GET /health` → `{ ok: true }`.
 
-**`DryRunDiffEntry` shape** (per node in `dryRunDiff`): `{ localId, parentLocalId, type, title, description, action: 'create'|'reuse'|'dedup_skip', existingAdoId: number | null, similarity, customerId, sourceHash, tags?: string[] }`. `tags` is now optional (legacy pre-Phase-1 rows lack it — see §4). `action` values are lowercase.
+**`DryRunDiffEntry` shape** (per node in `dryRunDiff`): `{ localId, parentLocalId, type, title, description, action: 'create'|'reuse'|'dedup_skip', existingAdoId: number | null, similarity, customerId, sourceHash, tags?: string[], qualityScore?: number | null, qualityIssues?: string[], childType?: string | null, excluded?: boolean, isManual?: boolean }`. `tags` is now optional (legacy pre-Phase-1 rows lack it — see §4). `action` values are lowercase. `childType`/`excluded`/`isManual` are P3a additions (§4d) — all optional, so pre-existing rows read back with them `undefined` (treated as not-excluded/not-manual).
 
 ## 6. Real-world performance characteristics (unchanged)
 
@@ -168,10 +213,12 @@ Prod k8s (on-prem, k3s, 4-node cluster) has shared `devops-postgresql`/`redis` i
 - **Phase 2, P2b — RAG-first retrieval-injection** — done (§4b). `infer_hierarchy` and `generate_requirements_for_document` are grounded by a per-document `kb_context` retrieved once from the KB, falling back to baseline model knowledge when no KB material exists. Retrieval into a future chat feature remains out of scope (no chat feature exists yet).
 - **P2c — RAG-grounded quality scoring** — done (§4c). Every SURVEY node gets a 0-100 quality score + issue chips, reusing the same `kb_context` P2b computes — zero new retrieval calls.
 - **P2d — learning loop** (write confirmed items back into the KB) — **deferred**, see `docs/req2ado-roadmap.md`'s P2d entry for the full rationale: the signal available today (P2c's own `quality_score`/`quality_issues`) is circular for deriving "learned rules" — a second LLM call grading the first LLM's grading mostly restates generic advice, not genuine org-specific learning. The real signal is a diff between an LLM-generated item and what a human actually edited it to, which needs Phase 3's per-item edit/accept/reject flow to exist first. Revisit P2d once Phase 3 ships.
-- **Phase 3 — Review power** (next up): editable dry-run diff (inline edit/delete/add before confirm), AI assist/chat per item, accept/reject, source provenance. Also unblocks P2d (above).
+- **Phase 3, P3a — Editable dry-run diff** — done (§4d). Exclude/edit/add before confirm, verified end-to-end. Also unblocks P2d (above) once P3b's AI-assist accept/reject produces real per-item edit-diffs to learn from.
+- **P3b — AI assist/chat per item** (next up): per-item refine/regenerate via chat, accept/reject, building on P3a's edit infrastructure.
+- **P3c — Source provenance display**: show where a generated item's content/score came from (KB doc, standard).
 - **Phase 4 — Traceability** (Covers/CoveredBy/Affects link types, diff-vs-live-ADO, baselining).
 
-The KB ingest happy path is verified against a real Graph token/tenant (§4a), and P2b's retrieval + P2c's scoring are both verified end-to-end against real ingested KB content (§4b, §4c) — the whole RAG-first knowledge layer (Phase 2) is now feature-complete except for the deferred P2d.
+The KB ingest happy path is verified against a real Graph token/tenant (§4a), and P2b's retrieval + P2c's scoring are both verified end-to-end against real ingested KB content (§4b, §4c) — the whole RAG-first knowledge layer (Phase 2) is feature-complete except for the deferred P2d. P3a (§4d) is also done and verified end-to-end.
 
 ## 9. Testing conventions (established, keep using)
 
