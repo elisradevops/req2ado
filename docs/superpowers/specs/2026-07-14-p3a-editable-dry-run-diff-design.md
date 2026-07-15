@@ -58,8 +58,12 @@ set in `tree_builder.py` alongside the existing `type=type_for_depth(profile, de
   manually-added node's own next-level type isn't computable (no ingestion table ran for it), so
   it can't itself be an Add target (see Out of scope) — enforced via `isManual`, not `childType`,
   since `childType` alone can't distinguish "manual node" from "real SURVEY node" (both null).
-  `sourceHash` is computed server-side at creation time using the same hash scheme ingestion uses
-  (over title+description+areaPath+customerId), so idempotency/dedup keep working across re-runs.
+  `sourceHash` is computed server-side at creation time as `sha256(description)` — the exact
+  scheme ingestion uses for `fidelity_hash` (`tree_builder.py`'s `_hash_description`,
+  `llm_leveling.py`'s identical inline hash), which is what `DryRunTreeNode.sourceHash` is set from
+  (`pipeline.worker.ts`). `customerId`/`areaPath` are separate fields in the idempotency lookup's
+  compound key (`IdempotencyService.lookup`), not folded into the hash — so idempotency/dedup keep
+  working across job re-runs without needing anything beyond the description hash.
 
 **Exclusion cascades transitively, computed at read time — never written to descendant rows.**
 Excluding a node makes it and every descendant uncreatable regardless of the descendant's own
