@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: req2ado
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: req2ado
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: elisradevops/req2ado-postgres:1.0.1
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: req2ado
+            - name: POSTGRES_USER
+              value: req2ado
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: req2ado-postgres
+                  key: postgres-password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: nfs-client
+        resources:
+          requests:
+            storage: 5Gi
