@@ -318,3 +318,30 @@ def test_mock_flat_docx_end_to_end_through_the_headingless_fallback() -> None:
     assert tree.nodes[0].type == WorkItemType.EPIC
     assert tree.nodes[1].type == WorkItemType.FEATURE
     assert all(n.type == WorkItemType.REQUIREMENT for n in tree.nodes[2:])
+
+
+def test_child_type_is_computed_one_level_deeper_per_node_tv_style() -> None:
+    tree = build_baseline_tree(_tv_style_doc())
+    child_types = [n.child_type for n in tree.nodes]
+    assert child_types == [
+        WorkItemType.EPIC,        # depth1 Epic -> depth2 is still Epic in tv_style
+        WorkItemType.FEATURE,     # depth2 Epic -> depth3 is Feature
+        WorkItemType.REQUIREMENT, # depth3 Feature -> depth4 is Requirement
+        WorkItemType.REQUIREMENT, # depth4 Requirement -> depth5 stays Requirement
+        WorkItemType.REQUIREMENT, # depth5 Requirement -> depth6 stays Requirement
+    ]
+
+
+def test_child_type_is_computed_one_level_deeper_per_node_icd_style() -> None:
+    tree = build_baseline_tree(_icd_style_doc())
+    child_types = [n.child_type for n in tree.nodes]
+    assert child_types == [WorkItemType.REQUIREMENT, WorkItemType.REQUIREMENT]
+
+
+def test_headingless_document_child_types_follow_the_synthetic_epic_feature_requirement_shape() -> None:
+    tree = build_baseline_tree(_headingless_doc())
+    epic, feature = tree.nodes[0], tree.nodes[1]
+    requirements = tree.nodes[2:]
+    assert epic.child_type == WorkItemType.FEATURE
+    assert feature.child_type == WorkItemType.REQUIREMENT
+    assert all(r.child_type == WorkItemType.REQUIREMENT for r in requirements)

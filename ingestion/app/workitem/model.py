@@ -55,6 +55,7 @@ class WorkItemNode(BaseModel):
     quality_score: int | None = None
     quality_issues: list[RequirementQualityIssue] = Field(default_factory=list)
     mode: WorkItemMode
+    child_type: WorkItemType | None = None
 
 
 class WorkItemTree(BaseModel):

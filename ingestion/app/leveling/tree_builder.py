@@ -70,6 +70,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
         fidelity_hash=_hash_description(doc_title),
         tags=[],
         mode=WorkItemMode.BASELINE,
+        child_type=WorkItemType.FEATURE,
     )
     feature = WorkItemNode(
         local_id="n1",
@@ -82,6 +83,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
         fidelity_hash=_hash_description(doc_title),
         tags=[],
         mode=WorkItemMode.BASELINE,
+        child_type=WorkItemType.REQUIREMENT,
     )
     nodes: list[WorkItemNode] = [epic, feature]
     for index, block in enumerate(doc.blocks):
@@ -98,6 +100,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                 fidelity_hash=_hash_description(description),
                 tags=[],
                 mode=WorkItemMode.BASELINE,
+                child_type=WorkItemType.REQUIREMENT,
             )
         )
     return WorkItemTree(nodes=nodes)
@@ -173,6 +176,7 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                 fidelity_hash=_hash_description(display_text),
                 tags=[],
                 mode=WorkItemMode.BASELINE,
+                child_type=type_for_depth(profile, depth + 1),
             )
             nodes.append(node)
             nodes_by_id[local_id] = node
