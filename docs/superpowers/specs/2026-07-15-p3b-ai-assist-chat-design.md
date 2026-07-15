@@ -56,6 +56,7 @@ New Prisma model, orchestrator:
 ChatMessage {
   id, jobId, localId, role ('user'|'assistant'), content,
   proposedTitle: string?, proposedDescription: string?,
+  model: string?,   // assistant turns only — which model produced this reply
   createdAt
 }
 ```
@@ -64,6 +65,39 @@ Indexed on `[jobId, localId]`. No `accepted` flag — the row is a log, not a st
 acceptance is just a normal `editDiffEntry` call. Reusing that endpoint also means Accept
 inherits P3a's final-review fix: only fields actually provided in the proposal are sent, so a
 proposal with only `proposedDescription` set can't clobber `title` via undefined-spread.
+
+## 4a. Model selection
+
+Switchable per turn — a model dropdown next to the send box, changeable before every message.
+No conversation-wide lock; each assistant turn records which model produced it (`ChatMessage.model`)
+so history and any future P2d learning-signal analysis can see the model mix.
+
+- **Model catalog is already reachable without a new architecture boundary.** `OpenWebUiClient`
+  (`orchestrator/src/modules/llm/openwebui.client.ts`) already talks to Open WebUI via the OpenAI
+  SDK (`this.openai`, pointed at `LLM_BASE_URL`) — Open WebUI exposes an OpenAI-compatible
+  `/v1/models` route, so `this.openai.models.list()` gives a real catalog for free. This still
+  respects the locked "never call Open WebUI/Ollama directly from ingestion or frontend, only via
+  the orchestrator proxy" rule (`orchestrator_llm_client.py`'s docstring) — the catalog call is
+  orchestrator-side, same as `chat`/`embed` today.
+- **New endpoint:** `GET /llm/models` on `LlmController` → `{ models: string[] }` (or richer
+  `{id, ...}` objects if Open WebUI returns useful metadata — id is the minimum needed). No
+  filtering of embedding-only models mixed into the list — returned as-is; the dev environment's
+  model set is small and known, filtering by name heuristic risks hiding a valid chat model.
+- **`chat` already accepts `opts?.model`** (`OpenWebUiClient.chat`, line 28) — falls back to
+  `LLM_CHAT_MODEL` when omitted. `LlmController.chat` and `llmChatRequestSchema` currently don't
+  thread a `model` field through from the request body — this phase adds it (optional string,
+  passed through to `llmClient.chat(messages, { model, temperature })`).
+- **ingestion → orchestrator:** `chat_client.py`'s `POST /chat/{jobId}/{localId}/turn` payload
+  gains an optional `model` field, forwarded to ingestion's own call to orchestrator's
+  `POST /llm/chat` (mirrors the existing `/llm/chat` proxy call already used by
+  `orchestrator_llm_client.py`, just with `model` added to the JSON body).
+- **frontend:** `ChatPanel` fetches `GET /llm/models` once when opened (not per turn), renders a
+  dropdown defaulting to the server's configured `LLM_CHAT_MODEL` (first list entry, or a
+  distinguished default if Open WebUI reports one) — selection sent with each `POST .../chat` call.
+- **Unavailable model at send time** (removed from Ollama between list-fetch and send): same
+  failure path as any other LLM error (§5) — ingestion's call fails, `error` event, no partial
+  persistence, frontend shows "reply failed, try again" (the stale model choice remains selected;
+  user can pick another from a re-fetched list).
 
 ## 5. Error handling & edge cases
 
@@ -127,10 +161,15 @@ proposal with only `proposedDescription` set can't clobber `title` via undefined
   no-persistence on `error`; disconnect triggers unsubscribe; per-turn timeout force-emits error
   and drops subscription; gating (create-only / diff_ready / excluded) mirrors
   `jobs.service.spec.ts`'s P3a gating tests.
+- `orchestrator/test/llm.controller.spec.ts`: `GET /llm/models` returns the catalog from
+  `openai.models.list()` unfiltered; `POST /llm/chat` threads an optional `model` field through
+  to `llmClient.chat()`, falling back to `LLM_CHAT_MODEL` when omitted (existing behavior,
+  regression-guarded).
 - `frontend/src/components/ChatPanel.test.tsx`: streaming token append, proposal render + Accept
   wiring to existing `editDiffEntry` API call, Reject discards without a network call, disabled
   state for reuse/dedup_skip/excluded entries, "stop generating" aborts the stream, history
-  pagination/truncation for long conversations.
+  pagination/truncation for long conversations, model dropdown populated from `GET /llm/models`
+  and selection sent per turn.
 
 ## 9. Not yet done
 
