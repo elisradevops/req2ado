@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { FixedSizeList } from 'react-window';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
+import Checkbox from '@mui/material/Checkbox';
 import { ActionBadge } from './ActionBadge';
 import { TagChips } from './TagChips';
 
@@ -17,6 +18,9 @@ export interface DryRunDiffEntry {
   tags?: string[];
   qualityScore?: number | null;
   qualityIssues?: string[];
+  childType?: string | null;
+  excluded?: boolean;
+  isManual?: boolean;
 }
 
 interface FlatRow {
@@ -50,12 +54,14 @@ export function DiffTree({
   onSelect,
   filterAction,
   filterText,
+  onToggleExclude,
 }: {
   entries: DryRunDiffEntry[];
   selectedId: string | null;
   onSelect: (localId: string) => void;
   filterAction: string | null;
   filterText: string;
+  onToggleExclude: (localId: string, excluded: boolean) => void;
 }): React.ReactElement {
   const rows = useMemo(() => {
     const allRows = buildFlatRows(entries);
@@ -73,12 +79,23 @@ export function DiffTree({
         return (
           <ListItemButton
             key={row.entry.localId}
-            style={{ ...style, paddingLeft: row.depth * 16 + 16 }}
+            style={{ ...style, paddingLeft: row.depth * 16 + 16, opacity: row.entry.excluded ? 0.5 : 1 }}
             selected={row.entry.localId === selectedId}
             onClick={() => onSelect(row.entry.localId)}
+            data-excluded={row.entry.excluded ? 'true' : 'false'}
           >
+            <Checkbox
+              inputProps={{ 'aria-label': 'exclude' }}
+              checked={!!row.entry.excluded}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => onToggleExclude(row.entry.localId, e.target.checked)}
+            />
             <ActionBadge action={row.entry.action} existingAdoId={row.entry.existingAdoId} />
-            <ListItemText primary={row.entry.title} secondary={<TagChips tags={row.entry.tags} />} />
+            <ListItemText
+              primary={row.entry.title}
+              secondary={<TagChips tags={row.entry.tags} />}
+              sx={row.entry.excluded ? { textDecoration: 'line-through' } : undefined}
+            />
           </ListItemButton>
         );
       }}
