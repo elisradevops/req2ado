@@ -38,6 +38,8 @@ jobs:
           context: ./postgres-initializer/
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: false
+          sbom: false
           tags: |
             ${{ steps.meta.outputs.tags }}
             elisradevops/req2ado-postgres:latest
