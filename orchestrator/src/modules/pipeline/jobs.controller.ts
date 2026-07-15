@@ -6,6 +6,7 @@ import {
   Inject,
   NotFoundException,
   Param,
+  Patch,
   PayloadTooLargeException,
   Post,
   UploadedFile,
@@ -136,6 +137,45 @@ export class JobsController {
       throw new NotFoundException(`Job ${id} not found`);
     }
     return job;
+  }
+
+  @Patch(':id/diff/:localId')
+  async editDiffEntry(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @Body('title') title: string | undefined,
+    @Body('description') description: string | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    const dryRunDiff = await this.jobsService.editDiffEntry(id, localId, { title, description });
+    return { dryRunDiff };
+  }
+
+  @Patch(':id/diff/:localId/exclude')
+  async setDiffEntryExcluded(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @Body('excluded') excluded: boolean | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (typeof excluded !== 'boolean') {
+      throw new BadRequestException('excluded must be a boolean');
+    }
+    const dryRunDiff = await this.jobsService.setDiffEntryExcluded(id, localId, excluded);
+    return { dryRunDiff };
+  }
+
+  @Post(':id/diff')
+  async addDiffEntry(
+    @Param('id') id: string,
+    @Body('parentLocalId') parentLocalId: string | undefined,
+    @Body('type') type: string | undefined,
+    @Body('title') title: string | undefined,
+    @Body('description') description: string | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (!parentLocalId || !type || !title || !description) {
+      throw new BadRequestException('parentLocalId, type, title, and description are all required');
+    }
+    const dryRunDiff = await this.jobsService.addDiffEntry(id, { parentLocalId, type, title, description });
+    return { dryRunDiff };
   }
 
   @Post(':id/confirm')
