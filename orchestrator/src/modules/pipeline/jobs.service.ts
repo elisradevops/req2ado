@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
+import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
 import type { IngestionHttpClient } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
@@ -128,6 +129,54 @@ export class JobsService {
     diff[index] = { ...diff[index], ...patch };
     await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
     return diff;
+  }
+
+  async addDiffEntry(
+    id: string,
+    input: { parentLocalId: string; type: string; title: string; description: string },
+  ): Promise<DryRunDiffEntry[]> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException(`Job ${id} not found`);
+    if (job.status !== 'diff_ready') {
+      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+    }
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const parentEntry = diff.find((entry) => entry.localId === input.parentLocalId);
+    if (!parentEntry) throw new NotFoundException(`Diff entry ${input.parentLocalId} not found`);
+    if (parentEntry.isManual) {
+      throw new BadRequestException('cannot add a child under a manually-added entry');
+    }
+    if (job.mode === 'baseline') {
+      if (input.type !== parentEntry.childType) {
+        throw new BadRequestException(`type '${input.type}' does not match the required child type '${parentEntry.childType}'`);
+      }
+    } else {
+      const validTypes = ['Epic', 'Feature', 'Requirement'];
+      if (!validTypes.includes(input.type)) {
+        throw new BadRequestException(`type must be one of ${validTypes.join(', ')}`);
+      }
+    }
+    const sourceHash = createHash('sha256').update(input.description).digest('hex');
+    const newEntry: DryRunDiffEntry = {
+      localId: `manual-${diff.length}-${Date.now()}`,
+      parentLocalId: input.parentLocalId,
+      type: input.type,
+      title: input.title,
+      description: input.description,
+      action: 'create',
+      existingAdoId: null,
+      similarity: null,
+      sourceHash,
+      customerId: null,
+      tags: [],
+      qualityScore: null,
+      qualityIssues: [],
+      childType: null,
+      isManual: true,
+    };
+    const updated = [...diff, newEntry];
+    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: updated as any } });
+    return updated;
   }
 
   async list(): Promise<JobSummary[]> {

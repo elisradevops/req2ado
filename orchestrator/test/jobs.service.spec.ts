@@ -414,6 +414,83 @@ describe('JobsService.editDiffEntry', () => {
   });
 });
 
+describe('JobsService.addDiffEntry', () => {
+  const parent = { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, childType: 'Requirement' };
+
+  it('appends a new create entry with sha256(description) as sourceHash, for a matching BASELINE childType', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'baseline', dryRunDiff: [parent] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'New Req', description: 'New desc' });
+
+    expect(result).toHaveLength(2);
+    const added = result[1];
+    expect(added.action).toBe('create');
+    expect(added.parentLocalId).toBe('n0');
+    expect(added.isManual).toBe(true);
+    expect(added.childType).toBeNull();
+    const crypto = require('crypto');
+    expect(added.sourceHash).toBe(crypto.createHash('sha256').update('New desc').digest('hex'));
+  });
+
+  it('rejects a BASELINE add whose type does not match the parent childType', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'baseline', dryRunDiff: [parent] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(
+      service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Feature', title: 'X', description: 'Y' }),
+    ).rejects.toThrow('does not match');
+  });
+
+  it('accepts any of the three types for a SURVEY job', async () => {
+    const surveyParent = { ...parent, childType: null };
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [surveyParent] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Epic', title: 'X', description: 'Y' });
+
+    expect(result[1].type).toBe('Epic');
+  });
+
+  it('rejects an invalid type for a SURVEY job', async () => {
+    const surveyParent = { ...parent, childType: null };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [surveyParent] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(
+      service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Bug', title: 'X', description: 'Y' }),
+    ).rejects.toThrow('must be one of');
+  });
+
+  it('rejects adding under a manually-added parent', async () => {
+    const manualParent = { ...parent, isManual: true, childType: null };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'baseline', dryRunDiff: [manualParent] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(
+      service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'X', description: 'Y' }),
+    ).rejects.toThrow('manually-added');
+  });
+});
+
 describe('JobsService.confirm — exclusion', () => {
   it('skips an excluded entry and any child of it, even if the child itself is not excluded', async () => {
     const createWorkItem = jest.fn();
