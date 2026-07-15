@@ -32,6 +32,7 @@ interface LeveledNode {
   tags: string[];
   quality_score?: number | null;
   quality_issues?: string[];
+  child_type?: string | null;
 }
 
 /**
@@ -79,6 +80,7 @@ export async function runPipelineJob(
       tags: node.tags ?? [],
       qualityScore: node.quality_score,
       qualityIssues: node.quality_issues,
+      childType: node.child_type,
     }));
 
     const diff = await deps.dryRunService.diff(

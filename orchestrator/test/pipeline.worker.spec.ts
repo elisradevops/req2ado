@@ -212,7 +212,7 @@ describe('runPipelineJob', () => {
     );
   });
 
-  it('carries quality_score/quality_issues from ingestion through to the dry-run diff input', async () => {
+  it('carries quality_score/quality_issues/child_type from ingestion through to the dry-run diff input', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({
       nodes: [
@@ -222,6 +222,7 @@ describe('runPipelineJob', () => {
           customer_id: 'CUST-1',
           quality_score: 72,
           quality_issues: ['vague_term'],
+          child_type: 'Requirement',
         },
         {
           local_id: 'n1',
@@ -247,11 +248,11 @@ describe('runPipelineJob', () => {
       [
         {
           localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [],
-          qualityScore: 72, qualityIssues: ['vague_term'],
+          qualityScore: 72, qualityIssues: ['vague_term'], childType: 'Requirement',
         },
         {
           localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [],
-          qualityScore: undefined, qualityIssues: undefined,
+          qualityScore: undefined, qualityIssues: undefined, childType: undefined,
         },
       ],
       fakeIdempotencyService,
