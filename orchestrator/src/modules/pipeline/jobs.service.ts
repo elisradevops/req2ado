@@ -126,7 +126,13 @@ export class JobsService {
     if (diff[index].action !== 'create') {
       throw new BadRequestException('only create entries can be edited');
     }
-    diff[index] = { ...diff[index], ...patch };
+    // A patch key present with an explicit `undefined` value (as sent by the
+    // controller for a caller who never mentioned that field) must not
+    // overwrite the existing value — only apply keys the caller actually set.
+    const definedPatch: { title?: string; description?: string } = {};
+    if (patch.title !== undefined) definedPatch.title = patch.title;
+    if (patch.description !== undefined) definedPatch.description = patch.description;
+    diff[index] = { ...diff[index], ...definedPatch };
     await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
     return diff;
   }

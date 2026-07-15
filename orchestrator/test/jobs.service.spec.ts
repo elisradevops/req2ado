@@ -405,12 +405,52 @@ describe('JobsService.editDiffEntry', () => {
 
   it('rejects editing a reuse entry', async () => {
     const reuseEntry = { ...baseEntry, action: 'reuse', existingAdoId: 42 };
+    const update = jest.fn();
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [reuseEntry] }) },
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [reuseEntry] }), update },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     await expect(service.editDiffEntry('job-1', 'n0', { title: 'New' })).rejects.toThrow('only create entries can be edited');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('preserves description when only title is supplied in the patch', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { title: 'New Title' });
+
+    expect(result[0].title).toBe('New Title');
+    expect(result[0].description).toBe('Old desc');
+  });
+
+  // The HTTP controller extracts title/description independently via
+  // @Body('title')/@Body('description'), so a PATCH body that omits
+  // `description` still produces a patch object with an explicit
+  // `description: undefined` key (JS shorthand property syntax always
+  // creates the key). This reproduces that exact shape to guard against
+  // the service clobbering an existing description with undefined.
+  it('does not clobber description with an explicit undefined value from the controller', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { title: 'New Title', description: undefined });
+
+    expect(result[0].title).toBe('New Title');
+    expect(result[0].description).toBe('Old desc');
   });
 });
 

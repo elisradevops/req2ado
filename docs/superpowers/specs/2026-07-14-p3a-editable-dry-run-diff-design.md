@@ -95,18 +95,18 @@ buffering, no new request body on `confirm()`.
 
 ## Frontend
 
-- `DiffTree` rows: exclude/include toggle icon on every node (dims/strikes the row when excluded,
-  matching whatever muted-state styling `StatusChip`/`ActionBadge` already establish — no new
-  visual language). Edit (pencil) icon only on nodes where `action === 'create' && !excluded`.
-  "Add child" (plus) icon only where additionally `!isManual` (excludes manually-added nodes as
-  Add targets — see Out of scope; note this is `isManual`, not `childType`, since `childType` is
-  null for every SURVEY node too).
-- Edit: inline in `NodeDetailPanel` — title/description become editable fields + Save button,
-  PATCHes `/diff/:localId` on save.
-- Add: inline form anchored under the selected node (title, description, type selector). For a
-  BASELINE job, pre-filled and fixed to the parent's `childType` (single option, matching the
-  ladder). For a SURVEY job, a free dropdown of all three types (no `childType` to constrain it —
-  matches how SURVEY assigns types today, see Reference).
+- `DiffTree` rows: exclude/include toggle (a checkbox, `aria-label="exclude"`) on every node (dims
+  the row and strikes through the title when excluded).
+- Edit: no icon on the tree row. Selecting a node shows it in `NodeDetailPanel`; an "Edit" button
+  appears only when `action === 'create' && !excluded`, switching the panel into an editable
+  title/description form with Save/Cancel buttons. Save PATCHes `/diff/:localId`.
+- Add: a separate `AddChildForm` component, rendered below `NodeDetailPanel` for the selected
+  parent node (title, description, type selector). Renders nothing when the parent is
+  `isManual` (excludes manually-added nodes as Add targets — see Out of scope; this is `isManual`,
+  not `childType`, since `childType` is null for every SURVEY node too). For a BASELINE job, the
+  type field is pre-filled and disabled, fixed to the parent's `childType` (single option, matching
+  the ladder). For a SURVEY job, a free dropdown of all three types (no `childType` to constrain it
+  — matches how SURVEY assigns types today, see Reference).
 
 ## Testing
 
