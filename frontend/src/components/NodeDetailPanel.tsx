@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
@@ -17,6 +17,17 @@ export function NodeDetailPanel({
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
   const [draftDescription, setDraftDescription] = useState('');
+
+  // Exit edit mode whenever the selected node changes so a stale draft from
+  // the previously-edited node can never be saved onto a different node.
+  // Depend on entry?.localId (not entry itself) — JobDetail.tsx passes a new
+  // entry object reference on every parent re-render even for the same node.
+  useEffect(() => {
+    setEditing(false);
+    setDraftTitle('');
+    setDraftDescription('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry?.localId]);
 
   if (!entry) {
     return <Box p={2}><Typography color="text.secondary">Select a node to view details.</Typography></Box>;
