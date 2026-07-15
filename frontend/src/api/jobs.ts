@@ -64,3 +64,29 @@ export async function getAudit(id: string): Promise<AuditEntry[]> {
   const response = await httpClient.get<AuditEntry[]>(`/jobs/${id}/audit`);
   return response.data;
 }
+
+export async function editDiffEntry(
+  jobId: string,
+  localId: string,
+  patch: { title?: string; description?: string },
+): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}`, patch);
+  return response.data;
+}
+
+export async function setDiffEntryExcluded(jobId: string, localId: string, excluded: boolean): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/exclude`, { excluded });
+  return response.data;
+}
+
+export interface AddDiffEntryInput {
+  parentLocalId: string;
+  type: string;
+  title: string;
+  description: string;
+}
+
+export async function addDiffEntry(jobId: string, input: AddDiffEntryInput): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.post(`/jobs/${jobId}/diff`, input);
+  return response.data;
+}
