@@ -6,7 +6,7 @@ import Tab from '@mui/material/Tab';
 import Button from '@mui/material/Button';
 import Typography from '@mui/material/Typography';
 import Grid from '@mui/material/Grid';
-import { getJob, confirmJob, getAudit, type AuditEntry } from '../api/jobs';
+import { getJob, confirmJob, getAudit, editDiffEntry, setDiffEntryExcluded, addDiffEntry, type AuditEntry } from '../api/jobs';
 import { subscribeToJobEvents, type JobStage } from '../api/events';
 import { loadRuntimeConfig } from '../api/config';
 import { useOrgUrl, usePat } from '../store/authStore';
@@ -14,6 +14,7 @@ import { StatusChip } from '../components/StatusChip';
 import { ProgressBanner } from '../components/ProgressBanner';
 import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
 import { NodeDetailPanel } from '../components/NodeDetailPanel';
+import { AddChildForm } from '../components/AddChildForm';
 
 export function JobDetail(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
@@ -72,11 +73,31 @@ export function JobDetail(): React.ReactElement {
     setStatus(job.status);
   }
 
+  async function handleToggleExclude(localId: string, excluded: boolean): Promise<void> {
+    if (!id) return;
+    const result = await setDiffEntryExcluded(id, localId, excluded);
+    setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+  }
+
+  async function handleSaveEdit(localId: string, patch: { title: string; description: string }): Promise<void> {
+    if (!id) return;
+    const result = await editDiffEntry(id, localId, patch);
+    setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+  }
+
+  async function handleAddChild(parentLocalId: string, input: { type: string; title: string; description: string }): Promise<void> {
+    if (!id) return;
+    const result = await addDiffEntry(id, { parentLocalId, ...input });
+    setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+  }
+
   async function handleShowAudit(): Promise<void> {
     if (!id) return;
     setTab('audit');
     setAudit(await getAudit(id));
   }
+
+  const selectedEntry = diff.find((entry) => entry.localId === selectedId) ?? null;
 
   if (status === 'failed') {
     return (
@@ -109,10 +130,24 @@ export function JobDetail(): React.ReactElement {
       {tab === 'tree' ? (
         <Grid container>
           <Grid item xs={7}>
-            <DiffTree entries={diff} selectedId={selectedId} onSelect={setSelectedId} filterAction={null} filterText="" />
+            <DiffTree
+              entries={diff}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              filterAction={null}
+              filterText=""
+              onToggleExclude={handleToggleExclude}
+            />
           </Grid>
           <Grid item xs={5}>
-            <NodeDetailPanel entry={diff.find((entry) => entry.localId === selectedId) ?? null} />
+            <NodeDetailPanel entry={selectedEntry} onSave={handleSaveEdit} />
+            {selectedId && status === 'diff_ready' && selectedEntry && (
+              <AddChildForm
+                parentEntry={selectedEntry}
+                jobMode={mode as 'baseline' | 'survey'}
+                onAdd={(input) => handleAddChild(selectedId, input)}
+              />
+            )}
           </Grid>
         </Grid>
       ) : (
