@@ -384,6 +384,36 @@ describe('JobsService.setDiffEntryExcluded', () => {
   });
 });
 
+describe('JobsService.editDiffEntry', () => {
+  const baseEntry = { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Old', description: 'Old desc', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null };
+
+  it('updates title and description on a create entry', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { title: 'New', description: 'New desc' });
+
+    expect(result[0].title).toBe('New');
+    expect(result[0].description).toBe('New desc');
+  });
+
+  it('rejects editing a reuse entry', async () => {
+    const reuseEntry = { ...baseEntry, action: 'reuse', existingAdoId: 42 };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [reuseEntry] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.editDiffEntry('job-1', 'n0', { title: 'New' })).rejects.toThrow('only create entries can be edited');
+  });
+});
+
 describe('JobsService.confirm — exclusion', () => {
   it('skips an excluded entry and any child of it, even if the child itself is not excluded', async () => {
     const createWorkItem = jest.fn();

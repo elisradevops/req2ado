@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import type { McpClient } from './mcp.client';
@@ -109,6 +109,23 @@ export class JobsService {
     const index = diff.findIndex((entry) => entry.localId === localId);
     if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
     diff[index] = { ...diff[index], excluded };
+    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
+    return diff;
+  }
+
+  async editDiffEntry(id: string, localId: string, patch: { title?: string; description?: string }): Promise<DryRunDiffEntry[]> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException(`Job ${id} not found`);
+    if (job.status !== 'diff_ready') {
+      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+    }
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const index = diff.findIndex((entry) => entry.localId === localId);
+    if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+    if (diff[index].action !== 'create') {
+      throw new BadRequestException('only create entries can be edited');
+    }
+    diff[index] = { ...diff[index], ...patch };
     await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
     return diff;
   }
