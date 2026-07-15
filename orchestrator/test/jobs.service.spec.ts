@@ -339,6 +339,82 @@ describe('JobsService.confirm', () => {
   });
 });
 
+describe('JobsService.setDiffEntryExcluded', () => {
+  it('flips excluded on the matching entry and persists the whole array', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+          ],
+        }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.setDiffEntryExcluded('job-1', 'n0', true);
+
+    expect(result[0].excluded).toBe(true);
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { dryRunDiff: [expect.objectContaining({ localId: 'n0', excluded: true })] },
+    });
+  });
+
+  it('throws a conflict when the job is not diff_ready', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'writing', dryRunDiff: [] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.setDiffEntryExcluded('job-1', 'n0', true)).rejects.toThrow('not in a diff-editable state');
+  });
+
+  it('throws not found when the entry localId does not exist', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.setDiffEntryExcluded('job-1', 'missing', true)).rejects.toThrow('not found');
+  });
+});
+
+describe('JobsService.confirm — exclusion', () => {
+  it('skips an excluded entry and any child of it, even if the child itself is not excluded', async () => {
+    const createWorkItem = jest.fn();
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, excluded: true },
+            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, excluded: false },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntry: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(result).toEqual({ status: 'succeeded', createdCount: 0 });
+    expect(createWorkItem).not.toHaveBeenCalled();
+  });
+});
+
 describe('JobsService.list', () => {
   it('lists jobs newest-first with item counts derived from dryRunDiff length', async () => {
     const prisma = {

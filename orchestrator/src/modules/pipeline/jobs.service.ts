@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import type { McpClient } from './mcp.client';
 import type { IngestionHttpClient } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
+import type { DryRunDiffEntry } from '../writeback/dry-run.service';
 
 export interface SubmitJobInput {
   areaPath: string;
@@ -98,6 +99,20 @@ export class JobsService {
     return { id: job.id, status: job.status, mode: job.mode, dryRunDiff: job.dryRunDiff };
   }
 
+  async setDiffEntryExcluded(id: string, localId: string, excluded: boolean): Promise<DryRunDiffEntry[]> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException(`Job ${id} not found`);
+    if (job.status !== 'diff_ready') {
+      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+    }
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const index = diff.findIndex((entry) => entry.localId === localId);
+    if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+    diff[index] = { ...diff[index], excluded };
+    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
+    return diff;
+  }
+
   async list(): Promise<JobSummary[]> {
     const rows = await this.prisma.job.findMany({
       orderBy: { createdAt: 'desc' },
@@ -154,7 +169,20 @@ export class JobsService {
     const customerIdFieldByType = new Map<string, string | null>();
     let createdCount = 0;
 
+    // Excluding an entry excludes its whole subtree too, even if a descendant
+    // itself isn't marked excluded — walk parentLocalId ancestry to find out.
+    const diffById = new Map(diff.map((entry) => [entry.localId, entry] as const));
+    function isExcluded(entry: (typeof diff)[number]): boolean {
+      let current: typeof entry | undefined = entry;
+      while (current) {
+        if ((current as unknown as { excluded?: boolean }).excluded) return true;
+        current = current.parentLocalId ? diffById.get(current.parentLocalId) : undefined;
+      }
+      return false;
+    }
+
     for (const entry of diff) {
+      if (isExcluded(entry)) continue;
       // 'dedup_skip' is skipped the same as 'reuse': both already have a
       // real ADO id to point at, just with different certainty (exact-hash
       // fact vs embedding-similarity judgment) — see DryRunDiffEntry's doc
@@ -204,6 +232,7 @@ export class JobsService {
 
     for (const entry of diff) {
       if (entry.parentLocalId === null) continue;
+      if (isExcluded(entry)) continue;
       // Never re-parent an existing ADO item based on a probabilistic
       // dedup match — that would silently mutate real ADO hierarchy off a
       // similarity guess, not a certainty. A NEW child linking UP to a
