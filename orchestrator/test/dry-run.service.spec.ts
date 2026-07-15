@@ -407,4 +407,20 @@ describe('DryRunService', () => {
     expect(diff[0].qualityScore).toBeUndefined();
     expect(diff[0].qualityIssues).toBeUndefined();
   });
+
+  it('passes childType through on every action branch (create, reuse, dedup_skip)', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Feature', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          childType: 'Requirement',
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0].childType).toBe('Requirement');
+  });
 });

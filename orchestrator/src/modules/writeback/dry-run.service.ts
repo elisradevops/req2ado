@@ -13,6 +13,7 @@ export interface DryRunTreeNode {
   tags: string[];
   qualityScore?: number | null;
   qualityIssues?: string[];
+  childType?: string | null;
 }
 
 export interface DryRunDiffEntry {
@@ -40,6 +41,9 @@ export interface DryRunDiffEntry {
   tags: string[];
   qualityScore?: number | null;
   qualityIssues?: string[];
+  childType?: string | null;
+  excluded?: boolean;
+  isManual?: boolean;
 }
 
 /**
@@ -64,6 +68,7 @@ export class DryRunService {
           title: node.title, description: node.description, action: 'reuse',
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
           tags: node.tags, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
+          childType: node.childType,
         });
         continue;
       }
@@ -84,6 +89,7 @@ export class DryRunService {
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
               qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
+              childType: node.childType,
             });
             continue;
           }
@@ -97,6 +103,7 @@ export class DryRunService {
         title: node.title, description: node.description, action: 'create',
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
         tags: node.tags, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
+        childType: node.childType,
       });
     }
     return results;
