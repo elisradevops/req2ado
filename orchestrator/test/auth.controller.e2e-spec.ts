@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { WsAdapter } from '@nestjs/platform-ws';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AdoPatProvider } from '../src/modules/auth/ado-pat.provider';
@@ -25,6 +26,7 @@ describe('AuthController (e2e)', () => {
       .useValue(fakeAdoPatProvider)
       .compile();
     app = moduleRef.createNestApplication();
+    app.useWebSocketAdapter(new WsAdapter(app));
     await app.init();
   });
 

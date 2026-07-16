@@ -1,7 +1,7 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway } from '@nestjs/websockets';
 import type Redis from 'ioredis';
-import type { ChatService } from './chat.service';
+import { ChatService } from './chat.service';
 
 // Must stay strictly greater than ingestion's own stream timeout
 // (_STREAM_REQUEST_TIMEOUT_SECONDS = 120s in chat_client.py) — otherwise a
@@ -40,7 +40,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   private readonly timedOutChannels = new Set<string>();
 
   constructor(
-    private readonly subscriber: Redis,
+    @Inject('CHAT_REDIS_SUBSCRIBER') private readonly subscriber: Redis,
     private readonly chatService: ChatService,
   ) {
     // Single shared subscriber for ALL open chats (pattern-subscribe), not

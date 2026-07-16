@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { WsAdapter } from '@nestjs/platform-ws';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import helmet from 'helmet';
@@ -19,6 +20,7 @@ describe('Security headers and rate limiting', () => {
     const { AppModule } = await import('../src/app.module');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
+    app.useWebSocketAdapter(new WsAdapter(app));
     app.use(helmet());
     await app.init();
     // Bind to a real ephemeral port before the burst-request test below fires

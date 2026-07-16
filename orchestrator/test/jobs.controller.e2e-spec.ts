@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { WsAdapter } from '@nestjs/platform-ws';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { JobsService } from '../src/modules/pipeline/jobs.service';
@@ -28,6 +29,7 @@ describe('JobsController (e2e)', () => {
       .useValue(fakeJobsService)
       .compile();
     app = moduleRef.createNestApplication();
+    app.useWebSocketAdapter(new WsAdapter(app));
     await app.init();
   });
 

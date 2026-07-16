@@ -38,11 +38,17 @@ import { ChatService } from './chat.service';
       useFactory: (prisma: PrismaClient, config: ConfigService, redis: Redis) =>
         new ChatService(prisma, config.get<string>('INGESTION_BASE_URL')!, redis),
     },
-    {
-      provide: ChatGateway,
-      inject: ['CHAT_REDIS_SUBSCRIBER', ChatService],
-      useFactory: (subscriber: Redis, chatService: ChatService) => new ChatGateway(subscriber, chatService),
-    },
+    // Registered as a plain class provider (not useFactory) — NestJS's
+    // WebSocket gateway auto-discovery (SocketModule.connectGatewayToServer)
+    // reads wrapper.metatype to find the @WebSocketGateway() metadata, and
+    // metatype is only set to the real class for class-based providers. A
+    // useFactory provider's metatype is null, so the gateway instance would
+    // be constructed but silently never wired to the WS server (confirmed
+    // live: the WS handshake 404'd — Node fell through to the normal HTTP
+    // request path since no 'upgrade' listener was ever attached). Redis
+    // injection uses @Inject('CHAT_REDIS_SUBSCRIBER') on the constructor
+    // param instead (see chat.gateway.ts).
+    ChatGateway,
   ],
 })
 export class ChatModule {}

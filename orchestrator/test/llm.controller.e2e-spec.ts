@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { WsAdapter } from '@nestjs/platform-ws';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { OpenWebUiClient } from '../src/modules/llm/openwebui.client';
@@ -23,6 +24,7 @@ describe('LlmController (e2e)', () => {
       .useValue(fakeOpenWebUiClient)
       .compile();
     app = moduleRef.createNestApplication();
+    app.useWebSocketAdapter(new WsAdapter(app));
     await app.init();
   });
 
