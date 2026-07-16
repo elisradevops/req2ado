@@ -236,6 +236,44 @@ async def test_run_chat_turn_stops_and_publishes_error_when_aborted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_path_supplied(monkeypatch) -> None:
+    # Regression guard for a caller of retrieve_context() the P3c plan initially
+    # missed (retrieval.py/llm_leveling.py's test suites cover the other
+    # caller) — locks that run_chat_turn correctly unpacks the (context,
+    # citations) tuple and threads context into the system prompt.
+    monkeypatch.setattr(
+        "app.chat.chat_service.retrieve_context",
+        lambda area_path, query_text, embed_client, vector_store, **_: ("The receiver shall decode HDR10 metadata.", ["spec.docx"]),
+    )
+
+    captured: dict[str, list[dict]] = {}
+
+    class _CapturingChatClient:
+        async def stream_reply(self, messages, model):  # noqa: ANN001, ARG002 - test double
+            captured["messages"] = messages
+            yield "Sure."
+
+    publisher = _FakePublisher()
+
+    await run_chat_turn(
+        "job-1", "n0",
+        {
+            "type": "Requirement",
+            "title": "T",
+            "description": "D",
+            "childType": None,
+            "qualityIssues": [],
+        },
+        [], "make this testable", "llama3.1", "Project\\Area1", object(), object(),
+        _CapturingChatClient(), publisher,
+    )
+
+    system_prompt = captured["messages"][0]["content"]
+    assert "The receiver shall decode HDR10 metadata." in system_prompt
+    assert publisher.done is not None
+
+
+@pytest.mark.asyncio
 async def test_run_chat_turn_publishes_error_on_llm_failure_never_raises() -> None:
     class _FailingChatClient:
         async def stream_reply(self, messages, model):  # noqa: ANN001, ARG002

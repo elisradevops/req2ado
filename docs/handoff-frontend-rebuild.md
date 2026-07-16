@@ -20,7 +20,8 @@ Converts a customer requirements document (contract-signed spec, informal narrat
 - **`docs/architecture.md`** — the original (aspirational, over-scoped) design doc. Still treat with skepticism.
 - **`~/.claude/plans/glowing-prancing-valiant.md`** — the approved design/plan for the Graph-ingest replacement (the current KB model).
 - **`docs/superpowers/specs/2026-07-12-p2a-sharepoint-kb-connector-design.md`** + **`docs/superpowers/plans/2026-07-12-p2a-sharepoint-kb-connector.md`** — the *superseded* P2a folder-crawl design/plan. Historical only; the connector they describe was deleted in `8f22cec`.
-- **`.superpowers/sdd/progress.md`** (Phase 1), **`progress-p2a.md`** (superseded folder-crawl), **`progress-graph-kb.md`** (current Graph connector, incl. real-tenant verification + folder-crawl addition + independent review findings) — execution ledgers: which task found which bug, which commit fixed it.
+- **`.superpowers/sdd/progress.md`** (Phase 1), **`progress-p2a.md`** (superseded folder-crawl), **`progress-graph-kb.md`** (current Graph connector, incl. real-tenant verification + folder-crawl addition + independent review findings) — execution ledgers: which task found which bug, which commit fixed it. **Note:** `.superpowers/sdd/progress.md` is overwritten fresh per feature branch (it's git-ignored scratch, not append-only) — the P3c ledger that lived there during P3c's execution is gone now that branch merged; this doc (§4f) is P3c's durable record.
+- **Branch note:** despite this doc's title/§2 above saying `master`, the actual default branch is now `main` (confirmed via `git log`) — P3c (§4f, commits `663b997`→`6583d68`) merged there via fast-forward.
 
 ## 3. The frontend as it exists today
 
@@ -285,6 +286,71 @@ class provider whenever the class itself carries framework-relevant class-level 
 P3a `editDiffEntry` PATCH; it doesn't write anything back to the KB or produce a learning
 signal. P2d (learning-loop write-back) remains deferred per the roadmap — see §8.
 
+## 4f. P3c — Source provenance display (current, commits `663b997` → `6583d68`)
+
+Third of Phase 3's three sub-specs (see
+`docs/superpowers/specs/2026-07-16-p3c-source-provenance-design.md` and
+`docs/superpowers/plans/2026-07-16-p3c-source-provenance.md`). Shows, per SURVEY diff entry, which
+KB documents (if any) grounded its content/quality score, plus the always-on EARS/INCOSE/ISO-29148
+standards baseline P2c's scoring already judges against.
+
+- **Job-level, not per-node.** `retrieve_context()` (`ingestion/app/kb/retrieval.py`) runs exactly
+  once per document inside `build_survey_tree` and its result is reused, unchanged, across all
+  three SURVEY LLM calls (hierarchy, generate, score) — so one job has exactly one KB-grounding
+  state, shared by every node in its tree. Per-node/per-chunk attribution was explicitly out of
+  scope; it would need retrieval to run per-node instead of once per document.
+- **`retrieve_context()` now returns `(context, citations)`** instead of a bare context string —
+  `citations` is the deduped, first-seen-order list of surviving hits' `source_file` names
+  (`KbVectorStore.query()` already carried this metadata; it was previously discarded). Threaded
+  through `build_survey_tree` onto `WorkItemTree.kb_citations: list[str]` (`ingestion/app/workitem/model.py`),
+  which rides `/level`'s existing `response_model=WorkItemTree` serialization with zero extra
+  production code — `ingestion/app/main.py` needed no changes at all.
+- **Persisted on the `Job` row** — `Job.kbCitations String[] @default([])` (Prisma), written by
+  `pipeline.worker.ts` in the same `diff_ready` update that stores `dryRunDiff`
+  (`kbCitations: tree.kb_citations ?? []`). Exposed on `GET /jobs/:id` (§5).
+- **Frontend**: a "Sources" section in `NodeDetailPanel`, gated on `jobMode === 'survey' && entry.action === 'create'`
+  (mirrors P2c's `qualityScore` display gating). Always shows a static "Judged against EARS,
+  INCOSE, ISO/IEC/IEEE 29148" line when the section renders (the standard is always active for
+  scoring, independent of KB grounding); shows a "KB references: ..." line only when
+  `kbCitations.length > 0`. Both `jobMode`/`kbCitations` are optional props, backward-compatible
+  with every pre-existing `NodeDetailPanel` caller/test.
+
+**Critical bug found and fixed during this round, not previously known:**
+`IngestionHttpClient.level()` (orchestrator) never forwarded `area_path` to ingestion's `/level`
+endpoint — the real pipeline (`pipeline.worker.ts` → `ingestionClient.level()`) has therefore
+**never actually triggered KB retrieval in production** since P2b/P2c shipped; only direct-curl
+testing against ingestion exercised that path (see §4b/§4c's "real-tenant verified" notes — those
+verifications called ingestion directly, bypassing the orchestrator's own broken call site). Fixed
+by adding an optional 4th `areaPath` param to `level()`, forwarded as `area_path` when present, and
+wiring `job.areaPath` through from `pipeline.worker.ts`. `area_path` is harmless for BASELINE jobs
+(`build_baseline_tree` never reads it) — the worker now passes it unconditionally rather than
+mode-branching. **This means P2b/P2c's KB grounding is, as of this round, verified working in the
+real pipeline for the first time** — previously "verified" claims in §4b/§4c were curl-only.
+
+**Two plan gaps caught and fixed during implementation, not anticipated by the plan itself:**
+1. `retrieve_context()` has a second production caller the plan missed —
+   `ingestion/app/chat/chat_service.py`'s `run_chat_turn` (P3b's per-item chat feature also calls
+   it for its own KB grounding). Fixed alongside the main signature change; currently untested
+   directly (deferred, see below).
+2. Making `pipeline.worker.ts` actually pass `job.areaPath` to `level()` broke two *pre-existing*
+   `pipeline.worker.spec.ts` assertions that expected exactly 3 args — mechanical fix, verified
+   against the tests' own fixtures (both already had non-empty `areaPath` values) to confirm it
+   wasn't papering over a real behavior change.
+
+**Verified**: all three test suites green post-merge — ingestion 300/307 (7 pre-existing
+OCR/poppler failures, unrelated), orchestrator 213/213, frontend 94/94. Not yet live-verified
+against a real docker-compose stack + real ingested KB content (unlike P2b/P2c/P3a/P3b, which all
+got a live E2E pass) — the next session picking up P3c-adjacent work should run the manual smoke
+test in the plan's "Final verification" section: ingest a real KB doc, run a SURVEY job against
+that area path, confirm the Sources section actually renders a KB reference in the browser.
+
+**Deferred, not blocking:**
+- `chat_service.py`'s KB-grounded chat-turn branch has no dedicated regression test for the new
+  tuple-unpack — correct by inspection, but the exact class of caller that got missed once already.
+- A docstring run-on sentence in `llm_leveling.py`'s `build_survey_tree` (cosmetic only).
+- **P2d still unfed.** P3c only *displays* existing retrieval metadata; it produces no new
+  accept/reject signal. P2d (learning-loop write-back) remains deferred — see §8.
+
 ## 5. Backend API surface (current)
 
 All routes on the orchestrator (`http://localhost:3001` in dev):
@@ -300,7 +366,7 @@ All routes on the orchestrator (`http://localhost:3001` in dev):
 - `GET /jobs` → `{ id, mode, status, areaPath, itemCount, createdAt }[]`, newest first.
 - `POST /jobs/preview` — multipart `file` → `{ blockCount, sectionCount, fileType }`. No LLM, no credentials required.
 - `POST /jobs` — multipart form: `file`, `areaPath`, `customerId?`, `mode` (`baseline`|`survey`), `state?`, `iterationPath?` → `{ jobId }`.
-- `GET /jobs/:id` → `{ id, status, mode, dryRunDiff }` — **`mode` added this round**. `status` ∈ `pending | running | diff_ready | writing | succeeded | failed`.
+- `GET /jobs/:id` → `{ id, status, mode, dryRunDiff, kbCitations }` — **`kbCitations` added this round** (§4f), `mode` added in an earlier round. `status` ∈ `pending | running | diff_ready | writing | succeeded | failed`. `kbCitations: string[]` is job-level (one list, shared by every node in `dryRunDiff`), always `[]` for BASELINE jobs.
 - `GET /ado/area-paths?depth=5` — headers `X-Ado-Org-Url`/`X-Ado-Pat` → nested `{ path, children }` tree.
 - `GET /jobs/:id/events` — SSE stream, `event: stage\ndata: {"stage":"..."}\n\n` frames.
 - `POST /jobs/:id/confirm` — headers `X-Ado-Org-Url`, `X-Ado-Pat` → `{ status, createdCount }`.
@@ -352,10 +418,10 @@ Prod k8s (on-prem, k3s, 4-node cluster) has shared `devops-postgresql`/`redis` i
 - **P2d — learning loop** (write confirmed items back into the KB) — **deferred**, see `docs/req2ado-roadmap.md`'s P2d entry for the full rationale: the signal available today (P2c's own `quality_score`/`quality_issues`) is circular for deriving "learned rules" — a second LLM call grading the first LLM's grading mostly restates generic advice, not genuine org-specific learning. The real signal is a diff between an LLM-generated item and what a human actually edited it to, which needs Phase 3's per-item edit/accept/reject flow to exist first. Revisit P2d once Phase 3 ships.
 - **Phase 3, P3a — Editable dry-run diff** — done (§4d). Exclude/edit/add before confirm, verified end-to-end. Also unblocks P2d (above) once P3b's AI-assist accept/reject produces real per-item edit-diffs to learn from.
 - **P3b — AI assist/chat per item** — done (§4e). Per-item streamed chat with model selection, sentinel-based proposal splitting, and Accept via P3a's existing `editDiffEntry`. Two Critical bugs (cross-node proposal leak, WS opened while disabled) fixed in Task 11's own review; three lifecycle bugs (Redis pool leak, mismatched timeout windows, stop-generating not propagated upstream) fixed in a final whole-branch review (`5d17d5a`). **Still doesn't feed P2d** — Accept just calls `editDiffEntry`, no KB write-back yet (see P2d above).
-- **P3c — Source provenance display** (next up): show where a generated item's content/score came from (KB doc, standard).
-- **Phase 4 — Traceability** (Covers/CoveredBy/Affects link types, diff-vs-live-ADO, baselining).
+- **P3c — Source provenance display** — done (§4f). "Sources" section in `NodeDetailPanel` shows job-level KB citations + the always-on standards baseline. Also fixed a Critical latent bug: the orchestrator never forwarded `area_path` to ingestion's `/level`, so P2b/P2c's KB retrieval had never actually fired in the real pipeline before this round — only curl-direct testing had exercised it. **Still doesn't feed P2d** — P3c only displays existing retrieval metadata, produces no new accept/reject signal (see P2d above). Not yet live-verified against a real docker-compose stack + real ingested KB (unlike every other Phase 2/3 sub-feature) — see §4f's "Verified" note for the manual smoke test still owed.
+- **Phase 4 — Traceability** (Covers/CoveredBy/Affects link types, diff-vs-live-ADO, baselining) — next up.
 
-The KB ingest happy path is verified against a real Graph token/tenant (§4a), and P2b's retrieval + P2c's scoring are both verified end-to-end against real ingested KB content (§4b, §4c) — the whole RAG-first knowledge layer (Phase 2) is feature-complete except for the deferred P2d. P3a (§4d) and P3b (§4e) are also done, with P3b leaving P2d still unfed pending P3c and a real learning signal.
+The KB ingest happy path is verified against a real Graph token/tenant (§4a), and P2b's retrieval + P2c's scoring are both verified end-to-end against real ingested KB content (§4b, §4c) — the whole RAG-first knowledge layer (Phase 2) is feature-complete except for the deferred P2d. Phase 3 (P3a §4d, P3b §4e, P3c §4f) is now fully done, with P2d still unfed pending a real learning signal (needs a live human edit/accept/reject stream, which none of P3a/b/c produce on their own).
 
 ## 9. Testing conventions (established, keep using)
 

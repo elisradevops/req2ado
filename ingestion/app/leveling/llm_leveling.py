@@ -91,7 +91,9 @@ def build_survey_tree(
     exactly. kb_citations (the deduped list of KB source_file names that grounded
     kb_context) is returned once on the tree, not per node — retrieval runs
     once per document, so every node in a tree shares the same citation
-    list (P3c source provenance). When scoring_client is supplied, one additional batched call
+    list (P3c source provenance).
+
+    When scoring_client is supplied, one additional batched call
     scores every node's FINAL formalized description using the SAME
     kb_context already computed for the other two calls; when scoring_client
     is omitted, every node's quality_score stays None and quality_issues
