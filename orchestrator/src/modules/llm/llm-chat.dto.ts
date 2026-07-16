@@ -9,6 +9,7 @@ export const llmChatRequestSchema = z.object({
       }),
     )
     .min(1),
+  model: z.string().optional(),
   temperature: z.number().min(0).max(2).optional(),
 });
 

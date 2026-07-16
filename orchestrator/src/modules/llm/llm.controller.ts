@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { llmChatRequestSchema } from './llm-chat.dto';
 import { llmEmbedRequestSchema } from './llm-embed.dto';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
@@ -16,11 +16,17 @@ export class LlmController {
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
     }
     const body = parseResult.data;
-    const content = await this.llmClient.chat(
-      body.messages,
-      body.temperature !== undefined ? { temperature: body.temperature } : undefined,
-    );
+    const content = await this.llmClient.chat(body.messages, {
+      ...(body.model !== undefined ? { model: body.model } : {}),
+      ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
+    });
     return { content };
+  }
+
+  @Get('models')
+  async models(): Promise<{ models: string[] }> {
+    const models = await this.llmClient.listModels();
+    return { models };
   }
 
   @Post('embed')
