@@ -6,6 +6,7 @@ import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { LlmModule } from './modules/llm/llm.module';
 import { JobsModule } from './modules/pipeline/jobs.module';
+import { ChatModule } from './modules/chat/chat.module';
 import { KbModule } from './modules/kb/kb.module';
 import { WikiModule } from './modules/wiki/wiki.module';
 
@@ -21,6 +22,7 @@ import { WikiModule } from './modules/wiki/wiki.module';
     AuthModule,
     LlmModule,
     JobsModule,
+    ChatModule,
     KbModule,
     WikiModule,
   ],

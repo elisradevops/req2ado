@@ -20,6 +20,7 @@
     "@nestjs/throttler": "^6.2.1",
     "@nestjs/websockets": "^10.4.0",
     "@prisma/client": "^5.20.0",
+    "axios": "^1.18.1",
     "bullmq": "^5.12.0",
     "helmet": "^7.1.0",
     "ioredis": "^5.4.1",
