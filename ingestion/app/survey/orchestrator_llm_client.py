@@ -118,6 +118,54 @@ class OrchestratorLlmClient:
         except json.JSONDecodeError as exc:
             raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
 
+    def infer_trace_links(
+        self,
+        nodes: list[dict],
+        link_type_catalog: list[dict],
+        kb_context: str | None = None,
+    ) -> list[dict]:
+        catalog_lines = "\n".join(
+            f"- {entry['reference_name']} (\"{entry['name']}\")"
+            + (f": {entry['semantic_hint']}" if entry.get("semantic_hint") else "")
+            for entry in link_type_catalog
+        )
+        nodes_json = json.dumps(nodes)
+        system_prompt = (
+            "You infer trace/coverage links between work items in a requirements tree — "
+            "the most common case is a System Requirement covering/tracing a Customer "
+            "Requirement, but use your judgment on the actual relationship implied by the "
+            "text. You are given a JSON array of nodes, each with 'node_id', 'type', "
+            "'title', and 'text'. You may propose zero or more links. For each link, "
+            "choose EXACTLY ONE reference_name from this list — never invent one, and "
+            "omit the link entirely if none genuinely fits:\n\n"
+            f"{catalog_lines}\n\n"
+            "Return ONLY a JSON array of objects, each with 'source_node_id' (the node_id "
+            "the link is on), 'target_ref' (the node_id of the OTHER node in this array, "
+            "if the target is one of them), and 'reference_name' (one of the reference "
+            "names listed above). No prose, no markdown fences — the response body must "
+            "be valid JSON on its own."
+        )
+        system_prompt = _with_kb_context(system_prompt, kb_context)
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": nodes_json},
+            ],
+            "temperature": 0,
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
+
     def generate_requirements_for_document(
         self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
     ) -> dict[str, list[dict]]:

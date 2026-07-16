@@ -267,3 +267,57 @@ def test_score_requirements_for_document_prompt_unchanged_when_kb_context_is_non
 
     client.score_requirements_for_document({"0": "text"})
     assert "Reference material from the knowledge base" not in captured["system_prompt"]
+
+
+def test_infer_trace_links_sends_nodes_and_catalog_returns_parsed_links() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        system_prompt = body["messages"][0]["content"]
+        assert "Elisra.CoveredBy-Forward" in system_prompt
+        return httpx.Response(
+            200,
+            json={
+                "content": json.dumps(
+                    [{"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}]
+                )
+            },
+        )
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.infer_trace_links(
+        nodes=[
+            {"node_id": "0", "type": "Requirement", "title": "Sys Req", "text": "The system shall X."},
+            {"node_id": "1", "type": "Requirement", "title": "Cust Req", "text": "The customer requires X."},
+        ],
+        link_type_catalog=[
+            {"reference_name": "Elisra.CoveredBy-Forward", "name": "Covered by", "semantic_hint": "system req covers customer req"},
+        ],
+    )
+
+    assert result == [{"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}]
+
+
+def test_infer_trace_links_raises_on_malformed_json() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "not json"})
+
+    with pytest.raises(ValueError, match="malformed JSON"):
+        client.infer_trace_links(nodes=[], link_type_catalog=[])
+
+
+def test_infer_trace_links_with_no_catalog_still_sends_a_valid_request() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["messages"][1]["content"]  # user content present
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.infer_trace_links(
+        nodes=[{"node_id": "0", "type": "Requirement", "title": "T", "text": "X"}],
+        link_type_catalog=[],
+    )
+    assert result == []
