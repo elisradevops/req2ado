@@ -35,6 +35,25 @@ export class OpenWebUiClient implements LlmClient {
     return response.choices[0]?.message?.content ?? '';
   }
 
+  async listModels(): Promise<string[]> {
+    const page = await this.openai.models.list();
+    return page.data.map((m) => m.id);
+  }
+
+  async *streamChat(messages: ChatMessage[], opts?: { model?: string; temperature?: number }): AsyncGenerator<string> {
+    const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
+    const stream = await this.openai.chat.completions.create({
+      model: opts?.model ?? this.config.LLM_CHAT_MODEL,
+      messages: outboundMessages,
+      stream: true,
+      ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+    });
+    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string } }[] }>) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) yield delta;
+    }
+  }
+
   async embed(texts: string[], opts?: { model?: string }): Promise<number[][]> {
     if (this.config.EMBED_TRANSPORT !== 'ollama') {
       throw new Error(

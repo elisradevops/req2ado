@@ -55,6 +55,7 @@ services:
     env_file: .env
     environment:
       PORT: 8000
+      REDIS_URL: redis://redis:6379
     ports:
       # Host port 8000 is taken by an unrelated container on dev machines
       # (see scripts/run-golden-e2e.sh) — map to 8010 instead, matching the
@@ -68,6 +69,8 @@ services:
       # already-declared (previously unused) req2ado_chroma volume rather
       # than adding a new one.
       - req2ado_chroma:/app/.req2ado/vectors
+    depends_on:
+      - redis
 
   orchestrator:
     build:

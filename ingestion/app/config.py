@@ -22,6 +22,7 @@ class Settings(BaseSettings):
         default=None, validation_alias=AliasChoices("SHAREPOINT_TOKEN", "GRAPH_TOKEN")
     )
     graph_base_url: str = "https://graph.microsoft.com/v1.0"
+    redis_url: str = "redis://localhost:6379"
 
     class Config:
         env_prefix = ""

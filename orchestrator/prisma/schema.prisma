@@ -62,3 +62,21 @@ model IngestedDocument {
 
   @@unique([areaPath, driveItemId])
 }
+
+// One row per chat turn (user message or assistant reply) on a single
+// dry-run diff entry. A log, not a state machine — acceptance of a
+// proposal is a normal editDiffEntry PATCH, not tracked here. See
+// docs/superpowers/specs/2026-07-15-p3b-ai-assist-chat-design.md §4.
+model ChatMessage {
+  id                  String   @id @default(uuid())
+  jobId               String
+  localId             String
+  role                String // "user" | "assistant"
+  content             String
+  proposedTitle       String?
+  proposedDescription String?
+  model               String? // assistant turns only — which model produced this reply
+  createdAt           DateTime @default(now())
+
+  @@index([jobId, localId])
+}

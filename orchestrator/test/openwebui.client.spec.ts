@@ -73,6 +73,47 @@ describe('OpenWebUiClient', () => {
     const client = new OpenWebUiClient(config);
     await expect(client.vision('prompt', [])).rejects.toThrow(/not implemented/i);
   });
+
+  it('lists available models from the OpenAI-compatible /v1/models endpoint', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeList = jest.fn().mockResolvedValue({ data: [{ id: 'llama3.1' }, { id: 'qwen2.5:14b' }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.models.list = fakeList;
+
+    const models = await client.listModels();
+
+    expect(models).toEqual(['llama3.1', 'qwen2.5:14b']);
+  });
+
+  it('passes an explicit model through when provided, overriding LLM_CHAT_MODEL', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { model: 'qwen2.5:14b' });
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'qwen2.5:14b' }));
+  });
+
+  it('streamChat yields text deltas from a streamed completion', async () => {
+    const client = new OpenWebUiClient(config);
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: 'Hel' } }] };
+      yield { choices: [{ delta: { content: 'lo' } }] };
+      yield { choices: [{ delta: {} }] }; // no content — must be skipped, not yielded as ''
+    }
+    const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const deltas: string[] = [];
+    for await (const delta of client.streamChat([{ role: 'user', content: 'hi' }], { model: 'llama3.1' })) {
+      deltas.push(delta);
+    }
+
+    expect(deltas).toEqual(['Hel', 'lo']);
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'llama3.1', stream: true }));
+  });
 });
 
 describe('OpenWebUiClient.embed (ollama transport)', () => {

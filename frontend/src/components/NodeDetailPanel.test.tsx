@@ -1,17 +1,39 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { NodeDetailPanel } from './NodeDetailPanel';
+import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
+import * as chatApi from '../api/chat';
+
+// NodeDetailPanel now renders ChatPanel (Task 11) whenever entry is non-null,
+// which calls useToast() unconditionally and hits the chat API/WS on mount.
+// Mock both so these pre-existing tests stay focused on NodeDetailPanel's own
+// title/description/tags/quality-score/Edit behavior.
+vi.mock('../api/chat');
+vi.mock('../hooks/useChatSocket', async () => {
+  const actual = await vi.importActual<typeof import('../hooks/useChatSocket')>('../hooks/useChatSocket');
+  return { ...actual, useChatSocket: vi.fn() };
+});
+
+function renderPanel(ui: React.ReactElement) {
+  return render(<ToastProvider>{ui}</ToastProvider>);
+}
 
 describe('NodeDetailPanel', () => {
+  beforeEach(() => {
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+  });
+
   it('renders a placeholder when nothing is selected', () => {
-    render(<NodeDetailPanel entry={null} />);
+    renderPanel(<NodeDetailPanel jobId="job-1" entry={null} />);
     expect(screen.getByText(/select a node/i)).toBeInTheDocument();
   });
 
   it('renders the entry title, description, type, and tags when selected', () => {
-    render(
+    renderPanel(
       <NodeDetailPanel
+        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: ['functional'] }}
       />,
     );
@@ -21,8 +43,9 @@ describe('NodeDetailPanel', () => {
   });
 
   it('renders the quality score and issue chips when present', () => {
-    render(
+    renderPanel(
       <NodeDetailPanel
+        jobId="job-1"
         entry={{
           localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
           action: 'create', customerId: null, tags: [], qualityScore: 72, qualityIssues: ['vague_term'],
@@ -34,8 +57,9 @@ describe('NodeDetailPanel', () => {
   });
 
   it('renders no score line when qualityScore is absent', () => {
-    render(
+    renderPanel(
       <NodeDetailPanel
+        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
       />,
     );
@@ -45,8 +69,9 @@ describe('NodeDetailPanel', () => {
   it('shows an Edit button for a create entry and switches to editable fields on click', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const user = userEvent.setup();
-    render(
+    renderPanel(
       <NodeDetailPanel
+        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
         onSave={vi.fn()}
       />,
@@ -60,8 +85,9 @@ describe('NodeDetailPanel', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     const user = userEvent.setup();
     const onSave = vi.fn();
-    render(
+    renderPanel(
       <NodeDetailPanel
+        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
         onSave={onSave}
       />,
@@ -87,7 +113,7 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, tags: [],
     };
 
-    const { rerender } = render(<NodeDetailPanel entry={nodeA} onSave={vi.fn()} />);
+    const { rerender } = renderPanel(<NodeDetailPanel jobId="job-1" entry={nodeA} onSave={vi.fn()} />);
 
     // Start editing node A and dirty the draft without saving/cancelling.
     await user.click(screen.getByRole('button', { name: /edit/i }));
@@ -97,7 +123,11 @@ describe('NodeDetailPanel', () => {
 
     // Select a different node (JobDetail.tsx passes a new entry prop into this
     // still-mounted component) without the user clicking Save or Cancel first.
-    rerender(<NodeDetailPanel entry={nodeB} onSave={vi.fn()} />);
+    rerender(
+      <ToastProvider>
+        <NodeDetailPanel jobId="job-1" entry={nodeB} onSave={vi.fn()} />
+      </ToastProvider>,
+    );
 
     // Edit mode must be exited: no leftover draft textfield for A's stale text,
     // and node B's data is shown read-only with a fresh Edit button available.
@@ -108,8 +138,9 @@ describe('NodeDetailPanel', () => {
   });
 
   it('does not show an Edit button for a reuse entry', () => {
-    render(
+    renderPanel(
       <NodeDetailPanel
+        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
         onSave={vi.fn()}
       />,

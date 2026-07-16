@@ -11,6 +11,8 @@ import type { ChatMessage } from './redactor';
  */
 export interface LlmClient {
   chat(messages: ChatMessage[], opts?: { model?: string; temperature?: number }): Promise<string>;
+  listModels(): Promise<string[]>;
+  streamChat(messages: ChatMessage[], opts?: { model?: string; temperature?: number }): AsyncGenerator<string>;
   embed(texts: string[], opts?: { model?: string }): Promise<number[][]>;
   vision(prompt: string, images: Buffer[], opts?: { model?: string }): Promise<string>;
 }

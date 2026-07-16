@@ -140,7 +140,7 @@ export function JobDetail(): React.ReactElement {
             />
           </Grid>
           <Grid item xs={5}>
-            <NodeDetailPanel entry={selectedEntry} onSave={handleSaveEdit} />
+            <NodeDetailPanel jobId={id!} entry={selectedEntry} onSave={handleSaveEdit} />
             {selectedId && status === 'diff_ready' && selectedEntry && (
               <AddChildForm
                 parentEntry={selectedEntry}

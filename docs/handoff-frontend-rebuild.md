@@ -155,11 +155,118 @@ request body and re-read `job.dryRunDiff` as-is.
   real data-loss bug on the documented `{ title?, description? }` contract — worth knowing if a
   future caller (e.g. Phase 3's AI-assist chat) ever sends a genuinely partial patch.
 
+## 4e. P3b — Per-item AI-assist chat (current, commits `b566ab9` → `7871a7f`, final fixes `5d17d5a`)
+
+Third of Phase 3's three sub-specs (see
+`docs/superpowers/specs/2026-07-15-p3b-ai-assist-chat-design.md` and
+`docs/superpowers/plans/2026-07-16-p3b-ai-assist-chat.md`). Lets a user free-form chat with an
+LLM about a single `action: 'create'` diff entry, get a streamed, model-selectable reply plus an
+optional structured title/description proposal, and Accept it into P3a's existing edit flow —
+Accept just calls `PATCH /jobs/:id/diff/:localId` (`editDiffEntry`), no new mutation path for the
+diff entry itself.
+
+- **Architecture** — ingestion owns the LLM call and KB grounding (never calls Open
+  WebUI/Ollama directly, same locked boundary as every other LLM call in this codebase); tokens
+  are relayed to the browser via orchestrator, not called directly by ingestion:
+  - **ingestion → orchestrator**: `ChatLlmClient` (`ingestion/app/chat/chat_client.py`) streams
+    from the new `POST /llm/chat/stream` proxy on `LlmController` (ndjson, one
+    `{"delta": "..."}\n` line per token) instead of buffering one full completion like the
+    existing `/llm/chat`/`/llm/embed` calls.
+  - **ingestion → Redis**: `run_chat_turn` (`ingestion/app/chat/chat_service.py`) drives one turn
+    end-to-end — reuses P2b's `retrieve_context()` for KB grounding (best-effort, failure never
+    aborts the turn), builds a system prompt capped at the last 10 history turns, streams the
+    reply through a `_SentinelWindow` (buffers text so a `PROPOSAL_SENTINEL` marker is never
+    split across two published chunks and nothing after it ever reaches the live token stream),
+    and publishes to Redis via `RedisChatPublisher` (`ingestion/app/chat/redis_publisher.py`) —
+    channel `chat:{job_id}:{local_id}`, `{"type": "chunk"|"done"|"error", ...}` payloads. Also
+    polls a Redis key `chat:abort:{job_id}:{local_id}` (set by orchestrator's `stopTurn`, 30s TTL,
+    cleared on read) between chunks to support "stop generating". Route:
+    `POST /chat/{job_id}/{local_id}/turn`.
+  - **orchestrator relay**: `ChatGateway` (`orchestrator/src/modules/chat/chat.gateway.ts`, plain
+    `ws` via `@nestjs/platform-ws`'s `WsAdapter` — not socket.io, the frontend has no WS client
+    library) holds one shared `ioredis` subscriber pattern-subscribed to `chat:*` and relays by
+    channel to whichever sockets are in that channel's room. On a `done` event it persists a new
+    `ChatMessage` row (`ChatService.persistAssistantTurn`); on `error` it persists nothing. A
+    per-turn timeout (`startTurnTimeout`, 150s) force-emits a synthetic `error` if no terminal
+    event ever arrives.
+  - **frontend**: `ChatPanel` (`frontend/src/components/ChatPanel.tsx`) renders inside
+    `NodeDetailPanel` (new `jobId` prop threaded from `JobDetail`), backed by `useChatSocket`
+    (`frontend/src/hooks/useChatSocket.ts`, plain `WebSocket`) and `api/chat.ts`.
+- **Sentinel-based proposal splitting** — not specified in the design doc's original sketch
+  (only "reply includes conversational text AND a structured proposal"), implemented as the
+  simplest robust way to carry both a live-streamable message and a structured proposal over one
+  token stream: the model is prompted to end its reply with a literal `PROPOSAL_SENTINEL` line
+  followed by a single-line JSON object, only when an actual rewrite was requested.
+  `split_message_and_proposal` (`ingestion/app/chat/chat_client.py`) parses the full text after
+  streaming ends; tolerant of a missing sentinel, malformed JSON, non-dict JSON, or non-string
+  field values — all fall back to a safe default (message-only, no proposal) rather than raising.
+- **Model selection** — switchable per turn via a dropdown, not locked for the conversation.
+  `GET /chat/models` (and the underlying `GET /llm/models`) call `OpenWebUiClient.listModels()`
+  (`this.openai.models.list()` against Open WebUI's OpenAI-compatible `/v1/models` — no new
+  architecture boundary, same client `/llm/chat`/`/llm/embed` already use), unfiltered. `model` is
+  now threaded through `POST /llm/chat`'s request body (optional, falls back to
+  `LLM_CHAT_MODEL`) and forwarded end-to-end: frontend dropdown → `POST .../chat` body → ingestion
+  payload → `ChatLlmClient.stream_reply(messages, model)` → `/llm/chat/stream`. Each assistant
+  turn records which model produced it (`ChatMessage.model`) for history and any future P2d
+  signal analysis.
+- **Data model** — new `ChatMessage` Prisma model (`orchestrator/prisma/schema.prisma`):
+  `{ id, jobId, localId, role: 'user'|'assistant', content, proposedTitle?, proposedDescription?,
+  model?, createdAt }`, indexed on `[jobId, localId]`. A log, not a state machine — no `accepted`
+  flag; acceptance is a normal `editDiffEntry` PATCH. History load is capped at 50 rows
+  (`CHAT_HISTORY_LIMIT`); LLM-facing history per turn is capped at the last 10 turns.
+- **Gating** — mirrors P3a's `editDiffEntry` restrictions: chat only allowed on
+  `action: 'create'` entries with `excluded` falsy, and only while `job.status === 'diff_ready'`
+  (`ChatService.sendTurn` 404s on unknown job/entry, 409s otherwise). `useChatSocket`'s `enabled`
+  param (default `true`) skips opening a WebSocket entirely when the panel is disabled.
+- **Verified** per Task 12's manual E2E checklist (streaming render, Accept via the existing PATCH
+  path, history reload, gating on `reuse`/`dedup_skip`/excluded, stop-generating) — run
+  separately/manually, not part of this doc update.
+
+**Two Critical bugs caught in Task 11's own review, fixed before merge:**
+1. `ChatPanel` wasn't resetting its history/proposal/draft/model state when the selected
+   diff-tree node changed — an unaccepted proposal drafted against node A could be silently
+   applied to node B if the user switched nodes mid-draft. Fixed with a node-change reset effect.
+2. The WebSocket connection was opened even when chat was disabled for
+   `reuse`/`dedup_skip`/excluded entries — wasted a connection per non-chattable node. Fixed with
+   the `enabled` param on `useChatSocket` (see Gating above).
+
+**Three lifecycle bugs caught in a final whole-branch review (commit `5d17d5a`), after all 12
+plan tasks were individually done — worth knowing for future work on this path:**
+1. **Redis pool leak** — ingestion constructed a fresh `RedisChatPublisher` (and its underlying
+   `redis.asyncio` connection pool, never `aclose()`d) on every `/chat/{job_id}/{local_id}/turn`
+   request. Fixed by promoting it to a module-level singleton in `ingestion/app/main.py`,
+   mirroring the existing `_embed_client`/`_kb_vector_store` pattern.
+2. **Mismatched timeout windows** — orchestrator's `TURN_TIMEOUT_MS` (90s) fired *before*
+   ingestion's own stream timeout (120s), so a legitimately slow reply got a spurious "timed out"
+   error followed by a late real `done` event still being relayed and persisted on top of it.
+   Fixed by raising the orchestrator timeout to 150s (strictly greater than ingestion's 120s) and
+   adding a `timedOutChannels` guard on `ChatGateway` so any late done/error after a fired timeout
+   is dropped instead of relayed/persisted; the marker resets when a fresh turn starts on the same
+   channel.
+3. **Stop-generating didn't stop the upstream LLM call** — it only broke ingestion's relay loop;
+   orchestrator's `POST /llm/chat/stream` kept iterating `streamChat()` to completion regardless,
+   so the actual Ollama/Open WebUI generation kept running and burning compute after nobody was
+   reading tokens. Fixed by wiring `res.on('close', ...)` in `LlmController.chatStream` to a
+   `clientDisconnected` flag checked after each write — stops writing/consuming further chunks as
+   soon as the current await resolves (not an instant mid-network-call abort, but the best
+   granularity available without deeper SDK abort-signal plumbing).
+
+**Not yet done — no accept/reject signal feeds P2d yet.** Accept still just calls the existing
+P3a `editDiffEntry` PATCH; it doesn't write anything back to the KB or produce a learning
+signal. P2d (learning-loop write-back) remains deferred per the roadmap — see §8.
+
 ## 5. Backend API surface (current)
 
 All routes on the orchestrator (`http://localhost:3001` in dev):
 
 - `POST /auth/login` — body `{ adoOrgUrl, pat }` → `{ displayName }`. Calls the **real** ADO org directly (no mock path — see §4).
+- `POST /llm/chat` — body `{ messages, model?, temperature? }` → `{ content }`. **`model` added this round** (§4e) — optional, forwarded to `llmClient.chat()`, falls back to `LLM_CHAT_MODEL` when omitted. Bearer-guarded (`LlmProxyBearerGuard`), service-to-service only.
+- `POST /llm/chat/stream` — same body shape as `/llm/chat`, new this round (§4e) → chunked `application/x-ndjson`, one `{"delta": "..."}` line per token. Bearer-guarded, service-to-service only — consumed by ingestion's `ChatLlmClient`, never called from the frontend. Aborts the underlying stream on downstream (ingestion) disconnect (§4e's stop-generating fix).
+- `GET /chat/models` — new this round (§4e) → `{ models: string[] }` from `OpenWebUiClient.listModels()` (Open WebUI's `/v1/models`), unfiltered. Not bearer-guarded (`ChatController` has no `@UseGuards`) — called directly from the frontend's model dropdown.
+- `POST /jobs/:id/diff/:localId/chat` — new this round (§4e). Body `{ message, model? }` → `{ status: 'started' }`. 404 unknown job/entry, 409 if not `action: 'create'`/excluded or `job.status !== 'diff_ready'`. Fire-and-forget — kicks off ingestion's turn and the WS relay, doesn't await the reply.
+- `GET /jobs/:id/diff/:localId/chat` — new this round (§4e) → `{ messages: ChatMessageDto[] }`, capped at last 50 rows, oldest first.
+- `POST /jobs/:id/diff/:localId/chat/stop` — new this round (§4e) → `{ status: 'stopping' }`. Sets a short-TTL Redis abort flag ingestion's `run_chat_turn` polls between chunks.
+- `WS /chat?jobId=&localId=` — new this round (§4e), plain `ws` (not socket.io) via `ChatGateway`. Server→client only: relays `{"type":"chunk"|"done"|"error", ...}` events published by ingestion over the shared Redis `chat:*` subscription.
 - `GET /jobs` → `{ id, mode, status, areaPath, itemCount, createdAt }[]`, newest first.
 - `POST /jobs/preview` — multipart `file` → `{ blockCount, sectionCount, fileType }`. No LLM, no credentials required.
 - `POST /jobs` — multipart form: `file`, `areaPath`, `customerId?`, `mode` (`baseline`|`survey`), `state?`, `iterationPath?` → `{ jobId }`.
@@ -214,11 +321,11 @@ Prod k8s (on-prem, k3s, 4-node cluster) has shared `devops-postgresql`/`redis` i
 - **P2c — RAG-grounded quality scoring** — done (§4c). Every SURVEY node gets a 0-100 quality score + issue chips, reusing the same `kb_context` P2b computes — zero new retrieval calls.
 - **P2d — learning loop** (write confirmed items back into the KB) — **deferred**, see `docs/req2ado-roadmap.md`'s P2d entry for the full rationale: the signal available today (P2c's own `quality_score`/`quality_issues`) is circular for deriving "learned rules" — a second LLM call grading the first LLM's grading mostly restates generic advice, not genuine org-specific learning. The real signal is a diff between an LLM-generated item and what a human actually edited it to, which needs Phase 3's per-item edit/accept/reject flow to exist first. Revisit P2d once Phase 3 ships.
 - **Phase 3, P3a — Editable dry-run diff** — done (§4d). Exclude/edit/add before confirm, verified end-to-end. Also unblocks P2d (above) once P3b's AI-assist accept/reject produces real per-item edit-diffs to learn from.
-- **P3b — AI assist/chat per item** (next up): per-item refine/regenerate via chat, accept/reject, building on P3a's edit infrastructure.
-- **P3c — Source provenance display**: show where a generated item's content/score came from (KB doc, standard).
+- **P3b — AI assist/chat per item** — done (§4e). Per-item streamed chat with model selection, sentinel-based proposal splitting, and Accept via P3a's existing `editDiffEntry`. Two Critical bugs (cross-node proposal leak, WS opened while disabled) fixed in Task 11's own review; three lifecycle bugs (Redis pool leak, mismatched timeout windows, stop-generating not propagated upstream) fixed in a final whole-branch review (`5d17d5a`). **Still doesn't feed P2d** — Accept just calls `editDiffEntry`, no KB write-back yet (see P2d above).
+- **P3c — Source provenance display** (next up): show where a generated item's content/score came from (KB doc, standard).
 - **Phase 4 — Traceability** (Covers/CoveredBy/Affects link types, diff-vs-live-ADO, baselining).
 
-The KB ingest happy path is verified against a real Graph token/tenant (§4a), and P2b's retrieval + P2c's scoring are both verified end-to-end against real ingested KB content (§4b, §4c) — the whole RAG-first knowledge layer (Phase 2) is feature-complete except for the deferred P2d. P3a (§4d) is also done and verified end-to-end.
+The KB ingest happy path is verified against a real Graph token/tenant (§4a), and P2b's retrieval + P2c's scoring are both verified end-to-end against real ingested KB content (§4b, §4c) — the whole RAG-first knowledge layer (Phase 2) is feature-complete except for the deferred P2d. P3a (§4d) and P3b (§4e) are also done, with P3b leaving P2d still unfed pending P3c and a real learning signal.
 
 ## 9. Testing conventions (established, keep using)
 
