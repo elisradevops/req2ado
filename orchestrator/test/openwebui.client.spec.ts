@@ -94,6 +94,26 @@ describe('OpenWebUiClient', () => {
     await client.chat([{ role: 'user', content: 'hi' }], { model: 'qwen2.5:14b' });
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'qwen2.5:14b' }));
   });
+
+  it('streamChat yields text deltas from a streamed completion', async () => {
+    const client = new OpenWebUiClient(config);
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: 'Hel' } }] };
+      yield { choices: [{ delta: { content: 'lo' } }] };
+      yield { choices: [{ delta: {} }] }; // no content — must be skipped, not yielded as ''
+    }
+    const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const deltas: string[] = [];
+    for await (const delta of client.streamChat([{ role: 'user', content: 'hi' }], { model: 'llama3.1' })) {
+      deltas.push(delta);
+    }
+
+    expect(deltas).toEqual(['Hel', 'lo']);
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'llama3.1', stream: true }));
+  });
 });
 
 describe('OpenWebUiClient.embed (ollama transport)', () => {

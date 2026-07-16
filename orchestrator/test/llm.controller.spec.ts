@@ -33,4 +33,24 @@ describe('LlmController', () => {
 
     expect(result).toEqual({ models: ['llama3.1', 'qwen2.5:14b'] });
   });
+
+  it('POST /llm/chat/stream writes one ndjson line per delta and ends the response', async () => {
+    async function* fakeDeltas() {
+      yield 'Hel';
+      yield 'lo';
+    }
+    const streamChat = jest.fn().mockReturnValue(fakeDeltas());
+    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const written: string[] = [];
+    const res = {
+      setHeader: jest.fn(),
+      write: jest.fn((chunk: string) => written.push(chunk)),
+      end: jest.fn(),
+    };
+
+    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, res as any);
+
+    expect(written).toEqual([`${JSON.stringify({ delta: 'Hel' })}\n`, `${JSON.stringify({ delta: 'lo' })}\n`]);
+    expect(res.end).toHaveBeenCalled();
+  });
 });

@@ -40,8 +40,18 @@ export class OpenWebUiClient implements LlmClient {
     return page.data.map((m) => m.id);
   }
 
-  async *streamChat(_messages: ChatMessage[], _opts?: { model?: string; temperature?: number }): AsyncGenerator<string> {
-    throw new Error('streamChat not implemented yet — see Task 3');
+  async *streamChat(messages: ChatMessage[], opts?: { model?: string; temperature?: number }): AsyncGenerator<string> {
+    const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
+    const stream = await this.openai.chat.completions.create({
+      model: opts?.model ?? this.config.LLM_CHAT_MODEL,
+      messages: outboundMessages,
+      stream: true,
+      ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+    });
+    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string } }[] }>) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) yield delta;
+    }
   }
 
   async embed(texts: string[], opts?: { model?: string }): Promise<number[][]> {
