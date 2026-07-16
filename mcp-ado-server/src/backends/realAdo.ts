@@ -176,6 +176,19 @@ export class RealAdoBackend implements AdoBackend {
     );
   }
 
+  async linkWorkItems(fromId: number, toId: number, referenceName: string): Promise<void> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems/${fromId}${versionQueryParam(version)}`;
+    const toUrl = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workItems/${toId}`;
+    await retryWithBackoff(() =>
+      this.httpClient.patch(
+        url,
+        [{ op: 'add', path: '/relations/-', value: { rel: referenceName, url: toUrl } }],
+        { headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' } },
+      ),
+    );
+  }
+
   async queryIds(fieldMatch: Record<string, string>): Promise<number[]> {
     const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/wiql${versionQueryParam(version)}`;

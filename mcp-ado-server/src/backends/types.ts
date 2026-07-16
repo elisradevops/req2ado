@@ -30,6 +30,13 @@ export interface AdoBackend {
   getWorkItem(id: number): Promise<WorkItemRecord | null>;
   linkParentChild(childId: number, parentId: number): Promise<void>;
   /**
+   * Adds a relation of the given referenceName from fromId to toId. Generic
+   * primitive behind Phase 4's trace/coverage links (Covers/CoveredBy/
+   * Affects/AffectedBy/etc.) — linkParentChild remains separate and
+   * unchanged for the hierarchy link.
+   */
+  linkWorkItems(fromId: number, toId: number, referenceName: string): Promise<void>;
+  /**
    * Exact-match field query, used for dedup/idempotency lookups (later phases) and tests here.
    * Note: this exact-full-match mock semantics diverges from the documented Phase 7
    * area-path-scoped dedup contract (docs/architecture.md) and will need revisiting then.

@@ -231,6 +231,46 @@ describe('RealAdoBackend.linkParentChild', () => {
   });
 });
 
+describe('RealAdoBackend.linkWorkItems', () => {
+  it('PATCHes a relation add op with the given referenceName onto the fromId work item', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const patchSpy = vi.spyOn(httpClient, 'patch').mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.linkWorkItems(42, 7, 'Elisra.CoveredBy-Forward');
+
+    expect(patchSpy.mock.calls[0][0]).toContain('/wit/workitems/42');
+    expect(patchSpy.mock.calls[0][1]).toEqual([
+      {
+        op: 'add',
+        path: '/relations/-',
+        value: {
+          rel: 'Elisra.CoveredBy-Forward',
+          url: expect.stringContaining('/workItems/7'),
+        },
+      },
+    ]);
+  });
+
+  it('retries on a 503 before succeeding', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const patchSpy = vi
+      .spyOn(httpClient, 'patch')
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.linkWorkItems(42, 7, 'System.LinkTypes.Related');
+    expect(patchSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('RealAdoBackend.queryIds', () => {
   it('runs a WIQL query built from the field-match map and returns matching ids', async () => {
     const backend = new RealAdoBackend(testConfig, credential);

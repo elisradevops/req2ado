@@ -47,6 +47,12 @@ export class MockAdoBackend implements AdoBackend {
     this.db.prepare('UPDATE work_items SET parent_id = ? WHERE id = ?').run(parentId, childId);
   }
 
+  async linkWorkItems(_fromId: number, _toId: number, _referenceName: string): Promise<void> {
+    // No-op: the mock's flat schema has no generic relations table (only
+    // parent_id). Good enough to exercise the tool contract in tests; the
+    // real backend is what actually needs to write the relation.
+  }
+
   async queryIds(fieldMatch: Record<string, string>): Promise<number[]> {
     const rows = this.db.prepare('SELECT id, fields FROM work_items').all() as { id: number; fields: string }[];
     return rows
