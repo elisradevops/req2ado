@@ -9,7 +9,17 @@ from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import retrieve_context
 from app.leveling.depth import resolve_block_depth
 from app.leveling.profiles import LevelingProfile
-from app.workitem.model import RequirementQualityIssue, RequirementTag, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
+from app.workitem.model import (
+    RequirementQualityIssue,
+    RequirementTag,
+    TraceLink,
+    TraceLinkResolutionStatus,
+    TraceLinkTargetKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemTree,
+    WorkItemType,
+)
 
 
 class LlmLevelingClient(Protocol):
@@ -50,6 +60,19 @@ class BatchedScoringClient(Protocol):
     ) -> dict[str, dict]: ...
 
 
+class TraceLinkInferenceClient(Protocol):
+    """Interface for SURVEY-mode trace/coverage link inference — one call
+    covering every node (whole-tree), mirroring BatchedRequirementClient's
+    one-call-per-document rationale. Given the full node list and a
+    discovered ADO link-type catalog, proposes zero or more links; anything
+    the model returns with a reference_name outside the supplied catalog is
+    dropped by build_survey_tree, never trusted blind."""
+
+    def infer_trace_links(
+        self, nodes: list[dict], link_type_catalog: list[dict], kb_context: str | None = None
+    ) -> list[dict]: ...
+
+
 def _build_outline(doc: CanonicalDoc) -> str:
     lines = []
     for block in doc.blocks:
@@ -66,6 +89,8 @@ def build_survey_tree(
     embed_client: object | None = None,
     vector_store: KbVectorStore | None = None,
     scoring_client: BatchedScoringClient | None = None,
+    link_type_client: TraceLinkInferenceClient | None = None,
+    link_type_catalog: list[dict] | None = None,
 ) -> WorkItemTree:
     """SURVEY-mode leveling: infers hierarchy, then formalizes every node's
     description into 'shall'-style requirement text + taxonomy tags via ONE
@@ -99,7 +124,26 @@ def build_survey_tree(
     is omitted, every node's quality_score stays None and quality_issues
     stays empty — matching pre-scoring behavior exactly. Per-node scoring
     entries that are missing, malformed, or out of the 0-100 range are
-    tolerated individually and never abort the batch."""
+    tolerated individually and never abort the batch.
+
+    When link_type_client is supplied, one additional batched call
+    infers_trace_links over the whole node set using the SAME kb_context
+    already computed for the other calls, plus link_type_catalog (the ADO
+    link-type catalog discovered by the orchestrator, Task 5); when
+    link_type_client is omitted, trace_links stays [] — matching
+    pre-trace-link behavior exactly. Every returned link is validated
+    before being trusted: a source_node_id that doesn't match any node
+    actually produced by this build is always dropped, and — when a
+    non-empty link_type_catalog was supplied — a reference_name outside
+    that catalog is dropped too (the model is never trusted blind on
+    either axis). An empty/omitted catalog does not itself suppress
+    every link; it just means reference_name isn't validated against a
+    known list for that call. A link's target_ref is classified as
+    intraJob when it matches
+    another node's local_id in this same tree, and as crossJob (treated as
+    an opaque customer-id string) for anything else — this is a heuristic,
+    not a lookup against ADO, since intraJob is not verifiable until write
+    time."""
     outline = _build_outline(doc)
     kb_context: str | None = None
     kb_citations: list[str] = []
@@ -194,4 +238,52 @@ def build_survey_tree(
                     key=lambda issue: issue.value,
                 )
 
-    return WorkItemTree(nodes=nodes, kb_citations=kb_citations)
+    trace_links: list[TraceLink] = []
+    if link_type_client is not None:
+        catalog = link_type_catalog or []
+        valid_reference_names = {entry["reference_name"] for entry in catalog}
+        node_by_local_id = {node.local_id: node for node in nodes}
+        llm_nodes = [
+            {"node_id": node.local_id, "type": node.type.value, "title": node.title, "text": node.description}
+            for node in nodes
+        ]
+        raw_links = link_type_client.infer_trace_links(llm_nodes, catalog, kb_context=kb_context)
+        catalog_by_ref = {entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog}
+        for raw_link in raw_links:
+            source_node_id = raw_link.get("source_node_id")
+            reference_name = raw_link.get("reference_name")
+            target_ref = raw_link.get("target_ref")
+            if source_node_id not in node_by_local_id:
+                continue
+            # Only enforce catalog membership when a catalog was actually
+            # supplied. An empty catalog means discovery wasn't wired up
+            # (or found nothing) for this call, not "reject everything" —
+            # validation is a defense against a hallucinated reference_name
+            # among real catalog entries, not a way to blanket-suppress
+            # every link whenever the catalog happens to be empty.
+            if catalog and reference_name not in valid_reference_names:
+                continue
+            if target_ref in node_by_local_id:
+                trace_links.append(
+                    TraceLink(
+                        source_local_id=source_node_id,
+                        reference_name=reference_name,
+                        display_name=catalog_by_ref.get(reference_name, reference_name),
+                        target_kind=TraceLinkTargetKind.INTRA_JOB,
+                        target_local_id=target_ref,
+                        resolution_status=TraceLinkResolutionStatus.PENDING,
+                    )
+                )
+            elif target_ref:
+                trace_links.append(
+                    TraceLink(
+                        source_local_id=source_node_id,
+                        reference_name=reference_name,
+                        display_name=catalog_by_ref.get(reference_name, reference_name),
+                        target_kind=TraceLinkTargetKind.CROSS_JOB,
+                        target_customer_id=target_ref,
+                        resolution_status=TraceLinkResolutionStatus.PENDING,
+                    )
+                )
+
+    return WorkItemTree(nodes=nodes, kb_citations=kb_citations, trace_links=trace_links)

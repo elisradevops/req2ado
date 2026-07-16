@@ -486,3 +486,90 @@ def test_build_survey_tree_kb_citations_empty_when_retrieval_finds_nothing(monke
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
     )
     assert tree.kb_citations == []
+
+
+class FakeTraceLinkInferenceClient:
+    """Hand-written test double for infer_trace_links — proves build_survey_tree
+    calls it exactly once per document (whole-tree, not per-node), and that
+    the discovered catalog is passed through unchanged."""
+
+    def __init__(self, results: list[dict] | None = None) -> None:
+        self._results = results if results is not None else []
+        self.calls: list[dict] = []
+
+    def infer_trace_links(self, nodes: list[dict], link_type_catalog: list[dict], kb_context: str | None = None) -> list[dict]:
+        self.calls.append({"nodes": nodes, "link_type_catalog": link_type_catalog, "kb_context": kb_context})
+        return self._results
+
+
+def test_build_survey_tree_without_link_type_client_leaves_trace_links_empty() -> None:
+    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
+    assert tree.trace_links == []
+
+
+def test_build_survey_tree_calls_infer_trace_links_exactly_once_with_the_catalog() -> None:
+    fake_client = FakeTraceLinkInferenceClient()
+    catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
+    build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(),
+        link_type_client=fake_client, link_type_catalog=catalog,
+    )
+    assert len(fake_client.calls) == 1
+    assert fake_client.calls[0]["link_type_catalog"] == catalog
+
+
+def test_build_survey_tree_resolves_intra_job_link_target() -> None:
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[{"source_node_id": "1", "target_ref": "0", "reference_name": "System.LinkTypes.Related"}]
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(),
+        link_type_client=fake_client, link_type_catalog=[],
+    )
+    assert len(tree.trace_links) == 1
+    link = tree.trace_links[0]
+    assert link.source_local_id == "1"
+    assert link.target_kind == "intraJob"
+    assert link.target_local_id == "0"
+    assert link.resolution_status == "pending"
+
+
+def test_build_survey_tree_treats_a_non_node_id_target_ref_as_cross_job_customer_id() -> None:
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[{"source_node_id": "1", "target_ref": "REQ-SYS-012", "reference_name": "Elisra.CoveredBy-Reverse"}]
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(),
+        link_type_client=fake_client, link_type_catalog=[],
+    )
+    link = tree.trace_links[0]
+    assert link.target_kind == "crossJob"
+    assert link.target_customer_id == "REQ-SYS-012"
+    assert link.target_local_id is None
+
+
+def test_build_survey_tree_drops_a_link_with_a_reference_name_not_in_the_catalog() -> None:
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[
+            {"source_node_id": "1", "target_ref": "0", "reference_name": "Hallucinated.NotReal"},
+            {"source_node_id": "1", "target_ref": "0", "reference_name": "System.LinkTypes.Related"},
+        ]
+    )
+    catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
+    tree = build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(),
+        link_type_client=fake_client, link_type_catalog=catalog,
+    )
+    assert len(tree.trace_links) == 1
+    assert tree.trace_links[0].reference_name == "System.LinkTypes.Related"
+
+
+def test_build_survey_tree_drops_a_link_whose_source_node_id_does_not_exist() -> None:
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[{"source_node_id": "does-not-exist", "target_ref": "0", "reference_name": "System.LinkTypes.Related"}]
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient(),
+        link_type_client=fake_client, link_type_catalog=[{"reference_name": "System.LinkTypes.Related", "name": "Related"}],
+    )
+    assert tree.trace_links == []

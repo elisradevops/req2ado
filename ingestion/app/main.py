@@ -1,4 +1,5 @@
 # ingestion/app/main.py
+import json
 import tempfile
 from pathlib import Path
 
@@ -106,7 +107,11 @@ async def ingest(file: UploadFile, redact: bool = False, languages: str = "eng")
 
 @app.post("/level", response_model=WorkItemTree)
 async def level(
-    doc: CanonicalDoc, customer_id: str | None = None, mode: str = "baseline", area_path: str | None = None
+    doc: CanonicalDoc,
+    customer_id: str | None = None,
+    mode: str = "baseline",
+    area_path: str | None = None,
+    link_type_catalog: str | None = None,
 ) -> WorkItemTree:
     if mode == "survey":
         # One real client instance satisfies both Protocols build_survey_tree
@@ -120,7 +125,18 @@ async def level(
         # area_path is optional here: when the caller omits it (no KB scope
         # known yet), build_survey_tree skips retrieval entirely and behaves
         # exactly as it did before KB retrieval existed.
+        # link_type_catalog arrives as a JSON-encoded query param (matches
+        # the existing lightweight query-param style used by customer_id/
+        # area_path here) rather than restructuring the request body around
+        # CanonicalDoc — the orchestrator (Task 5) is the only caller that
+        # populates it. link_type_client is only wired up when a catalog was
+        # actually supplied: passing it unconditionally would make every
+        # survey call (including every pre-existing caller that omits this
+        # param) issue an extra infer_trace_links call, changing behavior
+        # for callers this task must leave untouched — matching
+        # pre-trace-link behavior exactly when the param is omitted.
         client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
+        catalog = json.loads(link_type_catalog) if link_type_catalog else None
         return await run_in_threadpool(
             build_survey_tree,
             doc,
@@ -130,6 +146,8 @@ async def level(
             embed_client=_embed_client,
             vector_store=_kb_vector_store,
             scoring_client=client,
+            link_type_client=client if catalog is not None else None,
+            link_type_catalog=catalog,
         )
     return build_baseline_tree(doc, customer_id=customer_id)
 

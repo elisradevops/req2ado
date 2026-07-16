@@ -182,6 +182,57 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
     assert response.status_code == 200
 
 
+def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch) -> None:
+    # Mirrors test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval's
+    # exact mocking mechanics for infer_hierarchy/generate_requirements_for_document
+    # (MockTransport-backed OrchestratorLlmClient) — infer_trace_links is
+    # monkeypatched directly instead, since this test only needs to prove the
+    # catalog reaches it unchanged, not exercise its own HTTP prompt contract.
+    catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related"}]
+    captured: dict[str, list[dict]] = {}
+
+    def fake_infer_trace_links(self, nodes, link_type_catalog, kb_context=None):
+        captured["link_type_catalog"] = link_type_catalog
+        return []
+
+    monkeypatch.setattr(
+        "app.survey.orchestrator_llm_client.OrchestratorLlmClient.infer_trace_links",
+        fake_infer_trace_links,
+    )
+
+    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
+    requirements_by_node = {"0": [{"text": "The system shall power on.", "tags": ["functional"]}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        system_prompt = body["messages"][0]["content"]
+        if "hierarchy" in system_prompt:
+            return httpx.Response(200, json={"content": json.dumps(hierarchy)})
+        return httpx.Response(200, json={"content": json.dumps(requirements_by_node)})
+
+    original_init = OrchestratorLlmClient.__init__
+
+    def patched_init(self, base_url, bearer_token):
+        original_init(self, base_url, bearer_token)
+        self._transport = httpx.MockTransport(handler)
+
+    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
+    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
+
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+    )
+    response = client.post(
+        "/level",
+        params={"mode": "survey", "link_type_catalog": json.dumps(catalog)},
+        json=doc.model_dump(mode="json"),
+    )
+
+    assert response.status_code == 200
+    assert captured["link_type_catalog"] == catalog
+
+
 def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
