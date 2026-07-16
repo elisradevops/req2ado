@@ -45,6 +45,12 @@ export class IngestionHttpClient {
     customerId: string | null,
     mode: 'baseline' | 'survey' = 'baseline',
     areaPath?: string,
+    // Accepted but not yet sent to /level — the Python endpoint doesn't
+    // consume a link-type catalog yet (a later task wires that up). Adding
+    // the parameter here now is intentional groundwork so the orchestrator's
+    // per-job catalog discovery has somewhere to plug in without another
+    // signature churn later.
+    linkTypeCatalog?: { referenceName: string; name: string; semanticHint?: string }[],
   ): Promise<Record<string, unknown>> {
     const params = new URLSearchParams({ mode });
     if (customerId) params.set('customer_id', customerId);

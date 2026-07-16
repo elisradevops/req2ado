@@ -6,6 +6,7 @@ import { IngestionHttpClient } from './ingestion-http.client';
 import { DryRunService } from '../writeback/dry-run.service';
 import { IdempotencyService } from '../writeback/idempotency.service';
 import { JobEventsPublisher } from './job-events.publisher';
+import { McpClient } from './mcp.client';
 import { runPipelineJob, type PipelineJobInput } from './pipeline.worker';
 
 /**
@@ -33,6 +34,7 @@ jobEventsPublisherRedis.on('error', (err) => {
   console.error('JobEventsPublisher Redis error:', err);
 });
 const jobEventsPublisher = new JobEventsPublisher(jobEventsPublisherRedis as any);
+const mcpClient = new McpClient(`${config.MCP_URL}/mcp`, config.MCP_BEARER);
 
 // Queued job data carries the file as base64, not a raw Buffer — see the
 // comment in JobsService.submit for why (BullMQ's Redis JSON round-trip
@@ -44,7 +46,7 @@ const worker = new Worker<QueuedJobData>(
   async (job) => {
     const { fileBufferBase64, ...rest } = job.data;
     const jobInput: PipelineJobInput = { ...rest, fileBuffer: Buffer.from(fileBufferBase64, 'base64') };
-    return runPipelineJob(jobInput, { ingestionClient, dryRunService, idempotencyService, prisma, jobEventsPublisher });
+    return runPipelineJob(jobInput, { ingestionClient, dryRunService, idempotencyService, prisma, jobEventsPublisher, mcpClient });
   },
   { connection: { url: config.REDIS_URL } as any },
 );

@@ -229,6 +229,15 @@ export class JobsService {
       sourceHash: string;
       customerId: string | null;
       tags?: string[];
+      traceLinks?: {
+        sourceLocalId: string;
+        referenceName: string;
+        targetKind: 'intraJob' | 'crossJob';
+        targetLocalId?: string;
+        targetCustomerId?: string;
+        resolvedAdoId?: number;
+        resolutionStatus: 'resolved' | 'unresolved' | 'pending';
+      }[];
     }[];
 
     // Tree order from ingestion (parents appear before children — see
@@ -317,6 +326,28 @@ export class JobsService {
       const parentAdoId = adoIdByLocalId.get(entry.parentLocalId);
       if (childAdoId === undefined || parentAdoId === undefined) continue; // defensive — should not happen given tree order
       await this.mcpClient.linkParentChild(childAdoId, parentAdoId, credential);
+    }
+
+    // Trace-link writes fire last, once every entry in this confirm() call
+    // has a real ADO id in adoIdByLocalId — same ordering guarantee the
+    // parent-child loop above relies on. Unresolved links (bad customer id,
+    // or a targetLocalId that isn't in this diff — e.g. its subtree was
+    // excluded) are skipped, never thrown: per the project's "never block"
+    // philosophy, a broken trace link must not fail the whole confirm.
+    for (const entry of diff) {
+      if (isExcluded(entry)) continue;
+      for (const link of entry.traceLinks ?? []) {
+        const sourceAdoId = adoIdByLocalId.get(link.sourceLocalId);
+        if (sourceAdoId === undefined) continue;
+        let targetAdoId: number | undefined;
+        if (link.targetKind === 'intraJob' && link.targetLocalId) {
+          targetAdoId = adoIdByLocalId.get(link.targetLocalId);
+        } else if (link.targetKind === 'crossJob' && link.resolutionStatus === 'resolved') {
+          targetAdoId = link.resolvedAdoId;
+        }
+        if (targetAdoId === undefined) continue;
+        await this.mcpClient.linkWorkItems(sourceAdoId, targetAdoId, link.referenceName, credential);
+      }
     }
 
     await this.prisma.job.update({

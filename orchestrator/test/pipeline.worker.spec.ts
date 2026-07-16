@@ -6,6 +6,11 @@ describe('runPipelineJob', () => {
   const fakeIdempotencyService = { lookup: jest.fn(), record: jest.fn() };
   const fakePrisma = { job: { update: jest.fn() }, auditEntry: { create: jest.fn() } };
   const fakeJobEventsPublisher = { publish: jest.fn() };
+  const fakeMcpClient = {
+    discoverLinkTypes: jest.fn().mockResolvedValue([]),
+    discoverFields: jest.fn().mockResolvedValue([]),
+    queryIds: jest.fn().mockResolvedValue([]),
+  };
 
   afterEach(() => {
     jest.clearAllMocks();
@@ -26,11 +31,12 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
     expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt');
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline', 'Project\\Area1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline', 'Project\\Area1', []);
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
   });
 
@@ -47,10 +53,11 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', 'Project\\Area1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', 'Project\\Area1', []);
   });
 
   it('updates the Job row status to diff_ready and stores the diff on success', async () => {
@@ -66,6 +73,7 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
@@ -88,6 +96,7 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
@@ -107,6 +116,7 @@ describe('runPipelineJob', () => {
           idempotencyService: fakeIdempotencyService as any,
           prisma: fakePrisma as any,
           jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
         },
       ),
     ).rejects.toThrow('ingestion service down');
@@ -132,13 +142,14 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
     expect(fakeDryRunService.diff).toHaveBeenCalledWith(
       [
-        { localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [] },
-        { localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [] },
+        { localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [], traceLinks: [] },
+        { localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [], traceLinks: [] },
       ],
       fakeIdempotencyService,
       expect.any(Function),
@@ -179,6 +190,7 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
@@ -194,6 +206,7 @@ describe('runPipelineJob', () => {
           customerId: 'CUST-1',
           areaPath: 'Project\\Area1',
           tags: [],
+          traceLinks: [],
         },
         {
           localId: 'n1',
@@ -205,6 +218,7 @@ describe('runPipelineJob', () => {
           customerId: 'CUST-1',
           areaPath: 'Project\\Area1',
           tags: [],
+          traceLinks: [],
         },
       ],
       fakeIdempotencyService,
@@ -241,6 +255,7 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
@@ -248,11 +263,11 @@ describe('runPipelineJob', () => {
       [
         {
           localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [],
-          qualityScore: 72, qualityIssues: ['vague_term'], childType: 'Requirement',
+          qualityScore: 72, qualityIssues: ['vague_term'], childType: 'Requirement', traceLinks: [],
         },
         {
           localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1', tags: [],
-          qualityScore: undefined, qualityIssues: undefined, childType: undefined,
+          qualityScore: undefined, qualityIssues: undefined, childType: undefined, traceLinks: [],
         },
       ],
       fakeIdempotencyService,
@@ -286,6 +301,7 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
@@ -307,6 +323,7 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
@@ -330,6 +347,7 @@ describe('runPipelineJob', () => {
           idempotencyService: fakeIdempotencyService as any,
           prisma: fakePrisma as any,
           jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
         },
       ),
     ).rejects.toThrow('ingestion service down');
@@ -350,10 +368,11 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', 'Project\\Area1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', 'Project\\Area1', []);
   });
 
   it("persists the tree's kb_citations onto the Job row alongside dryRunDiff", async () => {
@@ -369,6 +388,7 @@ describe('runPipelineJob', () => {
         idempotencyService: fakeIdempotencyService as any,
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
       },
     );
 

@@ -200,3 +200,21 @@ describe('McpClient', () => {
     expect(mockCallTool).toHaveBeenCalledWith({ name: 'ado_discover_link_types', arguments: {} });
   });
 });
+
+describe('McpClient.queryIds', () => {
+  it('calls ado_query_ids with the field-match map and parses the JSON id array', async () => {
+    const client = new McpClient('http://mcp.test/mcp', 'test-bearer');
+    const callTool = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '[1,2]' }] });
+    jest.spyOn(client as any, 'withClient').mockImplementation(async (_cred: unknown, fn: any) =>
+      fn({ callTool }),
+    );
+
+    const result = await client.queryIds({ 'Custom.CustomerId': 'REQ-SYS-012' });
+
+    expect(callTool).toHaveBeenCalledWith({
+      name: 'ado_query_ids',
+      arguments: { fieldMatch: { 'Custom.CustomerId': 'REQ-SYS-012' } },
+    });
+    expect(result).toEqual([1, 2]);
+  });
+});

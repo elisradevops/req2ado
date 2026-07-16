@@ -99,6 +99,13 @@ export class McpClient {
     });
   }
 
+  async queryIds(fieldMatch: Record<string, string>, credential?: AdoRequestCredential): Promise<number[]> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({ name: 'ado_query_ids', arguments: { fieldMatch } });
+      return this.parseToolTextResult(result as any);
+    });
+  }
+
   async readAreaPaths(depth: number, credential?: AdoRequestCredential): Promise<unknown> {
     return this.withClient(credential, async (client) => {
       const result = await client.callTool({ name: 'ado_read_area_paths', arguments: { depth } });
