@@ -7,6 +7,9 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from app.canonical.model import CanonicalDoc
+from app.chat.chat_client import ChatLlmClient
+from app.chat.chat_service import run_chat_turn
+from app.chat.redis_publisher import RedisChatPublisher
 from app.config import settings
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
@@ -50,6 +53,27 @@ class KbIngestUrlRequest(BaseModel):
     area_path: str
     doc_type: str | None = None
     recursive: bool = False  # ignored by /kb/ingest-url (single doc); folder route only
+
+
+class ChatTurnItem(BaseModel):
+    type: str
+    title: str
+    description: str
+    childType: str | None = None
+    qualityIssues: list[str] = []
+
+
+class ChatTurnMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatTurnRequest(BaseModel):
+    item: ChatTurnItem
+    history: list[ChatTurnMessage] = []
+    message: str
+    model: str | None = None
+    area_path: str | None = None
 
 
 @app.get("/health")
@@ -172,3 +196,27 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
         # Graph-unreachable 502.
         status = exc.status if exc.status in (400, 401, 403, 404) else 502
         raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/chat/{job_id}/{local_id}/turn")
+async def chat_turn(job_id: str, local_id: str, body: ChatTurnRequest) -> dict[str, bool]:
+    # Fully async (httpx.AsyncClient, redis.asyncio) — no run_in_threadpool
+    # needed here, unlike /level and /kb/ingest-*, which wrap synchronous
+    # httpx.Client calls. The caller (orchestrator's ChatService) doesn't
+    # await this request's completion either way — see chat.service.ts.
+    chat_client = ChatLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
+    publisher = RedisChatPublisher(settings.redis_url)
+    await run_chat_turn(
+        job_id,
+        local_id,
+        body.item.model_dump(),
+        [m.model_dump() for m in body.history],
+        body.message,
+        body.model,
+        body.area_path,
+        _embed_client,
+        _kb_vector_store,
+        chat_client,
+        publisher,
+    )
+    return {"ok": True}
