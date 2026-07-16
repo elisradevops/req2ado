@@ -5,12 +5,15 @@ import Button from '@mui/material/Button';
 import TextField from '@mui/material/TextField';
 import { TagChips } from './TagChips';
 import { IssueChips } from './IssueChips';
+import { ChatPanel } from './ChatPanel';
 import type { DryRunDiffEntry } from './DiffTree';
 
 export function NodeDetailPanel({
+  jobId,
   entry,
   onSave,
 }: {
+  jobId: string;
   entry: DryRunDiffEntry | null;
   onSave?: (localId: string, patch: { title: string; description: string }) => void;
 }): React.ReactElement {
@@ -84,6 +87,19 @@ export function NodeDetailPanel({
         </>
       )}
       {canEdit && <Button onClick={startEditing}>Edit</Button>}
+      {entry && (
+        <ChatPanel
+          jobId={jobId}
+          localId={entry.localId}
+          disabled={!canEdit}
+          onAcceptProposal={(patch) =>
+            onSave?.(entry.localId, {
+              title: patch.title ?? entry.title,
+              description: patch.description ?? entry.description,
+            })
+          }
+        />
+      )}
     </Box>
   );
 }
