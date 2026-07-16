@@ -147,4 +147,64 @@ describe('NodeDetailPanel', () => {
     );
     expect(screen.queryByRole('button', { name: /edit/i })).not.toBeInTheDocument();
   });
+
+  it('shows the standards line and KB references for a SURVEY create entry with citations', () => {
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        jobMode="survey"
+        kbCitations={['doc-a.docx', 'doc-b.pdf']}
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.getByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).toBeInTheDocument();
+    expect(screen.getByText(/doc-a\.docx, doc-b\.pdf/)).toBeInTheDocument();
+  });
+
+  it('shows the standards line but no KB references line when kbCitations is empty', () => {
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        jobMode="survey"
+        kbCitations={[]}
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.getByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).toBeInTheDocument();
+    expect(screen.queryByText(/KB references/i)).not.toBeInTheDocument();
+  });
+
+  it('does not show the Sources section for a BASELINE job', () => {
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        jobMode="baseline"
+        kbCitations={[]}
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
+  });
+
+  it('does not show the Sources section for a reuse entry, even in a SURVEY job', () => {
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        jobMode="survey"
+        kbCitations={['doc-a.docx']}
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
+  });
+
+  it('does not show the Sources section when jobMode is omitted (backward compatible with pre-existing callers)', () => {
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
+  });
 });

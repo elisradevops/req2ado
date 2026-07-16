@@ -11,10 +11,14 @@ import type { DryRunDiffEntry } from './DiffTree';
 export function NodeDetailPanel({
   jobId,
   entry,
+  jobMode,
+  kbCitations,
   onSave,
 }: {
   jobId: string;
   entry: DryRunDiffEntry | null;
+  jobMode?: 'baseline' | 'survey' | null;
+  kbCitations?: string[];
   onSave?: (localId: string, patch: { title: string; description: string }) => void;
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
@@ -85,6 +89,15 @@ export function NodeDetailPanel({
           <Typography variant="body2">Quality score: {entry.qualityScore} / 100</Typography>
           <IssueChips issues={entry.qualityIssues} />
         </>
+      )}
+      {jobMode === 'survey' && entry.action === 'create' && (
+        <Box mt={1}>
+          <Typography variant="subtitle2">Sources</Typography>
+          <Typography variant="body2">Judged against EARS, INCOSE, ISO/IEC/IEEE 29148</Typography>
+          {kbCitations && kbCitations.length > 0 && (
+            <Typography variant="body2">KB references: {kbCitations.join(', ')}</Typography>
+          )}
+        </Box>
       )}
       {canEdit && <Button onClick={startEditing}>Edit</Button>}
       {entry && (

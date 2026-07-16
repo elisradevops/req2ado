@@ -22,6 +22,7 @@ export function JobDetail(): React.ReactElement {
   const pat = usePat();
   const [status, setStatus] = useState<string | null>(null);
   const [mode, setMode] = useState<string | null>(null);
+  const [kbCitations, setKbCitations] = useState<string[]>([]);
   const [diff, setDiff] = useState<DryRunDiffEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [stage, setStage] = useState<JobStage | null>(null);
@@ -36,6 +37,7 @@ export function JobDetail(): React.ReactElement {
       if (cancelled) return;
       setStatus(job.status);
       setMode(job.mode);
+      setKbCitations(job.kbCitations ?? []);
       setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
     });
     return () => {
@@ -140,7 +142,13 @@ export function JobDetail(): React.ReactElement {
             />
           </Grid>
           <Grid item xs={5}>
-            <NodeDetailPanel jobId={id!} entry={selectedEntry} onSave={handleSaveEdit} />
+            <NodeDetailPanel
+              jobId={id!}
+              entry={selectedEntry}
+              jobMode={mode as 'baseline' | 'survey' | null}
+              kbCitations={kbCitations}
+              onSave={handleSaveEdit}
+            />
             {selectedId && status === 'diff_ready' && selectedEntry && (
               <AddChildForm
                 parentEntry={selectedEntry}

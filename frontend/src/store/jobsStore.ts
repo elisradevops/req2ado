@@ -14,6 +14,7 @@ export interface JobDetail {
   status: string;
   mode: string;
   dryRunDiff: unknown;
+  kbCitations?: string[];
 }
 
 interface JobsState {
