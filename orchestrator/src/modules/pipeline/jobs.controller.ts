@@ -131,7 +131,9 @@ export class JobsController {
   }
 
   @Get(':id')
-  async getById(@Param('id') id: string): Promise<{ id: string; status: string; mode: string; dryRunDiff: unknown }> {
+  async getById(
+    @Param('id') id: string,
+  ): Promise<{ id: string; status: string; mode: string; dryRunDiff: unknown; kbCitations: string[] }> {
     const job = await this.jobsService.getById(id);
     if (!job) {
       throw new NotFoundException(`Job ${id} not found`);

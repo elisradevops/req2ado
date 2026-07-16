@@ -583,3 +583,37 @@ describe('JobsService.list', () => {
     ]);
   });
 });
+
+describe('JobsService.getById', () => {
+  it('returns kbCitations alongside the existing job fields', async () => {
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready',
+          mode: 'survey',
+          dryRunDiff: [{ localId: 'n0' }],
+          kbCitations: ['doc-a.docx'],
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result).toEqual({
+      id: 'job-1',
+      status: 'diff_ready',
+      mode: 'survey',
+      dryRunDiff: [{ localId: 'n0' }],
+      kbCitations: ['doc-a.docx'],
+    });
+  });
+
+  it('returns null for an unknown job', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    expect(await service.getById('missing')).toBeNull();
+  });
+});
