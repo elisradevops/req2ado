@@ -337,17 +337,32 @@ real pipeline for the first time** — previously "verified" claims in §4b/§4c
    against the tests' own fixtures (both already had non-empty `areaPath` values) to confirm it
    wasn't papering over a real behavior change.
 
-**Verified**: all three test suites green post-merge — ingestion 300/307 (7 pre-existing
-OCR/poppler failures, unrelated), orchestrator 213/213, frontend 94/94. Not yet live-verified
-against a real docker-compose stack + real ingested KB content (unlike P2b/P2c/P3a/P3b, which all
-got a live E2E pass) — the next session picking up P3c-adjacent work should run the manual smoke
-test in the plan's "Final verification" section: ingest a real KB doc, run a SURVEY job against
-that area path, confirm the Sources section actually renders a KB reference in the browser.
+**Verified**: all three test suites green post-merge — ingestion 301/307 (7 pre-existing
+OCR/poppler failures, unrelated), orchestrator 213/213, frontend 94/94.
 
-**Deferred, not blocking:**
-- `chat_service.py`'s KB-grounded chat-turn branch has no dedicated regression test for the new
-  tuple-unpack — correct by inspection, but the exact class of caller that got missed once already.
-- A docstring run-on sentence in `llm_leveling.py`'s `build_survey_tree` (cosmetic only).
+**Live-verified against a real docker-compose stack + real local Ollama** (a follow-up round,
+closing the loose ends left above): `docker compose up -d --build`, then `ADO_BACKEND=mock` +
+`gemma4:12b`/`all-minilm` (same local models P3b used). No real SharePoint/Graph tenant link was
+on hand this round, so the KB collection was seeded directly (one chunk, embedded via Ollama's
+`all-minilm` for a genuine cosine match, upserted into `KbVectorStore` inside the running
+`ingestion` container) rather than through a real Graph ingest — P3c's own new code (retrieval →
+citations → persistence → UI) is what needed proving, not the already-verified Graph connector
+(§4a). Submitted a real SURVEY job (`docs/golden-e2e-survey-fixture.txt`) against that area path
+through the real HTTP API (not curl-to-ingestion-only, unlike every prior "verified" claim in
+§4b/§4c) — confirmed `GET /jobs/:id` returned `"kbCitations": ["spec.docx"]`, then opened the job
+in a real browser (session-storage login bypass, same technique as §4's testing-infra note),
+selected the `create` node, and confirmed the Sources section rendered exactly as designed:
+"Judged against EARS, INCOSE, ISO/IEC/IEEE 29148" + "KB references: spec.docx". This is also the
+first real-pipeline exercise of this round's `area_path`-forwarding bug fix — confirmed it
+actually activates KB retrieval end-to-end, not just in unit tests.
+
+**Also closed this round:**
+- `chat_service.py`'s KB-grounded chat-turn branch now has a dedicated regression test
+  (`test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_path_supplied`) — the
+  exact class of caller that got missed once already during planning.
+- The docstring run-on sentence in `llm_leveling.py`'s `build_survey_tree` is fixed.
+
+**Still deferred, not blocking:**
 - **P2d still unfed.** P3c only *displays* existing retrieval metadata; it produces no new
   accept/reject signal. P2d (learning-loop write-back) remains deferred — see §8.
 
@@ -418,7 +433,7 @@ Prod k8s (on-prem, k3s, 4-node cluster) has shared `devops-postgresql`/`redis` i
 - **P2d — learning loop** (write confirmed items back into the KB) — **deferred**, see `docs/req2ado-roadmap.md`'s P2d entry for the full rationale: the signal available today (P2c's own `quality_score`/`quality_issues`) is circular for deriving "learned rules" — a second LLM call grading the first LLM's grading mostly restates generic advice, not genuine org-specific learning. The real signal is a diff between an LLM-generated item and what a human actually edited it to, which needs Phase 3's per-item edit/accept/reject flow to exist first. Revisit P2d once Phase 3 ships.
 - **Phase 3, P3a — Editable dry-run diff** — done (§4d). Exclude/edit/add before confirm, verified end-to-end. Also unblocks P2d (above) once P3b's AI-assist accept/reject produces real per-item edit-diffs to learn from.
 - **P3b — AI assist/chat per item** — done (§4e). Per-item streamed chat with model selection, sentinel-based proposal splitting, and Accept via P3a's existing `editDiffEntry`. Two Critical bugs (cross-node proposal leak, WS opened while disabled) fixed in Task 11's own review; three lifecycle bugs (Redis pool leak, mismatched timeout windows, stop-generating not propagated upstream) fixed in a final whole-branch review (`5d17d5a`). **Still doesn't feed P2d** — Accept just calls `editDiffEntry`, no KB write-back yet (see P2d above).
-- **P3c — Source provenance display** — done (§4f). "Sources" section in `NodeDetailPanel` shows job-level KB citations + the always-on standards baseline. Also fixed a Critical latent bug: the orchestrator never forwarded `area_path` to ingestion's `/level`, so P2b/P2c's KB retrieval had never actually fired in the real pipeline before this round — only curl-direct testing had exercised it. **Still doesn't feed P2d** — P3c only displays existing retrieval metadata, produces no new accept/reject signal (see P2d above). Not yet live-verified against a real docker-compose stack + real ingested KB (unlike every other Phase 2/3 sub-feature) — see §4f's "Verified" note for the manual smoke test still owed.
+- **P3c — Source provenance display** — done (§4f), live-verified against a real docker-compose stack + real local Ollama. "Sources" section in `NodeDetailPanel` shows job-level KB citations + the always-on standards baseline. Also fixed a Critical latent bug: the orchestrator never forwarded `area_path` to ingestion's `/level`, so P2b/P2c's KB retrieval had never actually fired in the real pipeline before this round — only curl-direct testing had exercised it; this round's live verification is the first real-pipeline proof it now works. **Still doesn't feed P2d** — P3c only displays existing retrieval metadata, produces no new accept/reject signal (see P2d above).
 - **Phase 4 — Traceability** (Covers/CoveredBy/Affects link types, diff-vs-live-ADO, baselining) — next up.
 
 The KB ingest happy path is verified against a real Graph token/tenant (§4a), and P2b's retrieval + P2c's scoring are both verified end-to-end against real ingested KB content (§4b, §4c) — the whole RAG-first knowledge layer (Phase 2) is feature-complete except for the deferred P2d. Phase 3 (P3a §4d, P3b §4e, P3c §4f) is now fully done, with P2d still unfed pending a real learning signal (needs a live human edit/accept/reject stream, which none of P3a/b/c produce on their own).
