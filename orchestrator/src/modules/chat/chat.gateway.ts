@@ -3,7 +3,11 @@ import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway } from '@nes
 import type Redis from 'ioredis';
 import type { ChatService } from './chat.service';
 
-const TURN_TIMEOUT_MS = 90_000;
+// Must stay strictly greater than ingestion's own stream timeout
+// (_STREAM_REQUEST_TIMEOUT_SECONDS = 120s in chat_client.py) — otherwise a
+// legitimately slow (but still in-flight) reply gets force-timed-out here
+// before ingestion's real done/error event ever arrives.
+const TURN_TIMEOUT_MS = 150_000;
 
 interface ChatSocket {
   readyState: number;
@@ -28,6 +32,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   private readonly logger = new Logger(ChatGateway.name);
   private readonly rooms = new Map<string, Set<ChatSocket>>();
   private readonly channelTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Channels whose turn timeout already fired a synthetic error. A real
+  // done/error that arrives afterward (e.g. a legitimately slow reply that
+  // still beat ingestion's own stream timeout) must be dropped rather than
+  // relayed/persisted, so the user isn't shown a late "success" after
+  // already being told the turn failed.
+  private readonly timedOutChannels = new Set<string>();
 
   constructor(
     private readonly subscriber: Redis,
@@ -67,6 +77,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   }
 
   private relay(channel: string, message: string): void {
+    if (this.timedOutChannels.has(channel)) return;
+
     const sockets = this.rooms.get(channel);
     if (sockets) {
       for (const socket of sockets) {
@@ -100,8 +112,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
    * done/error event ever arrives (ingestion process killed mid-turn). */
   startTurnTimeout(jobId: string, localId: string): void {
     const channel = `chat:${jobId}:${localId}`;
+    // A fresh turn on the same item reuses this channel string — reset the
+    // "already timed out" marker from any prior turn before arming the timer.
+    this.timedOutChannels.delete(channel);
     const timer = setTimeout(() => {
+      // Relay the synthetic error first — it must still reach the socket —
+      // then mark the channel so a real done/error arriving afterward is
+      // dropped instead of being relayed/persisted on top of it.
       this.relay(channel, JSON.stringify({ type: 'error', reason: 'turn timed out' }));
+      this.timedOutChannels.add(channel);
     }, TURN_TIMEOUT_MS);
     this.channelTimers.set(channel, timer);
   }

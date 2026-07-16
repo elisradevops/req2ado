@@ -35,6 +35,12 @@ app = FastAPI(title="req2ado-ingestion")
 _embed_client = OrchestratorEmbedClient(settings.orchestrator_url, settings.llm_proxy_bearer)
 _vector_store = ChromaVectorStore(settings.chroma_persist_path)
 _kb_vector_store = KbVectorStore(settings.chroma_persist_path)
+# Module-level singleton, mirroring _embed_client/_kb_vector_store above:
+# RedisChatPublisher.__init__ opens a redis.asyncio connection pool via
+# from_url() that is never explicitly closed. Constructing one per request
+# (as /chat/{job_id}/{local_id}/turn used to) leaked a pool on every chat
+# turn, risking FD/Redis maxclients exhaustion on a long-running process.
+_chat_redis_publisher = RedisChatPublisher(settings.redis_url)
 
 
 class DedupCheckRequest(BaseModel):
@@ -210,7 +216,6 @@ async def chat_turn(job_id: str, local_id: str, body: ChatTurnRequest) -> dict[s
     # ChatService) doesn't await this request's completion either way — see
     # chat.service.ts.
     chat_client = ChatLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
-    publisher = RedisChatPublisher(settings.redis_url)
     await run_chat_turn(
         job_id,
         local_id,
@@ -222,6 +227,6 @@ async def chat_turn(job_id: str, local_id: str, body: ChatTurnRequest) -> dict[s
         _embed_client,
         _kb_vector_store,
         chat_client,
-        publisher,
+        _chat_redis_publisher,
     )
     return {"ok": True}

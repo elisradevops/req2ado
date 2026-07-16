@@ -87,7 +87,7 @@ describe('ChatGateway', () => {
     gateway.handleConnection(socket as any, { url: '/chat?jobId=job-1&localId=n0' } as any);
 
     gateway.startTurnTimeout('job-1', 'n0');
-    jest.advanceTimersByTime(90_001);
+    jest.advanceTimersByTime(150_001);
 
     expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'error', reason: 'turn timed out' }));
     jest.useRealTimers();
@@ -104,9 +104,59 @@ describe('ChatGateway', () => {
     gateway.startTurnTimeout('job-1', 'n0');
     handlers.pmessage('chat:*', 'chat:job-1:n0', JSON.stringify({ type: 'done', message: 'hi', proposedTitle: null, proposedDescription: null, model: 'llama3.1' }));
     socket.send.mockClear();
-    jest.advanceTimersByTime(90_001);
+    jest.advanceTimersByTime(150_001);
 
     expect(socket.send).not.toHaveBeenCalled();
+    jest.useRealTimers();
+  });
+
+  it('drops a real done event that arrives after the turn already timed out (no re-relay, no persist)', () => {
+    jest.useFakeTimers();
+    const handlers: Record<string, (...args: any[]) => void> = {};
+    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const persistAssistantTurn = jest.fn().mockResolvedValue(undefined);
+    const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn } as any);
+    const socket = makeSocket();
+    gateway.handleConnection(socket as any, { url: '/chat?jobId=job-1&localId=n0' } as any);
+
+    gateway.startTurnTimeout('job-1', 'n0');
+    jest.advanceTimersByTime(150_001);
+    socket.send.mockClear();
+
+    // The real done event finally arrives from ingestion after the
+    // synthetic timeout error already went out — it must be dropped.
+    handlers.pmessage(
+      'chat:*',
+      'chat:job-1:n0',
+      JSON.stringify({ type: 'done', message: 'late reply', proposedTitle: null, proposedDescription: null, model: 'llama3.1' }),
+    );
+
+    expect(socket.send).not.toHaveBeenCalled();
+    expect(persistAssistantTurn).not.toHaveBeenCalled();
+    jest.useRealTimers();
+  });
+
+  it('resets the timed-out marker for a channel when a new turn starts, so the next turn relays normally', () => {
+    jest.useFakeTimers();
+    const handlers: Record<string, (...args: any[]) => void> = {};
+    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const persistAssistantTurn = jest.fn().mockResolvedValue(undefined);
+    const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn } as any);
+    const socket = makeSocket();
+    gateway.handleConnection(socket as any, { url: '/chat?jobId=job-1&localId=n0' } as any);
+
+    // First turn times out.
+    gateway.startTurnTimeout('job-1', 'n0');
+    jest.advanceTimersByTime(150_001);
+    socket.send.mockClear();
+
+    // A fresh turn on the same item reuses the channel string.
+    gateway.startTurnTimeout('job-1', 'n0');
+    const donePayload = { type: 'done', message: 'hi again', proposedTitle: null, proposedDescription: null, model: 'llama3.1' };
+    handlers.pmessage('chat:*', 'chat:job-1:n0', JSON.stringify(donePayload));
+
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify(donePayload));
+    expect(persistAssistantTurn).toHaveBeenCalledWith('chat:job-1:n0', donePayload);
     jest.useRealTimers();
   });
 });

@@ -33,12 +33,27 @@ export class LlmController {
     const body = parseResult.data;
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Transfer-Encoding', 'chunked');
+    // "Stop generating" support: when the downstream caller (ingestion)
+    // aborts and closes its httpx connection to this endpoint, Express fires
+    // 'close' on the response. Without this, the loop below kept iterating
+    // this.llmClient.streamChat() to completion regardless, so the upstream
+    // Ollama/Open WebUI generation kept running and burning compute after
+    // nobody was reading the tokens. Checking the flag right after each
+    // write stops consuming/writing further chunks as soon as the current
+    // await resolves — the best granularity available without deeper
+    // OpenAI SDK abort-signal plumbing (out of scope here), since it can't
+    // instantly abort a stream mid-network-call.
+    let clientDisconnected = false;
+    res.on('close', () => {
+      clientDisconnected = true;
+    });
     try {
       for await (const delta of this.llmClient.streamChat(body.messages, {
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
       })) {
         res.write(`${JSON.stringify({ delta })}\n`);
+        if (clientDisconnected) break;
       }
     } finally {
       res.end();
