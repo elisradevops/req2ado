@@ -5,6 +5,7 @@ import ListItemText from '@mui/material/ListItemText';
 import Checkbox from '@mui/material/Checkbox';
 import { ActionBadge } from './ActionBadge';
 import { TagChips } from './TagChips';
+import { TraceLinkChips } from './TraceLinkChips';
 
 export interface DryRunDiffEntry {
   localId: string;
@@ -21,6 +22,16 @@ export interface DryRunDiffEntry {
   childType?: string | null;
   excluded?: boolean;
   isManual?: boolean;
+  traceLinks?: {
+    sourceLocalId: string;
+    referenceName: string;
+    displayName: string;
+    targetKind: 'intraJob' | 'crossJob';
+    targetLocalId?: string;
+    targetCustomerId?: string;
+    resolvedAdoId?: number;
+    resolutionStatus: 'resolved' | 'unresolved' | 'pending';
+  }[];
 }
 
 interface FlatRow {
@@ -93,7 +104,12 @@ export function DiffTree({
             <ActionBadge action={row.entry.action} existingAdoId={row.entry.existingAdoId} />
             <ListItemText
               primary={row.entry.title}
-              secondary={<TagChips tags={row.entry.tags} />}
+              secondary={
+                <>
+                  <TagChips tags={row.entry.tags} />
+                  <TraceLinkChips links={row.entry.traceLinks} />
+                </>
+              }
               sx={row.entry.excluded ? { textDecoration: 'line-through' } : undefined}
             />
           </ListItemButton>

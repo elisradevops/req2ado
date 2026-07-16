@@ -5,6 +5,7 @@ import Button from '@mui/material/Button';
 import TextField from '@mui/material/TextField';
 import { TagChips } from './TagChips';
 import { IssueChips } from './IssueChips';
+import { TraceLinkChips } from './TraceLinkChips';
 import { ChatPanel } from './ChatPanel';
 import type { DryRunDiffEntry } from './DiffTree';
 
@@ -89,6 +90,12 @@ export function NodeDetailPanel({
           <Typography variant="body2">Quality score: {entry.qualityScore} / 100</Typography>
           <IssueChips issues={entry.qualityIssues} />
         </>
+      )}
+      {entry.traceLinks && entry.traceLinks.length > 0 && (
+        <Box mt={1}>
+          <Typography variant="subtitle2">Trace links</Typography>
+          <TraceLinkChips links={entry.traceLinks} />
+        </Box>
       )}
       {jobMode === 'survey' && entry.action === 'create' && (
         <Box mt={1}>

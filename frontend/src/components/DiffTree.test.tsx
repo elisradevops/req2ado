@@ -62,3 +62,46 @@ describe('DiffTree', () => {
     expect(screen.getByText('Root Epic').closest('[data-excluded="true"]')).not.toBeNull();
   });
 });
+
+const baseEntry: DryRunDiffEntry = {
+  localId: 'n0',
+  parentLocalId: null,
+  type: 'Requirement',
+  title: 'Sys Req',
+  description: 'd',
+  action: 'create',
+  customerId: null,
+};
+
+describe('DiffTree trace link chips', () => {
+  it('renders a resolved trace link chip with its display name and target', () => {
+    const entries: DryRunDiffEntry[] = [
+      {
+        ...baseEntry,
+        traceLinks: [
+          { sourceLocalId: 'n0', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covered by', targetKind: 'crossJob', targetCustomerId: 'REQ-SYS-012', resolvedAdoId: 555, resolutionStatus: 'resolved' },
+        ],
+      },
+    ];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    expect(screen.getByText(/Covered by/i)).toBeInTheDocument();
+  });
+
+  it('renders an unresolved trace link chip distinctly', () => {
+    const entries: DryRunDiffEntry[] = [
+      {
+        ...baseEntry,
+        traceLinks: [
+          { sourceLocalId: 'n0', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covered by', targetKind: 'crossJob', targetCustomerId: 'REQ-MISSING', resolutionStatus: 'unresolved' },
+        ],
+      },
+    ];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    const chip = screen.getByText(/Covered by/i);
+    expect(chip.closest('[data-resolution-status]')).toHaveAttribute('data-resolution-status', 'unresolved');
+  });
+});

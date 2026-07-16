@@ -207,4 +207,18 @@ describe('NodeDetailPanel', () => {
     );
     expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
   });
+
+  it('shows the full trace link list for the selected node', () => {
+    const entry: DryRunDiffEntry = {
+      localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Sys Req', description: 'd', action: 'create', customerId: null,
+      traceLinks: [
+        { sourceLocalId: 'n0', referenceName: 'System.LinkTypes.Affects-Forward', displayName: 'Affects', targetKind: 'crossJob', targetCustomerId: 'REQ-SYS-099', resolutionStatus: 'unresolved' },
+      ],
+    };
+
+    renderPanel(<NodeDetailPanel jobId="job-1" entry={entry} />);
+
+    expect(screen.getByText(/Affects/i)).toBeInTheDocument();
+    expect(screen.getByText(/REQ-SYS-099/i)).toBeInTheDocument();
+  });
 });
