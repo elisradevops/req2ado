@@ -200,10 +200,15 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
 
 @app.post("/chat/{job_id}/{local_id}/turn")
 async def chat_turn(job_id: str, local_id: str, body: ChatTurnRequest) -> dict[str, bool]:
-    # Fully async (httpx.AsyncClient, redis.asyncio) — no run_in_threadpool
-    # needed here, unlike /level and /kb/ingest-*, which wrap synchronous
-    # httpx.Client calls. The caller (orchestrator's ChatService) doesn't
-    # await this request's completion either way — see chat.service.ts.
+    # ChatLlmClient and RedisChatPublisher are fully async (httpx.AsyncClient,
+    # redis.asyncio) — no run_in_threadpool needed for those, unlike /level
+    # and /kb/ingest-*, which wrap synchronous httpx.Client calls. However,
+    # run_chat_turn also calls retrieve_context, which IS a blocking sync
+    # call (embed client + vector store I/O) — it's wrapped in
+    # run_in_threadpool inside run_chat_turn itself (chat_service.py), so
+    # this route stays non-blocking end-to-end. The caller (orchestrator's
+    # ChatService) doesn't await this request's completion either way — see
+    # chat.service.ts.
     chat_client = ChatLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
     publisher = RedisChatPublisher(settings.redis_url)
     await run_chat_turn(

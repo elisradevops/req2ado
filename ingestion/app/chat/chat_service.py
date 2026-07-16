@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+from starlette.concurrency import run_in_threadpool
+
 from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, split_message_and_proposal
 from app.chat.redis_publisher import RedisChatPublisher
 from app.kb.retrieval import retrieve_context
@@ -102,7 +104,13 @@ async def run_chat_turn(
     try:
         kb_context = None
         if area_path is not None and embed_client is not None and vector_store is not None:
-            kb_context = retrieve_context(area_path, user_message, embed_client, vector_store)
+            # retrieve_context is a synchronous, blocking call (embed client +
+            # vector store I/O) — run in the threadpool so it doesn't stall the
+            # single-worker event loop, matching /level and /kb/ingest-* in
+            # main.py.
+            kb_context = await run_in_threadpool(
+                retrieve_context, area_path, user_message, embed_client, vector_store
+            )
 
         system_prompt = _build_system_prompt(item, kb_context)
         capped_history = history[-_MAX_HISTORY_TURNS:]
