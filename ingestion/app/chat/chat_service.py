@@ -108,7 +108,7 @@ async def run_chat_turn(
             # vector store I/O) — run in the threadpool so it doesn't stall the
             # single-worker event loop, matching /level and /kb/ingest-* in
             # main.py.
-            kb_context = await run_in_threadpool(
+            kb_context, _ = await run_in_threadpool(
                 retrieve_context, area_path, user_message, embed_client, vector_store
             )
 

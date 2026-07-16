@@ -209,7 +209,7 @@ def test_build_survey_tree_threads_kb_context_into_both_calls(monkeypatch) -> No
 
     monkeypatch.setattr(
         "app.leveling.llm_leveling.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: "injected KB text",
+        lambda area_path, query_text, embed_client, vector_store, **_: ("injected KB text", []),
     )
 
     build_survey_tree(
@@ -231,7 +231,7 @@ def test_build_survey_tree_calls_retrieve_context_exactly_once(monkeypatch) -> N
 
     def _fake_retrieve_context(area_path, query_text, embed_client, vector_store, **_):
         call_count["n"] += 1
-        return None
+        return None, []
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
@@ -376,7 +376,7 @@ def test_build_survey_tree_reuses_same_kb_context_for_scoring_as_other_calls(mon
 
     monkeypatch.setattr(
         "app.leveling.llm_leveling.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: "injected KB text",
+        lambda area_path, query_text, embed_client, vector_store, **_: ("injected KB text", []),
     )
 
     build_survey_tree(

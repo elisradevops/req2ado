@@ -98,7 +98,7 @@ def build_survey_tree(
     outline = _build_outline(doc)
     kb_context: str | None = None
     if area_path is not None and embed_client is not None and vector_store is not None:
-        kb_context = retrieve_context(area_path, outline, embed_client, vector_store)
+        kb_context, _ = retrieve_context(area_path, outline, embed_client, vector_store)
     hierarchy = llm_client.infer_hierarchy(outline, profile_hint=None, kb_context=kb_context)
     # Tolerant of LLM non-compliance: the prompt asks for a JSON ARRAY, but a
     # small local model (observed with llama3.2:1b against a short outline)

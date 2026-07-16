@@ -132,7 +132,7 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
     # vector_store through, it never calls retrieve_context itself.
     monkeypatch.setattr(
         "app.leveling.llm_leveling.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: "Injected KB reference text.",
+        lambda area_path, query_text, embed_client, vector_store, **_: ("Injected KB reference text.", []),
     )
 
     doc = CanonicalDoc(
