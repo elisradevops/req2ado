@@ -1,3 +1,5 @@
+import type { AdoLinkType } from '../domain/adoLinkTypes.js';
+
 /**
  * Backend-agnostic contract for ADO work-item operations. `MockAdoBackend`
  * (this phase) and a future `RealAdoBackend` (Phase 7) both implement this,
@@ -44,4 +46,12 @@ export interface AdoBackend {
   setFields(id: number, fields: Record<string, string>): Promise<void>;
   /** Reads the ADO classification-node area-path tree, nested to `depth` levels. */
   readAreaPaths(depth: number): Promise<AreaPathNode>;
+  /**
+   * Discovers the work-item link types available on the target ADO project's
+   * process template (Phase 4's trace/coverage link feature). Real backend:
+   * live REST call with a seed-catalog fallback on failure. Mock backend:
+   * always returns the seed catalog — good enough to exercise the tool
+   * contract without a real ADO server.
+   */
+  discoverLinkTypes(): Promise<AdoLinkType[]>;
 }

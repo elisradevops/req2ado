@@ -6,6 +6,7 @@ import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
 import type { AdoBackend, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
 import type { AdoMcpConfig } from '../config/env.js';
 import { retryWithBackoff } from './retryWithBackoff.js';
+import { SEED_LINK_TYPES, isWorkItemRelationType, type AdoLinkType } from '../domain/adoLinkTypes.js';
 
 /**
  * Builds the axios client used for all real ADO calls. When `caCertPath` is
@@ -220,5 +221,28 @@ export class RealAdoBackend implements AdoBackend {
     const path = pathPrefix;
     const children = (raw.children ?? []).map((child: any) => this.toAreaPathNode(child, `${path}\\${child.name}`));
     return { path, children };
+  }
+
+  async discoverLinkTypes(): Promise<AdoLinkType[]> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitemrelationtypes${versionQueryParam(version)}`;
+    try {
+      const response = await retryWithBackoff(() =>
+        this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+      );
+      const raw = response.data.value as { referenceName: string; name: string }[];
+      return raw
+        .filter((t) => isWorkItemRelationType(t.referenceName))
+        .map((t) => {
+          const seedMatch = SEED_LINK_TYPES.find((s) => s.referenceName === t.referenceName);
+          return { referenceName: t.referenceName, name: t.name, semanticHint: seedMatch?.semanticHint };
+        });
+    } catch {
+      // Live discovery failed (network, auth, or an ADO version that doesn't
+      // expose this endpoint) — fall back to the seed catalog rather than
+      // failing the whole job over a discovery call that isn't the write
+      // itself. Matches resolveCustomerIdField's discover-then-fallback shape.
+      return SEED_LINK_TYPES;
+    }
   }
 }

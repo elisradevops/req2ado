@@ -11,6 +11,7 @@ import { registerCreateWorkItemTool } from './tools/createWorkItemTool.js';
 import { registerLinkParentChildTool } from './tools/linkParentChildTool.js';
 import { registerSetFieldsTool } from './tools/setFieldsTool.js';
 import { registerQueryIdsTool } from './tools/queryIdsTool.js';
+import { registerDiscoverLinkTypesTool } from './tools/discoverLinkTypesTool.js';
 import { timingSafeEqualBearer } from './auth/timingSafeEqualBearer.js';
 
 /**
@@ -83,6 +84,7 @@ export function createMcpApp(backendFactory: BackendFactory, cfg: AdoMcpConfig):
     registerLinkParentChildTool(mcpServer, backend);
     registerSetFieldsTool(mcpServer, backend);
     registerQueryIdsTool(mcpServer, backend);
+    registerDiscoverLinkTypesTool(mcpServer, backend);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     res.on('close', () => {

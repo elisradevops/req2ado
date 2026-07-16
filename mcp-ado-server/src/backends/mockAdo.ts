@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import type { AdoBackend, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
+import { SEED_LINK_TYPES, type AdoLinkType } from '../domain/adoLinkTypes.js';
 
 /**
  * SQLite-backed ADO stand-in for off-network development and tests.
@@ -88,5 +89,9 @@ export class MockAdoBackend implements AdoBackend {
         { path: 'Project\\Backend', children: [] },
       ],
     };
+  }
+
+  async discoverLinkTypes(): Promise<AdoLinkType[]> {
+    return SEED_LINK_TYPES;
   }
 }

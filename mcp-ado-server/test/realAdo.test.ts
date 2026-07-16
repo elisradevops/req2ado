@@ -332,6 +332,49 @@ describe('RealAdoBackend.discoverFields', () => {
   });
 });
 
+describe('RealAdoBackend.discoverLinkTypes', () => {
+  it('GETs the workitemrelationtypes endpoint and maps to AdoLinkType, filtering out non-work-item types', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          value: [
+            { referenceName: 'System.LinkTypes.Affects-Forward', name: 'Affects' },
+            { referenceName: 'Elisra.CoveredBy-Forward', name: 'Covered by' },
+            { referenceName: 'Hyperlink', name: 'Hyperlink' },
+          ],
+        },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.discoverLinkTypes();
+
+    expect(result).toEqual([
+      { referenceName: 'System.LinkTypes.Affects-Forward', name: 'Affects', semanticHint: expect.stringContaining('affects the target') },
+      { referenceName: 'Elisra.CoveredBy-Forward', name: 'Covered by', semanticHint: undefined },
+    ]);
+  });
+
+  it('falls back to the seed catalog when the live call fails', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockRejectedValueOnce(new Error('network down'));
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.discoverLinkTypes();
+
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.some((t) => t.referenceName === 'System.LinkTypes.Hierarchy-Reverse')).toBe(true);
+  });
+});
+
 describe('RealAdoBackend CA-trust TLS construction', () => {
   it('constructs an https.Agent with the CA bundle when caCertPath is configured', () => {
     vi.mocked(readFileSync).mockReturnValue(Buffer.from('fake-ca-cert-content'));
