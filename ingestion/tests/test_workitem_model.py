@@ -1,5 +1,15 @@
 from app.canonical.model import SourceRef
-from app.workitem.model import RequirementQualityIssue, RequirementTag, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
+from app.workitem.model import (
+    RequirementQualityIssue,
+    RequirementTag,
+    TraceLink,
+    TraceLinkResolutionStatus,
+    TraceLinkTargetKind,
+    WorkItemMode,
+    WorkItemNode,
+    WorkItemTree,
+    WorkItemType,
+)
 
 
 def _source_ref() -> SourceRef:
@@ -87,3 +97,34 @@ def test_work_item_node_accepts_quality_score_and_issues() -> None:
 def test_work_item_tree_defaults_to_empty_nodes() -> None:
     tree = WorkItemTree()
     assert tree.nodes == []
+
+
+def test_trace_link_requires_target_kind() -> None:
+    link = TraceLink(
+        source_local_id="0",
+        reference_name="System.LinkTypes.Related",
+        display_name="Related",
+        target_kind=TraceLinkTargetKind.INTRA_JOB,
+        target_local_id="1",
+        resolution_status=TraceLinkResolutionStatus.PENDING,
+    )
+    assert link.target_kind == "intraJob"
+    assert link.resolution_status == "pending"
+
+
+def test_work_item_tree_defaults_trace_links_to_empty_list() -> None:
+    tree = WorkItemTree()
+    assert tree.trace_links == []
+
+
+def test_work_item_tree_accepts_trace_links() -> None:
+    link = TraceLink(
+        source_local_id="0",
+        reference_name="Elisra.CoveredBy-Forward",
+        display_name="Covered by",
+        target_kind=TraceLinkTargetKind.CROSS_JOB,
+        target_customer_id="REQ-SYS-012",
+        resolution_status=TraceLinkResolutionStatus.PENDING,
+    )
+    tree = WorkItemTree(trace_links=[link])
+    assert tree.trace_links[0].target_customer_id == "REQ-SYS-012"
