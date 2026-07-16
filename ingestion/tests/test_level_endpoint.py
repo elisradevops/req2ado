@@ -132,7 +132,7 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
     # vector_store through, it never calls retrieve_context itself.
     monkeypatch.setattr(
         "app.leveling.llm_leveling.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: ("Injected KB reference text.", []),
+        lambda area_path, query_text, embed_client, vector_store, **_: ("Injected KB reference text.", ["ref-doc.docx"]),
     )
 
     doc = CanonicalDoc(
@@ -144,6 +144,7 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
     )
     assert response.status_code == 200
     assert all("Injected KB reference text." in prompt for prompt in captured_system_prompts)
+    assert response.json()["kb_citations"] == ["ref-doc.docx"]
 
 
 def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeypatch) -> None:
@@ -211,3 +212,42 @@ def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_
     body = response.json()
     assert body["nodes"][0]["quality_score"] == 72
     assert body["nodes"][0]["quality_issues"] == ["vague_term"]
+
+
+def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(monkeypatch) -> None:
+    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
+    requirements_by_node = {"0": [{"text": "The system shall power on.", "tags": ["functional"]}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        system_prompt = body["messages"][0]["content"]
+        if "hierarchy" in system_prompt:
+            return httpx.Response(200, json={"content": json.dumps(hierarchy)})
+        return httpx.Response(200, json={"content": json.dumps(requirements_by_node)})
+
+    original_init = OrchestratorLlmClient.__init__
+
+    def patched_init(self, base_url, bearer_token):
+        original_init(self, base_url, bearer_token)
+        self._transport = httpx.MockTransport(handler)
+
+    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
+    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
+
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+    )
+    response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
+    assert response.status_code == 200
+    assert response.json()["kb_citations"] == []
+
+
+def test_level_endpoint_baseline_mode_has_empty_kb_citations() -> None:
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
+    )
+    response = client.post("/level", json=doc.model_dump(mode="json"))
+    assert response.status_code == 200
+    assert response.json()["kb_citations"] == []
