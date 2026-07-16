@@ -88,7 +88,10 @@ def build_survey_tree(
     retrieval call grounds both the hierarchy and requirement-generation
     calls with the same retrieved context; when any is omitted, retrieval is
     skipped entirely (kb_context stays None), matching pre-KB behavior
-    exactly. When scoring_client is supplied, one additional batched call
+    exactly. kb_citations (the deduped list of KB source_file names that grounded
+    kb_context) is returned once on the tree, not per node — retrieval runs
+    once per document, so every node in a tree shares the same citation
+    list (P3c source provenance). When scoring_client is supplied, one additional batched call
     scores every node's FINAL formalized description using the SAME
     kb_context already computed for the other two calls; when scoring_client
     is omitted, every node's quality_score stays None and quality_issues
@@ -97,8 +100,9 @@ def build_survey_tree(
     tolerated individually and never abort the batch."""
     outline = _build_outline(doc)
     kb_context: str | None = None
+    kb_citations: list[str] = []
     if area_path is not None and embed_client is not None and vector_store is not None:
-        kb_context, _ = retrieve_context(area_path, outline, embed_client, vector_store)
+        kb_context, kb_citations = retrieve_context(area_path, outline, embed_client, vector_store)
     hierarchy = llm_client.infer_hierarchy(outline, profile_hint=None, kb_context=kb_context)
     # Tolerant of LLM non-compliance: the prompt asks for a JSON ARRAY, but a
     # small local model (observed with llama3.2:1b against a short outline)
@@ -188,4 +192,4 @@ def build_survey_tree(
                     key=lambda issue: issue.value,
                 )
 
-    return WorkItemTree(nodes=nodes)
+    return WorkItemTree(nodes=nodes, kb_citations=kb_citations)

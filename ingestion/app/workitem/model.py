@@ -60,3 +60,4 @@ class WorkItemNode(BaseModel):
 
 class WorkItemTree(BaseModel):
     nodes: list[WorkItemNode] = Field(default_factory=list)
+    kb_citations: list[str] = Field(default_factory=list)

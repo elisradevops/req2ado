@@ -209,7 +209,7 @@ def test_build_survey_tree_threads_kb_context_into_both_calls(monkeypatch) -> No
 
     monkeypatch.setattr(
         "app.leveling.llm_leveling.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: ("injected KB text", []),
+        lambda area_path, query_text, embed_client, vector_store, **_: ("injected KB text", ["doc-a.docx"]),
     )
 
     build_survey_tree(
@@ -288,7 +288,7 @@ def test_build_survey_tree_end_to_end_injects_real_ingested_kb_chunk(tmp_path) -
             captured["requirements_kb_context"] = kb_context
             return {node_id: [{"text": f"shall {text}", "tags": []}] for node_id, text in blocks_by_node_id.items()}
 
-    build_survey_tree(
+    tree = build_survey_tree(
         _small_doc(),
         _CapturingHierarchyClient(),
         _CapturingRequirementClient(),
@@ -299,6 +299,7 @@ def test_build_survey_tree_end_to_end_injects_real_ingested_kb_chunk(tmp_path) -
 
     assert captured["hierarchy_kb_context"] == "The receiver shall decode HDR10 metadata."
     assert captured["requirements_kb_context"] == "The receiver shall decode HDR10 metadata."
+    assert tree.kb_citations == ["spec.docx"]
 
 
 class FakeBatchedScoringClient:
@@ -376,7 +377,7 @@ def test_build_survey_tree_reuses_same_kb_context_for_scoring_as_other_calls(mon
 
     monkeypatch.setattr(
         "app.leveling.llm_leveling.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: ("injected KB text", []),
+        lambda area_path, query_text, embed_client, vector_store, **_: ("injected KB text", ["doc-a.docx"]),
     )
 
     build_survey_tree(
@@ -442,3 +443,46 @@ def test_build_survey_tree_tolerates_a_non_dict_per_node_scoring_entry() -> None
     node0 = next(node for node in tree.nodes if node.local_id == "0")
     assert node0.quality_score is None
     assert node0.quality_issues == []
+
+
+def test_build_survey_tree_without_area_path_has_empty_kb_citations() -> None:
+    tree = build_survey_tree(_small_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
+    assert tree.kb_citations == []
+
+
+def test_build_survey_tree_threads_kb_citations_from_retrieve_context(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.retrieve_context",
+        lambda area_path, query_text, embed_client, vector_store, **_: ("injected KB text", ["doc-a.docx", "doc-b.pdf"]),
+    )
+
+    tree = build_survey_tree(
+        _small_doc(),
+        FakeLlmLevelingClient(),
+        FakeBatchedRequirementClient(),
+        area_path="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert tree.kb_citations == ["doc-a.docx", "doc-b.pdf"]
+
+
+def test_build_survey_tree_kb_citations_empty_when_retrieval_finds_nothing(monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.retrieve_context",
+        lambda area_path, query_text, embed_client, vector_store, **_: (None, []),
+    )
+
+    tree = build_survey_tree(
+        _small_doc(),
+        FakeLlmLevelingClient(),
+        FakeBatchedRequirementClient(),
+        area_path="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+    )
+    assert tree.kb_citations == []
