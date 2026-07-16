@@ -1,4 +1,4 @@
-import { DryRunService } from '../src/modules/writeback/dry-run.service';
+import { DryRunService, resolveCrossJobTraceLinks, type TraceLink } from '../src/modules/writeback/dry-run.service';
 import type { IdempotencyService } from '../src/modules/writeback/idempotency.service';
 
 describe('DryRunService', () => {
@@ -422,5 +422,59 @@ describe('DryRunService', () => {
       fakeIdempotencyService,
     );
     expect(result[0].childType).toBe('Requirement');
+  });
+});
+
+describe('resolveCrossJobTraceLinks', () => {
+  it('resolves an intraJob link without calling the query function', async () => {
+    const links: TraceLink[] = [
+      { sourceLocalId: 'n1', referenceName: 'System.LinkTypes.Related', displayName: 'Related', targetKind: 'intraJob', targetLocalId: 'n0', resolutionStatus: 'pending' },
+    ];
+    const queryByCustomerId = jest.fn();
+
+    const result = await resolveCrossJobTraceLinks(links, queryByCustomerId);
+
+    expect(result).toEqual(links);
+    expect(queryByCustomerId).not.toHaveBeenCalled();
+  });
+
+  it('resolves a crossJob link to the single matching ADO id', async () => {
+    const links: TraceLink[] = [
+      { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'crossJob', targetCustomerId: 'REQ-SYS-012', resolutionStatus: 'pending' },
+    ];
+    const queryByCustomerId = jest.fn().mockResolvedValue([555]);
+
+    const result = await resolveCrossJobTraceLinks(links, queryByCustomerId);
+
+    expect(queryByCustomerId).toHaveBeenCalledWith('REQ-SYS-012');
+    expect(result[0].resolvedAdoId).toBe(555);
+    expect(result[0].resolutionStatus).toBe('resolved');
+  });
+
+  it('marks unresolved when no match or more than one match is found', async () => {
+    const links: TraceLink[] = [
+      { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'crossJob', targetCustomerId: 'REQ-NONE', resolutionStatus: 'pending' },
+      { sourceLocalId: 'n2', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'crossJob', targetCustomerId: 'REQ-DUP', resolutionStatus: 'pending' },
+    ];
+    const queryByCustomerId = jest.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([1, 2]);
+
+    const result = await resolveCrossJobTraceLinks(links, queryByCustomerId);
+
+    expect(result[0].resolutionStatus).toBe('unresolved');
+    expect(result[0].resolvedAdoId).toBeUndefined();
+    expect(result[1].resolutionStatus).toBe('unresolved');
+  });
+
+  it('marks unresolved (never throws) when the query function itself rejects', async () => {
+    const links: TraceLink[] = [
+      { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'crossJob', targetCustomerId: 'REQ-ERR', resolutionStatus: 'pending' },
+    ];
+    const queryByCustomerId = jest.fn().mockRejectedValue(new Error('mcp down'));
+
+    const result = await resolveCrossJobTraceLinks(links, queryByCustomerId);
+
+    expect(result[0].resolutionStatus).toBe('unresolved');
   });
 });

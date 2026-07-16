@@ -14,6 +14,52 @@ export interface DryRunTreeNode {
   qualityScore?: number | null;
   qualityIssues?: string[];
   childType?: string | null;
+  traceLinks?: TraceLink[];
+}
+
+export interface TraceLink {
+  sourceLocalId: string;
+  referenceName: string;
+  displayName: string;
+  targetKind: 'intraJob' | 'crossJob';
+  targetLocalId?: string;
+  targetCustomerId?: string;
+  resolvedAdoId?: number;
+  resolutionStatus: 'resolved' | 'unresolved' | 'pending';
+}
+
+/**
+ * Resolves crossJob trace links (targets outside the current job's tree) to
+ * a real ADO id via an exact customer-ID field match, at dry-run build time
+ * — so the diff view can show resolution status before the user ever
+ * confirms. intraJob links are left untouched here; they resolve during
+ * confirm() once their sibling gets a real ADO id (see jobs.service.ts).
+ * Per the project's "never block" philosophy: no match, more than one
+ * match, or the query itself failing all become 'unresolved', never a
+ * thrown error — an unresolved link just doesn't get written later.
+ */
+export async function resolveCrossJobTraceLinks(
+  links: TraceLink[],
+  queryByCustomerId: (customerId: string) => Promise<number[]>,
+): Promise<TraceLink[]> {
+  const results: TraceLink[] = [];
+  for (const link of links) {
+    if (link.targetKind !== 'crossJob' || link.targetCustomerId === undefined) {
+      results.push(link);
+      continue;
+    }
+    try {
+      const ids = await queryByCustomerId(link.targetCustomerId);
+      if (ids.length === 1) {
+        results.push({ ...link, resolvedAdoId: ids[0], resolutionStatus: 'resolved' });
+      } else {
+        results.push({ ...link, resolutionStatus: 'unresolved' });
+      }
+    } catch {
+      results.push({ ...link, resolutionStatus: 'unresolved' });
+    }
+  }
+  return results;
 }
 
 export interface DryRunDiffEntry {
@@ -44,6 +90,7 @@ export interface DryRunDiffEntry {
   childType?: string | null;
   excluded?: boolean;
   isManual?: boolean;
+  traceLinks?: TraceLink[];
 }
 
 /**
@@ -68,7 +115,7 @@ export class DryRunService {
           title: node.title, description: node.description, action: 'reuse',
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
           tags: node.tags, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
-          childType: node.childType,
+          childType: node.childType, traceLinks: node.traceLinks,
         });
         continue;
       }
@@ -89,7 +136,7 @@ export class DryRunService {
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
               qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
-              childType: node.childType,
+              childType: node.childType, traceLinks: node.traceLinks,
             });
             continue;
           }
@@ -103,7 +150,7 @@ export class DryRunService {
         title: node.title, description: node.description, action: 'create',
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
         tags: node.tags, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
-        childType: node.childType,
+        childType: node.childType, traceLinks: node.traceLinks,
       });
     }
     return results;
