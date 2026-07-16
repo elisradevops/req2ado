@@ -65,7 +65,10 @@ export async function runPipelineJob(
     // diff_ready, not the finer 4-point sequence the JobStage union's other
     // members would imply.
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
-    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode)) as { nodes: LeveledNode[] };
+    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.areaPath)) as {
+      nodes: LeveledNode[];
+      kb_citations?: string[];
+    };
     await deps.jobEventsPublisher.publish(job.id, 'generate_requirements_done');
 
     const diffInputs: DryRunTreeNode[] = tree.nodes.map((node) => ({
@@ -95,7 +98,7 @@ export async function runPipelineJob(
     // though the runtime value is valid JSON).
     await deps.prisma.job.update({
       where: { id: job.id },
-      data: { status: 'diff_ready', dryRunDiff: diff as any },
+      data: { status: 'diff_ready', dryRunDiff: diff as any, kbCitations: tree.kb_citations ?? [] },
     });
     await deps.prisma.auditEntry.create({
       data: {

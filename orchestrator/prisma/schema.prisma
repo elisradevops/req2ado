@@ -18,6 +18,7 @@ model Job {
   customerId       String?
   originalFilename String
   dryRunDiff       Json?
+  kbCitations      String[] @default([])
   createdAt        DateTime  @default(now())
   confirmedAt      DateTime?
   completedAt      DateTime?

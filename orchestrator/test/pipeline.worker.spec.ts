@@ -30,7 +30,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt');
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline', 'Project\\Area1');
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
   });
 
@@ -50,7 +50,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', 'Project\\Area1');
   });
 
   it('updates the Job row status to diff_ready and stores the diff on success', async () => {
@@ -71,7 +71,7 @@ describe('runPipelineJob', () => {
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
       where: { id: 'job-1' },
-      data: { status: 'diff_ready', dryRunDiff: [] },
+      data: { status: 'diff_ready', dryRunDiff: [], kbCitations: [] },
     });
   });
 
@@ -335,5 +335,46 @@ describe('runPipelineJob', () => {
     ).rejects.toThrow('ingestion service down');
 
     expect(fakeJobEventsPublisher.publish.mock.calls.map((call: unknown[]) => call[1])).toEqual(['parse', 'failed']);
+  });
+
+  it('passes job.areaPath through to ingestionClient.level as the 4th argument', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', customerId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+      },
+    );
+
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', 'Project\\Area1');
+  });
+
+  it("persists the tree's kb_citations onto the Job row alongside dryRunDiff", async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [], kb_citations: ['doc-a.docx', 'doc-b.pdf'] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', customerId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+      },
+    );
+
+    expect(fakePrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { status: 'diff_ready', dryRunDiff: [], kbCitations: ['doc-a.docx', 'doc-b.pdf'] },
+    });
   });
 });
