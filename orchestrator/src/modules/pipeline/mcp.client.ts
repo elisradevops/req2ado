@@ -12,6 +12,12 @@ export interface AdoRequestCredential {
   pat: string;
 }
 
+export interface AdoLinkType {
+  referenceName: string;
+  name: string;
+  semanticHint?: string;
+}
+
 /**
  * Real MCP protocol client for mcp-ado-server — the first place in this
  * project that uses the SDK's CLIENT-side APIs (every prior phase only
@@ -65,6 +71,24 @@ export class McpClient {
   async linkParentChild(childId: number, parentId: number, credential?: AdoRequestCredential): Promise<void> {
     await this.withClient(credential, async (client) => {
       await client.callTool({ name: 'ado_link_parent_child', arguments: { childId, parentId } });
+    });
+  }
+
+  async linkWorkItems(
+    fromId: number,
+    toId: number,
+    referenceName: string,
+    credential?: AdoRequestCredential,
+  ): Promise<void> {
+    await this.withClient(credential, async (client) => {
+      await client.callTool({ name: 'ado_link_work_items', arguments: { fromId, toId, referenceName } });
+    });
+  }
+
+  async discoverLinkTypes(credential?: AdoRequestCredential): Promise<AdoLinkType[]> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({ name: 'ado_discover_link_types', arguments: {} });
+      return this.parseToolTextResult(result as any);
     });
   }
 

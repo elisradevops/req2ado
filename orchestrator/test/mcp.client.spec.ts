@@ -162,4 +162,41 @@ describe('McpClient', () => {
       'X-Ado-Pat': 'secret-pat',
     });
   });
+
+  it('linkWorkItems calls the ado_link_work_items tool with fromId/toId/referenceName', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const mockCallTool = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"ok":true}' }] });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    await client.linkWorkItems(101, 100, 'Elisra.CoveredBy-Forward');
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'ado_link_work_items',
+      arguments: { fromId: 101, toId: 100, referenceName: 'Elisra.CoveredBy-Forward' },
+    });
+  });
+
+  it('discoverLinkTypes calls the ado_discover_link_types tool and parses the JSON array result', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const linkTypes = [{ referenceName: 'System.LinkTypes.Related', name: 'Related' }];
+    const mockCallTool = jest.fn().mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify(linkTypes) }],
+    });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    const result = await client.discoverLinkTypes();
+
+    expect(result).toEqual(linkTypes);
+    expect(mockCallTool).toHaveBeenCalledWith({ name: 'ado_discover_link_types', arguments: {} });
+  });
 });
