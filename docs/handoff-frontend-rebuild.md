@@ -155,7 +155,7 @@ request body and re-read `job.dryRunDiff` as-is.
   real data-loss bug on the documented `{ title?, description? }` contract — worth knowing if a
   future caller (e.g. Phase 3's AI-assist chat) ever sends a genuinely partial patch.
 
-## 4e. P3b — Per-item AI-assist chat (current, commits `b566ab9` → `7871a7f`, final fixes `5d17d5a`)
+## 4e. P3b — Per-item AI-assist chat (current, commits `b566ab9` → `4802fd0`)
 
 Third of Phase 3's three sub-specs (see
 `docs/superpowers/specs/2026-07-15-p3b-ai-assist-chat-design.md` and
@@ -218,9 +218,14 @@ diff entry itself.
   `action: 'create'` entries with `excluded` falsy, and only while `job.status === 'diff_ready'`
   (`ChatService.sendTurn` 404s on unknown job/entry, 409s otherwise). `useChatSocket`'s `enabled`
   param (default `true`) skips opening a WebSocket entirely when the panel is disabled.
-- **Verified** per Task 12's manual E2E checklist (streaming render, Accept via the existing PATCH
-  path, history reload, gating on `reuse`/`dedup_skip`/excluded, stop-generating) — run
-  separately/manually, not part of this doc update.
+- **Verified live** against a real docker-compose stack + real local Ollama models (`gemma4:12b`,
+  `llama3.2:1b`, `all-minilm`), driven end-to-end through the actual browser UI (not curl-only):
+  real WS handshake (`101 Switching Protocols`), model dropdown populated from the live Ollama
+  catalog, a streamed reply rendering token-by-token in the UI, a structured proposal
+  (`gemma4:12b` reliably emits the sentinel+JSON; `llama3.2:1b` — 1B params — did not, falling
+  back to message-only exactly as the tolerant parser is designed to), Accept via a real UI click
+  landing in the diff tree, stop-generating mid-stream (turn aborted, no assistant row
+  persisted), and disabled-gating on an excluded entry (zero WS/API calls fired at all).
 
 **Two Critical bugs caught in Task 11's own review, fixed before merge:**
 1. `ChatPanel` wasn't resetting its history/proposal/draft/model state when the selected
@@ -250,6 +255,31 @@ plan tasks were individually done — worth knowing for future work on this path
    `clientDisconnected` flag checked after each write — stops writing/consuming further chunks as
    soon as the current await resolves (not an instant mid-network-call abort, but the best
    granularity available without deeper SDK abort-signal plumbing).
+
+**A fourth Critical bug — found only by live E2E, invisible to every unit/integration test
+(commit `4802fd0`):** `ChatGateway` was registered via `useFactory` in `chat.module.ts` (the same
+pattern used elsewhere in this codebase to work around `import type`-erased constructor params —
+see `IdempotencyService`/`JobEventsPublisher` in `jobs.module.ts`). That pattern is incompatible
+with NestJS's WebSocket gateway auto-discovery: `SocketModule.connectGatewayToServer` reads
+`wrapper.metatype` to find the `@WebSocketGateway()` metadata, and a factory provider's
+`wrapper.metatype` is `null` — so the gateway was constructed (as a normal injectable) but never
+actually connected to the WS server. Every unit test passed because `chat.gateway.spec.ts`
+constructs `ChatGateway` directly with `new`, bypassing Nest's DI/discovery path entirely; the
+bug only surfaced when a real WS handshake against the live orchestrator returned a plain HTTP
+404 (Node's http server falls through to the normal request path when no `'upgrade'` listener is
+attached). Fixed by registering `ChatGateway` as a plain class provider and injecting the shared
+Redis subscriber via `@Inject('CHAT_REDIS_SUBSCRIBER')` on the constructor parameter instead.
+Fixing this surfaced a second-order issue: six pre-existing e2e-spec files
+(`auth.controller.e2e-spec.ts`, `health.e2e-spec.ts`, `jobs.controller.e2e-spec.ts`,
+`llm.controller.e2e-spec.ts`, `security-headers.e2e-spec.ts`, `wiki.controller.e2e-spec.ts`) boot
+the full `AppModule` via `@nestjs/testing` without calling `useWebSocketAdapter` (only `main.ts`'s
+real bootstrap does) — once the gateway actually registers, `SocketModule` falls back to
+autoloading `@nestjs/platform-socket.io` (not installed) and crashes. Fixed by adding the same
+`app.useWebSocketAdapter(new WsAdapter(app))` call to each spec's bootstrap, mirroring `main.ts`.
+**Lesson for future WS/gateway work in this codebase:** the `useFactory`-for-type-erasure pattern
+is safe for ordinary providers but silently breaks NestJS's decorator-metadata-based discovery
+(gateways, and likely anything else keyed off `wrapper.metatype`) — prefer `@Inject()` on a plain
+class provider whenever the class itself carries framework-relevant class-level decorators.
 
 **Not yet done — no accept/reject signal feeds P2d yet.** Accept still just calls the existing
 P3a `editDiffEntry` PATCH; it doesn't write anything back to the KB or produce a learning
