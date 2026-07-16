@@ -134,4 +134,45 @@ describe('ChatPanel', () => {
     await user.click(screen.getByRole('button', { name: /stop generating/i }));
     expect(chatApi.stopChatTurn).toHaveBeenCalledWith('job-1', 'n0');
   });
+
+  it('clears a still-pending proposal when the selected node changes, so it can never be accepted onto the new node', async () => {
+    let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    const onAcceptProposal = vi.fn();
+    const { rerender } = render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={onAcceptProposal} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+
+    capturedOnEvent?.({
+      type: 'done',
+      message: 'Here you go',
+      proposedTitle: 'New title',
+      proposedDescription: null,
+      model: 'llama3.1',
+    });
+    await screen.findByText('New title');
+
+    rerender(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n1" disabled={false} onAcceptProposal={onAcceptProposal} />
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(screen.queryByText('New title')).not.toBeInTheDocument());
+    expect(onAcceptProposal).not.toHaveBeenCalled();
+  });
+
+  it('gates useChatSocket to not connect when disabled=true', async () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(useChatSocket).toHaveBeenCalledWith('job-1', 'n0', expect.any(Function), false);
+  });
 });

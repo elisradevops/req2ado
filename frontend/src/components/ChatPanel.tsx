@@ -36,43 +36,70 @@ export function ChatPanel({
   const [isStreaming, setIsStreaming] = useState(false);
   const [proposal, setProposal] = useState<Proposal | null>(null);
 
+  // Reset chat state whenever the selected node changes so a stale
+  // proposal/history from a different node can never be shown or accepted
+  // onto the newly-selected one.
+  useEffect(() => {
+    setHistory([]);
+    setProposal(null);
+    setDraft('');
+    setModel(undefined);
+    setStreaming('');
+    setIsStreaming(false);
+  }, [jobId, localId]);
+
   useEffect(() => {
     if (disabled) return;
-    getChatHistory(jobId, localId).then(setHistory);
+    let cancelled = false;
+    getChatHistory(jobId, localId).then((h) => {
+      if (!cancelled) setHistory(h);
+    });
     listModels()
-      .then(setModels)
-      .catch(() => setModels([]));
+      .then((m) => {
+        if (!cancelled) setModels(m);
+      })
+      .catch(() => {
+        if (!cancelled) setModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, localId, disabled]);
 
-  useChatSocket(jobId, localId, (event: StreamEvent) => {
-    if (disabled) return;
-    if (event.type === 'chunk') {
-      setStreaming((prev) => prev + (event.delta ?? ''));
-    } else if (event.type === 'done') {
-      setIsStreaming(false);
-      setStreaming('');
-      setHistory((prev) => [
-        ...prev,
-        {
-          id: `local-${prev.length}`,
-          role: 'assistant',
-          content: event.message ?? '',
-          proposedTitle: event.proposedTitle ?? null,
-          proposedDescription: event.proposedDescription ?? null,
-          model: event.model ?? null,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-      if (event.proposedTitle || event.proposedDescription) {
-        setProposal({ proposedTitle: event.proposedTitle ?? null, proposedDescription: event.proposedDescription ?? null });
+  useChatSocket(
+    jobId,
+    localId,
+    (event: StreamEvent) => {
+      if (disabled) return;
+      if (event.type === 'chunk') {
+        setStreaming((prev) => prev + (event.delta ?? ''));
+      } else if (event.type === 'done') {
+        setIsStreaming(false);
+        setStreaming('');
+        setHistory((prev) => [
+          ...prev,
+          {
+            id: `local-${prev.length}`,
+            role: 'assistant',
+            content: event.message ?? '',
+            proposedTitle: event.proposedTitle ?? null,
+            proposedDescription: event.proposedDescription ?? null,
+            model: event.model ?? null,
+            createdAt: new Date().toISOString(),
+          },
+        ]);
+        if (event.proposedTitle || event.proposedDescription) {
+          setProposal({ proposedTitle: event.proposedTitle ?? null, proposedDescription: event.proposedDescription ?? null });
+        }
+      } else if (event.type === 'error') {
+        setIsStreaming(false);
+        setStreaming('');
+        showToast(`Chat reply failed: ${event.reason ?? 'unknown error'}`, 'error');
       }
-    } else if (event.type === 'error') {
-      setIsStreaming(false);
-      setStreaming('');
-      showToast(`Chat reply failed: ${event.reason ?? 'unknown error'}`, 'error');
-    }
-  });
+    },
+    !disabled,
+  );
 
   async function send(): Promise<void> {
     if (!draft.trim() || isStreaming) return;

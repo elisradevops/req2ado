@@ -19,13 +19,22 @@ export function toWsUrl(apiBaseUrl: string): string {
   return url.toString();
 }
 
-export function useChatSocket(jobId: string, localId: string, onEvent: (event: StreamEvent) => void): void {
+export function useChatSocket(
+  jobId: string,
+  localId: string,
+  onEvent: (event: StreamEvent) => void,
+  enabled = true,
+): void {
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
 
   useEffect(() => {
     let cancelled = false;
     let socket: WebSocket | undefined;
+
+    // Skip connecting entirely when disabled (e.g. reuse/dedup_skip/excluded
+    // nodes) so no live WebSocket is ever opened for chat-inert entries.
+    if (!enabled) return () => {};
 
     loadRuntimeConfig().then((config) => {
       if (cancelled) return;
@@ -41,5 +50,5 @@ export function useChatSocket(jobId: string, localId: string, onEvent: (event: S
       cancelled = true;
       socket?.close();
     };
-  }, [jobId, localId]);
+  }, [jobId, localId, enabled]);
 }
