@@ -165,3 +165,8 @@ server-side for operator follow-up. No blocking, no partial-tree rollback.
 - Cross-job target resolution via anything other than the exact customer-ID field match (no fuzzy/
   semantic matching against prior items).
 - Diff-vs-live-ADO tree traversal and baselining — P4b/P4c, separate specs.
+- Real-ADO-mode trace-link inference requires the pipeline worker to have an ADO credential, which
+  this slice does not provide — the worker runs without a per-user PAT, so `discoverLinkTypes`/
+  `discoverFields`/`queryIds` calls 401 against a real ADO backend and degrade to their empty-result
+  fallbacks. Trace-link inference is mock-backend-only for now; threading a credential through the
+  job queue is a future task.

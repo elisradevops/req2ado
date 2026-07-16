@@ -668,6 +668,44 @@ describe('JobsService.confirm — trace links', () => {
 
     expect(linkWorkItems).toHaveBeenCalledWith(100, 555, 'System.LinkTypes.Affects-Forward', undefined);
   });
+
+  it('does not abort confirm when linkWorkItems rejects — the failure is logged and swallowed', async () => {
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 }) // n0
+      .mockResolvedValueOnce({ id: 101 }); // n1
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const linkWorkItems = jest.fn().mockRejectedValue(new Error('ADO rejected the rel'));
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
+            {
+              localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Cust Req', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null,
+              traceLinks: [
+                { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Reverse', displayName: 'Covers', targetKind: 'intraJob', targetLocalId: 'n0', resolutionStatus: 'pending' },
+              ],
+            },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, linkWorkItems } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntry: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(linkWorkItems).toHaveBeenCalledWith(101, 100, 'Elisra.CoveredBy-Reverse', undefined);
+    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+  });
 });
 
 describe('JobsService.list', () => {

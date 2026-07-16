@@ -85,6 +85,14 @@ export async function runPipelineJob(
     // correct degraded behavior — infer_trace_links just gets nothing to
     // choose from and every node's trace_links stays empty, never blocking
     // the rest of the job.
+    //
+    // Known limitation: this BullMQ worker runs with no per-user ADO
+    // credential (only confirm(), a synchronous request-scoped call,
+    // receives the submitting user's PAT via headers). In real-ADO backend
+    // mode this call will 401 and degrade to the empty-catalog fallback
+    // above — trace-link inference is effectively mock-backend-only until a
+    // future task threads a credential through the job queue. Accepted for
+    // this slice; not a bug.
     let linkTypeCatalog: { referenceName: string; name: string; semanticHint?: string }[] = [];
     try {
       linkTypeCatalog = await deps.mcpClient.discoverLinkTypes();
@@ -137,6 +145,10 @@ export async function runPipelineJob(
     // so a single discoverFields('Requirement') call is enough; if this
     // assumption stops holding, thread the actual target type through
     // instead of hardcoding it here.
+    // Same credential gap as discoverLinkTypes above: this worker has no
+    // per-user ADO PAT, so discoverFields/queryIds below will 401 in
+    // real-ADO backend mode and fall back to their empty-result defaults —
+    // crossJob resolution silently yields nothing. Mock-backend-only for now.
     let resolvedCustomerIdField: string | null = null;
     if ((tree.trace_links ?? []).some((l) => l.target_kind === 'crossJob')) {
       const availableFields = await deps.mcpClient.discoverFields('Requirement').catch(() => [] as string[]);

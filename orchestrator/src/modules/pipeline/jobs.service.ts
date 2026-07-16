@@ -346,7 +346,15 @@ export class JobsService {
           targetAdoId = link.resolvedAdoId;
         }
         if (targetAdoId === undefined) continue;
-        await this.mcpClient.linkWorkItems(sourceAdoId, targetAdoId, link.referenceName, credential);
+        // Best-effort: a trace-link write failure (rejected rel, deleted
+        // crossJob target, transient network error) must not abort confirm()
+        // after work items in this call have already been created/parented.
+        try {
+          await this.mcpClient.linkWorkItems(sourceAdoId, targetAdoId, link.referenceName, credential);
+        } catch (error) {
+          // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+          console.error(`Trace-link write failed for ${sourceAdoId} -> ${targetAdoId}:`, error);
+        }
       }
     }
 

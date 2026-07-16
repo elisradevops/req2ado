@@ -321,3 +321,24 @@ def test_infer_trace_links_with_no_catalog_still_sends_a_valid_request() -> None
         link_type_catalog=[],
     )
     assert result == []
+
+
+def test_infer_trace_links_prompt_mentions_external_customer_cited_targets() -> None:
+    """The crossJob classification logic downstream treats any target_ref that
+    isn't a known node_id as an external customer-id reference — but the LLM
+    only emits one if the prompt tells it that's allowed. Guard the prompt
+    wording so this path stays reachable in practice."""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured["system_prompt"] = body["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.infer_trace_links(nodes=[], link_type_catalog=[])
+
+    system_prompt = captured["system_prompt"].lower()
+    assert "external" in system_prompt or "customer" in system_prompt

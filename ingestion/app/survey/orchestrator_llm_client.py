@@ -142,7 +142,10 @@ class OrchestratorLlmClient:
             "Return ONLY a JSON array of objects, each with 'source_node_id' (the node_id "
             "the link is on), 'target_ref' (the node_id of the OTHER node in this array, "
             "if the target is one of them), and 'reference_name' (one of the reference "
-            "names listed above). No prose, no markdown fences — the response body must "
+            "names listed above). If the covered/traced item is NOT one of the nodes "
+            "supplied above but the text cites an external requirement identifier (e.g. a "
+            "customer requirement ID like 'REQ-SYS-012'), use that cited identifier as "
+            "target_ref instead. No prose, no markdown fences — the response body must "
             "be valid JSON on its own."
         )
         system_prompt = _with_kb_context(system_prompt, kb_context)
