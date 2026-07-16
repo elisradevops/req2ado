@@ -134,7 +134,12 @@ async def level(
         # survey call (including every pre-existing caller that omits this
         # param) issue an extra infer_trace_links call, changing behavior
         # for callers this task must leave untouched — matching
-        # pre-trace-link behavior exactly when the param is omitted.
+        # pre-trace-link behavior exactly when the param is omitted. An
+        # empty catalog ("[]") is treated the same as no catalog at all:
+        # infer_trace_links has nothing to validate against, so skipping it
+        # matches pipeline.worker.ts's documented degraded-mode contract
+        # (empty catalog -> empty trace_links, never blocking the rest of
+        # the job).
         client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
         catalog = json.loads(link_type_catalog) if link_type_catalog else None
         return await run_in_threadpool(
@@ -146,7 +151,7 @@ async def level(
             embed_client=_embed_client,
             vector_store=_kb_vector_store,
             scoring_client=client,
-            link_type_client=client if catalog is not None else None,
+            link_type_client=client if catalog else None,
             link_type_catalog=catalog,
         )
     return build_baseline_tree(doc, customer_id=customer_id)
