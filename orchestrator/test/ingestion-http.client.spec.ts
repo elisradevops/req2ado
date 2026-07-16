@@ -63,6 +63,24 @@ describe('IngestionHttpClient', () => {
     expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1');
   });
 
+  it('forwards area_path as a query param when provided', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level({ blocks: [] }, 'CUST-1', 'survey', 'Project\\Area1');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1&area_path=Project%5CArea1');
+  });
+
+  it('omits area_path when not provided, matching pre-existing behavior', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level({ blocks: [] }, 'CUST-1', 'survey');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1');
+  });
+
   it('throws on a non-ok /level response', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
     const client = new IngestionHttpClient('http://ingestion.internal');
