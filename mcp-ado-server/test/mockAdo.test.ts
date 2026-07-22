@@ -35,6 +35,17 @@ describe('MockAdoBackend', () => {
   it('ping returns ok:true', async () => {
     expect(await backend.ping()).toEqual({ ok: true, backend: 'mock' });
   });
+
+  it('getWorkItemsBatch reads multiple items and omits unknown ids', async () => {
+    const a = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'A' } });
+    const b = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'B' } });
+    const results = await backend.getWorkItemsBatch([a.id, 999999, b.id]);
+    expect(results.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it('getWorkItemsBatch returns an empty array for an empty id list', async () => {
+    expect(await backend.getWorkItemsBatch([])).toEqual([]);
+  });
 });
 
 describe('MockAdoBackend.discoverFields', () => {
@@ -47,17 +58,12 @@ describe('MockAdoBackend.discoverFields', () => {
   });
 });
 
-describe('MockAdoBackend.readAreaPaths', () => {
-  it('returns a fixed area-path tree from readAreaPaths', async () => {
+describe('MockAdoBackend.discoverProjects', () => {
+  it('returns a fixed list of projects, including "Project" to align with the readAreaPaths mock root', async () => {
     const backend = new MockAdoBackend(':memory:');
-    const tree = await backend.readAreaPaths(2);
-    expect(tree).toEqual({
-      path: 'Project',
-      children: [
-        { path: 'Project\\Frontend', children: [] },
-        { path: 'Project\\Backend', children: [] },
-      ],
-    });
+    const projects = await backend.discoverProjects();
+    expect(projects.map((p) => p.name)).toContain('Project');
+    expect(projects.length).toBeGreaterThan(1);
   });
 });
 

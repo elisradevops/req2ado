@@ -7,10 +7,12 @@ import type { AdoMcpConfig } from './config/env.js';
 import { registerPingTool } from './tools/pingTool.js';
 import { registerDiscoverFieldsTool } from './tools/discoverFieldsTool.js';
 import { registerReadAreaPathsTool } from './tools/readAreaPathsTool.js';
+import { registerDiscoverProjectsTool } from './tools/discoverProjectsTool.js';
 import { registerCreateWorkItemTool } from './tools/createWorkItemTool.js';
 import { registerLinkParentChildTool } from './tools/linkParentChildTool.js';
 import { registerSetFieldsTool } from './tools/setFieldsTool.js';
 import { registerQueryIdsTool } from './tools/queryIdsTool.js';
+import { registerGetWorkItemsBatchTool } from './tools/getWorkItemsBatchTool.js';
 import { registerDiscoverLinkTypesTool } from './tools/discoverLinkTypesTool.js';
 import { registerLinkWorkItemsTool } from './tools/linkWorkItemsTool.js';
 import { timingSafeEqualBearer } from './auth/timingSafeEqualBearer.js';
@@ -56,6 +58,25 @@ export function createMcpApp(backendFactory: BackendFactory, cfg: AdoMcpConfig):
     res.json(await backendFactory(undefined).ping());
   });
 
+  // Separate from /health for k8s readiness-probe semantics parity with
+  // orchestrator/ingestion (a readiness failure removes the pod from
+  // load-balancing without restarting it, unlike a liveness failure).
+  // Real-ADO reachability genuinely cannot be checked here: this
+  // architecture deliberately has no server-level ADO credential (only
+  // per-request X-Ado-Org-Url/X-Ado-Pat headers) -- backendFactory(undefined)
+  // for backend==='real' has no credential.orgUrl to call. This is the same
+  // structural limitation /health's own comment above documents, not a new
+  // gap -- /ready is honest about it rather than faking a check that can't
+  // exist for this backend.
+  app.get('/ready', async (_req, res) => {
+    if (cfg.backend === 'real') {
+      res.json({ ok: true, backend: 'real', note: 'real-ADO reachability requires a per-request credential, not checkable here' });
+      return;
+    }
+    const pingResult = await backendFactory(undefined).ping();
+    res.status(pingResult.ok ? 200 : 503).json(pingResult);
+  });
+
   app.use('/mcp', (req, res, next) => {
     const header = req.header('authorization') ?? '';
     if (!timingSafeEqualBearer(header, `Bearer ${cfg.mcpBearer}`)) {
@@ -81,10 +102,12 @@ export function createMcpApp(backendFactory: BackendFactory, cfg: AdoMcpConfig):
     registerPingTool(mcpServer, backend);
     registerDiscoverFieldsTool(mcpServer, backend);
     registerReadAreaPathsTool(mcpServer, backend);
+    registerDiscoverProjectsTool(mcpServer, backend);
     registerCreateWorkItemTool(mcpServer, backend);
     registerLinkParentChildTool(mcpServer, backend);
     registerSetFieldsTool(mcpServer, backend);
     registerQueryIdsTool(mcpServer, backend);
+    registerGetWorkItemsBatchTool(mcpServer, backend);
     registerDiscoverLinkTypesTool(mcpServer, backend);
     registerLinkWorkItemsTool(mcpServer, backend);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });

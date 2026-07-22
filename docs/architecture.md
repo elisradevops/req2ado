@@ -19,7 +19,7 @@
 | Stack | **Hybrid: TypeScript + Python.** React/MUI GUI + Node/TS orchestrator & MCP server + Python ingestion/OCR/embeddings service. |
 | MCP server | **Fresh, ours, from scratch.** Do NOT use `elisra-mcp-ado`. Reuse only generic ADO REST conventions (below). |
 | MCP transport | **HTTP Streamable** (networked, multi-client, containerized). |
-| ADO target | **On-prem TFS/ADO Server**: api-version `7.1` (fallback `7.1 → 5.1 → none`), self-signed TLS via CA-trust. |
+| ADO target | **On-prem TFS/ADO Server**: api-version `7.1` (fallback `7.1 → 7.0 → 5.1 → none`), self-signed TLS via CA-trust. |
 | PAT entry | **Login screen** (DocGen / `ado-hierarchy-viewer` pattern). Header-passed, in-memory/session only, never persisted or logged. |
 | LLM access | **Backend proxy, redact-first.** Open WebUI reached server-side by config URL; redaction runs before every egress call. |
 | Scale | **Job queue + workers** (Redis + BullMQ; Python ingestion as horizontally-scaled compute service). |
@@ -33,7 +33,7 @@
 
 **Generic ADO REST conventions reused as knowledge (ported into our MCP server):**
 - PAT = HTTP Basic, empty username. On-prem TLS = CA-trust (not `rejectUnauthorized:false`).
-- api-version fallback ladder `7.1 → 5.1 → none`.
+- api-version fallback ladder `7.1 → 7.0 → 5.1 → none` (7.0 added after a real on-prem Server 2022.1 rejected 7.1 as preview-only).
 - Retry/backoff on 429/5xx + network errors, exp backoff + jitter.
 - Bounded concurrency + `workitemsbatch` chunk at **200**.
 - Write = JSON-Patch: `POST/PATCH {org}/{project}/_apis/wit/workitems/${type}`, `Content-Type: application/json-patch+json`, body `[{op:'add', path:'/fields/<RefName>', value}]`; parent link via relation op `/relations/-` with `System.LinkTypes.Hierarchy-Reverse` (child→parent).
@@ -102,7 +102,7 @@
 **Module boundaries (each package = one responsibility):**
 - `frontend/` — GUI only (upload, preview, progress, results, wiki, tooltips).
 - `orchestrator/` — API, auth, LLM redaction proxy, MCP client, job submission, Prisma/Postgres, BullMQ producer + TS workers (pipeline driver).
-- `ingestion/` (Python/FastAPI) — loaders → CanonicalDoc; OCR; tables; figures; embeddings; leveling heuristics. Stateless, scaled ×N.
+- `ingestion/` (Python/FastAPI) — loaders → CanonicalDoc; OCR; tables; figures; embeddings; leveling heuristics. Stateless and scalable ×N **only when `CHROMA_MODE=http`** points at a real, shared Chroma server (see `docker-compose.yml`'s `chroma` service) — the default `CHROMA_MODE=embedded` (a local `PersistentClient`) is single-instance-only, each replica would otherwise hold an independent, incomplete dedup corpus.
 - `mcp-ado-server/` (TS) — MCP tools for ADO write/read; PAT auth; retry/batch/api-version; mock backend adapter.
 - `shared/` — cross-package types (CanonicalDoc, WorkItemTree, DTOs) — TS types + Python pydantic mirror (or JSON Schema single-source).
 - `deploy/` — docker-compose, nginx, env templates.
@@ -197,7 +197,8 @@ A Scope & Gap review of this project against the ORIGINAL request found that the
 
 - **What IS solved (BASELINE, deterministic):** `detect_profile_for_branch` (`ingestion/app/leveling/autodetect.py`) auto-detects a leveling profile PER TOP-LEVEL BRANCH, not once globally — proven with two branches in the same document where the identical nominal depth-1 position resolves to `Epic` in one branch (5 levels deep → `tv_style`) and `Feature` in the other (2 levels deep → `icd_style`). This is branch-granularity dual-role resolution, and it is genuinely context-dependent (based on that branch's own structure), not a single document-wide setting.
 - **What is NOT solved:** true intra-branch semantic dual-role — inferring differing intent from local CONTENT within a single branch at the same depth — is not attempted in BASELINE. `autodetect.py`'s own docstring is explicit that this is SURVEY/LLM territory. This is an accepted BASELINE limitation, not a gap to close deterministically: content-driven type inference without an LLM would require heuristics with no principled stopping point.
-- **A related, previously undocumented limitation surfaced by the mock ICD fixture:** the `max_depth <= 2` → `icd_style` / `max_depth >= 3` → `tv_style` heuristic means a genuine ICD-style sub-requirement (a depth-3 node under a Feature/Requirement branch) is unreachable — any depth-3 heading in a branch flips the WHOLE branch to `tv_style` (Epic/Epic/Feature) instead. `mock_icd.docx` is deliberately built without a depth-3 level for this reason (see its build script's docstring). If the real ICD document ever has genuine sub-requirements, this heuristic needs a follow-up fix (e.g. distinguishing "one extra depth level past an otherwise-icd_style branch" from "a genuinely deep tv_style branch") — flagged here rather than silently assumed away, since it cannot be checked against the real ICD document from within this repo.
+- **Fixed: the depth-3 ICD sub-requirement gap.** The heuristic was `max_depth <= 2` → `icd_style` / `max_depth >= 3` → `tv_style`, which meant a genuine ICD-style sub-requirement (a depth-3 node under a Feature/Requirement branch) flipped the WHOLE branch to `tv_style` (Epic/Epic/Feature) instead. The ceiling is now `max_depth <= 3` → `icd_style` / `max_depth >= 4` → `tv_style` (`ingestion/app/leveling/autodetect.py::detect_profile_for_branch`), distinguishing "one extra depth level past an otherwise-icd_style branch" (stops at 3) from "a genuinely deep tv_style branch" (the golden `mock_tv_remote.docx` reference reaches depth 5) — the exact fix this section previously flagged as a follow-up. `mock_icd.docx` now includes a real depth-3 "Ripple Sub-Requirement" node proving this (`test_mock_reference_golden.py::test_mock_icd_docx_each_top_heading_is_a_feature_everything_nested_is_a_requirement`).
+  - **Known, accepted tradeoff (documented in `detect_profile_for_branch`'s own docstring):** a tv_style branch that stops exactly at depth 3 with no depth-4 child (e.g. `Epic/Epic/Feature`, no individual Requirement written under that Feature) will now misclassify as icd_style. This narrows the original gap rather than eliminating it outright — still cannot be fully resolved without checking against the real ICD document, which is unavailable in this repo.
 
 ---
 
@@ -278,7 +279,7 @@ ado:
   base_url: ${ADO_BASE_URL}    # on-prem, https
   project:  ${ADO_PROJECT}
   area_path: ${ADO_AREA_PATH}
-  api_version: "7.1"           # ladder 7.1 -> 5.1 -> none
+  api_version: "7.1"           # ladder 7.1 -> 7.0 -> 5.1 -> none
   ca_cert_path: ${ADO_CA_CERT} # self-signed CA trust (NODE_EXTRA_CA_CERTS)
   bypass_rules: false
   batch_size: 200

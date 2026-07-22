@@ -63,6 +63,12 @@ describe('IngestionHttpClient', () => {
     expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1');
   });
 
+  it('throws on a non-ok /level response', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await expect(client.level({ blocks: [] }, null)).rejects.toThrow(/level.*500/i);
+  });
+
   it('forwards area_path as a query param when provided', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
@@ -81,10 +87,89 @@ describe('IngestionHttpClient', () => {
     expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1');
   });
 
-  it('throws on a non-ok /level response', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+  it('forwards model as a query param when provided (per-job LLM model override)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await expect(client.level({ blocks: [] }, null)).rejects.toThrow(/level.*500/i);
+    await client.level({ blocks: [] }, null, 'survey', undefined, undefined, 'qwen2.5:1.5b');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(url).searchParams.get('model')).toBe('qwen2.5:1.5b');
+  });
+
+  it('omits model when not provided, matching pre-model-selection behavior', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level({ blocks: [] }, null, 'survey');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(url).searchParams.has('model')).toBe(false);
+  });
+
+  it('forwards job_id as a query param when provided (SURVEY narration threading)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level({ blocks: [] }, null, 'survey', undefined, undefined, undefined, 'job-123');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(url).searchParams.get('job_id')).toBe('job-123');
+  });
+
+  it('omits job_id when not provided', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level({ blocks: [] }, null, 'survey');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(url).searchParams.has('job_id')).toBe(false);
+  });
+
+  it('serializes link_type_catalog with snake_case keys (ingestion/Python is the wire contract, not this side\'s camelCase AdoLinkType)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level({ blocks: [] }, null, 'survey', 'Project\\Area1', [
+      { referenceName: 'Elisra.CoveredBy-Forward', name: 'Covers', semanticHint: 'source covers target' },
+      { referenceName: 'System.LinkTypes.Related', name: 'Related' },
+    ]);
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    const catalogParam = new URL(url).searchParams.get('link_type_catalog');
+    expect(JSON.parse(catalogParam!)).toEqual([
+      { reference_name: 'Elisra.CoveredBy-Forward', name: 'Covers', semantic_hint: 'source covers target' },
+      { reference_name: 'System.LinkTypes.Related', name: 'Related', semantic_hint: null },
+    ]);
+  });
+
+  it('upsertDedupEntriesBatch POSTs all items to /dedup/upsert-batch in one call', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.upsertDedupEntriesBatch([
+      { itemId: '1', text: 'a', areaPath: 'Proj\\Area' },
+      { itemId: '2', text: 'b', areaPath: 'Proj\\Area' },
+    ]);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/dedup/upsert-batch');
+    expect(JSON.parse(options.body)).toEqual({
+      items: [
+        { item_id: '1', text: 'a', area_path: 'Proj\\Area' },
+        { item_id: '2', text: 'b', area_path: 'Proj\\Area' },
+      ],
+    });
+  });
+
+  it('upsertDedupEntriesBatch makes no HTTP call at all for an empty list', async () => {
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.upsertDedupEntriesBatch([]);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('throws on a non-ok /dedup/upsert-batch response', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 502 });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await expect(
+      client.upsertDedupEntriesBatch([{ itemId: '1', text: 'a', areaPath: 'Proj\\Area' }]),
+    ).rejects.toThrow(/upsert-batch.*502/i);
   });
 });
 

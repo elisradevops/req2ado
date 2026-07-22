@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { KbCitation } from '../components/KbCitationChips';
 
 export interface JobSummary {
   id: string;
@@ -14,7 +15,12 @@ export interface JobDetail {
   status: string;
   mode: string;
   dryRunDiff: unknown;
-  kbCitations?: string[];
+  kbCitations?: KbCitation[];
+  // Tree-level integrity warnings from ingestion's /level response
+  // (SURVEY-only, e.g. generated node count diverging from source block
+  // count) -- distinct from per-node quality/grounding signals.
+  warnings?: string[];
+  createdAt: string;
 }
 
 interface JobsState {

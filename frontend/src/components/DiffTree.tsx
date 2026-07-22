@@ -1,11 +1,47 @@
-import { useMemo } from 'react';
-import { FixedSizeList } from 'react-window';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { VariableSizeList } from 'react-window';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemText from '@mui/material/ListItemText';
 import Checkbox from '@mui/material/Checkbox';
 import { ActionBadge } from './ActionBadge';
 import { TagChips } from './TagChips';
 import { TraceLinkChips } from './TraceLinkChips';
+
+// Pre-measurement estimate only -- real row height is measured per-row (see
+// MeasuredRow below) since wrapped title/chip height can't be reliably
+// estimated (chip-wrap height depends on per-chip label width, chip count,
+// and MUI gap/padding). Used for VariableSizeList's initial scrollbar
+// geometry before any row has been measured.
+const DEFAULT_ROW_HEIGHT = 56;
+
+// Small measurement wrapper: reports its child's REAL rendered height via
+// ResizeObserver, which fires on mount and on any subsequent size change
+// (e.g. column width narrowing changes the title's wrap point). This is
+// what lets react-window's fixed-height row slot (`style`) actually match
+// variable wrapped content instead of clipping/overlapping it.
+function MeasuredRow({
+  index,
+  onMeasure,
+  children,
+}: {
+  index: number;
+  onMeasure: (index: number, size: number) => void;
+  children: React.ReactNode;
+}): React.ReactElement {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const report = (): void => onMeasure(index, el.getBoundingClientRect().height);
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [index, onMeasure]);
+
+  return <div ref={ref}>{children}</div>;
+}
 
 export interface DryRunDiffEntry {
   localId: string;
@@ -83,38 +119,69 @@ export function DiffTree({
     });
   }, [entries, filterAction, filterText]);
 
+  const listRef = useRef<VariableSizeList>(null);
+  const sizeMap = useRef<Map<number, number>>(new Map());
+
+  const getItemSize = useCallback((index: number) => sizeMap.current.get(index) ?? DEFAULT_ROW_HEIGHT, []);
+
+  const setRowSize = useCallback((index: number, size: number) => {
+    if (sizeMap.current.get(index) === size) return;
+    sizeMap.current.set(index, size);
+    listRef.current?.resetAfterIndex(index);
+  }, []);
+
+  // `rows` changing (edit/add/exclude/filter) may shift indices or change
+  // content height -- clear the whole cache and let mounted rows re-measure
+  // via MeasuredRow's mount-time report. Coarse but correct; per-row diffing
+  // isn't worth it at this data volume.
+  useEffect(() => {
+    sizeMap.current.clear();
+    listRef.current?.resetAfterIndex(0);
+  }, [rows]);
+
   return (
-    <FixedSizeList height={600} width="100%" itemCount={rows.length} itemSize={56}>
+    <VariableSizeList
+      ref={listRef}
+      height={600}
+      width="100%"
+      itemCount={rows.length}
+      itemSize={getItemSize}
+      estimatedItemSize={DEFAULT_ROW_HEIGHT}
+    >
       {({ index, style }) => {
         const row = rows[index];
         return (
-          <ListItemButton
-            key={row.entry.localId}
-            style={{ ...style, paddingLeft: row.depth * 16 + 16, opacity: row.entry.excluded ? 0.5 : 1 }}
-            selected={row.entry.localId === selectedId}
-            onClick={() => onSelect(row.entry.localId)}
-            data-excluded={row.entry.excluded ? 'true' : 'false'}
-          >
-            <Checkbox
-              inputProps={{ 'aria-label': 'exclude' }}
-              checked={!!row.entry.excluded}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => onToggleExclude(row.entry.localId, e.target.checked)}
-            />
-            <ActionBadge action={row.entry.action} existingAdoId={row.entry.existingAdoId} />
-            <ListItemText
-              primary={row.entry.title}
-              secondary={
-                <>
-                  <TagChips tags={row.entry.tags} />
-                  <TraceLinkChips links={row.entry.traceLinks} />
-                </>
-              }
-              sx={row.entry.excluded ? { textDecoration: 'line-through' } : undefined}
-            />
-          </ListItemButton>
+          <div style={style}>
+            <MeasuredRow index={index} onMeasure={setRowSize}>
+              <ListItemButton
+                key={row.entry.localId}
+                sx={{ pl: `${row.depth * 16 + 16}px`, opacity: row.entry.excluded ? 0.5 : 1, alignItems: 'flex-start' }}
+                selected={row.entry.localId === selectedId}
+                onClick={() => onSelect(row.entry.localId)}
+                data-excluded={row.entry.excluded ? 'true' : 'false'}
+              >
+                <Checkbox
+                  inputProps={{ 'aria-label': 'exclude' }}
+                  checked={!!row.entry.excluded}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => onToggleExclude(row.entry.localId, e.target.checked)}
+                />
+                <ActionBadge action={row.entry.action} existingAdoId={row.entry.existingAdoId} />
+                <ListItemText
+                  primary={row.entry.title}
+                  secondary={
+                    <>
+                      <TagChips tags={row.entry.tags} />
+                      <TraceLinkChips links={row.entry.traceLinks} />
+                    </>
+                  }
+                  sx={row.entry.excluded ? { textDecoration: 'line-through' } : undefined}
+                />
+              </ListItemButton>
+            </MeasuredRow>
+          </div>
         );
       }}
-    </FixedSizeList>
+    </VariableSizeList>
   );
 }

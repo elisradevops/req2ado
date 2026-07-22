@@ -1,4 +1,4 @@
-import { McpClient } from '../src/modules/pipeline/mcp.client';
+import { McpClient, McpRequestTimeoutError } from '../src/modules/pipeline/mcp.client';
 
 // These tests mock the @modelcontextprotocol/sdk Client class's connect/
 // callTool/close methods directly, rather than standing up a real MCP
@@ -102,6 +102,25 @@ describe('McpClient', () => {
     });
   });
 
+  it('queryIds calls the ado_query_ids tool with the given field match', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const mockCallTool = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '[100,101]' }] });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    const result = await client.queryIds({ 'System.AreaPath': 'Project\\Area1' });
+
+    expect(result).toEqual([100, 101]);
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'ado_query_ids',
+      arguments: { fieldMatch: { 'System.AreaPath': 'Project\\Area1' } },
+    });
+  });
+
   it('calls the ado_read_area_paths tool and parses the result', async () => {
     const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
     const mockCallTool = jest.fn().mockResolvedValue({
@@ -121,6 +140,104 @@ describe('McpClient', () => {
       name: 'ado_read_area_paths',
       arguments: { depth: 3 },
     });
+  });
+
+  it('forwards project as a tool arg when provided (per-project area-path override)', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const mockCallTool = jest.fn().mockResolvedValue({
+      content: [{ type: 'text', text: '{"path":"OtherProject","children":[]}' }],
+    });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    await client.readAreaPaths(3, 'OtherProject');
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'ado_read_area_paths',
+      arguments: { depth: 3, project: 'OtherProject' },
+    });
+  });
+
+  it('discoverProjects calls the ado_discover_projects tool and parses the result', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const mockCallTool = jest.fn().mockResolvedValue({
+      content: [{ type: 'text', text: '[{"id":"1","name":"Project"}]' }],
+    });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    const result = await client.discoverProjects();
+
+    expect(result).toEqual([{ id: '1', name: 'Project' }]);
+    expect(mockCallTool).toHaveBeenCalledWith({ name: 'ado_discover_projects', arguments: {} });
+  });
+
+  it('linkWorkItems calls the ado_link_work_items tool with fromId/toId/referenceName', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const mockCallTool = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"ok":true}' }] });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    await client.linkWorkItems(101, 100, 'Elisra.CoveredBy-Forward');
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'ado_link_work_items',
+      arguments: { fromId: 101, toId: 100, referenceName: 'Elisra.CoveredBy-Forward' },
+    });
+  });
+
+  it('discoverLinkTypes calls the ado_discover_link_types tool and parses the JSON array result', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const linkTypes = [{ referenceName: 'System.LinkTypes.Related', name: 'Related' }];
+    const mockCallTool = jest.fn().mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify(linkTypes) }],
+    });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    const result = await client.discoverLinkTypes();
+
+    expect(result).toEqual(linkTypes);
+    expect(mockCallTool).toHaveBeenCalledWith({ name: 'ado_discover_link_types', arguments: {} });
+  });
+
+  it('createWorkItem throws the real error message when the tool result has isError: true', async () => {
+    // Regression: parseToolTextResult previously ignored `isError` and always
+    // ran JSON.parse on the text content -- an error result's plain-text
+    // message (not JSON) then threw an opaque SyntaxError, masking the real
+    // backend failure (found live: "No api-version in the ladder [...]
+    // succeeded" surfaced only as "Unexpected token 'N' ... is not valid JSON").
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const mockCallTool = jest.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'No api-version in the ladder [7.1, 7.0, 5.1, none] succeeded against x' }],
+      isError: true,
+    });
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+      callTool: mockCallTool,
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
+    await expect(client.createWorkItem('Requirement', {})).rejects.toThrow(
+      'No api-version in the ladder [7.1, 7.0, 5.1, none] succeeded against x',
+    );
   });
 
   it('omits the ADO credential headers when no credential is passed (mock-backend default)', async () => {
@@ -163,58 +280,49 @@ describe('McpClient', () => {
     });
   });
 
-  it('linkWorkItems calls the ado_link_work_items tool with fromId/toId/referenceName', async () => {
+  it('rejects with McpRequestTimeoutError when the tool call never settles', async () => {
     const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
-    const mockCallTool = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"ok":true}' }] });
+    const mockClose = jest.fn().mockResolvedValue(undefined);
     Client.mockImplementation(() => ({
       connect: jest.fn().mockResolvedValue(undefined),
-      close: jest.fn().mockResolvedValue(undefined),
-      callTool: mockCallTool,
+      close: mockClose,
+      callTool: jest.fn().mockReturnValue(new Promise(() => {})),
     }));
 
-    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
-    await client.linkWorkItems(101, 100, 'Elisra.CoveredBy-Forward');
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer', 20);
 
-    expect(mockCallTool).toHaveBeenCalledWith({
-      name: 'ado_link_work_items',
-      arguments: { fromId: 101, toId: 100, referenceName: 'Elisra.CoveredBy-Forward' },
-    });
+    await expect(client.discoverLinkTypes()).rejects.toBeInstanceOf(McpRequestTimeoutError);
+    await expect(client.discoverLinkTypes()).rejects.toThrow(/mcp\.internal\/mcp.*20ms/);
+    expect(mockClose).toHaveBeenCalled();
   });
 
-  it('discoverLinkTypes calls the ado_discover_link_types tool and parses the JSON array result', async () => {
+  it('rejects with McpRequestTimeoutError when connect never settles', async () => {
     const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
-    const linkTypes = [{ referenceName: 'System.LinkTypes.Related', name: 'Related' }];
-    const mockCallTool = jest.fn().mockResolvedValue({
-      content: [{ type: 'text', text: JSON.stringify(linkTypes) }],
-    });
+    const mockClose = jest.fn().mockResolvedValue(undefined);
+    Client.mockImplementation(() => ({
+      connect: jest.fn().mockReturnValue(new Promise(() => {})),
+      close: mockClose,
+      callTool: jest.fn(),
+    }));
+
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer', 20);
+
+    await expect(client.discoverLinkTypes()).rejects.toBeInstanceOf(McpRequestTimeoutError);
+    expect(mockClose).toHaveBeenCalled();
+  });
+
+  it('resolves normally when the call settles before the timeout', async () => {
+    const { Client } = jest.requireMock('@modelcontextprotocol/sdk/client/index.js');
+    const mockClose = jest.fn().mockResolvedValue(undefined);
     Client.mockImplementation(() => ({
       connect: jest.fn().mockResolvedValue(undefined),
-      close: jest.fn().mockResolvedValue(undefined),
-      callTool: mockCallTool,
+      close: mockClose,
+      callTool: jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '[]' }] }),
     }));
 
-    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer');
-    const result = await client.discoverLinkTypes();
+    const client = new McpClient('http://mcp.internal/mcp', 'test-bearer', 20);
 
-    expect(result).toEqual(linkTypes);
-    expect(mockCallTool).toHaveBeenCalledWith({ name: 'ado_discover_link_types', arguments: {} });
-  });
-});
-
-describe('McpClient.queryIds', () => {
-  it('calls ado_query_ids with the field-match map and parses the JSON id array', async () => {
-    const client = new McpClient('http://mcp.test/mcp', 'test-bearer');
-    const callTool = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '[1,2]' }] });
-    jest.spyOn(client as any, 'withClient').mockImplementation(async (_cred: unknown, fn: any) =>
-      fn({ callTool }),
-    );
-
-    const result = await client.queryIds({ 'Custom.CustomerId': 'REQ-SYS-012' });
-
-    expect(callTool).toHaveBeenCalledWith({
-      name: 'ado_query_ids',
-      arguments: { fieldMatch: { 'Custom.CustomerId': 'REQ-SYS-012' } },
-    });
-    expect(result).toEqual([1, 2]);
+    await expect(client.discoverLinkTypes()).resolves.toEqual([]);
+    expect(mockClose).toHaveBeenCalledTimes(1);
   });
 });

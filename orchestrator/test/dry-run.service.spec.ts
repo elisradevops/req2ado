@@ -22,6 +22,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -39,6 +43,10 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
     ]);
@@ -58,6 +66,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: 'CUST-1',
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -75,6 +87,10 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: 'CUST-1',
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
     ]);
@@ -94,6 +110,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
         {
@@ -105,6 +125,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash2',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -122,6 +146,10 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
       {
@@ -135,6 +163,10 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash2',
         customerId: null,
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
     ]);
@@ -154,6 +186,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -180,6 +216,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -198,6 +238,10 @@ describe('DryRunService', () => {
         similarity: 0.94,
         sourceHash: 'hash1',
         customerId: null,
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
     ]);
@@ -219,6 +263,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -237,6 +285,10 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
     ]);
@@ -257,6 +309,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -282,6 +338,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -299,6 +359,10 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
     ]);
@@ -320,6 +384,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash1',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
         {
@@ -331,6 +399,10 @@ describe('DryRunService', () => {
           sourceHash: 'hash2',
           customerId: null,
           areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
           tags: [],
         },
       ],
@@ -349,6 +421,10 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
       {
@@ -362,6 +438,10 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash2',
         customerId: null,
+        groundingScore: null,
+        qualityScore: null,
+        qualityIssues: [],
+        sourceRef: null,
         tags: [],
       },
     ]);
@@ -369,41 +449,75 @@ describe('DryRunService', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('carries tags through from tree node to diff entry', async () => {
-    const nodes = [
-      {
-        localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-        sourceHash: 'h1', customerId: null, areaPath: 'Proj\\Area', tags: ['functional', 'safety'],
-      },
-    ];
+  it('carries real groundingScore/qualityScore/qualityIssues through to every action type', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
-    const diff = await service.diff(nodes as any, { lookup: jest.fn().mockResolvedValue(null) } as any);
-    expect(diff[0].tags).toEqual(['functional', 'safety']);
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+          groundingScore: 0.15,
+          qualityScore: 40,
+          qualityIssues: ['ambiguous', 'vague_term'],
+          sourceRef: null,
+          tags: [],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0]).toMatchObject({
+      groundingScore: 0.15,
+      qualityScore: 40,
+      qualityIssues: ['ambiguous', 'vague_term'],
+      sourceRef: null,
+      tags: [],
+    });
   });
 
-  it('carries qualityScore and qualityIssues through from tree node to diff entry', async () => {
-    const nodes = [
-      {
-        localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-        sourceHash: 'h1', customerId: null, areaPath: 'Proj\\Area', tags: [],
-        qualityScore: 72, qualityIssues: ['vague_term'],
-      },
-    ];
+  it('carries a real sourceRef/tags through to every action type', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
-    const diff = await service.diff(nodes as any, { lookup: jest.fn().mockResolvedValue(null) } as any);
-    expect(diff[0].qualityScore).toBe(72);
-    expect(diff[0].qualityIssues).toEqual(['vague_term']);
+    const sourceRef = { documentPath: '/tmp/doc.docx', startOffset: 10, endOffset: 20, page: null };
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef,
+          tags: ['functional', 'safety'],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0]).toMatchObject({ sourceRef, tags: ['functional', 'safety'] });
   });
 
   it('leaves qualityScore/qualityIssues undefined when the tree node omits them (byte-identical pre-P2c behavior)', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const service = new DryRunService();
     const nodes = [
       {
         localId: 'r1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
         sourceHash: 'h1', customerId: null, areaPath: 'Proj\\Area', tags: [],
       },
     ];
-    const service = new DryRunService();
-    const diff = await service.diff(nodes as any, { lookup: jest.fn().mockResolvedValue(null) } as any);
+    const diff = await service.diff(nodes as any, fakeIdempotencyService);
     expect(diff[0].qualityScore).toBeUndefined();
     expect(diff[0].qualityIssues).toBeUndefined();
   });

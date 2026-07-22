@@ -9,7 +9,14 @@ import { Agent } from 'undici';
 // are the only calls that can run this long (BASELINE never touches an LLM;
 // /ingest, /dedup/check, /dedup/upsert are all fast); scoped to a dedicated
 // Agent rather than raising the timeout for every ingestion call.
-const LONG_RUNNING_AGENT = new Agent({ headersTimeout: 1_800_000, bodyTimeout: 1_800_000 });
+//
+// Raised 30min -> 60min after a live run against a large document (152
+// SURVEY branches, ~2 sequential LLM calls each) hit UND_ERR_HEADERS_TIMEOUT
+// at the 30min mark even on a fast, GPU-accelerated small model -- branch
+// count, not model speed, dominates total /level wall time. A real fix
+// (parallelizing or streaming per-branch progress) is tracked separately;
+// this is the immediate unblock.
+const LONG_RUNNING_AGENT = new Agent({ headersTimeout: 3_600_000, bodyTimeout: 3_600_000 });
 
 export class IngestionHttpError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -45,16 +52,30 @@ export class IngestionHttpClient {
     customerId: string | null,
     mode: 'baseline' | 'survey' = 'baseline',
     areaPath?: string,
-    // Accepted but not yet sent to /level — the Python endpoint doesn't
-    // consume a link-type catalog yet (a later task wires that up). Adding
-    // the parameter here now is intentional groundwork so the orchestrator's
-    // per-job catalog discovery has somewhere to plug in without another
-    // signature churn later.
     linkTypeCatalog?: { referenceName: string; name: string; semanticHint?: string }[],
+    model?: string,
+    jobId?: string,
   ): Promise<Record<string, unknown>> {
     const params = new URLSearchParams({ mode });
     if (customerId) params.set('customer_id', customerId);
     if (areaPath) params.set('area_path', areaPath);
+    if (model) params.set('model', model);
+    if (jobId) params.set('job_id', jobId);
+    if (linkTypeCatalog) {
+      // ingestion (Python) expects snake_case keys (reference_name/name/
+      // semantic_hint) -- AdoLinkType on this side is camelCase. Map at the
+      // wire boundary rather than changing either side's native casing.
+      params.set(
+        'link_type_catalog',
+        JSON.stringify(
+          linkTypeCatalog.map((t) => ({
+            reference_name: t.referenceName,
+            name: t.name,
+            semantic_hint: t.semanticHint ?? null,
+          })),
+        ),
+      );
+    }
     const response = await fetch(`${this.baseUrl}/level?${params.toString()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -88,6 +109,26 @@ export class IngestionHttpClient {
     });
     if (!response.ok) {
       throw new Error(`Ingestion /dedup/upsert request failed: ${response.status}`);
+    }
+  }
+
+  /**
+   * Batches multiple items into a single /dedup/upsert-batch call -- one
+   * embed() round-trip for all of them, instead of confirm()'s previous
+   * per-node loop triggering one /dedup/upsert (and one embed() call) per
+   * item. A no-op for an empty list (never makes the HTTP call at all).
+   */
+  async upsertDedupEntriesBatch(items: { itemId: string; text: string; areaPath: string }[]): Promise<void> {
+    if (items.length === 0) return;
+    const response = await fetch(`${this.baseUrl}/dedup/upsert-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: items.map((item) => ({ item_id: item.itemId, text: item.text, area_path: item.areaPath })),
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Ingestion /dedup/upsert-batch request failed: ${response.status}`);
     }
   }
 

@@ -3,7 +3,7 @@ import axios from 'axios';
 import { readFileSync } from 'fs';
 import https from 'https';
 import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
-import type { AdoBackend, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
+import type { AdoBackend, AdoProject, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
 import type { AdoMcpConfig } from '../config/env.js';
 import { retryWithBackoff } from './retryWithBackoff.js';
 import { SEED_LINK_TYPES, isWorkItemRelationType, type AdoLinkType } from '../domain/adoLinkTypes.js';
@@ -27,34 +27,60 @@ function buildHttpClient(config: AdoMcpConfig): AxiosInstance {
 
 /**
  * Probes the api-version fallback ladder (docs/architecture.md: "7.1 -> 5.1
- * -> none") by calling connectionData with each candidate in order, using
- * the first one that responds 200. "none" omits the api-version query
- * param entirely — some legacy on-prem endpoints predate versioning.
+ * -> none") against `{project}/_apis/wit/fields` -- the SAME endpoint family
+ * (`_apis/wit/*`) every real write call (createWorkItem, linkParentChild,
+ * setFields) actually uses -- with each candidate in order, using the first
+ * one that responds 200. "none" omits the api-version query param entirely
+ * -- some legacy on-prem endpoints predate versioning.
+ *
+ * Previously probed the org-level `_apis/connectionData` endpoint instead.
+ * Found live against a real ADO org: connectionData rejected 7.1/7.0/5.1
+ * with 400 (resolving to "none"), but the actual wit/workitems create
+ * endpoint accepts 7.1 directly and, unlike connectionData, HARD REQUIRES an
+ * explicit api-version -- "none" 400'd there with "No api-version was
+ * supplied". connectionData's version gating doesn't represent the wit
+ * endpoints' at all on this org; probing the family we actually call avoids
+ * that mismatch.
+ *
  * Exported standalone (not a RealAdoBackend method) so it can be reused
  * and tested independently of a full backend instance.
  */
 export async function resolveApiVersion(
   orgUrl: string,
+  project: string,
   apiVersionLadder: string[],
   credential: AdoCredential,
   httpClient: AxiosInstance,
 ): Promise<string> {
   const authHeader = buildBasicAuthHeader(credential.pat);
+  let lastFailure: { status: number; url: string } | null = null;
   for (const version of apiVersionLadder) {
-    const url =
-      version === 'none'
-        ? `${orgUrl.replace(/\/$/, '')}/_apis/connectionData`
-        : `${orgUrl.replace(/\/$/, '')}/_apis/connectionData?api-version=${version}`;
+    const base = `${orgUrl.replace(/\/$/, '')}/${project}/_apis/wit/fields`;
+    const url = version === 'none' ? base : `${base}?api-version=${version}`;
     try {
       const response = await retryWithBackoff(() => httpClient.get(url, { headers: { Authorization: authHeader } }));
       if (response.status === 200) {
         return version;
       }
-    } catch {
+    } catch (error: any) {
+      const status = error?.response?.status;
+      lastFailure = { status, url };
+      // Only a 400 (e.g. VssInvalidPreviewVersionException) means THIS
+      // api-version is wrong for this server -- try the next one. Any other
+      // status (401 expired/invalid PAT, network error, etc.) is not fixed
+      // by trying a different api-version -- fail immediately with the real
+      // error rather than exhausting the whole ladder pointlessly. Mirrors
+      // orchestrator's AdoPatProvider.validateAndIdentify.
+      if (status !== 400) {
+        throw new Error(`ADO wit/fields api-version probe failed: ${status ?? error?.message} at ${url}`);
+      }
       continue;
     }
   }
-  throw new Error(`No api-version in the ladder [${apiVersionLadder.join(', ')}] succeeded against ${orgUrl}`);
+  throw new Error(
+    `No api-version in the ladder [${apiVersionLadder.join(', ')}] succeeded against ${orgUrl}` +
+      (lastFailure ? ` (last failure: ${lastFailure.status} at ${lastFailure.url})` : ''),
+  );
 }
 
 function versionQueryParam(version: string): string {
@@ -108,6 +134,7 @@ export class RealAdoBackend implements AdoBackend {
     if (this.resolvedApiVersion === null) {
       this.resolvedApiVersion = await resolveApiVersion(
         this.credential.orgUrl,
+        this.config.adoProject,
         this.config.apiVersionLadder,
         this.credential,
         this.httpClient,
@@ -155,6 +182,46 @@ export class RealAdoBackend implements AdoBackend {
       if (error?.response?.status === 404) return null;
       throw error;
     }
+  }
+
+  /**
+   * Chunks `ids` at `config.batchSize` (ADO's own cap on the workitems-by-id
+   * endpoint is 200) and dispatches chunks with bounded concurrency
+   * (`config.concurrency`) instead of one getWorkItem call per id -- both
+   * config fields were previously declared but never referenced anywhere.
+   * Unknown ids are simply absent from the result; ADO's own endpoint drops
+   * them rather than erroring, matched here rather than treated as a fault.
+   */
+  async getWorkItemsBatch(ids: number[]): Promise<WorkItemRecord[]> {
+    if (ids.length === 0) return [];
+    const version = await this.getApiVersion();
+    const chunks: number[][] = [];
+    for (let i = 0; i < ids.length; i += this.config.batchSize) {
+      chunks.push(ids.slice(i, i + this.config.batchSize));
+    }
+
+    const results: WorkItemRecord[][] = [];
+    for (let i = 0; i < chunks.length; i += this.config.concurrency) {
+      const window = chunks.slice(i, i + this.config.concurrency);
+      const windowResults = await Promise.all(window.map((chunk) => this.getWorkItemsChunk(chunk, version)));
+      results.push(...windowResults);
+    }
+    return results.flat();
+  }
+
+  private async getWorkItemsChunk(ids: number[], version: string): Promise<WorkItemRecord[]> {
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems?ids=${ids.join(',')}&$expand=relations${
+      version === 'none' ? '' : `&api-version=${version}`
+    }`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+    );
+    return response.data.value.map((data: { id: number; fields: Record<string, string>; relations?: unknown }) => ({
+      id: data.id,
+      type: data.fields['System.WorkItemType'] as WorkItemType,
+      fields: data.fields,
+      parentId: parentIdFromRelations(data.relations as { rel: string; url: string }[] | undefined),
+    }));
   }
 
   async linkParentChild(childId: number, parentId: number): Promise<void> {
@@ -218,16 +285,28 @@ export class RealAdoBackend implements AdoBackend {
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
     );
-    return response.data.fields.map((field: { referenceName: string }) => field.referenceName);
+    return response.data.value.map((field: { referenceName: string }) => field.referenceName);
   }
 
-  async readAreaPaths(depth: number): Promise<AreaPathNode> {
+  async readAreaPaths(depth: number, project?: string): Promise<AreaPathNode> {
+    const proj = project ?? this.config.adoProject;
     const version = await this.getApiVersion();
-    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/classificationnodes/areas${versionQueryParam(version)}${version === 'none' ? '?' : '&'}$depth=${depth}`;
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/classificationnodes/areas${versionQueryParam(version)}${version === 'none' ? '?' : '&'}$depth=${depth}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
     );
-    return this.toAreaPathNode(response.data, this.config.adoProject);
+    return this.toAreaPathNode(response.data, proj);
+  }
+
+  async discoverProjects(): Promise<AdoProject[]> {
+    // Collection-level endpoint -- no project segment in the URL, unlike
+    // every other real call here.
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/projects${versionQueryParam(version)}`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+    );
+    return (response.data.value as { id: string; name: string }[]).map((p) => ({ id: p.id, name: p.name }));
   }
 
   private toAreaPathNode(raw: { name: string; children?: unknown[] }, pathPrefix: string): AreaPathNode {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { JobDetail } from './JobDetail';
@@ -18,6 +18,12 @@ function renderAt(id: string) {
 }
 
 describe('JobDetail', () => {
+  beforeEach(() => {
+    vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({
+      created: 0, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [],
+    });
+  });
+
   it('renders an explicit failure screen for a failed job, not a blank diff', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-1', status: 'failed', dryRunDiff: null } as any);
     renderAt('job-1');
@@ -34,6 +40,35 @@ describe('JobDetail', () => {
     renderAt('job-2');
     await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());
     expect(screen.getByText(/select a node/i)).toBeInTheDocument();
+  });
+
+  it('shows the real job elapsed time from createdAt, not time-since-page-load', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    // Job "created" 90s in the real past -- if startedAt used page-load/mount
+    // time instead of this, the timer would read ~00:00, not ~01:30.
+    const createdAt = new Date(Date.now() - 90_000).toISOString();
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-4',
+      status: 'running',
+      mode: 'survey',
+      dryRunDiff: null,
+      createdAt,
+    } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+      onStage('parse');
+      return () => {};
+    });
+
+    renderAt('job-4');
+
+    await waitFor(() => {
+      const match = screen.getByText(/^\d{2}:\d{2}$/);
+      const [minutes] = match.textContent!.split(':').map(Number);
+      // Allow slack for test execution time -- must NOT be 00, which is
+      // what a page-load-time startedAt would produce.
+      expect(minutes).toBeGreaterThanOrEqual(1);
+    });
   });
 
   it('gates the Confirm button on diff_ready status', async () => {

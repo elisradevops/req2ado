@@ -25,6 +25,7 @@ describe('JobEventsController', () => {
   function makeSubscriber() {
     const handlers: Record<string, (...args: any[]) => void> = {};
     return {
+      get: jest.fn().mockResolvedValue(null),
       subscribe: jest.fn().mockResolvedValue(1),
       unsubscribe: jest.fn().mockResolvedValue(undefined),
       quit: jest.fn().mockResolvedValue(undefined),
@@ -120,6 +121,62 @@ describe('JobEventsController', () => {
 
     expect(subscriber.unsubscribe).toHaveBeenCalledTimes(1);
     expect(subscriber.quit).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays the last-known stage immediately when the client (re)connects mid-run', async () => {
+    const subscriber = makeSubscriber();
+    subscriber.get.mockResolvedValue(JSON.stringify({ stage: 'infer_hierarchy_start' }));
+    const factory = jest.fn().mockReturnValue(subscriber);
+    const controller = new JobEventsController(factory as any);
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any);
+
+    expect(subscriber.get).toHaveBeenCalledWith('job-events:job-1:current');
+    expect(res.write).toHaveBeenCalledWith('event: stage\ndata: {"stage":"infer_hierarchy_start"}\n\n');
+  });
+
+  it('writes no replay frame when no stage has been recorded yet', async () => {
+    const subscriber = makeSubscriber();
+    const factory = jest.fn().mockReturnValue(subscriber);
+    const controller = new JobEventsController(factory as any);
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any);
+
+    expect(res.write).not.toHaveBeenCalled();
+  });
+
+  it('forwards a narration-typed message as an SSE narration frame, without ending the stream', async () => {
+    const subscriber = makeSubscriber();
+    const factory = jest.fn().mockReturnValue(subscriber);
+    const controller = new JobEventsController(factory as any);
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any);
+    const narrationPayload = JSON.stringify({ type: 'narration', phase: 'infer_hierarchy', message: 'Analyzing structure' });
+    subscriber.__handlers.message('job-events:job-1', narrationPayload);
+
+    expect(res.write).toHaveBeenCalledWith(`event: narration\ndata: ${narrationPayload}\n\n`);
+    expect(res.end).not.toHaveBeenCalled();
+    expect(subscriber.quit).not.toHaveBeenCalled();
+  });
+
+  it('replays the last-known narration on connect, from a separate Redis key than stage', async () => {
+    const subscriber = makeSubscriber();
+    const narrationPayload = JSON.stringify({ type: 'narration', phase: 'infer_hierarchy', message: 'Analyzing structure' });
+    subscriber.get.mockImplementation((key: string) => {
+      if (key === 'job-events:job-1:narration') return Promise.resolve(narrationPayload);
+      return Promise.resolve(null);
+    });
+    const factory = jest.fn().mockReturnValue(subscriber);
+    const controller = new JobEventsController(factory as any);
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any);
+
+    expect(subscriber.get).toHaveBeenCalledWith('job-events:job-1:narration');
+    expect(res.write).toHaveBeenCalledWith(`event: narration\ndata: ${narrationPayload}\n\n`);
   });
 
   it('quits the leaked subscriber connection when subscribe() rejects', async () => {

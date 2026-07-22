@@ -6,9 +6,25 @@ export interface AreaPathNode {
   children: AreaPathNode[];
 }
 
-export async function getAreaPaths(depth: number, credential: AdoRequestCredential): Promise<AreaPathNode> {
+export interface AdoProject {
+  id: string;
+  name: string;
+}
+
+export async function getAreaPaths(
+  depth: number,
+  credential: AdoRequestCredential,
+  project?: string,
+): Promise<AreaPathNode> {
   const response = await httpClient.get<AreaPathNode>('/ado/area-paths', {
-    params: { depth },
+    params: { depth, ...(project ? { project } : {}) },
+    headers: { 'X-Ado-Org-Url': credential.orgUrl, 'X-Ado-Pat': credential.pat },
+  });
+  return response.data;
+}
+
+export async function getProjects(credential: AdoRequestCredential): Promise<AdoProject[]> {
+  const response = await httpClient.get<AdoProject[]>('/ado/projects', {
     headers: { 'X-Ado-Org-Url': credential.orgUrl, 'X-Ado-Pat': credential.pat },
   });
   return response.data;

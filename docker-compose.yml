@@ -17,29 +17,48 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Disables RDB snapshotting (default: BGSAVE on "100 changes in 300s").
+    # This Redis instance is purely a BullMQ job queue + pub/sub broker --
+    # nothing here needs to survive a restart, and losing in-flight jobs on
+    # a Redis restart is an accepted dev-environment risk already. Observed
+    # live: periodic BGSAVE's fork() call caused a Redis latency spike that
+    # made BullMQ's lock-renewal command fail mid-job ("could not renew
+    # lock"), stalling and force-reprocessing an otherwise-healthy
+    # long-running SURVEY job. `--appendonly no` is already the image
+    # default; stated explicitly so nothing re-enables durability later
+    # without a deliberate decision.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       # Same reasoning as postgres above — host 6379 is occupied by a
       # leftover temp container; REDIS_URL below uses `redis:6379` internally.
       - "6381:6379"
 
-  # Phase 1+ — not built in Phase 0
-  # chroma:
-  #   image: chromadb/chroma:latest
-  #   ports:
-  #     - "8001:8000"
-  #   volumes:
-  #     - req2ado_chroma:/chroma/chroma
+  # Real, shared Chroma server -- ingestion connects to this via
+  # chromadb.HttpClient (CHROMA_MODE=http below) instead of each replica
+  # holding its own independent local PersistentClient. Makes ingestion
+  # genuinely stateless/horizontally-scalable; this container is the
+  # single stateful thing (backed by the req2ado_chroma volume).
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - req2ado_chroma:/chroma/chroma
 
   mcp-ado-server:
     build: ./mcp-ado-server
     env_file: .env
     environment:
       PORT: 4100
-      # Only used when ADO_BACKEND=real (currently mock) — RealAdoBackend
-      # trusts this CA bundle for on-prem TLS, per its own caCertPath config
-      # (a separate mechanism from NODE_EXTRA_CA_CERTS, see orchestrator's
-      # comment on the same cert). Mounted proactively so flipping to
-      # ADO_BACKEND=real doesn't also require a compose change.
+      # Only used when ADO_BACKEND=real against an on-prem TFS/ADO Server
+      # behind a self-signed/corporate cert (dev.azure.com, the default
+      # cloud target, presents a public CA-issued cert and doesn't need
+      # this -- default axios trust store is correct as-is, see
+      # buildHttpClient's own doc comment in realAdo.ts). Mounted
+      # proactively -- a separate mechanism from orchestrator's
+      # NODE_EXTRA_CA_CERTS below (see that comment on the same cert) --
+      # so flipping to an on-prem target doesn't also require a compose
+      # change.
       ADO_CA_CERT: /certs/cato-ca-bundle.pem
     volumes:
       - ./.certs/cato-ca-bundle.pem:/certs/cato-ca-bundle.pem:ro
@@ -55,27 +74,46 @@ services:
     env_file: .env
     environment:
       PORT: 8000
+      CHROMA_MODE: http
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
       REDIS_URL: redis://redis:6379
     ports:
       # Host port 8000 is taken by an unrelated container on dev machines
       # (see scripts/run-golden-e2e.sh) — map to 8010 instead, matching the
       # local-process golden E2E script's port for consistency.
       - "8010:8000"
-    volumes:
-      # Chroma's PersistentClient (dedup vectors + P2a's KB chunks) writes
-      # to settings.chroma_persist_path ("./.req2ado/vectors", resolved
-      # against the Dockerfile's WORKDIR /app) — without a volume this
-      # resets on every `docker compose up --build`. Reuses the
-      # already-declared (previously unused) req2ado_chroma volume rather
-      # than adding a new one.
-      - req2ado_chroma:/app/.req2ado/vectors
     depends_on:
+      - chroma
       - redis
 
-  orchestrator:
+  # Runs Prisma migrations once, then exits -- previously baked into
+  # orchestrator's own Dockerfile CMD as `sh -c "npx prisma migrate deploy
+  # && node dist/main.js"`, which raced under multiple orchestrator replicas
+  # (or even a single rolling update) and, as a shell-form CMD, also meant
+  # PID 1 was `sh`, not `node` -- SIGTERM sent to the container was never
+  # reliably forwarded to the actual Node process, breaking graceful
+  # shutdown. Mirrors the k8s initContainer pattern this maps onto (see
+  # k8s manifests).
+  migrate:
     build:
       # Root context, not ./orchestrator — the Dockerfile also needs the
       # root docs/ folder (WikiController reads it at runtime).
+      context: .
+      dockerfile: orchestrator/Dockerfile
+      # The `prisma` CLI package is a devDependency, stripped from the
+      # slim multi-stage `runtime` target (see orchestrator/Dockerfile) --
+      # `builder` still has the full node_modules `npx prisma` needs.
+      target: builder
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://req2ado:req2ado@postgres:5432/req2ado
+    command: ["npx", "prisma", "migrate", "deploy"]
+    depends_on:
+      - postgres
+
+  orchestrator:
+    build:
       context: .
       dockerfile: orchestrator/Dockerfile
     env_file: .env
@@ -98,12 +136,18 @@ services:
       NODE_EXTRA_CA_CERTS: /certs/cato-ca-bundle.pem
     volumes:
       - ./.certs/cato-ca-bundle.pem:/certs/cato-ca-bundle.pem:ro
+    command: ["node", "dist/main.js"]
     ports:
       - "3001:3001"
     depends_on:
-      - postgres
-      - redis
-      - mcp-ado-server
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      mcp-ado-server:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
 
   pipeline-worker:
     build:
@@ -117,9 +161,14 @@ services:
       INGESTION_BASE_URL: http://ingestion:8000
     command: ["node", "dist/modules/pipeline/pipeline-worker.main.js"]
     depends_on:
-      - postgres
-      - redis
-      - mcp-ado-server
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      mcp-ado-server:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:

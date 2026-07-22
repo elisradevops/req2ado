@@ -153,12 +153,16 @@ describe('NodeDetailPanel', () => {
       <NodeDetailPanel
         jobId="job-1"
         jobMode="survey"
-        kbCitations={['doc-a.docx', 'doc-b.pdf']}
+        kbCitations={[
+          { sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' },
+          { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
+        ]}
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
       />,
     );
     expect(screen.getByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).toBeInTheDocument();
-    expect(screen.getByText(/doc-a\.docx, doc-b\.pdf/)).toBeInTheDocument();
+    expect(screen.getByText('doc-a.docx')).toBeInTheDocument();
+    expect(screen.getByText('doc-b.pdf')).toBeInTheDocument();
   });
 
   it('shows the standards line but no KB references line when kbCitations is empty', () => {
@@ -191,7 +195,7 @@ describe('NodeDetailPanel', () => {
       <NodeDetailPanel
         jobId="job-1"
         jobMode="survey"
-        kbCitations={['doc-a.docx']}
+        kbCitations={[{ sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' }]}
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
       />,
     );

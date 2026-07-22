@@ -9,10 +9,10 @@ export function registerReadAreaPathsTool(server: McpServer, backend: AdoBackend
     {
       title: 'Read ADO area paths',
       description: 'Returns the nested area-path tree for the configured project, used to populate a real area-path picker instead of free text.',
-      inputSchema: { depth: z.number().int().min(1).max(10).default(5) },
+      inputSchema: { depth: z.number().int().min(1).max(10).default(5), project: z.string().optional() },
     },
-    async ({ depth }) => {
-      const tree = await backend.readAreaPaths(depth);
+    async ({ depth, project }) => {
+      const tree = await backend.readAreaPaths(depth, project);
       return { content: [{ type: 'text', text: JSON.stringify(tree) }] };
     },
   );

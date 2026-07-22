@@ -1,20 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import type { IdempotencyService } from './idempotency.service';
 
-export interface DryRunTreeNode {
-  localId: string;
-  parentLocalId: string | null;
-  type: string;
-  title: string;
-  description: string;
-  sourceHash: string;
-  customerId: string | null;
-  areaPath: string;
-  tags: string[];
-  qualityScore?: number | null;
-  qualityIssues?: string[];
-  childType?: string | null;
-  traceLinks?: TraceLink[];
+export interface DryRunSourceRef {
+  documentPath: string;
+  startOffset: number;
+  endOffset: number;
+  page: number | null;
 }
 
 export interface TraceLink {
@@ -26,6 +17,63 @@ export interface TraceLink {
   targetCustomerId?: string;
   resolvedAdoId?: number;
   resolutionStatus: 'resolved' | 'unresolved' | 'pending';
+}
+
+export interface DryRunTreeNode {
+  localId: string;
+  parentLocalId: string | null;
+  type: string;
+  title: string;
+  description: string;
+  sourceHash: string;
+  customerId: string | null;
+  areaPath: string;
+  tags: string[];
+  // SURVEY-only signals (see ingestion's WorkItemNode) -- null/undefined for
+  // BASELINE nodes and for any SURVEY node when scoring wasn't enabled.
+  groundingScore?: number | null;
+  qualityScore?: number | null;
+  qualityIssues?: string[];
+  // Carried from ingestion's WorkItemNode (source_ref/child_type/trace_links)
+  // so confirm() can eventually write a traceability link, classification
+  // tags, and child-type-derived fields to ADO -- previously dropped at
+  // pipeline.worker.ts and never reached this far.
+  sourceRef?: DryRunSourceRef | null;
+  childType?: string | null;
+  traceLinks?: TraceLink[];
+}
+
+export interface DryRunDiffEntry {
+  localId: string;
+  parentLocalId: string | null;
+  type: string;
+  title: string;
+  description: string;
+  action: 'create' | 'reuse' | 'dedup_skip';
+  existingAdoId: number | null;
+  // Distinct from 'reuse': an exact-hash match (idempotency lookup) is a
+  // certain fact, while a 'dedup_skip' match comes from the embedding
+  // service's probabilistic similarity judgment. similarity is populated
+  // only for 'dedup_skip' entries so a reviewer can tell which kind of
+  // match they're looking at.
+  similarity: number | null;
+  // Carried forward from the source node so confirm() can record idempotency
+  // at the correct (per-node) granularity — Job.sourceHash is a whole-file
+  // hash and cannot be used here; each node's own content hash is what the
+  // idempotency map is actually keyed on. Found via the golden E2E script:
+  // without this, a re-run always showed 'create' since confirm() had no
+  // way to record the mapping using the same key diff() looks it up by.
+  sourceHash: string;
+  customerId: string | null;
+  tags: string[];
+  groundingScore?: number | null;
+  qualityScore?: number | null;
+  qualityIssues?: string[];
+  sourceRef?: DryRunSourceRef | null;
+  childType?: string | null;
+  traceLinks?: TraceLink[];
+  excluded?: boolean;
+  isManual?: boolean;
 }
 
 /**
@@ -62,37 +110,6 @@ export async function resolveCrossJobTraceLinks(
   return results;
 }
 
-export interface DryRunDiffEntry {
-  localId: string;
-  parentLocalId: string | null;
-  type: string;
-  title: string;
-  description: string;
-  action: 'create' | 'reuse' | 'dedup_skip';
-  existingAdoId: number | null;
-  // Distinct from 'reuse': an exact-hash match (idempotency lookup) is a
-  // certain fact, while a 'dedup_skip' match comes from the embedding
-  // service's probabilistic similarity judgment. similarity is populated
-  // only for 'dedup_skip' entries so a reviewer can tell which kind of
-  // match they're looking at.
-  similarity: number | null;
-  // Carried forward from the source node so confirm() can record idempotency
-  // at the correct (per-node) granularity — Job.sourceHash is a whole-file
-  // hash and cannot be used here; each node's own content hash is what the
-  // idempotency map is actually keyed on. Found via the golden E2E script:
-  // without this, a re-run always showed 'create' since confirm() had no
-  // way to record the mapping using the same key diff() looks it up by.
-  sourceHash: string;
-  customerId: string | null;
-  tags: string[];
-  qualityScore?: number | null;
-  qualityIssues?: string[];
-  childType?: string | null;
-  excluded?: boolean;
-  isManual?: boolean;
-  traceLinks?: TraceLink[];
-}
-
 /**
  * Pure diff against the idempotency map — no MCP tool call, no ADO write.
  * Satisfies Phase 7's DoD "dry-run diff" and config.yaml's dry_run: true
@@ -114,8 +131,9 @@ export class DryRunService {
           localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
           title: node.title, description: node.description, action: 'reuse',
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
-          tags: node.tags, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
-          childType: node.childType, traceLinks: node.traceLinks,
+          tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
+          qualityIssues: node.qualityIssues, sourceRef: node.sourceRef, childType: node.childType,
+          traceLinks: node.traceLinks,
         });
         continue;
       }
@@ -135,8 +153,8 @@ export class DryRunService {
               title: node.title, description: node.description, action: 'dedup_skip',
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
-              qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
-              childType: node.childType, traceLinks: node.traceLinks,
+              groundingScore: node.groundingScore, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
+              sourceRef: node.sourceRef, childType: node.childType, traceLinks: node.traceLinks,
             });
             continue;
           }
@@ -149,8 +167,9 @@ export class DryRunService {
         localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
         title: node.title, description: node.description, action: 'create',
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
-        tags: node.tags, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
-        childType: node.childType, traceLinks: node.traceLinks,
+        tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
+        qualityIssues: node.qualityIssues, sourceRef: node.sourceRef, childType: node.childType,
+        traceLinks: node.traceLinks,
       });
     }
     return results;

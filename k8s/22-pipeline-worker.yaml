@@ -1,0 +1,37 @@
+# No Service -- nothing calls the pipeline worker directly, it only
+# consumes BullMQ jobs from Redis.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-worker
+  namespace: req2ado
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pipeline-worker
+  template:
+    metadata:
+      labels:
+        app: pipeline-worker
+    spec:
+      containers:
+        - name: pipeline-worker
+          image: req2ado-orchestrator:latest
+          command: ["node", "dist/modules/pipeline/pipeline-worker.main.js"]
+          envFrom:
+            - configMapRef:
+                name: req2ado-config
+            - secretRef:
+                name: req2ado-secrets
+          # No HTTP server in this process -- no liveness/readiness probe.
+          # Graceful shutdown (worker.close(), see pipeline-worker.main.ts)
+          # needs enough time to finish whatever job is currently
+          # processing -- raise this if real documents take longer than
+          # 60s to ingest/level (SURVEY mode routinely takes minutes; size
+          # this against your actual LLM backend's latency).
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+      terminationGracePeriodSeconds: 60

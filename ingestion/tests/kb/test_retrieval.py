@@ -37,7 +37,8 @@ def test_retrieve_context_joins_hits_within_threshold(tmp_path) -> None:
     )
     context, citations = retrieve_context("Project\\Area1", "some outline", FakeEmbedClient(embedding=[1.0, 0.0, 0.0]), store)
     assert context == "close chunk text"
-    assert citations == ["doc.txt"]
+    assert [c["source_file"] for c in citations] == ["doc.txt"]
+    assert citations[0]["similarity"] == 1.0
 
 
 def test_retrieve_context_dedups_citations_across_multiple_hits_from_the_same_file(tmp_path) -> None:
@@ -51,7 +52,7 @@ def test_retrieve_context_dedups_citations_across_multiple_hits_from_the_same_fi
         area_path="Project\\Area1", source_file="doc.txt", source_id="s1", chunk_index=1, file_hash="h1",
     )
     context, citations = retrieve_context("Project\\Area1", "some outline", FakeEmbedClient(embedding=[1.0, 0.0, 0.0]), store, top_k=5)
-    assert citations == ["doc.txt"]
+    assert [c["source_file"] for c in citations] == ["doc.txt"]
     assert context is not None and "chunk one" in context and "chunk two" in context
 
 
@@ -66,7 +67,24 @@ def test_retrieve_context_citations_span_multiple_distinct_files(tmp_path) -> No
         area_path="Project\\Area1", source_file="doc2.txt", source_id="s2", chunk_index=0, file_hash="h2",
     )
     context, citations = retrieve_context("Project\\Area1", "some outline", FakeEmbedClient(embedding=[1.0, 0.0, 0.0]), store, top_k=5)
-    assert sorted(citations) == ["doc1.txt", "doc2.txt"]
+    assert sorted(c["source_file"] for c in citations) == ["doc1.txt", "doc2.txt"]
+
+
+def test_retrieve_context_dedup_keeps_the_lowest_distance_hit_per_file(tmp_path) -> None:
+    store = KbVectorStore(persist_path=str(tmp_path))
+    # A worse (farther) hit from the same file, upserted first.
+    store.upsert_chunk(
+        chunk_id="s1:doc.txt:0", embedding=[0.9, 0.436, 0.0], text="farther chunk",
+        area_path="Project\\Area1", source_file="doc.txt", source_id="s1", chunk_index=0, file_hash="h1",
+    )
+    # A better (closer) hit from the same file.
+    store.upsert_chunk(
+        chunk_id="s1:doc.txt:1", embedding=[1.0, 0.0, 0.0], text="closer chunk",
+        area_path="Project\\Area1", source_file="doc.txt", source_id="s1", chunk_index=1, file_hash="h1",
+    )
+    _context, citations = retrieve_context("Project\\Area1", "some outline", FakeEmbedClient(embedding=[1.0, 0.0, 0.0]), store, top_k=5)
+    assert len(citations) == 1
+    assert citations[0]["text"] == "closer chunk"
 
 
 def test_retrieve_context_discards_hits_below_similarity_bar(tmp_path) -> None:

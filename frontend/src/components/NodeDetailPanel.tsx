@@ -7,6 +7,7 @@ import { TagChips } from './TagChips';
 import { IssueChips } from './IssueChips';
 import { TraceLinkChips } from './TraceLinkChips';
 import { ChatPanel } from './ChatPanel';
+import { KbCitationChips, type KbCitation } from './KbCitationChips';
 import type { DryRunDiffEntry } from './DiffTree';
 
 export function NodeDetailPanel({
@@ -19,7 +20,7 @@ export function NodeDetailPanel({
   jobId: string;
   entry: DryRunDiffEntry | null;
   jobMode?: 'baseline' | 'survey' | null;
-  kbCitations?: string[];
+  kbCitations?: KbCitation[];
   onSave?: (localId: string, patch: { title: string; description: string }) => void;
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
@@ -102,7 +103,10 @@ export function NodeDetailPanel({
           <Typography variant="subtitle2">Sources</Typography>
           <Typography variant="body2">Judged against EARS, INCOSE, ISO/IEC/IEEE 29148</Typography>
           {kbCitations && kbCitations.length > 0 && (
-            <Typography variant="body2">KB references: {kbCitations.join(', ')}</Typography>
+            <Box mt={0.5}>
+              <Typography variant="body2">KB references:</Typography>
+              <KbCitationChips citations={kbCitations} />
+            </Box>
           )}
         </Box>
       )}

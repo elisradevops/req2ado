@@ -21,15 +21,27 @@ def test_level_endpoint_returns_worktree_json() -> None:
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt")),
             Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr("x.txt")),
             Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 Channel Scan", source_ref=_sr("x.txt")),
+            # A genuine depth-4 leaf, matching the golden mock_tv_remote.docx
+            # reference -- without this, max_depth=3 alone is no longer
+            # enough to signal tv_style (docs/architecture.md 1g's fix:
+            # depth<=3 is now icd_style), so this fixture must actually reach
+            # depth 4 to stay tv_style/Epic at depth 1, same as a real
+            # TV-Receiver-style document would.
+            Block(
+                id="b3", kind=BlockKind.PARAGRAPH,
+                text="1.1.1.1 The receiver shall scan all channels within 10 seconds.",
+                source_ref=_sr("x.txt"),
+            ),
         ],
     )
     response = client.post("/level", json=doc.model_dump(mode="json"))
     assert response.status_code == 200
     body = response.json()
-    assert len(body["nodes"]) == 3
+    assert len(body["nodes"]) == 4
     assert body["nodes"][0]["type"] == "Epic"
     assert body["nodes"][1]["type"] == "Epic"
     assert body["nodes"][2]["type"] == "Feature"
+    assert body["nodes"][3]["type"] == "Requirement"
 
 
 def test_level_endpoint_accepts_and_stamps_customer_id() -> None:
@@ -60,6 +72,17 @@ def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> No
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt")),
             Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr("x.txt")),
             Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 Channel Scan", source_ref=_sr("x.txt")),
+            # A genuine depth-4 leaf, matching the golden mock_tv_remote.docx
+            # reference -- without this, max_depth=3 alone is no longer
+            # enough to signal tv_style (docs/architecture.md 1g's fix:
+            # depth<=3 is now icd_style), so this fixture must actually reach
+            # depth 4 to stay tv_style/Epic at depth 1, same as a real
+            # TV-Receiver-style document would.
+            Block(
+                id="b3", kind=BlockKind.PARAGRAPH,
+                text="1.1.1.1 The receiver shall scan all channels within 10 seconds.",
+                source_ref=_sr("x.txt"),
+            ),
         ],
     )
     response = client.post("/level", params={"mode": "baseline"}, json=doc.model_dump(mode="json"))
@@ -85,8 +108,8 @@ def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch) -> 
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token):
-        original_init(self, base_url, bearer_token)
+    def patched_init(self, base_url, bearer_token, model=None):
+        original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
@@ -121,8 +144,8 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token):
-        original_init(self, base_url, bearer_token)
+    def patched_init(self, base_url, bearer_token, model=None):
+        original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
@@ -132,8 +155,18 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
     # vector_store through, it never calls retrieve_context itself.
     monkeypatch.setattr(
         "app.leveling.llm_leveling.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: ("Injected KB reference text.", ["ref-doc.docx"]),
+        lambda area_path, query_text, embed_client, vector_store, **_: (
+            "Injected KB reference text.",
+            [{"source_file": "ref-doc.docx", "distance": 0.1, "similarity": 0.9, "text": "Injected KB reference text."}],
+        ),
     )
+    # judge_kb_relevance is wired for real (area_path is set) and routes
+    # through the same MockTransport handler -- it doesn't match "hierarchy"
+    # so falls into the generate_requirements_for_document-shaped branch,
+    # whose response ({"0": [...]}) _parse_json_object accepts fine even
+    # though judge_kb_relevance doesn't actually consume its shape here.
+    # Not asserted on in this test; kb_citations relevance-field coverage
+    # lives in test_llm_leveling.py.
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
@@ -143,8 +176,14 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
         "/level", params={"mode": "survey", "area_path": "Project\\Area1"}, json=doc.model_dump(mode="json")
     )
     assert response.status_code == 200
-    assert all("Injected KB reference text." in prompt for prompt in captured_system_prompts)
-    assert response.json()["kb_citations"] == ["ref-doc.docx"]
+    # judge_kb_relevance's own system prompt doesn't carry kb_context (it's
+    # the thing being verified, not something to ground itself in) -- only
+    # the hierarchy/generation/scoring prompts must include it.
+    grounded_prompts = [p for p in captured_system_prompts if "knowledge-base snippets" not in p]
+    assert grounded_prompts and all("Injected KB reference text." in prompt for prompt in grounded_prompts)
+    assert response.json()["kb_citations"] == [
+        {"source_file": "ref-doc.docx", "similarity": 0.9, "relevance": "unknown"}
+    ]
 
 
 def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeypatch) -> None:
@@ -167,8 +206,8 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token):
-        original_init(self, base_url, bearer_token)
+    def patched_init(self, base_url, bearer_token, model=None):
+        original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
@@ -212,8 +251,8 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token):
-        original_init(self, base_url, bearer_token)
+    def patched_init(self, base_url, bearer_token, model=None):
+        original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
@@ -264,8 +303,8 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token):
-        original_init(self, base_url, bearer_token)
+    def patched_init(self, base_url, bearer_token, model=None):
+        original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
@@ -299,8 +338,8 @@ def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token):
-        original_init(self, base_url, bearer_token)
+    def patched_init(self, base_url, bearer_token, model=None):
+        original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
@@ -330,8 +369,8 @@ def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(mon
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token):
-        original_init(self, base_url, bearer_token)
+    def patched_init(self, base_url, bearer_token, model=None):
+        original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)

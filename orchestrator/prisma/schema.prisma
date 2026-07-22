@@ -10,19 +10,29 @@ datasource db {
 model Job {
   id               String    @id @default(uuid())
   mode             String // "baseline" | "survey"
-  status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed"
+  status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed" | "rejected"
   sourceHash       String
   areaPath         String
-  state            String    @default("Proposed")
-  iterationPath    String?
   customerId       String?
   originalFilename String
   dryRunDiff       Json?
-  kbCitations      String[] @default([])
+  state            String    @default("Proposed")
+  iterationPath    String?
+  // {sourceFile, similarity, relevance}[] -- structured citations (was a
+  // bare TEXT[] of filenames; widened so a reviewer can see the actual
+  // retrieval score and relevance verdict, not just "this file was
+  // offered", per docs/runbook.md's KB-usage-visibility rationale.
+  kbCitations      Json      @default("[]")
+  // Tree-level integrity warnings surfaced by ingestion's /level response
+  // (WorkItemTree.warnings, SURVEY-only) -- always [] for BASELINE. Persisted
+  // here so getById() can return them alongside the diff for the reviewer.
+  warnings         Json?
   createdAt        DateTime  @default(now())
   confirmedAt      DateTime?
   completedAt      DateTime?
   auditEntries     AuditEntry[]
+  dedupSkipAudits  DedupSkipAudit[]
+  createdItemMappings CreatedItemMapping[]
 }
 
 model AuditEntry {
@@ -31,6 +41,41 @@ model AuditEntry {
   job       Job      @relation(fields: [jobId], references: [id])
   message   String
   createdAt DateTime @default(now())
+}
+
+// Durable, structured audit trail for skipped duplicates (distinct from
+// AuditEntry's free-text messages) -- one row per node whose dry-run diff
+// action was 'dedup_skip', written at diff-ready time in pipeline.worker.ts.
+// Queryable per job for real audit/reporting, not just an in-memory count.
+model DedupSkipAudit {
+  id            String   @id @default(uuid())
+  jobId         String
+  job           Job      @relation(fields: [jobId], references: [id])
+  localId       String
+  similarity    Float
+  existingAdoId Int
+  createdAt     DateTime @default(now())
+}
+
+// Durable local-id -> ADO-id resume state for confirm() (the "P4b" tree
+// previously flagged as "not yet built" -- see JobsService.confirm's own
+// prior doc comment). Written immediately after each create/link succeeds
+// (not batched at the end), so a failure partway through confirm() leaves
+// correct state for a safe retry: a retry skips any localId that already
+// has a row here (already created in THIS or a PRIOR attempt at this job),
+// and skips re-linking any row already marked `linked`. Distinct from
+// IdempotencyMapping below, which is scoped by content hash across DIFFERENT
+// jobs/re-runs -- this one is scoped to a single job's own confirm() retries.
+model CreatedItemMapping {
+  id            String   @id @default(uuid())
+  jobId         String
+  job           Job      @relation(fields: [jobId], references: [id])
+  localId       String
+  adoWorkItemId Int
+  linked        Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@unique([jobId, localId])
 }
 
 // Idempotency map: prevents duplicate ADO writes on job re-run.

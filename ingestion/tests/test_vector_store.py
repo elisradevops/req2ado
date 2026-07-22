@@ -1,12 +1,40 @@
+from unittest.mock import patch
+
 import pytest
 
 from app.dedup.vector_store import ChromaVectorStore
+
+
+def test_default_mode_uses_a_local_persistent_client(tmp_path) -> None:
+    with patch("app.dedup.vector_store.chromadb.PersistentClient") as mock_persistent:
+        ChromaVectorStore(persist_path=str(tmp_path))
+        mock_persistent.assert_called_once_with(path=str(tmp_path))
+
+
+def test_http_mode_connects_to_a_shared_chroma_server_instead() -> None:
+    # Regression: previously the ONLY mode was a local PersistentClient --
+    # each ingestion replica held an independent, incomplete dedup corpus.
+    # mode="http" makes ingestion genuinely stateless/horizontally-scalable.
+    with patch("app.dedup.vector_store.chromadb.HttpClient") as mock_http:
+        ChromaVectorStore("unused-in-http-mode", mode="http", host="chroma", port=8000)
+        mock_http.assert_called_once_with(host="chroma", port=8000)
 
 
 def test_query_nearest_returns_none_on_an_empty_collection(tmp_path) -> None:
     store = ChromaVectorStore(persist_path=str(tmp_path))
     result = store.query_nearest([0.1, 0.2, 0.3], area_path="Project\\Area1")
     assert result is None
+
+
+def test_ping_returns_true_for_a_real_reachable_client(tmp_path) -> None:
+    store = ChromaVectorStore(persist_path=str(tmp_path))
+    assert store.ping() is True
+
+
+def test_ping_returns_false_when_the_underlying_client_raises() -> None:
+    store = ChromaVectorStore(persist_path="/tmp/unused-for-this-test")
+    store._client.heartbeat = lambda: (_ for _ in ()).throw(RuntimeError("chroma down"))
+    assert store.ping() is False
 
 
 def test_upsert_then_query_nearest_finds_an_exact_match() -> None:

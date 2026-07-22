@@ -1,8 +1,10 @@
 # ingestion/tests/test_ingest_endpoint.py
+import tempfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.main import app
 
 client = TestClient(app)
@@ -66,6 +68,25 @@ def test_ingest_with_redact_strips_emails() -> None:
 
     body = _upload(temp_path.name, temp_path, redact=True)
     assert "jane.doe@example.com" not in body["blocks"][0]["text"]
+    temp_path.unlink()
+
+
+def test_ingest_rejects_a_file_exceeding_the_configured_size_cap(monkeypatch) -> None:
+    # Regression: /ingest previously buffered the whole upload into memory
+    # with no size guard of its own at this layer (the orchestrator's own
+    # check happens before forwarding here, but this endpoint is
+    # independently reachable). Set a tiny cap so a small fixture trips it
+    # without needing to actually construct a huge file.
+    monkeypatch.setattr(settings, "max_upload_size_mb", 0)  # effectively 0 bytes allowed
+    with tempfile.NamedTemporaryFile(suffix=".txt", mode="w", delete=False) as f:
+        f.write("more than zero bytes of content")
+        temp_path = Path(f.name)
+
+    with open(temp_path, "rb") as f:
+        response = client.post(
+            "/ingest", files={"file": (temp_path.name, f, "application/octet-stream")}
+        )
+    assert response.status_code == 413
     temp_path.unlink()
 
 

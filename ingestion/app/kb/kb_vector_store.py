@@ -21,8 +21,22 @@ class KbVectorStore:
     alongside each embedding — P2b's retrieval needs the actual text to
     inject into LLM prompts, not just a similarity score."""
 
-    def __init__(self, persist_path: str) -> None:
-        self._client = chromadb.PersistentClient(path=persist_path)
+    def __init__(
+        self,
+        persist_path: str,
+        mode: str = "embedded",
+        host: str = "localhost",
+        port: int = 8000,
+    ) -> None:
+        # Same embedded-vs-http choice as dedup/vector_store.py's
+        # ChromaVectorStore -- "http" points at the same shared Chroma
+        # server (CHROMA_MODE=http), keeping KB chunks stateless/horizontally
+        # scalable alongside dedup's embeddings, not a separate local-only
+        # store that would break under multiple ingestion replicas.
+        if mode == "http":
+            self._client = chromadb.HttpClient(host=host, port=port)
+        else:
+            self._client = chromadb.PersistentClient(path=persist_path)
 
     def _get_collection(self, area_path: str):
         return self._client.get_or_create_collection(

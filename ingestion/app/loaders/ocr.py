@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from typing import Callable
 
 import pytesseract
 from pdf2image import convert_from_path
@@ -53,19 +54,21 @@ def ocr_page_to_text_filtered(
     return " ".join(kept_words)
 
 
-def load_pdf_with_ocr_fallback(path: str, languages: str = "eng") -> CanonicalDoc:
+def load_pdf_with_ocr_fallback(
+    path: str, languages: str = "eng", describe_figure: Callable[[bytes], str] | None = None
+) -> CanonicalDoc:
     reader = PdfReader(path)
     num_pages = len(reader.pages)
 
     any_scanned = any(not page_has_extractable_text(path, i) for i in range(num_pages))
     if not any_scanned:
-        return load_pdf(path)
+        return load_pdf(path, describe_figure=describe_figure)
 
     file_path = Path(path)
     sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
     document = Document(path=path, format=DocumentFormat.PDF_SCANNED, sha256=sha256)
 
-    text_doc = load_pdf(path)
+    text_doc = load_pdf(path, describe_figure=describe_figure)
     blocks: list[Block] = list(text_doc.blocks)
 
     for page_index in range(num_pages):

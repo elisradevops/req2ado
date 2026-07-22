@@ -53,4 +53,18 @@ describe('redactMessages', () => {
     const messages = [{ role: 'assistant' as const, content: 'no pii here' }];
     expect(redactMessages(messages)[0].role).toBe('assistant');
   });
+
+  it('passes through an assistant tool_calls message with no content unchanged', () => {
+    const toolCalls = [{ id: 'call_1', type: 'function' as const, function: { name: 'query_kb', arguments: '{"query":"jane@example.com"}' } }];
+    const messages = [{ role: 'assistant' as const, tool_calls: toolCalls }];
+    const result = redactMessages(messages);
+    expect(result[0].content).toBeUndefined();
+    expect(result[0].tool_calls).toEqual(toolCalls);
+  });
+
+  it('redacts content on a tool-role message the same as any other message', () => {
+    const messages = [{ role: 'tool' as const, tool_call_id: 'call_1', content: 'contact jane@example.com' }];
+    const result = redactMessages(messages);
+    expect(result[0].content).toBe('contact <redacted>');
+  });
 });

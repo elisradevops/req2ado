@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
+from typing import Callable
 
 from docx import Document as DocxDocument
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table
 
+logger = logging.getLogger(__name__)
+
 _STYLE_HEADING_PREFIX = "Heading "
 _IMAGE_RELTYPE_MARKER = "image"
 
 
-def load_docx(path: str) -> CanonicalDoc:
+def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) -> CanonicalDoc:
+    """`describe_figure`, when provided, is called with each embedded
+    image's raw bytes and must return a short text description -- used to
+    replace the `[FIGURE: none]` placeholder with real content (see
+    app/vision/orchestrator_vision_client.py). None (the default) preserves
+    the original placeholder-only behavior exactly. A describe_figure
+    failure for one image must not abort the whole document -- caught and
+    falls back to the placeholder for that image only."""
     file_path = Path(path)
     sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
     document = Document(path=path, format=DocumentFormat.DOCX, sha256=sha256)
@@ -67,6 +78,12 @@ def load_docx(path: str) -> CanonicalDoc:
     for figure_index, rel in enumerate(docx_doc.part.rels.values()):
         if _IMAGE_RELTYPE_MARKER in rel.reltype:
             caption = None
+            if describe_figure is not None:
+                try:
+                    caption = describe_figure(rel.target_part.blob)
+                except Exception:  # noqa: BLE001 -- a vision failure must not abort the whole document
+                    logger.warning("describe_figure failed for %s (rel target %s)", rel.target_part.content_type, rel.target_ref, exc_info=True)
+                    caption = None
             figures.append(
                 Figure(
                     id=f"f{figure_index}",

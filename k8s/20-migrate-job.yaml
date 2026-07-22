@@ -1,0 +1,28 @@
+# One-shot migration step -- mirrors docker-compose.yml's `migrate` service
+# / the initContainer pattern orchestrator/Dockerfile's own CMD comment
+# describes. Re-apply (delete + apply) this Job on every orchestrator image
+# update that includes new migrations; it does not run automatically as
+# part of a rolling deployment.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: req2ado-migrate
+  namespace: req2ado
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          # Targets the multi-stage Dockerfile's `builder` stage, NOT the
+          # default `runtime` stage -- the `prisma` CLI package is a
+          # devDependency, stripped from `runtime` (see orchestrator/Dockerfile).
+          image: req2ado-orchestrator:builder
+          command: ["npx", "prisma", "migrate", "deploy"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: req2ado-secrets
+                  key: DATABASE_URL

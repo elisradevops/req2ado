@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: req2ado-config
+  namespace: req2ado
+data:
+  # --- LLM (Open WebUI or Ollama's OpenAI-compatible endpoint) ---
+  LLM_BASE_URL: "http://ollama.req2ado.svc.cluster.local:11434/v1"
+  LLM_CHAT_MODEL: "llama3.1"
+  EMBED_TRANSPORT: "ollama"
+  EMBED_MODEL: "nomic-embed-text"
+  EMBED_PATH: "/api/embed"
+  # Unset (empty) = figure/diagram extraction stays a placeholder, same as
+  # before this capability existed. Set to a real vision-capable model name
+  # to enable it.
+  LLM_VISION_MODEL: ""
+  LLM_TRUSTED_LOCAL: "false"
+
+  # --- ADO (on-prem TFS/ADO Server) ---
+  ADO_BASE_URL: "https://your-tfs-host/tfs/YourCollection"
+  ADO_PROJECT: "YourProject"
+  ADO_AREA_PATH: "YourProject\\Area"
+  # Initial System.State written on every created work item -- defaults to
+  # "Proposed"; override if the target process template's initial state
+  # has a different name.
+  ADO_INITIAL_STATE: "Proposed"
+
+  # --- Our MCP server (ADO write/read tools) ---
+  MCP_URL: "http://mcp-ado-server.req2ado.svc.cluster.local:4100"
+  ADO_BACKEND: "real"
+
+  # --- Pipeline worker ---
+  PIPELINE_WORKER_CONCURRENCY: "4"
+
+  # --- Infra (in-cluster service DNS names) ---
+  # REDIS_URL has no credential in this topology (matches docker-compose's
+  # unauthenticated dev redis) -- safe as a plain ConfigMap value. DATABASE_URL
+  # embeds the Postgres password, so it lives in 02-secret.yaml instead, not
+  # here.
+  REDIS_URL: "redis://redis.req2ado.svc.cluster.local:6379"
+  INGESTION_BASE_URL: "http://ingestion.req2ado.svc.cluster.local:8000"
+
+  # --- Ingestion's Chroma dedup vector store ---
+  # "http" here (not the default "embedded") -- required for ingestion to
+  # be safely scaled beyond replicas: 1 (see docs/handoff-point7-*.md).
+  CHROMA_MODE: "http"
+  CHROMA_HOST: "chroma.req2ado.svc.cluster.local"
+  CHROMA_PORT: "8000"

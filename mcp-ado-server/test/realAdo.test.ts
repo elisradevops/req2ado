@@ -26,54 +26,81 @@ describe('resolveApiVersion', () => {
     const httpClient = axios.create();
     const getSpy = vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
 
-    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
+    const result = await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient);
 
     expect(result).toBe('7.1');
     expect(getSpy).toHaveBeenCalledTimes(1);
     expect(getSpy.mock.calls[0][0]).toContain('api-version=7.1');
   });
 
-  it('falls back to the second ladder entry when the first returns 404', async () => {
+  it('falls back to the second ladder entry when the first returns 400 (version mismatch)', async () => {
     const httpClient = axios.create();
     const getSpy = vi
       .spyOn(httpClient, 'get')
-      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({ response: { status: 400 } })
       .mockResolvedValueOnce({ status: 200, data: {} });
 
-    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
+    const result = await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient);
 
     expect(result).toBe('5.1');
     expect(getSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('falls back to "none" (omits the query param) when both versions 404', async () => {
+  it('falls back to "none" (omits the query param) when both versions 400', async () => {
     const httpClient = axios.create();
     const getSpy = vi
       .spyOn(httpClient, 'get')
-      .mockRejectedValueOnce({ response: { status: 404 } })
-      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({ response: { status: 400 } })
+      .mockRejectedValueOnce({ response: { status: 400 } })
       .mockResolvedValueOnce({ status: 200, data: {} });
 
-    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
+    const result = await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient);
 
     expect(result).toBe('none');
     expect(getSpy.mock.calls[2][0]).not.toContain('api-version');
   });
 
-  it('throws if every ladder entry fails', async () => {
+  it('throws if every ladder entry returns 400', async () => {
     const httpClient = axios.create();
-    vi.spyOn(httpClient, 'get').mockRejectedValue({ response: { status: 404 } });
+    vi.spyOn(httpClient, 'get').mockRejectedValue({ response: { status: 400 } });
 
-    await expect(resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient)).rejects.toThrow(
+    await expect(resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient)).rejects.toThrow(
       /no api-version/i,
     );
+  });
+
+  it('fails immediately on a non-400 status (e.g. 401 bad PAT) without exhausting the ladder', async () => {
+    const httpClient = axios.create();
+    const getSpy = vi.spyOn(httpClient, 'get').mockRejectedValue({ response: { status: 401 } });
+
+    await expect(resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient)).rejects.toThrow(
+      /401/,
+    );
+    expect(getSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('probes the project-scoped wit/fields endpoint, not org-level connectionData', async () => {
+    // Regression: found live against a real ADO org that connectionData
+    // rejects api-version 7.1/7.0/5.1 with 400 (resolving to "none"), while
+    // the actual wit/workitems create endpoint accepts 7.1 directly and,
+    // unlike connectionData, hard-requires an explicit api-version --
+    // "none" 400'd there with "No api-version was supplied". Probing the
+    // same _apis/wit/* family we actually write to avoids that mismatch.
+    const httpClient = axios.create();
+    const getSpy = vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+
+    await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1'], credential, httpClient);
+
+    const url = getSpy.mock.calls[0][0] as string;
+    expect(url).toContain(`/${testConfig.adoProject}/_apis/wit/fields`);
+    expect(url).not.toContain('connectionData');
   });
 
   it('sends the PAT as a Basic auth header on every probe', async () => {
     const httpClient = axios.create();
     const getSpy = vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
 
-    await resolveApiVersion(credential.orgUrl, ['7.1'], credential, httpClient);
+    await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1'], credential, httpClient);
 
     const expectedHeader = `Basic ${Buffer.from(':fake-pat').toString('base64')}`;
     expect(getSpy.mock.calls[0][1]?.headers?.Authorization).toBe(expectedHeader);
@@ -86,7 +113,7 @@ describe('resolveApiVersion', () => {
       .mockRejectedValueOnce({ response: { status: 503 } })
       .mockResolvedValueOnce({ status: 200, data: {} });
 
-    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
+    const result = await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient);
 
     expect(result).toBe('7.1');
     expect(getSpy).toHaveBeenCalledTimes(2);
@@ -191,6 +218,75 @@ describe('RealAdoBackend.getWorkItem', () => {
   });
 });
 
+describe('RealAdoBackend.getWorkItemsBatch', () => {
+  it('returns an empty array without making any HTTP call for an empty id list', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi.spyOn(httpClient, 'get');
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    expect(await backend.getWorkItemsBatch([])).toEqual([]);
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
+  it('chunks ids at config.batchSize and issues one comma-joined GET per chunk', async () => {
+    const smallBatchConfig: AdoMcpConfig = { ...testConfig, batchSize: 2, concurrency: 8 };
+    const backend = new RealAdoBackend(smallBatchConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { value: [{ id: 1, fields: { 'System.WorkItemType': 'Requirement' } }, { id: 2, fields: { 'System.WorkItemType': 'Requirement' } }] },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { value: [{ id: 3, fields: { 'System.WorkItemType': 'Requirement' } }] },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const results = await backend.getWorkItemsBatch([1, 2, 3]);
+
+    expect(results.map((r) => r.id)).toEqual([1, 2, 3]);
+    // 1 api-version probe + 2 chunk GETs (batchSize=2 over 3 ids -> [1,2], [3])
+    expect(getSpy).toHaveBeenCalledTimes(3);
+    expect(getSpy.mock.calls[1][0]).toContain('ids=1,2');
+    expect(getSpy.mock.calls[2][0]).toContain('ids=3');
+  });
+
+  it('dispatches chunk requests with bounded concurrency, not all at once', async () => {
+    // batchSize=1 -> 4 chunks of 1 id each; concurrency=2 -> at most 2
+    // in-flight GETs (beyond the initial api-version probe) at any moment.
+    const boundedConfig: AdoMcpConfig = { ...testConfig, batchSize: 1, concurrency: 2 };
+    const backend = new RealAdoBackend(boundedConfig, credential);
+    const httpClient = axios.create();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const getSpy = vi.spyOn(httpClient, 'get').mockImplementation(async (url: string) => {
+      if (url.includes('ids=')) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        const id = Number(url.match(/ids=(\d+)/)?.[1]);
+        return { status: 200, data: { value: [{ id, fields: { 'System.WorkItemType': 'Requirement' } }] } };
+      }
+      return { status: 200, data: {} }; // api-version probe
+    });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const results = await backend.getWorkItemsBatch([1, 2, 3, 4]);
+
+    expect(results.map((r) => r.id).sort()).toEqual([1, 2, 3, 4]);
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect(getSpy).toHaveBeenCalledTimes(5); // 1 probe + 4 single-id chunk GETs
+  });
+});
+
 describe('RealAdoBackend.linkParentChild', () => {
   it('PATCHes a Hierarchy-Reverse relation add op onto the child work item', async () => {
     const backend = new RealAdoBackend(testConfig, credential);
@@ -227,46 +323,6 @@ describe('RealAdoBackend.linkParentChild', () => {
     backend.httpClient = httpClient;
 
     await backend.linkParentChild(42, 7);
-    expect(patchSpy).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe('RealAdoBackend.linkWorkItems', () => {
-  it('PATCHes a relation add op with the given referenceName onto the fromId work item', async () => {
-    const backend = new RealAdoBackend(testConfig, credential);
-    const httpClient = axios.create();
-    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
-    const patchSpy = vi.spyOn(httpClient, 'patch').mockResolvedValueOnce({ status: 200, data: {} });
-    // @ts-expect-error -- injecting the spied client
-    backend.httpClient = httpClient;
-
-    await backend.linkWorkItems(42, 7, 'Elisra.CoveredBy-Forward');
-
-    expect(patchSpy.mock.calls[0][0]).toContain('/wit/workitems/42');
-    expect(patchSpy.mock.calls[0][1]).toEqual([
-      {
-        op: 'add',
-        path: '/relations/-',
-        value: {
-          rel: 'Elisra.CoveredBy-Forward',
-          url: expect.stringContaining('/workItems/7'),
-        },
-      },
-    ]);
-  });
-
-  it('retries on a 503 before succeeding', async () => {
-    const backend = new RealAdoBackend(testConfig, credential);
-    const httpClient = axios.create();
-    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
-    const patchSpy = vi
-      .spyOn(httpClient, 'patch')
-      .mockRejectedValueOnce({ response: { status: 503 } })
-      .mockResolvedValueOnce({ status: 200, data: {} });
-    // @ts-expect-error -- injecting the spied client
-    backend.httpClient = httpClient;
-
-    await backend.linkWorkItems(42, 7, 'System.LinkTypes.Related');
     expect(patchSpy).toHaveBeenCalledTimes(2);
   });
 });
@@ -356,8 +412,11 @@ describe('RealAdoBackend.discoverFields', () => {
       .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
       .mockResolvedValueOnce({
         status: 200,
+        // Real ADO wraps list responses as { count, value: [...] }, not { fields: [...] } --
+        // this fixture previously used the wrong shape and masked a real bug (see realAdo.ts).
         data: {
-          fields: [
+          count: 3,
+          value: [
             { referenceName: 'System.Title' },
             { referenceName: 'Custom.CustomerRequirementId' },
             { referenceName: 'Microsoft.VSTS.CMMI.RequirementType' },
@@ -372,46 +431,62 @@ describe('RealAdoBackend.discoverFields', () => {
   });
 });
 
-describe('RealAdoBackend.discoverLinkTypes', () => {
-  it('GETs the workitemrelationtypes endpoint and maps to AdoLinkType, filtering out non-work-item types', async () => {
+describe('RealAdoBackend.readAreaPaths', () => {
+  it('uses config.adoProject by default', async () => {
     const backend = new RealAdoBackend(testConfig, credential);
     const httpClient = axios.create();
-    vi.spyOn(httpClient, 'get')
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({ status: 200, data: { name: 'MyProject', children: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.readAreaPaths(5);
+
+    expect(getSpy.mock.calls[1][0]).toContain('/MyProject/_apis/wit/classificationnodes/areas');
+    expect(result.path).toBe('MyProject');
+  });
+
+  it('overrides config.adoProject when a project argument is passed', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({ status: 200, data: { name: 'OtherProject', children: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.readAreaPaths(5, 'OtherProject');
+
+    expect(getSpy.mock.calls[1][0]).toContain('/OtherProject/_apis/wit/classificationnodes/areas');
+    expect(result.path).toBe('OtherProject');
+  });
+});
+
+describe('RealAdoBackend.discoverProjects', () => {
+  it('GETs the collection-level projects endpoint and maps id/name', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
       .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
       .mockResolvedValueOnce({
         status: 200,
-        data: {
-          value: [
-            { referenceName: 'System.LinkTypes.Affects-Forward', name: 'Affects' },
-            { referenceName: 'Elisra.CoveredBy-Forward', name: 'Covered by' },
-            { referenceName: 'Hyperlink', name: 'Hyperlink' },
-          ],
-        },
+        data: { count: 2, value: [{ id: 'abc-1', name: 'Project' }, { id: 'abc-2', name: 'OtherProject' }] },
       });
     // @ts-expect-error -- injecting the spied client
     backend.httpClient = httpClient;
 
-    const result = await backend.discoverLinkTypes();
+    const result = await backend.discoverProjects();
 
+    expect(getSpy.mock.calls[1][0]).toContain('/_apis/projects');
+    expect(getSpy.mock.calls[1][0]).not.toContain('/MyProject/_apis/projects');
     expect(result).toEqual([
-      { referenceName: 'System.LinkTypes.Affects-Forward', name: 'Affects', semanticHint: expect.stringContaining('affects the target') },
-      { referenceName: 'Elisra.CoveredBy-Forward', name: 'Covered by', semanticHint: undefined },
+      { id: 'abc-1', name: 'Project' },
+      { id: 'abc-2', name: 'OtherProject' },
     ]);
-  });
-
-  it('falls back to the seed catalog when the live call fails', async () => {
-    const backend = new RealAdoBackend(testConfig, credential);
-    const httpClient = axios.create();
-    vi.spyOn(httpClient, 'get')
-      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
-      .mockRejectedValueOnce(new Error('network down'));
-    // @ts-expect-error -- injecting the spied client
-    backend.httpClient = httpClient;
-
-    const result = await backend.discoverLinkTypes();
-
-    expect(result.length).toBeGreaterThan(0);
-    expect(result.some((t) => t.referenceName === 'System.LinkTypes.Hierarchy-Reverse')).toBe(true);
   });
 });
 

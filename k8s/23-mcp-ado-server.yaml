@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-ado-server
+  namespace: req2ado
+spec:
+  selector:
+    app: mcp-ado-server
+  ports:
+    - port: 4100
+      targetPort: 4100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-ado-server
+  namespace: req2ado
+spec:
+  # NOTE: the pipeline worker's background jobs (discoverLinkTypes/
+  # discoverFields/queryIds calls made without a per-request user PAT) 401
+  # against a real ADO backend regardless of replica count here -- a known,
+  # accepted limitation (see the other req2ado repo's P4a handoff notes on
+  # threading a worker credential through the job queue). Only confirm()'s
+  # synchronous, request-scoped calls (which DO carry the submitting user's
+  # PAT via headers) work against ADO_BACKEND=real today.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mcp-ado-server
+  template:
+    metadata:
+      labels:
+        app: mcp-ado-server
+    spec:
+      containers:
+        - name: mcp-ado-server
+          image: req2ado-mcp-ado-server:latest
+          ports:
+            - containerPort: 4100
+          envFrom:
+            - configMapRef:
+                name: req2ado-config
+            - secretRef:
+                name: req2ado-secrets
+          env:
+            - name: PORT
+              value: "4100"
+            # Only needed against a self-signed on-prem cert -- points at
+            # the file mounted below. Omit this env var (and the volume/
+            # volumeMount) entirely for a CA-issued cert.
+            - name: ADO_CA_CERT
+              value: "/etc/req2ado/ca/ca-bundle.pem"
+          volumeMounts:
+            - name: ado-ca-cert
+              mountPath: /etc/req2ado/ca
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 4100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+      volumes:
+        - name: ado-ca-cert
+          secret:
+            secretName: req2ado-secrets
+            items:
+              - key: ADO_CA_CERT_PEM
+                path: ca-bundle.pem
+      terminationGracePeriodSeconds: 30

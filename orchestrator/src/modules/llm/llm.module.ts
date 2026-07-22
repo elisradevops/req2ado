@@ -17,6 +17,7 @@ import { OpenWebUiClient } from './openwebui.client';
           LLM_BASE_URL: config.get<string>('LLM_BASE_URL')!,
           LLM_API_KEY: config.get<string>('LLM_API_KEY'),
           LLM_CHAT_MODEL: config.get<string>('LLM_CHAT_MODEL')!,
+          LLM_VISION_MODEL: config.get<string>('LLM_VISION_MODEL'),
           LLM_TRUSTED_LOCAL: config.get<boolean>('LLM_TRUSTED_LOCAL')!,
           EMBED_TRANSPORT: config.get<'ollama' | 'openai'>('EMBED_TRANSPORT')!,
           EMBED_BASE_URL: config.get<string>('EMBED_BASE_URL'),

@@ -19,7 +19,7 @@ def retrieve_context(
     vector_store: KbVectorStore,
     top_k: int = 5,
     max_distance: float = 0.7,
-) -> tuple[str | None, list[str]]:
+) -> tuple[str | None, list[dict]]:
     """Embeds query_text, queries the KB collection for area_path, keeps
     hits with distance <= max_distance (cosine similarity >= 0.3), and
     joins their text with a blank-line separator. Returns
@@ -27,10 +27,13 @@ def retrieve_context(
     hit clears the similarity bar, or the embed/query call itself raises
     (network failure, Chroma error) — KB retrieval is an enhancement, not a
     hard dependency, and must never fail or block a SURVEY job. citations is
-    the deduped, first-seen-order list of surviving hits' source_file names
-    (P3c source provenance) — always [] when context is None. Any exception
-    is caught and logged here; this is the single seam that makes KB failure
-    non-fatal for callers."""
+    the deduped (best/lowest-distance hit per source_file, first-seen order)
+    list of surviving hits as {source_file, distance, similarity} dicts --
+    the raw retrieval score, surfaced so a caller/reviewer can judge
+    relevance themselves rather than trusting a hidden binary threshold --
+    always [] when context is None. Any exception is caught and logged
+    here; this is the single seam that makes KB failure non-fatal for
+    callers."""
     try:
         [embedding] = embed_client.embed([query_text])
         hits = vector_store.query(area_path, embedding, top_k)
@@ -43,8 +46,25 @@ def retrieve_context(
         return None, []
 
     context = "\n\n".join(hit["text"] for hit in survivors)
-    citations: list[str] = []
+    best_by_file: dict[str, dict] = {}
+    order: list[str] = []
     for hit in survivors:
-        if hit["source_file"] not in citations:
-            citations.append(hit["source_file"])
+        source_file = hit["source_file"]
+        if source_file not in best_by_file:
+            order.append(source_file)
+            best_by_file[source_file] = hit
+        elif hit["distance"] < best_by_file[source_file]["distance"]:
+            best_by_file[source_file] = hit
+    citations = [
+        {
+            "source_file": source_file,
+            "distance": best_by_file[source_file]["distance"],
+            "similarity": 1 - best_by_file[source_file]["distance"],
+            # Kept here (not on the eventual KbCitation model sent to the
+            # orchestrator/frontend) so a caller can build relevance-
+            # verification snippets without a second vector-store query.
+            "text": best_by_file[source_file]["text"],
+        }
+        for source_file in order
+    ]
     return context, citations

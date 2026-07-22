@@ -36,6 +36,9 @@ export interface SubmitJobParams {
   mode: 'baseline' | 'survey';
   state?: string;
   iterationPath?: string;
+  // SURVEY-only LLM model override (BASELINE never calls an LLM). Unset
+  // means "use whatever the orchestrator is configured with".
+  model?: string;
 }
 
 export async function submitJob(params: SubmitJobParams): Promise<{ jobId: string }> {
@@ -46,8 +49,14 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   if (params.customerId) form.append('customerId', params.customerId);
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);
+  if (params.model) form.append('model', params.model);
   const response = await httpClient.post('/jobs', form);
   return response.data;
+}
+
+export async function listModels(): Promise<string[]> {
+  const response = await httpClient.get<{ models: string[] }>('/jobs/models');
+  return response.data.models;
 }
 
 export async function getJob(id: string): Promise<JobDetail> {
@@ -88,5 +97,36 @@ export interface AddDiffEntryInput {
 
 export async function addDiffEntry(jobId: string, input: AddDiffEntryInput): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.post(`/jobs/${jobId}/diff`, input);
+  return response.data;
+}
+
+export async function rejectJob(id: string): Promise<{ status: string }> {
+  const response = await httpClient.post(`/jobs/${id}/reject`);
+  return response.data;
+}
+
+export interface JobSummaryReport {
+  created: number;
+  reused: number;
+  dedupSkipped: number;
+  flagged: number;
+  warnings: string[];
+}
+
+export async function getSummary(id: string): Promise<JobSummaryReport> {
+  const response = await httpClient.get<JobSummaryReport>(`/jobs/${id}/summary`);
+  return response.data;
+}
+
+export interface DedupSkipEntry {
+  id: string;
+  localId: string;
+  similarity: number;
+  existingAdoId: number;
+  createdAt: string;
+}
+
+export async function getDedupSkips(id: string): Promise<DedupSkipEntry[]> {
+  const response = await httpClient.get<DedupSkipEntry[]>(`/jobs/${id}/dedup-skips`);
   return response.data;
 }

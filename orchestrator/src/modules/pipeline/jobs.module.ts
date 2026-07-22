@@ -10,16 +10,24 @@ import { McpClient } from './mcp.client';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { IdempotencyService } from '../writeback/idempotency.service';
 import { JobEventsPublisher } from './job-events.publisher';
+import { BackfillService } from '../writeback/backfill.service';
+import { BackfillController } from '../writeback/backfill.controller';
+import { LlmModule } from '../llm/llm.module';
 
 @Module({
-  imports: [ConfigModule],
-  controllers: [JobsController, AdoController, JobEventsController],
+  imports: [ConfigModule, LlmModule],
+  controllers: [JobsController, AdoController, JobEventsController, BackfillController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
     {
       provide: McpClient,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => new McpClient(`${config.get<string>('MCP_URL')}/mcp`, config.get<string>('MCP_BEARER')!),
+      useFactory: (config: ConfigService) =>
+        new McpClient(
+          `${config.get<string>('MCP_URL')}/mcp`,
+          config.get<string>('MCP_BEARER')!,
+          config.get<number>('MCP_REQUEST_TIMEOUT_MS'),
+        ),
     },
     {
       // IdempotencyService's constructor declares its `prisma` param via
@@ -51,7 +59,24 @@ import { JobEventsPublisher } from './job-events.publisher';
         idempotencyService: IdempotencyService,
         ingestionClient: IngestionHttpClient,
         config: ConfigService,
-      ) => new JobsService(prisma, mcpClient, idempotencyService, ingestionClient, config.get<string>('REDIS_URL')!),
+      ) =>
+        new JobsService(
+          prisma,
+          mcpClient,
+          idempotencyService,
+          ingestionClient,
+          config.get<string>('REDIS_URL')!,
+          config.get<string>('ADO_INITIAL_STATE')!,
+          config.get<number>('CONFIRM_WRITE_CONCURRENCY')!,
+          // Unset keeps JobsService's own default candidate list (see its
+          // constructor) rather than passing an empty array here, which
+          // would silently disable Customer ID field resolution entirely.
+          config
+            .get<string>('CUSTOMER_ID_FIELD_CANDIDATES')
+            ?.split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        ),
     },
     {
       provide: 'MAX_UPLOAD_SIZE_BYTES',
@@ -84,6 +109,17 @@ import { JobEventsPublisher } from './job-events.publisher';
       provide: REDIS_SUBSCRIBER_FACTORY,
       inject: [ConfigService],
       useFactory: (config: ConfigService) => () => new Redis(config.get<string>('REDIS_URL')!),
+    },
+    {
+      // BackfillService's constructor params are declared via `import type`
+      // (see backfill.service.ts) -- same erased-runtime-type DI issue this
+      // module already documents for IdempotencyService above, so it needs
+      // the same explicit-factory treatment rather than a bare class
+      // provider.
+      provide: BackfillService,
+      inject: [McpClient, IngestionHttpClient, IdempotencyService],
+      useFactory: (mcpClient: McpClient, ingestionClient: IngestionHttpClient, idempotencyService: IdempotencyService) =>
+        new BackfillService(mcpClient, ingestionClient, idempotencyService),
     },
   ],
 })

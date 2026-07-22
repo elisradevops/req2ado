@@ -88,3 +88,15 @@ describe('configSchema embed fields', () => {
     expect(result.EMBED_PATH).toBe('/ollama/api/embed');
   });
 });
+
+describe('configSchema PIPELINE_WORKER_CONCURRENCY', () => {
+  it('defaults to 4 when unset', () => {
+    const result = configSchema.parse(BASE_ENV);
+    expect(result.PIPELINE_WORKER_CONCURRENCY).toBe(4);
+  });
+
+  it('coerces an explicit override from a string env value', () => {
+    const result = configSchema.parse({ ...BASE_ENV, PIPELINE_WORKER_CONCURRENCY: '10' });
+    expect(result.PIPELINE_WORKER_CONCURRENCY).toBe(10);
+  });
+});

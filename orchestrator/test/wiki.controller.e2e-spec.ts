@@ -1,7 +1,7 @@
 import { Test } from '@nestjs/testing';
-import { WsAdapter } from '@nestjs/platform-ws';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { WsAdapter } from '@nestjs/platform-ws';
 
 describe('WikiController (e2e)', () => {
   let app: INestApplication;

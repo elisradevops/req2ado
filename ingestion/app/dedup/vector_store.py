@@ -15,16 +15,48 @@ def _collection_name_for_area_path(area_path: str) -> str:
 
 
 class ChromaVectorStore:
-    """Local, persistent, Area-Path-scoped vector store for dedup (Phase 6).
-    One Chroma collection per area path — structurally isolates similarity
-    matches to the same area path rather than relying on a post-query
-    filter, so cross-area-path false positives are impossible by
-    construction, not just filtered out. Uses cosine similarity (Chroma
-    collection metadata hnsw:space=cosine); Chroma's cosine DISTANCE is
-    1 - cosine_similarity, so similarity is derived as 1 - distance."""
+    """Area-Path-scoped vector store for dedup (Phase 6). One Chroma
+    collection per area path — structurally isolates similarity matches to
+    the same area path rather than relying on a post-query filter, so
+    cross-area-path false positives are impossible by construction, not
+    just filtered out. Uses cosine similarity (Chroma collection metadata
+    hnsw:space=cosine); Chroma's cosine DISTANCE is 1 - cosine_similarity,
+    so similarity is derived as 1 - distance.
 
-    def __init__(self, persist_path: str) -> None:
-        self._client = chromadb.PersistentClient(path=persist_path)
+    Two backing modes:
+    - "embedded" (default): a local chromadb.PersistentClient at
+      `persist_path`. Does NOT survive horizontal scaling -- each ingestion
+      replica gets an independent, incomplete corpus copy. This was the
+      ONLY mode available before this option existed.
+    - "http": chromadb.HttpClient against a real, shared Chroma server
+      (`host`/`port`) -- makes ingestion genuinely stateless, safe to run
+      as multiple replicas (the actual point of adding this mode: closes
+      the "ingestion is stateful, contradicting its own docs" gap).
+    `persist_path` is ignored in "http" mode (kept as a required
+    positional param so no existing "embedded"-mode call site needs to
+    change)."""
+
+    def __init__(
+        self,
+        persist_path: str,
+        mode: str = "embedded",
+        host: str = "localhost",
+        port: int = 8000,
+    ) -> None:
+        if mode == "http":
+            self._client = chromadb.HttpClient(host=host, port=port)
+        else:
+            self._client = chromadb.PersistentClient(path=persist_path)
+
+    def ping(self) -> bool:
+        """Cheap reachability check for /ready -- previously nothing in
+        ingestion ever verified Chroma is actually usable before reporting
+        healthy. heartbeat() is Chroma's own lightweight liveness call."""
+        try:
+            self._client.heartbeat()
+            return True
+        except Exception:
+            return False
 
     def _get_collection(self, area_path: str):
         return self._client.get_or_create_collection(

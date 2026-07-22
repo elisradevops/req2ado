@@ -13,17 +13,23 @@ export function AreaPathPicker({
   value,
   onChange,
   credential,
+  project,
 }: {
   value: string;
   onChange: (path: string) => void;
   credential: AdoRequestCredential;
+  // Optional: when set, scopes the area-path fetch to this team project
+  // instead of the backend's configured default. When unset (no project
+  // picker in use yet), behaves byte-identically to before this prop
+  // existed.
+  project?: string;
 }): React.ReactElement {
   const [options, setOptions] = useState<string[]>([]);
   const { showToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
-    getAreaPaths(5, credential)
+    getAreaPaths(5, credential, project)
       .then((tree) => {
         if (!cancelled) setOptions(flatten(tree));
       })
@@ -33,7 +39,7 @@ export function AreaPathPicker({
     return () => {
       cancelled = true;
     };
-  }, [credential, showToast]);
+  }, [credential, project, showToast]);
 
   return (
     <Autocomplete

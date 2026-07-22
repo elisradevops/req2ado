@@ -23,11 +23,25 @@ export type JobStage =
 // round trip with no intermediate signal back to the orchestrator, so the
 // finer-grained stages in this union are unreachable until a Phase 2+
 // ingestion API change (chunking/webhooks) exposes that sub-boundary.
+// How long a job's last-known stage stays readable after being set --
+// generous relative to any real job's lifetime, just bounding unbounded
+// key growth in Redis rather than modeling an actual expectation.
+const CURRENT_STAGE_TTL_SECONDS = 3600;
+
 @Injectable()
 export class JobEventsPublisher {
   constructor(private readonly redis: Redis) {}
 
   async publish(jobId: string, stage: JobStage): Promise<void> {
-    await this.redis.publish(`job-events:${jobId}`, JSON.stringify({ stage }));
+    const payload = JSON.stringify({ stage });
+    // Pub/sub only reaches subscribers connected AT THE MOMENT of publish --
+    // a client that opens the SSE stream after this event (e.g. the user
+    // left the job page mid-run and came back) would otherwise see nothing
+    // until the NEXT stage fires, which can be minutes away during a real
+    // LLM call. Persisting the last-known stage lets a fresh subscriber
+    // (see JobEventsController.streamEvents) replay it immediately instead
+    // of waiting on the future.
+    await this.redis.set(`job-events:${jobId}:current`, payload, 'EX', CURRENT_STAGE_TTL_SECONDS);
+    await this.redis.publish(`job-events:${jobId}`, payload);
   }
 }

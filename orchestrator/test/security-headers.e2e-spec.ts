@@ -1,8 +1,8 @@
 import { Test } from '@nestjs/testing';
-import { WsAdapter } from '@nestjs/platform-ws';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import helmet from 'helmet';
+import { WsAdapter } from '@nestjs/platform-ws';
 
 describe('Security headers and rate limiting', () => {
   let app: INestApplication;

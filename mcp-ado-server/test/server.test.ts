@@ -106,6 +106,26 @@ describe('MCP server HTTP transport', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true, backend: 'real' });
   });
+
+  it('GET /ready pings the backend for backend=mock', async () => {
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
+    const res = await request(app).get('/ready');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, backend: 'mock' });
+  });
+
+  it('GET /ready never constructs a credentialed backend when backend=real', async () => {
+    const app = createMcpApp(() => {
+      throw new Error('should not be called for /ready when backend=real');
+    }, { ...testConfig, backend: 'real' });
+    const res = await request(app).get('/ready');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      backend: 'real',
+      note: 'real-ADO reachability requires a per-request credential, not checkable here',
+    });
+  });
 });
 
 describe('timingSafeEqualBearer', () => {

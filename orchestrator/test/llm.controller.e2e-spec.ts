@@ -1,7 +1,7 @@
 import { Test } from '@nestjs/testing';
-import { WsAdapter } from '@nestjs/platform-ws';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { OpenWebUiClient } from '../src/modules/llm/openwebui.client';
 
 describe('LlmController (e2e)', () => {
@@ -60,7 +60,7 @@ describe('LlmController (e2e)', () => {
   });
 
   it('returns the chat content on a valid request with the correct bearer', async () => {
-    fakeOpenWebUiClient.chat.mockResolvedValue('The unit shall survive a 1m drop.');
+    fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'The unit shall survive a 1m drop.' });
     const res = await request(app.getHttpServer())
       .post('/llm/chat')
       .set('Authorization', 'Bearer test-llm-proxy-bearer')
@@ -70,7 +70,7 @@ describe('LlmController (e2e)', () => {
   });
 
   it('passes temperature through to OpenWebUiClient.chat when provided', async () => {
-    fakeOpenWebUiClient.chat.mockResolvedValue('ok');
+    fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'ok' });
     await request(app.getHttpServer())
       .post('/llm/chat')
       .set('Authorization', 'Bearer test-llm-proxy-bearer')
@@ -103,6 +103,47 @@ describe('LlmController (e2e)', () => {
         .send({ texts: ['The unit shall survive a drop.'] });
       expect(res.status).toBe(201);
       expect(res.body).toEqual({ embeddings: [[0.1, 0.2, 0.3]] });
+    });
+  });
+
+  describe('POST /llm/vision', () => {
+    it('returns 401 with no Authorization header', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/llm/vision')
+        .send({ prompt: 'describe this', images: ['aGVsbG8='] });
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 400 on a malformed body (missing images)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/llm/vision')
+        .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .send({ prompt: 'describe this' });
+      expect(res.status).toBe(400);
+    });
+
+    it('decodes base64 images to Buffers and returns the description on a valid request', async () => {
+      fakeOpenWebUiClient.vision.mockResolvedValue('A block diagram showing power distribution.');
+      const res = await request(app.getHttpServer())
+        .post('/llm/vision')
+        .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .send({ prompt: 'describe this figure', images: [Buffer.from('fake-png-bytes').toString('base64')] });
+      expect(res.status).toBe(201);
+      expect(res.body).toEqual({ description: 'A block diagram showing power distribution.' });
+      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith(
+        'describe this figure',
+        [Buffer.from('fake-png-bytes')],
+        undefined,
+      );
+    });
+
+    it('forwards an explicit model override when provided', async () => {
+      fakeOpenWebUiClient.vision.mockResolvedValue('ok');
+      await request(app.getHttpServer())
+        .post('/llm/vision')
+        .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .send({ prompt: 'describe', images: ['aGVsbG8='], model: 'llava' });
+      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { model: 'llava' });
     });
   });
 });

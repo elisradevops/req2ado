@@ -2,6 +2,8 @@ import { BadRequestException, Body, Controller, Get, Post, Res, UseGuards } from
 import type { Response } from 'express';
 import { llmChatRequestSchema } from './llm-chat.dto';
 import { llmEmbedRequestSchema } from './llm-embed.dto';
+import { llmVisionRequestSchema } from './llm-vision.dto';
+import type { LlmToolCall } from './llm-client.interface';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClient } from './openwebui.client';
 
@@ -11,17 +13,21 @@ export class LlmController {
   constructor(private readonly llmClient: OpenWebUiClient) {}
 
   @Post('chat')
-  async chat(@Body() rawBody: unknown): Promise<{ content: string }> {
+  async chat(@Body() rawBody: unknown): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string }> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
     }
     const body = parseResult.data;
-    const content = await this.llmClient.chat(body.messages, {
+    const result = await this.llmClient.chat(body.messages, {
       ...(body.model !== undefined ? { model: body.model } : {}),
       ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
+      ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
+      ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
+      ...(body.tools !== undefined ? { tools: body.tools } : {}),
+      ...(body.toolChoice !== undefined ? { toolChoice: body.toolChoice } : {}),
     });
-    return { content };
+    return result;
   }
 
   @Post('chat/stream')
@@ -51,6 +57,8 @@ export class LlmController {
       for await (const delta of this.llmClient.streamChat(body.messages, {
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
+        ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
+        ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
       })) {
         res.write(`${JSON.stringify({ delta })}\n`);
         if (clientDisconnected) break;
@@ -74,5 +82,20 @@ export class LlmController {
     }
     const embeddings = await this.llmClient.embed(parseResult.data.texts);
     return { embeddings };
+  }
+
+  @Post('vision')
+  async vision(@Body() rawBody: unknown): Promise<{ description: string }> {
+    const parseResult = llmVisionRequestSchema.safeParse(rawBody);
+    if (!parseResult.success) {
+      throw new BadRequestException('Invalid request body: prompt and a non-empty images array (base64) are required');
+    }
+    const body = parseResult.data;
+    const description = await this.llmClient.vision(
+      body.prompt,
+      body.images.map((image) => Buffer.from(image, 'base64')),
+      body.model ? { model: body.model } : undefined,
+    );
+    return { description };
   }
 }

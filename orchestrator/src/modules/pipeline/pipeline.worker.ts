@@ -13,6 +13,10 @@ export interface PipelineJobInput {
   mode: 'baseline' | 'survey';
   fileBuffer: Buffer;
   filename: string;
+  // Per-job LLM model override (SURVEY only -- BASELINE never calls an
+  // LLM). Unset means "use whatever the orchestrator is configured with",
+  // matching pre-model-selection behavior exactly.
+  model?: string;
 }
 
 export interface PipelineWorkerDeps {
@@ -24,6 +28,13 @@ export interface PipelineWorkerDeps {
   mcpClient: McpClient;
 }
 
+interface LeveledSourceRef {
+  document_path: string;
+  start_offset: number;
+  end_offset: number;
+  page: number | null;
+}
+
 interface LeveledNode {
   local_id: string;
   parent_local_id: string | null;
@@ -32,9 +43,19 @@ interface LeveledNode {
   description: string;
   fidelity_hash: string;
   customer_id: string | null;
-  tags: string[];
+  // SURVEY-only signals (see ingestion's WorkItemNode) -- null/[] for
+  // BASELINE nodes and for any SURVEY node when scoring wasn't enabled.
+  // Optional (not just nullable) because they didn't exist on this
+  // response shape before this round -- an older/mocked ingestion response
+  // in a test omitting them entirely must not crash the mapping below.
+  grounding_score?: number | null;
   quality_score?: number | null;
   quality_issues?: string[];
+  // Previously computed by ingestion (WorkItemNode.source_ref/tags) but
+  // dropped here -- neither reached DryRunTreeNode nor any ADO field.
+  // Optional for the same backward-compat reason as the scoring fields above.
+  source_ref?: LeveledSourceRef | null;
+  tags?: string[];
   child_type?: string | null;
 }
 
@@ -101,9 +122,10 @@ export async function runPipelineJob(
     }
 
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
-    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.areaPath, linkTypeCatalog)) as {
+    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.areaPath, linkTypeCatalog, job.model, job.id)) as {
       nodes: LeveledNode[];
-      kb_citations?: string[];
+      warnings?: string[];
+      kb_citations?: { source_file: string; similarity: number; relevance: string }[];
       trace_links?: LeveledTraceLink[];
     };
     await deps.jobEventsPublisher.publish(job.id, 'generate_requirements_done');
@@ -132,9 +154,18 @@ export async function runPipelineJob(
       sourceHash: node.fidelity_hash,
       customerId: node.customer_id,
       areaPath: job.areaPath,
-      tags: node.tags ?? [],
+      groundingScore: node.grounding_score ?? null,
       qualityScore: node.quality_score,
       qualityIssues: node.quality_issues,
+      sourceRef: node.source_ref
+        ? {
+            documentPath: node.source_ref.document_path,
+            startOffset: node.source_ref.start_offset,
+            endOffset: node.source_ref.end_offset,
+            page: node.source_ref.page,
+          }
+        : null,
+      tags: node.tags ?? [],
       childType: node.child_type,
       traceLinks: traceLinksByLocalId.get(node.local_id) ?? [],
     }));
@@ -182,7 +213,16 @@ export async function runPipelineJob(
     // union even though the runtime value is valid JSON).
     await deps.prisma.job.update({
       where: { id: job.id },
-      data: { status: 'diff_ready', dryRunDiff: resolvedDiff as any, kbCitations: tree.kb_citations ?? [] },
+      data: {
+        status: 'diff_ready',
+        dryRunDiff: resolvedDiff as any,
+        warnings: (tree.warnings ?? []) as any,
+        kbCitations: (tree.kb_citations ?? []).map((c) => ({
+          sourceFile: c.source_file,
+          similarity: c.similarity,
+          relevance: c.relevance,
+        })) as any,
+      },
     });
     await deps.prisma.auditEntry.create({
       data: {
@@ -190,6 +230,27 @@ export async function runPipelineJob(
         message: `Dry-run diff ready: ${resolvedDiff.length} node(s), ${resolvedDiff.filter((e) => e.action === 'create').length} to create`,
       },
     });
+
+    // One structured, durable row per skipped duplicate (see schema.prisma's
+    // DedupSkipAudit doc comment) -- distinct from the free-text AuditEntry
+    // above, and from the in-memory dedupSkipCount the frontend derives from
+    // dryRunDiff. createMany is a no-op for an empty array (no dedup_skip
+    // entries in this diff), matching upsertDedupEntriesBatch's own
+    // no-call-for-empty-input convention elsewhere in this pipeline.
+    const dedupSkips = resolvedDiff.filter(
+      (e) => e.action === 'dedup_skip' && e.existingAdoId !== null && e.similarity !== null,
+    );
+    if (dedupSkips.length > 0) {
+      await deps.prisma.dedupSkipAudit.createMany({
+        data: dedupSkips.map((e) => ({
+          jobId: job.id,
+          localId: e.localId,
+          similarity: e.similarity as number,
+          existingAdoId: e.existingAdoId as number,
+        })),
+      });
+    }
+
     await deps.jobEventsPublisher.publish(job.id, 'diff_ready');
     return resolvedDiff;
   } catch (error) {

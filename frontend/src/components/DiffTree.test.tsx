@@ -61,6 +61,48 @@ describe('DiffTree', () => {
     );
     expect(screen.getByText('Root Epic').closest('[data-excluded="true"]')).not.toBeNull();
   });
+
+  it('renders a row with a long title and multiple chips without crashing (variable row-height measurement)', () => {
+    const longEntry: DryRunDiffEntry = {
+      localId: 'long1',
+      parentLocalId: null,
+      type: 'Requirement',
+      title:
+        'The system shall provide a comprehensive mechanism for handling multi-line wrapped titles that would previously overflow a fixed 56px row and overlap the row below it',
+      description: '',
+      action: 'create',
+      customerId: null,
+      tags: ['functional', 'interface', 'performance', 'regulatory'],
+    };
+    render(
+      <DiffTree entries={[longEntry]} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    expect(screen.getByText(longEntry.title)).toBeInTheDocument();
+  });
+
+  it('re-renders correctly when a row is edited (title changes) and when a row is added', () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <DiffTree entries={ENTRIES} selectedId={null} onSelect={onSelect} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    expect(screen.getByText('Root Epic')).toBeInTheDocument();
+
+    const editedEntries = [{ ...ENTRIES[0], title: 'Root Epic Edited' }, ...ENTRIES.slice(1)];
+    rerender(
+      <DiffTree entries={editedEntries} selectedId={null} onSelect={onSelect} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    expect(screen.getByText('Root Epic Edited')).toBeInTheDocument();
+    expect(screen.queryByText('Root Epic')).not.toBeInTheDocument();
+
+    const withAddedChild: DryRunDiffEntry[] = [
+      ...editedEntries,
+      { localId: 'new1', parentLocalId: 'e1', type: 'Requirement', title: 'New Added Requirement', description: '', action: 'create', customerId: null, tags: [] },
+    ];
+    rerender(
+      <DiffTree entries={withAddedChild} selectedId={null} onSelect={onSelect} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    expect(screen.getByText('New Added Requirement')).toBeInTheDocument();
+  });
 });
 
 const baseEntry: DryRunDiffEntry = {

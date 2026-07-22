@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AdoBackend } from '../backends/types.js';
+import { adoErrorMessage } from '../backends/adoErrorMessage.js';
 
 export function registerCreateWorkItemTool(server: McpServer, backend: AdoBackend): void {
   server.registerTool(
@@ -14,8 +15,12 @@ export function registerCreateWorkItemTool(server: McpServer, backend: AdoBacken
       },
     },
     async ({ type, fields }) => {
-      const result = await backend.createWorkItem({ type, fields });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      try {
+        const result = await backend.createWorkItem({ type, fields });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (error) {
+        throw new Error(adoErrorMessage(error));
+      }
     },
   );
 }

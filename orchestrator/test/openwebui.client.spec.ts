@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import { OpenWebUiClient } from '../src/modules/llm/openwebui.client';
 
 describe('OpenWebUiClient', () => {
@@ -51,7 +52,7 @@ describe('OpenWebUiClient', () => {
     client.openai.chat.completions.create = fakeCreate;
 
     const result = await client.chat([{ role: 'user', content: 'hi' }]);
-    expect(result).toBe('The answer is 42.');
+    expect(result.content).toBe('The answer is 42.');
   });
 
   it('passes temperature through when provided', async () => {
@@ -64,14 +65,139 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ temperature: 0 }));
   });
 
-  it('embed() throws not-implemented in this phase', async () => {
+  it('forwards maxTokens as max_tokens when provided (bounds worst-case latency)', async () => {
     const client = new OpenWebUiClient(config);
-    await expect(client.embed(['text'])).rejects.toThrow(/not implemented/i);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { maxTokens: 8000 });
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 8000 }));
   });
 
-  it('vision() throws not-implemented in this phase', async () => {
+  it('omits max_tokens when maxTokens is not provided', async () => {
     const client = new OpenWebUiClient(config);
-    await expect(client.vision('prompt', [])).rejects.toThrow(/not implemented/i);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('max_tokens');
+  });
+
+  it('forwards responseSchema as response_format: json_schema when provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: '[]' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], {
+      responseSchema: { name: 'hierarchy', schema: { type: 'array' } },
+    });
+
+    expect(fakeCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_format: { type: 'json_schema', json_schema: { name: 'hierarchy', schema: { type: 'array' } } },
+      }),
+    );
+  });
+
+  it('omits response_format entirely when no responseSchema is provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: '[]' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }]);
+
+    expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('response_format');
+  });
+
+  it('degrades to a schema-less retry when the backend rejects response_format with a 400', async () => {
+    const client = new OpenWebUiClient(config);
+    const rejection = new OpenAI.APIError(400, { message: 'bad param' }, 'bad param', {} as any);
+    const fakeCreate = jest
+      .fn()
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValueOnce({ choices: [{ message: { content: '[]' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], {
+      responseSchema: { name: 'hierarchy', schema: { type: 'array' } },
+    });
+
+    expect(result.content).toBe('[]');
+    expect(fakeCreate).toHaveBeenCalledTimes(2);
+    expect(fakeCreate.mock.calls[0][0]).toHaveProperty('response_format');
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('response_format');
+  });
+
+  it('does not retry on a non-schema-rejection error even when a responseSchema was provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const rejection = new OpenAI.APIError(500, { message: 'server error' }, 'server error', {} as any);
+    const fakeCreate = jest.fn().mockRejectedValue(rejection);
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await expect(
+      client.chat([{ role: 'user', content: 'hi' }], { responseSchema: { name: 'hierarchy', schema: {} } }),
+    ).rejects.toThrow();
+    expect(fakeCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards tools as-is and omits tool_choice when not provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const tools = [{ type: 'function' as const, function: { name: 'query_kb', parameters: { type: 'object' } } }];
+    await client.chat([{ role: 'user', content: 'hi' }], { tools });
+
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ tools }));
+    expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('tool_choice');
+  });
+
+  it('forwards toolChoice as tool_choice when provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], {
+      tools: [{ type: 'function', function: { name: 'query_kb', parameters: {} } }],
+      toolChoice: 'auto',
+    });
+
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ tool_choice: 'auto' }));
+  });
+
+  it('surfaces toolCalls and finishReason from the response alongside content', async () => {
+    const client = new OpenWebUiClient(config);
+    const toolCalls = [{ id: 'call_1', type: 'function' as const, function: { name: 'query_kb', arguments: '{"query":"power rail"}' } }];
+    const fakeCreate = jest.fn().mockResolvedValue({
+      choices: [{ message: { content: null, tool_calls: toolCalls }, finish_reason: 'tool_calls' }],
+    });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], {
+      tools: [{ type: 'function', function: { name: 'query_kb', parameters: {} } }],
+    });
+
+    expect(result).toEqual({ content: '', toolCalls, finishReason: 'tool_calls' });
+  });
+
+  it('returns empty toolCalls/finishReason fields when the model does not call a tool', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'plain answer' }, finish_reason: 'stop' }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+
+    expect(result).toEqual({ content: 'plain answer', toolCalls: undefined, finishReason: 'stop' });
   });
 
   it('lists available models from the OpenAI-compatible /v1/models endpoint', async () => {
@@ -113,6 +239,62 @@ describe('OpenWebUiClient', () => {
 
     expect(deltas).toEqual(['Hel', 'lo']);
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'llama3.1', stream: true }));
+  });
+
+  it('embed() throws not-implemented in this phase', async () => {
+    const client = new OpenWebUiClient(config);
+    await expect(client.embed(['text'])).rejects.toThrow(/not implemented/i);
+  });
+
+  it('vision() throws when no model is configured and no override is passed', async () => {
+    const client = new OpenWebUiClient(config); // config has no LLM_VISION_MODEL
+    await expect(client.vision('prompt', [Buffer.from('img')])).rejects.toThrow(/no model/i);
+  });
+
+  it('vision() sends a multimodal content array to the same chat.completions endpoint', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'A block diagram.' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.vision('describe this figure', [Buffer.from('fake-png-bytes')]);
+
+    expect(result).toBe('A block diagram.');
+    expect(fakeCreate).toHaveBeenCalledWith({
+      model: 'llava',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe this figure' },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from('fake-png-bytes').toString('base64')}` } },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('vision() redacts the prompt text (not the image) unless LLM_TRUSTED_LOCAL is true', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('contact jane@example.com about this figure', [Buffer.from('img')]);
+
+    const sentContent = fakeCreate.mock.calls[0][0].messages[0].content;
+    expect(sentContent[0].text).toBe('contact <redacted> about this figure');
+  });
+
+  it('vision() uses opts.model over the configured LLM_VISION_MODEL when both are present', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('img')], { model: 'moondream' });
+
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'moondream' }));
   });
 });
 

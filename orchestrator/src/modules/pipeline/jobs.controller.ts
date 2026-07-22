@@ -18,6 +18,7 @@ import { JobsService, JobSummary } from './jobs.service';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { readAdoCredential } from './credential.util';
 import { createHash } from 'crypto';
+import { OpenWebUiClient } from '../llm/openwebui.client';
 
 // Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
 // md, docx, pdf (incl. scanned/OCR, same extension), xlsx. Not a security
@@ -39,13 +40,24 @@ const MULTER_SAFETY_CEILING_BYTES = 500 * 1024 * 1024;
 export class JobsController {
   constructor(
     private readonly jobsService: JobsService,
-    @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
     private readonly ingestionClient: IngestionHttpClient,
+    private readonly llmClient: OpenWebUiClient,
+    @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
   ) {}
 
   @Get()
   async list(): Promise<JobSummary[]> {
     return this.jobsService.list();
+  }
+
+  // Frontend-reachable model list for SURVEY mode's per-job model picker.
+  // Deliberately separate from /llm/models (LlmController), which is
+  // guarded by LlmProxyBearerGuard for service-to-service use only and
+  // isn't reachable from a browser session.
+  @Get('models')
+  async listModels(): Promise<{ models: string[] }> {
+    const models = await this.llmClient.listModels();
+    return { models };
   }
 
   @Post()
@@ -61,6 +73,7 @@ export class JobsController {
     @Body('mode') mode: string | undefined,
     @Body('state') state: string | undefined,
     @Body('iterationPath') iterationPath: string | undefined,
+    @Body('model') model: string | undefined,
   ): Promise<{ jobId: string }> {
     if (!file) {
       throw new BadRequestException('file is required');
@@ -88,8 +101,9 @@ export class JobsController {
       fileBuffer: file.buffer,
       filename: file.originalname,
       sourceHash,
-      state: state ?? 'Proposed',
+      state,
       iterationPath: iterationPath ?? null,
+      model,
     });
   }
 
@@ -133,7 +147,15 @@ export class JobsController {
   @Get(':id')
   async getById(
     @Param('id') id: string,
-  ): Promise<{ id: string; status: string; mode: string; dryRunDiff: unknown; kbCitations: string[] }> {
+  ): Promise<{
+    id: string;
+    status: string;
+    mode: string;
+    dryRunDiff: unknown;
+    warnings: string[];
+    kbCitations: unknown;
+    createdAt: Date;
+  }> {
     const job = await this.jobsService.getById(id);
     if (!job) {
       throw new NotFoundException(`Job ${id} not found`);
@@ -185,13 +207,55 @@ export class JobsController {
     @Param('id') id: string,
     @Headers('x-ado-org-url') orgUrl: string | undefined,
     @Headers('x-ado-pat') pat: string | undefined,
+    @Body('selectedLocalIds') selectedLocalIds: string[] | undefined,
   ): Promise<{ status: string; createdCount: number }> {
     const credential = readAdoCredential(orgUrl, pat);
-    return this.jobsService.confirm(id, credential);
+    return this.jobsService.confirm(id, credential, selectedLocalIds);
+  }
+
+  @Post(':id/reject')
+  async reject(@Param('id') id: string): Promise<{ status: string }> {
+    return this.jobsService.reject(id);
   }
 
   @Get(':id/audit')
   async getAudit(@Param('id') id: string): Promise<{ id: string; message: string; createdAt: Date }[]> {
     return this.jobsService.getAuditTrail(id);
+  }
+
+  @Get(':id/dedup-skips')
+  async getDedupSkips(
+    @Param('id') id: string,
+  ): Promise<{ id: string; localId: string; similarity: number; existingAdoId: number; createdAt: Date }[]> {
+    return this.jobsService.getDedupSkips(id);
+  }
+
+  @Get(':id/summary')
+  async getSummary(
+    @Param('id') id: string,
+  ): Promise<{ created: number; reused: number; dedupSkipped: number; flagged: number; warnings: string[] }> {
+    const summary = await this.jobsService.getSummary(id);
+    if (!summary) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    return summary;
+  }
+
+  @Get(':id/validate')
+  async validateCreatedTree(
+    @Param('id') id: string,
+    @Headers('x-ado-org-url') orgUrl: string | undefined,
+    @Headers('x-ado-pat') pat: string | undefined,
+  ): Promise<{
+    valid: boolean;
+    checkedCount: number;
+    mismatches: { localId: string; adoWorkItemId: number; field: string; expected: string; actual: string }[];
+  }> {
+    const credential = readAdoCredential(orgUrl, pat);
+    const result = await this.jobsService.validateCreatedTree(id, credential);
+    if (!result) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    return result;
   }
 }

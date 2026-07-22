@@ -30,6 +30,8 @@ describe('NewJobWizard Step 1', () => {
   it('Step 2 submits with mode, area path, and optional state/iteration', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({ blockCount: 20, sectionCount: 3, fileType: 'docx' });
     vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-99' });
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue(['qwen2.5:1.5b']);
+    vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }]);
     vi.spyOn(adoApi, 'getAreaPaths').mockResolvedValue({ path: 'Project', children: [] });
     useAuthStore.getState().login('https://ado.example', 'pat-1', 'Jane');
 
@@ -43,8 +45,10 @@ describe('NewJobWizard Step 1', () => {
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
     await waitFor(() => expect(screen.getByText(/20/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/survey/i));
+    await userEvent.click(screen.getByLabelText(/team project/i));
+    await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
     await userEvent.click(screen.getByLabelText(/area path/i));
-    await userEvent.click(await screen.findByText('Project'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
     await userEvent.click(screen.getByRole('button', { name: /start/i }));
 
     await waitFor(() =>

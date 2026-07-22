@@ -48,6 +48,33 @@ describe('subscribeToJobEvents', () => {
     expect(onStage).toHaveBeenCalledWith('parse');
   });
 
+  it('forwards parsed narration payloads to onNarration', () => {
+    const onNarration = vi.fn();
+    subscribeToJobEvents('job-1', 'https://api.example', vi.fn(), onNarration);
+
+    const source = FakeEventSource.instances[0];
+    const narration = {
+      phase: 'infer_hierarchy',
+      branchIndex: 0,
+      branchCount: 3,
+      blocksDone: 10,
+      blocksTotal: 50,
+      kbGrounded: false,
+      kbCitations: [],
+      message: 'Analyzing structure (section 1 of 3)',
+    };
+    source.emit('narration', narration);
+
+    expect(onNarration).toHaveBeenCalledWith(narration);
+  });
+
+  it('does not throw when a narration event arrives and onNarration is omitted', () => {
+    subscribeToJobEvents('job-1', 'https://api.example', vi.fn());
+    const source = FakeEventSource.instances[0];
+
+    expect(() => source.emit('narration', { phase: 'infer_hierarchy', message: 'x' })).not.toThrow();
+  });
+
   it('returns a function that closes the underlying EventSource', () => {
     const unsubscribe = subscribeToJobEvents('job-1', 'https://api.example', vi.fn());
     const source = FakeEventSource.instances[0];

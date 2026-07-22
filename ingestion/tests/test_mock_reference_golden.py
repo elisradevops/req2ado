@@ -29,10 +29,10 @@ def _nodes_by_title(nodes):
 
 def test_mock_icd_docx_each_top_heading_is_a_feature_everything_nested_is_a_requirement() -> None:
     """Real ICD convention: each top-level heading = Feature, everything
-    nested below it = Requirement. See build_mock_icd_docx.py's docstring
-    for why a genuine sub-requirement (depth 3) is not modeled here — the
-    current autodetect heuristic reclassifies any depth-3 branch as
-    tv_style instead."""
+    nested below it = Requirement -- including a genuine depth-3
+    sub-requirement (docs/architecture.md 1g fix in
+    detect_profile_for_branch), which stays icd_style/Requirement rather
+    than flipping the whole branch to tv_style/Epic-Epic."""
     doc = load_docx(str(_FIXTURES_DIR / "mock_icd.docx"))
     tree = build_baseline_tree(doc)
     by_title = _nodes_by_title(tree.nodes)
@@ -41,6 +41,8 @@ def test_mock_icd_docx_each_top_heading_is_a_feature_everything_nested_is_a_requ
     assert by_title["Power Distribution"].parent_local_id is None
     assert by_title["3.3V Rail Requirements"].type == WorkItemType.REQUIREMENT
     assert by_title["3.3V Rail Requirements"].parent_local_id == by_title["Power Distribution"].local_id
+    assert by_title["Ripple Sub-Requirement"].type == WorkItemType.REQUIREMENT
+    assert by_title["Ripple Sub-Requirement"].parent_local_id == by_title["3.3V Rail Requirements"].local_id
     assert by_title["Rail Sequencing Requirements"].type == WorkItemType.REQUIREMENT
     assert by_title["Rail Sequencing Requirements"].parent_local_id == by_title["Power Distribution"].local_id
 

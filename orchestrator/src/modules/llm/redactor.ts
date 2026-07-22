@@ -7,8 +7,14 @@
  * classes are caught regardless of which service touches the text last.
  */
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  // Optional: an assistant message that ISSUES tool calls (see tool_calls
+  // below) commonly carries no content at all -- only a 'tool' message
+  // (the executed tool's result) or a plain system/user/assistant turn is
+  // guaranteed to have one.
+  content?: string;
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  tool_call_id?: string;
 }
 
 const PATTERNS: RegExp[] = [
@@ -24,5 +30,9 @@ export function redactText(text: string): string {
 }
 
 export function redactMessages(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map((message) => ({ ...message, content: redactText(message.content) }));
+  // content is absent on an assistant message that only carries tool_calls
+  // (see ChatMessage above) -- nothing to redact in that case.
+  return messages.map((message) =>
+    message.content !== undefined ? { ...message, content: redactText(message.content) } : message,
+  );
 }

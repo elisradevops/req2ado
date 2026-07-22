@@ -29,6 +29,7 @@ ado:
 mcp:
   url: ${MCP_URL}
   bearer: ${MCP_BEARER}
+  request_timeout_ms: ${MCP_REQUEST_TIMEOUT_MS}
 
 fields:
   title: System.Title

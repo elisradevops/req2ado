@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { AdoBackend, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
+import type { AdoBackend, AdoProject, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
 import { SEED_LINK_TYPES, type AdoLinkType } from '../domain/adoLinkTypes.js';
 
 /**
@@ -41,6 +41,11 @@ export class MockAdoBackend implements AdoBackend {
       .get(id) as { id: number; type: WorkItemType; fields: string; parentId: number | null } | undefined;
     if (!row) return null;
     return { id: row.id, type: row.type, fields: JSON.parse(row.fields), parentId: row.parentId };
+  }
+
+  async getWorkItemsBatch(ids: number[]): Promise<WorkItemRecord[]> {
+    const results = await Promise.all(ids.map((id) => this.getWorkItem(id)));
+    return results.filter((item): item is WorkItemRecord => item !== null);
   }
 
   async linkParentChild(childId: number, parentId: number): Promise<void> {
@@ -87,7 +92,7 @@ export class MockAdoBackend implements AdoBackend {
     ];
   }
 
-  async readAreaPaths(_depth: number): Promise<AreaPathNode> {
+  async readAreaPaths(_depth: number, _project?: string): Promise<AreaPathNode> {
     return {
       path: 'Project',
       children: [
@@ -95,6 +100,13 @@ export class MockAdoBackend implements AdoBackend {
         { path: 'Project\\Backend', children: [] },
       ],
     };
+  }
+
+  async discoverProjects(): Promise<AdoProject[]> {
+    return [
+      { id: '1', name: 'Project' },
+      { id: '2', name: 'OtherProject' },
+    ];
   }
 
   async discoverLinkTypes(): Promise<AdoLinkType[]> {

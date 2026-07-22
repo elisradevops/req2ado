@@ -31,6 +31,25 @@ export class JobEventsController {
       console.error(`Redis subscriber error for job ${id}:`, err);
     });
 
+    // Replay the last-known stage immediately, before subscribing -- a
+    // client that (re)opens this stream mid-run (e.g. navigated away and
+    // back) would otherwise see nothing until the NEXT stage event fires,
+    // which can be minutes away during a real LLM call. Read BEFORE
+    // subscribe(): once subscribed, this connection can't issue any other
+    // command (see class doc comment).
+    const current = await subscriber.get(`job-events:${id}:current`);
+    if (current) {
+      res.write(`event: stage\ndata: ${current}\n\n`);
+    }
+    // Same replay-on-reconnect pattern as the stage's :current key above,
+    // for ingestion's narration events (see NarrationPublisher, Python
+    // side) -- published to the SAME channel this controller subscribes to
+    // below, distinguished only by `type: 'narration'` on the message.
+    const currentNarration = await subscriber.get(`job-events:${id}:narration`);
+    if (currentNarration) {
+      res.write(`event: narration\ndata: ${currentNarration}\n\n`);
+    }
+
     try {
       await subscriber.subscribe(`job-events:${id}`);
     } catch (err) {
@@ -55,9 +74,17 @@ export class JobEventsController {
 
     const terminalStages = new Set(['diff_ready', 'failed']);
     subscriber.on('message', (_channel: string, message: string) => {
-      const payload = JSON.parse(message) as { stage: string };
-      res.write(`event: stage\ndata: ${JSON.stringify(payload)}\n\n`);
-      if (terminalStages.has(payload.stage)) {
+      const payload = JSON.parse(message) as { type?: string; stage?: string };
+      // Convention: ingestion only ever publishes `type: 'narration'` on
+      // this channel; orchestrator's own JobEventsPublisher owns every
+      // `stage` transition (no `type` field). Narration never ends the
+      // stream -- only a terminal stage does.
+      if (payload.type === 'narration') {
+        res.write(`event: narration\ndata: ${message}\n\n`);
+        return;
+      }
+      res.write(`event: stage\ndata: ${message}\n\n`);
+      if (payload.stage && terminalStages.has(payload.stage)) {
         cleanup();
         res.end();
       }

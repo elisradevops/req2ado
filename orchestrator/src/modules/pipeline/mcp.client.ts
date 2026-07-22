@@ -18,6 +18,27 @@ export interface AdoLinkType {
   semanticHint?: string;
 }
 
+export interface AdoProject {
+  id: string;
+  name: string;
+}
+
+/**
+ * Thrown when a single MCP round trip (connect + tool call + close) exceeds
+ * requestTimeoutMs. Extends Error so every existing untyped catch (both
+ * `.catch(() => [])` fallbacks and outer job try/catch blocks) keeps
+ * working unchanged -- this only turns a HANG into a FAST REJECTION.
+ */
+export class McpRequestTimeoutError extends Error {
+  constructor(
+    public readonly url: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(`MCP request to ${url} timed out after ${timeoutMs}ms`);
+    this.name = 'McpRequestTimeoutError';
+  }
+}
+
 /**
  * Real MCP protocol client for mcp-ado-server — the first place in this
  * project that uses the SDK's CLIENT-side APIs (every prior phase only
@@ -31,6 +52,13 @@ export class McpClient {
   constructor(
     private readonly mcpUrl: string,
     private readonly bearerToken: string,
+    // Wall-clock cap on a single MCP round trip. Observed live: mcp-ado-server
+    // crashed mid-request and a McpClient call hung indefinitely -- the
+    // promise never settled, so the caller's surrounding try/catch never
+    // fired, leaving a pipeline job stuck 'running' for 13+ minutes with no
+    // recovery short of restarting the process. Default matches the MCP
+    // SDK's own DEFAULT_REQUEST_TIMEOUT_MSEC.
+    private readonly requestTimeoutMs = 60000,
   ) {}
 
   private async withClient<T>(
@@ -44,16 +72,38 @@ export class McpClient {
       headers['X-Ado-Pat'] = credential.pat;
     }
     const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), { requestInit: { headers } });
-    await client.connect(transport);
+    let timer: NodeJS.Timeout | undefined;
+    // The transport sets its own `signal` (from an internal AbortController)
+    // on every fetch AFTER spreading requestInit, so a signal passed via
+    // requestInit above would be silently overridden -- close() (which
+    // aborts that internal controller) is the only real cancellation path
+    // for a hung connect()/fetch()/SSE stream.
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        void client.close().catch(() => {});
+        reject(new McpRequestTimeoutError(this.mcpUrl, this.requestTimeoutMs));
+      }, this.requestTimeoutMs);
+    });
+    const run = (async () => {
+      await client.connect(transport);
+      try {
+        return await fn(client);
+      } finally {
+        await client.close().catch(() => {});
+      }
+    })();
     try {
-      return await fn(client);
+      return await Promise.race([run, timeout]);
     } finally {
-      await client.close();
+      if (timer) clearTimeout(timer);
     }
   }
 
-  private parseToolTextResult<T>(result: { content: { type: string; text?: string }[] }): T {
+  private parseToolTextResult<T>(result: { content: { type: string; text?: string }[]; isError?: boolean }): T {
     const textContent = result.content.find((item) => item.type === 'text');
+    if (result.isError) {
+      throw new Error(textContent?.text ?? 'MCP tool call failed');
+    }
     return JSON.parse(textContent?.text ?? 'null') as T;
   }
 
@@ -92,6 +142,23 @@ export class McpClient {
     });
   }
 
+  async readAreaPaths(depth: number, project?: string, credential?: AdoRequestCredential): Promise<unknown> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({
+        name: 'ado_read_area_paths',
+        arguments: { depth, ...(project ? { project } : {}) },
+      });
+      return this.parseToolTextResult(result as any);
+    });
+  }
+
+  async discoverProjects(credential?: AdoRequestCredential): Promise<AdoProject[]> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({ name: 'ado_discover_projects', arguments: {} });
+      return this.parseToolTextResult(result as any);
+    });
+  }
+
   async discoverFields(workItemType: string, credential?: AdoRequestCredential): Promise<string[]> {
     return this.withClient(credential, async (client) => {
       const result = await client.callTool({ name: 'ado_discover_fields', arguments: { workItemType } });
@@ -99,16 +166,19 @@ export class McpClient {
     });
   }
 
-  async queryIds(fieldMatch: Record<string, string>, credential?: AdoRequestCredential): Promise<number[]> {
+  async getWorkItemsBatch(
+    ids: number[],
+    credential?: AdoRequestCredential,
+  ): Promise<{ id: number; type: string; fields: Record<string, string>; parentId: number | null }[]> {
     return this.withClient(credential, async (client) => {
-      const result = await client.callTool({ name: 'ado_query_ids', arguments: { fieldMatch } });
+      const result = await client.callTool({ name: 'ado_get_work_items_batch', arguments: { ids } });
       return this.parseToolTextResult(result as any);
     });
   }
 
-  async readAreaPaths(depth: number, credential?: AdoRequestCredential): Promise<unknown> {
+  async queryIds(fieldMatch: Record<string, string>, credential?: AdoRequestCredential): Promise<number[]> {
     return this.withClient(credential, async (client) => {
-      const result = await client.callTool({ name: 'ado_read_area_paths', arguments: { depth } });
+      const result = await client.callTool({ name: 'ado_query_ids', arguments: { fieldMatch } });
       return this.parseToolTextResult(result as any);
     });
   }

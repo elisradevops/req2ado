@@ -8,6 +8,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   writing: { label: 'Writing', color: themeTokens.color.liveAccent },
   succeeded: { label: 'Succeeded', color: themeTokens.color.success },
   failed: { label: 'Failed', color: themeTokens.color.danger },
+  rejected: { label: 'Rejected', color: themeTokens.color.textSecondary },
 };
 
 export function StatusChip({ status }: { status: string }): React.ReactElement {
