@@ -23,13 +23,20 @@ class OrchestratorVisionClient:
         self._bearer_token = bearer_token
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
-    def describe_figure(self, image_bytes: bytes) -> str:
+    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+        """`mime_type` (e.g. 'image/jpeg'), when supplied, tells the
+        orchestrator's real content-type instead of its pre-existing
+        hardcoded 'image/png' default -- harmless for a docx-embedded PNG
+        figure (every existing caller omits it, unchanged behavior), but
+        needed for a directly-uploaded non-PNG image (see
+        app/loaders/image_loader.py)."""
         with httpx.Client(transport=self._transport, timeout=_VISION_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/vision",
                 json={
                     "prompt": _DESCRIBE_FIGURE_PROMPT,
                     "images": [base64.b64encode(image_bytes).decode("ascii")],
+                    **({"mimeType": mime_type} if mime_type else {}),
                 },
                 headers={"Authorization": f"Bearer {self._bearer_token}"},
             )

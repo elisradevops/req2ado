@@ -20,6 +20,52 @@ describe('IngestionHttpClient', () => {
     expect(options.body).toBeInstanceOf(FormData);
   });
 
+  it('uses the long-running dispatcher for /ingest, same as /level', async () => {
+    // Regression: /ingest previously used the plain default-timeout fetch --
+    // fine when it was pure CPU-bound parsing, but real job submission's
+    // vision captioning (one sequential LLM call per figure, same
+    // cold-start-latency profile as /level's calls) can exceed undici's
+    // default 300s headersTimeout. Confirmed live: a real 36-figure docx
+    // failed with HeadersTimeoutError at exactly 5:04 after submit.
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ document: { path: 'x.docx' }, blocks: [], tables: [], figures: [] }),
+    });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.ingest(Buffer.from('hello world'), 'x.docx');
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(options.dispatcher).toBeDefined();
+  });
+
+  it('appends skip_vision=true to /ingest when skipVision is passed', async () => {
+    // Regression: /jobs/preview only needs blockCount/sectionCount/fileType,
+    // never figure captions -- without this a merely-previewed document's
+    // images paid the full per-image vision-LLM cost (confirmed live: 28s
+    // instead of ~30ms for one small embedded image).
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ document: { path: 'x.docx' }, blocks: [], tables: [], figures: [] }),
+    });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.ingest(Buffer.from('hello world'), 'x.docx', true);
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/ingest?skip_vision=true');
+  });
+
+  it('omits skip_vision from /ingest when skipVision is not passed (real job submission)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ document: { path: 'x.docx' }, blocks: [], tables: [], figures: [] }),
+    });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.ingest(Buffer.from('hello world'), 'x.docx');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/ingest');
+  });
+
   it('throws on a non-ok /ingest response', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 422 });
     const client = new IngestionHttpClient('http://ingestion.internal');
@@ -69,16 +115,16 @@ describe('IngestionHttpClient', () => {
     await expect(client.level({ blocks: [] }, null)).rejects.toThrow(/level.*500/i);
   });
 
-  it('forwards area_path as a query param when provided', async () => {
+  it('forwards user_id (KB scope) as a query param when provided', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, 'CUST-1', 'survey', 'Project\\Area1');
+    await client.level({ blocks: [] }, 'CUST-1', 'survey', 'user-descriptor-1');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1&area_path=Project%5CArea1');
+    expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1&user_id=user-descriptor-1');
   });
 
-  it('omits area_path when not provided, matching pre-existing behavior', async () => {
+  it('omits user_id when not provided, matching pre-existing behavior', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
     await client.level({ blocks: [] }, 'CUST-1', 'survey');
@@ -202,7 +248,7 @@ describe('IngestionHttpClient.ingestUrl', () => {
         method: 'POST',
         body: JSON.stringify({
           url: 'https://contoso.sharepoint.com/sites/s/doc.pdf',
-          area_path: 'Project\\Area1',
+          user_id: 'Project\\Area1',
           doc_type: 'SRD',
         }),
       }),
@@ -260,7 +306,7 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
       'http://ingestion:8000/kb/ingest-folder-url',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', area_path: 'Project\\Area1', doc_type: 'SRD', recursive: false }),
+        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', user_id: 'Project\\Area1', doc_type: 'SRD', recursive: false }),
       }),
     );
     expect(result).toEqual({
@@ -281,7 +327,7 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
     expect(mockFetch).toHaveBeenCalledWith(
       'http://ingestion:8000/kb/ingest-folder-url',
       expect.objectContaining({
-        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', area_path: 'Project\\Area1', doc_type: 'SRD', recursive: true }),
+        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', user_id: 'Project\\Area1', doc_type: 'SRD', recursive: true }),
       }),
     );
   });

@@ -49,7 +49,7 @@ describe('AuthController (e2e)', () => {
       .send({ adoOrgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fake-pat' });
 
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({ displayName: 'Jane Doe' });
+    expect(res.body).toEqual({ displayName: 'Jane Doe', userId: 'Microsoft.TeamFoundation.Identity;S-1-5-21-000' });
   });
 
   it('POST /auth/login returns 401 on an invalid PAT', async () => {

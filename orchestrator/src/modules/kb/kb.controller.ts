@@ -11,20 +11,20 @@ export class KbController {
   @Post('ingest-url')
   async ingestUrl(
     @Body('url') url: string | undefined,
-    @Body('areaPath') areaPath: string | undefined,
+    @Body('userId') userId: string | undefined,
     @Body('docType') docType: string | undefined,
   ): Promise<IngestUrlResult> {
     if (!url) {
       throw new BadRequestException('url is required');
     }
-    if (!areaPath) {
-      throw new BadRequestException('areaPath is required');
+    if (!userId) {
+      throw new BadRequestException('userId is required');
     }
     if (!this.isAllowedHost(url)) {
       throw new BadRequestException('url must be a SharePoint/OneDrive URL');
     }
     try {
-      return await this.kbService.ingestUrl(url, areaPath, docType ?? null);
+      return await this.kbService.ingestUrl(url, userId, docType ?? null);
     } catch (err) {
       if (err instanceof IngestionHttpError) {
         throw new HttpException(err.message, err.status);
@@ -36,21 +36,21 @@ export class KbController {
   @Post('ingest-folder-url')
   async ingestFolderUrl(
     @Body('url') url: string | undefined,
-    @Body('areaPath') areaPath: string | undefined,
+    @Body('userId') userId: string | undefined,
     @Body('docType') docType: string | undefined,
     @Body('recursive') recursive?: boolean,
   ): Promise<FolderIngestUrlResult> {
     if (!url) {
       throw new BadRequestException('url is required');
     }
-    if (!areaPath) {
-      throw new BadRequestException('areaPath is required');
+    if (!userId) {
+      throw new BadRequestException('userId is required');
     }
     if (!this.isAllowedHost(url)) {
       throw new BadRequestException('url must be a SharePoint/OneDrive URL');
     }
     try {
-      return await this.kbService.ingestFolderUrl(url, areaPath, docType ?? null, recursive ?? false);
+      return await this.kbService.ingestFolderUrl(url, userId, docType ?? null, recursive ?? false);
     } catch (err) {
       if (err instanceof IngestionHttpError) {
         throw new HttpException(err.message, err.status);
@@ -60,8 +60,8 @@ export class KbController {
   }
 
   @Get('documents')
-  async listDocuments(@Query('areaPath') areaPath?: string): Promise<IngestedDocumentSummary[]> {
-    return this.kbService.listDocuments(areaPath);
+  async listDocuments(@Query('userId') userId?: string): Promise<IngestedDocumentSummary[]> {
+    return this.kbService.listDocuments(userId);
   }
 
   private isAllowedHost(url: string): boolean {

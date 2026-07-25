@@ -24,7 +24,10 @@ describe('JobsController.preview', () => {
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
     const result = await controller.preview(file);
 
-    expect(ingestionClient.ingest).toHaveBeenCalledWith(file.buffer, 'req.docx');
+    // skipVision=true: preview only needs blockCount/sectionCount/fileType,
+    // never figure captions -- must not pay the per-image vision-LLM cost
+    // (confirmed live: 28s instead of ~30ms for one small embedded image).
+    expect(ingestionClient.ingest).toHaveBeenCalledWith(file.buffer, 'req.docx', true);
     expect(result).toEqual({ blockCount: 5, sectionCount: 2, fileType: 'docx' });
   });
 

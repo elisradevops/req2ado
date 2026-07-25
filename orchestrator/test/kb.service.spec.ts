@@ -18,23 +18,23 @@ describe('KbService', () => {
 
     expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD');
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith({
-      where: { areaPath_driveItemId: { areaPath: 'Project\\Area1', driveItemId: 'drive-1' } },
-      create: { areaPath: 'Project\\Area1', driveItemId: 'drive-1', name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD' },
+      where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-1' } },
+      create: { userId: 'Project\\Area1', driveItemId: 'drive-1', name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD' },
       update: { name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', ingestedAt: expect.any(Date) },
     });
     expect(result).toEqual(ingestResult);
   });
 
-  it('listDocuments() filters by areaPath when provided', async () => {
+  it('listDocuments() filters by userId when provided', async () => {
     const prisma = { ingestedDocument: { findMany: jest.fn().mockResolvedValue([]) } };
     const service = new KbService(prisma as any, {} as any);
 
     await service.listDocuments('Project\\Area1');
 
-    expect(prisma.ingestedDocument.findMany).toHaveBeenCalledWith({ where: { areaPath: 'Project\\Area1' }, orderBy: { ingestedAt: 'desc' } });
+    expect(prisma.ingestedDocument.findMany).toHaveBeenCalledWith({ where: { userId: 'Project\\Area1' }, orderBy: { ingestedAt: 'desc' } });
   });
 
-  it('listDocuments() returns all documents ordered newest-first when areaPath is omitted', async () => {
+  it('listDocuments() returns all documents ordered newest-first when userId is omitted', async () => {
     const prisma = { ingestedDocument: { findMany: jest.fn().mockResolvedValue([]) } };
     const service = new KbService(prisma as any, {} as any);
 
@@ -60,10 +60,10 @@ describe('KbService', () => {
     expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', false);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledTimes(2);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { areaPath_driveItemId: { areaPath: 'Project\\Area1', driveItemId: 'drive-a' } } }),
+      expect.objectContaining({ where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-a' } } }),
     );
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { areaPath_driveItemId: { areaPath: 'Project\\Area1', driveItemId: 'drive-b' } } }),
+      expect.objectContaining({ where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-b' } } }),
     );
     expect(result).toEqual(folderResult);
   });

@@ -69,11 +69,13 @@ export class JobsController {
   async submit(
     @UploadedFile() file: Express.Multer.File | undefined,
     @Body('areaPath') areaPath: string | undefined,
+    @Body('userId') userId: string | undefined,
     @Body('customerId') customerId: string | undefined,
     @Body('mode') mode: string | undefined,
     @Body('state') state: string | undefined,
     @Body('iterationPath') iterationPath: string | undefined,
     @Body('model') model: string | undefined,
+    @Body('followUp') followUp: string | boolean | undefined,
   ): Promise<{ jobId: string }> {
     if (!file) {
       throw new BadRequestException('file is required');
@@ -96,6 +98,13 @@ export class JobsController {
     const sourceHash = createHash('sha256').update(file.buffer).digest('hex');
     return this.jobsService.submit({
       areaPath,
+      // The submitting user's stable ADO identity (see Job.userId's own doc
+      // comment) -- the Knowledge Base scope key, kept separate from
+      // areaPath (ADO write-back destination only). Optional: not every
+      // caller has a resolved identity (e.g. an old/unauthenticated client);
+      // KB grounding simply stays off for that job, matching pre-KB-scoping
+      // behavior.
+      userId: userId ?? null,
       customerId: customerId ?? null,
       mode: (mode as 'baseline' | 'survey' | undefined) ?? 'baseline',
       fileBuffer: file.buffer,
@@ -104,6 +113,10 @@ export class JobsController {
       state,
       iterationPath: iterationPath ?? null,
       model,
+      // Multipart form bodies send booleans as the strings "true"/"false"
+      // (or omit the field entirely) -- coerce explicitly rather than
+      // relying on JS truthiness, since the string "false" is truthy.
+      followUp: followUp === true || followUp === 'true',
     });
   }
 
@@ -132,7 +145,7 @@ export class JobsController {
     // `sections` field — only `document`, `blocks`, `tables`, `figures`.
     // Each Block carries a `kind` (BlockKind str-enum). Section count is
     // derived as the number of blocks whose kind is "heading".
-    const doc = (await this.ingestionClient.ingest(file.buffer, file.originalname)) as {
+    const doc = (await this.ingestionClient.ingest(file.buffer, file.originalname, true)) as {
       blocks?: { kind?: string }[];
     };
     const blocks = doc.blocks ?? [];

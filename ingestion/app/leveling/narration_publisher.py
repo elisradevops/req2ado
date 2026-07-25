@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 # actual expected job lifetime.
 _CURRENT_NARRATION_TTL_SECONDS = 3600
 
-Phase = Literal["infer_hierarchy", "generate_requirements", "score_requirements", "infer_trace_links"]
+Phase = Literal[
+    "infer_hierarchy", "generate_requirements", "analyze_section", "score_requirements", "infer_trace_links"
+]
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,14 @@ class LevelingProgress:
     blocks_total: int
     kb_grounded: bool
     kb_citations: list[dict]  # [{source_file, similarity}] -- empty when kb_grounded is False
+    # Human-readable label for the section currently being analyzed --
+    # typically its own first heading text, or a short excerpt when the
+    # section has no heading (see llm_leveling._derive_section_label).
+    # None for the whole-tree infer_trace_links phase (no single section).
+    # Without this the UI could only ever show an anonymous "Section N of
+    # M", giving no way to tell WHICH real content a job was processing at
+    # the time it failed.
+    section_label: str | None = None
 
 
 ProgressCallback = Callable[[LevelingProgress], None]
@@ -37,6 +47,7 @@ ProgressCallback = Callable[[LevelingProgress], None]
 _PHASE_MESSAGES: dict[Phase, str] = {
     "infer_hierarchy": "Analyzing structure",
     "generate_requirements": "Generating formal requirements",
+    "analyze_section": "Analyzing and synthesizing requirements",
     "score_requirements": "Scoring requirement quality",
     "infer_trace_links": "Resolving trace/coverage links",
 }
@@ -45,7 +56,10 @@ _PHASE_MESSAGES: dict[Phase, str] = {
 def _format_message(progress: LevelingProgress) -> str:
     base = _PHASE_MESSAGES[progress.phase]
     if progress.branch_index is not None:
-        base += f" (section {progress.branch_index + 1} of {progress.branch_count})"
+        base += f" (section {progress.branch_index + 1} of {progress.branch_count}"
+        if progress.section_label:
+            base += f" -- {progress.section_label}"
+        base += ")"
     base += f" -- {progress.blocks_done} of {progress.blocks_total} blocks"
     if progress.kb_grounded:
         strong = sum(1 for c in progress.kb_citations if c.get("similarity", 0) >= 0.55)
@@ -86,6 +100,7 @@ class NarrationPublisher:
                 "phase": progress.phase,
                 "branchIndex": progress.branch_index,
                 "branchCount": progress.branch_count,
+                "sectionLabel": progress.section_label,
                 "blocksDone": progress.blocks_done,
                 "blocksTotal": progress.blocks_total,
                 "kbGrounded": progress.kb_grounded,

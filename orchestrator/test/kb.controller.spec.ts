@@ -8,9 +8,9 @@ describe('KbController', () => {
     await expect(controller.ingestUrl(undefined, 'Project\\Area1', undefined)).rejects.toThrow(/url/i);
   });
 
-  it('ingestUrl() 400s when areaPath is missing', async () => {
+  it('ingestUrl() 400s when userId is missing', async () => {
     const controller = new KbController({} as any);
-    await expect(controller.ingestUrl('https://contoso.sharepoint.com/x', undefined, undefined)).rejects.toThrow(/areaPath/i);
+    await expect(controller.ingestUrl('https://contoso.sharepoint.com/x', undefined, undefined)).rejects.toThrow(/userId/i);
   });
 
   it('ingestUrl() 400s on a bad host without calling the service', async () => {

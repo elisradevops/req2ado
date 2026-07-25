@@ -45,6 +45,18 @@ export class OpenWebUiClient implements LlmClient {
 
   async chat(messages: ChatMessage[], opts?: LlmChatOptions): Promise<LlmChatResult> {
     const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
+    // Ollama-specific extras, not part of the OpenAI spec -- its OpenAI-compat
+    // endpoint accepts a passthrough `options` object for native Ollama
+    // request options. Built as ONE merged object (not one independent
+    // spread per field) since multiple `options:` spread entries in the same
+    // object literal would silently OVERWRITE each other (later key wins),
+    // losing whichever was set first. A genuine OpenAI-compat backend (the
+    // production frontier-model proxy) simply ignores an unrecognized field.
+    // See LlmChatOptions.numCtx/topK/minP doc comments.
+    const ollamaOptions: Record<string, number> = {};
+    if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
+    if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
+    if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
     const buildParams = (includeSchema: boolean) => ({
       model: opts?.model ?? this.config.LLM_CHAT_MODEL,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
@@ -54,6 +66,7 @@ export class OpenWebUiClient implements LlmClient {
       // worst-case latency for a reasoning model's otherwise-unbounded
       // chain-of-thought + answer (see LlmChatOptions.maxTokens doc comment).
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
     });
@@ -125,7 +138,7 @@ export class OpenWebUiClient implements LlmClient {
     return body.embeddings;
   }
 
-  async vision(prompt: string, images: Buffer[], opts?: { model?: string }): Promise<string> {
+  async vision(prompt: string, images: Buffer[], opts?: { model?: string; mimeType?: string }): Promise<string> {
     const model = opts?.model ?? this.config.LLM_VISION_MODEL;
     if (!model) {
       throw new Error('vision() called with no model available -- set LLM_VISION_MODEL or pass opts.model');
@@ -134,12 +147,17 @@ export class OpenWebUiClient implements LlmClient {
     // a multimodal content array -- Ollama/Open WebUI's OpenAI-compat API
     // accepts image_url content parts for vision-capable models (llava,
     // bakllava, moondream, etc.) the same way OpenAI's own API does.
+    // mimeType defaults to image/png -- the pre-existing hardcoded value,
+    // harmless for docx-embedded figures whose real type was never
+    // surfaced, but now correctly overridable for directly-uploaded
+    // non-PNG images (KB image ingestion).
+    const mimeType = opts?.mimeType ?? 'image/png';
     const outboundPrompt = this.config.LLM_TRUSTED_LOCAL ? prompt : redactText(prompt);
     const content: OpenAI.Chat.ChatCompletionContentPart[] = [
       { type: 'text', text: outboundPrompt },
       ...images.map((image) => ({
         type: 'image_url' as const,
-        image_url: { url: `data:image/png;base64,${image.toString('base64')}` },
+        image_url: { url: `data:${mimeType};base64,${image.toString('base64')}` },
       })),
     ];
     const response = await this.openai.chat.completions.create({

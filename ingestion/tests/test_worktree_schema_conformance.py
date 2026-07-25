@@ -48,31 +48,30 @@ def _survey_doc() -> CanonicalDoc:
     )
 
 
-class FakeLlmLevelingClient:
-    """Hand-written test double for LlmLevelingClient — mirrors the fake used
-    in tests/test_llm_leveling.py to prove SURVEY-mode output also conforms
-    to the shared work-item-tree schema."""
+class FakeSectionAnalysisClient:
+    """Hand-written test double for SectionAnalysisClient — mirrors the fake
+    used in tests/test_llm_leveling.py to prove SURVEY-mode output (via the
+    one-call holistic analyze_section redesign) also conforms to the shared
+    work-item-tree schema."""
 
-    def infer_hierarchy(self, outline: str, profile_hint: str | None, kb_context: str | None = None) -> list[dict]:
+    def analyze_section(
+        self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
+        topic_count: int | None = None,
+    ) -> tuple[list[dict], bool]:
         return [
-            {"node_id": "0", "type": "Feature", "parent_id": None},
-            {"node_id": "1", "type": "Requirement", "parent_id": "0"},
-        ]
+            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display", "text": "The system shall handle: Display", "tags": []},
+            {
+                "temp_id": "n1",
+                "type": "Requirement",
+                "parent_temp_id": "n0",
+                "title": "HDR support",
+                "text": "The system shall handle: The display shall support HDR.",
+                "tags": [],
+            },
+        ], False
 
-
-class FakeBatchedRequirementClient:
-    """Hand-written test double for BatchedRequirementClient — mirrors the
-    fake used in tests/test_llm_leveling.py to prove SURVEY-mode output
-    also conforms to the shared work-item-tree schema after this phase wired
-    batched requirement generation into build_survey_tree."""
-
-    def generate_requirements_for_document(
-        self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
-    ) -> dict[str, list[dict]]:
-        return {
-            node_id: [{"text": f"The system shall handle: {text}", "tags": []}]
-            for node_id, text in blocks_by_node_id.items()
-        }
+    def analyze_section_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
+        raise AssertionError("not exercised by this test -- default model is not tool-capable")
 
 
 def test_baseline_tree_matches_work_item_tree_schema(schema) -> None:
@@ -81,5 +80,5 @@ def test_baseline_tree_matches_work_item_tree_schema(schema) -> None:
 
 
 def test_survey_tree_matches_work_item_tree_schema(schema) -> None:
-    tree = build_survey_tree(_survey_doc(), FakeLlmLevelingClient(), FakeBatchedRequirementClient())
+    tree = build_survey_tree(_survey_doc(), FakeSectionAnalysisClient())
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)

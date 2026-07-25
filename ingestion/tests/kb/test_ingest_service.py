@@ -39,7 +39,7 @@ def test_ingests_a_new_document_end_to_end(mock_dispatch, tmp_path) -> None:
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     result = ingest_document_from_url(
         url=VALID_URL,
-        area_path="Project\\Area1",
+        user_id="Project\\Area1",
         doc_type="requirements",
         graph_client=graph_client,
         embed_client=FakeEmbedClient(),
@@ -65,7 +65,7 @@ def test_skips_a_document_whose_hash_is_unchanged(mock_dispatch, tmp_path) -> No
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     kwargs = dict(
         url=VALID_URL,
-        area_path="Project\\Area1",
+        user_id="Project\\Area1",
         doc_type="requirements",
         graph_client=graph_client,
         embed_client=FakeEmbedClient(),
@@ -89,7 +89,7 @@ def test_rejects_oversize_files_before_downloading_content(tmp_path) -> None:
     with pytest.raises(ValueError):
         ingest_document_from_url(
             url=VALID_URL,
-            area_path="Project\\Area1",
+            user_id="Project\\Area1",
             doc_type=None,
             graph_client=graph_client,
             embed_client=FakeEmbedClient(),
@@ -110,7 +110,7 @@ def test_rejects_content_whose_magic_bytes_dont_match_the_extension(tmp_path) ->
     with pytest.raises(ValueError):
         ingest_document_from_url(
             url=VALID_URL,
-            area_path="Project\\Area1",
+            user_id="Project\\Area1",
             doc_type=None,
             graph_client=graph_client,
             embed_client=FakeEmbedClient(),
@@ -125,7 +125,7 @@ def test_rejects_an_ssrf_url_before_calling_graph_client(tmp_path) -> None:
     with pytest.raises(ValueError):
         ingest_document_from_url(
             url="http://169.254.169.254/x",
-            area_path="Project\\Area1",
+            user_id="Project\\Area1",
             doc_type=None,
             graph_client=graph_client,
             embed_client=FakeEmbedClient(),
@@ -152,7 +152,7 @@ def test_ingest_folder_stores_each_file_and_skips_subfolders(mock_dispatch, tmp_
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     result = ingest_folder_from_url(
         url="https://contoso.sharepoint.com/sites/s/folder",
-        area_path="Project\\Area1",
+        user_id="Project\\Area1",
         doc_type="requirements",
         graph_client=graph_client,
         embed_client=FakeEmbedClient(),
@@ -178,7 +178,7 @@ def test_ingest_folder_isolates_one_files_failure_from_the_rest(mock_dispatch, t
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     result = ingest_folder_from_url(
         url="https://contoso.sharepoint.com/sites/s/folder",
-        area_path="Project\\Area1",
+        user_id="Project\\Area1",
         doc_type=None,
         graph_client=graph_client,
         embed_client=FakeEmbedClient(),
@@ -208,7 +208,7 @@ def test_ingest_folder_recursive_descends_into_subfolders_with_relative_path(moc
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     result = ingest_folder_from_url(
         url="https://contoso.sharepoint.com/sites/s/folder",
-        area_path="Project\\Area1",
+        user_id="Project\\Area1",
         doc_type="requirements",
         graph_client=graph_client,
         embed_client=FakeEmbedClient(),
@@ -235,7 +235,7 @@ def test_ingest_folder_non_recursive_still_skips_subfolders(mock_dispatch, tmp_p
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     result = ingest_folder_from_url(
         url="https://contoso.sharepoint.com/sites/s/folder",
-        area_path="Project\\Area1",
+        user_id="Project\\Area1",
         doc_type=None,
         graph_client=graph_client,
         embed_client=FakeEmbedClient(),
@@ -268,7 +268,7 @@ def test_ingest_folder_recursive_stops_at_max_depth(mock_dispatch, tmp_path) -> 
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     result = ingest_folder_from_url(
         url="https://contoso.sharepoint.com/sites/s/folder",
-        area_path="Project\\Area1",
+        user_id="Project\\Area1",
         doc_type=None,
         graph_client=graph_client,
         embed_client=FakeEmbedClient(),
@@ -294,7 +294,7 @@ def test_ingest_folder_recursive_isolates_a_subfolder_listing_failure(mock_dispa
     vector_store = KbVectorStore(persist_path=str(tmp_path))
     result = ingest_folder_from_url(
         url="https://contoso.sharepoint.com/sites/s/folder",
-        area_path="Project\\Area1",
+        user_id="Project\\Area1",
         doc_type=None,
         graph_client=graph_client,
         embed_client=FakeEmbedClient(),
@@ -308,6 +308,114 @@ def test_ingest_folder_recursive_isolates_a_subfolder_listing_failure(mock_dispa
     assert "transient Graph error" in by_name["BrokenSubfolder"].reason
 
 
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_document_forwards_describe_figure_to_dispatch(mock_dispatch, tmp_path) -> None:
+    # Regression: KB ingestion previously never captioned figures at all --
+    # _store_document called dispatch_by_extension with no describe_figure,
+    # unlike app.main's /ingest route. Every embedded image became the bare
+    # '[FIGURE: none]' placeholder regardless of vision config.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    def fake_describe_figure(image_bytes: bytes) -> str:
+        return "a caption"
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        describe_figure=fake_describe_figure,
+    )
+
+    assert mock_dispatch.call_args.kwargs["describe_figure"] is fake_describe_figure
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_document_omits_describe_figure_by_default(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+    )
+
+    assert mock_dispatch.call_args.kwargs["describe_figure"] is None
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_folder_forwards_describe_figure_to_every_file(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [
+        GraphFolderChild(id="item-1", name="a.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/a"),
+    ]
+    graph_client.fetch_child_content.return_value = DOCX_CONTENT
+
+    def fake_describe_figure(image_bytes: bytes) -> str:
+        return "a caption"
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        describe_figure=fake_describe_figure,
+    )
+
+    assert mock_dispatch.call_args.kwargs["describe_figure"] is fake_describe_figure
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_folder_recursive_forwards_describe_figure_into_subfolders(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.list_folder_children.return_value = [
+        GraphFolderChild(id="item-2", name="Subfolder", mime_type=None, size=0, is_folder=True, download_url=None, drive_id="drive-1"),
+    ]
+    graph_client.list_children_by_id.return_value = [
+        GraphFolderChild(id="item-3", name="nested.docx", mime_type=None, size=len(DOCX_CONTENT), is_folder=False, download_url="https://dl/nested"),
+    ]
+    graph_client.fetch_child_content.return_value = DOCX_CONTENT
+
+    def fake_describe_figure(image_bytes: bytes) -> str:
+        return "a caption"
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_folder_from_url(
+        url="https://contoso.sharepoint.com/sites/s/folder",
+        user_id="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        recursive=True,
+        describe_figure=fake_describe_figure,
+    )
+
+    assert mock_dispatch.call_args.kwargs["describe_figure"] is fake_describe_figure
+
+
 def test_ingest_folder_rejects_ssrf_url_before_listing_children(tmp_path) -> None:
     graph_client = MagicMock()
     vector_store = KbVectorStore(persist_path=str(tmp_path))
@@ -315,7 +423,7 @@ def test_ingest_folder_rejects_ssrf_url_before_listing_children(tmp_path) -> Non
     with pytest.raises(ValueError):
         ingest_folder_from_url(
             url="http://169.254.169.254/x",
-            area_path="Project\\Area1",
+            user_id="Project\\Area1",
             doc_type=None,
             graph_client=graph_client,
             embed_client=FakeEmbedClient(),

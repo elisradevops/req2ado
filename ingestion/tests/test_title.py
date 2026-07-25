@@ -78,3 +78,46 @@ def test_multibyte_text_with_word_boundaries_trims_correctly() -> None:
 
 def test_respects_a_custom_max_length() -> None:
     assert extract_baseline_title("Channel scan test", max_length=7) == "Channel"
+
+
+def test_uses_only_the_first_sentence_of_multi_sentence_text() -> None:
+    text = "The receiver shall scan all channels. This improves coverage. A third sentence follows."
+    assert extract_baseline_title(text) == "The receiver shall scan all channels."
+
+
+def test_does_not_split_on_a_decimal_number() -> None:
+    # "3.3V" must not be mistaken for a sentence boundary -- no whitespace
+    # immediately follows the '.' there.
+    text = "The BP shall operate at 3.3V and comply with MIL-STD-704A."
+    assert extract_baseline_title(text) == text
+
+
+def test_does_not_split_on_an_abbreviation() -> None:
+    # "e.g." must not be mistaken for a sentence boundary either.
+    text = "The system shall support common formats, e.g. PDF and DOCX, for ingestion."
+    assert extract_baseline_title(text) == text
+
+
+def test_falls_back_to_whole_text_when_no_sentence_boundary_exists() -> None:
+    # No '.', '!', or '?' anywhere -- behavior unchanged from pre-sentence-rule.
+    text = "Channel scan without terminal punctuation"
+    assert extract_baseline_title(text) == text
+
+
+def test_truncates_the_first_sentence_when_it_alone_exceeds_max_length() -> None:
+    # The first sentence itself is too long -- truncate JUST that sentence
+    # at a word boundary, not the whole multi-sentence text (a later
+    # sentence must never leak into the truncated result).
+    long_sentence = ("word " * 60).strip() + "."  # ~300 chars, one long sentence
+    text = long_sentence + " A short second sentence."
+    result = extract_baseline_title(text)
+    assert len(result) <= 256
+    assert "second sentence" not in result
+    assert long_sentence.startswith(result)
+
+
+def test_hard_cuts_the_first_sentence_when_it_has_no_word_boundary() -> None:
+    text = ("A" * 300) + ". A short second sentence."
+    result = extract_baseline_title(text)
+    assert len(result) == 256
+    assert result == "A" * 256

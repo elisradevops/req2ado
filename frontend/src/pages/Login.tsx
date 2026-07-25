@@ -40,7 +40,7 @@ export function Login(): JSX.Element {
       const response = await httpClient.post('/auth/login', { adoOrgUrl, pat });
       setDisplayName(response.data.displayName);
       setStatus('ok');
-      useAuthStore.getState().login(adoOrgUrl, pat, response.data.displayName);
+      useAuthStore.getState().login(adoOrgUrl, pat, response.data.displayName, response.data.userId);
       navigate('/jobs');
     } catch (err) {
       setStatus('error');

@@ -81,3 +81,66 @@ class TestVerifySupportedContent:
     def test_unsupported_extension(self):
         with pytest.raises(ValueError):
             verify_supported_content("x.exe", b"MZ")
+
+    def test_pptx_valid(self):
+        verify_supported_content("deck.pptx", b"PK\x03\x04....")
+
+    def test_pptx_invalid(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("deck.pptx", b"plain")
+
+    def test_csv_valid(self):
+        verify_supported_content("data.csv", "a,b\n1,2".encode())
+
+    def test_csv_invalid_non_utf8(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("data.csv", b"\xff\xfe\x00\x01")
+
+    def test_rtf_valid(self):
+        verify_supported_content("notes.rtf", rb"{\rtf1\ansi ...}")
+
+    def test_rtf_invalid(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("notes.rtf", b"not rtf")
+
+    def test_jpeg_valid(self):
+        verify_supported_content("photo.jpg", b"\xff\xd8\xff\xe0...")
+
+    def test_jpeg_invalid(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("photo.jpg", b"not a jpeg")
+
+    def test_png_valid(self):
+        verify_supported_content("photo.png", b"\x89PNG\r\n\x1a\n...")
+
+    def test_png_invalid(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("photo.png", b"not a png")
+
+    def test_gif_valid(self):
+        verify_supported_content("photo.gif", b"GIF89a...")
+
+    def test_gif_invalid(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("photo.gif", b"not a gif")
+
+    def test_bmp_valid(self):
+        verify_supported_content("photo.bmp", b"BM....")
+
+    def test_bmp_invalid(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("photo.bmp", b"not a bmp")
+
+    def test_webp_valid(self):
+        verify_supported_content("photo.webp", b"RIFF\x00\x00\x00\x00WEBP...")
+
+    def test_webp_invalid(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("photo.webp", b"not a webp")
+
+    def test_tiff_valid(self):
+        verify_supported_content("photo.tiff", b"II*\x00...")
+
+    def test_tiff_invalid(self):
+        with pytest.raises(ValueError):
+            verify_supported_content("photo.tiff", b"not a tiff")

@@ -13,7 +13,21 @@ model Job {
   status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed" | "rejected"
   sourceHash       String
   areaPath         String
+  // The submitting user's stable ADO identity (authenticatedUser.descriptor,
+  // see AdoPatProvider) -- threaded into ingestion's /level call as the
+  // Knowledge Base scope key (see IngestedDocument below), kept SEPARATE
+  // from areaPath (the ADO write-back destination + idempotency key,
+  // unrelated concern). Nullable: historical jobs predate this column.
+  userId           String?
   customerId       String?
+  // True when this job ingests a follow-up document against requirements
+  // already ingested under the same area path -- gates whether
+  // pipeline.worker.ts's diff() runs the dedup-similarity check at all.
+  // Default false: a first-time ingestion has nothing to compare against,
+  // so skipping the check is both correct and faster (no wasted embed
+  // calls). See docs/runbook.md's "Duplicate Detection for Follow-up
+  // Documents" backlog item.
+  followUp         Boolean   @default(false)
   originalFilename String
   dryRunDiff       Json?
   state            String    @default("Proposed")
@@ -94,11 +108,18 @@ model IdempotencyMapping {
 // SharePoint/OneDrive sharing link via Microsoft Graph. No token or content
 // is stored here — chunk text + embeddings live in the Chroma KB collection;
 // this table only records what has been ingested, for display/listing.
-// Keyed [areaPath, driveItemId] so re-ingesting the same document updates
-// the same row rather than duplicating it.
+// Keyed [userId, driveItemId] -- User-scoped (the ingesting user's stable
+// ADO identity, see Job.userId's own doc comment), NOT areaPath. Previously
+// scoped by areaPath, which conflated "who owns this KB document" with "what
+// ADO destination a later job happens to target" -- a job whose ADO area
+// path didn't match the ingesting area path silently got zero KB grounding
+// even though the same person owned both. Re-ingesting the same document
+// (same user, same driveItemId) updates the same row rather than
+// duplicating it; the SAME SharePoint file ingested by two different users
+// is tracked as two independent rows (each user's own KB copy).
 model IngestedDocument {
   id          String   @id @default(uuid())
-  areaPath    String
+  userId      String
   driveItemId String
   name        String
   sizeBytes   Int
@@ -106,7 +127,7 @@ model IngestedDocument {
   docType     String?
   ingestedAt  DateTime @default(now())
 
-  @@unique([areaPath, driveItemId])
+  @@unique([userId, driveItemId])
 }
 
 // One row per chat turn (user message or assistant reply) on a single

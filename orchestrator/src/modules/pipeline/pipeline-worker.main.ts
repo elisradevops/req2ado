@@ -75,7 +75,19 @@ const worker = new Worker(
   // job") -- raised substantially (10 min) since real SURVEY jobs already
   // run tens of minutes, so slower real-stall detection is an acceptable
   // tradeoff against false-positive stalls during host contention.
-  { connection: { url: config.REDIS_URL } as any, concurrency: config.PIPELINE_WORKER_CONCURRENCY, lockDuration: 600000, stalledInterval: 600000 },
+  //
+  // Raised again to 30 min: the coverage-chunking fix (see
+  // ingestion/app/leveling/llm_leveling.py's coverage_budget_tokens)
+  // deliberately trades one large holistic call for several smaller
+  // sequential per-branch calls to fix under-synthesis -- correct for
+  // coverage, but it extends a real job's total wall-clock time
+  // proportionally to branch count. Observed live: a real AirPro job (6
+  // branches) still hit "could not renew lock"/"Missing lock" at the
+  // previous 10-min value under the SAME already-diagnosed host
+  // contention (Docker Desktop VM starved by Ollama.app's native
+  // inference) -- not a new bug, just the existing tradeoff's margin
+  // consumed by the chunking fix's own added latency.
+  { connection: { url: config.REDIS_URL } as any, concurrency: config.PIPELINE_WORKER_CONCURRENCY, lockDuration: 1800000, stalledInterval: 1800000 },
 );
 
 worker.on('failed', (job, error) => {

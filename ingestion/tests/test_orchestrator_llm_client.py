@@ -656,3 +656,738 @@ def test_infer_trace_links_omits_response_schema_when_catalog_is_empty() -> None
     client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=[])
 
     assert "responseSchema" not in captured["body"]
+
+
+# --- analyze_section / analyze_section_agentic (§2b/§5b holistic redesign) ---
+
+
+def test_analyze_section_parses_the_nodes_object_and_sends_response_schema() -> None:
+    # Unlike the legacy array-shaped methods above, analyze_section DOES send
+    # responseSchema -- section_analysis_schema() is object-wrapped
+    # ({"nodes": [...]}) and deliberately maxItems-free, so it doesn't hit
+    # the GBNF grammar-cost cliff the legacy methods avoid by omitting it.
+    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The unit shall survive a 1m drop.", "tags": ["safety"]}]
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result, truncated = client.analyze_section("Some section text.")
+
+    assert result == nodes
+    assert truncated is False
+    assert captured["body"]["temperature"] == 0
+    assert captured["body"]["messages"][1]["content"] == "Some section text."
+    schema = captured["body"]["responseSchema"]["schema"]
+    assert schema["properties"]["nodes"]["type"] == "array"
+    assert "maxItems" not in schema["properties"]["nodes"]
+
+
+def test_analyze_section_caps_max_tokens_to_avoid_silent_truncation() -> None:
+    # Regression, confirmed live: a real 679-block, 6-section document's
+    # section 1 response truncated mid-array ('Expecting , delimiter') at
+    # ~8.4KB -- analyze_section previously sent NO maxTokens at all, so
+    # output was bounded by whatever small default Ollama/Open WebUI
+    # applies, and a reasoning model (gemma4:e4b) burns hidden
+    # chain-of-thought tokens before its actual JSON answer. Must send the
+    # same _MAX_OUTPUT_TOKENS ceiling the legacy calls already trust.
+    from app.survey.orchestrator_llm_client import _MAX_OUTPUT_TOKENS
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+
+    assert captured["body"]["maxTokens"] == _MAX_OUTPUT_TOKENS
+
+
+def test_analyze_section_agentic_caps_max_tokens_to_avoid_silent_truncation() -> None:
+    from app.survey.orchestrator_llm_client import _MAX_OUTPUT_TOKENS
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+
+    assert captured["body"]["maxTokens"] == _MAX_OUTPUT_TOKENS
+
+
+def test_analyze_section_includes_the_whole_document_hint_only_when_requested() -> None:
+    from app.survey.orchestrator_llm_client import _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.", whole_document=True)
+    assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT in captured["body"]["messages"][0]["content"]
+
+    client.analyze_section("Some section text.", whole_document=False)
+    assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT not in captured["body"]["messages"][0]["content"]
+
+
+def test_analyze_section_agentic_includes_the_whole_document_hint_only_when_requested() -> None:
+    from app.survey.orchestrator_llm_client import _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic("Some section text.", lambda query: (None, []), whole_document=True)
+    assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT in captured["body"]["messages"][0]["content"]
+
+    client.analyze_section_agentic("Some section text.", lambda query: (None, []), whole_document=False)
+    assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT not in captured["body"]["messages"][0]["content"]
+
+
+def test_analyze_section_whole_document_hint_states_the_topic_count() -> None:
+    # Confirmed live: a qualitative-only hint does not change model
+    # behavior -- a concrete floor tied to the document's own real heading
+    # count is a much stronger signal.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.", whole_document=True, topic_count=79)
+    system_content = captured["body"]["messages"][0]["content"]
+    assert "79" in system_content
+    assert "AT LEAST 79" in system_content
+    assert "never invent, pad, or duplicate content to reach the count" in system_content
+
+
+def test_analyze_section_agentic_whole_document_hint_states_the_topic_count() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic("Some section text.", lambda query: (None, []), whole_document=True, topic_count=79)
+    system_content = captured["body"]["messages"][0]["content"]
+    assert "79" in system_content
+    assert "AT LEAST 79" in system_content
+
+
+def test_whole_document_hint_falls_back_to_qualitative_when_no_topics() -> None:
+    from app.survey.orchestrator_llm_client import _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT, _whole_document_hint
+
+    # A "0 sections" floor would be nonsensical -- a headingless document
+    # (topic_count 0 or None) must fall back to the qualitative-only hint,
+    # with no digit injected.
+    assert _whole_document_hint(0) == _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT
+    assert _whole_document_hint(None) == _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT
+
+
+def test_analyze_section_reports_truncated_when_finish_reason_is_length() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"nodes": []}), "finishReason": "length"})
+
+    _, truncated = client.analyze_section("Some section text.")
+    assert truncated is True
+
+
+def test_analyze_section_reports_not_truncated_when_finish_reason_is_stop() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"nodes": []}), "finishReason": "stop"})
+
+    _, truncated = client.analyze_section("Some section text.")
+    assert truncated is False
+
+
+def test_analyze_section_reports_not_truncated_when_finish_reason_is_absent() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"nodes": []})})
+
+    _, truncated = client.analyze_section("Some section text.")
+    assert truncated is False
+
+
+def test_analyze_section_agentic_reports_truncated_when_final_answer_hits_finish_reason_length() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    _, _, truncated = client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+    assert truncated is True
+
+
+def test_analyze_section_agentic_reports_not_truncated_when_max_tool_rounds_exhausted() -> None:
+    # Exhausting _MAX_TOOL_ROUNDS without ever reaching a final answer is a
+    # DIFFERENT failure mode from a length-capped final answer -- the loop
+    # gave up, it never got far enough to see a real finishReason.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"toolCalls": [{"id": "call-1", "function": {"name": "query_kb", "arguments": '{"query": "x"}'}}]}
+        )
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, citations, truncated = client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+    assert nodes == []
+    assert truncated is False
+
+
+def test_analyze_section_tolerates_a_response_missing_only_the_final_closing_brace() -> None:
+    # Regression, confirmed live and deterministic at temperature=0 against
+    # a real 679-block AirPro document: Ollama's grammar-constrained
+    # decoder (responseSchema) closed the "nodes" array correctly but never
+    # emitted the outer object's own final '}' -- verified that appending
+    # exactly one '}' recovers the full, otherwise well-formed response (all
+    # 19 real nodes parsed correctly). Must not raise "malformed JSON" and
+    # abort the whole job over this one confirmed failure shape.
+    nodes = [{"temp_id": "n1", "type": "Epic", "parent_temp_id": None, "text": "The Backplane shall comply.", "tags": ["feature"]}]
+    content_missing_final_brace = json.dumps({"nodes": nodes})[:-1]  # drop the trailing '}'
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": content_missing_final_brace})
+
+    result, _ = client.analyze_section("Some section text.")
+    assert result == nodes
+
+
+def test_analyze_section_forwards_top_k_and_min_p_when_configured() -> None:
+    # Gemma4 repetition-collapse mitigation (ollama/ollama#15502) -- these
+    # sampler overrides are only sent when the caller (app.main) configured
+    # them, same opt-in convention as num_ctx.
+    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", top_k=50, min_p=0.05
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+
+    assert captured["body"]["topK"] == 50
+    assert captured["body"]["minP"] == 0.05
+
+
+def test_analyze_section_omits_top_k_and_min_p_when_not_configured() -> None:
+    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+
+    assert "topK" not in captured["body"]
+    assert "minP" not in captured["body"]
+
+
+def test_analyze_section_tolerates_a_node_missing_its_own_closing_brace() -> None:
+    # Regression, confirmed live and deterministic at temperature=0 against
+    # a real AirPro branch: Ollama's grammar-constrained decoder can omit a
+    # single NODE object's own closing brace right before the "nodes"
+    # array's closing bracket -- e.g. `..."tags": [...]\n  ]\n}` instead of
+    # `..."tags": [...]\n  }\n  ]\n}`. Distinct failure shape from the
+    # missing-FINAL-brace tolerance above (this is a missing brace in the
+    # MIDDLE of the structure, not at the very end) -- verified that
+    # inserting a single '}' right where the array closes recovers the full,
+    # otherwise well-formed response.
+    nodes = [
+        {"temp_id": "n1", "type": "Epic", "parent_temp_id": None, "text": "The Backplane shall comply.", "tags": ["feature"]},
+        {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n1", "text": "The BP shall support 7 slots.", "tags": []},
+    ]
+    well_formed = json.dumps({"nodes": nodes})
+    # Remove exactly the LAST node object's own closing '}' (the one right
+    # before the "nodes" array's closing ']') -- mirrors the real failure's
+    # "Expecting ',' delimiter" at that ']'.
+    last_brace_index = well_formed.rindex("}", 0, well_formed.rindex("]"))
+    content_missing_node_brace = well_formed[:last_brace_index] + well_formed[last_brace_index + 1 :]
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": content_missing_node_brace})
+
+    result, _ = client.analyze_section("Some section text.")
+    assert result == nodes
+
+
+def test_analyze_section_still_raises_when_malformed_for_a_different_reason() -> None:
+    # The missing-final-brace tolerance above must not become a blanket
+    # auto-repair engine -- a response that's malformed for any OTHER
+    # reason (not just "missing exactly the outer closing brace") must
+    # still raise, same as every other call site's malformed-JSON handling.
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "not valid json at all"})
+
+    with pytest.raises(ValueError, match="malformed"):
+        client.analyze_section("Some section text.")
+
+
+def test_analyze_section_raises_on_non_200_response() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"nodes": []})}, expected_status=401)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.analyze_section("Some section text.")
+
+
+def test_analyze_section_strips_a_markdown_json_fence() -> None:
+    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+    response_json = {"content": "```json\n" + json.dumps({"nodes": nodes}) + "\n```"}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result, _ = client.analyze_section("Some section text.")
+    assert result == nodes
+
+
+def test_analyze_section_tolerates_a_bare_array_response() -> None:
+    # Defensive unwrap (_nodes_from_parsed): the prompt asks for the
+    # object-wrapped {"nodes": [...]} shape, but a schema-less degraded
+    # response could come back as a bare array -- must not crash.
+    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(nodes)})
+
+    result, _ = client.analyze_section("Some section text.")
+    assert result == nodes
+
+
+def test_analyze_section_includes_model_in_payload_when_set() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen3:4b")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+
+    assert captured["body"]["model"] == "qwen3:4b"
+
+
+def test_analyze_section_omits_model_from_payload_when_unset() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+
+    assert "model" not in captured["body"]
+
+
+def test_analyze_section_prepends_kb_context_when_present() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.", kb_context="Reference material from doc-a.docx")
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "Reference material from doc-a.docx" in system_prompt
+
+
+def test_analyze_section_prompt_unchanged_when_kb_context_is_none() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.", kb_context=None)
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "Reference material from the knowledge base" not in system_prompt
+
+
+def test_analyze_section_agentic_calls_retrieve_fn_then_returns_final_nodes() -> None:
+    # Full loop: first turn returns a query_kb tool call, retrieve_fn is
+    # invoked with the model's own query, a {role:"tool"} result message is
+    # appended, and the second turn's content is the final parsed answer.
+    final_nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Grounded requirement.", "tags": []}]
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        body = json.loads(request.content)
+        if call_count["n"] == 1:
+            assert body["tools"][0]["function"]["name"] == "query_kb"
+            return httpx.Response(
+                200,
+                json={
+                    "toolCalls": [
+                        {"id": "call-1", "function": {"name": "query_kb", "arguments": json.dumps({"query": "HDR spec"})}}
+                    ]
+                },
+            )
+        # Second turn: the tool-result message must have been appended.
+        assert body["messages"][-1] == {"role": "tool", "tool_call_id": "call-1", "content": "context for: HDR spec"}
+        return httpx.Response(200, json={"content": json.dumps({"nodes": final_nodes})})
+
+    retrieved_queries: list[str] = []
+
+    def retrieve_fn(query: str):
+        retrieved_queries.append(query)
+        return f"context for: {query}", [{"source_file": "spec.docx", "similarity": 0.8}]
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, citations, _ = client.analyze_section_agentic("Some section text.", retrieve_fn)
+
+    assert nodes == final_nodes
+    assert retrieved_queries == ["HDR spec"]
+    assert citations == [{"source_file": "spec.docx", "similarity": 0.8}]
+    assert call_count["n"] == 2
+
+
+def test_analyze_section_agentic_sends_both_tools_and_response_schema() -> None:
+    # Regression guard for a confirmed real bug: this call previously sent
+    # tools WITHOUT responseSchema at all -- an implementation gap (every
+    # other no-response_format call site in this module has an explicit
+    # grammar-cost-cliff justification comment; this one had none), meaning
+    # every real SURVEY call on a tool-capable model ran with ZERO
+    # grammar-level JSON enforcement in production. Confirmed live
+    # (malformed-JSON failures on a real AirPro branch) and verified
+    # directly against Ollama 0.30.10 that `tools` + `response_format`
+    # coexist without rejection, that a genuine tool-call round still
+    # returns tool_calls correctly, and that a final-answer round stays
+    # syntactically valid JSON once the schema is present.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+
+    assert "tools" in captured["body"]
+    assert captured["body"]["responseSchema"]["schema"]["properties"]["nodes"]["type"] == "array"
+    assert "maxItems" not in captured["body"]["responseSchema"]["schema"]["properties"]["nodes"]
+
+
+def test_analyze_section_agentic_bounds_at_max_tool_rounds() -> None:
+    # A misbehaving model that keeps calling query_kb forever must not loop
+    # forever -- _MAX_TOOL_ROUNDS is a hard ceiling; degrades to no nodes
+    # rather than hanging.
+    from app.survey.orchestrator_llm_client import _MAX_TOOL_ROUNDS
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "toolCalls": [
+                    {"id": "call-x", "function": {"name": "query_kb", "arguments": json.dumps({"query": "again"})}}
+                ]
+            },
+        )
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    call_count = {"n": 0}
+
+    def retrieve_fn(query: str):
+        call_count["n"] += 1
+        return f"context {call_count['n']}", [{"source_file": f"doc-{call_count['n']}.docx", "similarity": 0.5}]
+
+    nodes, citations, _ = client.analyze_section_agentic("Some section text.", retrieve_fn)
+
+    assert nodes == []
+    assert call_count["n"] == _MAX_TOOL_ROUNDS
+    assert len(citations) == _MAX_TOOL_ROUNDS  # one hit accumulated per round before giving up
+
+
+def test_analyze_section_agentic_offers_full_document_tools_when_both_fns_supplied() -> None:
+    # §15: list_kb_documents/read_kb_document are only offered when BOTH
+    # closures are supplied by the caller -- omitting either (the pre-§15
+    # default, exercised by every other analyze_section_agentic test in this
+    # file) offers only query_kb, unchanged.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic(
+        "Some section text.",
+        lambda query: (None, []),
+        list_documents_fn=lambda: ["spec.docx"],
+        read_document_fn=lambda source_file: "full text",
+    )
+
+    tool_names = {t["function"]["name"] for t in captured["body"]["tools"]}
+    assert tool_names == {"query_kb", "list_kb_documents", "read_kb_document"}
+
+
+def test_analyze_section_agentic_list_kb_documents_tool_call_returns_document_names() -> None:
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(
+                200, json={"toolCalls": [{"id": "call-1", "function": {"name": "list_kb_documents", "arguments": "{}"}}]}
+            )
+        assert json.loads(request.content)["messages"][-1] == {
+            "role": "tool", "tool_call_id": "call-1", "content": "spec.docx, other.docx",
+        }
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, citations, _ = client.analyze_section_agentic(
+        "Some section text.",
+        lambda query: (None, []),
+        list_documents_fn=lambda: ["spec.docx", "other.docx"],
+        read_document_fn=lambda source_file: None,
+    )
+
+    assert nodes == []
+    assert citations == []
+    assert call_count["n"] == 2
+
+
+def test_analyze_section_agentic_read_kb_document_tool_call_returns_full_text() -> None:
+    call_count = {"n": 0}
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "toolCalls": [
+                        {"id": "call-1", "function": {"name": "read_kb_document", "arguments": json.dumps({"source_file": "spec.docx"})}}
+                    ]
+                },
+            )
+        assert json.loads(request.content)["messages"][-1] == {
+            "role": "tool", "tool_call_id": "call-1", "content": "the full spec text",
+        }
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    def read_document_fn(source_file: str) -> str | None:
+        requested.append(source_file)
+        return "the full spec text"
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []), list_documents_fn=lambda: ["spec.docx"], read_document_fn=read_document_fn
+    )
+
+    assert requested == ["spec.docx"]
+
+
+def test_analyze_section_agentic_read_kb_document_handles_a_missing_document_gracefully() -> None:
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "toolCalls": [
+                        {"id": "call-1", "function": {"name": "read_kb_document", "arguments": json.dumps({"source_file": "missing.docx"})}}
+                    ]
+                },
+            )
+        assert "not found" in json.loads(request.content)["messages"][-1]["content"]
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, _, _ = client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []), list_documents_fn=lambda: [], read_document_fn=lambda source_file: None
+    )
+    assert nodes == []
+
+
+def test_analyze_section_agentic_handles_no_query_argument_gracefully() -> None:
+    # Tolerant of LLM non-compliance: a tool call missing/malformed
+    # 'arguments' must not crash the loop -- degrades to "(no query
+    # provided)" and never calls retrieve_fn for that round.
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(
+                200, json={"toolCalls": [{"id": "call-1", "function": {"name": "query_kb", "arguments": "not json"}}]}
+            )
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    retrieve_calls = []
+    nodes, citations, _ = client.analyze_section_agentic(
+        "Some section text.", lambda query: retrieve_calls.append(query) or (None, [])
+    )
+
+    assert nodes == []
+    assert retrieve_calls == []  # retrieve_fn never invoked -- no valid query to search with
+
+
+def test_analyze_section_agentic_offers_read_other_section_only_when_fn_supplied() -> None:
+    # whole-document redesign §3: read_other_section is orthogonal to the
+    # §15 full-document KB tools -- offered independently based solely on
+    # whether read_other_section_fn is supplied (the multi-branch fallback
+    # path in llm_leveling.build_survey_tree).
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic(
+        "Some section text.",
+        lambda query: (None, []),
+        read_other_section_fn=lambda section_id: "other section text",
+    )
+
+    tool_names = {t["function"]["name"] for t in captured["body"]["tools"]}
+    assert tool_names == {"query_kb", "read_other_section"}
+
+
+def test_analyze_section_agentic_does_not_offer_read_other_section_by_default() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+
+    tool_names = {t["function"]["name"] for t in captured["body"]["tools"]}
+    assert tool_names == {"query_kb"}
+
+
+def test_analyze_section_agentic_read_other_section_tool_call_returns_section_text() -> None:
+    call_count = {"n": 0}
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "toolCalls": [
+                        {"id": "call-1", "function": {"name": "read_other_section", "arguments": json.dumps({"section_id": "3"})}}
+                    ]
+                },
+            )
+        assert json.loads(request.content)["messages"][-1] == {
+            "role": "tool", "tool_call_id": "call-1", "content": "section 3's full text",
+        }
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    def read_other_section_fn(section_id: str) -> str | None:
+        requested.append(section_id)
+        return "section 3's full text"
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []), read_other_section_fn=read_other_section_fn
+    )
+
+    assert requested == ["3"]
+
+
+def test_analyze_section_agentic_read_other_section_handles_a_missing_section_gracefully() -> None:
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "toolCalls": [
+                        {"id": "call-1", "function": {"name": "read_other_section", "arguments": json.dumps({"section_id": "99"})}}
+                    ]
+                },
+            )
+        assert "not found" in json.loads(request.content)["messages"][-1]["content"]
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, _, _ = client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []), read_other_section_fn=lambda section_id: None
+    )
+    assert nodes == []

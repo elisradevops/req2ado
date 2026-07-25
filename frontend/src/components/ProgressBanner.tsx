@@ -22,6 +22,7 @@ const STAGE_LABELS: Record<JobStage, string> = {
 // list -- the narration message itself is more verbose (includes block
 // counts), this is just "which of the section's three passes is running".
 const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
+  analyze_section: 'Analyzing and synthesizing requirements',
   infer_hierarchy: 'Analyzing structure',
   generate_requirements: 'Generating requirements',
   score_requirements: 'Scoring quality',
@@ -37,6 +38,7 @@ const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
 // section's three passes take (the actual bug being fixed here: blocksDone
 // only updates once a WHOLE section finishes, which can be many minutes).
 const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
+  analyze_section: 0,
   infer_hierarchy: 0,
   generate_requirements: 0.4,
   score_requirements: 0.75,
@@ -84,7 +86,7 @@ export function ProgressBanner({
         Elapsed: <ElapsedTimer startedAt={startedAt} />
         {mode === 'survey' && ' — can take up to ~40 min'}
       </Typography>
-      {latest && <SectionStepList latest={latest} />}
+      {latest && <SectionStepList latest={latest} narrations={narrations ?? []} />}
     </Box>
   );
 }
@@ -96,15 +98,28 @@ export function ProgressBanner({
 // reads at a glance in a CI pipeline view, matched to what THIS pipeline
 // actually does per section (infer hierarchy -> generate requirements ->
 // score quality) rather than a generic percentage.
-function SectionStepList({ latest }: { latest: NarrationEvent }): React.ReactElement {
+function SectionStepList({ latest, narrations }: { latest: NarrationEvent; narrations: NarrationEvent[] }): React.ReactElement {
   const sections = Array.from({ length: latest.branchCount }, (_, i) => i);
   const traceLinksActive = latest.phase === 'infer_trace_links';
+
+  // Accumulated from EVERY narration event seen so far, not just the
+  // latest -- without this, once a section finishes and a later section's
+  // event becomes `latest`, that earlier section's real name would be
+  // lost, and a failed job's step list could only ever show the CURRENT
+  // section's name, not which named sections it already got through.
+  const labelsByIndex = new Map<number, string>();
+  for (const event of narrations) {
+    if (event.branchIndex !== null && event.sectionLabel) {
+      labelsByIndex.set(event.branchIndex, event.sectionLabel);
+    }
+  }
 
   return (
     <Stack mt={1.5} spacing={0.5}>
       {sections.map((i) => {
         const isDone = traceLinksActive || i < (latest.branchIndex ?? -1);
         const isActive = !traceLinksActive && i === latest.branchIndex;
+        const label = labelsByIndex.get(i);
         return (
           <Stack key={i} direction="row" spacing={1} alignItems="center">
             {isDone ? (
@@ -120,6 +135,7 @@ function SectionStepList({ latest }: { latest: NarrationEvent }): React.ReactEle
               fontWeight={isActive ? 600 : 400}
             >
               Section {i + 1} of {latest.branchCount}
+              {label && `: ${label}`}
               {isActive && ` — ${PHASE_SUBLABEL[latest.phase]}`}
             </Typography>
           </Stack>

@@ -103,10 +103,11 @@ def section_analysis_schema() -> dict:
                             "temp_id": {"type": "string"},
                             "type": {"type": "string", "enum": _TYPES},
                             "parent_temp_id": {"type": ["string", "null"]},
+                            "title": {"type": "string"},
                             "text": {"type": "string"},
                             "tags": {"type": "array", "items": {"type": "string", "enum": _TAGS}},
                         },
-                        "required": ["temp_id", "type", "parent_temp_id", "text", "tags"],
+                        "required": ["temp_id", "type", "parent_temp_id", "title", "text", "tags"],
                     },
                 }
             },

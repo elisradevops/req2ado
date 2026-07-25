@@ -13,7 +13,7 @@ export interface IngestUrlResult {
 
 export interface IngestedDocumentSummary {
   id: string;
-  areaPath: string;
+  userId: string;
   driveItemId: string;
   name: string;
   sizeBytes: number;
@@ -44,12 +44,12 @@ export class KbService {
     private readonly ingestionClient: IngestionHttpClient,
   ) {}
 
-  async ingestUrl(url: string, areaPath: string, docType: string | null): Promise<IngestUrlResult> {
-    const result = await this.ingestionClient.ingestUrl(url, areaPath, docType);
+  async ingestUrl(url: string, userId: string, docType: string | null): Promise<IngestUrlResult> {
+    const result = await this.ingestionClient.ingestUrl(url, userId, docType);
     await this.prisma.ingestedDocument.upsert({
-      where: { areaPath_driveItemId: { areaPath, driveItemId: result.driveitemId } },
+      where: { userId_driveItemId: { userId, driveItemId: result.driveitemId } },
       create: {
-        areaPath,
+        userId,
         driveItemId: result.driveitemId,
         name: result.documentName,
         sizeBytes: result.sizeBytes,
@@ -67,20 +67,20 @@ export class KbService {
     return result;
   }
 
-  async listDocuments(areaPath?: string): Promise<IngestedDocumentSummary[]> {
+  async listDocuments(userId?: string): Promise<IngestedDocumentSummary[]> {
     return this.prisma.ingestedDocument.findMany({
-      where: areaPath ? { areaPath } : {},
+      where: userId ? { userId } : {},
       orderBy: { ingestedAt: 'desc' },
     });
   }
 
   async ingestFolderUrl(
     url: string,
-    areaPath: string,
+    userId: string,
     docType: string | null,
     recursive = false,
   ): Promise<FolderIngestUrlResult> {
-    const result = await this.ingestionClient.ingestFolderUrl(url, areaPath, docType, recursive);
+    const result = await this.ingestionClient.ingestFolderUrl(url, userId, docType, recursive);
     const toPersist = result.files.filter((f) => f.status !== 'failed' && f.driveitemId);
     // allSettled: the KB (Chroma) side already succeeded for every file in
     // toPersist, so one file's Prisma upsert rejecting must not throw away
@@ -88,9 +88,9 @@ export class KbService {
     const settled = await Promise.allSettled(
       toPersist.map((f) =>
         this.prisma.ingestedDocument.upsert({
-          where: { areaPath_driveItemId: { areaPath, driveItemId: f.driveitemId! } },
+          where: { userId_driveItemId: { userId, driveItemId: f.driveitemId! } },
           create: {
-            areaPath,
+            userId,
             driveItemId: f.driveitemId!,
             name: f.relativePath ?? f.file,
             sizeBytes: f.sizeBytes ?? 0,

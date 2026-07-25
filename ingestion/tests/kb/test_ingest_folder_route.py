@@ -21,7 +21,7 @@ def test_folder_ingest_on_a_non_folder_link_returns_a_clean_400(monkeypatch) -> 
 
     response = client.post(
         "/kb/ingest-folder-url",
-        json={"url": "https://contoso.sharepoint.com/single-file-link", "area_path": "Project\\Area1"},
+        json={"url": "https://contoso.sharepoint.com/single-file-link", "user_id": "Project\\Area1"},
     )
 
     assert response.status_code == 400
@@ -32,7 +32,7 @@ def test_folder_ingest_forwards_the_recursive_flag_to_the_service(monkeypatch) -
     monkeypatch.setattr(settings, "sharepoint_token", "test-token")
     captured = {}
 
-    def fake_ingest_folder_from_url(url, area_path, doc_type, graph_client, embed_client, vector_store, recursive=False):
+    def fake_ingest_folder_from_url(url, user_id, doc_type, graph_client, embed_client, vector_store, recursive=False, describe_figure=None):
         captured["recursive"] = recursive
         from app.kb.ingest_service import FolderIngestResult
 
@@ -42,7 +42,7 @@ def test_folder_ingest_forwards_the_recursive_flag_to_the_service(monkeypatch) -
 
     response = client.post(
         "/kb/ingest-folder-url",
-        json={"url": "https://contoso.sharepoint.com/folder", "area_path": "Project\\Area1", "recursive": True},
+        json={"url": "https://contoso.sharepoint.com/folder", "user_id": "Project\\Area1", "recursive": True},
     )
 
     assert response.status_code == 200

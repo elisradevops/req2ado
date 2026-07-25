@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Callable
 
@@ -13,6 +14,8 @@ from app.survey._response_schemas import (
     scores_schema,
     section_analysis_schema,
 )
+
+logger = logging.getLogger(__name__)
 
 _JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 
@@ -63,11 +66,47 @@ def _parse_json_object(content: str):
     so trailing garbage after a genuinely complete value no longer fails
     the whole job. A response that's malformed from the start (e.g. cut off
     mid-value) still raises -- this is tolerance for trailing noise, not a
-    truncation fix."""
+    truncation fix.
+
+    One further tolerance, confirmed live and deterministic at
+    temperature=0 against a real 679-block AirPro document: an
+    object-wrapped-array `responseSchema` (section_analysis_schema, see
+    analyze_section) can make Ollama's grammar-constrained decoder stop
+    generation exactly ONE character short of complete valid JSON -- the
+    "nodes" array itself closes correctly, but the outer object's own
+    final closing brace is never emitted. Appending a single '}' and
+    retrying recovers the full, otherwise well-formed response (verified:
+    all 19 nodes parsed correctly once appended). This is a targeted
+    tolerance for this ONE confirmed failure shape, not a general
+    auto-repair engine -- a response malformed for any other reason still
+    raises exactly as before.
+
+    A third tolerance, also confirmed live and deterministic at
+    temperature=0 against a real AirPro branch: the same grammar-constrained
+    decoder can omit a single NODE object's own closing brace right before
+    the "nodes" array's closing bracket -- e.g. `..."tags": [...]\n  ]\n}`
+    instead of `..."tags": [...]\n  }\n  ]\n}`. `json.JSONDecodeError.pos`
+    marks exactly where this happens: parsing the node's object hits the
+    array's closing `]` where a `,` or `}` was expected. Narrowly scoped to
+    this exact shape -- only retried when the error message is literally
+    "Expecting ',' delimiter" AND the offending character is `]` -- inserting
+    a single '}' at that position closes the truncated node object and lets
+    the rest of the response parse correctly. Any other malformation still
+    raises exactly as before."""
     try:
         obj, _end = json.JSONDecoder().raw_decode(content)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
+        try:
+            obj, _end = json.JSONDecoder().raw_decode(content + "}")
+        except json.JSONDecodeError:
+            if exc.msg == "Expecting ',' delimiter" and content[exc.pos : exc.pos + 1] == "]":
+                repaired = content[: exc.pos] + "}" + content[exc.pos :]
+                try:
+                    obj, _end = json.JSONDecoder().raw_decode(repaired)
+                    return obj
+                except json.JSONDecodeError:
+                    pass
+            raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
     return obj
 
 
@@ -94,6 +133,66 @@ QUERY_KB_TOOL = {
     },
 }
 
+# §15: full-document read tools, for when top-k similarity snippets aren't
+# enough and the model needs a whole previously-ingested KB document's
+# content (e.g. a referenced ICD or spec the section only mentions by name).
+# Reuses this same agentic loop -- both are only wired in when the caller
+# (llm_leveling._build_survey_tree_for_branch) supplies the corresponding
+# list_documents_fn/read_document_fn closures (KB deps + tool-capable model).
+LIST_KB_DOCUMENTS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_kb_documents",
+        "description": (
+            "List the names of documents available in the knowledge base for this "
+            "job's area path. Call this before read_kb_document if you don't "
+            "already know the exact document name you need."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+READ_KB_DOCUMENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_kb_document",
+        "description": (
+            "Read the FULL text of one previously-ingested knowledge base document "
+            "by name (see list_kb_documents) -- use this when a section references "
+            "a whole external document (e.g. \"see the attached ICD\") and a "
+            "similarity-searched snippet (query_kb) wouldn't give enough context."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"source_file": {"type": "string", "description": "The exact document name, from list_kb_documents"}},
+            "required": ["source_file"],
+        },
+    },
+}
+
+# §3.3: lets the model pull a specific OTHER section of the CURRENT document
+# (not the KB) on demand -- only wired in when llm_leveling.build_survey_tree
+# found the whole document too large for one call and built a compact
+# outline instead of raw full text. Numbered to match that outline's own
+# 1-based section numbering (see _build_document_outline).
+READ_OTHER_SECTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_other_section",
+        "description": (
+            "Read the FULL text of another section of THIS SAME document, by its "
+            "number from the document outline above -- use this for a specific "
+            "cross-reference the outline alone doesn't resolve (e.g. \"per "
+            "section 3\"). Not for the knowledge base -- see read_kb_document for that."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"section_id": {"type": "string", "description": "The section number, from the document outline"}},
+            "required": ["section_id"],
+        },
+    },
+}
+
 _SECTION_ANALYSIS_SYSTEM_PROMPT = (
     "You are analyzing one section of a customer requirements document. First "
     "understand the section as a whole -- its headings, prose, bullet/spec lists, "
@@ -102,13 +201,26 @@ _SECTION_ANALYSIS_SYSTEM_PROMPT = (
     "section as a JSON object {\"nodes\": [...]}. Each node has: 'temp_id' (a "
     "unique short id you assign, e.g. 'n1'), 'type' (one of: Epic, Feature, "
     "Requirement), 'parent_temp_id' (the temp_id of its parent in this same "
-    "array, or null for a section root), 'text' (a single formal shall-style "
-    "requirement statement that folds in every related value/bullet/cell -- do "
-    "NOT emit one node per bullet), and 'tags' (zero or more of: functional, "
+    "array, or null for a section root), 'title' (a short, human-scannable "
+    "label for this node, roughly 80 characters or less -- NOT a repeat of "
+    "the full formal statement in 'text', a distinct at-a-glance summary of "
+    "it), 'text' (a single formal shall-style requirement statement that "
+    "folds in every related value/bullet/cell -- do NOT emit one node per "
+    "bullet), and 'tags' (zero or more of: functional, "
     "non_functional, interface, performance, regulatory, safety, security, "
     "operation, maintenance, feature, behavior). Emit as many or as few nodes as "
     "the section genuinely contains. No prose, no markdown fences -- the body "
-    "must be valid JSON on its own."
+    "must be valid JSON on its own.\n\n"
+    "IMPORTANT on parent_temp_id: null means 'this node has no parent at all "
+    "-- it is a root of the tree', NOT a placeholder or default. At most ONE "
+    "node in your entire response should have parent_temp_id null (the single "
+    "section root -- usually the first Epic or Feature you emit). EVERY other "
+    "node -- including the LAST ones you emit, however many nodes there are -- "
+    "must set parent_temp_id to an already-emitted temp_id from earlier in "
+    "this same array (its Epic, Feature, or another Requirement it belongs "
+    "under). Do not let parent_temp_id drift to null for later nodes just "
+    "because the response is long -- re-check this field for every single "
+    "node before finishing."
 )
 
 _SECTION_ANALYSIS_TOOL_HINT = (
@@ -117,6 +229,62 @@ _SECTION_ANALYSIS_TOOL_HINT = (
     "Once you have what you need (or need nothing further), respond with the "
     "final JSON object described above -- not a tool call."
 )
+
+_SECTION_ANALYSIS_FULL_DOCUMENT_TOOL_HINT = (
+    "\n\nIf a section references a whole external document by name (e.g. \"see "
+    "the attached ICD\") rather than needing a short similarity-searched "
+    "snippet, you may also call list_kb_documents to see what's available, then "
+    "read_kb_document to read one in full."
+)
+
+_SECTION_ANALYSIS_OTHER_SECTION_TOOL_HINT = (
+    "\n\nA compact outline of every section in THIS document is included above "
+    "for orientation. If you need another section's FULL text for a specific "
+    "cross-reference, call read_other_section with its number from the outline."
+)
+
+# Fallback wording for a whole-document analysis with no headings to count
+# (e.g. a plain-text or table-only document) -- a "0 sections" floor would be
+# nonsensical, and block-count is a poor topic proxy (it would demand one
+# node per bullet, exactly what the base prompt correctly forbids
+# elsewhere), so this stays qualitative-only.
+_SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT = (
+    "\n\nNOTE: this is the COMPLETE document analyzed in a single pass, not one "
+    "small section. Maintain full topical coverage across the entire document -- "
+    "do not over-consolidate distinct requirements for brevity. Every distinct "
+    "obligation in the source must be represented by at least one node. This "
+    "overrides the 'as many or as few nodes as genuinely necessary' guidance "
+    "above -- do not under-emit for brevity."
+)
+
+
+def _whole_document_hint(topic_count: int | None) -> str:
+    """Confirmed live (3 separate runs against the same real 679-block
+    document): the qualitative-only hint above does NOT change model
+    behavior -- it's a soft reminder losing to the base prompt's repeated,
+    specific permission to under-emit ("do NOT emit one node per bullet...
+    as many or as few nodes as the section genuinely contains"). A concrete,
+    countable floor tied to the document's own real heading count (computed
+    once in build_survey_tree's whole-doc gate, from actual BlockKind.HEADING
+    blocks -- not a guess) plus an EXPLICIT override of that permissive base
+    instruction is a much stronger signal than a qualitative reminder alone.
+    `topic_count` of 0/None (a headingless document -- topic_count itself
+    isn't a meaningful floor there) falls back to the qualitative hint."""
+    if not topic_count:
+        return _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT
+    return (
+        "\n\nNOTE: this is the COMPLETE document analyzed in a single pass, "
+        "not one small section. It contains approximately "
+        f"{topic_count} distinct headed sections. Your response should "
+        f"contain AT LEAST {topic_count} nodes -- at least one clearly "
+        "attributable to each headed section; a section with several distinct "
+        f"requirements needs several nodes, so {topic_count} is a FLOOR, not a "
+        "target or a cap. This overrides the 'as many or as few nodes as "
+        "genuinely necessary' guidance above -- do not under-emit for brevity. "
+        f"Emitting fewer than {topic_count} nodes is acceptable ONLY where a "
+        "section genuinely states no distinct requirement; never invent, pad, "
+        "or duplicate content to reach the count."
+    )
 
 
 def _nodes_from_parsed(parsed: object) -> list[dict]:
@@ -153,7 +321,15 @@ class OrchestratorLlmClient:
     silently returning an empty/wrong result, since a caller acting on
     invalid generated requirements is worse than a loud failure."""
 
-    def __init__(self, base_url: str, bearer_token: str, model: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        bearer_token: str,
+        model: str | None = None,
+        num_ctx: int | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._bearer_token = bearer_token
         # Per-job model override (see /level's `model` query param) -- when
@@ -161,6 +337,24 @@ class OrchestratorLlmClient:
         # configured LLM_CHAT_MODEL default, matching pre-model-selection
         # behavior exactly.
         self._model = model
+        # Ollama's actual runtime context window (§6 of the whole-document
+        # redesign) -- forwarded only on analyze_section/analyze_section_agentic,
+        # the two calls the §3 whole-document gate actually depends on being
+        # backed by a real, large-enough context window. Sized by the caller
+        # (app.main's /level route) from the SAME _resolve_caps(model) budget
+        # build_survey_tree itself gates on. None (the default) omits the
+        # field entirely, matching pre-num_ctx behavior exactly.
+        self._num_ctx = num_ctx
+        # Gemma4 repetition-collapse mitigation (confirmed upstream bug,
+        # ollama/ollama#15502/#15783 -- see orchestrator's
+        # LlmChatOptions.topK/minP doc comment for the full citation and why
+        # repeat_penalty does NOT work as a substitute). Forwarded on the
+        # same two calls as num_ctx above -- the long free-text holistic
+        # analysis is exactly where the collapse was observed live. None
+        # (the default) omits both fields entirely, matching pre-mitigation
+        # behavior exactly.
+        self._top_k = top_k
+        self._min_p = min_p
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
     def generate_requirements(self, block_text: str) -> list[dict]:
@@ -400,7 +594,13 @@ class OrchestratorLlmClient:
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
 
-    def analyze_section(self, section_text: str, kb_context: str | None = None) -> list[dict]:
+    def analyze_section(
+        self,
+        section_text: str,
+        kb_context: str | None = None,
+        whole_document: bool = False,
+        topic_count: int | None = None,
+    ) -> tuple[list[dict], bool]:
         """Single holistic SURVEY call replacing the old infer_hierarchy +
         generate_requirements_for_document pair for the whole-tree-in-one-call
         redesign. Given ONE coherent, structure-preserving markdown rendering
@@ -410,8 +610,41 @@ class OrchestratorLlmClient:
         without tool-calling support (see §5c's capability gate) -- KB context,
         when available, is a pre-computed once-per-document string threaded in
         via kb_context rather than actively retrieved. Tool-capable models use
-        analyze_section_agentic instead."""
+        analyze_section_agentic instead.
+
+        `whole_document`, when True, appends a coverage hint (see
+        _whole_document_hint) -- the model is analyzing the ENTIRE document
+        in one call (build_survey_tree's whole-doc gate found it fits
+        budget), not one small section, and the base prompt's
+        synthesis-maximizing instructions ("do NOT emit one node per bullet")
+        otherwise drive over-consolidation when applied just once to
+        hundreds of blocks instead of many times (once per branch/heading,
+        the pre-whole-doc-gate design). `topic_count` (the document's real
+        heading count, computed once in build_survey_tree) makes that hint
+        quantitative -- confirmed live that a qualitative-only reminder does
+        NOT change model behavior (see _whole_document_hint's docstring).
+
+        `maxTokens` (§9 gap, confirmed live): a whole-section holistic
+        response can be substantially larger than any single legacy
+        per-node/per-branch-outline call, and a reasoning/"thinking" model
+        (e.g. gemma4:e4b) burns hidden chain-of-thought tokens before its
+        actual JSON answer -- without an explicit cap this is bounded by
+        whatever small default Ollama/Open WebUI applies, silently
+        truncating a real response mid-array. Observed live: a 679-block,
+        6-section AirPro document's section 1 truncated at ~8.4KB
+        ('Expecting , delimiter'), well under output any legacy call would
+        need. Same _MAX_OUTPUT_TOKENS ceiling the other calls already
+        trust for large branches.
+
+        Returns (nodes, truncated) -- `truncated` is True when the
+        orchestrator reports finishReason == 'length' (the LLM backend
+        itself hit its output-token cap), a real signal a genuinely
+        truncated response was NOT silently caught by _parse_json_object's
+        limited (missing-final-brace-only) tolerance; the caller surfaces
+        this as a branch warning rather than staying silent."""
         system_prompt = _with_kb_context(_SECTION_ANALYSIS_SYSTEM_PROMPT, kb_context)
+        if whole_document:
+            system_prompt += _whole_document_hint(topic_count)
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -420,6 +653,10 @@ class OrchestratorLlmClient:
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
             "responseSchema": section_analysis_schema(),
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"topK": self._top_k} if self._top_k else {}),
+            **({"minP": self._min_p} if self._min_p else {}),
         }
         with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
@@ -428,14 +665,26 @@ class OrchestratorLlmClient:
                 headers={"Authorization": f"Bearer {self._bearer_token}"},
             )
         response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _nodes_from_parsed(_parse_json_object(content))
+        body = response.json()
+        content = _strip_json_fence(body["content"])
+        nodes = _nodes_from_parsed(_parse_json_object(content))
+        truncated = body.get("finishReason") == "length"
+        logger.warning(
+            "analyze_section result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
+            len(nodes), body.get("finishReason"), truncated, topic_count,
+        )
+        return nodes, truncated
 
     def analyze_section_agentic(
         self,
         section_text: str,
         retrieve_fn: Callable[[str], tuple[str | None, list[dict]]],
-    ) -> tuple[list[dict], list[dict]]:
+        list_documents_fn: Callable[[], list[str]] | None = None,
+        read_document_fn: Callable[[str], str | None] | None = None,
+        read_other_section_fn: Callable[[str], str | None] | None = None,
+        whole_document: bool = False,
+        topic_count: int | None = None,
+    ) -> tuple[list[dict], list[dict], bool]:
         """Tool-calling variant of analyze_section for models that support it
         (see §5c's capability gate) -- the model actively pulls KB context via
         a query_kb tool call DURING analysis instead of us pre-computing
@@ -444,12 +693,48 @@ class OrchestratorLlmClient:
         see llm_leveling._build_survey_tree_for_branch) so this client stays
         free of KB dependencies -- it only executes tool calls the model asks
         for. Bounded to _MAX_TOOL_ROUNDS turns so a model that keeps calling
-        the tool can't loop forever. Returns (nodes, citations) -- citations
-        are every (source_file, similarity) hit actually retrieved across all
-        query_kb calls, marked relevant by the model's own choice to use them
-        (see llm_leveling's KbCitation construction)."""
+        the tool can't loop forever. Returns (nodes, citations, truncated) --
+        citations are every (source_file, similarity) hit actually retrieved
+        across all query_kb calls, marked relevant by the model's own choice
+        to use them (see llm_leveling's KbCitation construction); `truncated`
+        -- see analyze_section's own docstring -- is True only when a FINAL
+        answer round reports finishReason == 'length'; exhausting
+        _MAX_TOOL_ROUNDS without ever reaching a final answer is a distinct
+        failure mode (the loop gave up, not a length cap) and reports
+        truncated=False.
+
+        `list_documents_fn`/`read_document_fn` (§15) are optional, same
+        injected-closure convention as `retrieve_fn` -- when supplied, the
+        model additionally gets `list_kb_documents`/`read_kb_document` tools
+        for reading a FULL previously-ingested KB document (see
+        KbVectorStore.get_document), not just top-k similarity snippets.
+        Omitting either (the pre-§15 default) is byte-identical to before
+        this capability existed -- only `query_kb` is offered.
+
+        `read_other_section_fn` (new whole-document-redesign §3) is likewise
+        optional and orthogonal to the KB tools above -- it's supplied only
+        on the multi-branch fallback path (llm_leveling.build_survey_tree),
+        where a compact document outline is prepended to section_text and
+        this closure resolves another section's FULL text by its outline
+        number. Omitting it (single-branch / whole-document path, or a KB
+        client with no outline built) offers no read_other_section tool.
+
+        `whole_document`/`topic_count` -- see analyze_section's own docstring."""
+        full_document_tools_enabled = list_documents_fn is not None and read_document_fn is not None
+        other_section_tool_enabled = read_other_section_fn is not None
+        tools = [QUERY_KB_TOOL]
+        tool_hint = _SECTION_ANALYSIS_TOOL_HINT
+        if full_document_tools_enabled:
+            tools += [LIST_KB_DOCUMENTS_TOOL, READ_KB_DOCUMENT_TOOL]
+            tool_hint += _SECTION_ANALYSIS_FULL_DOCUMENT_TOOL_HINT
+        if other_section_tool_enabled:
+            tools.append(READ_OTHER_SECTION_TOOL)
+            tool_hint += _SECTION_ANALYSIS_OTHER_SECTION_TOOL_HINT
+        system_prompt = _SECTION_ANALYSIS_SYSTEM_PROMPT + tool_hint
+        if whole_document:
+            system_prompt += _whole_document_hint(topic_count)
         messages: list[dict] = [
-            {"role": "system", "content": _SECTION_ANALYSIS_SYSTEM_PROMPT + _SECTION_ANALYSIS_TOOL_HINT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": section_text},
         ]
         citations: list[dict] = []
@@ -458,7 +743,29 @@ class OrchestratorLlmClient:
                 "messages": messages,
                 "temperature": 0,
                 **({"model": self._model} if self._model else {}),
-                "tools": [QUERY_KB_TOOL],
+                "tools": tools,
+                # Root cause of the confirmed live JSON-malformation failures
+                # (missing node-object closing brace; unescaped quote inside a
+                # "text" string value): this call previously sent NO
+                # responseSchema at all, unlike its analyze_section sibling --
+                # an implementation gap, not a documented grammar-cost-cliff
+                # omission like the three OTHER no-response_format call sites
+                # in this file (see this module's header comment). Every real
+                # SURVEY call on a tool-capable model (gemma4:e4b included)
+                # takes THIS path, so it ran with zero grammar-level JSON
+                # enforcement in production. Confirmed live and directly
+                # against Ollama 0.30.10 that `tools` + `response_format`
+                # coexist without error or rejection, that a genuine
+                # tool-call round still returns tool_calls correctly (not
+                # forced into the schema shape), and that a final-answer
+                # round stays syntactically valid JSON once the schema is
+                # present -- restoring the same real constraint
+                # analyze_section already had all along.
+                "responseSchema": section_analysis_schema(),
+                "maxTokens": _MAX_OUTPUT_TOKENS,
+                **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+                **({"topK": self._top_k} if self._top_k else {}),
+                **({"minP": self._min_p} if self._min_p else {}),
             }
             with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
                 response = client.post(
@@ -476,20 +783,68 @@ class OrchestratorLlmClient:
                         args = json.loads(call["function"]["arguments"])
                     except (json.JSONDecodeError, TypeError, KeyError):
                         args = {}
-                    query = args.get("query", "") if isinstance(args, dict) else ""
-                    tool_result = "(no query provided)"
-                    if query:
-                        kb_context, hits = retrieve_fn(query)
-                        citations.extend(hits)
-                        tool_result = kb_context or "(no relevant context found)"
+                    args = args if isinstance(args, dict) else {}
+                    name = call.get("function", {}).get("name")
+                    tool_result = self._execute_agentic_tool_call(
+                        name, args, retrieve_fn, list_documents_fn, read_document_fn, read_other_section_fn, citations
+                    )
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": tool_result})
                 continue
             content = _strip_json_fence(body.get("content", ""))
-            return _nodes_from_parsed(_parse_json_object(content)), citations
+            nodes = _nodes_from_parsed(_parse_json_object(content))
+            truncated = body.get("finishReason") == "length"
+            logger.warning(
+                "analyze_section_agentic result: node_count=%d finishReason=%r truncated=%s query_kb_calls=%d topic_count=%r",
+                len(nodes), body.get("finishReason"), truncated, len(citations), topic_count,
+            )
+            return nodes, citations, truncated
         # Exceeded _MAX_TOOL_ROUNDS without a final answer -- degrade to no
         # nodes for this branch rather than looping forever; the branch's
-        # existing coverage/completeness warnings surface the gap.
-        return [], citations
+        # existing coverage/completeness warnings surface the gap. Not a
+        # length-cap truncation (no final answer was ever reached to check
+        # finishReason on) -- reported as truncated=False, a distinct
+        # failure mode from analyze_section's own truncation signal.
+        logger.warning("analyze_section_agentic: exceeded _MAX_TOOL_ROUNDS=%d without a final answer -- 0 nodes", _MAX_TOOL_ROUNDS)
+        return [], citations, False
+
+    @staticmethod
+    def _execute_agentic_tool_call(
+        name: str | None,
+        args: dict,
+        retrieve_fn: Callable[[str], tuple[str | None, list[dict]]],
+        list_documents_fn: Callable[[], list[str]] | None,
+        read_document_fn: Callable[[str], str | None] | None,
+        read_other_section_fn: Callable[[str], str | None] | None,
+        citations: list[dict],
+    ) -> str:
+        """Dispatches one tool call to the matching injected closure --
+        factored out of the main loop so adding a tool (§15) means adding one
+        branch here, not restructuring the loop itself. Tolerant of an
+        unknown/unsupported tool name (a model can hallucinate one) --
+        degrades to a plain string result rather than crashing the branch."""
+        if name == "query_kb":
+            query = args.get("query", "")
+            if not query:
+                return "(no query provided)"
+            kb_context, hits = retrieve_fn(query)
+            citations.extend(hits)
+            return kb_context or "(no relevant context found)"
+        if name == "list_kb_documents" and list_documents_fn is not None:
+            documents = list_documents_fn()
+            return ", ".join(documents) if documents else "(no documents in the knowledge base)"
+        if name == "read_kb_document" and read_document_fn is not None:
+            source_file = args.get("source_file", "")
+            if not source_file:
+                return "(no source_file provided)"
+            content = read_document_fn(source_file)
+            return content or f"(document {source_file!r} not found in the knowledge base)"
+        if name == "read_other_section" and read_other_section_fn is not None:
+            section_id = args.get("section_id", "")
+            if not section_id:
+                return "(no section_id provided)"
+            content = read_other_section_fn(section_id)
+            return content or f"(section {section_id!r} not found in the document outline)"
+        return f"(unsupported tool: {name!r})"
 
     def generate_requirements_for_document(
         self, blocks_by_node_id: dict[str, str], kb_context: str | None = None

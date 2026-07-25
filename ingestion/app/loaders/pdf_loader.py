@@ -30,6 +30,28 @@ def page_has_extractable_text(path: str, page_index: int) -> bool:
     return len(text.strip()) > 0
 
 
+def _inside_any_bbox(obj: dict, bboxes: list[tuple[float, float, float, float]]) -> bool:
+    ox0, otop, ox1, obottom = obj.get("x0", 0), obj.get("top", 0), obj.get("x1", 0), obj.get("bottom", 0)
+    return any(x0 <= ox0 and ox1 <= x1 and top <= otop and obottom <= bottom for x0, top, x1, bottom in bboxes)
+
+
+def _paragraph_tops(filtered_page, paragraphs: list[str]) -> list[float]:
+    """One vertical (`top`) position per paragraph, for merging with table
+    bboxes into real document order (§12). `extract_words()` and
+    `extract_text()` walk the SAME word stream in the SAME top-to-bottom,
+    left-to-right reading order -- consuming `len(paragraph.split())` words
+    per paragraph, in sequence, gives each paragraph's real top position
+    without fuzzy text re-matching against the already-extracted string."""
+    words = iter(filtered_page.extract_words())
+    tops: list[float] = []
+    for paragraph in paragraphs:
+        first_word = next(words, None)
+        tops.append(first_word["top"] if first_word else 0.0)
+        for _ in range(max(len(paragraph.split()) - 1, 0)):
+            next(words, None)
+    return tops
+
+
 def load_pdf(path: str, describe_figure: Callable[[bytes], str] | None = None) -> CanonicalDoc:
     """`describe_figure`, when provided, is called with each embedded
     image's raw bytes and must return a short text description -- used to
@@ -51,36 +73,69 @@ def load_pdf(path: str, describe_figure: Callable[[bytes], str] | None = None) -
 
     with pdfplumber.open(path) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text() or ""
-            offset = 0
-            for paragraph in (p for p in text.split("\n\n") if p.strip()):
-                start = text.index(paragraph, offset)
-                end = start + len(paragraph)
-                offset = end
-                blocks.append(
-                    Block(
-                        id=f"b{block_id}",
-                        kind=BlockKind.PARAGRAPH,
-                        text=paragraph.strip(),
-                        source_ref=SourceRef(
-                            document_path=path, start_offset=start, end_offset=end, page=page_number
-                        ),
-                    )
-                )
-                block_id += 1
+            # §12/§13: table bboxes (page.find_tables()) drive BOTH fixes at
+            # once -- (a) filtering table-region chars out before
+            # extract_text() stops table cell text ALSO becoming a duplicate
+            # paragraph block (previously page.extract_text() and
+            # page.extract_tables() both read the same page unfiltered); (b)
+            # each table's bbox top, merged by position against each
+            # paragraph's own top (_paragraph_tops), gives tables a real
+            # document-order slot instead of the previous (0,0) placeholder.
+            found_tables = page.find_tables()
+            table_bboxes = [t.bbox for t in found_tables]
+            filtered_page = page.filter(lambda obj: not _inside_any_bbox(obj, table_bboxes)) if table_bboxes else page
 
-            for extracted_table in page.extract_tables():
-                rows: list[list[str]] = [[cell or "" for cell in row] for row in extracted_table]
-                tables.append(
-                    Table(
-                        id=f"t{table_id}",
-                        rows=rows,
-                        source_ref=SourceRef(
-                            document_path=path, start_offset=0, end_offset=0, page=page_number
-                        ),
-                    )
-                )
+            text = filtered_page.extract_text() or ""
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+            tops = _paragraph_tops(filtered_page, paragraphs)
+
+            page_tables: list[Table] = []
+            for found_table in found_tables:
+                rows: list[list[str]] = [[cell or "" for cell in row] for row in found_table.extract()]
+                page_tables.append(Table(id=f"t{table_id}", rows=rows, source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0, page=page_number)))
                 table_id += 1
+
+            # Merge paragraphs and tables into real document order by top
+            # position, then walk that merged order assigning ONE shared
+            # monotonically increasing offset counter across both -- same
+            # technique docx_loader.py's body-walk uses, adapted for pdf's
+            # lack of a single ordered element stream: paragraph offsets are
+            # real char-length spans (unchanged from before); a table gets a
+            # single synthetic slot in the same counter (tables have no
+            # natural text length here, same as before -- only their ORDER
+            # relative to paragraphs is new, not a real char span).
+            merged = sorted(
+                [("paragraph", top, paragraph) for top, paragraph in zip(tops, paragraphs)]
+                + [("table", bbox[1], table) for bbox, table in zip(table_bboxes, page_tables)],
+                key=lambda entry: entry[1],
+            )
+            offset = 0
+            for kind, _top, item in merged:
+                if kind == "paragraph":
+                    start = offset
+                    end = start + len(item)
+                    offset = end + 1
+                    blocks.append(
+                        Block(
+                            id=f"b{block_id}",
+                            kind=BlockKind.PARAGRAPH,
+                            text=item,
+                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                        )
+                    )
+                    block_id += 1
+                else:
+                    start = offset
+                    end = start + 1
+                    offset = end
+                    table = item
+                    tables.append(
+                        Table(
+                            id=table.id,
+                            rows=table.rows,
+                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                        )
+                    )
 
             # pdfplumber has no natural text offset for an embedded image
             # region, same reasoning as tables above (placeholder 0, 0).

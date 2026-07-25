@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 from pydantic import BaseModel
 
@@ -51,19 +52,27 @@ def _store_document(
     name: str,
     item_id: str,
     content: bytes,
-    area_path: str,
+    user_id: str,
     doc_type: str | None,
     embed_client,
     vector_store: KbVectorStore,
+    describe_figure: Callable[[bytes], str] | None = None,
 ) -> IngestResult:
     """Shared core once a document's bytes are in hand, regardless of
     whether they came from a single-document share link or a folder
     child's pre-signed download URL: verify content-type -> hash ->
-    skip-if-unchanged -> parse -> chunk -> embed -> store."""
+    skip-if-unchanged -> parse -> chunk -> embed -> store.
+
+    `describe_figure`, when supplied, is forwarded into dispatch_by_extension
+    so an embedded docx/pptx/pdf image gets a real vision caption instead of
+    the bare '[FIGURE: none]' placeholder -- mirrors app.main's /ingest route
+    (see _describe_figure there), which this KB path previously never
+    received. None (the pre-existing default, and every existing caller
+    before this change) preserves the placeholder-only behavior exactly."""
     verify_supported_content(name, content)
 
     file_hash = hashlib.sha256(content).hexdigest()
-    if vector_store.existing_file_hash(area_path, name, item_id) == file_hash:
+    if vector_store.existing_file_hash(user_id, name, item_id) == file_hash:
         return IngestResult(
             document_name=name,
             driveitem_id=item_id,
@@ -78,7 +87,7 @@ def _store_document(
         tmp.write(content)
         tmp_path = tmp.name
     try:
-        doc = dispatch_by_extension(name, tmp_path)
+        doc = dispatch_by_extension(name, tmp_path, describe_figure=describe_figure)
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -91,13 +100,13 @@ def _store_document(
     # partially-overwritten document.
     embedded = [(chunk, embed_client.embed([chunk.text])[0]) for chunk in chunks]
 
-    vector_store.delete_file_chunks(area_path, name, item_id)
+    vector_store.delete_file_chunks(user_id, name, item_id)
     for chunk, embedding in embedded:
         vector_store.upsert_chunk(
             chunk_id=f"{item_id}:{name}:{chunk.chunk_index}",
             embedding=embedding,
             text=chunk.text,
-            area_path=area_path,
+            user_id=user_id,
             source_file=name,
             source_id=item_id,
             chunk_index=chunk.chunk_index,
@@ -117,18 +126,19 @@ def _store_document(
 
 def ingest_document_from_url(
     url: str,
-    area_path: str,
+    user_id: str,
     doc_type: str | None,
     graph_client,
     embed_client,
     vector_store: KbVectorStore,
+    describe_figure: Callable[[bytes], str] | None = None,
 ) -> IngestResult:
     """Ingests a single document from a SharePoint/OneDrive sharing URL via
     the Microsoft Graph client: validate -> fetch metadata + bytes -> verify
     size/content-type -> skip if unchanged -> parse -> chunk -> embed ->
     store. This handles exactly one document, so any failure (ValueError,
     GraphApiError) propagates to the caller instead of being collected into
-    a failures list."""
+    a failures list. `describe_figure` -- see _store_document's docstring."""
     validate_share_url(url)
 
     item = graph_client.get_drive_item(url)
@@ -139,7 +149,9 @@ def ingest_document_from_url(
     if len(content) > MAX_FILE_SIZE_BYTES:
         raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
 
-    result = _store_document(item.name, item.id, content, area_path, doc_type, embed_client, vector_store)
+    result = _store_document(
+        item.name, item.id, content, user_id, doc_type, embed_client, vector_store, describe_figure=describe_figure
+    )
     return result.model_copy(update={"mime_type": item.mime_type})
 
 
@@ -147,20 +159,22 @@ def _ingest_folder_children(
     children: list,
     prefix: str,
     depth: int,
-    area_path: str,
+    user_id: str,
     doc_type: str | None,
     graph_client,
     embed_client,
     vector_store: KbVectorStore,
     recursive: bool,
     results: list[FolderIngestFileResult],
+    describe_figure: Callable[[bytes], str] | None = None,
 ) -> None:
     """Processes one folder level's children in place, appending to
     `results`. Files are stored via `_store_document`; folders are
     recursed into (sequential, depth-first) only when `recursive` is set
     and the depth cap hasn't been reached. One file's failure or one
     subfolder's listing failure is caught and recorded as a single failed
-    entry — never aborts siblings or the rest of the batch."""
+    entry — never aborts siblings or the rest of the batch. `describe_figure`
+    -- see _store_document's docstring."""
     for child in children:
         relative_path = f"{prefix}{child.name}"
         if child.is_folder:
@@ -174,7 +188,17 @@ def _ingest_folder_children(
                 )
                 continue
             _ingest_folder_children(
-                grandchildren, f"{relative_path}/", depth + 1, area_path, doc_type, graph_client, embed_client, vector_store, recursive, results
+                grandchildren,
+                f"{relative_path}/",
+                depth + 1,
+                user_id,
+                doc_type,
+                graph_client,
+                embed_client,
+                vector_store,
+                recursive,
+                results,
+                describe_figure=describe_figure,
             )
             continue
 
@@ -188,7 +212,9 @@ def _ingest_folder_children(
             if len(content) > MAX_FILE_SIZE_BYTES:
                 raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
 
-            result = _store_document(child.name, child.id, content, area_path, doc_type, embed_client, vector_store)
+            result = _store_document(
+                child.name, child.id, content, user_id, doc_type, embed_client, vector_store, describe_figure=describe_figure
+            )
             results.append(
                 FolderIngestFileResult(
                     file=child.name,
@@ -206,19 +232,21 @@ def _ingest_folder_children(
 
 def ingest_folder_from_url(
     url: str,
-    area_path: str,
+    user_id: str,
     doc_type: str | None,
     graph_client,
     embed_client,
     vector_store: KbVectorStore,
     recursive: bool = False,
+    describe_figure: Callable[[bytes], str] | None = None,
 ) -> FolderIngestResult:
     """Ingests every file inside a shared SharePoint/OneDrive folder.
     Single-level by default; when `recursive` is set, descends into
     subfolders up to MAX_FOLDER_DEPTH (sequential, depth-first — matches
     the non-recursive path's simple per-file isolation, just applied
     per-subtree too). One file's or one subfolder's failure never aborts
-    the rest of the batch; each outcome is collected and returned."""
+    the rest of the batch; each outcome is collected and returned.
+    `describe_figure` -- see _store_document's docstring."""
     validate_share_url(url)
     children = graph_client.list_folder_children(url)
 
@@ -226,5 +254,7 @@ def ingest_folder_from_url(
     # depth starts at 1 for the root's own children: MAX_FOLDER_DEPTH=5 means
     # a folder found 5 levels down from the root is listed but not descended
     # into (its own children, at depth 6, are never fetched).
-    _ingest_folder_children(children, "", 1, area_path, doc_type, graph_client, embed_client, vector_store, recursive, results)
+    _ingest_folder_children(
+        children, "", 1, user_id, doc_type, graph_client, embed_client, vector_store, recursive, results, describe_figure=describe_figure
+    )
     return FolderIngestResult(files=results)

@@ -83,15 +83,36 @@ def verify_supported_content(filename: str, content: bytes) -> None:
     if ext == ".pdf":
         if not content.startswith(b"%PDF"):
             raise ValueError("expected PDF magic bytes b'%PDF', got mismatched content")
-    elif ext in (".docx", ".xlsx"):
+    elif ext in (".docx", ".xlsx", ".pptx"):
         if not content.startswith(b"PK\x03\x04"):
             raise ValueError(
                 "expected ZIP container magic bytes b'PK\\x03\\x04', got mismatched content"
             )
-    elif ext in (".txt", ".md"):
+    elif ext in (".txt", ".md", ".csv"):
         try:
-            content.decode("utf-8")
+            content.decode("utf-8-sig" if ext == ".csv" else "utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError(f"content is not valid UTF-8 for {ext} file") from exc
+    elif ext == ".rtf":
+        if not content.lstrip().startswith(b"{\\rtf"):
+            raise ValueError("expected RTF magic bytes b'{\\\\rtf', got mismatched content")
+    elif ext in (".jpg", ".jpeg"):
+        if not content.startswith(b"\xff\xd8\xff"):
+            raise ValueError("expected JPEG magic bytes, got mismatched content")
+    elif ext == ".png":
+        if not content.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("expected PNG magic bytes, got mismatched content")
+    elif ext == ".gif":
+        if not content.startswith((b"GIF87a", b"GIF89a")):
+            raise ValueError("expected GIF magic bytes, got mismatched content")
+    elif ext == ".bmp":
+        if not content.startswith(b"BM"):
+            raise ValueError("expected BMP magic bytes, got mismatched content")
+    elif ext == ".webp":
+        if not (content.startswith(b"RIFF") and content[8:12] == b"WEBP"):
+            raise ValueError("expected WEBP (RIFF) magic bytes, got mismatched content")
+    elif ext in (".tiff", ".tif"):
+        if not content.startswith((b"II*\x00", b"MM\x00*")):
+            raise ValueError("expected TIFF magic bytes, got mismatched content")
     else:
         raise ValueError(f"unsupported file type: {ext}")

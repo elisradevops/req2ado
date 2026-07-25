@@ -11,7 +11,7 @@ export interface IngestResult {
 
 export interface IngestedDocument {
   id: string;
-  areaPath: string;
+  userId: string;
   driveItemId: string;
   name: string;
   sizeBytes: number;
@@ -35,22 +35,22 @@ export interface FolderIngestResult {
   files: FolderIngestFile[];
 }
 
-export async function ingestUrl(url: string, areaPath: string, docType?: string): Promise<IngestResult> {
-  const response = await httpClient.post<IngestResult>('/kb/ingest-url', { url, areaPath, docType });
+export async function ingestUrl(url: string, userId: string, docType?: string): Promise<IngestResult> {
+  const response = await httpClient.post<IngestResult>('/kb/ingest-url', { url, userId, docType });
   return response.data;
 }
 
 export async function ingestFolderUrl(
   url: string,
-  areaPath: string,
+  userId: string,
   docType?: string,
   recursive?: boolean,
 ): Promise<FolderIngestResult> {
-  const response = await httpClient.post<FolderIngestResult>('/kb/ingest-folder-url', { url, areaPath, docType, recursive });
+  const response = await httpClient.post<FolderIngestResult>('/kb/ingest-folder-url', { url, userId, docType, recursive });
   return response.data;
 }
 
-export async function listIngestedDocuments(areaPath?: string): Promise<IngestedDocument[]> {
-  const response = await httpClient.get<IngestedDocument[]>('/kb/documents', { params: areaPath ? { areaPath } : {} });
+export async function listIngestedDocuments(userId?: string): Promise<IngestedDocument[]> {
+  const response = await httpClient.get<IngestedDocument[]>('/kb/documents', { params: userId ? { userId } : {} });
   return response.data;
 }

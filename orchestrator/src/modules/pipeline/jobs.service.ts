@@ -10,8 +10,21 @@ import { mapWithConcurrency } from './map-with-concurrency';
 
 export interface SubmitJobInput {
   areaPath: string;
+  // The submitting user's stable ADO identity -- the Knowledge Base scope
+  // key ingestion's /level uses for KB grounding, kept separate from
+  // areaPath (ADO write-back destination + idempotency key only). Nullable:
+  // KB grounding simply stays off for a job with no resolved identity.
+  userId: string | null;
   customerId: string | null;
   mode: 'baseline' | 'survey';
+  // True when this job ingests a follow-up document against requirements
+  // already ingested under the same area path -- gates whether
+  // pipeline.worker.ts runs the dedup-similarity check (see Job.followUp's
+  // own schema.prisma doc comment). Defaults to false in submit() below,
+  // matching pre-follow-up-mode behavior only insofar as dedup previously
+  // ran unconditionally on every job -- see pipeline.worker.ts for the
+  // actual behavior change.
+  followUp?: boolean;
   fileBuffer: Buffer;
   filename: string;
   sourceHash: string;
@@ -72,6 +85,8 @@ export class JobsService implements OnModuleDestroy {
         status: 'pending',
         sourceHash: input.sourceHash,
         areaPath: input.areaPath,
+        userId: input.userId,
+        followUp: input.followUp ?? false,
         state: input.state ?? this.initialState,
         iterationPath: input.iterationPath ?? null,
         customerId: input.customerId,
@@ -87,8 +102,10 @@ export class JobsService implements OnModuleDestroy {
     await this.queue.add('ingest-and-level', {
       id: job.id,
       areaPath: input.areaPath,
+      userId: input.userId,
       customerId: input.customerId,
       mode: input.mode,
+      followUp: input.followUp ?? false,
       fileBufferBase64: input.fileBuffer.toString('base64'),
       filename: input.filename,
       ...(input.model ? { model: input.model } : {}),
@@ -589,6 +606,16 @@ export class JobsService implements OnModuleDestroy {
           const sourceRefField = sourceRefFieldByType.get(entry.type);
           if (sourceRefField !== null && sourceRefField !== undefined) {
             fields[sourceRefField] = JobsService.formatSourceRef(entry.sourceRef);
+          } else {
+            // Same non-type-gated fallback as Customer ID above: this org
+            // exposes no Custom.SourceReference-style field at all for this
+            // work-item type -- rather than silently dropping traceability
+            // (the previous behavior), stamp it into System.Tags so it's at
+            // least visible somewhere. NOT appended to System.Description --
+            // that's rejected elsewhere in this file as violating BASELINE's
+            // verbatim-fidelity guarantee (see resolveSourceRefField's own
+            // doc comment).
+            tags.push(`SourceRef:${JobsService.formatSourceRef(entry.sourceRef)}`);
           }
         }
         // System.Tags is a native ADO field on every work-item type (unlike

@@ -90,7 +90,7 @@ async def run_chat_turn(
     history: list[dict],
     user_message: str,
     model: str | None,
-    area_path: str | None,
+    user_id: str | None,
     embed_client: object | None,
     vector_store: object | None,
     chat_client: ChatLlmClient,
@@ -103,13 +103,13 @@ async def run_chat_turn(
     (orchestrator) always gets a terminal event for this turn."""
     try:
         kb_context = None
-        if area_path is not None and embed_client is not None and vector_store is not None:
+        if user_id is not None and embed_client is not None and vector_store is not None:
             # retrieve_context is a synchronous, blocking call (embed client +
             # vector store I/O) — run in the threadpool so it doesn't stall the
             # single-worker event loop, matching /level and /kb/ingest-* in
             # main.py.
             kb_context, _ = await run_in_threadpool(
-                retrieve_context, area_path, user_message, embed_client, vector_store
+                retrieve_context, user_id, user_message, embed_client, vector_store
             )
 
         system_prompt = _build_system_prompt(item, kb_context)

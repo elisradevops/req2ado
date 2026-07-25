@@ -1,4 +1,5 @@
 import { BadRequestException, Body, Controller, Get, Post, Res, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { llmChatRequestSchema } from './llm-chat.dto';
 import { llmEmbedRequestSchema } from './llm-embed.dto';
@@ -7,6 +8,14 @@ import type { LlmToolCall } from './llm-client.interface';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClient } from './openwebui.client';
 
+// Every route here is internal service-to-service traffic already gated by
+// LlmProxyBearerGuard (ingestion's shared bearer token), not public traffic
+// -- the global ThrottlerGuard (app.module.ts, 200 req/60s) was never meant
+// to rate-limit it. The agentic SURVEY redesign's query_kb tool-calling loop
+// (see ingestion/app/survey/orchestrator_llm_client.py) can fire several
+// /llm/embed calls per branch, making throttle pressure here newly likely,
+// not just theoretical.
+@SkipThrottle()
 @Controller('llm')
 @UseGuards(LlmProxyBearerGuard)
 export class LlmController {
@@ -24,6 +33,9 @@ export class LlmController {
       ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
       ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
       ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
+      ...(body.numCtx !== undefined ? { numCtx: body.numCtx } : {}),
+      ...(body.topK !== undefined ? { topK: body.topK } : {}),
+      ...(body.minP !== undefined ? { minP: body.minP } : {}),
       ...(body.tools !== undefined ? { tools: body.tools } : {}),
       ...(body.toolChoice !== undefined ? { toolChoice: body.toolChoice } : {}),
     });
@@ -91,11 +103,14 @@ export class LlmController {
       throw new BadRequestException('Invalid request body: prompt and a non-empty images array (base64) are required');
     }
     const body = parseResult.data;
-    const description = await this.llmClient.vision(
-      body.prompt,
-      body.images.map((image) => Buffer.from(image, 'base64')),
-      body.model ? { model: body.model } : undefined,
-    );
+    const opts =
+      body.model !== undefined || body.mimeType !== undefined
+        ? {
+            ...(body.model !== undefined ? { model: body.model } : {}),
+            ...(body.mimeType !== undefined ? { mimeType: body.mimeType } : {}),
+          }
+        : undefined;
+    const description = await this.llmClient.vision(body.prompt, body.images.map((image) => Buffer.from(image, 'base64')), opts);
     return { description };
   }
 }

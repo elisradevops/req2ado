@@ -37,10 +37,23 @@ export class IngestionHttpError extends Error {
 export class IngestionHttpClient {
   constructor(private readonly baseUrl: string) {}
 
-  async ingest(fileBuffer: Buffer, filename: string): Promise<Record<string, unknown>> {
+  // skipVision: /jobs/preview's caller (jobs.controller.ts) only needs
+  // blockCount/sectionCount/fileType -- never figure captions -- passes
+  // true here so a previewed document's images don't pay the full
+  // per-image vision-LLM cost (confirmed live: turned a ~30ms preview into
+  // 28s for one small embedded image). Real job submission
+  // (pipeline.worker.ts) omits this -- captions still matter there, and a
+  // real document's images (each a sequential describe_figure LLM call,
+  // same cold-start-latency profile as /level's calls) can comfortably
+  // exceed undici's default 300s headersTimeout -- confirmed live: a real
+  // 36-figure docx failed with HeadersTimeoutError at exactly 5:04 after
+  // submit. Needs the SAME LONG_RUNNING_AGENT dispatcher /level already
+  // uses below, not the plain default-timeout fetch.
+  async ingest(fileBuffer: Buffer, filename: string, skipVision = false): Promise<Record<string, unknown>> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
-    const response = await fetch(`${this.baseUrl}/ingest`, { method: 'POST', body: form });
+    const url = skipVision ? `${this.baseUrl}/ingest?skip_vision=true` : `${this.baseUrl}/ingest`;
+    const response = await fetch(url, { method: 'POST', body: form, dispatcher: LONG_RUNNING_AGENT });
     if (!response.ok) {
       throw new Error(`Ingestion /ingest request failed: ${response.status}`);
     }
@@ -51,14 +64,18 @@ export class IngestionHttpClient {
     doc: Record<string, unknown>,
     customerId: string | null,
     mode: 'baseline' | 'survey' = 'baseline',
-    areaPath?: string,
+    // Knowledge Base scope key -- the submitting user's stable ADO identity
+    // (see Job.userId's own doc comment), NOT the job's ADO areaPath. Kept
+    // as a distinct param/arg name from checkDuplicate/upsertDedupEntry*'s
+    // areaPath below, which is a legitimate, unrelated ADO-scoped concern.
+    userId?: string,
     linkTypeCatalog?: { referenceName: string; name: string; semanticHint?: string }[],
     model?: string,
     jobId?: string,
   ): Promise<Record<string, unknown>> {
     const params = new URLSearchParams({ mode });
     if (customerId) params.set('customer_id', customerId);
-    if (areaPath) params.set('area_path', areaPath);
+    if (userId) params.set('user_id', userId);
     if (model) params.set('model', model);
     if (jobId) params.set('job_id', jobId);
     if (linkTypeCatalog) {
@@ -134,7 +151,7 @@ export class IngestionHttpClient {
 
   async ingestUrl(
     url: string,
-    areaPath: string,
+    userId: string,
     docType: string | null,
   ): Promise<{
     documentName: string;
@@ -147,7 +164,7 @@ export class IngestionHttpClient {
     const response = await fetch(`${this.baseUrl}/kb/ingest-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, area_path: areaPath, doc_type: docType }),
+      body: JSON.stringify({ url, user_id: userId, doc_type: docType }),
       dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {
@@ -173,7 +190,7 @@ export class IngestionHttpClient {
 
   async ingestFolderUrl(
     url: string,
-    areaPath: string,
+    userId: string,
     docType: string | null,
     recursive = false,
   ): Promise<{
@@ -191,7 +208,7 @@ export class IngestionHttpClient {
     const response = await fetch(`${this.baseUrl}/kb/ingest-folder-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, area_path: areaPath, doc_type: docType, recursive }),
+      body: JSON.stringify({ url, user_id: userId, doc_type: docType, recursive }),
       dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {

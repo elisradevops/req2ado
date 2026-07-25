@@ -266,7 +266,7 @@ describe('JobsService.confirm', () => {
     );
   });
 
-  it('leaves the source traceability field off the written item when no candidate field is discovered, rather than failing', async () => {
+  it('falls back to stamping SourceRef into System.Tags when no candidate source-ref field is discovered, rather than dropping traceability', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 203 });
     const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
     const prisma = {
@@ -305,8 +305,46 @@ describe('JobsService.confirm', () => {
         'System.Description': 'D',
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
+        'System.Tags': 'SourceRef:/tmp/doc.docx#offset=10-20',
       },
       undefined,
+    );
+  });
+
+  it('combines the CustomerId fallback tag with the SourceRef fallback tag when neither custom field resolves', async () => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 204 });
+    const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            {
+              localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+              action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1',
+              sourceRef: { documentPath: '/tmp/doc.docx', startOffset: 10, endOffset: 20, page: null },
+              tags: ['functional'],
+            },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(createWorkItem.mock.calls[0][1]['System.Tags']).toBe(
+      'functional; CustomerId:CUST-1; SourceRef:/tmp/doc.docx#offset=10-20',
     );
   });
 

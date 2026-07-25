@@ -5,18 +5,18 @@ import hashlib
 import chromadb
 
 
-def _kb_collection_name_for_area_path(area_path: str) -> str:
+def _kb_collection_name_for_user(user_id: str) -> str:
     # Separate namespace from dedup's `req2ado_<hash>` collections (see
     # dedup/vector_store.py) — KB chunks store real source text and are a
     # different concern from dedup's embeddings-only vectors. Keeping them
     # in different collections means neither can leak into the other's
     # queries.
-    digest = hashlib.sha256(area_path.encode()).hexdigest()[:32]
+    digest = hashlib.sha256(user_id.encode()).hexdigest()[:32]
     return f"req2ado_kb_{digest}"
 
 
 class KbVectorStore:
-    """Area-Path-scoped knowledge-base store: unlike ChromaVectorStore
+    """User-scoped knowledge-base store: unlike ChromaVectorStore
     (dedup, embeddings-only), this stores chunk source text + metadata
     alongside each embedding — P2b's retrieval needs the actual text to
     inject into LLM prompts, not just a similarity score."""
@@ -38,9 +38,9 @@ class KbVectorStore:
         else:
             self._client = chromadb.PersistentClient(path=persist_path)
 
-    def _get_collection(self, area_path: str):
+    def _get_collection(self, user_id: str):
         return self._client.get_or_create_collection(
-            name=_kb_collection_name_for_area_path(area_path),
+            name=_kb_collection_name_for_user(user_id),
             metadata={"hnsw:space": "cosine"},
         )
 
@@ -49,14 +49,14 @@ class KbVectorStore:
         chunk_id: str,
         embedding: list[float],
         text: str,
-        area_path: str,
+        user_id: str,
         source_file: str,
         source_id: str,
         chunk_index: int,
         file_hash: str,
         doc_type: str | None = None,
     ) -> None:
-        collection = self._get_collection(area_path)
+        collection = self._get_collection(user_id)
         metadata = {
             "source_file": source_file,
             "source_id": source_id,
@@ -75,16 +75,16 @@ class KbVectorStore:
             metadatas=[metadata],
         )
 
-    def existing_file_hash(self, area_path: str, source_file: str, source_id: str) -> str | None:
+    def existing_file_hash(self, user_id: str, source_file: str, source_id: str) -> str | None:
         """Returns the stored file_hash for any existing chunk of this
         source_file scoped to source_id, or None if the file has never been
         ingested by this source. Used for hash-based skip-unchanged: if this
         matches the freshly-computed hash, the caller skips
         re-parsing/re-embedding the file. Scoping by source_id (in addition
         to source_file) prevents two different KbSource rows that happen to
-        share an area_path from clobbering each other's same-named files —
-        nothing today enforces area_path uniqueness across KbSource rows."""
-        collection = self._get_collection(area_path)
+        share a user_id from clobbering each other's same-named files —
+        nothing today enforces user_id uniqueness across KbSource rows."""
+        collection = self._get_collection(user_id)
         result = collection.get(
             where={"$and": [{"source_file": source_file}, {"source_id": source_id}]}, limit=1
         )
@@ -93,23 +93,53 @@ class KbVectorStore:
             return None
         return metadatas[0].get("file_hash")
 
-    def delete_file_chunks(self, area_path: str, source_file: str, source_id: str) -> None:
+    def delete_file_chunks(self, user_id: str, source_file: str, source_id: str) -> None:
         """Deletes all previously-stored chunks for this source_file (scoped
         to source_id) before re-ingesting a changed file, so stale chunks
         (e.g. from a since-removed section) don't linger alongside the new
         ones. Scoping by source_id prevents deleting another source's
-        same-named file's chunks when two sources share an area_path."""
-        collection = self._get_collection(area_path)
+        same-named file's chunks when two sources share a user_id."""
+        collection = self._get_collection(user_id)
         collection.delete(where={"$and": [{"source_file": source_file}, {"source_id": source_id}]})
 
-    def query(self, area_path: str, embedding: list[float], top_k: int) -> list[dict]:
-        """Returns up to top_k nearest chunks for this area_path's KB
+    def get_document(self, user_id: str, source_file: str) -> str | None:
+        """Reassembles ONE previously-ingested document's FULL text by
+        concatenating its stored chunks in chunk_index order -- for the §15
+        read_kb_document agentic tool, which needs a whole document (e.g. a
+        referenced ICD only mentioned by name), not just top-k similarity
+        snippets (see query() above / app.kb.retrieval.retrieve_context).
+        Returns None when no chunk exists for this source_file, mirroring
+        query()'s empty-result convention -- an enhancement, never a hard
+        dependency."""
+        collection = self._get_collection(user_id)
+        result = collection.get(where={"source_file": source_file})
+        documents = result.get("documents") or []
+        if not documents:
+            return None
+        metadatas = result.get("metadatas") or []
+        ordered = sorted(zip(metadatas, documents), key=lambda pair: pair[0].get("chunk_index", 0))
+        return "\n\n".join(text for _, text in ordered)
+
+    def list_documents(self, user_id: str) -> list[str]:
+        """Distinct source_file names ingested into this user_id's KB
+        collection -- for the §15 list_kb_documents agentic tool, so the
+        model can discover what full documents are available before picking
+        one for read_kb_document rather than guessing a name blind."""
+        collection = self._get_collection(user_id)
+        if collection.count() == 0:
+            return []
+        result = collection.get()
+        metadatas = result.get("metadatas") or []
+        return sorted({m["source_file"] for m in metadatas if "source_file" in m})
+
+    def query(self, user_id: str, embedding: list[float], top_k: int) -> list[dict]:
+        """Returns up to top_k nearest chunks for this user_id's KB
         collection, ordered nearest-first, each as {text, distance,
         source_file}. distance is chromadb's cosine distance (lower =
         closer) — callers apply their own similarity cutoff. Empty list
         if the collection has no chunks (mirrors ChromaVectorStore.
         query_nearest's empty-collection guard)."""
-        collection = self._get_collection(area_path)
+        collection = self._get_collection(user_id)
         if collection.count() == 0:
             return []
         result = collection.query(query_embeddings=[embedding], n_results=top_k)

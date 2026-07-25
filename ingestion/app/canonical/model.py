@@ -13,6 +13,10 @@ class DocumentFormat(str, Enum):
     PDF = "pdf"
     PDF_SCANNED = "pdf_scanned"
     XLSX = "xlsx"
+    PPTX = "pptx"
+    CSV = "csv"
+    RTF = "rtf"
+    IMAGE = "image"
 
 
 class BlockKind(str, Enum):

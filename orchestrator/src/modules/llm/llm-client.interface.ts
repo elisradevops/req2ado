@@ -58,6 +58,30 @@ export interface LlmChatOptions {
   // throughput itself degrading as context grows, producing 40+ minute
   // calls with no cap in place. Does not fix verbosity, only bounds it.
   maxTokens?: number;
+  // Ollama's actual runtime context window, forwarded as `options.num_ctx`
+  // in the request body its OpenAI-compat endpoint accepts (Ollama-specific,
+  // not part of the OpenAI spec itself -- ignored by a genuine OpenAI-compat
+  // backend). A model's architectural max context (e.g. gemma4:e4b's 128K)
+  // is NOT what Ollama actually runs at by default -- num_ctx must be set
+  // explicitly or Ollama truncates to its own small default regardless of
+  // prompt size. Local/dev models only; the production frontier-model proxy
+  // manages context server-side and this option has no effect there.
+  numCtx?: number;
+  // Ollama sampler overrides mitigating a confirmed upstream Gemma4 bug
+  // (ollama/ollama#15502): long free-text generation under grammar-
+  // constrained JSON output can enter a token-repetition collapse (a word
+  // repeats until it fills the remaining token budget), corrupting the
+  // JSON structure. repeat_penalty is NOT a working mitigation for this
+  // model family -- Ollama's Go-native sampler silently ignores
+  // repeat_penalty/frequency_penalty/presence_penalty entirely for it
+  // (ollama/ollama#15783); only temperature/top_k/top_p/min_p are actually
+  // implemented. topK/minP mirror Gemma4's own release-note-recommended
+  // sampler settings, confirmed in the same issue thread to noticeably
+  // reduce degenerate repetition on long generations. Both Ollama-specific,
+  // same "harmless passthrough, ignored by a genuine OpenAI-compat backend"
+  // contract as numCtx above.
+  topK?: number;
+  minP?: number;
   tools?: LlmToolDefinition[];
   toolChoice?: 'auto' | 'none' | 'required';
 }
@@ -76,5 +100,5 @@ export interface LlmClient {
   listModels(): Promise<string[]>;
   streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<string>;
   embed(texts: string[], opts?: { model?: string }): Promise<number[][]>;
-  vision(prompt: string, images: Buffer[], opts?: { model?: string }): Promise<string>;
+  vision(prompt: string, images: Buffer[], opts?: { model?: string; mimeType?: string }): Promise<string>;
 }

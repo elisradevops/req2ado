@@ -33,7 +33,7 @@ describe('NewJobWizard Step 1', () => {
     vi.spyOn(jobsApi, 'listModels').mockResolvedValue(['qwen2.5:1.5b']);
     vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }]);
     vi.spyOn(adoApi, 'getAreaPaths').mockResolvedValue({ path: 'Project', children: [] });
-    useAuthStore.getState().login('https://ado.example', 'pat-1', 'Jane');
+    useAuthStore.getState().login('https://ado.example', 'pat-1', 'Jane', 'user-descriptor-1');
 
     render(
       <ToastProvider>
@@ -53,8 +53,50 @@ describe('NewJobWizard Step 1', () => {
 
     await waitFor(() =>
       expect(jobsApi.submitJob).toHaveBeenCalledWith(
-        expect.objectContaining({ mode: 'survey', areaPath: 'Project' }),
+        expect.objectContaining({ mode: 'survey', areaPath: 'Project', userId: 'user-descriptor-1', followUp: false }),
       ),
     );
+  });
+
+  it('submits followUp: true when the follow-up checkbox is checked', async () => {
+    // Force the no-credential (plain TextField) area-path path, deterministic
+    // regardless of whether an earlier test left authStore's credential set.
+    useAuthStore.getState().logout();
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({ blockCount: 20, sectionCount: 3, fileType: 'docx' });
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-99' });
+
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByText(/20/)).toBeInTheDocument());
+    await userEvent.type(screen.getByLabelText(/^area path$/i), 'Project\\Area1');
+    await userEvent.click(screen.getByLabelText(/follow-up document/i));
+    await userEvent.click(screen.getByRole('button', { name: /start/i }));
+
+    await waitFor(() =>
+      expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ followUp: true })),
+    );
+  });
+
+  it('shows an error toast instead of silently failing when previewJob rejects', async () => {
+    // Regression: a transient backend failure (a redeploy mid-request, a
+    // network blip) previously left the user stuck on step 1 with ZERO
+    // feedback -- the promise rejected with no try/catch and no visible
+    // signal, indistinguishable from the app simply refusing the upload.
+    vi.spyOn(jobsApi, 'previewJob').mockRejectedValue(new Error('network error'));
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByText(/failed to parse the uploaded file/i)).toBeInTheDocument());
   });
 });

@@ -12,6 +12,18 @@ describe('jobs api', () => {
     expect(result).toEqual([{ id: 'j1' }]);
   });
 
+  it('submitJob appends followUp="true"/"false" to the form data (never omitted)', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { jobId: 'job-1' } });
+
+    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline', followUp: true });
+    let form = (httpClient.post as any).mock.calls[0][1] as FormData;
+    expect(form.get('followUp')).toBe('true');
+
+    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline' });
+    form = (httpClient.post as any).mock.calls[1][1] as FormData;
+    expect(form.get('followUp')).toBe('false');
+  });
+
   it('confirmJob sends PAT headers when a credential is provided', async () => {
     (httpClient.post as any).mockResolvedValue({ data: { status: 'succeeded', createdCount: 3 } });
     await confirmJob('job-1', { orgUrl: 'https://ado.example', pat: 'pat-1' });

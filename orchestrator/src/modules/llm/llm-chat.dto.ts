@@ -45,6 +45,17 @@ export const llmChatRequestSchema = z.object({
     })
     .optional(),
   maxTokens: z.number().int().positive().optional(),
+  // Ollama's actual runtime context window (distinct from a model's
+  // architectural max) -- unset, Ollama truncates to its own small default
+  // regardless of how large a prompt this proxies. Only meaningful for
+  // local/dev models; the production frontier-model proxy manages context
+  // server-side and ignores this (see openwebui.client.ts's forwarding).
+  numCtx: z.number().int().positive().optional(),
+  // Gemma4 repetition-collapse mitigation (see llm-client.interface.ts's
+  // LlmChatOptions.topK/minP doc comment for the confirmed upstream bug and
+  // why repeat_penalty doesn't work as a substitute).
+  topK: z.number().int().positive().optional(),
+  minP: z.number().min(0).max(1).optional(),
   tools: z.array(toolDefinitionSchema).optional(),
   toolChoice: z.union([z.literal('auto'), z.literal('none'), z.literal('required')]).optional(),
 });

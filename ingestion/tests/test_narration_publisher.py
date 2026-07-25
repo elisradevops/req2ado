@@ -91,3 +91,26 @@ def test_publish_message_omits_branch_position_when_branch_index_is_none() -> No
 
     payload = json.loads(redis_client.publish_calls[0][1])
     assert "section" not in payload["message"]
+
+
+def test_publish_includes_section_label_in_camelcase_and_the_message() -> None:
+    # Without this, the UI could only ever show an anonymous "Section N of
+    # M" -- no way to tell WHICH real content a job was analyzing/failed on.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(section_label="Backplane Power Budget"))
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["sectionLabel"] == "Backplane Power Budget"
+    assert "Backplane Power Budget" in payload["message"]
+
+
+def test_publish_section_label_is_null_when_not_supplied() -> None:
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress())
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["sectionLabel"] is None

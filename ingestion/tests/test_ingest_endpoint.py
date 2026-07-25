@@ -5,17 +5,17 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.main import app
+from app.main import _sniff_image_mime_type, app
 
 client = TestClient(app)
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _upload(filename: str, path: Path, redact: bool = False) -> dict:
+def _upload(filename: str, path: Path, redact: bool = False, **extra_params: object) -> dict:
     with open(path, "rb") as f:
         response = client.post(
             "/ingest",
-            params={"redact": redact},
+            params={"redact": redact, **extra_params},
             files={"file": (filename, f, "application/octet-stream")},
         )
     assert response.status_code == 200
@@ -58,6 +58,32 @@ def test_ingest_scanned_pdf_via_ocr() -> None:
     assert any(b["kind"] == "open_tbd" for b in body["blocks"])
 
 
+def test_ingest_pptx() -> None:
+    body = _upload("sample.pptx", FIXTURES / "sample.pptx")
+    assert body["document"]["format"] == "pptx"
+    assert any(b["kind"] == "heading" for b in body["blocks"])
+
+
+def test_ingest_csv() -> None:
+    body = _upload("sample.csv", FIXTURES / "sample.csv")
+    assert body["document"]["format"] == "csv"
+    assert len(body["tables"]) == 1
+    assert body["tables"][0]["rows"][0] == ["Component", "Voltage", "Current (A)"]
+
+
+def test_ingest_rtf() -> None:
+    body = _upload("sample.rtf", FIXTURES / "sample.rtf")
+    assert body["document"]["format"] == "rtf"
+    assert any("thermal requirements" in b["text"] for b in body["blocks"])
+
+
+def test_ingest_image() -> None:
+    body = _upload("sample.png", FIXTURES / "sample.png")
+    assert body["document"]["format"] == "image"
+    assert len(body["blocks"]) == 1
+    assert body["blocks"][0]["kind"] == "figure"
+
+
 def test_ingest_with_redact_strips_emails() -> None:
     # sample.txt has no email, so use a temp fixture with one inline
     import tempfile
@@ -90,6 +116,57 @@ def test_ingest_rejects_a_file_exceeding_the_configured_size_cap(monkeypatch) ->
     temp_path.unlink()
 
 
+def test_ingest_skip_vision_skips_figure_captioning_even_when_vision_is_configured(monkeypatch) -> None:
+    # Regression: /jobs/preview (orchestrator) only needs blockCount/
+    # sectionCount/fileType -- it never reads figure captions -- but before
+    # skip_vision existed, every embedded image in a merely-previewed
+    # document paid the full per-image vision-LLM inference cost anyway
+    # (confirmed live: a single small image made preview take 28s instead
+    # of ~30ms). skip_vision=true must suppress describe_figure entirely,
+    # even when a real vision client IS configured.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+            self.calls += 1
+            return "a description nobody asked for"
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+
+    body = _upload("sample.docx", FIXTURES / "sample.docx", **{"skip_vision": True})
+    figure_blocks = [b for b in body["blocks"] if b["kind"] == "figure"]
+    assert len(figure_blocks) == 1
+    assert figure_blocks[0]["text"] == "[FIGURE: none]"  # placeholder, not the fake caption
+    assert fake_client.calls == 0
+
+
+def test_ingest_without_skip_vision_still_captions_when_vision_is_configured(monkeypatch) -> None:
+    # Companion to the test above -- proves skip_vision is opt-in, not a
+    # silent global regression: real job submission (pipeline.worker.ts)
+    # omits skip_vision and must keep getting real captions.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+            self.calls += 1
+            return "a real caption"
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+
+    body = _upload("sample.docx", FIXTURES / "sample.docx")
+    figure_blocks = [b for b in body["blocks"] if b["kind"] == "figure"]
+    assert figure_blocks[0]["text"] == "[FIGURE: a real caption]"
+    assert fake_client.calls == 1
+
+
 def test_ingest_unsupported_extension_returns_400() -> None:
     import tempfile
 
@@ -103,3 +180,31 @@ def test_ingest_unsupported_extension_returns_400() -> None:
         )
     assert response.status_code == 400
     temp_path.unlink()
+
+
+def test_sniff_image_mime_type_detects_jpeg() -> None:
+    assert _sniff_image_mime_type(b"\xff\xd8\xff\xe0rest of jpeg") == "image/jpeg"
+
+
+def test_sniff_image_mime_type_detects_png() -> None:
+    assert _sniff_image_mime_type(b"\x89PNG\r\n\x1a\nrest of png") == "image/png"
+
+
+def test_sniff_image_mime_type_detects_gif() -> None:
+    assert _sniff_image_mime_type(b"GIF89arest of gif") == "image/gif"
+
+
+def test_sniff_image_mime_type_detects_bmp() -> None:
+    assert _sniff_image_mime_type(b"BMrest of bmp") == "image/bmp"
+
+
+def test_sniff_image_mime_type_detects_webp() -> None:
+    assert _sniff_image_mime_type(b"RIFF\x00\x00\x00\x00WEBPrest") == "image/webp"
+
+
+def test_sniff_image_mime_type_detects_tiff() -> None:
+    assert _sniff_image_mime_type(b"II*\x00rest of tiff") == "image/tiff"
+
+
+def test_sniff_image_mime_type_returns_none_for_unrecognized_bytes() -> None:
+    assert _sniff_image_mime_type(b"not a real image format") is None

@@ -68,7 +68,9 @@ export class ChatService {
       history: history.map((h: { role: string; content: string }) => ({ role: h.role, content: h.content })),
       message,
       model: model ?? null,
-      area_path: job.areaPath,
+      // Knowledge Base scope key -- the job's submitting user's identity,
+      // NOT job.areaPath (ADO destination, unrelated concern here).
+      user_id: job.userId,
     };
 
     // Fire-and-forget: the caller gets an immediate ack; the actual reply

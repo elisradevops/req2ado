@@ -9,8 +9,21 @@ import type { McpClient } from './mcp.client';
 export interface PipelineJobInput {
   id: string;
   areaPath: string;
+  // The submitting user's stable ADO identity -- the Knowledge Base scope
+  // key threaded into ingestionClient.level() below, kept separate from
+  // areaPath (ADO write-back destination + dedup key only). Nullable: an
+  // older/mocked job predating this field simply gets no KB grounding.
+  userId: string | null;
   customerId: string | null;
   mode: 'baseline' | 'survey';
+  // True when this job ingests a follow-up document against requirements
+  // already ingested under the same area path -- gates whether the diff()
+  // call below runs the dedup-similarity check at all (see Job.followUp's
+  // schema.prisma doc comment). Defaults to false when constructing the
+  // BullMQ payload (see pipeline-worker.main.ts/jobs.service.ts), matching
+  // an older/mocked job predating this field: no dedup, same as any other
+  // first-time ingestion.
+  followUp?: boolean;
   fileBuffer: Buffer;
   filename: string;
   // Per-job LLM model override (SURVEY only -- BASELINE never calls an
@@ -122,7 +135,10 @@ export async function runPipelineJob(
     }
 
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
-    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.areaPath, linkTypeCatalog, job.model, job.id)) as {
+    // job.userId (KB scope), NOT job.areaPath (ADO write-back destination --
+    // see diffInputs[].areaPath and checkDuplicate below, both correctly
+    // still using job.areaPath).
+    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.userId ?? undefined, linkTypeCatalog, job.model, job.id)) as {
       nodes: LeveledNode[];
       warnings?: string[];
       kb_citations?: { source_file: string; similarity: number; relevance: string }[];
@@ -187,10 +203,17 @@ export async function runPipelineJob(
         customerIdFieldCandidates.find((candidate) => availableFields.includes(candidate)) ?? null;
     }
 
+    // Dedup only runs for a follow-up ingestion (see Job.followUp's
+    // schema.prisma doc comment) -- a first-time document has nothing to
+    // compare against under this area path, so skipping the check is both
+    // correct and avoids wasted embed calls. dryRunService.diff's third
+    // arg is already optional (see its own signature) -- omitting it (via
+    // `undefined`) makes every node fall straight through to 'create',
+    // exactly like before dedup existed.
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      (text, areaPath) => deps.ingestionClient.checkDuplicate(text, areaPath),
+      job.followUp ? (text, areaPath) => deps.ingestionClient.checkDuplicate(text, areaPath) : undefined,
     );
 
     const resolvedDiff =

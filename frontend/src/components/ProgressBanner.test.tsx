@@ -74,6 +74,67 @@ describe('ProgressBanner', () => {
     expect(screen.getByText('Resolving trace links')).toBeInTheDocument();
   });
 
+  it('renders a real sublabel (not "undefined") for the analyze_section phase and a valid progress value', () => {
+    // Regression: the backend's SURVEY redesign replaced infer_hierarchy/
+    // generate_requirements with one holistic analyze_section phase --
+    // PHASE_SUBLABEL/PHASE_START_WEIGHT previously had no entry for it,
+    // so the active section rendered "Section 1 of 6 — undefined" and the
+    // progress bar's value became NaN (confirmed live against a real job).
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 0, branchCount: 6, blocksDone: 0, blocksTotal: 679, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/Section 1 of 6.*Analyzing and synthesizing requirements/)).toBeInTheDocument();
+    expect(screen.queryByText(/undefined/i)).not.toBeInTheDocument();
+    const progressbars = screen.getAllByRole('progressbar');
+    const linear = progressbars.find((el) => el.classList.contains('MuiLinearProgress-root'));
+    expect(linear).toHaveAttribute('aria-valuenow', '0');
+  });
+
+  it('shows each section\'s real name (its own heading) instead of an anonymous index', () => {
+    // Without sectionLabel, the step list could only ever show "Section N
+    // of M" -- no way to tell WHICH real content the job analyzed or
+    // failed on.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 1, branchCount: 3, blocksDone: 10, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x', sectionLabel: 'Backplane Power Budget' },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/Section 2 of 3: Backplane Power Budget/)).toBeInTheDocument();
+  });
+
+  it('retains an earlier section\'s real name after a later section becomes active', () => {
+    // The whole point for debugging a failed job: by the time it dies on
+    // section 3, you still see what sections 1 and 2 actually were, not
+    // just their generic index.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 0, branchCount: 3, blocksDone: 0, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x', sectionLabel: 'Display' },
+          { phase: 'analyze_section', branchIndex: 1, branchCount: 3, blocksDone: 10, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x', sectionLabel: 'Audio' },
+          { phase: 'analyze_section', branchIndex: 2, branchCount: 3, blocksDone: 20, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x', sectionLabel: 'Backplane Power Budget' },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/Section 1 of 3: Display/)).toBeInTheDocument();
+    expect(screen.getByText(/Section 2 of 3: Audio/)).toBeInTheDocument();
+    expect(screen.getByText(/Section 3 of 3: Backplane Power Budget/)).toBeInTheDocument();
+  });
+
   it('marks the trace-links step active and every section done once trace-link inference starts', () => {
     render(
       <ProgressBanner

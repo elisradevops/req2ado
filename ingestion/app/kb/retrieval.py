@@ -13,14 +13,16 @@ class EmbedClient(Protocol):
 
 
 def retrieve_context(
-    area_path: str,
+    user_id: str,
     query_text: str,
     embed_client: EmbedClient,
     vector_store: KbVectorStore,
     top_k: int = 5,
     max_distance: float = 0.7,
 ) -> tuple[str | None, list[dict]]:
-    """Embeds query_text, queries the KB collection for area_path, keeps
+    """Embeds query_text, queries the KB collection for user_id (the
+    Knowledge Base is scoped by the ingesting/submitting user's identity,
+    NOT any ADO area path -- see KbVectorStore's own docstring), keeps
     hits with distance <= max_distance (cosine similarity >= 0.3), and
     joins their text with a blank-line separator. Returns
     (context, citations): context is None when the collection is empty, no
@@ -36,9 +38,9 @@ def retrieve_context(
     callers."""
     try:
         [embedding] = embed_client.embed([query_text])
-        hits = vector_store.query(area_path, embedding, top_k)
+        hits = vector_store.query(user_id, embedding, top_k)
     except Exception as exc:  # noqa: BLE001 - retrieval must never fail a SURVEY job
-        logger.warning("KB retrieval failed for area_path=%s: %s", area_path, exc)
+        logger.warning("KB retrieval failed for user_id=%s: %s", user_id, exc)
         return None, []
 
     survivors = [hit for hit in hits if hit["distance"] <= max_distance]

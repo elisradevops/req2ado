@@ -45,3 +45,33 @@ def test_describe_figure_raises_on_non_200_response() -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         client.describe_figure(b"img")
+
+
+def test_describe_figure_forwards_mime_type_when_supplied() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"description": "ok"})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.describe_figure(b"fake-jpeg-bytes", mime_type="image/jpeg")
+
+    assert captured["body"]["mimeType"] == "image/jpeg"
+
+
+def test_describe_figure_omits_mime_type_when_not_supplied() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"description": "ok"})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.describe_figure(b"fake-png-bytes")
+
+    assert "mimeType" not in captured["body"]

@@ -13,6 +13,46 @@ describe('llmChatRequestSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts an optional numCtx (Ollama runtime context window override)', () => {
+    const result = llmChatRequestSchema.safeParse({
+      messages: [{ role: 'user', content: 'hi' }],
+      numCtx: 28000,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.numCtx).toBe(28000);
+    }
+  });
+
+  it('rejects a non-positive numCtx', () => {
+    const result = llmChatRequestSchema.safeParse({
+      messages: [{ role: 'user', content: 'hi' }],
+      numCtx: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts optional topK/minP (Gemma4 repetition-collapse mitigation)', () => {
+    const result = llmChatRequestSchema.safeParse({
+      messages: [{ role: 'user', content: 'hi' }],
+      topK: 50,
+      minP: 0.05,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.topK).toBe(50);
+      expect(result.data.minP).toBe(0.05);
+    }
+  });
+
+  it('rejects a minP outside [0, 1]', () => {
+    const result = llmChatRequestSchema.safeParse({
+      messages: [{ role: 'user', content: 'hi' }],
+      minP: 1.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('does NOT strip tools/toolChoice (Zod default is to strip unknown keys)', () => {
     const tools = [{ type: 'function' as const, function: { name: 'query_kb', parameters: { type: 'object' } } }];
     const result = llmChatRequestSchema.safeParse({

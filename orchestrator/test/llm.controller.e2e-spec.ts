@@ -145,6 +145,15 @@ describe('LlmController (e2e)', () => {
         .send({ prompt: 'describe', images: ['aGVsbG8='], model: 'llava' });
       expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { model: 'llava' });
     });
+
+    it('forwards an explicit mimeType when provided (a real non-PNG image)', async () => {
+      fakeOpenWebUiClient.vision.mockResolvedValue('ok');
+      await request(app.getHttpServer())
+        .post('/llm/vision')
+        .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .send({ prompt: 'describe', images: ['aGVsbG8='], mimeType: 'image/jpeg' });
+      expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { mimeType: 'image/jpeg' });
+    });
   });
 });
 

@@ -32,10 +32,20 @@ export async function previewJob(file: File): Promise<{ blockCount: number; sect
 export interface SubmitJobParams {
   file: File;
   areaPath: string;
+  // The submitting user's stable ADO identity (see authStore's userId) --
+  // the Knowledge Base scope key, kept separate from areaPath (the ADO
+  // write-back destination, unrelated concern). Optional: an unauthenticated
+  // caller simply gets no KB grounding for this job.
+  userId?: string | null;
   customerId?: string;
   mode: 'baseline' | 'survey';
   state?: string;
   iterationPath?: string;
+  // True when this job ingests a follow-up document against requirements
+  // already ingested under the same area path -- gates whether the
+  // orchestrator runs the dedup-similarity check at all. Defaults to false
+  // (a first-time ingestion has nothing to compare against).
+  followUp?: boolean;
   // SURVEY-only LLM model override (BASELINE never calls an LLM). Unset
   // means "use whatever the orchestrator is configured with".
   model?: string;
@@ -46,9 +56,11 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   form.append('file', params.file);
   form.append('areaPath', params.areaPath);
   form.append('mode', params.mode);
+  if (params.userId) form.append('userId', params.userId);
   if (params.customerId) form.append('customerId', params.customerId);
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);
+  form.append('followUp', params.followUp ? 'true' : 'false');
   if (params.model) form.append('model', params.model);
   const response = await httpClient.post('/jobs', form);
   return response.data;

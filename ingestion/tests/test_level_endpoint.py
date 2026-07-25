@@ -9,6 +9,16 @@ from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 
 client = TestClient(app)
 
+# Substring unique to _SECTION_ANALYSIS_SYSTEM_PROMPT (the one-call holistic
+# analyze_section/analyze_section_agentic call, replacing the old
+# infer_hierarchy/generate_requirements_for_document two-call pair) -- used
+# by every survey-mode MockTransport handler below to route the ONE real
+# analysis call to a real nodes-shaped response, while any other call this
+# job makes (quality scoring, kb relevance verification) falls through to a
+# harmless empty-object default unless a test specifically needs to assert
+# on it (see test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call).
+_ANALYZE_SECTION_MARKER = "analyzing one section"
+
 
 def _sr(path: str) -> SourceRef:
     return SourceRef(document_path=path, start_offset=0, end_offset=10)
@@ -93,22 +103,21 @@ def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> No
 
 
 def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch) -> None:
-    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
-    requirements_by_node = {
-        "0": [{"text": "The system shall power on within 5 seconds.", "tags": ["functional"]}]
-    }
+    nodes = [
+        {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on within 5 seconds.", "tags": ["functional"]}
+    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-bearer"
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        if "hierarchy" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps(hierarchy)})
-        return httpx.Response(200, json={"content": json.dumps(requirements_by_node)})
+        if _ANALYZE_SECTION_MARKER in system_prompt:
+            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        return httpx.Response(200, json={"content": "{}"})  # scoring call -- degrades harmlessly, not asserted here
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -135,50 +144,46 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
         captured_system_prompts.append(system_prompt)
-        if "hierarchy" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps([{"node_id": "0", "type": "Epic", "parent_id": None}])})
-        return httpx.Response(
-            200,
-            json={"content": json.dumps({"0": [{"text": "The system shall power on.", "tags": ["functional"]}]})},
-        )
+        if _ANALYZE_SECTION_MARKER in system_prompt:
+            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
+            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
     monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
     monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
     # retrieve_context is called from app.leveling.llm_leveling (build_survey_tree's
-    # module), not from app.main — main.py only forwards area_path/embed_client/
-    # vector_store through, it never calls retrieve_context itself.
+    # module), not from app.main — main.py only forwards user_id/embed_client/
+    # vector_store through, it never calls retrieve_context itself. With the
+    # default model (no tool-calling support), build_survey_tree computes this
+    # ONCE for the whole document (§5c's fallback path) and threads the same
+    # kb_context into analyze_section + scoring.
     monkeypatch.setattr(
         "app.leveling.llm_leveling.retrieve_context",
-        lambda area_path, query_text, embed_client, vector_store, **_: (
+        lambda user_id, query_text, embed_client, vector_store, **_: (
             "Injected KB reference text.",
             [{"source_file": "ref-doc.docx", "distance": 0.1, "similarity": 0.9, "text": "Injected KB reference text."}],
         ),
     )
-    # judge_kb_relevance is wired for real (area_path is set) and routes
-    # through the same MockTransport handler -- it doesn't match "hierarchy"
-    # so falls into the generate_requirements_for_document-shaped branch,
-    # whose response ({"0": [...]}) _parse_json_object accepts fine even
-    # though judge_kb_relevance doesn't actually consume its shape here.
-    # Not asserted on in this test; kb_citations relevance-field coverage
-    # lives in test_llm_leveling.py.
+    # judge_kb_relevance is wired for real (user_id is set) and routes
+    # through the same MockTransport handler -- its own system prompt
+    # doesn't carry kb_context (it's the thing being verified, not something
+    # to ground itself in), so it's excluded from the assertion below via
+    # its "knowledge-base snippets" phrase.
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt"))],
     )
     response = client.post(
-        "/level", params={"mode": "survey", "area_path": "Project\\Area1"}, json=doc.model_dump(mode="json")
+        "/level", params={"mode": "survey", "user_id": "Project\\Area1"}, json=doc.model_dump(mode="json")
     )
     assert response.status_code == 200
-    # judge_kb_relevance's own system prompt doesn't carry kb_context (it's
-    # the thing being verified, not something to ground itself in) -- only
-    # the hierarchy/generation/scoring prompts must include it.
     grounded_prompts = [p for p in captured_system_prompts if "knowledge-base snippets" not in p]
     assert grounded_prompts and all("Injected KB reference text." in prompt for prompt in grounded_prompts)
     assert response.json()["kb_citations"] == [
@@ -187,26 +192,24 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
 
 
 def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeypatch) -> None:
-    # Regression guard: omitting area_path (every pre-existing caller) must
+    # Regression guard: omitting user_id (every pre-existing caller) must
     # never even attempt retrieval.
     def _fail_retrieve(*args, **kwargs):  # pragma: no cover - should never run
-        raise AssertionError("retrieve_context must not be called when area_path is omitted")
+        raise AssertionError("retrieve_context must not be called when user_id is omitted")
 
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fail_retrieve)
-
-    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
-    requirements_by_node = {"0": [{"text": "The system shall power on.", "tags": ["functional"]}]}
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        if "hierarchy" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps(hierarchy)})
-        return httpx.Response(200, json={"content": json.dumps(requirements_by_node)})
+        if _ANALYZE_SECTION_MARKER in system_prompt:
+            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
+            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -223,10 +226,10 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
 
 def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch) -> None:
     # Mirrors test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval's
-    # exact mocking mechanics for infer_hierarchy/generate_requirements_for_document
-    # (MockTransport-backed OrchestratorLlmClient) — infer_trace_links is
-    # monkeypatched directly instead, since this test only needs to prove the
-    # catalog reaches it unchanged, not exercise its own HTTP prompt contract.
+    # exact mocking mechanics for analyze_section (MockTransport-backed
+    # OrchestratorLlmClient) — infer_trace_links is monkeypatched directly
+    # instead, since this test only needs to prove the catalog reaches it
+    # unchanged, not exercise its own HTTP prompt contract.
     catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related"}]
     captured: dict[str, list[dict]] = {}
 
@@ -239,19 +242,17 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
         fake_infer_trace_links,
     )
 
-    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
-    requirements_by_node = {"0": [{"text": "The system shall power on.", "tags": ["functional"]}]}
-
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        if "hierarchy" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps(hierarchy)})
-        return httpx.Response(200, json={"content": json.dumps(requirements_by_node)})
+        if _ANALYZE_SECTION_MARKER in system_prompt:
+            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
+            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -291,19 +292,17 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
         fake_infer_trace_links,
     )
 
-    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
-    requirements_by_node = {"0": [{"text": "The system shall power on.", "tags": ["functional"]}]}
-
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        if "hierarchy" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps(hierarchy)})
-        return httpx.Response(200, json={"content": json.dumps(requirements_by_node)})
+        if _ANALYZE_SECTION_MARKER in system_prompt:
+            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
+            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -327,18 +326,16 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
 def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
-        if "hierarchy" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps([{"node_id": "0", "type": "Epic", "parent_id": None}])})
+        if _ANALYZE_SECTION_MARKER in system_prompt:
+            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
+            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if "score" in system_prompt.lower() and "EARS" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps({"0": {"score": 72, "issues": ["vague_term"]}})})
-        return httpx.Response(
-            200,
-            json={"content": json.dumps({"0": [{"text": "The system shall power on.", "tags": ["functional"]}]})},
-        )
+            return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 72, "issues": ["vague_term"]}})})
+        return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -357,19 +354,17 @@ def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_
 
 
 def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(monkeypatch) -> None:
-    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
-    requirements_by_node = {"0": [{"text": "The system shall power on.", "tags": ["functional"]}]}
-
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
-        if "hierarchy" in system_prompt:
-            return httpx.Response(200, json={"content": json.dumps(hierarchy)})
-        return httpx.Response(200, json={"content": json.dumps(requirements_by_node)})
+        if _ANALYZE_SECTION_MARKER in system_prompt:
+            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
+            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 

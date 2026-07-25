@@ -50,18 +50,18 @@ services:
     env_file: .env
     environment:
       PORT: 4100
-      # Only used when ADO_BACKEND=real against an on-prem TFS/ADO Server
-      # behind a self-signed/corporate cert (dev.azure.com, the default
-      # cloud target, presents a public CA-issued cert and doesn't need
-      # this -- default axios trust store is correct as-is, see
-      # buildHttpClient's own doc comment in realAdo.ts). Mounted
-      # proactively -- a separate mechanism from orchestrator's
-      # NODE_EXTRA_CA_CERTS below (see that comment on the same cert) --
-      # so flipping to an on-prem target doesn't also require a compose
-      # change.
-      ADO_CA_CERT: /certs/cato-ca-bundle.pem
-    volumes:
-      - ./.certs/cato-ca-bundle.pem:/certs/cato-ca-bundle.pem:ro
+      # ADO_CA_CERT/the Cato CA bundle mount were REMOVED here (were
+      # present, pointed at .certs/cato-ca-bundle.pem) -- only relevant
+      # behind the office's Cato Networks TLS-inspecting proxy, AND that
+      # bundle's root cert expired 2025-10-29 regardless. buildHttpClient
+      # (realAdo.ts) trusts ONLY the exact CA this path points to when set
+      # (never additive to the system trust store) -- with an unreachable/
+      # expired CA configured, every real ADO call failed TLS entirely
+      # ("unable to get local issuer certificate"), even off the Cato
+      # network where dev.azure.com's real public-CA cert would otherwise
+      # validate fine via the default trust store. Re-add ADO_CA_CERT
+      # (pointed at a CURRENT cert bundle) only if back on a network that
+      # actually intercepts this traffic.
     ports:
       - "4100:4100"
 
@@ -126,16 +126,14 @@ services:
       # Frontend is served on its own origin/port (4082) below, not
       # same-origin behind a reverse proxy — CORS must be enabled for it.
       CORS_ORIGIN: http://localhost:4082
-      # Corporate network runs outbound HTTPS through a Cato Networks
-      # TLS-inspecting proxy (confirmed by inspecting the real cert's issuer:
-      # CN=Cato-Networks-Server-tlvcatod4). The host trusts it because Cato's
-      # client installs its root CA into macOS's system keychain — containers
-      # never see that CA on their own, so any outbound HTTPS call (e.g. the
-      # login route's connectionData check) fails cert verification with
-      # "fetch failed" unless this CA bundle is trusted here too.
-      NODE_EXTRA_CA_CERTS: /certs/cato-ca-bundle.pem
-    volumes:
-      - ./.certs/cato-ca-bundle.pem:/certs/cato-ca-bundle.pem:ro
+      # NODE_EXTRA_CA_CERTS/the Cato CA bundle mount were REMOVED here --
+      # only relevant behind the office's Cato Networks TLS-inspecting proxy
+      # (Cato's client installs its root CA into the host's system keychain;
+      # containers don't see it on their own without this). NODE_EXTRA_CA_CERTS
+      # is additive to Node's default trust store, so it was harmless off
+      # that network -- but the bundle's root cert also expired 2025-10-29,
+      # so it's stale either way. Re-add (pointed at a CURRENT bundle) only
+      # if back on a network that actually intercepts this traffic.
     command: ["node", "dist/main.js"]
     ports:
       - "3001:3001"

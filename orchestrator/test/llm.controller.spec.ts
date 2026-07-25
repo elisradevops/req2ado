@@ -1,5 +1,19 @@
+import 'reflect-metadata';
 import { BadRequestException } from '@nestjs/common';
 import { LlmController } from '../src/modules/llm/llm.controller';
+
+describe('LlmController @SkipThrottle', () => {
+  it('is exempt from the global ThrottlerGuard (§16 -- internal bearer-guarded traffic, not public; the agentic KB loop fires several /llm/embed calls per branch)', () => {
+    // @nestjs/throttler's SkipThrottle() decorator writes Reflect metadata
+    // under `THROTTLER:SKIP${name}` (name defaults to 'default') directly
+    // onto the decorated class -- see throttler.decorator.js /
+    // throttler.constants.js in @nestjs/throttler's dist. Asserting the
+    // literal metadata key here (rather than a live HTTP burst test, which
+    // would need the full AppModule + ThrottlerGuard wired) proves the
+    // decorator is actually applied without needing live Postgres/Redis.
+    expect(Reflect.getMetadata('THROTTLER:SKIPdefault', LlmController)).toBe(true);
+  });
+});
 
 describe('LlmController', () => {
   it('threads an explicit model from the request body into llmClient.chat', async () => {
@@ -18,6 +32,24 @@ describe('LlmController', () => {
     await controller.chat({ messages: [{ role: 'user', content: 'hi' }] });
 
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], {});
+  });
+
+  it('threads an explicit numCtx from the request body into llmClient.chat', async () => {
+    const chat = jest.fn().mockResolvedValue('reply');
+    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], numCtx: 28000 });
+
+    expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { numCtx: 28000 });
+  });
+
+  it('threads explicit topK/minP from the request body into llmClient.chat', async () => {
+    const chat = jest.fn().mockResolvedValue('reply');
+    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], topK: 50, minP: 0.05 });
+
+    expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { topK: 50, minP: 0.05 });
   });
 
   it('throws BadRequestException on an invalid body', async () => {

@@ -85,6 +85,62 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('max_tokens');
   });
 
+  it('forwards numCtx as options.num_ctx when provided (Ollama-specific passthrough)', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { numCtx: 28000 });
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ options: { num_ctx: 28000 } }));
+  });
+
+  it('omits options.num_ctx when numCtx is not provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('options');
+  });
+
+  it('forwards topK/minP as options.top_k/options.min_p when provided (Gemma4 repetition-collapse mitigation)', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { topK: 50, minP: 0.05 });
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ options: { top_k: 50, min_p: 0.05 } }));
+  });
+
+  it('omits options.top_k/options.min_p when not provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('options');
+  });
+
+  it('merges numCtx and topK/minP into ONE options object instead of the second overwriting the first', async () => {
+    // Regression guard: a naive `...(numCtx ? {options: {...}} : {}), ...(topK ? {options: {...}} : {})`
+    // spread pattern would have the second `options:` key silently OVERWRITE
+    // the first in the object literal, losing num_ctx entirely whenever both
+    // are set together -- exactly the case every real SURVEY call now hits.
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { numCtx: 28000, topK: 50, minP: 0.05 });
+    expect(fakeCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ options: { num_ctx: 28000, top_k: 50, min_p: 0.05 } }),
+    );
+  });
+
   it('forwards responseSchema as response_format: json_schema when provided', async () => {
     const client = new OpenWebUiClient(config);
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: '[]' } }] });
@@ -295,6 +351,30 @@ describe('OpenWebUiClient', () => {
     await client.vision('describe', [Buffer.from('img')], { model: 'moondream' });
 
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'moondream' }));
+  });
+
+  it('vision() uses opts.mimeType in the data URI when supplied (a real non-PNG image)', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('fake-jpeg-bytes')], { mimeType: 'image/jpeg' });
+
+    const sentContent = fakeCreate.mock.calls[0][0].messages[0].content;
+    expect(sentContent[1].image_url.url).toBe(`data:image/jpeg;base64,${Buffer.from('fake-jpeg-bytes').toString('base64')}`);
+  });
+
+  it('vision() defaults to image/png in the data URI when opts.mimeType is not supplied', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('img')]);
+
+    const sentContent = fakeCreate.mock.calls[0][0].messages[0].content;
+    expect(sentContent[1].image_url.url).toMatch(/^data:image\/png;base64,/);
   });
 });
 

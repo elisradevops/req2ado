@@ -8,7 +8,16 @@ export type JobStage =
   | 'failed';
 
 export interface NarrationEvent {
-  phase: 'infer_hierarchy' | 'generate_requirements' | 'score_requirements' | 'infer_trace_links';
+  // 'analyze_section' replaced the 'infer_hierarchy'/'generate_requirements'
+  // pair when the backend's SURVEY pipeline moved to one holistic call per
+  // section (see req2ado docs) -- the old two are kept here only so a
+  // stale/rolling-deploy backend emitting them doesn't fail this type.
+  phase: 'analyze_section' | 'infer_hierarchy' | 'generate_requirements' | 'score_requirements' | 'infer_trace_links';
+  // Human-readable label for the section this event's branchIndex refers to
+  // (typically its own first heading text) -- null/undefined when the
+  // backend had nothing to label the section with (or for the whole-tree
+  // infer_trace_links phase, which has no single section).
+  sectionLabel?: string | null;
   branchIndex: number | null;
   branchCount: number;
   blocksDone: number;
