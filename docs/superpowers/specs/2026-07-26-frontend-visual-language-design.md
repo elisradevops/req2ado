@@ -36,11 +36,25 @@ Current motion inventory: page-enter fade (`fadeIn`), dropdown/tooltip fade+scal
 - **The decision affordance**: once `ConfirmDialog` is wired into `JobDetail`'s Confirm button (Phase 4, already planned), the confirm CTA gets a slow breathing glow (`shadow` pulsing between two signal-yellow-tinted values, ~2.6s cycle) once its acknowledgement checkbox is ticked — matches the approved prototype. Never applied to any other button; this is the one place motion signals "waiting on you."
 - **Explicitly not doing**: hover-triggered motion on every icon/link, decorative background animation, anything that fires on mount without a state-change reason. `prefers-reduced-motion` kill-switch (already in `index.css`) covers all new motion automatically since it's implemented via the same transition/animation utilities.
 
-### 3. Type contrast sharpened
+### 3. Type contrast sharpened — and the type family itself reconsidered
 
-`h1`-style page titles (via `PageHeader`) currently differ from body text mainly by size/weight, using Inter Tight at a moderate weight. Push the display/body contrast harder: heavier weight + tighter negative tracking on `PageHeader`'s title specifically (not all headings — section headings inside cards stay closer to body weight, so the contrast reads as "this is the page," not "everything is loud").
+**Refinement (post-review):** the original migration's Inter Tight + Inter pairing is exactly the "safe AI-generated default" this app should avoid — Inter/Inter Tight is the pairing any similar B2B review-tool brief would produce regardless of subject. Since the palette and mono face (IBM Plex Mono) are locked, the fix is to stop mixing an unrelated display/body family with a bolted-on mono, and instead unify the whole system under the **IBM Plex superfamily**: Plex Sans (display, restrained heavy use — page titles only), Plex Sans (body, regular weight), Plex Mono (identifiers, unchanged). One type family designed as a coherent system, with a technical/engineering heritage that actually matches the subject, replaces three families glued together for convenience.
+
+Add a fourth, narrowly-scoped utility role: **Plex Sans Condensed** for genuinely dense tabular content that has a real overflow problem today — long ADO area paths and iteration paths in table cells and the destination bar. This is justified by an actual content constraint (these strings routinely run 30-50 characters), not decoration.
+
+`h1`-style page titles (via `PageHeader`) currently differ from body text mainly by size/weight. Push the display/body contrast harder: heavier weight + tighter negative tracking on `PageHeader`'s title specifically (not all headings — section headings inside cards stay closer to body weight, so the contrast reads as "this is the page," not "everything is loud").
 
 Mono identifiers (job ids, clause numbers) get a subtle treatment where they're structural content rather than incidental — e.g. in the future clause-spine, the clause-number column gets a faint tabular/monospace visual rhythm (tabular-nums already applied; add a subtle vertical guide/tick per depth level per the approved prototype's "spine" gutter) instead of being just another text color.
+
+### 3a. Signature sharpened: the document-control margin
+
+**Refinement (post-review):** the clause-spine thesis was correct but under-executed — the last mockup pass rendered it as a generic dashboard with mono accents, not something a systems/requirements engineer would recognize from their own world. Sharpening it around three real artifacts of that world:
+
+- **Title-block strip.** Engineering drawings and controlled specs carry a title block: document, revision, date, approval state, laid out as small-caps labels over mono values with hairline dividers between fields. The review-gate header's document identity (name, job id, revision/hash, analysed-in time) adopts this convention directly instead of a generic breadcrumb-and-badge row — it's a layout this audience reads instinctively because they see it daily on the documents themselves.
+- **Verification-method badges, real shorthand.** Systems engineering verifies each requirement by one of four canonical methods — Inspection, Analysis, Demonstration, Test (the "IADT" verification matrix, a real and universal convention in this discipline). Where the diff tree shows a requirement's verification method, use the actual single-letter engineering shorthand (I/A/D/T) in a small mono badge, not a generic colored tag with a made-up label.
+- **Redline convention for superseded content.** Near-duplicate/rejected clauses in the diff tree use strikethrough + a muted red-adjacent tone — this already existed loosely; make the connection explicit: it's borrowed from the red-pen redline convention on a physical markup, not an arbitrary "danger" color choice.
+
+These three are the one place this design spends its boldness; everything else (elevation, motion, buttons) stays quiet and disciplined per the restraint principle.
 
 ### 4. Primitive interaction states
 
@@ -53,6 +67,8 @@ Mono identifiers (job ids, clause numbers) get a subtle treatment where they're 
 Everything remaining in the original Phase 4 plan gets built directly in this upgraded language rather than plainly ported then revisited: the destination bar (JobsDetail/running state), the banded quality gauge with animated needle (`NodeDetailPanel`), the KB folder-tree view, chat panel polish (model picker, streaming indicator), `ConfirmDialog` wired into Confirm/Reject, Wiki markdown styling. None of these exist as functioning UI yet in the real app (only in the earlier mockup/prototype) — they get built once, in the upgraded language, not built plain and redone.
 
 Already-migrated screens (Login, JobsList, AppShell, NewJobWizard, KnowledgeBase, JobDetail's existing tabs/tree) get the elevation/motion/interaction-state upgrades (items 1, 2, 4) applied directly — this is a small, mechanical pass (opt into the new `Card`/`Button` variants) since the components already exist and only need the new tier/behavior wired in.
+
+The type-family swap (item 3) touches every screen at once since it's a token-level change: `@fontsource/ibm-plex-sans` and `@fontsource/ibm-plex-sans-condensed` replace `@fontsource-variable/inter-tight` and `@fontsource-variable/inter` in `main.tsx`, and `--font-display`/`--font-sans` in `index.css`'s `@theme` update accordingly. `IBM Plex Mono` (identifiers) is already in place and unchanged. Both new packages confirmed available on the npm registry (`@fontsource/ibm-plex-sans@5.3.0`, `@fontsource/ibm-plex-sans-condensed@5.3.0`).
 
 ## Testing
 
