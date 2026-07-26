@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
-from app.workitem.model import RequirementQualityIssue, RequirementTag
+from app.workitem.model import RequirementQualityIssue
 
 
 def _mock_transport(response_json: dict, expected_status: int = 200) -> httpx.MockTransport:
@@ -89,113 +89,6 @@ def test_generate_requirements_handles_an_empty_array_response() -> None:
     assert client.generate_requirements("Table of Contents") == []
 
 
-def test_infer_hierarchy_parses_the_response_into_a_hierarchy_list() -> None:
-    hierarchy = [
-        {"node_id": "0", "type": "Epic", "parent_id": None},
-        {"node_id": "1", "type": "Requirement", "parent_id": "0"},
-    ]
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        import json
-
-        captured["body"] = json.loads(request.content)
-        captured["auth"] = request.headers["authorization"]
-        return httpx.Response(200, json={"content": json.dumps(hierarchy)})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    result = client.infer_hierarchy("line 0\nline 1", None)
-
-    assert result == hierarchy
-    assert captured["auth"] == "Bearer test-bearer"
-    assert captured["body"]["temperature"] == 0
-    assert captured["body"]["messages"][1]["content"] == "line 0\nline 1"
-
-
-def test_infer_hierarchy_raises_on_non_200_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": "[]"}, expected_status=503)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        client.infer_hierarchy("line 0", None)
-
-
-def test_infer_hierarchy_handles_a_single_node_outline() -> None:
-    # Smallest possible real input: one line, one root node, no children --
-    # not an error/edge case for the client itself, just the minimum shape.
-    hierarchy = [{"node_id": "0", "type": "Requirement", "parent_id": None}]
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": json.dumps(hierarchy)})
-
-    assert client.infer_hierarchy("line 0", None) == hierarchy
-
-
-def test_infer_hierarchy_raises_on_malformed_json() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": "not valid json"})
-
-    with pytest.raises(ValueError, match="malformed"):
-        client.infer_hierarchy("line 0", None)
-
-
-def test_infer_hierarchy_strips_a_markdown_json_fence() -> None:
-    hierarchy = [{"node_id": "0", "type": "Epic", "parent_id": None}]
-    response_json = {"content": "```json\n" + json.dumps(hierarchy) + "\n```"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport(response_json)
-
-    result = client.infer_hierarchy("line 0", None)
-    assert result == hierarchy
-
-
-def test_generate_requirements_for_document_sends_all_blocks_in_one_call() -> None:
-    call_count = {"n": 0}
-    response_body = {"n0": [{"text": "The unit shall power on.", "tags": ["functional"]}], "n1": []}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        call_count["n"] += 1
-        return httpx.Response(200, json={"content": json.dumps(response_body)})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    result = client.generate_requirements_for_document({"n0": "block 0 text", "n1": "block 1 text"})
-
-    assert result == response_body
-    assert call_count["n"] == 1
-
-
-def test_generate_requirements_for_document_raises_on_non_200_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": "{}"}, expected_status=500)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        client.generate_requirements_for_document({"n0": "block 0 text"})
-
-
-def test_generate_requirements_for_document_handles_a_block_mapped_to_an_empty_list() -> None:
-    # A heading-only or otherwise non-substantive block legitimately yields
-    # no formal requirement at all -- an empty list value, not an error.
-    response_body = {"n0": []}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": json.dumps(response_body)})
-
-    result = client.generate_requirements_for_document({"n0": "Table of Contents"})
-    assert result == {"n0": []}
-
-
-def test_generate_requirements_for_document_strips_a_markdown_json_fence() -> None:
-    response_body = {"n0": [{"text": "The unit shall power on.", "tags": ["functional"]}]}
-    response_json = {"content": "```json\n" + json.dumps(response_body) + "\n```"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport(response_json)
-
-    result = client.generate_requirements_for_document({"n0": "block 0 text"})
-    assert result == response_body
-
-
 def test_score_requirements_for_document_sends_all_descriptions_in_one_call() -> None:
     call_count = {"n": 0}
     response_body = {"n0": {"score": 85, "issues": []}, "n1": {"score": 40, "issues": ["ambiguous", "vague_term"]}}
@@ -272,72 +165,6 @@ def test_score_requirements_for_document_raises_on_non_200_response() -> None:
 
     with pytest.raises(httpx.HTTPStatusError):
         client.score_requirements_for_document({"n0": "text"})
-def test_infer_hierarchy_prepends_kb_context_when_present() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
-        return httpx.Response(200, json={"content": "[]"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.infer_hierarchy("some outline", None, kb_context="Reference chunk about displays.")
-    assert captured["system_prompt"].startswith(
-        "Reference material from the knowledge base (may be incomplete or "
-        "irrelevant — use only what's genuinely helpful):\n\n"
-        "Reference chunk about displays.\n\n"
-    )
-    assert "You infer a work-item hierarchy" in captured["system_prompt"]
-
-
-def test_infer_hierarchy_prompt_unchanged_when_kb_context_is_none() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
-        return httpx.Response(200, json={"content": "[]"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.infer_hierarchy("some outline", None)
-    assert captured["system_prompt"].startswith("You infer a work-item hierarchy")
-    assert "Reference material from the knowledge base" not in captured["system_prompt"]
-
-
-def test_generate_requirements_for_document_prepends_kb_context_when_present() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
-        return httpx.Response(200, json={"content": "{}"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.generate_requirements_for_document({"0": "text"}, kb_context="Reference chunk about displays.")
-    assert captured["system_prompt"].startswith(
-        "Reference material from the knowledge base (may be incomplete or "
-        "irrelevant — use only what's genuinely helpful):\n\n"
-        "Reference chunk about displays.\n\n"
-    )
-    assert "You convert several informal requirement blocks" in captured["system_prompt"]
-
-
-def test_generate_requirements_for_document_prompt_unchanged_when_kb_context_is_none() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
-        return httpx.Response(200, json={"content": "{}"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.generate_requirements_for_document({"0": "text"})
-    assert captured["system_prompt"].startswith("You convert several informal requirement blocks")
-    assert "Reference material from the knowledge base" not in captured["system_prompt"]
 
 
 def test_score_requirements_for_document_parses_valid_json_response() -> None:
@@ -483,39 +310,6 @@ def test_infer_trace_links_prompt_mentions_external_customer_cited_targets() -> 
     assert "external" in system_prompt or "customer" in system_prompt
 
 
-def test_infer_hierarchy_includes_model_in_payload_when_set() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "[]"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen2.5:1.5b")
-    client._transport = httpx.MockTransport(handler)
-
-    client.infer_hierarchy("0: some outline", profile_hint=None)
-
-    assert captured["body"]["model"] == "qwen2.5:1.5b"
-
-
-def test_infer_hierarchy_omits_model_from_payload_when_unset() -> None:
-    # Matches pre-model-selection behavior exactly: unset means "let the
-    # orchestrator's own /llm/chat proxy fall back to its configured
-    # LLM_CHAT_MODEL default" -- must not send a null/empty model key.
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "[]"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.infer_hierarchy("0: some outline", profile_hint=None)
-
-    assert "model" not in captured["body"]
-
-
 def test_generate_requirements_never_sends_response_schema_to_avoid_gbnf_array_wedge() -> None:
     # A top-level array schema over branch-sized content hit Ollama's
     # GBNF grammar-cost cliff live (server-wide wedge, ollama/ollama#1910) --
@@ -538,25 +332,6 @@ def test_generate_requirements_never_sends_response_schema_to_avoid_gbnf_array_w
     assert captured["body"]["maxTokens"] == 20000
 
 
-def test_infer_hierarchy_never_sends_response_schema_to_avoid_gbnf_array_wedge() -> None:
-    # The exact call site that wedged Ollama's whole server for 10+ minutes
-    # live on a ~200-item branch. Must stay omitted -- defended by the
-    # WorkItemType ValueError->REQUIREMENT fallback in llm_leveling.py.
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "[]"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.infer_hierarchy("0: some outline", profile_hint=None)
-
-    assert "responseSchema" not in captured["body"]
-    assert captured["body"]["maxTokens"] == 20000
-
-
 def test_score_requirements_for_document_includes_an_issues_enum_schema_with_additional_properties() -> None:
     captured: dict = {}
 
@@ -575,24 +350,6 @@ def test_score_requirements_for_document_includes_an_issues_enum_schema_with_add
     assert "additionalProperties" in schema
     issues_enum = schema["additionalProperties"]["properties"]["issues"]["items"]["enum"]
     assert set(issues_enum) == {i.value for i in RequirementQualityIssue}
-
-
-def test_generate_requirements_for_document_includes_a_tags_enum_schema_with_additional_properties() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "{}"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.generate_requirements_for_document({"0": "some block text"})
-
-    schema = captured["body"]["responseSchema"]["schema"]
-    assert "additionalProperties" in schema
-    tags_enum = schema["additionalProperties"]["items"]["properties"]["tags"]["items"]["enum"]
-    assert set(tags_enum) == {t.value for t in RequirementTag}
 
 
 def test_infer_trace_links_never_sends_response_schema_even_with_a_nonempty_catalog() -> None:

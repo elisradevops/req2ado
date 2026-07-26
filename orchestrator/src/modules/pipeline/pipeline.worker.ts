@@ -5,6 +5,7 @@ import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { JobEventsPublisher } from './job-events.publisher';
 import type { McpClient } from './mcp.client';
+import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 
 export interface PipelineJobInput {
   id: string;
@@ -55,6 +56,17 @@ interface LeveledNode {
   title: string;
   description: string;
   fidelity_hash: string;
+  // Distinct from fidelity_hash (drift detection only, see ingestion's
+  // WorkItemNode.identity_hash doc comment) -- this is what the idempotency
+  // lookup below actually keys on, so two nodes with byte-identical
+  // description text but different source positions (a genuine verbatim
+  // repeat in the source document) resolve as distinct work items rather
+  // than the second silently reusing the first's ADO id. Optional for the
+  // same backward-compat reason as the scoring fields below: an
+  // older/mocked ingestion response predating this field must not crash
+  // the mapping -- falls back to fidelity_hash at the diffInputs mapping
+  // below, i.e. the pre-identity_hash behavior exactly.
+  identity_hash?: string | null;
   customer_id: string | null;
   // SURVEY-only signals (see ingestion's WorkItemNode) -- null/[] for
   // BASELINE nodes and for any SURVEY node when scoring wasn't enabled.
@@ -102,7 +114,10 @@ export async function runPipelineJob(
     // ProgressBanner) never activates.
     await deps.prisma.job.update({ where: { id: job.id }, data: { status: 'running' } });
     await deps.jobEventsPublisher.publish(job.id, 'parse');
-    const doc = await deps.ingestionClient.ingest(job.fileBuffer, job.filename);
+    // mode threaded through so BASELINE never opens ingestion's vision-LLM
+    // gate (see IngestionHttpClient.ingest's own doc comment) -- a real job
+    // submission never sets skipVision, unlike /jobs/preview.
+    const doc = await deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode);
 
     // ingestion's /level call runs infer_hierarchy + generate_requirements
     // internally in one HTTP round trip with no intermediate signal back to
@@ -167,7 +182,19 @@ export async function runPipelineJob(
       type: node.type,
       title: node.title,
       description: node.description,
-      sourceHash: node.fidelity_hash,
+      // identity_hash is what actually distinguishes two nodes with
+      // byte-identical description text (see LeveledNode's own doc
+      // comment) -- fidelity_hash alone would silently collapse them via
+      // the idempotency lookup below. Falls back to fidelity_hash for an
+      // older/mocked response predating identity_hash, matching the exact
+      // pre-identity_hash behavior for that case.
+      sourceHash: node.identity_hash ?? node.fidelity_hash,
+      // Migration-safety fallback for IdempotencyService.lookup -- see
+      // DryRunTreeNode.legacySourceHash's own doc comment. Only meaningful
+      // when identity_hash is actually present and differs from
+      // fidelity_hash; dry-run.service.ts's `?? undefined` handles the
+      // null case for an older/mocked node shape.
+      legacySourceHash: node.fidelity_hash,
       customerId: node.customer_id,
       areaPath: job.areaPath,
       groundingScore: node.grounding_score ?? null,
@@ -186,7 +213,7 @@ export async function runPipelineJob(
       traceLinks: traceLinksByLocalId.get(node.local_id) ?? [],
     }));
 
-    const customerIdFieldCandidates = ['Custom.CustomerId', 'Custom.CustomerRequirementId', 'Custom.CustomerID'];
+    const customerIdFieldCandidates = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES;
     // Cross-job trace-link targets are always Requirement-type items in
     // practice (System/Customer requirement pairs — the driving use case),
     // so a single discoverFields('Requirement') call is enough; if this

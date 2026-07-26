@@ -105,6 +105,24 @@ class WorkItemNode(BaseModel):
     customer_id: str | None = None
     source_ref: SourceRef
     fidelity_hash: str | None = None
+    # Distinct from fidelity_hash, which exists purely for drift detection
+    # (verify_fidelity: does this node's CURRENT description still match its
+    # recorded hash). identity_hash exists for the orchestrator's idempotency
+    # lookup (source_hash, customer_id, area_path) -> System.Id -- it must
+    # distinguish two nodes whose description happens to be byte-identical
+    # but come from different places in the source document (e.g. a genuine
+    # verbatim repeat like "GA2 shall be replaced to signal
+    # PS_INPUT_FAIL_L." appearing twice in the AirPro ICD, at two different
+    # requirement IDs -- both must ingest as distinct work items on first
+    # ingest, not collapse into one via a shared fidelity_hash). Folds
+    # description + this node's OWN, never-changing source position
+    # (document_path + start_offset) into the hash -- recomputed alongside
+    # fidelity_hash on every description fold (see tree_builder.py), using
+    # the position of the block/table that ORIGINALLY created this node
+    # (source_ref itself never changes across folds, only description
+    # does). None for a node shape that predates this field (e.g. an older
+    # fixture) -- optional so this is purely additive.
+    identity_hash: str | None = None
     tags: list[RequirementTag] = Field(default_factory=list)
     mode: WorkItemMode
     # The work-item type a NEW manual child entry added under this node

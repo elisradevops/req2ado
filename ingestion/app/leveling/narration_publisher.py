@@ -14,9 +14,7 @@ logger = logging.getLogger(__name__)
 # actual expected job lifetime.
 _CURRENT_NARRATION_TTL_SECONDS = 3600
 
-Phase = Literal[
-    "infer_hierarchy", "generate_requirements", "analyze_section", "score_requirements", "infer_trace_links"
-]
+Phase = Literal["analyze_section", "score_requirements", "infer_trace_links"]
 
 
 @dataclass(frozen=True)
@@ -45,8 +43,6 @@ class LevelingProgress:
 ProgressCallback = Callable[[LevelingProgress], None]
 
 _PHASE_MESSAGES: dict[Phase, str] = {
-    "infer_hierarchy": "Analyzing structure",
-    "generate_requirements": "Generating formal requirements",
     "analyze_section": "Analyzing and synthesizing requirements",
     "score_requirements": "Scoring requirement quality",
     "infer_trace_links": "Resolving trace/coverage links",

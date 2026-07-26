@@ -64,16 +64,43 @@ class ChromaVectorStore:
             metadata={"hnsw:space": "cosine"},
         )
 
-    def upsert(self, item_id: str, embedding: list[float], area_path: str) -> None:
+    def upsert(self, item_id: str, embedding: list[float], area_path: str, document: str | None = None) -> None:
+        # `document` (optional) stores the item's original text alongside its
+        # embedding -- needed by check_for_duplicates.py's numeric-literal
+        # guard (X7), which must compare the actual matched text, not just
+        # its embedding, to veto a false-positive dedup match caused solely
+        # by a differing number (e.g. "at least 87%" vs "at least 93%").
+        # Omitted (None, the default) preserves the original embeddings-only
+        # behavior exactly -- an older/pre-migration item upserted before
+        # this option existed has no stored text, and query_nearest reports
+        # that honestly as `matched_document=None` rather than guessing.
         collection = self._get_collection(area_path)
-        collection.upsert(ids=[item_id], embeddings=[embedding])
+        collection.upsert(ids=[item_id], embeddings=[embedding], documents=[document] if document else None)
 
-    def query_nearest(self, embedding: list[float], area_path: str) -> tuple[str, float] | None:
+    def upsert_many(self, items: list[tuple[str, list[float], str | None]], area_path: str) -> None:
+        """Batched upsert for N items sharing the same area_path -- one
+        Chroma round trip instead of N. `items` is (item_id, embedding,
+        document) triples, matching upsert()'s own optional-document
+        semantics -- but (like Chroma's own API) requires the WHOLE
+        documents list to be all-str or entirely omitted; there is no
+        per-item mixed None/str support. The one real caller
+        (/dedup/upsert-batch) always has text for every item it upserts, so
+        this is not a real limitation in practice."""
+        if not items:
+            return
+        collection = self._get_collection(area_path)
+        ids = [item_id for item_id, _, _ in items]
+        embeddings = [embedding for _, embedding, _ in items]
+        documents = [document for _, _, document in items]
+        collection.upsert(ids=ids, embeddings=embeddings, documents=documents if all(documents) else None)
+
+    def query_nearest(self, embedding: list[float], area_path: str) -> tuple[str, float, str | None] | None:
         collection = self._get_collection(area_path)
         if collection.count() == 0:
             return None
-        result = collection.query(query_embeddings=[embedding], n_results=1)
+        result = collection.query(query_embeddings=[embedding], n_results=1, include=["distances", "documents"])
         matched_id = result["ids"][0][0]
         distance = result["distances"][0][0]
         similarity = 1.0 - distance
-        return matched_id, similarity
+        matched_document = result["documents"][0][0] if result.get("documents") else None
+        return matched_id, similarity, matched_document

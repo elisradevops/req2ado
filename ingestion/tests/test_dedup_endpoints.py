@@ -89,6 +89,66 @@ def test_dedup_upsert_batch_with_an_empty_item_list_is_a_no_op(tmp_path, monkeyp
     assert response.json() == {"ok": True}
 
 
+def test_dedup_upsert_batch_issues_one_chroma_upsert_call_per_area_path(tmp_path, monkeypatch) -> None:
+    # Regression: /dedup/upsert-batch already batches the embedding call
+    # (test above), but previously still issued one Chroma upsert per item.
+    # For a batch entirely within one area path (the common case -- one
+    # confirm() call is one job, one area path), this must collapse to a
+    # single Chroma round trip via upsert_many, not N.
+    from unittest.mock import patch
+
+    from app.dedup.vector_store import ChromaVectorStore as _Store
+
+    monkeypatch.setattr(main, "_vector_store", _Store(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+
+    with patch.object(main._vector_store, "upsert_many", wraps=main._vector_store.upsert_many) as spy:
+        response = client.post(
+            "/dedup/upsert-batch",
+            json={
+                "items": [
+                    {"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+                    {"item_id": "item-2", "text": "The unit shall operate at low temperature.", "area_path": "Project\\Area1"},
+                    {"item_id": "item-3", "text": "The unit shall withstand vibration.", "area_path": "Project\\Area1"},
+                ]
+            },
+        )
+    assert response.status_code == 200
+    assert spy.call_count == 1
+    items_arg = spy.call_args[0][0]
+    assert len(items_arg) == 3
+
+
+def test_dedup_upsert_batch_groups_by_area_path_without_cross_contaminating(tmp_path, monkeypatch) -> None:
+    # A batch spanning two distinct area paths must still isolate each
+    # area's items into its own Chroma collection -- grouping for the
+    # batched upsert must not assume every item shares one area path just
+    # because that's the common case.
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+
+    response = client.post(
+        "/dedup/upsert-batch",
+        json={
+            "items": [
+                {"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+                {"item_id": "item-2", "text": "The unit shall survive a drop.", "area_path": "Project\\Area2"},
+            ]
+        },
+    )
+    assert response.status_code == 200
+
+    check_area1 = client.post(
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+    )
+    assert check_area1.json()["matched_item_id"] == "item-1"
+
+    check_area2 = client.post(
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area2"}
+    )
+    assert check_area2.json()["matched_item_id"] == "item-2"
+
+
 def test_dedup_check_scopes_by_area_path_and_finds_no_match_across_area_paths(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
     main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)

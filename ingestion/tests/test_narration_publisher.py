@@ -20,7 +20,7 @@ class _FakeRedis:
 
 def _progress(**overrides) -> LevelingProgress:
     defaults = dict(
-        phase="infer_hierarchy",
+        phase="analyze_section",
         branch_index=0,
         branch_count=3,
         blocks_done=10,
@@ -42,7 +42,7 @@ def test_publish_writes_current_key_and_publishes_to_channel() -> None:
     assert redis_client.publish_calls[0][0] == "job-events:job-1"
     payload = json.loads(redis_client.publish_calls[0][1])
     assert payload["type"] == "narration"
-    assert payload["phase"] == "infer_hierarchy"
+    assert payload["phase"] == "analyze_section"
     assert payload["branchIndex"] == 0
     assert payload["branchCount"] == 3
     assert payload["blocksDone"] == 10

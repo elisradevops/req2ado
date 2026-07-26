@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import type { McpClient, AdoRequestCredential } from '../pipeline/mcp.client';
 import type { IngestionHttpClient } from '../pipeline/ingestion-http.client';
 import type { IdempotencyService } from './idempotency.service';
+import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
 
 /**
  * Closes the "pre-existing work items not created by this app are
@@ -33,12 +34,27 @@ export interface BackfillResult {
 // have generated itself.
 const BACKFILLABLE_TYPES = new Set(['Epic', 'Feature', 'Requirement']);
 
+// One item's outcome from the concurrent per-item worker below -- kept as
+// a plain data record (not a direct shared-counter mutation) so the worker
+// function has no shared-state side effects; the counts/skippedReasons/
+// dedupUpsertItems accumulation happens afterward in one sequential pass
+// over the settled (order-preserved) results.
+type ItemOutcome =
+  | { kind: 'skipped'; reason: string }
+  | { kind: 'seeded'; itemId: string; text: string; areaPath: string };
+
 @Injectable()
 export class BackfillService {
   constructor(
     private readonly mcpClient: McpClient,
     private readonly ingestionClient: IngestionHttpClient,
     private readonly idempotencyService: IdempotencyService,
+    // Same writeConcurrency-style default used elsewhere in this pipeline
+    // (JobsService, DryRunService) -- lower priority here since backfill is
+    // an occasional admin operation, not a hot path, but every item's
+    // idempotency lookup is independent of every other item's, so there is
+    // no reason to run them one at a time.
+    private readonly concurrency: number = 8,
   ) {}
 
   async backfillAreaPath(areaPath: string, credential?: AdoRequestCredential): Promise<BackfillResult> {
@@ -51,13 +67,9 @@ export class BackfillService {
     const items = await this.mcpClient.getWorkItemsBatch(ids, credential);
     result.scanned = items.length;
 
-    const dedupUpsertItems: { itemId: string; text: string; areaPath: string }[] = [];
-
-    for (const item of items) {
+    const settled = await mapWithConcurrency(items, this.concurrency, async (item): Promise<ItemOutcome> => {
       if (!BACKFILLABLE_TYPES.has(item.type)) {
-        result.skipped += 1;
-        result.skippedReasons['unsupported type'] = (result.skippedReasons['unsupported type'] ?? 0) + 1;
-        continue;
+        return { kind: 'skipped', reason: 'unsupported type' };
       }
       // Prefer Description (matches what confirm() actually writes as the
       // hashed/embedded content for a req2ado-created item); a manually
@@ -65,9 +77,7 @@ export class BackfillService {
       // is the only real content available.
       const description = item.fields['System.Description'] || item.fields['System.Title'];
       if (!description) {
-        result.skipped += 1;
-        result.skippedReasons['no title or description'] = (result.skippedReasons['no title or description'] ?? 0) + 1;
-        continue;
+        return { kind: 'skipped', reason: 'no title or description' };
       }
 
       // Same scheme as ingestion's fidelity_hash (sha256 of the exact
@@ -94,8 +104,31 @@ export class BackfillService {
         }
       }
 
-      dedupUpsertItems.push({ itemId: String(item.id), text: description, areaPath });
-      result.seeded += 1;
+      return { kind: 'seeded', itemId: String(item.id), text: description, areaPath };
+    });
+
+    // Preserve the exact pre-parallelization failure semantics: an
+    // unguarded idempotencyService.lookup throwing previously propagated
+    // straight out of the sequential loop, aborting the whole backfill call.
+    // mapWithConcurrency instead captures a per-item exception into a
+    // rejected result rather than letting it propagate on its own --
+    // re-throw the first one here so a DB failure still fails the call
+    // exactly as it did before, instead of silently dropping that item.
+    const firstError = settled.find((r) => r.status === 'rejected');
+    if (firstError && firstError.status === 'rejected') {
+      throw firstError.reason;
+    }
+
+    const dedupUpsertItems: { itemId: string; text: string; areaPath: string }[] = [];
+    for (const r of settled as { status: 'fulfilled'; value: ItemOutcome }[]) {
+      const outcome = r.value;
+      if (outcome.kind === 'skipped') {
+        result.skipped += 1;
+        result.skippedReasons[outcome.reason] = (result.skippedReasons[outcome.reason] ?? 0) + 1;
+      } else {
+        result.seeded += 1;
+        dedupUpsertItems.push({ itemId: outcome.itemId, text: outcome.text, areaPath: outcome.areaPath });
+      }
     }
 
     if (dedupUpsertItems.length > 0) {

@@ -10,7 +10,6 @@ import httpx
 
 from app.survey._response_schemas import (
     kb_relevance_schema,
-    requirements_by_node_schema,
     scores_schema,
     section_analysis_schema,
 )
@@ -389,47 +388,6 @@ class OrchestratorLlmClient:
         content = _strip_json_fence(response.json()["content"])
         parsed = _parse_json_object(content)
         return parsed
-
-    def infer_hierarchy(
-        self, outline: str, profile_hint: object | None, kb_context: str | None = None
-    ) -> list[dict]:
-        # profile_hint is currently unused by the real prompt — LlmLevelingClient's
-        # Protocol declares it for future profile-aware prompting, not exercised yet.
-        system_prompt = (
-            "You infer a work-item hierarchy from an outline of requirement text. "
-            "Each line of the outline is one candidate node, addressed by its "
-            "0-based line index as a string. Return ONLY a JSON array of objects, "
-            "each with 'node_id' (the line index as a string), 'type' (one of: "
-            "Epic, Feature, Requirement), and 'parent_id' (the node_id of its "
-            "parent, or null for a root node). Honor 'same depth, different type "
-            "per branch' when the content implies it. Never invent a node_id not "
-            "present in the outline. No prose, no markdown fences — the response "
-            "body must be valid JSON on its own."
-        )
-        system_prompt = _with_kb_context(system_prompt, kb_context)
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": outline},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            # No response_format: this is the top-level array that actually
-            # wedged Ollama's whole server live for 10+ minutes (up to 200
-            # items on a real branch) -- see _response_schemas.py's module
-            # docstring. Defended by the existing WorkItemType ValueError
-            # fallback in llm_leveling.py instead.
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-        }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
 
     def infer_trace_links(
         self,
@@ -846,45 +804,3 @@ class OrchestratorLlmClient:
             return content or f"(section {section_id!r} not found in the document outline)"
         return f"(unsupported tool: {name!r})"
 
-    def generate_requirements_for_document(
-        self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
-    ) -> dict[str, list[dict]]:
-        """Batched sibling of generate_requirements: one LLM call for every
-        node in the tree, not one call per node. A first draft of this
-        wiring made ~2 LLM calls per node (title distillation + per-block
-        requirement generation) — for a 50-block document, ~101 sequential
-        blocking calls. This method and dropping title distillation entirely
-        (see llm_leveling.py) cut that to ~2 total calls per document,
-        mirroring how infer_hierarchy already sends the whole outline in one
-        call rather than one call per line."""
-        system_prompt = (
-            "You convert several informal requirement blocks into formal 'shall' "
-            "statements. You are given a JSON object mapping each block's node_id "
-            "to its raw text. Return ONLY a JSON object with the SAME node_id keys, "
-            "each mapped to a list of objects with 'text' (a single formal "
-            "shall-style requirement sentence) and 'tags' (a list of zero or more "
-            "of: functional, non_functional, interface, performance, regulatory, "
-            "safety, security, operation, maintenance, feature, behavior). A block "
-            "that yields no formal requirement (e.g. a heading) maps to an empty "
-            "list. Never invent a node_id not present in the input. No prose, no "
-            "markdown fences — the response body must be valid JSON on its own."
-        )
-        system_prompt = _with_kb_context(system_prompt, kb_context)
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(blocks_by_node_id)},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": requirements_by_node_schema(),
-        }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)

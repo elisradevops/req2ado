@@ -155,6 +155,84 @@ describe('BackfillService.backfillAreaPath', () => {
     consoleErrorSpy.mockRestore();
   });
 
+  it('runs idempotencyService.lookup calls concurrently, not one item at a time', async () => {
+    // Regression: the previous sequential `for` loop awaited each item's
+    // lookup (and best-effort record) before starting the next -- every
+    // item's check is independent, so this serializes N round trips for no
+    // reason. Track how many lookups are in flight simultaneously to prove
+    // the new implementation actually overlaps them.
+    const ids = [800, 801, 802, 803, 804, 805, 806, 807];
+    const queryIds = jest.fn().mockResolvedValue(ids);
+    const getWorkItemsBatch = jest.fn().mockResolvedValue(
+      ids.map((id) => ({ id, type: 'Feature', fields: { 'System.Description': `D${id}` }, parentId: null })),
+    );
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const lookup = jest.fn().mockImplementation(() => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise((resolve) => setTimeout(() => {
+        inFlight -= 1;
+        resolve(null);
+      }, 10));
+    });
+    const service = new BackfillService(
+      { queryIds, getWorkItemsBatch } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      { lookup, record: jest.fn().mockResolvedValue(undefined) } as any,
+      4,
+    );
+
+    await service.backfillAreaPath('Project\\Area1');
+
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
+
+  it('preserves the original item order in the batched dedup upsert regardless of concurrent resolution order', async () => {
+    const queryIds = jest.fn().mockResolvedValue([900, 901, 902]);
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([
+      { id: 900, type: 'Feature', fields: { 'System.Description': 'D0' }, parentId: null },
+      { id: 901, type: 'Feature', fields: { 'System.Description': 'D1' }, parentId: null },
+      { id: 902, type: 'Feature', fields: { 'System.Description': 'D2' }, parentId: null },
+    ]);
+    const upsertDedupEntriesBatch = jest.fn().mockResolvedValue(undefined);
+    const lookup = jest.fn().mockImplementation((sourceHash: string) => {
+      // item 900's lookup resolves LAST despite being requested first.
+      const delayMs = sourceHash === sourceHashFor('D0') ? 30 : 5;
+      return new Promise((resolve) => setTimeout(() => resolve(null), delayMs));
+    });
+    const service = new BackfillService(
+      { queryIds, getWorkItemsBatch } as any,
+      { upsertDedupEntriesBatch } as any,
+      { lookup, record: jest.fn().mockResolvedValue(undefined) } as any,
+      3,
+    );
+
+    await service.backfillAreaPath('Project\\Area1');
+
+    expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
+      { itemId: '900', text: 'D0', areaPath: 'Project\\Area1' },
+      { itemId: '901', text: 'D1', areaPath: 'Project\\Area1' },
+      { itemId: '902', text: 'D2', areaPath: 'Project\\Area1' },
+    ]);
+  });
+
+  it('propagates an idempotencyService.lookup rejection (fails the whole backfill, same as before parallelization)', async () => {
+    const queryIds = jest.fn().mockResolvedValue([950, 951]);
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([
+      { id: 950, type: 'Feature', fields: { 'System.Description': 'D0' }, parentId: null },
+      { id: 951, type: 'Feature', fields: { 'System.Description': 'D1' }, parentId: null },
+    ]);
+    const lookup = jest.fn().mockRejectedValue(new Error('db unreachable'));
+    const service = new BackfillService(
+      { queryIds, getWorkItemsBatch } as any,
+      { upsertDedupEntriesBatch: jest.fn() } as any,
+      { lookup, record: jest.fn() } as any,
+    );
+
+    await expect(service.backfillAreaPath('Project\\Area1')).rejects.toThrow('db unreachable');
+  });
+
   it('forwards the ADO credential through to queryIds and getWorkItemsBatch', async () => {
     const credential = { orgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fake-pat' };
     const queryIds = jest.fn().mockResolvedValue([700]);

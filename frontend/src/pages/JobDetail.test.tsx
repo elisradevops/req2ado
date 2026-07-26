@@ -2,18 +2,30 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { JobDetail } from './JobDetail';
+import { ToastProvider } from '../components/ToastProvider';
 import * as jobsApi from '../api/jobs';
 
 vi.mock('../api/jobs');
+vi.mock('../api/chat');
 vi.mock('../api/events', () => ({ subscribeToJobEvents: vi.fn(() => () => {}) }));
+vi.mock('../hooks/useChatSocket', async () => {
+  const actual = await vi.importActual<typeof import('../hooks/useChatSocket')>('../hooks/useChatSocket');
+  return { ...actual, useChatSocket: vi.fn() };
+});
 
 function renderAt(id: string) {
+  // Wrapped in ToastProvider matching App.tsx's real composition -- the
+  // diff tree's NodeDetailPanel renders ChatPanel (and, since Fix D, calls
+  // useToast() itself for the "Suggest a title" button's error handling),
+  // both of which require a ToastProvider ancestor to be present.
   return render(
-    <MemoryRouter initialEntries={[`/jobs/${id}`]}>
-      <Routes>
-        <Route path="/jobs/:id" element={<JobDetail />} />
-      </Routes>
-    </MemoryRouter>,
+    <ToastProvider>
+      <MemoryRouter initialEntries={[`/jobs/${id}`]}>
+        <Routes>
+          <Route path="/jobs/:id" element={<JobDetail />} />
+        </Routes>
+      </MemoryRouter>
+    </ToastProvider>,
   );
 }
 

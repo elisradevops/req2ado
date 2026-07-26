@@ -4,12 +4,12 @@ import hashlib
 import html
 from pathlib import Path
 
-from app.canonical.model import Block, CanonicalDoc, Table
+from app.canonical.model import Block, CanonicalDoc, SourceRef, Table
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
-from app.leveling.autodetect import detect_profile_for_branch
+from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.depth import resolve_block_depth
-from app.leveling.profiles import type_for_depth
+from app.leveling.profiles import heading_style_type_for_depth
 from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
 
 
@@ -53,12 +53,11 @@ def _bound_branch_size(branch: list[Block], max_block_count: int) -> list[list[B
     that structure, by bounding branch size directly.
 
     Deliberately NOT applied to build_baseline_tree's branches:
-    detect_profile_for_branch (tv_style vs icd_style) reasons over a
-    branch's own max depth, and sub-splitting would change what profile a
-    sub-chunk detects as compared to the original, whole section --
-    a real behavior change BASELINE mode has no need for (it doesn't call
-    an LLM, so branch size was never a timeout risk there in the first
-    place).
+    is_heading_style_branch/classify_numbering_branch reason over a
+    branch's own tree shape, and sub-splitting would change what a sub-chunk
+    classifies as compared to the original, whole section -- a real
+    behavior change BASELINE mode has no need for (it doesn't call an LLM,
+    so branch size was never a timeout risk there in the first place).
 
     Falls back to leaving a branch unsplit (returned as-is) when it has no
     further internal structure to split on -- a big flat run of body text
@@ -119,6 +118,17 @@ def _hash_description(description: str) -> str:
     return hashlib.sha256(description.encode()).hexdigest()
 
 
+def _hash_identity(description: str, source_ref: SourceRef) -> str:
+    """See WorkItemNode.identity_hash's own docstring for why this is a
+    SEPARATE hash from fidelity_hash. `source_ref` here is always the node's
+    OWN, never-changing source position (the block/table that originally
+    created it) -- not the position of whatever most recently folded into
+    it -- so this hash tracks the node's evolving description while staying
+    anchored to a stable position, distinguishing two nodes whose
+    description happens to become byte-identical."""
+    return hashlib.sha256(f"{description}\x00{source_ref.document_path}\x00{source_ref.start_offset}".encode()).hexdigest()
+
+
 def _derive_doc_title(doc: CanonicalDoc) -> str:
     """Filename-derived title for a document with no heading structure at
     all — there is no heading/numbered-line text to extract a title from,
@@ -142,6 +152,48 @@ def _table_to_html(table: Table) -> str:
         if any(cell.strip() for cell in row)
     ]
     return f"<table>{''.join(rows_html)}</table>" if rows_html else ""
+
+
+def _order_key(ref: SourceRef) -> tuple[int, int]:
+    """Document-order sort key comparable across a Block and a Table within
+    the SAME loader run. Offsets are NOT globally comparable on their own --
+    pdf_loader.py resets its running offset counter to 0 at the start of
+    EVERY page, so two different pages' start_offsets are meaningless
+    relative to each other without the page number. docx/txt/md loaders
+    never set `page` (None), where offset alone is already a real
+    document-global position -- `ref.page or 0` collapses that case to a
+    single implicit page 0, so the (page, offset) pair degrades correctly
+    to offset-only ordering for those loaders."""
+    return (ref.page or 0, ref.start_offset)
+
+
+def _partition_tables_by_branch(branches: list[list[Block]], tables: list[Table]) -> list[list[Table]]:
+    """Buckets each table into the top-level branch it falls within, by
+    document order (_order_key) -- used so a table folds into the parent
+    node ITS branch produced (§F/ADO 294208 etc's ECS/FAN/GPU/routing
+    tables all live inside their real parent's Description), not always
+    the last node of the last branch regardless of the table's actual
+    position (the previous, now-removed behavior).
+
+    A table falls into the LAST branch whose first block's order-key is
+    <= the table's own order-key; branches are already in document order
+    (see _split_into_branches), so this is a simple forward scan. A table
+    positioned before every branch's first block (order-key (0, 0) --
+    e.g. a loader that never got the real-offset fix for tables) falls
+    back to the first branch, same documented approximation SourceRef's
+    own docstring already describes for a table's offset."""
+    branch_starts = [_order_key(branch[0].source_ref) for branch in branches]
+    buckets: list[list[Table]] = [[] for _ in branches]
+    for table in tables:
+        key = _order_key(table.source_ref)
+        idx = 0
+        for i, start in enumerate(branch_starts):
+            if start <= key:
+                idx = i
+            else:
+                break
+        buckets[idx].append(table)
+    return buckets
 
 
 def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkItemTree:
@@ -184,6 +236,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
         customer_id=customer_id,
         source_ref=first_source_ref,
         fidelity_hash=_hash_description(doc_title),
+        identity_hash=_hash_identity(doc_title, first_source_ref),
         tags=[],
         mode=WorkItemMode.BASELINE,
         child_type=WorkItemType.FEATURE,
@@ -197,6 +250,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
         customer_id=customer_id,
         source_ref=first_source_ref,
         fidelity_hash=_hash_description(doc_title),
+        identity_hash=_hash_identity(doc_title, first_source_ref),
         tags=[],
         mode=WorkItemMode.BASELINE,
         child_type=WorkItemType.REQUIREMENT,
@@ -215,6 +269,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     customer_id=customer_id,
                     source_ref=block.source_ref,
                     fidelity_hash=_hash_description(description),
+                    identity_hash=_hash_identity(description, block.source_ref),
                     tags=[],
                     mode=WorkItemMode.BASELINE,
                     child_type=WorkItemType.REQUIREMENT,
@@ -236,6 +291,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     customer_id=customer_id,
                     source_ref=table.source_ref,
                     fidelity_hash=_hash_description(description),
+                    identity_hash=_hash_identity(description, table.source_ref),
                     tags=[],
                     mode=WorkItemMode.BASELINE,
                     child_type=WorkItemType.REQUIREMENT,
@@ -247,14 +303,14 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
 def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], customer_id: str | None) -> WorkItemTree:
     """Flat single-column list rule: a document where every top-level branch
     is exactly one lone block (numbering resolves a depth, e.g. '1 Do X',
-    '2 Do Y', but nothing ever nests under any of them) previously fell
-    through the structured per-branch loop below and produced N independent
-    top-level Feature nodes with no parent -- each branch auto-detected as
-    icd_style at max_depth=1, and type_for_depth(icd_style, 1) is Feature,
-    with no Epic to group them under. That is inconsistent with
-    _build_headingless_tree's Epic/Feature synthesis for the no-numbering
-    case, and loses the list's own "these are all one flat set of
-    requirements" structure.
+    '2 Do Y', but nothing ever nests under any of them) would otherwise fall
+    through to the structured per-branch loop below and produce N
+    independent top-level nodes with no parent -- each lone block has zero
+    children, so classify_numbering_branch's bottom-up rule gives it
+    Requirement, with no Epic/Feature to group them under at all. That is
+    inconsistent with _build_headingless_tree's Epic/Feature synthesis for
+    the no-numbering case, and loses the list's own "these are all one flat
+    set of requirements" structure.
 
     Synthesizes the same Epic/Feature wrapper as _build_headingless_tree
     (title/description derived from the filename, since a flat list has no
@@ -270,12 +326,14 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
         local_id="n0", type=WorkItemType.EPIC, parent_local_id=None,
         title=doc_title, description=doc_title, customer_id=customer_id,
         source_ref=first_source_ref, fidelity_hash=_hash_description(doc_title),
+        identity_hash=_hash_identity(doc_title, first_source_ref),
         tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.FEATURE,
     )
     feature = WorkItemNode(
         local_id="n1", type=WorkItemType.FEATURE, parent_local_id=epic.local_id,
         title=doc_title, description=doc_title, customer_id=customer_id,
         source_ref=first_source_ref, fidelity_hash=_hash_description(doc_title),
+        identity_hash=_hash_identity(doc_title, first_source_ref),
         tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
     )
     nodes: list[WorkItemNode] = [epic, feature]
@@ -287,6 +345,7 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
                 local_id=f"n{index + 2}", type=WorkItemType.REQUIREMENT, parent_local_id=feature.local_id,
                 title=extract_baseline_title(display_text), description=display_text, customer_id=customer_id,
                 source_ref=block.source_ref, fidelity_hash=_hash_description(display_text),
+                identity_hash=_hash_identity(display_text, block.source_ref),
                 tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
             )
         )
@@ -309,19 +368,21 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     app/workitem/fidelity.py's verify_fidelity for the standalone
     drift-detection check this invariant enables.
 
-    doc.blocks are leveled first in the structured path below; any doc.tables
-    are then folded in afterward, each as its own Requirement child of the
-    LAST node produced by the block-leveling pass (see the fold at the end
-    of this function). Previously a document with BOTH real heading blocks
-    AND tables silently dropped every table — only the table-only case (e.g.
-    xlsx, whose loader never produces doc.blocks at all) was handled, via
-    the headingless-grouping check just below delegating to
-    _build_headingless_tree. Attaching to the last block-node is a
-    documented approximation: CanonicalDoc's SourceRef gives tables a
-    placeholder (0, 0) offset (see SourceRef's own docstring), so there is
-    no real document-order signal to interleave a table at its true
-    position among the blocks — "after everything else" is the best
-    available default, not a precise placement.
+    Each doc.tables entry is folded into the Description of whichever node
+    is open at its real document-order position (via _order_key/
+    _partition_tables_by_branch below) -- exactly like a depth=None block
+    already folds into the nearest open node, and for the same reason: a
+    table belongs INSIDE its parent item's Description, never as its own
+    separate work item (see docs/architecture.md and the AirPro ICD's own
+    294208/294209/294210/294248/294611, all tables living inside their
+    parent's Description, not as standalone Requirements). This replaces
+    a previous design where every table was emitted as its OWN Requirement,
+    appended after all block-leveling regardless of the table's real
+    position -- correct only for the table-only case (e.g. xlsx, whose
+    loader never produces doc.blocks at all; still handled that way via
+    _build_headingless_tree, since there an xlsx sheet genuinely has no
+    parent block to fold into) but wrong for any document that ALSO has
+    real heading blocks.
 
     customer_id is a single value applied uniformly to every node in this
     call — one ingestion run corresponds to one customer's document, per
@@ -340,12 +401,13 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     block (numbering resolves a depth, but nothing ever nests under any of
     them -- e.g. '1 Do X' / '2 Do Y' / '3 Do Z' with no sub-items), this
     delegates to _build_flat_list_tree instead of the structured per-branch
-    loop below, which would otherwise auto-detect each single-block branch
-    as its own icd_style Feature with no parent -- N orphan top-level
-    Features instead of one grouped Epic/Feature/Requirement* tree. Requires
-    more than one branch: a document with a single flat item is too
-    ambiguous to confidently regroup and is left to the structured path
-    (produces one ungrouped Feature, an acceptable minimal case)."""
+    loop below, which would otherwise classify each single-block (zero
+    children) branch as its own orphan Requirement with no parent -- N
+    orphan top-level Requirements instead of one grouped
+    Epic/Feature/Requirement* tree. Requires more than one branch: a
+    document with a single flat item is too ambiguous to confidently
+    regroup and is left to the structured path (produces one ungrouped
+    Requirement, an acceptable minimal case)."""
     if (doc.blocks and all(resolve_block_depth(b)[0] is None for b in doc.blocks)) or (
         not doc.blocks and doc.tables
     ):
@@ -355,15 +417,66 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     if len(branches) > 1 and all(len(branch) == 1 for branch in branches):
         return _build_flat_list_tree(doc, branches, customer_id)
 
+    table_buckets = _partition_tables_by_branch(branches, doc.tables) if doc.tables else [[] for _ in branches]
+
     nodes: list[WorkItemNode] = []
     nodes_by_id: dict[str, WorkItemNode] = {}
     node_counter = 0
+    # BASELINE has no LLM step to produce a coverage mismatch the way SURVEY's
+    # sanity check does (see WorkItemTree.warnings' own docstring), but it has
+    # its own silent-loss case: a depth=None block/table with no node yet open
+    # to fold into (its branch's first entry has no heading/numbering the
+    # parser recognized -- see numbering.py) was previously just dropped with
+    # no record anywhere. verify_fidelity (app/workitem/fidelity.py) cannot
+    # catch this: a dropped entry never becomes part of any node's
+    # description, so there is nothing to hash-mismatch against. Surfacing it
+    # here closes that blind spot without changing behavior -- the entry is
+    # still dropped, a human reviewer now has a chance to notice.
+    warnings: list[str] = []
 
-    for branch_blocks in branches:
-        profile = detect_profile_for_branch(branch_blocks)
+    for branch_blocks, branch_tables in zip(branches, table_buckets):
+        heading_branch = is_heading_style_branch(branch_blocks)
+        # Numbering-label branches: bottom-up tree-shape classification (see
+        # classify_numbering_branch's own docstring) replaces the retired
+        # depth-threshold heuristic entirely -- no "profile" concept is
+        # needed for this convention, the type comes out of the tree shape.
+        # Heading-style branches skip this pre-pass -- their rule
+        # (heading_style_type_for_depth) is depth-only and unconditional.
+        classification = {} if heading_branch else classify_numbering_branch(branch_blocks)
         stack: list[tuple[int, str]] = []
 
-        for block in branch_blocks:
+        # Merge this branch's blocks and tables into one document-order walk
+        # (_order_key) so a table folds into whichever node is open at its
+        # REAL position, not always the branch's/document's last node
+        # regardless of where the table actually appears. Python's sort is
+        # stable, so a tied order_key (e.g. two entries both carrying a
+        # loader's (0, 0) table placeholder) preserves this list's own
+        # block-then-table construction order, matching the previous
+        # append-after-blocks behavior for that specific edge case.
+        merged: list[tuple[tuple[int, int], Block | None, Table | None]] = [
+            (_order_key(block.source_ref), block, None) for block in branch_blocks
+        ] + [(_order_key(table.source_ref), None, table) for table in branch_tables]
+        merged.sort(key=lambda entry: entry[0])
+
+        for _, block, table in merged:
+            if table is not None:
+                description = _table_to_html(table)
+                if not description.strip():
+                    continue
+                if stack:
+                    open_node = nodes_by_id[stack[-1][1]]
+                    open_node.description = assemble_description(open_node.description, description)
+                    open_node.fidelity_hash = _hash_description(open_node.description)
+                    open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
+                else:
+                    title_preview = table.caption or table.id
+                    warnings.append(
+                        f"Table {table.id} ({title_preview}) was dropped: no heading/numbering "
+                        f"precedes it in its branch, so there was no node open to fold it into."
+                    )
+                continue
+
+            assert block is not None
             depth, display_text = resolve_block_depth(block)
 
             if depth is None:
@@ -371,7 +484,40 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     open_node = nodes_by_id[stack[-1][1]]
                     open_node.description = assemble_description(open_node.description, display_text)
                     open_node.fidelity_hash = _hash_description(open_node.description)
+                    open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
+                else:
+                    preview = display_text[:80].replace("\n", " ")
+                    warnings.append(
+                        f"Block {block.id} was dropped: no heading/numbering precedes it in its "
+                        f'branch, so there was no node open to fold it into. Text: "{preview}"'
+                    )
                 continue
+
+            if heading_branch:
+                node_type = heading_style_type_for_depth(depth)
+                node_child_type = WorkItemType.REQUIREMENT
+            else:
+                # display_text is replaced with the classifier's stripped
+                # version -- only differs from resolve_block_depth's own
+                # remainder for a SUB--marked node (the marker and its
+                # adjacent separator are stripped from the title/description).
+                entry = classification.get(block.id)
+                if entry is not None:
+                    node_type, node_child_type, display_text = entry
+                else:
+                    # A block inside a numbering-label branch (is_heading_style_branch
+                    # is False for the branch overall, decided by the branch's root
+                    # block only) that itself resolved via the heading path -- a real
+                    # Word Heading style with non-numeric text, e.g. a "Notes"
+                    # sub-heading -- has no entry here: classify_numbering_branch only
+                    # classifies blocks whose OWN numbering label parses. Regression:
+                    # indexing classification[block.id] directly raised an unhandled
+                    # KeyError for this case, aborting the whole /level call. Fall back
+                    # to the flat heading rule for this one block -- its own resolved
+                    # signal was a heading, so that is the correct rule to borrow, not
+                    # an arbitrary default.
+                    node_type = heading_style_type_for_depth(depth)
+                    node_child_type = WorkItemType.REQUIREMENT
 
             while stack and stack[-1][0] >= depth:
                 stack.pop()
@@ -382,44 +528,20 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
 
             node = WorkItemNode(
                 local_id=local_id,
-                type=type_for_depth(profile, depth),
+                type=node_type,
                 parent_local_id=parent_local_id,
                 title=extract_baseline_title(display_text),
                 description=display_text,
                 customer_id=customer_id,
                 source_ref=block.source_ref,
                 fidelity_hash=_hash_description(display_text),
+                identity_hash=_hash_identity(display_text, block.source_ref),
                 tags=[],
                 mode=WorkItemMode.BASELINE,
-                child_type=type_for_depth(profile, depth + 1),
+                child_type=node_child_type,
             )
             nodes.append(node)
             nodes_by_id[local_id] = node
             stack.append((depth, local_id))
 
-    if doc.tables:
-        parent_local_id = nodes[-1].local_id if nodes else None
-        for index, table in enumerate(doc.tables):
-            description = _table_to_html(table)
-            if not description.strip():
-                continue
-            title = table.caption or f"Table {index + 1}"
-            local_id = f"n{node_counter}"
-            node_counter += 1
-            nodes.append(
-                WorkItemNode(
-                    local_id=local_id,
-                    type=WorkItemType.REQUIREMENT,
-                    parent_local_id=parent_local_id,
-                    title=extract_baseline_title(title),
-                    description=description,
-                    customer_id=customer_id,
-                    source_ref=table.source_ref,
-                    fidelity_hash=_hash_description(description),
-                    child_type=WorkItemType.REQUIREMENT,
-                    tags=[],
-                    mode=WorkItemMode.BASELINE,
-                )
-            )
-
-    return WorkItemTree(nodes=nodes)
+    return WorkItemTree(nodes=nodes, warnings=warnings)

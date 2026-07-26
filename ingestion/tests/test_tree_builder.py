@@ -105,12 +105,83 @@ def test_build_baseline_tree_is_deterministic() -> None:
     assert tree1.model_dump() == tree2.model_dump()
 
 
+def test_a_branch_starting_with_no_recognized_heading_drops_its_orphan_block_but_now_warns() -> None:
+    # Regression: a depth=None block reached before any node is open in its
+    # branch (its first line has no heading/numbering the parser
+    # recognized) is still dropped -- there is no node to fold it into --
+    # but this must no longer be SILENT. verify_fidelity structurally cannot
+    # catch this case (a dropped block never becomes part of any node's
+    # description to hash-mismatch against), so WorkItemTree.warnings is the
+    # only place this loss can ever surface to a human reviewer.
+    path = "orphan.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="orphanhash"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="a stray line with no numbering at all", source_ref=_sr(path, 0, 38)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 39, 49)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr(path, 50, 72)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    # The orphan line never becomes a node and never taints any node's
+    # description -- unchanged behavior, just no longer silent about it.
+    assert not any("stray line" in n.description for n in tree.nodes)
+    assert len(tree.warnings) == 1
+    assert "b0" in tree.warnings[0]
+    assert "stray line" in tree.warnings[0]
+
+
+def test_a_document_with_a_recognized_heading_first_produces_no_warnings() -> None:
+    # Companion to the test above -- proves the warning is specifically
+    # about an orphaned depth=None block, not a general "always warn" change
+    # in behavior for BASELINE.
+    tree = build_baseline_tree(_tv_style_doc())
+    assert tree.warnings == []
+
+
 def test_fidelity_hash_is_sha256_of_display_text() -> None:
     import hashlib
 
     tree = build_baseline_tree(_tv_style_doc())
     epic_node = tree.nodes[0]
     assert epic_node.fidelity_hash == hashlib.sha256("Receiver".encode()).hexdigest()
+
+
+def test_two_byte_identical_requirement_lines_get_distinct_identity_hashes() -> None:
+    # Regression: two genuinely distinct source lines with byte-identical
+    # text (e.g. the AirPro ICD's "GA2 shall be replaced to signal
+    # PS_INPUT_FAIL_L." appearing twice, at two different requirement IDs)
+    # previously shared the same fidelity_hash = sha256(description) -- the
+    # orchestrator's idempotency lookup reused THAT hash as its key, so the
+    # second line resolved to 'reuse' against the first's ADO id instead of
+    # becoming its own distinct work item, even on a FIRST ingest with no
+    # follow-up/dedup involved at all. identity_hash folds in each node's
+    # own source position, so two identical-text nodes now hash distinctly
+    # while their fidelity_hash (drift detection, unrelated to identity)
+    # stays equal, as it must -- verify_fidelity only ever compares a node's
+    # description against ITS OWN fidelity_hash.
+    path = "repeats.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="repeatshash"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Power Sequencing", source_ref=_sr(path, 0, 18)),
+            Block(
+                id="b1", kind=BlockKind.PARAGRAPH,
+                text="1.1 GA2 shall be replaced to signal PS_INPUT_FAIL_L.",
+                source_ref=_sr(path, 19, 72),
+            ),
+            Block(
+                id="b2", kind=BlockKind.PARAGRAPH,
+                text="1.2 GA2 shall be replaced to signal PS_INPUT_FAIL_L.",
+                source_ref=_sr(path, 73, 126),
+            ),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    repeated = [n for n in tree.nodes if "GA2 shall be replaced" in n.description]
+    assert len(repeated) == 2
+    assert repeated[0].fidelity_hash == repeated[1].fidelity_hash  # same text, drift-detection hash is equal
+    assert repeated[0].identity_hash != repeated[1].identity_hash  # different position, distinct identity
 
 
 def test_title_is_truncated_to_256_chars() -> None:
@@ -448,11 +519,15 @@ def test_flat_numbered_list_handles_a_deep_list_without_losing_any_item() -> Non
 def test_single_flat_item_is_left_to_the_structured_path_not_regrouped() -> None:
     # A document with exactly one flat numbered item is too ambiguous to
     # confidently regroup (len(branches) > 1 guard in build_baseline_tree) --
-    # it takes the original structured path, producing one ungrouped Feature.
+    # it takes the original structured path. Under the bottom-up classifier
+    # (autodetect.classify_numbering_branch), a lone item with zero children
+    # is a leaf, and a leaf is a Requirement -- not the old depth-threshold
+    # heuristic's Feature default (a single flat item with no substructure
+    # at all has no "one level above a leaf" position to be Feature at).
     tree = build_baseline_tree(_flat_numbered_list_doc(1))
 
     assert len(tree.nodes) == 1
-    assert tree.nodes[0].type == WorkItemType.FEATURE
+    assert tree.nodes[0].type == WorkItemType.REQUIREMENT
     assert tree.nodes[0].parent_local_id is None
 
 
@@ -513,13 +588,17 @@ def test_table_with_a_fully_blank_row_skips_only_that_row_not_the_whole_table() 
     )
 
 
-def test_document_with_both_headings_and_tables_no_longer_drops_the_table() -> None:
-    # Regression: a document with real heading blocks took the structured
-    # path and doc.tables was never even looked at -- silently dropping
-    # every table's content with no warning at all. Tables are now folded
-    # in after the structured pass, each as a Requirement child of the last
-    # block-derived node (see build_baseline_tree's docstring for why "last"
-    # is a documented approximation, not a precise position).
+def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_description() -> None:
+    # A table belongs INSIDE its parent item's Description, never as its own
+    # separate work item (non-goal: "turning embedded tables into separate
+    # work items" -- see the AirPro ICD's own 294208/294209/294210/294248/
+    # 294611, all living inside their parent's Description). Previously every
+    # table was emitted as its OWN Requirement, appended after all
+    # block-leveling regardless of the table's real position -- this proves
+    # the corrected behavior: the table's HTML lands inside the Description
+    # of whichever node was open at its real document-order position
+    # (here, the last block before it -- "3.3V Rail Requirements"), and no
+    # extra node is created for it at all.
     path = "mixed.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
@@ -531,11 +610,30 @@ def test_document_with_both_headings_and_tables_no_longer_drops_the_table() -> N
     )
     tree = build_baseline_tree(doc)
 
-    requirements = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
-    table_node = next(n for n in requirements if n.title == "Rail Table")
-    assert table_node.description == "<table><tr><td>Rail</td><td>Voltage</td></tr><tr><td>3.3V</td><td>3.3</td></tr></table>"
-    # Attached under the last node the block-leveling pass produced.
-    assert table_node.parent_local_id == tree.nodes[1].local_id
+    assert len(tree.nodes) == 2  # no extra node was created for the table
+    parent = next(n for n in tree.nodes if n.title == "3.3V Rail Requirements")
+    assert parent.description == (
+        "3.3V Rail Requirements"
+        "\n<table><tr><td>Rail</td><td>Voltage</td></tr><tr><td>3.3V</td><td>3.3</td></tr></table>"
+    )
+    assert tree.warnings == []
+
+
+def test_a_table_before_any_heading_in_its_branch_is_dropped_with_a_warning() -> None:
+    # Companion to the drop-warning test for blocks: a table can be orphaned
+    # exactly the same way a block can (no node open yet to fold into).
+    path = "table_orphan.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 20, 39))],
+        tables=[Table(id="t0", rows=[["Rail", "Voltage"]], caption="Rail Table", source_ref=_sr(path, 0, 1))],
+    )
+    tree = build_baseline_tree(doc)
+
+    assert len(tree.nodes) == 1
+    assert "Rail" not in tree.nodes[0].description
+    assert len(tree.warnings) == 1
+    assert "t0" in tree.warnings[0]
 
 
 def test_document_with_both_headings_and_tables_skips_a_fully_blank_table() -> None:
@@ -710,3 +808,198 @@ def test_bound_branch_size_leaves_a_flat_oversized_branch_unsplit_when_no_finer_
     result = _bound_branch_size(branch, max_block_count=2)
 
     assert result == [branch]
+
+
+# --- Golden TV-Receiver + Remote-Control scenario (bottom-up level-mapping) --
+#
+# Reproduces both top-level branches of the golden flat-numbered-list
+# scenario used to validate G1-G9 in the investigation report, translated to
+# English for readability (same structure/shape as the Hebrew source). Every
+# node's type is asserted against the golden oracle table -- this is the
+# single most load-bearing test for the bottom-up classification algorithm
+# (autodetect.py's classify_numbering_branch), since it exercises both
+# branches' full shape (including both SUB- sub-Features and both lettered
+# sub-Requirement pairs) in one real build_baseline_tree run, not just the
+# classifier in isolation.
+
+
+def _golden_scenario_doc() -> CanonicalDoc:
+    path = "golden.txt"
+    lines = [
+        "1 Receiver",
+        "1.1 Broadcast and Inputs",
+        "1.1.1 Channel scan and auto search",
+        "1.1.1.1 The system scans channels automatically. It then shows the results in order.",
+        "1.1.1.2 The system supports manual scan by frequency or channel.",
+        "1.1.1.3 Scan results are saved. They remain available on the next power-on.",
+        "1.1.2 External source detection",
+        "1.1.2.1 The system detects a new HDMI connection and shows a message.",
+        "1.1.2.2 Automatic switch to the active source.",
+        "1.1.2.2.a If multiple active sources exist, a picker is shown instead of switching automatically.",
+        "1.1.2.2.b If the user dismissed the prompt, it is not shown again for 10 minutes.",
+        "1.1.3 USB playback",
+        "1.1.3.1 The system shows a basic file browser when a USB drive is connected.",
+        "1.1.3.2 The system supports playing a selected video file.",
+        "1.2 Settings and User Experience",
+        "1.2.1 Display",
+        "1.2.1.1 Output resolution selectable from a list.",
+        "1.2.1.2 Screen brightness adjustable on a clear scale.",
+        "1.2.1.3 Refresh rate shown and selectable when the source allows it.",
+        "1.2.1.4 SUB- – Picture Modes",
+        "1.2.1.4.1 Cinema mode reduces color sharpness for movie viewing.",
+        "1.2.1.4.2 Game mode prioritizes low latency over heavy image processing.",
+        "1.2.1.4.3 Picture mode is saved separately per source.",
+        "1.2.2 Audio Control",
+        "1.2.2.1 Volume adjustable in clear steps with on-screen indication.",
+        "1.2.2.2 Active audio output selectable among available outputs.",
+        "1.2.2.3 Audio mode selectable with a short description of each mode.",
+        "1.2.2.4 Mute and revert behavior",
+        "1.2.2.4.a Exiting mute restores the last volume set before muting.",
+        "1.2.2.4.b If the user changed volume while muted, that becomes the new last volume on unmute.",
+        "1.2.3 Language, Region and Clock",
+        "1.2.3.1 Menu language selectable from a list, updating all menus.",
+        "1.2.3.2 Time zone selectable, showing the correct time on system screens.",
+        "1.2.3.3 Subtitles can be turned on or off when content supports it.",
+        "1.3 System Info",
+        "1.3.1 About and Software Version",
+        "1.3.1.1 The about screen shows software version, hardware model and serial number.",
+        "1.3.1.2 The system supports checking for a software update on demand.",
+        "2 Remote Control",
+        "2.1 Ergonomics and Physical Structure",
+        "2.1.1 The remote can be operated with one hand.",
+        "2.1.2 The remote is light enough for extended use and does not slip easily.",
+        "2.1.3 The remote keeps working after a typical drop from table height.",
+        "2.2 Button Layout and Indication",
+        "2.2.1 No more than three buttons per row to avoid confusion.",
+        "2.2.2 The Power button is a distinct color to stand out from the rest.",
+        "2.2.3 A brief indicator lights up on press to confirm the command was sent.",
+        "2.2.4 SUB- – Media Buttons",
+        "2.2.4.1 Media buttons work at least during USB playback.",
+        "2.2.4.2 Back consistently returns to the previous screen.",
+        "2.3 Pairing and TV Communication",
+        "2.3.1 The remote works over infrared by default.",
+        "2.3.2 A simple pairing flow with on-screen guidance is available for BT/RF remotes.",
+        "2.3.3 Recovery from lost communication",
+        "2.3.3.a If the link is lost, the remote automatically tries to reconnect.",
+        "2.3.3.b If reconnection fails, a message with a recommended action is shown.",
+        "2.4 Audio Functions from the Remote",
+        "2.4.1 The remote has at least Volume+, Volume- and Mute.",
+        "2.4.2 Exiting mute on the remote restores the last volume set before muting.",
+    ]
+    blocks = []
+    offset = 0
+    for index, text in enumerate(lines):
+        start = offset
+        end = start + len(text)
+        offset = end + 1
+        blocks.append(Block(id=f"n{index}", kind=BlockKind.PARAGRAPH, text=text, source_ref=_sr(path, start, end)))
+    return CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="goldenhash"), blocks=blocks)
+
+
+def test_golden_scenario_branch_1_epic_subepic_feature_requirement_ladder() -> None:
+    tree = build_baseline_tree(_golden_scenario_doc())
+    by_title = {n.title: n for n in tree.nodes}
+
+    assert by_title["Receiver"].type == WorkItemType.EPIC
+    assert by_title["Receiver"].parent_local_id is None
+    assert by_title["Broadcast and Inputs"].type == WorkItemType.EPIC  # sub-Epic
+    assert by_title["Channel scan and auto search"].type == WorkItemType.FEATURE
+    assert by_title["The system scans channels automatically."].type == WorkItemType.REQUIREMENT
+    assert by_title["External source detection"].type == WorkItemType.FEATURE
+    assert by_title["Automatic switch to the active source."].type == WorkItemType.REQUIREMENT
+    assert by_title["If multiple active sources exist, a picker is shown instead of switching automatically."].type == WorkItemType.REQUIREMENT
+    assert by_title["If the user dismissed the prompt, it is not shown again for 10 minutes."].type == WorkItemType.REQUIREMENT
+    assert by_title["USB playback"].type == WorkItemType.FEATURE
+    assert by_title["Settings and User Experience"].type == WorkItemType.EPIC  # sub-Epic
+    assert by_title["Display"].type == WorkItemType.FEATURE
+    # SUB- sub-Feature: "Picture Modes" must be Feature, parented under Display,
+    # and its own SUB- prefix must be stripped from the title.
+    picture_modes = by_title["Picture Modes"]
+    assert picture_modes.type == WorkItemType.FEATURE
+    assert picture_modes.parent_local_id == by_title["Display"].local_id
+    assert "SUB-" not in picture_modes.title
+    assert by_title["Cinema mode reduces color sharpness for movie viewing."].type == WorkItemType.REQUIREMENT
+    assert by_title["Audio Control"].type == WorkItemType.FEATURE
+    mute = by_title["Mute and revert behavior"]
+    assert mute.type == WorkItemType.REQUIREMENT
+    assert by_title["Exiting mute restores the last volume set before muting."].parent_local_id == mute.local_id
+    assert by_title["Language, Region and Clock"].type == WorkItemType.FEATURE
+    assert by_title["System Info"].type == WorkItemType.EPIC
+    assert by_title["About and Software Version"].type == WorkItemType.FEATURE
+
+
+def test_golden_scenario_branch_2_epic_directly_over_feature_no_sub_epic() -> None:
+    # The golden table's "Title 2 acts as Feature, not sub-Epic" case: this
+    # branch only reaches depth 3 (unlike branch 1's depth 5), so its root's
+    # children all collapse to Feature, and the root itself stays a plain
+    # Epic with NO sub-Epic tier -- derived purely from tree shape, with zero
+    # threshold or named profile.
+    tree = build_baseline_tree(_golden_scenario_doc())
+    by_title = {n.title: n for n in tree.nodes}
+
+    remote = by_title["Remote Control"]
+    assert remote.type == WorkItemType.EPIC
+    assert remote.parent_local_id is None
+
+    ergonomics = by_title["Ergonomics and Physical Structure"]
+    assert ergonomics.type == WorkItemType.FEATURE  # NOT sub-Epic
+    assert ergonomics.parent_local_id == remote.local_id
+
+    button_layout = by_title["Button Layout and Indication"]
+    assert button_layout.type == WorkItemType.FEATURE
+
+    # SUB- sub-Feature under a Feature (not under an Epic, unlike branch 1's
+    # Picture Modes) -- proves the mechanism generalizes across branches.
+    media_buttons = by_title["Media Buttons"]
+    assert media_buttons.type == WorkItemType.FEATURE
+    assert media_buttons.parent_local_id == button_layout.local_id
+    assert "SUB-" not in media_buttons.title
+
+    pairing = by_title["Pairing and TV Communication"]
+    assert pairing.type == WorkItemType.FEATURE
+
+    # This is the corrected G7 case from the report: "Recovery from lost
+    # communication" is a header-only Requirement (its only children are
+    # lettered sub-Requirements, excluded from its own promotion decision),
+    # NOT a Feature as the old depth-threshold heuristic produced.
+    recovery = by_title["Recovery from lost communication"]
+    assert recovery.type == WorkItemType.REQUIREMENT
+    assert recovery.parent_local_id == pairing.local_id
+    reconnect = by_title["If the link is lost, the remote automatically tries to reconnect."]
+    assert reconnect.type == WorkItemType.REQUIREMENT
+    assert reconnect.parent_local_id == recovery.local_id
+
+    audio_functions = by_title["Audio Functions from the Remote"]
+    assert audio_functions.type == WorkItemType.FEATURE
+
+
+def test_a_heading_styled_block_with_non_numeric_text_inside_a_numbering_label_branch_does_not_crash() -> None:
+    # Regression: build_baseline_tree crashed with an unhandled KeyError.
+    # is_heading_style_branch classifies a branch by its ROOT block only
+    # (correct, by design -- see its own docstring), so a branch whose root
+    # is a plain numbered paragraph is a numbering-label branch overall. But
+    # a NESTED block inside it can still carry a real Word Heading style
+    # with non-numeric text (e.g. a "Notes" sub-heading) -- resolve_block_depth
+    # resolves such a block's depth via the heading path (non-None), while
+    # classify_numbering_branch only ever populates entries for blocks whose
+    # OWN numbering label parses (parse_numbering succeeds). The unguarded
+    # `classification[block.id]` index previously raised KeyError for this
+    # block, aborting the whole /level BASELINE call and losing the job.
+    path = "mixed_convention.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Power Distribution", source_ref=_sr(path, 0, 20)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Rail Requirements", source_ref=_sr(path, 21, 42)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=3, text="Notes", source_ref=_sr(path, 43, 48)),
+        ],
+    )
+
+    tree = build_baseline_tree(doc)  # must not raise
+
+    by_id = {n.local_id: n for n in tree.nodes}
+    notes_node = next(n for n in tree.nodes if n.title == "Notes")
+    # Fell back to the flat heading rule for this one block: depth >=2 (its
+    # OWN heading_level) -> Requirement, matching heading_style_type_for_depth.
+    assert notes_node.type == WorkItemType.REQUIREMENT
+    assert by_id[notes_node.parent_local_id].title == "Rail Requirements"

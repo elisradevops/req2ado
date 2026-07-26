@@ -11,8 +11,7 @@ from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import retrieve_context
 from app.leveling.depth import resolve_block_depth
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
-from app.leveling.profiles import LevelingProfile
-from app.leveling.tree_builder import _bound_branch_size, _split_into_branches
+from app.leveling.tree_builder import _bound_branch_size, _hash_identity, _order_key, _split_into_branches
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.workitem.model import (
     KbCitation,
@@ -238,37 +237,6 @@ def _block_content_appears_in_generated_output(block_text: str, all_generated_te
     combined_words = _significant_words(" ".join(all_generated_texts))
     overlap = len(block_words & combined_words) / len(block_words)
     return overlap >= _BLOCK_COVERAGE_OVERLAP_THRESHOLD
-
-
-class LlmLevelingClient(Protocol):
-    """Interface for SURVEY-mode hierarchy inference. No real implementation
-    exists in this phase — the orchestrator's LLM proxy/redaction client
-    (which would host the actual Open WebUI call) is separate, not-yet-built
-    infrastructure. This Protocol lets tests and future callers inject any
-    conforming client. Matches the runtime prompt contract documented in
-    docs/architecture.md: strict JSON {node_id,type,parent_id}[].
-    `kb_context` (see app.kb.retrieval.retrieve_context) is optional
-    SharePoint/OneDrive-sourced reference material -- omitted (None) is
-    byte-identical to before KB grounding existed."""
-
-    def infer_hierarchy(
-        self, outline: str, profile_hint: LevelingProfile | None, kb_context: str | None = None
-    ) -> list[dict]: ...
-
-
-class BatchedRequirementClient(Protocol):
-    """Interface for whole-document SURVEY requirement generation — one call
-    covering every node, not one call per node (see
-    OrchestratorLlmClient.generate_requirements_for_document's docstring for
-    why: a per-node design made ~101 sequential LLM calls for a 50-block
-    document). Deliberately narrower than SurveyRequirementClient (which is
-    still used by build_survey_requirements.py for its own single-block
-    callers, untouched by this phase) — this Protocol's single method takes
-    ALL blocks at once."""
-
-    def generate_requirements_for_document(
-        self, blocks_by_node_id: dict[str, str], kb_context: str | None = None
-    ) -> dict[str, list[dict]]: ...
 
 
 class BatchedScoringClient(Protocol):
@@ -572,21 +540,21 @@ def render_section(blocks: list[Block], tables: list[Table] | None = None, figur
     each loader (docx_loader.py's body-walk, pdf_loader.py's bbox-based
     per-page merge) now shares ONE monotonically increasing offset counter
     across blocks AND tables, so `source_ref.start_offset` is directly
-    comparable between the two lists within the same loader run. Sorting
-    the merged (block, table) sequence by that offset replaces the previous
-    "always appended at the very end under a ### Tables marker"
-    approximation -- a table now lands wherever its real position in the
-    document falls."""
+    comparable between the two lists within the same loader run. Sorted via
+    the SAME _order_key tree_builder.py's BASELINE path now uses (§F) --
+    `start_offset` alone is not globally comparable across pdf_loader.py
+    pages (its running counter resets to 0 per page), so a multi-page PDF's
+    tables/blocks need the `(page, start_offset)` pair, not offset alone."""
     del figures  # see docstring -- not yet consulted, kept for signature symmetry
-    entries: list[tuple[int, str]] = []
+    entries: list[tuple[tuple[int, int], str]] = []
     for block in blocks:
         line = _render_block_line(block)
         if line is not None:
-            entries.append((block.source_ref.start_offset, line))
+            entries.append((_order_key(block.source_ref), line))
     for table in tables or []:
         markdown = _table_to_markdown(table)
         if markdown is not None:
-            entries.append((table.source_ref.start_offset, markdown))
+            entries.append((_order_key(table.source_ref), markdown))
     entries.sort(key=lambda entry: entry[0])
     return "\n".join(line for _, line in entries)
 
@@ -1163,6 +1131,7 @@ def _build_survey_tree_for_branch(
                 customer_id=customer_id,
                 source_ref=representative_source_ref,
                 fidelity_hash=hashlib.sha256(text.encode()).hexdigest(),
+                identity_hash=_hash_identity(text, representative_source_ref),
                 tags=tags,
                 mode=WorkItemMode.SURVEY,
                 grounding_score=grounding_score,

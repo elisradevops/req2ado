@@ -12,7 +12,12 @@ import type { PrismaClient } from '@prisma/client';
 export class IdempotencyService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async lookup(sourceHash: string, customerId: string | null, areaPath: string): Promise<number | null> {
+  async lookup(
+    sourceHash: string,
+    customerId: string | null,
+    areaPath: string,
+    legacySourceHash?: string,
+  ): Promise<number | null> {
     // findUnique's generated compound-unique-key input type rejects `null`
     // for any field at runtime, even though `customerId` is a nullable
     // column (Prisma does not support `null` in @@unique compound key
@@ -24,7 +29,25 @@ export class IdempotencyService {
     const record = await this.prisma.idempotencyMapping.findFirst({
       where: { sourceHash, customerId, areaPath },
     });
-    return record?.adoWorkItemId ?? null;
+    if (record) {
+      return record.adoWorkItemId;
+    }
+    // Migration-safety fallback: every IdempotencyMapping row recorded
+    // before ingestion's identity_hash existed was keyed on the OLD hash
+    // (sha256(description) alone -- what legacySourceHash carries here, see
+    // DryRunTreeNode's own doc comment). Without this fallback, re-ingesting
+    // an already-ingested document would find no row under the new
+    // identity_hash-based sourceHash and duplicate the entire tree in ADO.
+    // Skipped entirely when the two hashes are equal (an older/mocked
+    // caller that never populated identity_hash, so sourceHash already IS
+    // the legacy hash) to avoid a pointless duplicate query.
+    if (legacySourceHash === undefined || legacySourceHash === sourceHash) {
+      return null;
+    }
+    const legacyRecord = await this.prisma.idempotencyMapping.findFirst({
+      where: { sourceHash: legacySourceHash, customerId, areaPath },
+    });
+    return legacyRecord?.adoWorkItemId ?? null;
   }
 
   async record(sourceHash: string, customerId: string | null, areaPath: string, adoWorkItemId: number): Promise<void> {

@@ -15,7 +15,7 @@ describe('IngestionHttpClient', () => {
 
     expect(result).toEqual({ document: { path: 'x.txt' }, blocks: [], tables: [], figures: [] });
     const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(url).toBe('http://ingestion.internal/ingest');
+    expect(url).toBe('http://ingestion.internal/ingest?mode=baseline');
     expect(options.method).toBe('POST');
     expect(options.body).toBeInstanceOf(FormData);
   });
@@ -51,7 +51,7 @@ describe('IngestionHttpClient', () => {
     await client.ingest(Buffer.from('hello world'), 'x.docx', true);
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(url).toBe('http://ingestion.internal/ingest?skip_vision=true');
+    expect(url).toBe('http://ingestion.internal/ingest?mode=baseline&skip_vision=true');
   });
 
   it('omits skip_vision from /ingest when skipVision is not passed (real job submission)', async () => {
@@ -63,7 +63,24 @@ describe('IngestionHttpClient', () => {
     await client.ingest(Buffer.from('hello world'), 'x.docx');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(url).toBe('http://ingestion.internal/ingest');
+    expect(url).toBe('http://ingestion.internal/ingest?mode=baseline');
+  });
+
+  it('threads mode=survey through to /ingest so BASELINE never opens the vision gate for a SURVEY job either way', async () => {
+    // Regression guard for the mode gate itself (main.py's /ingest): BASELINE
+    // is contractually verbatim/no-AI, so a figure caption must never be
+    // model-authored there. mode defaults to 'baseline' (matching /ingest's
+    // own default) and pipeline.worker.ts must thread the real job.mode
+    // through -- this proves the client-side plumbing for that.
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ document: { path: 'x.docx' }, blocks: [], tables: [], figures: [] }),
+    });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.ingest(Buffer.from('hello world'), 'x.docx', false, 'survey');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/ingest?mode=survey');
   });
 
   it('throws on a non-ok /ingest response', async () => {

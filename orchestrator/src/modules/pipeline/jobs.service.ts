@@ -7,6 +7,7 @@ import type { IngestionHttpClient } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry } from '../writeback/dry-run.service';
 import { mapWithConcurrency } from './map-with-concurrency';
+import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 
 export interface SubmitJobInput {
   areaPath: string;
@@ -58,11 +59,7 @@ export class JobsService implements OnModuleDestroy {
     redisUrl: string,
     private readonly initialState: string = 'Proposed',
     private readonly writeConcurrency: number = 8,
-    private readonly customerIdFieldCandidates: string[] = [
-      'Custom.CustomerId',
-      'Custom.CustomerRequirementId',
-      'Custom.CustomerID',
-    ],
+    private readonly customerIdFieldCandidates: string[] = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES,
   ) {
     this.queue = new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any });
   }

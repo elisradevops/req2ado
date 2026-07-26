@@ -90,6 +90,17 @@ def test_load_pdf_falls_back_to_placeholder_when_describe_figure_raises() -> Non
     assert figure_blocks[0].text == "[FIGURE: none]"
 
 
+def test_load_pdf_figure_gets_a_real_position_not_the_old_zero_placeholder() -> None:
+    # Regression: an image's SourceRef was previously always (0, 0),
+    # regardless of where on the page it actually appeared -- best-effort
+    # positional correspondence between pdfplumber's page.images (has a
+    # bbox) and pypdf's page.images (has real decodable bytes) now gives it
+    # a real offset, same as tables already got.
+    doc = load_pdf(str(FIXTURES / "pdf_with_figure.pdf"))
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert figure_blocks[0].source_ref.start_offset > 0
+
+
 def test_load_pdf_figure_placeholder_survives_into_baseline_tree_verbatim() -> None:
     from app.leveling.tree_builder import build_baseline_tree
     from app.workitem.fidelity import verify_fidelity

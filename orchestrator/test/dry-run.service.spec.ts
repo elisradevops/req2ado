@@ -52,6 +52,71 @@ describe('DryRunService', () => {
     ]);
   });
 
+  it('passes legacySourceHash through to idempotencyService.lookup as its 4th argument', async () => {
+    // Regression: identity_hash's migration-safety fallback (see
+    // IdempotencyService.lookup's own doc comment) only works if diff()
+    // actually forwards the node's legacySourceHash -- silently dropping it
+    // here would make every already-ingested document duplicate on re-run.
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const service = new DryRunService();
+    await service.diff(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'new-identity-hash',
+          legacySourceHash: 'legacy-fidelity-hash',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
+          tags: [],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(fakeIdempotencyService.lookup).toHaveBeenCalledWith(
+      'new-identity-hash',
+      null,
+      'Project\\Area1',
+      'legacy-fidelity-hash',
+    );
+  });
+
+  it('passes undefined (not null) to idempotencyService.lookup when legacySourceHash is absent', async () => {
+    // Older/mocked node shape predating identity_hash -- must not pass a
+    // literal `null` through, matching IdempotencyService.lookup's optional
+    // parameter contract exactly.
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const service = new DryRunService();
+    await service.diff(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
+          tags: [],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(fakeIdempotencyService.lookup).toHaveBeenCalledWith('hash1', null, 'Project\\Area1', undefined);
+  });
+
   it('marks a node as "reuse" when an existing mapping is found', async () => {
     (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(42);
     const service = new DryRunService();
@@ -520,6 +585,72 @@ describe('DryRunService', () => {
     const diff = await service.diff(nodes as any, fakeIdempotencyService);
     expect(diff[0].qualityScore).toBeUndefined();
     expect(diff[0].qualityIssues).toBeUndefined();
+  });
+
+  // --- perf: bounded concurrency instead of one-node-at-a-time sequential awaits ---
+
+  it('propagates an idempotencyService.lookup rejection out of diff() (fails the whole job, same as before parallelization)', async () => {
+    // Unlike dedupCheck (fail-open, tested above), a lookup failure must
+    // still abort the whole diff() call -- this is the failure-semantics
+    // guarantee that must survive the switch to mapWithConcurrency, which
+    // otherwise captures per-item exceptions into rejected results instead
+    // of letting them propagate on their own.
+    (fakeIdempotencyService.lookup as jest.Mock)
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('db unreachable'))
+      .mockResolvedValueOnce(null);
+    const service = new DryRunService();
+    const nodes = ['n0', 'n1', 'n2'].map((localId, i) => ({
+      localId, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
+      sourceHash: `hash${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
+    }));
+
+    await expect(service.diff(nodes as any, fakeIdempotencyService)).rejects.toThrow('db unreachable');
+  });
+
+  it('returns results in the original node order regardless of concurrent resolution order', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockImplementation((sourceHash: string) => {
+      // n0's lookup resolves LAST despite being requested first -- proves
+      // the returned array order tracks input order, not completion order.
+      const delayMs = sourceHash === 'hash0' ? 30 : 5;
+      return new Promise((resolve) => setTimeout(() => resolve(null), delayMs));
+    });
+    const service = new DryRunService(3);
+    const nodes = ['n0', 'n1', 'n2', 'n3', 'n4'].map((localId, i) => ({
+      localId, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
+      sourceHash: `hash${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
+    }));
+
+    const result = await service.diff(nodes as any, fakeIdempotencyService);
+
+    expect(result.map((r) => r.localId)).toEqual(['n0', 'n1', 'n2', 'n3', 'n4']);
+  });
+
+  it('runs idempotencyService.lookup calls concurrently, not one at a time', async () => {
+    // Regression: the previous sequential `for` loop awaited each node's
+    // lookup before starting the next -- for N nodes this serializes N
+    // round trips even though every node's check is independent. Track how
+    // many lookups are in flight simultaneously to prove the new
+    // implementation actually overlaps them.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    (fakeIdempotencyService.lookup as jest.Mock).mockImplementation(() => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise((resolve) => setTimeout(() => {
+        inFlight -= 1;
+        resolve(null);
+      }, 10));
+    });
+    const service = new DryRunService(4);
+    const nodes = Array.from({ length: 8 }, (_, i) => ({
+      localId: `n${i}`, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
+      sourceHash: `hash${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
+    }));
+
+    await service.diff(nodes as any, fakeIdempotencyService);
+
+    expect(maxInFlight).toBeGreaterThan(1);
   });
 
   it('passes childType through on every action branch (create, reuse, dedup_skip)', async () => {

@@ -49,10 +49,25 @@ export class IngestionHttpClient {
   // 36-figure docx failed with HeadersTimeoutError at exactly 5:04 after
   // submit. Needs the SAME LONG_RUNNING_AGENT dispatcher /level already
   // uses below, not the plain default-timeout fetch.
-  async ingest(fileBuffer: Buffer, filename: string, skipVision = false): Promise<Record<string, unknown>> {
+  // mode: threaded straight through to ingestion's /ingest so BASELINE jobs
+  // never open the vision-LLM gate there (see main.py's ingest() docstring)
+  // -- BASELINE is contractually verbatim/no-AI, and a figure caption is
+  // model-authored text. Defaults to 'baseline', matching /ingest's own
+  // default and every pre-mode-gate call site (preview never sets it,
+  // matching its existing skipVision=true behavior either way).
+  async ingest(
+    fileBuffer: Buffer,
+    filename: string,
+    skipVision = false,
+    mode: 'baseline' | 'survey' = 'baseline',
+  ): Promise<Record<string, unknown>> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
-    const url = skipVision ? `${this.baseUrl}/ingest?skip_vision=true` : `${this.baseUrl}/ingest`;
+    const params = new URLSearchParams({ mode });
+    if (skipVision) {
+      params.set('skip_vision', 'true');
+    }
+    const url = `${this.baseUrl}/ingest?${params.toString()}`;
     const response = await fetch(url, { method: 'POST', body: form, dispatcher: LONG_RUNNING_AGENT });
     if (!response.ok) {
       throw new Error(`Ingestion /ingest request failed: ${response.status}`);

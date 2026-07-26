@@ -123,3 +123,108 @@ def pytest_approx(value: float):
     import pytest
 
     return pytest.approx(value, abs=1e-3)
+
+
+# --- X7: numeric-literal guard -----------------------------------------------
+#
+# A >90% embedding-similarity match must never be treated as a duplicate when
+# the candidate and matched texts contain different numeric-literal(+unit)
+# tokens -- protects the report's named cases: "at least 87%" vs "at least
+# 93%" (plus a third source using "85%"), and "at least 500W" vs "at least
+# 600W". The guard only fires when the matched item's original text was
+# actually stored (vector_store.upsert's optional `document` param) -- an
+# older/pre-migration item with no stored text fails open, same as every
+# other dedup safety mechanism in this codebase.
+
+
+def test_high_similarity_with_different_numeric_tokens_is_not_flagged_as_duplicate() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        # Identical embedding (similarity 1.0, far above 0.90) but the
+        # numbers in the text genuinely differ -- must not be a duplicate.
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="at least 87%")
+
+        embed_client = FakeEmbedClient({"at least 93%": [1.0, 0.0]})
+        result = check_for_duplicates(
+            text="at least 93%",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+        )
+        assert result.is_duplicate is False
+        # similarity is still reported -- the diff view can show why it was
+        # close, it just must never be auto-skipped.
+        assert result.similarity == pytest_approx(1.0)
+
+
+def test_high_similarity_with_different_wattage_tokens_is_not_flagged_as_duplicate() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="at least 500W")
+
+        embed_client = FakeEmbedClient({"at least 600W": [1.0, 0.0]})
+        result = check_for_duplicates(
+            text="at least 600W",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+        )
+        assert result.is_duplicate is False
+
+
+def test_high_similarity_with_identical_numeric_tokens_is_still_flagged_as_duplicate() -> None:
+    # The guard must not veto legitimate duplicates -- same numbers, same
+    # verdict as before this guard existed.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="at least 87%")
+
+        embed_client = FakeEmbedClient({"efficiency of at least 87%": [1.0, 0.0]})
+        result = check_for_duplicates(
+            text="efficiency of at least 87%",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+        )
+        assert result.is_duplicate is True
+        assert result.matched_item_id == "existing-item"
+
+
+def test_high_similarity_with_no_numbers_in_either_text_is_unaffected() -> None:
+    # Nothing to veto on when neither text has a number at all -- the guard
+    # is a no-op, not a regression on ordinary text-only dedup.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="shall support terrestrial broadcast")
+
+        embed_client = FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]})
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+        )
+        assert result.is_duplicate is True
+
+
+def test_high_similarity_with_no_stored_document_fails_open_ignoring_the_guard() -> None:
+    # An older/pre-migration item was upserted with no document at all
+    # (matched_document is None) -- the guard must not veto on missing
+    # information, matching every other fail-open dedup mechanism here.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1")  # no document
+
+        embed_client = FakeEmbedClient({"at least 93%": [1.0, 0.0]})
+        result = check_for_duplicates(
+            text="at least 93%",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+        )
+        assert result.is_duplicate is True

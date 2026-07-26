@@ -144,10 +144,10 @@ def test_ingest_skip_vision_skips_figure_captioning_even_when_vision_is_configur
     assert fake_client.calls == 0
 
 
-def test_ingest_without_skip_vision_still_captions_when_vision_is_configured(monkeypatch) -> None:
+def test_ingest_survey_mode_still_captions_when_vision_is_configured(monkeypatch) -> None:
     # Companion to the test above -- proves skip_vision is opt-in, not a
-    # silent global regression: real job submission (pipeline.worker.ts)
-    # omits skip_vision and must keep getting real captions.
+    # silent global regression: real SURVEY job submission
+    # (pipeline.worker.ts, mode='survey') must keep getting real captions.
     import app.main as main_module
 
     class _FakeVisionClient:
@@ -161,10 +161,100 @@ def test_ingest_without_skip_vision_still_captions_when_vision_is_configured(mon
     fake_client = _FakeVisionClient()
     monkeypatch.setattr(main_module, "_vision_client", fake_client)
 
-    body = _upload("sample.docx", FIXTURES / "sample.docx")
+    body = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey")
     figure_blocks = [b for b in body["blocks"] if b["kind"] == "figure"]
     assert figure_blocks[0]["text"] == "[FIGURE: a real caption]"
     assert fake_client.calls == 1
+
+
+def test_ingest_baseline_mode_never_captions_even_when_vision_is_configured(monkeypatch) -> None:
+    # BASELINE is contractually verbatim/no-AI: a figure caption is
+    # model-authored text, and must never reach a contract-baseline
+    # System.Description regardless of skip_vision or whether a vision
+    # client is configured (LLM_VISION_MODEL set). This is the mode gate
+    # itself -- distinct from skip_vision, which is a latency optimization
+    # for /jobs/preview only. Default mode ("baseline", per /ingest's own
+    # signature) must behave identically to an explicit mode="baseline".
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+            self.calls += 1
+            return "a description that must never appear in baseline"
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+
+    body = _upload("sample.docx", FIXTURES / "sample.docx")  # mode omitted -> default baseline
+    figure_blocks = [b for b in body["blocks"] if b["kind"] == "figure"]
+    assert figure_blocks[0]["text"] == "[FIGURE: none]"
+    assert fake_client.calls == 0
+
+    fake_client.calls = 0
+    body = _upload("sample.docx", FIXTURES / "sample.docx", mode="baseline")  # explicit, same result
+    figure_blocks = [b for b in body["blocks"] if b["kind"] == "figure"]
+    assert figure_blocks[0]["text"] == "[FIGURE: none]"
+    assert fake_client.calls == 0
+
+
+def test_ingest_unrecognized_mode_value_fails_safe_to_baseline(monkeypatch) -> None:
+    # Fail-safe direction matches /level's own `if mode == "survey"` fork
+    # (main.py) -- anything other than the exact string "survey" must never
+    # open the vision gate.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+            self.calls += 1
+            return "should never be reached"
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+
+    body = _upload("sample.docx", FIXTURES / "sample.docx", mode="Survey")  # wrong case, not "survey"
+    figure_blocks = [b for b in body["blocks"] if b["kind"] == "figure"]
+    assert figure_blocks[0]["text"] == "[FIGURE: none]"
+    assert fake_client.calls == 0
+
+
+def test_ingest_then_level_baseline_never_touches_a_configured_vision_client() -> None:
+    # Executable version of the "BASELINE is no-AI" invariant that
+    # config.yaml's enabled_in_baseline: false documents but nothing reads
+    # (see docs/architecture audit): drives the real pipeline shape
+    # (/ingest?mode=baseline -> /level?mode=baseline) end to end over a
+    # figure-bearing document with a real vision client monkeypatched to
+    # raise on any call. If BASELINE ever reopens the vision gate, this
+    # fails loudly instead of silently emitting a model-authored caption.
+    import app.main as main_module
+
+    class _ExplodingVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+            raise AssertionError("BASELINE must never call describe_figure")
+
+    monkeypatch_target = main_module._vision_client
+    main_module._vision_client = _ExplodingVisionClient()
+    try:
+        with open(FIXTURES / "sample.docx", "rb") as f:
+            ingest_response = client.post(
+                "/ingest",
+                params={"mode": "baseline"},
+                files={"file": ("sample.docx", f, "application/octet-stream")},
+            )
+        assert ingest_response.status_code == 200
+        doc = ingest_response.json()
+
+        level_response = client.post("/level", params={"mode": "baseline"}, json=doc)
+        assert level_response.status_code == 200
+        figure_blocks = [n for n in level_response.json()["nodes"] if "[FIGURE:" in n["description"]]
+        assert all("none" in n["description"] for n in figure_blocks)
+    finally:
+        main_module._vision_client = monkeypatch_target
 
 
 def test_ingest_unsupported_extension_returns_400() -> None:

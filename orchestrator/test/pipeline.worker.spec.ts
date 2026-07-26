@@ -39,7 +39,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt');
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline');
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline', undefined, [], undefined, 'job-1');
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
   });
@@ -153,11 +153,11 @@ describe('runPipelineJob', () => {
     expect(fakeDryRunService.diff).toHaveBeenCalledWith(
       [
         {
-          localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1',
+          localId: 'n0', sourceHash: 'hashA', legacySourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [], traceLinks: [],
         },
         {
-          localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
+          localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [], traceLinks: [],
         },
       ],
@@ -213,6 +213,7 @@ describe('runPipelineJob', () => {
           title: 'Parent Title',
           description: 'Parent Desc',
           sourceHash: 'hashA',
+          legacySourceHash: 'hashA',
           customerId: 'CUST-1',
           areaPath: 'Project\\Area1',
           groundingScore: null,
@@ -227,6 +228,7 @@ describe('runPipelineJob', () => {
           title: 'Child Title',
           description: 'Child Desc',
           sourceHash: 'hashB',
+          legacySourceHash: 'hashB',
           customerId: 'CUST-1',
           areaPath: 'Project\\Area1',
           groundingScore: null,
@@ -276,12 +278,12 @@ describe('runPipelineJob', () => {
     expect(fakeDryRunService.diff).toHaveBeenCalledWith(
       [
         {
-          localId: 'n0', sourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1',
+          localId: 'n0', sourceHash: 'hashA', legacySourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [],
           qualityScore: 72, qualityIssues: ['vague_term'], childType: 'Requirement', traceLinks: [],
         },
         {
-          localId: 'n1', sourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
+          localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [],
           qualityScore: undefined, qualityIssues: undefined, childType: undefined, traceLinks: [],
         },

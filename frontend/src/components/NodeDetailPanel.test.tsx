@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { NodeDetailPanel } from './NodeDetailPanel';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
@@ -21,6 +21,12 @@ function renderPanel(ui: React.ReactElement) {
 
 describe('NodeDetailPanel', () => {
   beforeEach(() => {
+    // Clear accumulated mock call history/implementations between tests --
+    // previously absent, meaning e.g. sendChatTurn's call count carried
+    // over across `it()` blocks. Only surfaced once a test asserted an
+    // ABSOLUTE call count (see "does not fire a second sendChatTurn call");
+    // clearing here is the correct general fix, not a one-off workaround.
+    vi.clearAllMocks();
     vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
     vi.mocked(chatApi.listModels).mockResolvedValue([]);
   });
@@ -210,6 +216,88 @@ describe('NodeDetailPanel', () => {
       />,
     );
     expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
+  });
+
+  it('shows a "Suggest a title" button for a create entry and sends a fixed prompt via chat when clicked, for a BASELINE job', async () => {
+    // Correction to a prior report claim: ChatPanel (and the chat backend)
+    // have no SURVEY-only gate -- the propose/accept mechanism already runs
+    // for BASELINE nodes today. This proves the new button isn't
+    // accidentally mode-gated: no jobMode prop is passed at all here.
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    vi.mocked(chatApi.sendChatTurn).mockResolvedValue(undefined);
+
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /suggest a title/i }));
+
+    expect(chatApi.sendChatTurn).toHaveBeenCalledWith(
+      'job-1',
+      'e1',
+      expect.stringMatching(/title/i),
+    );
+  });
+
+  it('shows an error toast and re-enables the button when sendChatTurn rejects', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    vi.mocked(chatApi.sendChatTurn).mockRejectedValue(new Error('network down'));
+
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    const button = screen.getByRole('button', { name: /suggest a title/i });
+    await user.click(button);
+
+    await waitFor(() => expect(screen.getByText(/failed to request a title suggestion/i)).toBeInTheDocument());
+    expect(button).not.toBeDisabled();
+  });
+
+  it('does not fire a second sendChatTurn call while the first request is still in flight', async () => {
+    // Uses fireEvent (not userEvent) deliberately: userEvent correctly
+    // refuses to click a button once React has committed disabled=true
+    // (confirming the UI-level guard works), but the useRef guard exists
+    // specifically for the narrower case userEvent can't simulate --
+    // several synchronous clicks landing BEFORE the first re-render, where
+    // a useState-only guard would still read its stale `false` closure
+    // value and let every click through. fireEvent dispatches directly,
+    // bypassing the pointer-events/disabled check, to exercise exactly that.
+    const { fireEvent } = await import('@testing-library/react');
+    let resolveTurn: () => void = () => {};
+    vi.mocked(chatApi.sendChatTurn).mockImplementation(
+      () => new Promise((resolve) => { resolveTurn = () => resolve(undefined); }),
+    );
+
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    const button = screen.getByRole('button', { name: /suggest a title/i });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(chatApi.sendChatTurn).toHaveBeenCalledTimes(1);
+    resolveTurn();
+  });
+
+  it('does not show a "Suggest a title" button for a reuse entry', () => {
+    renderPanel(
+      <NodeDetailPanel
+        jobId="job-1"
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /suggest a title/i })).not.toBeInTheDocument();
   });
 
   it('shows the full trace link list for the selected node', () => {

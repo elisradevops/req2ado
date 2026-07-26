@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { IdempotencyService } from './idempotency.service';
+import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
 
 export interface DryRunSourceRef {
   documentPath: string;
@@ -26,6 +27,15 @@ export interface DryRunTreeNode {
   title: string;
   description: string;
   sourceHash: string;
+  // Migration-safety fallback ONLY (see IdempotencyService.lookup's own
+  // doc comment): the pre-identity_hash idempotency key
+  // (sha256(description) alone -- ingestion's fidelity_hash) that every
+  // IdempotencyMapping row recorded before identity_hash existed is keyed
+  // on. A dual lookup (identity_hash first, this as fallback) is what lets
+  // re-ingesting an already-ingested document still resolve to 'reuse'
+  // instead of duplicating the whole tree in ADO. Never written to by
+  // record() -- only ever read as a fallback.
+  legacySourceHash?: string | null;
   customerId: string | null;
   areaPath: string;
   tags: string[];
@@ -118,24 +128,34 @@ export async function resolveCrossJobTraceLinks(
  */
 @Injectable()
 export class DryRunService {
+  // Matches JobsService's writeConcurrency convention/default exactly --
+  // every node's idempotency lookup (and, on a follow-up job, dedup check)
+  // is independent of every other node's, so bounding concurrency instead
+  // of running them one at a time cuts wall time roughly proportionally
+  // for a document with hundreds of leveled nodes.
+  constructor(private readonly concurrency: number = 8) {}
+
   async diff(
     nodes: DryRunTreeNode[],
     idempotencyService: IdempotencyService,
     dedupCheck?: (text: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
   ): Promise<DryRunDiffEntry[]> {
-    const results: DryRunDiffEntry[] = [];
-    for (const node of nodes) {
-      const existingAdoId = await idempotencyService.lookup(node.sourceHash, node.customerId, node.areaPath);
+    const settled = await mapWithConcurrency(nodes, this.concurrency, async (node) => {
+      const existingAdoId = await idempotencyService.lookup(
+        node.sourceHash,
+        node.customerId,
+        node.areaPath,
+        node.legacySourceHash ?? undefined,
+      );
       if (existingAdoId !== null) {
-        results.push({
+        return {
           localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
-          title: node.title, description: node.description, action: 'reuse',
+          title: node.title, description: node.description, action: 'reuse' as const,
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
           tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
           qualityIssues: node.qualityIssues, sourceRef: node.sourceRef, childType: node.childType,
           traceLinks: node.traceLinks,
-        });
-        continue;
+        };
       }
       if (dedupCheck) {
         // Fail OPEN, never closed: an embedding-service outage must not fail
@@ -148,30 +168,42 @@ export class DryRunService {
         try {
           const dedupResult = await dedupCheck(node.description, node.areaPath);
           if (dedupResult.isDuplicate && dedupResult.matchedItemId !== null) {
-            results.push({
+            return {
               localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
-              title: node.title, description: node.description, action: 'dedup_skip',
+              title: node.title, description: node.description, action: 'dedup_skip' as const,
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
               groundingScore: node.groundingScore, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
               sourceRef: node.sourceRef, childType: node.childType, traceLinks: node.traceLinks,
-            });
-            continue;
+            };
           }
         } catch (error) {
           // eslint-disable-next-line no-console -- operational visibility for a fail-open path, not app logging
           console.error(`Dedup check failed for node ${node.localId}, falling through to 'create':`, error);
         }
       }
-      results.push({
+      return {
         localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
-        title: node.title, description: node.description, action: 'create',
+        title: node.title, description: node.description, action: 'create' as const,
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
         tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
         qualityIssues: node.qualityIssues, sourceRef: node.sourceRef, childType: node.childType,
         traceLinks: node.traceLinks,
-      });
+      };
+    });
+
+    // Preserve the exact pre-parallelization failure semantics: an
+    // unguarded idempotencyService.lookup throwing previously propagated
+    // straight out of this loop, aborting the whole diff() call (and the
+    // pipeline job with it). mapWithConcurrency instead captures a
+    // per-item exception into a rejected result rather than letting it
+    // propagate on its own -- re-throw the first one here so a DB failure
+    // still fails the job exactly as it did before, instead of silently
+    // degrading into a partial/incomplete diff.
+    const firstError = settled.find((r) => r.status === 'rejected');
+    if (firstError && firstError.status === 'rejected') {
+      throw firstError.reason;
     }
-    return results;
+    return settled.map((r) => (r as { status: 'fulfilled'; value: DryRunDiffEntry }).value);
   }
 }

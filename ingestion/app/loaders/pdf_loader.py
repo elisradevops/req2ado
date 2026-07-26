@@ -95,18 +95,45 @@ def load_pdf(path: str, describe_figure: Callable[[bytes], str] | None = None) -
                 page_tables.append(Table(id=f"t{table_id}", rows=rows, source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0, page=page_number)))
                 table_id += 1
 
-            # Merge paragraphs and tables into real document order by top
-            # position, then walk that merged order assigning ONE shared
-            # monotonically increasing offset counter across both -- same
-            # technique docx_loader.py's body-walk uses, adapted for pdf's
-            # lack of a single ordered element stream: paragraph offsets are
-            # real char-length spans (unchanged from before); a table gets a
-            # single synthetic slot in the same counter (tables have no
-            # natural text length here, same as before -- only their ORDER
-            # relative to paragraphs is new, not a real char span).
+            # pdfplumber's own page.images gives each image region's bbox
+            # (for real-position ordering, same as tables above) but not a
+            # standalone-decodable image file; pypdf's page.images gives the
+            # real decodable bytes describe_figure needs but no position.
+            # Best-effort correspondence: pdfplumber and pypdf both walk a
+            # page's images in the same underlying content-stream order, so
+            # pairing them positionally is the same kind of documented
+            # approximation as a table's synthetic offset slot below -- not
+            # a guaranteed identity, but the best available without a much
+            # heavier cross-reference by image XObject name. If the two
+            # libraries disagree on image count for this page (rare --
+            # inline vs. XObject images can be counted differently), every
+            # pypdf image is still captured (matching pre-fix behavior of
+            # never dropping an image), just without a real position for
+            # any index past what pdfplumber reported.
+            pypdf_page = cached_pdf_reader(path).pages[page_number - 1]
+            plumber_tops = [im["top"] for im in page.images]
+            page_images = [
+                (plumber_tops[i] if i < len(plumber_tops) else 0.0, pypdf_image)
+                for i, pypdf_image in enumerate(pypdf_page.images)
+            ]
+
+            # Merge paragraphs, tables, and images into real document order
+            # by top position, then walk that merged order assigning ONE
+            # shared monotonically increasing offset counter across all
+            # three -- same technique docx_loader.py's body-walk uses,
+            # adapted for pdf's lack of a single ordered element stream:
+            # paragraph offsets are real char-length spans (unchanged from
+            # before); a table or image gets a single synthetic slot in the
+            # same counter (neither has a natural text length here, same as
+            # before -- only their ORDER relative to paragraphs is new, not
+            # a real char span). Previously every image on a page was always
+            # appended after ALL of that page's paragraphs/tables regardless
+            # of its real position -- interleaving them here gives each
+            # figure the same real-position treatment tables already got.
             merged = sorted(
                 [("paragraph", top, paragraph) for top, paragraph in zip(tops, paragraphs)]
-                + [("table", bbox[1], table) for bbox, table in zip(table_bboxes, page_tables)],
+                + [("table", bbox[1], table) for bbox, table in zip(table_bboxes, page_tables)]
+                + [("image", top, pypdf_image) for top, pypdf_image in page_images],
                 key=lambda entry: entry[1],
             )
             offset = 0
@@ -124,7 +151,7 @@ def load_pdf(path: str, describe_figure: Callable[[bytes], str] | None = None) -
                         )
                     )
                     block_id += 1
-                else:
+                elif kind == "table":
                     start = offset
                     end = start + 1
                     offset = end
@@ -136,38 +163,33 @@ def load_pdf(path: str, describe_figure: Callable[[bytes], str] | None = None) -
                             source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
                         )
                     )
-
-            # pdfplumber has no natural text offset for an embedded image
-            # region, same reasoning as tables above (placeholder 0, 0).
-            # Image BYTES come from pypdf's reader (cached_pdf_reader, same
-            # cache Task 6 added) rather than pdfplumber's own `page.images`
-            # -- pypdf's ImageFile.data is a real decodable image file,
-            # which describe_figure needs; pdfplumber's raw stream data
-            # isn't guaranteed to be a standalone-decodable image.
-            pypdf_page = cached_pdf_reader(path).pages[page_number - 1]
-            for pypdf_image in pypdf_page.images:
-                caption = None
-                if describe_figure is not None:
-                    try:
-                        caption = describe_figure(pypdf_image.data)
-                    except Exception:  # noqa: BLE001 -- a vision failure must not abort the whole document
-                        caption = None
-                figures.append(
-                    Figure(
-                        id=f"f{figure_id}",
-                        caption=caption,
-                        source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0, page=page_number),
+                else:
+                    start = offset
+                    end = start + 1
+                    offset = end
+                    pypdf_image = item
+                    caption = None
+                    if describe_figure is not None:
+                        try:
+                            caption = describe_figure(pypdf_image.data)
+                        except Exception:  # noqa: BLE001 -- a vision failure must not abort the whole document
+                            caption = None
+                    figures.append(
+                        Figure(
+                            id=f"f{figure_id}",
+                            caption=caption,
+                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                        )
                     )
-                )
-                blocks.append(
-                    Block(
-                        id=f"b{block_id}",
-                        kind=BlockKind.FIGURE,
-                        text=f"[FIGURE: {caption or 'none'}]",
-                        source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0, page=page_number),
+                    blocks.append(
+                        Block(
+                            id=f"b{block_id}",
+                            kind=BlockKind.FIGURE,
+                            text=f"[FIGURE: {caption or 'none'}]",
+                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                        )
                     )
-                )
-                block_id += 1
-                figure_id += 1
+                    block_id += 1
+                    figure_id += 1
 
     return CanonicalDoc(document=document, blocks=blocks, tables=tables, figures=figures)

@@ -278,7 +278,7 @@ _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 @app.post("/ingest", response_model=CanonicalDoc)
 async def ingest(
-    file: UploadFile, redact: bool = False, languages: str = "eng", skip_vision: bool = False
+    file: UploadFile, redact: bool = False, languages: str = "eng", skip_vision: bool = False, mode: str = "baseline"
 ) -> CanonicalDoc:
     # skip_vision: /jobs/preview (orchestrator) only needs blockCount/
     # sectionCount/fileType to show the user before they even pick a mode --
@@ -287,6 +287,14 @@ async def ingest(
     # inference cost (observed live: a single small image made preview take
     # 28s instead of ~30ms) for output nobody uses. Real job submission
     # (pipeline.worker.ts) never sets this -- captions still matter there.
+    #
+    # mode: BASELINE is contractually verbatim/no-AI -- describe_figure must
+    # never run for it regardless of skip_vision or LLM_VISION_MODEL, so a
+    # figure's caption cannot become model-authored text inside a contract-
+    # baseline System.Description. Only the literal string "survey" opens the
+    # vision gate below (fail-safe default, same direction as /level's own
+    # `if mode == "survey"` fork) -- anything else, including an unrecognized
+    # value, is treated as baseline.
     # Previously `tmp.write(await file.read())` -- the whole upload was
     # buffered into memory unconditionally, with no size guard at this
     # layer at all (the orchestrator's own upload-size check happens before
@@ -320,7 +328,7 @@ async def ingest(
             file.filename or "",
             tmp_path,
             languages=languages,
-            describe_figure=_describe_figure if (_vision_client is not None and not skip_vision) else None,
+            describe_figure=_describe_figure if (_vision_client is not None and not skip_vision and mode == "survey") else None,
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -402,7 +410,10 @@ async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
 @app.post("/dedup/upsert")
 async def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
     [embedding] = _embed_client.embed([body.text])
-    _vector_store.upsert(body.item_id, embedding, body.area_path)
+    # document=body.text: stores the item's original text alongside its
+    # embedding, so a future check_for_duplicates call can run its
+    # numeric-literal guard (X7) against the actual matched text.
+    _vector_store.upsert(body.item_id, embedding, body.area_path, document=body.text)
     return {"ok": True}
 
 
@@ -415,8 +426,22 @@ async def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     if not body.items:
         return {"ok": True}
     embeddings = _embed_client.embed([item.text for item in body.items])
+
+    # Group by area_path before calling vector_store.upsert_many -- one
+    # Chroma round trip per distinct area path instead of one per item
+    # (previously: N individual upsert() calls, undercutting this
+    # endpoint's own batching intent, which only batched the embed() call).
+    # Each DedupUpsertRequest item carries its own area_path, so this must
+    # not assume every item in the batch shares one -- in practice every
+    # item in one confirm() call shares the submitting job's single
+    # areaPath (see JobsService's dedupUpsertItems), but the grouping here
+    # stays correct even if that ever stops holding.
+    items_by_area_path: dict[str, list[tuple[str, list[float], str]]] = {}
     for item, embedding in zip(body.items, embeddings):
-        _vector_store.upsert(item.item_id, embedding, item.area_path)
+        items_by_area_path.setdefault(item.area_path, []).append((item.item_id, embedding, item.text))
+
+    for area_path, items in items_by_area_path.items():
+        _vector_store.upsert_many(items, area_path)
     return {"ok": True}
 
 
