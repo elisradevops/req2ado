@@ -5,10 +5,19 @@ import base64
 import httpx
 
 _VISION_REQUEST_TIMEOUT_SECONDS = 300.0
+
+# A fixed, literal sentinel the model must return verbatim (nothing else)
+# when a figure has no real technical content -- lets the dropped-block
+# coverage check (llm_leveling.py) reliably skip these figures via an exact
+# string match instead of pattern-matching whichever free-form "nothing
+# here" sentence the model happens to produce. main.py translates this back
+# to human-readable copy before it reaches narration/the UI.
+NO_TECHNICAL_CONTENT_SENTINEL = "NO_TECHNICAL_CONTENT"
 _DESCRIBE_FIGURE_PROMPT = (
     "Describe this figure or diagram in one or two sentences, focusing on any "
     "technical content (components, connections, values, labeled parts). If "
-    "the image contains no discernible technical content, say so briefly."
+    f"the image contains no discernible technical content, respond with "
+    f"exactly the single word {NO_TECHNICAL_CONTENT_SENTINEL} and nothing else."
 )
 
 

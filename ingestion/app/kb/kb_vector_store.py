@@ -1,8 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import chromadb
+
+
+# Bounds for get_document/list_documents -- both previously called
+# collection.get() with no limit at all. Confirmed real risk, not just a
+# perf nit: both results are returned to an LLM agentic tool call
+# (orchestrator_llm_client._execute_agentic_tool_call's list_kb_documents/
+# read_kb_document branches) -- a KB with many ingested files, or one large
+# document, could produce a single tool result exceeding the model's
+# context window, silently truncating (or erroring) mid-sentence during a
+# SURVEY analysis loop.
+_GET_PAGE_SIZE = 500
+_MAX_DOCUMENT_CHUNKS = 2000
+_MAX_LISTED_DOCUMENTS = 5000
 
 
 def _kb_collection_name_for_user(user_id: str) -> str:
@@ -55,6 +69,7 @@ class KbVectorStore:
         chunk_index: int,
         file_hash: str,
         doc_type: str | None = None,
+        quality_checklist: list[str] | None = None,
     ) -> None:
         collection = self._get_collection(user_id)
         metadata = {
@@ -68,6 +83,21 @@ class KbVectorStore:
         # pass doc_type keep working unchanged).
         if doc_type is not None:
             metadata["doc_type"] = doc_type
+        # Confirmed real determinism gap (user-reported): asking the scoring
+        # LLM to "derive" quality-checklist category names live, per scoring
+        # call, is not a hard cross-run guarantee even at temperature=0 --
+        # the SAME document run 4 times must yield the SAME categories.
+        # Extracted ONCE at ingestion time (see checklist_extraction.py) and
+        # stored here, on every chunk (cheap: a short JSON string, avoids any
+        # "which chunk is chunk 0" edge case for lookup) -- every later
+        # scoring call reads this stored value instead of ever re-deriving
+        # it, making the category set a genuine property of the ingested
+        # document, not of any one job run. `[]` (checked, not falsy-checked)
+        # means "extraction ran and found no checklist", stored explicitly
+        # so it's distinguishable from "extraction never ran" (None, older
+        # chunks ingested before this existed).
+        if quality_checklist is not None:
+            metadata["quality_checklist_json"] = json.dumps(quality_checklist)
         collection.upsert(
             ids=[chunk_id],
             embeddings=[embedding],
@@ -102,35 +132,101 @@ class KbVectorStore:
         collection = self._get_collection(user_id)
         collection.delete(where={"$and": [{"source_file": source_file}, {"source_id": source_id}]})
 
-    def get_document(self, user_id: str, source_file: str) -> str | None:
+    def get_document(self, user_id: str, source_file: str) -> tuple[str | None, bool]:
         """Reassembles ONE previously-ingested document's FULL text by
         concatenating its stored chunks in chunk_index order -- for the §15
         read_kb_document agentic tool, which needs a whole document (e.g. a
         referenced ICD only mentioned by name), not just top-k similarity
         snippets (see query() above / app.kb.retrieval.retrieve_context).
-        Returns None when no chunk exists for this source_file, mirroring
-        query()'s empty-result convention -- an enhancement, never a hard
-        dependency."""
+        Returns (None, False) when no chunk exists for this source_file,
+        mirroring query()'s empty-result convention -- an enhancement,
+        never a hard dependency.
+
+        Paginated (page size _GET_PAGE_SIZE) rather than one unbounded
+        collection.get() -- stops once either the real last page is reached
+        or more than _MAX_DOCUMENT_CHUNKS chunks have been seen (proof
+        enough that truncation is needed, without fetching a
+        possibly-much-larger remainder just to throw it away). Returns
+        (text, True) when the document was too large and had to be capped
+        -- the caller (llm_leveling.py's read_document_fn) surfaces this to
+        the model instead of silently handing back a partial document."""
         collection = self._get_collection(user_id)
-        result = collection.get(where={"source_file": source_file})
-        documents = result.get("documents") or []
-        if not documents:
-            return None
+        pairs: list[tuple[dict, str]] = []
+        offset = 0
+        while True:
+            page = collection.get(
+                where={"source_file": source_file},
+                limit=_GET_PAGE_SIZE,
+                offset=offset,
+                include=["documents", "metadatas"],
+            )
+            page_documents = page.get("documents") or []
+            page_metadatas = page.get("metadatas") or []
+            if not page_documents:
+                break
+            pairs.extend(zip(page_metadatas, page_documents))
+            if len(page_documents) < _GET_PAGE_SIZE:
+                break  # real last page
+            if len(pairs) > _MAX_DOCUMENT_CHUNKS:
+                break  # already proven truncated; stop paging the rest
+            offset += _GET_PAGE_SIZE
+        if not pairs:
+            return None, False
+        ordered = sorted(pairs, key=lambda pair: pair[0].get("chunk_index", 0))
+        truncated = len(ordered) > _MAX_DOCUMENT_CHUNKS
+        if truncated:
+            ordered = ordered[:_MAX_DOCUMENT_CHUNKS]
+        return "\n\n".join(text for _, text in ordered), truncated
+
+    def get_quality_checklist(self, user_id: str, source_file: str) -> list[str] | None:
+        """Returns the quality-checklist category names extracted ONCE for
+        this document at ingestion time (see checklist_extraction.py),
+        stored identically on every one of its chunks. `None` means
+        extraction never ran for this document (ingested before this
+        existed, or extraction itself failed) -- the caller's own fallback
+        applies. `[]` means extraction ran and genuinely found no checklist
+        in the document -- also falls back, but is a distinct, deliberate
+        signal from "never ran"."""
+        collection = self._get_collection(user_id)
+        result = collection.get(where={"source_file": source_file}, limit=1)
         metadatas = result.get("metadatas") or []
-        ordered = sorted(zip(metadatas, documents), key=lambda pair: pair[0].get("chunk_index", 0))
-        return "\n\n".join(text for _, text in ordered)
+        if not metadatas:
+            return None
+        raw = metadatas[0].get("quality_checklist_json")
+        if raw is None:
+            return None
+        return json.loads(raw)
 
     def list_documents(self, user_id: str) -> list[str]:
         """Distinct source_file names ingested into this user_id's KB
         collection -- for the §15 list_kb_documents agentic tool, so the
         model can discover what full documents are available before picking
-        one for read_kb_document rather than guessing a name blind."""
+        one for read_kb_document rather than guessing a name blind.
+
+        Paginated with an explicit metadatas-only projection (no reason to
+        ship chunk TEXT across the wire just to read one metadata key per
+        chunk) -- previously one unbounded collection.get() with no
+        projection at all, materializing every chunk's full source text of
+        the user's ENTIRE KB just to build this list. Stops once either the
+        real last page is reached or _MAX_LISTED_DOCUMENTS distinct names
+        have been collected."""
         collection = self._get_collection(user_id)
         if collection.count() == 0:
             return []
-        result = collection.get()
-        metadatas = result.get("metadatas") or []
-        return sorted({m["source_file"] for m in metadatas if "source_file" in m})
+        names: set[str] = set()
+        offset = 0
+        while True:
+            page = collection.get(limit=_GET_PAGE_SIZE, offset=offset, include=["metadatas"])
+            page_metadatas = page.get("metadatas") or []
+            if not page_metadatas:
+                break
+            names.update(m["source_file"] for m in page_metadatas if "source_file" in m)
+            if len(page_metadatas) < _GET_PAGE_SIZE:
+                break  # real last page
+            if len(names) >= _MAX_LISTED_DOCUMENTS:
+                break
+            offset += _GET_PAGE_SIZE
+        return sorted(names)[:_MAX_LISTED_DOCUMENTS]
 
     def query(self, user_id: str, embedding: list[float], top_k: int) -> list[dict]:
         """Returns up to top_k nearest chunks for this user_id's KB

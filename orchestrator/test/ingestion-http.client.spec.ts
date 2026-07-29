@@ -267,6 +267,7 @@ describe('IngestionHttpClient.ingestUrl', () => {
           url: 'https://contoso.sharepoint.com/sites/s/doc.pdf',
           user_id: 'Project\\Area1',
           doc_type: 'SRD',
+          graph_token: null,
         }),
       }),
     );
@@ -323,7 +324,7 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
       'http://ingestion:8000/kb/ingest-folder-url',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', user_id: 'Project\\Area1', doc_type: 'SRD', recursive: false }),
+        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', user_id: 'Project\\Area1', doc_type: 'SRD', recursive: false, graph_token: null }),
       }),
     );
     expect(result).toEqual({
@@ -344,7 +345,7 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
     expect(mockFetch).toHaveBeenCalledWith(
       'http://ingestion:8000/kb/ingest-folder-url',
       expect.objectContaining({
-        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', user_id: 'Project\\Area1', doc_type: 'SRD', recursive: true }),
+        body: JSON.stringify({ url: 'https://contoso.sharepoint.com/sites/s/folder', user_id: 'Project\\Area1', doc_type: 'SRD', recursive: true, graph_token: null }),
       }),
     );
   });
@@ -355,5 +356,54 @@ describe('IngestionHttpClient.ingestFolderUrl', () => {
     await expect(
       client.ingestFolderUrl('https://contoso.sharepoint.com/sites/s/folder', 'Project\\Area1', null),
     ).rejects.toThrow(IngestionHttpError);
+  });
+});
+
+describe('IngestionHttpClient.getSharePointStatus', () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('posts the optional override token and maps the snake_case response', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'valid', expires_in_seconds: 2820 }),
+    });
+    global.fetch = mockFetch as any;
+
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    const result = await client.getSharePointStatus('override-token');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://ingestion:8000/kb/sharepoint/status',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ graph_token: 'override-token' }),
+      }),
+    );
+    expect(result).toEqual({ status: 'valid', expiresInSeconds: 2820 });
+  });
+
+  it('sends graph_token: null when no override is given', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'not_configured', expires_in_seconds: null }),
+    });
+    global.fetch = mockFetch as any;
+
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    await client.getSharePointStatus();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://ingestion:8000/kb/sharepoint/status',
+      expect.objectContaining({ body: JSON.stringify({ graph_token: null }) }),
+    );
+  });
+
+  it('throws an IngestionHttpError on a non-ok response', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 502 }) as any;
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    await expect(client.getSharePointStatus()).rejects.toThrow(IngestionHttpError);
   });
 });

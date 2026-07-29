@@ -20,6 +20,10 @@ describe('ProjectPicker', () => {
       </ToastProvider>,
     );
 
+    // Select is a Radix combobox+listbox now (native <select> popups can
+    // render detached from their trigger after the page scrolls -- a real
+    // WebKit bug), so the RTL interaction is open-then-click-option, not
+    // selectOptions (that API only targets a real <select> element).
     await userEvent.click(screen.getByLabelText(/team project/i));
     await userEvent.click(await screen.findByRole('option', { name: 'OtherProject' }));
 

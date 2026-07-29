@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { loadRuntimeConfig } from '../api/config';
 
 export interface StreamEvent {
-  type: 'chunk' | 'done' | 'error';
+  type: 'chunk' | 'reasoning_chunk' | 'done' | 'error';
   delta?: string;
   message?: string;
   proposedTitle?: string | null;

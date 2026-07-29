@@ -3,12 +3,13 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import { LlmModule } from '../llm/llm.module';
+import { AuthModule } from '../auth/auth.module';
 import { ChatController } from './chat.controller';
 import { ChatGateway } from './chat.gateway';
 import { ChatService } from './chat.service';
 
 @Module({
-  imports: [ConfigModule, LlmModule],
+  imports: [ConfigModule, LlmModule, AuthModule],
   controllers: [ChatController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },

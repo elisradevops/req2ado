@@ -1,11 +1,12 @@
 # ingestion/app/main.py
+import hashlib
 import json
 import logging
 import tempfile
 from pathlib import Path
 
 import redis
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -15,26 +16,77 @@ from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
 from app.chat.redis_publisher import RedisChatPublisher
 from app.config import settings
+from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
-from app.kb.graph_client import GraphApiError, GraphClient
-from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_from_url
+from app.kb.browse_service import FolderChildSummary, browse_shared_folder, browse_subfolder
+from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
+from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
 from app.leveling.llm_leveling import _resolve_caps, build_survey_tree
-from app.leveling.narration_publisher import NarrationPublisher
+from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher
 from app.leveling.tree_builder import build_baseline_tree
+from app.logging_context import JobIdLogFilter, job_id_scope
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.redaction.redactor import redact_canonical_doc
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
-from app.vision.orchestrator_vision_client import OrchestratorVisionClient
+from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL, OrchestratorVisionClient
 from app.workitem.model import WorkItemTree
+
+logging.basicConfig(
+    level=settings.log_level,
+    format="%(asctime)s %(levelname)s [job_id=%(job_id)s] %(name)s: %(message)s",
+)
+# Filter attached to the root logger's HANDLER, not the root logger itself --
+# a Logger's own .addFilter() only runs for records IT originates; records
+# from child loggers (app.leveling.llm_leveling, etc.) reach the root
+# logger's handlers directly via propagation, bypassing the root Logger's
+# own filter() call. Handler-level filters run for every record the handler
+# processes regardless of which logger it came from. JobIdLogFilter reads
+# the current job_id from app.logging_context's contextvar (set via
+# job_id_scope() around _build_survey_tree_with_scoring below), falling
+# back to "-" for anything logged outside a job's scope.
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(JobIdLogFilter())
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="req2ado-ingestion")
+
+
+# Confirmed real UX gap (user-reported): with no handler registered here,
+# Starlette's own default (debug=False, uvicorn's default) swallows any
+# unhandled exception into a bare '{"detail": "Internal Server Error"}' --
+# every real root cause (a malformed-JSON LLM response, a downstream ADO/KB
+# error, anything else /level or any other route can raise) was silently
+# discarded before the orchestrator's ingestion-http.client.ts even saw it,
+# so a failed job's audit trail only ever showed "Ingestion /level request
+# failed: 500" -- accurate but useless for a reviewer trying to understand
+# what actually went wrong. These two handlers make the real exception
+# message reach the response body (and, via ingestion-http.client.ts's own
+# fix, the job's audit entry) for every route, present and future, without
+# having to wrap each one individually.
+#
+# ValueError specifically means "an upstream dependency (the LLM) produced
+# something this service couldn't use" everywhere it's raised in this
+# codebase (see orchestrator_llm_client.py's _parse_json_object) -- a
+# genuine upstream-failure signal, so 502 Bad Gateway is the semantically
+# correct status; anything else is a real internal bug, reported as 500.
+@app.exception_handler(ValueError)
+async def _value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+    # request.url (not request.url.path) -- /level's job_id arrives as a
+    # query param, which .path silently drops from this log line.
+    logger.exception("Unhandled ValueError in %s", request.url)
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled exception in %s", request.url)
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 # settings.chroma_mode="embedded" (default, unset = same behavior as
 # before this option existed) means a local PersistentClient -- does NOT
@@ -63,6 +115,14 @@ _vision_client = (
     if settings.llm_vision_model
     else None
 )
+# KB quality-checklist extraction (runs ONCE per document, at ingest time --
+# see OrchestratorLlmClient.extract_quality_checklist's own docstring for
+# the cross-run scoring-determinism problem this fixes). Same always-on
+# convention as _embed_client -- no separate opt-in flag, since this is a
+# best-effort enhancement (failures are caught and logged, never fail the
+# ingest, see ingest_service._store_document) rather than a capability gate
+# like vision.
+_checklist_client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
 # Module-level singleton, mirroring _embed_client/_kb_vector_store above:
 # RedisChatPublisher.__init__ opens a redis.asyncio connection pool via
 # from_url() that is never explicitly closed. Constructing one per request
@@ -75,6 +135,10 @@ _chat_redis_publisher = RedisChatPublisher(settings.redis_url)
 # where an async client can't be awaited without loop gymnastics a plain
 # sync call sidesteps. See NarrationPublisher's own docstring.
 _narration_redis = redis.Redis.from_url(settings.redis_url)
+# Same synchronous client, same threadpool-friendliness reasoning as above --
+# DebugCapture.capture() is called from inside soft-failure warning paths
+# that run on the same worker thread build_survey_tree itself runs on.
+_debug_capture = DebugCapture(_narration_redis)
 
 
 def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
@@ -100,7 +164,49 @@ def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
     return None
 
 
+# A week is long enough to cover repeated re-ingestion of the same document
+# during review iteration (a real, common flow -- re-run SURVEY after
+# tweaking KB documents or destination), short enough that a genuine
+# vision-model swap self-heals within a week rather than serving stale
+# captions forever.
+_FIGURE_CAPTION_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7
+
+
+def _figure_caption_cache_key(original_image_bytes: bytes) -> str:
+    # Keyed on the ORIGINAL bytes handed to _describe_figure, before any
+    # EMF/WMF->PNG conversion below -- two callers with byte-identical
+    # source images must hit the same cache entry regardless of which
+    # conversion path either happened to take.
+    # No model name in the key: /llm/vision has no per-call model override
+    # (LLM_VISION_MODEL is a single fixed orchestrator-side config), so the
+    # vision model is already effectively constant across every caller of
+    # this cache. If that ever changes, this key needs a model component.
+    return f"figcap:{hashlib.sha256(original_image_bytes).hexdigest()}"
+
+
 def _describe_figure(image_bytes: bytes) -> str:
+    # Confirmed real root cause of run-to-run SURVEY node-count variance
+    # (74 vs ~120 nodes for the identical document): a figure's caption was
+    # previously freshly (re-)sampled on every single job run (no cache,
+    # and -- see OpenWebUiClient.vision's own doc comment -- no temperature/
+    # seed either), and caption text feeds directly into
+    # llm_leveling.py's token-budget branch splitter, so a differently
+    # worded caption on a re-run can shift branch boundaries and, with
+    # them, total node count. Memoizing by the image's own byte hash makes
+    # the SAME figure produce the SAME caption on every run, removing that
+    # source of drift entirely (on top of the vision call now also being
+    # temperature=0/seed=0 -- belt and suspenders, since a cache miss still
+    # goes through that deterministic call). Fails open on any Redis error
+    # in either direction -- a cache outage must degrade to "call the
+    # vision model live," never fail the whole SURVEY job.
+    cache_key = _figure_caption_cache_key(image_bytes)
+    try:
+        cached = _narration_redis.get(cache_key)
+        if cached is not None:
+            return cached.decode("utf-8")
+    except Exception:
+        logger.warning("Figure-caption cache read failed -- falling through to a live vision call", exc_info=True)
+
     # Sniffed from the actual bytes, not a filename extension -- every
     # caller (docx/pptx-embedded figures, standalone image files) hands over
     # raw bytes with no reliable filename/extension of their own, so this is
@@ -109,6 +215,7 @@ def _describe_figure(image_bytes: bytes) -> str:
     # OrchestratorVisionClient.describe_figure's docstring) -- harmless for
     # an actual PNG, silently wrong for anything else.
     mime_type = _sniff_image_mime_type(image_bytes)
+    describe_bytes = image_bytes
     if mime_type is None:
         # Not a raster format at all -- most commonly an EMF/WMF vector
         # metafile (Word's embedding format for a pasted Visio/PowerPoint
@@ -122,9 +229,14 @@ def _describe_figure(image_bytes: bytes) -> str:
         if vector_extension is not None:
             converted = convert_vector_image_to_png(image_bytes, vector_extension)
             if converted is not None:
-                image_bytes = converted
+                describe_bytes = converted
                 mime_type = "image/png"
-    return _vision_client.describe_figure(image_bytes, mime_type)
+    caption = _vision_client.describe_figure(describe_bytes, mime_type)
+    try:
+        _narration_redis.set(cache_key, caption, ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS)
+    except Exception:
+        logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
+    return caption
 
 
 # Lazily constructed (NOT at import time, unlike _vector_store above) --
@@ -187,29 +299,36 @@ def _build_survey_tree_with_scoring(
 
     job_id is optional: when the caller omits it (no job context, e.g. a
     direct test/curl call), no narration is published -- build_survey_tree
-    behaves exactly as it did before narration existed."""
+    behaves exactly as it did before narration existed. job_id_scope is
+    entered here (this is where job_id is first available on the thread that
+    actually does the work, since this function runs inside
+    run_in_threadpool) so every logger.warning/exception below it in the
+    call stack picks up job_id correlation automatically, with no
+    parameter threading through llm_leveling.py's internals."""
     progress_callback = None
     if job_id is not None:
         progress_callback = NarrationPublisher(_narration_redis, job_id).publish
-    return build_survey_tree(
-        doc,
-        analysis_client=client,
-        scoring_client=client,
-        customer_id=customer_id,
-        criteria_retriever=_get_criteria_retriever(),
-        user_id=user_id,
-        embed_client=_embed_client,
-        vector_store=_kb_vector_store,
-        link_type_client=client if link_type_catalog else None,
-        link_type_catalog=link_type_catalog,
-        # Same client, same "only wired when actually usable" convention as
-        # link_type_client above -- verification is meaningless without KB
-        # retrieval itself being enabled (user_id set), and only applies to
-        # the non-tool-capable fallback path in the first place (§5c).
-        kb_relevance_client=client if user_id else None,
-        progress_callback=progress_callback,
-        model=model,
-    )
+    with job_id_scope(job_id):
+        return build_survey_tree(
+            doc,
+            analysis_client=client,
+            scoring_client=client,
+            customer_id=customer_id,
+            criteria_retriever=_get_criteria_retriever(),
+            user_id=user_id,
+            embed_client=_embed_client,
+            vector_store=_kb_vector_store,
+            link_type_client=client if link_type_catalog else None,
+            link_type_catalog=link_type_catalog,
+            # Same client, same "only wired when actually usable" convention as
+            # link_type_client above -- verification is meaningless without KB
+            # retrieval itself being enabled (user_id set), and only applies to
+            # the non-tool-capable fallback path in the first place (§5c).
+            kb_relevance_client=client if user_id else None,
+            progress_callback=progress_callback,
+            model=model,
+            debug_capture=_debug_capture,
+        )
 
 
 class DedupCheckRequest(BaseModel):
@@ -232,6 +351,41 @@ class KbIngestUrlRequest(BaseModel):
     user_id: str
     doc_type: str | None = None
     recursive: bool = False  # ignored by /kb/ingest-url (single doc); folder route only
+    # Optional per-request override for the shared SharePoint token -- set
+    # by the orchestrator when a user has rotated the token via
+    # POST /kb/sharepoint/reconnect (stored in its credential vault, not
+    # this process's env). Falls back to settings.sharepoint_token when
+    # absent, same as before this field existed.
+    graph_token: str | None = None
+
+
+class KbIngestItemRequest(BaseModel):
+    name: str
+    item_id: str
+    download_url: str
+    user_id: str
+    doc_type: str | None = None
+    graph_token: str | None = None
+
+
+class KbBrowseFolderRequest(BaseModel):
+    url: str
+    graph_token: str | None = None
+
+
+class KbBrowseChildrenRequest(BaseModel):
+    drive_id: str
+    item_id: str
+    graph_token: str | None = None
+
+
+class KbSharePointStatusRequest(BaseModel):
+    graph_token: str | None = None
+
+
+class KbSharePointStatusResult(BaseModel):
+    status: str  # "not_configured" | "valid" | "invalid" | "unreachable"
+    expires_in_seconds: int | None = None
 
 
 class ChatTurnItem(BaseModel):
@@ -273,12 +427,36 @@ def ready() -> Response:
     return JSONResponse(status_code=200, content=body)
 
 
+@app.get("/debug/{job_id}")
+def get_debug_captures(job_id: str) -> list[dict[str, str]]:
+    """Every raw-model-response capture recorded for a soft-failure warning
+    during this job's SURVEY run (see app.debug_capture) -- proxied by the
+    orchestrator's own GET /jobs/:id/debug route (ownership-checked there;
+    this endpoint is service-to-service only, same trust boundary as every
+    other ingestion route). Empty list if nothing was captured -- the common
+    case, since capture only fires on an actual soft failure."""
+    return _debug_capture.list_captures(job_id)
+
+
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 
 @app.post("/ingest", response_model=CanonicalDoc)
 async def ingest(
-    file: UploadFile, redact: bool = False, languages: str = "eng", skip_vision: bool = False, mode: str = "baseline"
+    file: UploadFile,
+    redact: bool = False,
+    languages: str = "eng",
+    skip_vision: bool = False,
+    mode: str = "baseline",
+    # Optional -- present only for a real job submission (pipeline.worker.ts
+    # passes job.id), absent for /jobs/preview's own call (which has no job
+    # yet to narrate for). Lets this route publish real parse-stage
+    # progress on the SAME job-events channel /level's SURVEY narration
+    # already uses, instead of the parse stage being a total black box --
+    # confirmed live against a real 39-figure document that the "Parsing
+    # document..." UI showed zero detail for however many minutes the
+    # figures' sequential vision-LLM calls took.
+    job_id: str | None = None,
 ) -> CanonicalDoc:
     # skip_vision: /jobs/preview (orchestrator) only needs blockCount/
     # sectionCount/fileType to show the user before they even pick a mode --
@@ -317,6 +495,60 @@ async def ingest(
                 )
             tmp.write(chunk)
 
+    narration_publisher = NarrationPublisher(_narration_redis, job_id) if job_id else None
+    vision_active = _vision_client is not None and not skip_vision and mode == "survey"
+
+    describe_figure_fn = None
+    if vision_active:
+        # Closed over per-request (not module-level) -- figure_counter must
+        # start at 0 for every new /ingest call, not accumulate across
+        # concurrent or subsequent requests.
+        figure_counter = {"n": 0}
+
+        def _describe_figure_with_progress(image_bytes: bytes) -> str:
+            figure_counter["n"] += 1
+            index = figure_counter["n"]
+            if narration_publisher is not None:
+                # Published BEFORE the (potentially slow, sequential)
+                # vision call itself -- the whole point is showing which
+                # figure is in flight RIGHT NOW during a long wait, not
+                # reporting one that already finished.
+                narration_publisher.publish(
+                    LevelingProgress(
+                        phase="describe_figure",
+                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                        kb_grounded=False, kb_citations=[],
+                        figure_index=index,
+                    )
+                )
+            caption = _describe_figure(image_bytes)
+            if narration_publisher is not None:
+                # Second event, same figure_index, now WITH the real caption
+                # -- answers "what did the model actually see" instead of
+                # leaving every figure's row in the activity log identical
+                # (confirmed live: 7 figures produced 7 indistinguishable
+                # "figure N so far" lines). The raw NO_TECHNICAL_CONTENT
+                # sentinel (see orchestrator_vision_client.py) is translated
+                # to human copy for narration ONLY -- the returned `caption`
+                # below keeps the raw sentinel so llm_leveling.py's coverage
+                # check can still detect it via an exact string match.
+                display_caption = (
+                    "this figure has no discernible technical content"
+                    if caption.strip() == NO_TECHNICAL_CONTENT_SENTINEL
+                    else caption
+                )
+                narration_publisher.publish(
+                    LevelingProgress(
+                        phase="describe_figure",
+                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                        kb_grounded=False, kb_citations=[],
+                        figure_index=index, figure_caption=display_caption,
+                    )
+                )
+            return caption
+
+        describe_figure_fn = _describe_figure_with_progress
+
     try:
         # run_in_threadpool: dispatch_by_extension can now make a real
         # network call per figure (vision description) when
@@ -328,10 +560,20 @@ async def ingest(
             file.filename or "",
             tmp_path,
             languages=languages,
-            describe_figure=_describe_figure if (_vision_client is not None and not skip_vision and mode == "survey") else None,
+            describe_figure=describe_figure_fn,
         )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+    if narration_publisher is not None:
+        narration_publisher.publish(
+            LevelingProgress(
+                phase="parse_done",
+                branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                kb_grounded=False, kb_citations=[],
+                block_count=len(doc.blocks), table_count=len(doc.tables), figure_count=len(doc.figures),
+            )
+        )
 
     if redact:
         doc = redact_canonical_doc(doc)
@@ -452,7 +694,7 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
     # makes synchronous httpx calls; run in the threadpool like /level and
     # the old /kb/sync so it never blocks the single-worker event loop.
     try:
-        graph_client = GraphClient(settings.sharepoint_token or "", settings.graph_base_url)
+        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
         return await run_in_threadpool(
             ingest_document_from_url,
             body.url,
@@ -462,6 +704,7 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
             _embed_client,
             _kb_vector_store,
             describe_figure=_describe_figure if _vision_client is not None else None,
+            checklist_client=_checklist_client,
         )
     except ValueError as exc:
         # SSRF/scheme/host/size/content-type violation, or missing token.
@@ -480,7 +723,7 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
     # Listing the folder itself (validate_share_url, list_folder_children)
     # can still fail with ValueError/GraphApiError, mapped the same way.
     try:
-        graph_client = GraphClient(settings.sharepoint_token or "", settings.graph_base_url)
+        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
         return await run_in_threadpool(
             ingest_folder_from_url,
             body.url,
@@ -491,6 +734,7 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
             _kb_vector_store,
             body.recursive,
             describe_figure=_describe_figure if _vision_client is not None else None,
+            checklist_client=_checklist_client,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -501,6 +745,99 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
         # Graph-unreachable 502.
         status = exc.status if exc.status in (400, 401, 403, 404) else 502
         raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/kb/ingest-item", response_model=IngestResult)
+async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
+    # Ingests exactly one file already seen via /kb/browse-folder or
+    # /kb/browse-children, addressed by its pre-signed Graph download URL --
+    # lets the tree view's per-row "ingest" action work without that file's
+    # own sharing link. Same token/threadpool/error-mapping reasoning as
+    # every other Graph-backed route here.
+    try:
+        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
+        return await run_in_threadpool(
+            ingest_folder_child,
+            body.name,
+            body.item_id,
+            body.download_url,
+            body.doc_type,
+            body.user_id,
+            graph_client,
+            _embed_client,
+            _kb_vector_store,
+            describe_figure=_describe_figure if _vision_client is not None else None,
+            checklist_client=_checklist_client,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except GraphApiError as exc:
+        status = exc.status if exc.status in (401, 403, 404) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.delete("/kb/documents")
+async def kb_delete_document(user_id: str, source_file: str, source_id: str) -> dict[str, bool]:
+    # Wraps KbVectorStore.delete_file_chunks (kb_vector_store.py), which
+    # already exists but was previously only called internally by re-ingest
+    # (ingest_service.py) to clear stale chunks before writing fresh ones --
+    # no HTTP route existed to call it standalone for a real user-initiated
+    # remove. run_in_threadpool: same reasoning as every other route here --
+    # Chroma's client is synchronous I/O, must not block the event loop.
+    await run_in_threadpool(_kb_vector_store.delete_file_chunks, user_id, source_file, source_id)
+    return {"ok": True}
+
+
+@app.post("/kb/browse-folder", response_model=list[FolderChildSummary])
+async def kb_browse_folder(body: KbBrowseFolderRequest) -> list[FolderChildSummary]:
+    # Read-only listing of a shared folder's immediate children -- no
+    # ingest side effects, unlike /kb/ingest-folder-url. Lets a user see
+    # what's inside a SharePoint link before deciding whether/what to
+    # ingest. Same token/error-mapping/threadpool reasoning as every other
+    # Graph-backed route here.
+    try:
+        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
+        return await run_in_threadpool(browse_shared_folder, body.url, graph_client)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except GraphApiError as exc:
+        status = exc.status if exc.status in (400, 401, 403, 404) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/kb/browse-children", response_model=list[FolderChildSummary])
+async def kb_browse_children(body: KbBrowseChildrenRequest) -> list[FolderChildSummary]:
+    # Same as /kb/browse-folder, for a subfolder reached during tree
+    # expansion (addressed by drive_id + item_id, not a share URL -- see
+    # browse_service.browse_subfolder's docstring).
+    try:
+        graph_client = GraphClient(body.graph_token or settings.sharepoint_token or "", settings.graph_base_url)
+        return await run_in_threadpool(browse_subfolder, body.drive_id, body.item_id, graph_client)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except GraphApiError as exc:
+        status = exc.status if exc.status in (400, 401, 403, 404) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@app.post("/kb/sharepoint/status", response_model=KbSharePointStatusResult)
+async def kb_sharepoint_status(body: KbSharePointStatusRequest) -> KbSharePointStatusResult:
+    # POST (not GET) so the token never rides in a query string / access log.
+    # `body.graph_token` lets the orchestrator check a candidate token before
+    # committing it to the vault (see /kb/sharepoint/reconnect there) as well
+    # as the currently-effective one after rotation; falls back to this
+    # process's own env var exactly like every other Graph-backed route.
+    token = body.graph_token or settings.sharepoint_token
+    if not token:
+        return KbSharePointStatusResult(status="not_configured")
+    expires_in_seconds = decode_jwt_expiry_seconds(token)
+    try:
+        graph_client = GraphClient(token, settings.graph_base_url)
+        await run_in_threadpool(graph_client.validate)
+    except GraphApiError as exc:
+        status = "invalid" if exc.status in (401, 403) else "unreachable"
+        return KbSharePointStatusResult(status=status, expires_in_seconds=expires_in_seconds)
+    return KbSharePointStatusResult(status="valid", expires_in_seconds=expires_in_seconds)
 
 
 @app.post("/chat/{job_id}/{local_id}/turn")

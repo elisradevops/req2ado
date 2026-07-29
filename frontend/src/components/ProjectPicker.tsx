@@ -1,25 +1,21 @@
 import { useEffect, useState } from 'react';
-import TextField from '@mui/material/TextField';
-import MenuItem from '@mui/material/MenuItem';
 import { getProjects, type AdoProject } from '../api/ado';
-import type { AdoRequestCredential } from '../api/jobs';
 import { useToast } from './ToastProvider';
+import { Select } from '../ui/Select';
 
 export function ProjectPicker({
   value,
   onChange,
-  credential,
 }: {
   value: string;
   onChange: (name: string) => void;
-  credential: AdoRequestCredential;
 }): React.ReactElement {
   const [projects, setProjects] = useState<AdoProject[]>([]);
   const { showToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
-    getProjects(credential)
+    getProjects()
       .then((result) => {
         if (!cancelled) setProjects(result);
       })
@@ -29,15 +25,18 @@ export function ProjectPicker({
     return () => {
       cancelled = true;
     };
-  }, [credential, showToast]);
+  }, [showToast]);
 
   return (
-    <TextField select label="Team Project" value={value} onChange={(event) => onChange(event.target.value)}>
+    <Select label="Team Project" value={value} onChange={(event) => onChange(event.target.value)} fullWidth>
+      <option value="" disabled>
+        Select a project
+      </option>
       {projects.map((project) => (
-        <MenuItem key={project.id} value={project.name}>
+        <option key={project.id} value={project.name}>
           {project.name}
-        </MenuItem>
+        </option>
       ))}
-    </TextField>
+    </Select>
   );
 }

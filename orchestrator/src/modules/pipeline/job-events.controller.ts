@@ -1,6 +1,9 @@
-import { Controller, Get, Inject, Param, Res } from '@nestjs/common';
+import { Controller, Get, Inject, NotFoundException, Param, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import type Redis from 'ioredis';
+import { JobsService } from './jobs.service';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { SessionUser } from '../auth/session.service';
 
 export const REDIS_SUBSCRIBER_FACTORY = 'REDIS_SUBSCRIBER_FACTORY';
 
@@ -13,10 +16,26 @@ export const REDIS_SUBSCRIBER_FACTORY = 'REDIS_SUBSCRIBER_FACTORY';
 // connections.
 @Controller('jobs')
 export class JobEventsController {
-  constructor(@Inject(REDIS_SUBSCRIBER_FACTORY) private readonly redisSubscriberFactory: () => Redis) {}
+  constructor(
+    @Inject(REDIS_SUBSCRIBER_FACTORY) private readonly redisSubscriberFactory: () => Redis,
+    private readonly jobsService: JobsService,
+  ) {}
 
   @Get(':id/events')
-  async streamEvents(@Param('id') id: string, @Res() res: Response): Promise<void> {
+  async streamEvents(
+    @Param('id') id: string,
+    @Res() res: Response,
+    @CurrentUser() user: SessionUser,
+  ): Promise<void> {
+    // Ownership check BEFORE flushHeaders/opening a Redis connection (see
+    // class doc comment on ordering) -- matches every other per-job route's
+    // 404-not-403 convention, so a job id isn't enumerable by trying it and
+    // reading the status code.
+    const job = await this.jobsService.getById(id);
+    if (!job || job.userId !== user.userId) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -72,7 +91,7 @@ export class JobEventsController {
       void subscriber.quit().catch(() => undefined);
     };
 
-    const terminalStages = new Set(['diff_ready', 'failed']);
+    const terminalStages = new Set(['diff_ready', 'failed', 'cancelled']);
     subscriber.on('message', (_channel: string, message: string) => {
       const payload = JSON.parse(message) as { type?: string; stage?: string };
       // Convention: ingestion only ever publishes `type: 'narration'` on

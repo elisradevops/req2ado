@@ -47,7 +47,20 @@ def scores_schema() -> dict:
     """score_requirements_for_document: a dynamic node_id-keyed object --
     additionalProperties (not properties), since keys are runtime node_ids,
     not a fixed set. Constrains 'issues' to the closed RequirementQualityIssue
-    vocabulary and 'score' to an integer 0-100."""
+    vocabulary and 'score' to an integer 0-100.
+
+    categoryScores gives a per-dimension breakdown backing the single
+    overall 'score' -- see QualityCategoryScores' own docstring (app.
+    workitem.model) for why a lone number + closed issue tags wasn't
+    informative enough ("what exactly is wrong, what's actually fine").
+    Its OWN keys are dynamic too (additionalProperties, not a fixed 5-key
+    'properties' list) -- confirmed real gap fixed here: an org's ingested
+    KB quality checklist can define its own category names (e.g. Necessary/
+    Unambiguous/Verifiable/...), which a fixed 5-key schema could never
+    accept regardless of what the prompt asked for. Same dynamic-key
+    pattern this module's header docstring already established to dodge
+    Ollama's bounded-array grammar-cost cliff -- a dynamic OBJECT schema,
+    unlike a bounded ARRAY, has never shown that cost."""
     return {
         "name": "scores_by_node",
         "schema": {
@@ -57,8 +70,12 @@ def scores_schema() -> dict:
                 "properties": {
                     "score": {"type": "integer", "minimum": 0, "maximum": 100},
                     "issues": {"type": "array", "items": {"type": "string", "enum": _ISSUES}},
+                    "categoryScores": {
+                        "type": "object",
+                        "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 100},
+                    },
                 },
-                "required": ["score", "issues"],
+                "required": ["score", "issues", "categoryScores"],
             },
         },
     }
@@ -134,6 +151,47 @@ def requirements_by_node_schema() -> dict:
                     },
                     "required": ["text"],
                 },
+            },
+        },
+    }
+
+
+def checklist_extraction_schema() -> dict:
+    """extract_quality_checklist (app.kb.checklist_extraction): a plain
+    unbounded array of strings -- the document's own quality-checklist
+    category/question names, or an empty array when none exists. No
+    minItems/maxItems -- same "unbounded array avoids Ollama's expensive
+    bounded-repetition GBNF grammar" reasoning as section_analysis_schema's
+    own 'nodes' array (see this module's header docstring)."""
+    return {
+        "name": "quality_checklist",
+        "schema": {"type": "array", "items": {"type": "string"}},
+    }
+
+
+def epic_feature_scores_schema() -> dict:
+    """score_epics_and_features_for_document: a dynamic node_id-keyed
+    object -- additionalProperties (not properties), same shape family as
+    scores_schema. No 'issues' field here -- RequirementQualityIssue's
+    closed vocabulary (ambiguous, not_testable, compound, ...) describes
+    atomic 'shall' statements, not what an Epic/Feature grouping IS (see
+    llm_leveling.py's own comment on why quality scoring was originally
+    scoped to Requirement-type nodes only); Epic/Feature review is
+    score + categoryScores only."""
+    return {
+        "name": "epic_feature_scores_by_node",
+        "schema": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                    "categoryScores": {
+                        "type": "object",
+                        "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 100},
+                    },
+                },
+                "required": ["score", "categoryScores"],
             },
         },
     }

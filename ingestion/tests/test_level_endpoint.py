@@ -174,7 +174,11 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
     # through the same MockTransport handler -- its own system prompt
     # doesn't carry kb_context (it's the thing being verified, not something
     # to ground itself in), so it's excluded from the assertion below via
-    # its "knowledge-base snippets" phrase.
+    # its "knowledge-base snippets" phrase. score_epics_and_features_for_
+    # document (fires here too -- the fixture's one node is type Epic) is a
+    # separate, deliberately un-grounded rubric (structural scope-coherence/
+    # decomposability judgments, not content-standard criteria) -- excluded
+    # via its own distinguishing phrase.
 
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
@@ -184,7 +188,11 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
         "/level", params={"mode": "survey", "user_id": "Project\\Area1"}, json=doc.model_dump(mode="json")
     )
     assert response.status_code == 200
-    grounded_prompts = [p for p in captured_system_prompts if "knowledge-base snippets" not in p]
+    grounded_prompts = [
+        p
+        for p in captured_system_prompts
+        if "knowledge-base snippets" not in p and "Epic and Feature work items" not in p
+    ]
     assert grounded_prompts and all("Injected KB reference text." in prompt for prompt in grounded_prompts)
     assert response.json()["kb_citations"] == [
         {"source_file": "ref-doc.docx", "similarity": 0.9, "relevance": "unknown"}
@@ -327,7 +335,12 @@ def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
         if _ANALYZE_SECTION_MARKER in system_prompt:
-            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
+            # Requirement, not Epic -- quality scoring is scoped to
+            # Requirement-type nodes only (EARS/INCOSE/ISO criteria describe
+            # atomic testable statements, not Epic/Feature groupings), so an
+            # Epic node here would never reach the scoring call this test
+            # means to exercise.
+            nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
         if "score" in system_prompt.lower() and "EARS" in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 72, "issues": ["vague_term"]}})})
@@ -388,3 +401,49 @@ def test_level_endpoint_baseline_mode_has_empty_kb_citations() -> None:
     response = client.post("/level", json=doc.model_dump(mode="json"))
     assert response.status_code == 200
     assert response.json()["kb_citations"] == []
+
+
+def test_exception_handlers_log_the_query_string_not_just_the_path(monkeypatch, caplog) -> None:
+    """Regression guard: the global exception handlers used to log
+    request.url.path, which silently drops job_id (a query param on
+    /level) from the traceback line -- the one piece of context needed to
+    correlate a 502/500 with a specific job. Asserted directly against the
+    handler functions (not a real request through a mocked failure) since
+    that's a simpler, equally faithful way to prove the log line now
+    includes the query string."""
+    import asyncio
+
+    from starlette.requests import Request
+
+    from app.main import _unhandled_exception_handler, _value_error_handler
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/level",
+        "query_string": b"job_id=abc-123",
+        "headers": [],
+    }
+    request = Request(scope)
+
+    with caplog.at_level("ERROR"):
+        asyncio.run(_value_error_handler(request, ValueError("bad upstream response")))
+    assert "job_id=abc-123" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("ERROR"):
+        asyncio.run(_unhandled_exception_handler(request, RuntimeError("boom")))
+    assert "job_id=abc-123" in caplog.text
+
+
+def test_logging_config_formats_job_id_with_a_default_when_absent(caplog) -> None:
+    """Regression guard for the logging.basicConfig + _DefaultJobIdFilter
+    setup in app.main -- a logger.warning call with no job_id `extra` must
+    still format cleanly (job_id="-"), proving the format string's
+    %(job_id)s reference doesn't crash ordinary, non-job-scoped log calls."""
+    import logging
+
+    logger = logging.getLogger("app.leveling.llm_leveling")
+    with caplog.at_level("WARNING"):
+        logger.warning("a warning with no job_id context")
+    assert caplog.records[-1].job_id == "-"

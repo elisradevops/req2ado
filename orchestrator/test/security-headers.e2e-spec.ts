@@ -16,6 +16,7 @@ describe('Security headers and rate limiting', () => {
     process.env.LLM_CHAT_MODEL = 'test-model';
     process.env.LLM_PROXY_BEARER = 'test-llm-proxy-bearer';
     process.env.EMBED_MODEL = 'test-embed-model';
+    process.env.CREDENTIAL_ENC_KEY = 'test-credential-enc-key';
 
     const { AppModule } = await import('../src/app.module');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();

@@ -54,3 +54,66 @@ export async function listIngestedDocuments(userId?: string): Promise<IngestedDo
   const response = await httpClient.get<IngestedDocument[]>('/kb/documents', { params: userId ? { userId } : {} });
   return response.data;
 }
+
+export async function deleteIngestedDocument(id: string, userId: string): Promise<void> {
+  await httpClient.delete(`/kb/documents/${id}`, { params: { userId } });
+}
+
+export interface FolderTreeEntry {
+  id: string;
+  name: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  isFolder: boolean;
+  driveId: string | null;
+  alreadyIngested: boolean;
+  // The matched IngestedDocument's id when alreadyIngested is true -- what
+  // a row's remove action deletes by. Null for folders and not-yet-ingested
+  // files.
+  ingestedDocumentId: string | null;
+  // Files only -- lets a row's ingest action pull this exact file in via
+  // POST /kb/ingest-item without a separate sharing link.
+  downloadUrl: string | null;
+}
+
+export async function browseSharedFolder(url: string, userId: string): Promise<FolderTreeEntry[]> {
+  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-folder', { params: { url, userId } });
+  return response.data;
+}
+
+export async function browseSubfolder(driveId: string, itemId: string, userId: string, path: string): Promise<FolderTreeEntry[]> {
+  const response = await httpClient.get<FolderTreeEntry[]>('/kb/browse-children', { params: { driveId, itemId, userId, path } });
+  return response.data;
+}
+
+export async function ingestFolderItem(
+  name: string,
+  itemId: string,
+  downloadUrl: string,
+  relativePath: string,
+  userId: string,
+): Promise<IngestResult & { ingestedDocumentId: string }> {
+  const response = await httpClient.post<IngestResult & { ingestedDocumentId: string }>('/kb/ingest-item', {
+    name,
+    itemId,
+    downloadUrl,
+    relativePath,
+    userId,
+  });
+  return response.data;
+}
+
+export interface SharePointStatus {
+  status: 'not_configured' | 'valid' | 'invalid' | 'unreachable';
+  expiresInSeconds: number | null;
+}
+
+export async function getSharePointStatus(): Promise<SharePointStatus> {
+  const response = await httpClient.get<SharePointStatus>('/kb/sharepoint/status');
+  return response.data;
+}
+
+export async function reconnectSharePoint(token: string): Promise<SharePointStatus> {
+  const response = await httpClient.post<SharePointStatus>('/kb/sharepoint/reconnect', { token });
+  return response.data;
+}

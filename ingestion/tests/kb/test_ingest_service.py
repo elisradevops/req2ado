@@ -53,6 +53,102 @@ def test_ingests_a_new_document_end_to_end(mock_dispatch, tmp_path) -> None:
     assert vector_store.existing_file_hash("Project\\Area1", "doc.docx", "item-1") is not None
 
 
+class FakeChecklistClient:
+    def __init__(self, checklist: list[str]) -> None:
+        self.checklist = checklist
+        self.calls: list[str] = []
+
+    def extract_quality_checklist(self, document_text: str) -> list[str]:
+        self.calls.append(document_text)
+        return self.checklist
+
+
+class RaisingChecklistClient:
+    def extract_quality_checklist(self, document_text: str) -> list[str]:
+        raise ValueError("boom")
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_stores_the_extracted_checklist_on_every_chunk(mock_dispatch, tmp_path) -> None:
+    # Confirmed real determinism requirement (user-reported): the checklist
+    # must be extracted ONCE, at ingest time, and stored -- not re-derived
+    # per scoring call.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    checklist_client = FakeChecklistClient(["Necessary", "Unambiguous", "Verifiable"])
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        checklist_client=checklist_client,
+    )
+
+    assert len(checklist_client.calls) == 1  # extracted exactly once, not per chunk
+    assert vector_store.get_quality_checklist("Project\\Area1", "doc.docx") == [
+        "Necessary", "Unambiguous", "Verifiable",
+    ]
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_stores_none_when_no_checklist_client_is_supplied(mock_dispatch, tmp_path) -> None:
+    # Backward-compat: omitting checklist_client entirely (existing callers
+    # before this capability existed) must not attempt extraction at all.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+    )
+
+    assert vector_store.get_quality_checklist("Project\\Area1", "doc.docx") is None
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_does_not_fail_when_checklist_extraction_raises(mock_dispatch, tmp_path) -> None:
+    # Checklist extraction is a best-effort enhancement -- a failure here
+    # must never fail the whole ingest, same tolerant philosophy as every
+    # other KB enhancement in this codebase.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    result = ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        checklist_client=RaisingChecklistClient(),
+    )
+
+    assert result.chunks_stored == 1  # ingest itself still succeeded
+    assert vector_store.get_quality_checklist("Project\\Area1", "doc.docx") is None
+
+
 @patch("app.kb.ingest_service.dispatch_by_extension")
 def test_skips_a_document_whose_hash_is_unchanged(mock_dispatch, tmp_path) -> None:
     mock_dispatch.return_value = _fake_doc("Some paragraph text")

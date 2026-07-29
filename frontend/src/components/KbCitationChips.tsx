@@ -1,6 +1,5 @@
-import Stack from '@mui/material/Stack';
-import Chip from '@mui/material/Chip';
-import Tooltip from '@mui/material/Tooltip';
+import { Chip } from '../ui/Chip';
+import { Tooltip } from '../ui/Tooltip';
 
 export interface KbCitation {
   sourceFile: string;
@@ -18,21 +17,34 @@ const RELEVANCE_COLOR: Record<KbCitation['relevance'], string> = {
   unknown: '#757575',
 };
 
+// Leads with the LLM's own relevance verdict -- a real judgment of whether
+// THIS chunk actually helped, not the raw number -- since a bare "33%
+// similarity" reads to a reviewer as "this guidance barely applies," which
+// misunderstands what the percentage measures. These KB documents are
+// process/style guides (e.g. "how to write a good ADO work item"), not
+// domain specs -- their vocabulary naturally has low text-overlap with a
+// specific technical requirement even when the guidance is exactly on
+// point. The percentage is a retrieval/text-overlap score, not a
+// relevance measure; framed that way here instead of shown bare.
+const RELEVANCE_LABEL: Record<KbCitation['relevance'], string> = {
+  relevant: 'Judged relevant',
+  not_relevant: 'Judged not relevant',
+  unknown: 'Relevance not verified',
+};
+
 export function KbCitationChips({ citations }: { citations: KbCitation[] | undefined }): React.ReactElement {
   return (
-    <Stack direction="row" spacing={0.5} flexWrap="wrap">
+    <div className="flex flex-wrap gap-1">
       {(citations ?? []).map((citation) => (
         <Tooltip
           key={citation.sourceFile}
-          title={`similarity ${(citation.similarity * 100).toFixed(0)}% -- relevance: ${citation.relevance}`}
+          content={`${RELEVANCE_LABEL[citation.relevance]} -- retrieval text-overlap score: ${(citation.similarity * 100).toFixed(0)}% (not a relevance measure; this KB doc is a process/style guide, so overlap with a specific technical requirement is naturally low even when the guidance applies)`}
         >
-          <Chip
-            label={citation.sourceFile}
-            size="small"
-            sx={{ backgroundColor: RELEVANCE_COLOR[citation.relevance], color: '#fff' }}
-          />
+          <Chip bg={RELEVANCE_COLOR[citation.relevance]} color="#fff">
+            {citation.sourceFile}
+          </Chip>
         </Tooltip>
       ))}
-    </Stack>
+    </div>
   );
 }

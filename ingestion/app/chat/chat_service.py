@@ -122,15 +122,23 @@ async def run_chat_turn(
 
         window = _SentinelWindow(PROPOSAL_SENTINEL)
         full_text = ""
-        async for delta in chat_client.stream_reply(messages, model):
+        async for delta, reasoning_delta in chat_client.stream_reply(messages, model):
             if await publisher.is_aborted(job_id, local_id):
                 logger.info("Chat turn aborted for job_id=%s local_id=%s", job_id, local_id)
                 await publisher.publish_error(job_id, local_id, "stopped by user")
                 return
-            full_text += delta
-            emit = window.feed(delta)
-            if emit:
-                await publisher.publish_chunk(job_id, local_id, emit)
+            # Reasoning tokens bypass the sentinel window entirely -- the
+            # window only guards the FINAL answer against PROPOSAL_SENTINEL
+            # leaking into the visible content stream; a model's
+            # chain-of-thought is never persisted or scanned for it, so
+            # there is nothing here to buffer against.
+            if reasoning_delta:
+                await publisher.publish_reasoning_chunk(job_id, local_id, reasoning_delta)
+            if delta:
+                full_text += delta
+                emit = window.feed(delta)
+                if emit:
+                    await publisher.publish_chunk(job_id, local_id, emit)
 
         trailing = window.flush()
         if trailing:

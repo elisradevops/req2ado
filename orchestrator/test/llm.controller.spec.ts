@@ -52,6 +52,15 @@ describe('LlmController', () => {
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { topK: 50, minP: 0.05 });
   });
 
+  it('threads an explicit think from the request body into llmClient.chat', async () => {
+    const chat = jest.fn().mockResolvedValue('reply');
+    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], think: false });
+
+    expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { think: false });
+  });
+
   it('throws BadRequestException on an invalid body', async () => {
     const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn() } as any);
     await expect(controller.chat({})).rejects.toThrow(BadRequestException);
@@ -68,8 +77,8 @@ describe('LlmController', () => {
 
   it('POST /llm/chat/stream writes one ndjson line per delta and ends the response', async () => {
     async function* fakeDeltas() {
-      yield 'Hel';
-      yield 'lo';
+      yield { content: 'Hel' };
+      yield { content: 'lo' };
     }
     const streamChat = jest.fn().mockReturnValue(fakeDeltas());
     const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
@@ -87,18 +96,38 @@ describe('LlmController', () => {
     expect(res.end).toHaveBeenCalled();
   });
 
+  it('writes reasoningDelta (not delta) for a reasoning-model chunk, keeping the two fields distinct on the wire', async () => {
+    async function* fakeChunks() {
+      yield { reasoning: 'Hmm, ' };
+      yield { content: 'Sure.' };
+    }
+    const streamChat = jest.fn().mockReturnValue(fakeChunks());
+    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const written: string[] = [];
+    const res = {
+      setHeader: jest.fn(),
+      write: jest.fn((chunk: string) => written.push(chunk)),
+      end: jest.fn(),
+      on: jest.fn(),
+    };
+
+    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, res as any);
+
+    expect(written).toEqual([`${JSON.stringify({ reasoningDelta: 'Hmm, ' })}\n`, `${JSON.stringify({ delta: 'Sure.' })}\n`]);
+  });
+
   it('stops writing further deltas once the response emits "close" (stop-generating / downstream disconnect)', async () => {
     let resolveNext: (() => void) | undefined;
     async function* fakeDeltas() {
-      yield 'a';
-      yield 'b';
+      yield { content: 'a' };
+      yield { content: 'b' };
       // Give the test a chance to invoke the registered 'close' callback
       // in between yields, simulating ingestion aborting mid-stream.
       await new Promise<void>((resolve) => {
         resolveNext = resolve;
       });
-      yield 'c';
-      yield 'd';
+      yield { content: 'c' };
+      yield { content: 'd' };
     }
     const streamChat = jest.fn().mockReturnValue(fakeDeltas());
     const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);

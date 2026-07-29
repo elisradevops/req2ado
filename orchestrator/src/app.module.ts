@@ -4,6 +4,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ConfigModule } from './config/config.module';
 import { HealthModule } from './modules/health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { AuthGuard } from './modules/auth/auth.guard';
 import { LlmModule } from './modules/llm/llm.module';
 import { JobsModule } from './modules/pipeline/jobs.module';
 import { ChatModule } from './modules/chat/chat.module';
@@ -26,6 +27,15 @@ import { WikiModule } from './modules/wiki/wiki.module';
     KbModule,
     WikiModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Runs after ThrottlerGuard (declared second -- Nest evaluates
+    // multiple APP_GUARD entries in registration order). Global by
+    // default; @Public() (health, auth/login, auth/me, auth/logout,
+    // LlmController's bearer-guarded service-to-service routes) is the
+    // explicit opt-out, so any new controller is protected unless it says
+    // otherwise.
+    { provide: APP_GUARD, useClass: AuthGuard },
+  ],
 })
 export class AppModule {}

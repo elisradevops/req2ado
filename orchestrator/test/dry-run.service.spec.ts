@@ -531,6 +531,7 @@ describe('DryRunService', () => {
           groundingScore: 0.15,
           qualityScore: 40,
           qualityIssues: ['ambiguous', 'vague_term'],
+          qualityCategoryScores: { clarity: 20, testability: 80, atomicity: 90, style: 60, rationale: 10 },
           sourceRef: null,
           tags: [],
         },
@@ -541,6 +542,7 @@ describe('DryRunService', () => {
       groundingScore: 0.15,
       qualityScore: 40,
       qualityIssues: ['ambiguous', 'vague_term'],
+      qualityCategoryScores: { clarity: 20, testability: 80, atomicity: 90, style: 60, rationale: 10 },
       sourceRef: null,
       tags: [],
     });

@@ -8,6 +8,7 @@ import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry } from '../writeback/dry-run.service';
 import { mapWithConcurrency } from './map-with-concurrency';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
+import { toAdoDescriptionHtml } from './description-html';
 
 export interface SubmitJobInput {
   areaPath: string;
@@ -43,7 +44,13 @@ export interface JobSummary {
   mode: string;
   status: string;
   areaPath: string;
+  originalFilename: string;
   itemCount: number;
+  // Real ADO work items written by a successful confirm() -- distinct from
+  // itemCount (the proposed dry-run diff length, which stays the same
+  // whether the job was later confirmed, rejected, or is still pending).
+  // Backed by CreatedItemMapping, one row per item actually created.
+  createdItemCount: number;
   createdAt: Date;
 }
 
@@ -60,6 +67,11 @@ export class JobsService implements OnModuleDestroy {
     private readonly initialState: string = 'Proposed',
     private readonly writeConcurrency: number = 8,
     private readonly customerIdFieldCandidates: string[] = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES,
+    // Same cap as upload validation (JobsController's MAX_UPLOAD_SIZE_BYTES)
+    // -- reused rather than inventing a second config knob. Gates retention
+    // for resubmit, not acceptance: an upload larger than this still
+    // processes normally, it just isn't retained (no JobSourceFile row).
+    private readonly maxStoredSourceBytes: number = 25 * 1024 * 1024,
   ) {
     this.queue = new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any });
   }
@@ -96,25 +108,86 @@ export class JobsService implements OnModuleDestroy {
     // in pipeline-worker.main.ts round-trips the exact bytes through JSON
     // safely. Found via the golden E2E script: every real upload was
     // silently producing an empty WorkItemTree with no error surfaced.
-    await this.queue.add('ingest-and-level', {
-      id: job.id,
-      areaPath: input.areaPath,
-      userId: input.userId,
-      customerId: input.customerId,
-      mode: input.mode,
-      followUp: input.followUp ?? false,
-      fileBufferBase64: input.fileBuffer.toString('base64'),
-      filename: input.filename,
-      ...(input.model ? { model: input.model } : {}),
-    });
+    // jobId option: makes BullMQ's own internal job id equal to our Prisma
+    // Job.id, so cancel() below can look it up directly via queue.getJob(id)
+    // instead of scanning for a data.id match. Previously omitted -- BullMQ
+    // auto-assigned an unrelated internal id, which cancel() has no use for.
+    await this.queue.add(
+      'ingest-and-level',
+      {
+        id: job.id,
+        areaPath: input.areaPath,
+        userId: input.userId,
+        customerId: input.customerId,
+        mode: input.mode,
+        followUp: input.followUp ?? false,
+        fileBufferBase64: input.fileBuffer.toString('base64'),
+        filename: input.filename,
+        ...(input.model ? { model: input.model } : {}),
+      },
+      { jobId: job.id },
+    );
     await this.prisma.auditEntry.create({
       data: { jobId: job.id, message: `Job submitted: ${input.filename}, areaPath=${input.areaPath}` },
     });
+    // Retention for resubmit() below -- best-effort: a failure here must
+    // never fail the job submission itself, it only means this particular
+    // job won't be resubmit-able later (the same degraded state as an
+    // upload over maxStoredSourceBytes, or one ingested before this existed).
+    if (input.fileBuffer.length <= this.maxStoredSourceBytes) {
+      try {
+        await this.prisma.jobSourceFile.create({ data: { jobId: job.id, bytes: input.fileBuffer } });
+      } catch {
+        // Swallowed deliberately -- see comment above.
+      }
+    }
     return { jobId: job.id };
+  }
+
+  // Re-runs a job's ORIGINAL upload under a brand-new Job row (never
+  // mutates the source job) -- sourceHash is unchanged, so IdempotencyMapping
+  // (keyed on sourceHash+customerId+areaPath) correctly REUSES the same ADO
+  // items on confirm() rather than duplicating them, exactly as it does for
+  // any other duplicate-content submission. If the caller wants genuinely
+  // NEW items, they must change areaPath (a real product decision, not
+  // something this method second-guesses).
+  async resubmit(id: string): Promise<{ jobId: string }> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    const sourceFile = await this.prisma.jobSourceFile.findUnique({ where: { jobId: id } });
+    if (!sourceFile) {
+      throw new NotFoundException(`Job ${id} has no retained source file to resubmit -- re-upload instead`);
+    }
+    return this.submit({
+      areaPath: job.areaPath,
+      userId: job.userId,
+      customerId: job.customerId,
+      mode: job.mode as 'baseline' | 'survey',
+      followUp: job.followUp,
+      fileBuffer: Buffer.from(sourceFile.bytes),
+      filename: job.originalFilename,
+      sourceHash: job.sourceHash,
+      state: job.state,
+      iterationPath: job.iterationPath,
+    });
   }
 
   async getAuditTrail(id: string): Promise<{ id: string; message: string; createdAt: Date }[]> {
     return this.prisma.auditEntry.findMany({ where: { jobId: id }, orderBy: { createdAt: 'asc' } });
+  }
+
+  // Proxies ingestion's debug-capture read -- best-effort, matching every
+  // other enhancement in this codebase: a failure to REACH ingestion (down,
+  // network) must not break the Audit tab that's already showing the job's
+  // real AuditEntry rows; it just means this section shows empty instead.
+  async getDebugCaptures(id: string): Promise<{ kind: string; identifier: string; content: string }[]> {
+    try {
+      return await this.ingestionClient.getDebugCaptures(id);
+    } catch {
+      return [];
+    }
   }
 
   async getDedupSkips(
@@ -184,6 +257,9 @@ export class JobsService implements OnModuleDestroy {
     warnings: string[];
     kbCitations: unknown;
     createdAt: Date;
+    areaPath: string;
+    originalFilename: string;
+    userId: string | null;
   } | null> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
@@ -195,20 +271,39 @@ export class JobsService implements OnModuleDestroy {
       warnings: (job.warnings as string[] | null) ?? [],
       kbCitations: job.kbCitations,
       createdAt: job.createdAt,
+      areaPath: job.areaPath,
+      originalFilename: job.originalFilename,
+      userId: job.userId,
     };
   }
 
-  async list(): Promise<JobSummary[]> {
+  // `userId` scopes the list to one caller's own jobs (ownership, matching
+  // getById/every other per-job route below) -- undefined only in the
+  // legacy pre-auth test suite's direct service calls, never in a real
+  // request (the controller always resolves a session's userId first).
+  async list(userId?: string): Promise<JobSummary[]> {
     const rows = await this.prisma.job.findMany({
+      where: userId ? { userId } : {},
       orderBy: { createdAt: 'desc' },
-      select: { id: true, mode: true, status: true, areaPath: true, dryRunDiff: true, createdAt: true },
+      select: {
+        id: true,
+        mode: true,
+        status: true,
+        areaPath: true,
+        originalFilename: true,
+        dryRunDiff: true,
+        createdAt: true,
+        _count: { select: { createdItemMappings: true } },
+      },
     });
     return rows.map((row) => ({
       id: row.id,
       mode: row.mode,
       status: row.status,
       areaPath: row.areaPath,
+      originalFilename: row.originalFilename,
       itemCount: Array.isArray(row.dryRunDiff) ? row.dryRunDiff.length : 0,
+      createdItemCount: row._count.createdItemMappings,
       createdAt: row.createdAt,
     }));
   }
@@ -384,10 +479,15 @@ export class JobsService implements OnModuleDestroy {
           field: 'System.Title', expected: entry.title, actual: item.fields['System.Title'] ?? '',
         });
       }
-      if (item.fields['System.Description'] !== entry.description) {
+      // Compared against the SAME conversion the create call applies (see
+      // toAdoDescriptionHtml's own doc comment) -- ADO actually stores the
+      // converted HTML, not entry.description verbatim, so comparing raw
+      // would false-positive a mismatch on every single audited item.
+      const expectedDescriptionHtml = toAdoDescriptionHtml(entry.description);
+      if (item.fields['System.Description'] !== expectedDescriptionHtml) {
         mismatches.push({
           localId: mapping.localId, adoWorkItemId: mapping.adoWorkItemId,
-          field: 'System.Description', expected: entry.description, actual: item.fields['System.Description'] ?? '',
+          field: 'System.Description', expected: expectedDescriptionHtml, actual: item.fields['System.Description'] ?? '',
         });
       }
       const expectedParentAdoId = entry.parentLocalId !== null ? (adoIdByLocalId.get(entry.parentLocalId) ?? null) : null;
@@ -400,6 +500,79 @@ export class JobsService implements OnModuleDestroy {
     }
 
     return { valid: mismatches.length === 0, checkedCount: mappings.length, mismatches };
+  }
+
+  /**
+   * Cancels a job that's still queued or running -- 'writing' and beyond
+   * are excluded (a confirmed write may already be partially applied to
+   * real ADO, same reasoning as reject()'s own restriction), and
+   * 'diff_ready' has its own dedicated Reject flow instead.
+   *
+   * If the BullMQ job hasn't been picked up yet (still 'waiting'/'delayed'),
+   * this removes it outright -- clean, immediate cancellation, the worker
+   * never runs at all. If it's already 'active' (the sandboxed processor is
+   * mid pipeline.worker.ts run, most likely blocked on ingestion's /level
+   * call for 15-40+ minutes), BullMQ has no mechanism to forcibly kill that
+   * external HTTP call from here -- there is no cross-process abort channel
+   * between this HTTP process and the worker's separate child process.
+   * Flipping Job.status to 'cancelled' still has real effect: JobDetail's
+   * SSE-driven UI reflects it immediately, and pipeline.worker.ts checks
+   * this same status at its own checkpoints (see JobCancelledError) to stop
+   * short of persisting a dry-run diff or emitting diff_ready once the
+   * long call eventually resolves. Net effect: cancellation is immediate
+   * if the job hasn't started, and takes effect at the next checkpoint
+   * (not mid-call) if it has -- an honest limitation, not silently pretended
+   * to be instant in every case.
+   */
+  async cancel(id: string): Promise<{ status: string }> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    if (job.status !== 'pending' && job.status !== 'running') {
+      throw new ConflictException(`Job ${id} cannot be cancelled from status '${job.status}'`);
+    }
+    const bullJob = await this.queue.getJob(id);
+    if (bullJob) {
+      const state = await bullJob.getState();
+      if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
+        await bullJob.remove();
+      }
+    }
+    await this.prisma.job.update({ where: { id }, data: { status: 'cancelled' } });
+    await this.prisma.auditEntry.create({ data: { jobId: id, message: 'Job cancelled by user' } });
+    return { status: 'cancelled' };
+  }
+
+  // Hard delete via an explicit transaction, not `onDelete: Cascade` on the
+  // child relations -- a cascade can't reach ChatMessage (no FK relation at
+  // all, only an index) and an explicit transaction covers all four rows
+  // without a schema migration. IdempotencyMapping is deliberately NOT
+  // touched here -- it's keyed by (sourceHash, customerId, areaPath), not
+  // jobId, and is intentionally cross-job (see its own model comment); a
+  // deleted job's prior ADO writes must stay idempotency-protected against a
+  // future resubmit of the same source content.
+  async delete(id: string): Promise<{ deleted: true }> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    // 'pending'/'running'/'writing' must be cancelled (or left to finish)
+    // first -- deleting a job mid-run/mid-write would orphan the still-
+    // in-flight BullMQ job or interrupt a live ADO write with no recovery
+    // path (unlike cancel(), which cooperatively stops the pipeline).
+    if (job.status === 'pending' || job.status === 'running' || job.status === 'writing') {
+      throw new ConflictException(`Job ${id} cannot be deleted while '${job.status}' -- cancel it first`);
+    }
+    await this.prisma.$transaction([
+      this.prisma.chatMessage.deleteMany({ where: { jobId: id } }),
+      this.prisma.createdItemMapping.deleteMany({ where: { jobId: id } }),
+      this.prisma.dedupSkipAudit.deleteMany({ where: { jobId: id } }),
+      this.prisma.auditEntry.deleteMany({ where: { jobId: id } }),
+      this.prisma.jobSourceFile.deleteMany({ where: { jobId: id } }),
+      this.prisma.job.delete({ where: { id } }),
+    ]);
+    return { deleted: true };
   }
 
   // Rejecting is only meaningful from 'diff_ready' -- once writing/succeeded,
@@ -553,6 +726,28 @@ export class JobsService implements OnModuleDestroy {
         toCreate.push(entry);
       }
 
+      // Confirmed real bug: entry.type ("Epic"/"Feature"/"Requirement", ingestion's
+      // own internal category vocabulary) was previously sent AS-IS to ADO as the
+      // literal work-item type name -- correct only for a CMMI process template.
+      // Agile's Requirement-category type is "User Story", Scrum's is "Product
+      // Backlog Item", Basic's is "Issue" -- every one of those would 404 against
+      // `_apis/wit/workitems/$Requirement`. Resolved ONCE per confirm() call (only
+      // when there's actually something to create -- a resume/retry with nothing
+      // left to write skips this ADO round-trip entirely, same as before this
+      // existed) via ADO's own universal work-item-type-category concept, which
+      // exists identically across every process template. `realType` is used at
+      // every point below that sends a type name to ADO (discoverFields via
+      // resolveCustomerIdField/resolveSourceRefField, createWorkItem) -- entry.type
+      // itself stays the internal category label everywhere else (map keys,
+      // sourceRefFieldByType, etc.), since translation only matters at the ADO
+      // wire boundary.
+      let realType: (type: string) => string = (type) => type;
+      if (toCreate.length > 0) {
+        const project = job.areaPath.split('\\')[0];
+        const workItemTypeCategories = await this.mcpClient.discoverWorkItemTypeCategories(project, credential);
+        realType = (type: string): string => workItemTypeCategories[type as keyof typeof workItemTypeCategories] ?? type;
+      }
+
       // Pre-resolve every distinct type's Customer ID field BEFORE the
       // concurrent create phase below -- discoverFields is idempotent, so a
       // race between concurrent creates of the same type would only be
@@ -561,10 +756,10 @@ export class JobsService implements OnModuleDestroy {
       // guarantee exact even under concurrency.
       for (const entry of toCreate) {
         if (entry.customerId != null && !customerIdFieldByType.has(entry.type)) {
-          customerIdFieldByType.set(entry.type, await this.resolveCustomerIdField(entry.type, credential));
+          customerIdFieldByType.set(entry.type, await this.resolveCustomerIdField(realType(entry.type), credential));
         }
         if (entry.sourceRef != null && !sourceRefFieldByType.has(entry.type)) {
-          sourceRefFieldByType.set(entry.type, await this.resolveSourceRefField(entry.type, credential));
+          sourceRefFieldByType.set(entry.type, await this.resolveSourceRefField(realType(entry.type), credential));
         }
       }
 
@@ -577,7 +772,7 @@ export class JobsService implements OnModuleDestroy {
       const createResults = await mapWithConcurrency(toCreate, this.writeConcurrency, async (entry) => {
         const fields: Record<string, string> = {
           'System.Title': entry.title,
-          'System.Description': entry.description,
+          'System.Description': toAdoDescriptionHtml(entry.description),
           'System.State': job.state,
           'System.AreaPath': job.areaPath,
         };
@@ -626,7 +821,7 @@ export class JobsService implements OnModuleDestroy {
         if (tags.length > 0) {
           fields['System.Tags'] = tags.join('; ');
         }
-        const created = await this.mcpClient.createWorkItem(entry.type, fields, credential);
+        const created = await this.mcpClient.createWorkItem(realType(entry.type), fields, credential);
         await this.idempotencyService.record(entry.sourceHash, entry.customerId, job.areaPath, created.id);
         // Durable resume state (P4b): written immediately, not batched at
         // the end of the create loop, so a LATER item in this same
@@ -718,6 +913,12 @@ export class JobsService implements OnModuleDestroy {
       // or a targetLocalId that isn't in this diff — e.g. its subtree was
       // excluded) are skipped, never thrown: per the project's "never block"
       // philosophy, a broken trace link must not fail the whole confirm.
+      // Flattened once (not the previous per-entry-then-per-link nested
+      // sequential loop) so trace-link writes can run at the same
+      // writeConcurrency as the create/link phases above instead of one at
+      // a time. Filtering happens up front since a `continue` can't happen
+      // inside mapWithConcurrency's callback.
+      const toTraceLink: { sourceAdoId: number; targetAdoId: number; referenceName: string }[] = [];
       for (const entry of diff) {
         if (isExcluded(entry)) continue;
         for (const link of entry.traceLinks ?? []) {
@@ -730,17 +931,24 @@ export class JobsService implements OnModuleDestroy {
             targetAdoId = link.resolvedAdoId;
           }
           if (targetAdoId === undefined) continue;
-          // Best-effort: a trace-link write failure (rejected rel, deleted
-          // crossJob target, transient network error) must not abort confirm()
-          // after work items in this call have already been created/parented.
-          try {
-            await this.mcpClient.linkWorkItems(sourceAdoId, targetAdoId, link.referenceName, credential);
-          } catch (error) {
-            // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
-            console.error(`Trace-link write failed for ${sourceAdoId} -> ${targetAdoId}:`, error);
-          }
+          toTraceLink.push({ sourceAdoId, targetAdoId, referenceName: link.referenceName });
         }
       }
+      await mapWithConcurrency(toTraceLink, this.writeConcurrency, async (link) => {
+        // Best-effort: a trace-link write failure (rejected rel, deleted
+        // crossJob target, transient network error) must not abort confirm()
+        // after work items in this call have already been created/parented.
+        // try/catch stays INSIDE the callback (not around the
+        // mapWithConcurrency call) so mapWithConcurrency never sees a
+        // rejection and this phase can never throw a firstError the way the
+        // create/link phases above do.
+        try {
+          await this.mcpClient.linkWorkItems(link.sourceAdoId, link.targetAdoId, link.referenceName, credential);
+        } catch (error) {
+          // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+          console.error(`Trace-link write failed for ${link.sourceAdoId} -> ${link.targetAdoId}:`, error);
+        }
+      });
     } catch (error) {
       // Always safe to retry now: CreatedItemMapping durably recorded every
       // create/link that succeeded before this failure, so the next

@@ -169,6 +169,12 @@ def test_build_survey_tree_warns_when_analysis_drops_most_of_the_document() -> N
     assert len(tree.warnings) == 1
     assert "did not reference 4 of 5 source block(s)" in tree.warnings[0]
     assert "[1, 2, 3, 4]" in tree.warnings[0]
+    # Regression: a bare index list forced a reviewer to go dig up the raw
+    # parsed document to judge whether a dropped block was a real loss or
+    # benign non-requirement content -- a text preview per index answers
+    # that right in the warning itself.
+    assert '[1] "The receiver shall log all firmware errors."' in tree.warnings[0]
+    assert '[4] "The battery shall charge fully within two hours."' in tree.warnings[0]
 
 
 def test_build_survey_tree_does_not_warn_when_a_dropped_blocks_content_was_merged_elsewhere() -> None:
@@ -199,11 +205,58 @@ def test_build_survey_tree_does_not_warn_when_a_dropped_blocks_content_was_merge
     assert tree.warnings == []
 
 
+def test_build_survey_tree_does_not_flag_a_short_label_block_as_dropped() -> None:
+    # §10.3 fix: a 1-2-significant-word block (a structural label like
+    # "APOLLO2" or "Notes:") can never realistically re-appear verbatim
+    # inside a synthesized shall-statement even when correctly absorbed as
+    # context, not restated -- the coverage check must not flag it.
+    path = "short_labels.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="APOLLO2", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="Notes:", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="The unit shall boot within ten seconds.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Boot time", "text": "The unit shall boot within ten seconds.", "tags": []}]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert tree.warnings == []
+
+
+def test_build_survey_tree_skips_a_figure_the_vision_model_flagged_as_no_content() -> None:
+    # §10.2a fix: a figure whose caption is exactly the NO_TECHNICAL_CONTENT
+    # sentinel (the vision model correctly saying there was nothing to
+    # describe) must not be flagged as a "dropped" block -- there was
+    # nothing to lose.
+    from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL
+
+    path = "empty_figure.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="The unit shall boot within ten seconds.", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.FIGURE, text=f"[FIGURE: {NO_TECHNICAL_CONTENT_SENTINEL}]", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Boot time", "text": "The unit shall boot within ten seconds.", "tags": []}]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert tree.warnings == []
+
+
 def test_build_survey_tree_falls_back_dangling_parent_temp_id_to_root_and_warns() -> None:
     # Regression (§2c step 5): the model can reference a parent_temp_id that
     # doesn't exist in its own returned node set -- previously this had no
     # handling at all under the new temp_id-keyed mapping. Must not crash;
-    # falls back to a section root with a reviewable warning.
+    # falls back to a section root with a reviewable warning. The CMMI
+    # hierarchy repair (added later) then ALSO catches this specific case --
+    # a root-level Requirement with a real Feature already present in the
+    # branch is itself a hierarchy violation, so n1 ends up re-parented
+    # under the Feature rather than staying a root. Both warnings fire.
     fake = FakeSectionAnalysisClient(
         nodes=[
             {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "text": "Root requirement.", "tags": []},
@@ -213,8 +266,9 @@ def test_build_survey_tree_falls_back_dangling_parent_temp_id_to_root_and_warns(
     tree = build_survey_tree(_small_doc(), fake)
     assert len(tree.nodes) == 2
     by_id = {node.local_id: node for node in tree.nodes}
-    assert by_id["n1"].parent_local_id is None  # fell back to section root
+    assert by_id["n1"].parent_local_id == "n0"  # repaired under the real Feature, not left orphaned
     assert any("does-not-exist" in w and "attached as section root" in w for w in tree.warnings)
+    assert any("re-parented under Feature n0" in w for w in tree.warnings)
 
 
 def test_survey_tree_nodes_have_survey_mode_and_real_fidelity_hash() -> None:
@@ -332,6 +386,21 @@ def test_build_survey_tree_passes_whole_document_false_for_a_multi_branch_docume
     assert all(call["whole_document"] is False for call in fake.calls)
 
 
+def test_build_survey_tree_passes_a_per_branch_topic_count_on_the_multi_branch_path(monkeypatch) -> None:
+    # Regression guard for a confirmed real cause of run-to-run SURVEY
+    # node-count variance: the multi-branch loop previously passed no
+    # topic_count at all (unlike the whole-doc path), so the multi-branch
+    # path had no countable node-granularity floor and relied purely on
+    # the model's own open-ended judgment (see
+    # orchestrator_llm_client._branch_topic_hint's docstring). Each of
+    # _two_branch_doc()'s two branches has exactly one HEADING block.
+    _force_multi_branch(monkeypatch)
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(_two_branch_doc(), fake)
+    assert len(fake.calls) == 2
+    assert all(call["topic_count"] == 1 for call in fake.calls)
+
+
 def test_build_survey_tree_passes_whole_document_true_on_the_agentic_path_too(monkeypatch) -> None:
     from app.kb.kb_vector_store import KbVectorStore
 
@@ -347,6 +416,42 @@ def test_build_survey_tree_passes_whole_document_true_on_the_agentic_path_too(mo
     assert len(fake.agentic_calls) == 1
     assert fake.agentic_calls[0]["whole_document"] is True
     assert fake.agentic_calls[0]["topic_count"] == 0  # _small_doc() has no headings
+
+
+def test_read_document_fn_appends_a_truncation_marker_when_the_document_was_capped(monkeypatch, tmp_path) -> None:
+    # Regression: KbVectorStore.get_document now returns (text, truncated)
+    # instead of a bare str -- read_document_fn's closure must surface a
+    # truncation marker to the model rather than silently handing back a
+    # partial document as if it were complete.
+    import app.kb.kb_vector_store as kb_vector_store_module
+    from app.kb.kb_vector_store import KbVectorStore
+
+    monkeypatch.setattr(kb_vector_store_module, "_GET_PAGE_SIZE", 3)
+    monkeypatch.setattr(kb_vector_store_module, "_MAX_DOCUMENT_CHUNKS", 2)
+    monkeypatch.setattr("app.leveling.llm_leveling._KB_GET_DOCUMENT_MAX_CHUNKS", 2)
+
+    def _fake_retrieve_context(area_path, query_text, embed_client, vector_store, **_):
+        return None, []
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    for i in range(4):  # more than the patched cap (2)
+        vector_store.upsert_chunk(
+            chunk_id=f"source-1:big.docx:{i}", embedding=[float(i), 0.0, 0.0],
+            text=f"chunk {i}", user_id="user-descriptor-1", source_file="big.docx",
+            source_id="source-1", chunk_index=i, file_hash="hash-1",
+        )
+
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(
+        _small_doc(), fake, user_id="user-descriptor-1", embed_client=object(),
+        vector_store=vector_store, model="qwen3:4b",
+    )
+    read_document_fn = fake.agentic_calls[0]["read_document_fn"]
+    result = read_document_fn("big.docx")
+    assert result.startswith("chunk 0\n\nchunk 1")
+    assert "document truncated" in result
 
 
 def test_node_with_empty_text_is_skipped() -> None:
@@ -428,30 +533,56 @@ def test_build_survey_tree_chunks_a_multi_branch_document_into_one_call_per_bran
     assert "5.1 surround" in fake.calls[1]["section_text"]
 
 
-def test_build_survey_tree_warns_when_tables_are_dropped_on_multi_branch_path(monkeypatch) -> None:
-    # Regression guard: multi-branch table/figure placement is a known,
-    # not-yet-solved gap -- the coverage-safe chunking fix routes far more
-    # documents through this path than before, making the silent loss
-    # common instead of rare. Must be reviewable, not invisible.
+def test_build_survey_tree_places_a_table_into_its_own_branchs_section_text(monkeypatch) -> None:
+    # §12 fix: a table is no longer silently dropped on the multi-branch
+    # path -- _partition_tables_by_branch (reused from BASELINE's
+    # tree_builder) buckets it into the branch it actually falls within by
+    # real document-order offset, and that branch's own call now receives
+    # it via `tables=`. The table's own SourceRef offset (20) sits inside
+    # branch 2 ("Audio", starting at offset 15+), not branch 1.
     _force_multi_branch(monkeypatch)
     doc = _two_branch_doc()
     doc = doc.model_copy(
-        update={"tables": [Table(id="t0", rows=[["a", "b"]], source_ref=_sr(doc.document.path))]}
+        update={
+            "tables": [
+                Table(
+                    id="t0", rows=[["a", "b"]],
+                    source_ref=SourceRef(document_path=doc.document.path, start_offset=20, end_offset=30),
+                )
+            ]
+        }
     )
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(doc, fake)
-    assert any("table(s)" in w for w in tree.warnings)
+    assert not any("table(s)" in w for w in tree.warnings)
+    assert "| a | b |" in fake.calls[1]["section_text"]
+    assert "| a | b |" not in fake.calls[0]["section_text"]
 
 
-def test_build_survey_tree_warns_when_figures_are_dropped_on_multi_branch_path(monkeypatch) -> None:
+def test_build_survey_tree_already_carries_figure_captions_via_inline_blocks_on_multi_branch_path(monkeypatch) -> None:
+    # Figures never needed a placement fix here: every loader already emits
+    # a figure's caption as an ordinary inline FIGURE-kind Block (see
+    # render_section's docstring), so _split_into_branches carries it into
+    # whichever branch it belongs to like any other block -- no separate
+    # `figures=` plumbing is needed on the multi-branch path.
     _force_multi_branch(monkeypatch)
-    doc = _two_branch_doc()
-    doc = doc.model_copy(
-        update={"figures": [Figure(id="f0", caption="a diagram", source_ref=_sr(doc.document.path))]}
+    path = "two_branch_survey_input.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
+            Block(
+                id="b3", kind=BlockKind.FIGURE, text="[FIGURE: a speaker wiring diagram]", source_ref=_sr(path),
+            ),
+        ],
     )
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(doc, fake)
-    assert any("figure(s)" in w for w in tree.warnings)
+    assert not any("figure(s)" in w for w in tree.warnings)
+    assert "speaker wiring diagram" in fake.calls[1]["section_text"]
+    assert "speaker wiring diagram" not in fake.calls[0]["section_text"]
 
 
 def test_build_survey_tree_does_not_warn_when_multi_branch_doc_has_no_tables_or_figures(monkeypatch) -> None:
@@ -459,6 +590,31 @@ def test_build_survey_tree_does_not_warn_when_multi_branch_doc_has_no_tables_or_
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(_two_branch_doc(), fake)
     assert not any("table(s)" in w or "figure(s)" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_warns_when_a_non_empty_branch_produces_zero_nodes(monkeypatch) -> None:
+    # Regression guard: a branch with real block content that the model (or
+    # a tool-calling failure) turned into 0 nodes used to be completely
+    # silent -- the item just never appeared in the proposed tree, with no
+    # indication anything went wrong. Confirmed real gap, distinct from the
+    # dropped_blocks coverage check (which assumes at least SOME nodes
+    # exist to compare source blocks against).
+    _force_multi_branch(monkeypatch)
+    fake = FakeSectionAnalysisClient(nodes=[])
+    tree = build_survey_tree(_two_branch_doc(), fake)
+    zero_node_warnings = [w for w in tree.warnings if "produced 0 work items" in w]
+    assert len(zero_node_warnings) == 2  # both branches returned zero nodes
+    assert "br0" in zero_node_warnings[0]
+    assert "br1" in zero_node_warnings[1]
+
+
+def test_build_survey_tree_does_not_warn_about_zero_nodes_when_a_branch_genuinely_has_none(monkeypatch) -> None:
+    # A branch with NO real content (no blocks/tables/figures at all) isn't
+    # a failure -- nothing to warn about.
+    _force_multi_branch(monkeypatch)
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(_two_branch_doc(), fake)
+    assert not any("produced 0 work items" in w for w in tree.warnings)
 
 
 def test_build_survey_tree_does_not_warn_about_tables_on_the_single_branch_path() -> None:
@@ -564,6 +720,7 @@ class FakeScoringClient:
         descriptions_by_node_id: dict[str, str],
         criteria_context: str | None = None,
         kb_context: str | None = None,
+        category_checklist: list[str] | None = None,
     ) -> dict[str, dict]:
         self.calls.append(descriptions_by_node_id)
         self.criteria_contexts.append(criteria_context)
@@ -582,15 +739,192 @@ def test_build_survey_tree_does_not_score_when_no_scoring_client_is_supplied() -
         assert node.quality_issues == []
 
 
-def test_build_survey_tree_scores_every_node_when_a_scoring_client_is_supplied() -> None:
+def test_build_survey_tree_scores_only_requirement_type_nodes_when_a_scoring_client_is_supplied() -> None:
+    # _DEFAULT_NODES is one Feature (n0) + one Requirement (n1) -- EARS/
+    # INCOSE/ISO quality criteria describe atomic testable "shall"
+    # statements, not Epic/Feature groupings, so score_requirements_for_
+    # document (this test's own FakeScoringClient) is scoped to Requirement
+    # nodes only. n0 stays unscored here specifically because
+    # FakeScoringClient doesn't implement score_epics_and_features_for_
+    # document (Epic/Feature review is a SEPARATE, optional capability --
+    # see test_build_survey_tree_scores_epic_and_feature_nodes_via_the_
+    # separate_rubric below for the case where it IS implemented).
     scoring_client = FakeScoringClient()
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
 
     assert len(scoring_client.calls) == 1  # one batched call, not one per node
-    assert set(scoring_client.calls[0].keys()) == {"n0", "n1"}
-    for node in tree.nodes:
-        assert node.quality_score == 90
-        assert node.quality_issues == []
+    assert set(scoring_client.calls[0].keys()) == {"n1"}
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n0"].quality_score is None  # no score_epics_and_features_for_document on this double
+    assert by_id["n1"].quality_score == 90
+    assert by_id["n1"].quality_issues == []
+
+
+def test_build_survey_tree_scores_epic_and_feature_nodes_via_the_separate_rubric() -> None:
+    # Confirmed real feature (CMMI guidance): Epic/Feature get their OWN
+    # quality review (scope coherence / decomposability), separate from
+    # Requirement's EARS/INCOSE wording rubric -- via score_epics_and_
+    # features_for_document, an optional capability on the scoring client
+    # (duck-typed, not every scoring_client needs to implement it).
+    class _FullScoringClient(FakeScoringClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.epic_feature_calls: list[dict] = []
+
+        def score_epics_and_features_for_document(self, nodes_by_id):
+            self.epic_feature_calls.append(nodes_by_id)
+            return {
+                node_id: {"score": 77, "categoryScores": {"scopeCoherence": 70, "outcomeClarity": 80}}
+                for node_id in nodes_by_id
+            }
+
+    scoring_client = _FullScoringClient()
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
+
+    assert len(scoring_client.epic_feature_calls) == 1
+    assert set(scoring_client.epic_feature_calls[0].keys()) == {"n0"}  # only the Feature node
+    assert scoring_client.epic_feature_calls[0]["n0"] == {"type": "Feature", "text": "The system shall handle: Display"}
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n0"].quality_score == 77
+    assert by_id["n0"].quality_category_scores == {"scopeCoherence": 70, "outcomeClarity": 80}
+    assert by_id["n0"].quality_issues == []  # no issues vocabulary for Epic/Feature review
+    # Requirement scoring (the separate rubric) is untouched.
+    assert by_id["n1"].quality_score == 90
+
+
+def test_build_survey_tree_excludes_a_synthesized_bridge_feature_from_epic_feature_scoring() -> None:
+    # A Feature synthesized by _repair_requirement_hierarchy to hold
+    # otherwise-orphaned Requirements was never a real authorial decision --
+    # scoring it against scopeCoherence/capabilityClarity would produce a
+    # guaranteed-low, misleading score. It must not appear in the
+    # score_epics_and_features_for_document call at all.
+    class _FullScoringClient(FakeScoringClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.epic_feature_calls: list[dict] = []
+
+        def score_epics_and_features_for_document(self, nodes_by_id):
+            self.epic_feature_calls.append(nodes_by_id)
+            return {node_id: {"score": 50, "categoryScores": {}} for node_id in nodes_by_id}
+
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Y.", "tags": []},
+        ]
+    )
+    scoring_client = _FullScoringClient()
+    tree = build_survey_tree(_small_doc(), fake, scoring_client)
+
+    synthesized = [n for n in tree.nodes if n.type == WorkItemType.FEATURE]
+    assert len(synthesized) == 1
+    assert synthesized[0].local_id.endswith("synth_feature")
+    # The scoring call fired for zero nodes (no real Epic/Feature exists in
+    # this fixture, only the synthesized bridge, which is excluded) --
+    # so score_epics_and_features_for_document is never even called.
+    assert scoring_client.epic_feature_calls == []
+    assert synthesized[0].quality_score is None
+
+
+def test_build_survey_tree_epic_feature_scoring_is_a_noop_without_scoring_client() -> None:
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n0"].quality_score is None
+    assert by_id["n1"].quality_score is None
+
+
+def test_build_survey_tree_epic_feature_scoring_failure_is_caught_and_warned() -> None:
+    class _RaisingEpicFeatureClient(FakeScoringClient):
+        def score_epics_and_features_for_document(self, nodes_by_id):
+            raise ValueError("boom")
+
+    scoring_client = _RaisingEpicFeatureClient()
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
+
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n0"].quality_score is None  # failed -- but the job itself did not fail
+    assert by_id["n1"].quality_score == 90  # Requirement scoring, a separate call, is unaffected
+    assert any("Epic/Feature quality scoring failed" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_captures_the_raw_response_when_epic_feature_scoring_fails() -> None:
+    class _RaisingEpicFeatureClient(FakeScoringClient):
+        def score_epics_and_features_for_document(self, nodes_by_id):
+            raise ValueError("boom")
+
+    class _FakeDebugCapture:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        def capture(self, kind: str, identifier: str, raw_response: str) -> None:
+            self.calls.append((kind, identifier, raw_response))
+
+    debug_capture = _FakeDebugCapture()
+    build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), _RaisingEpicFeatureClient(), debug_capture=debug_capture,
+    )
+    assert len(debug_capture.calls) == 1
+    kind, identifier, raw_response = debug_capture.calls[0]
+    assert kind == "score_epics_and_features"
+    assert identifier == "chunk_0"
+    assert "boom" in raw_response
+
+
+def test_build_survey_tree_carries_category_scores_through_to_the_node() -> None:
+    # The per-dimension breakdown (see QualityCategoryScores' own docstring)
+    # gives a reviewer real numbers per category instead of just an overall
+    # score + closed-vocabulary issue tags.
+    scoring_client = FakeScoringClient(
+        results={
+            "n1": {
+                "score": 40,
+                "issues": ["ambiguous"],
+                "categoryScores": {"clarity": 20, "testability": 80, "atomicity": 90, "style": 60, "rationale": 10},
+            }
+        }
+    )
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
+
+    by_id = {node.local_id: node for node in tree.nodes}
+    category_scores = by_id["n1"].quality_category_scores
+    assert category_scores is not None
+    assert category_scores["clarity"] == 20
+    assert category_scores["testability"] == 80
+    assert category_scores["atomicity"] == 90
+    assert category_scores["style"] == 60
+    assert category_scores["rationale"] == 10
+
+
+def test_build_survey_tree_discards_the_whole_category_breakdown_when_one_dimension_is_malformed() -> None:
+    # All-or-nothing tolerance, same philosophy as quality_score itself: a
+    # partial breakdown (e.g. clarity present, testability missing) would
+    # misleadingly read as "testability wasn't judged" rather than "the
+    # model's response was malformed" -- discard the whole thing instead.
+    scoring_client = FakeScoringClient(
+        results={
+            "n1": {
+                "score": 40,
+                "issues": [],
+                "categoryScores": {"clarity": 20, "testability": 150, "atomicity": 90, "style": 60, "rationale": 10},
+            }
+        }
+    )
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
+
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n1"].quality_category_scores is None
+    assert by_id["n1"].quality_score == 40  # score/issues parsing is independent, still succeeds
+
+
+def test_build_survey_tree_leaves_category_scores_none_when_the_field_is_absent() -> None:
+    # Backward-compat: a scoring_client double that doesn't return
+    # categoryScores at all (e.g. an older fixture) must not crash --
+    # matches FakeScoringClient's own default results shape.
+    scoring_client = FakeScoringClient()
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
+
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n1"].quality_category_scores is None
 
 
 def test_build_survey_tree_passes_none_criteria_context_when_no_retriever_is_supplied() -> None:
@@ -629,13 +963,23 @@ def test_build_survey_tree_grounds_scoring_with_retrieved_criteria_when_a_retrie
 
 
 def test_build_survey_tree_records_quality_issues_from_the_closed_vocabulary_only() -> None:
+    # Both nodes must be Requirement-type: scoring is scoped to Requirement
+    # nodes only (see test_..._scores_only_requirement_type_nodes...), and
+    # this test's own point is the closed-vocabulary filter across two
+    # scored nodes, not the type gate.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The system shall handle: Display", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []},
+        ]
+    )
     scoring_client = FakeScoringClient(
         results={
             "n0": {"score": 40, "issues": ["ambiguous", "not_a_real_issue"]},
             "n1": {"score": 95, "issues": []},
         }
     )
-    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
+    tree = build_survey_tree(_small_doc(), fake, scoring_client)
 
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n0"].quality_score == 40
@@ -676,11 +1020,16 @@ def test_build_survey_tree_rejects_boolean_score_values() -> None:
     assert by_id["n1"].quality_score == 85
 
 
-def test_build_survey_tree_calls_scoring_once_per_branch_for_a_multi_branch_document(monkeypatch) -> None:
+def test_build_survey_tree_calls_scoring_once_for_the_whole_document_not_once_per_branch(monkeypatch) -> None:
+    # §2c: scoring moved to whole-document scope -- a multi-branch document
+    # gets ONE batched scoring call over every branch's requirement nodes
+    # combined (chunked only past _SCORING_CHUNK_NODE_COUNT), not one call
+    # per branch as before.
     _force_multi_branch(monkeypatch)
     scoring_client = FakeScoringClient()
     build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), scoring_client)
-    assert len(scoring_client.calls) == 2  # one per branch, not one for the whole document
+    assert len(scoring_client.calls) == 1
+    assert set(scoring_client.calls[0].keys()) == {"br0_n1", "br1_n1"}
 
 
 def test_build_survey_tree_defaults_an_invalid_analysis_type_to_requirement() -> None:
@@ -799,7 +1148,7 @@ def test_build_survey_tree_tool_capable_model_uses_agentic_path_and_marks_citati
 
     fake = FakeSectionAnalysisClient(
         agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
-        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9}],
+        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
     )
     tree = build_survey_tree(
         _small_doc(),
@@ -820,11 +1169,290 @@ def test_build_survey_tree_tool_capable_model_uses_agentic_path_and_marks_citati
     assert tree.kb_citations[0].relevance == KbCitationRelevance.RELEVANT
 
 
+def test_build_survey_tree_agentic_path_reports_real_grounding_in_section_complete(monkeypatch) -> None:
+    # Regression: section_complete's kb_grounded/kb_citations_raw used to
+    # check `kb_context`, which is ALWAYS None on the agentic (tool-capable
+    # model) path -- so a section that genuinely grounded itself via a real
+    # query_kb call during analyze_section_agentic still reported "not
+    # grounded" in the narration. Must use this branch's own kb_citations
+    # (built from the real query_kb hits) instead.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "agentic KB text", [{"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+    )
+    events = []
+    build_survey_tree(
+        _small_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="qwen3:4b",  # confirmed live tool-capable, see _MODEL_CAPS
+        progress_callback=lambda p: events.append(p),
+    )
+
+    completed = next(e for e in events if e.phase == "section_complete")
+    assert completed.kb_grounded is True
+    assert completed.kb_citations == [{"source_file": "agentic.docx", "similarity": 0.9}]
+
+
+def test_build_survey_tree_agentic_path_dedupes_kb_citations_by_source_file(monkeypatch) -> None:
+    # Regression guard for a confirmed real bug (user-reported, via
+    # screenshot): the SAME source file appeared TWICE in the "Grounded
+    # against" chip list. Root cause: a real query_kb call can legitimately
+    # pull several DIFFERENT chunks from the SAME file across separate tool
+    # rounds, but kb_citations (the "which files backed this" UI signal)
+    # previously built one entry per HIT, not per distinct file. Must dedup
+    # by source_file, keeping the highest-similarity hit.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return None, []
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[
+            {"source_file": "same.pdf", "similarity": 0.33, "text": "chunk one"},
+            {"source_file": "same.pdf", "similarity": 0.38, "text": "chunk two"},
+            {"source_file": "other.pdf", "similarity": 0.5, "text": "chunk three"},
+        ],
+    )
+    tree = build_survey_tree(
+        _small_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="qwen3:4b",
+    )
+
+    citations_by_file = {c.source_file: c.similarity for c in tree.kb_citations}
+    assert citations_by_file == {"same.pdf": 0.38, "other.pdf": 0.5}  # highest similarity kept for the duplicated file
+
+
+def test_build_survey_tree_score_requirements_events_carry_the_real_kb_citations_not_an_empty_list(monkeypatch) -> None:
+    # Confirmed real user-reported bug: score_requirements/score_requirements_done
+    # previously hardcoded kb_citations_raw=[] regardless of kb_grounded, so a
+    # genuinely KB-grounded scoring pass rendered "grounded with 0 KB file(s)"
+    # in narration -- a contradiction (kb_grounded=True, 0 citations) that reads
+    # as "not really using the KB" even though scoring's own kb_context WAS
+    # built from real query_kb hits. Must carry the same real per-file
+    # citation list section_complete already correctly reports.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "agentic KB text", [{"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    class _FakeScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+    )
+    events = []
+    build_survey_tree(
+        _small_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="qwen3:4b",
+        scoring_client=_FakeScoringClient(),
+        progress_callback=lambda p: events.append(p),
+    )
+
+    scoring_started = next(e for e in events if e.phase == "score_requirements")
+    scoring_done = next(e for e in events if e.phase == "score_requirements_done")
+    assert scoring_started.kb_grounded is True
+    assert scoring_started.kb_citations == [{"source_file": "agentic.docx", "similarity": 0.9}]
+    assert scoring_done.kb_grounded is True
+    assert scoring_done.kb_citations == [{"source_file": "agentic.docx", "similarity": 0.9}]
+
+
+def test_build_survey_tree_scoring_uses_the_stored_checklist_from_the_grounding_document(tmp_path, monkeypatch) -> None:
+    # Confirmed real determinism requirement (user-reported): the SAME
+    # document run any number of times must yield the SAME categories --
+    # this is the fix: reads the checklist extracted ONCE at KB ingestion
+    # time (stored via KbVectorStore.upsert_chunk) for whichever grounding
+    # document contributed this scoring pass, instead of ever letting the
+    # scoring LLM derive categories live.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "agentic KB text", [{"source_file": "standard.pdf", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    vector_store.upsert_chunk(
+        chunk_id="s1:standard.pdf:0", embedding=[1.0, 0.0, 0.0], text="checklist text", user_id="Project\\Area1",
+        source_file="standard.pdf", source_id="s1", chunk_index=0, file_hash="h1",
+        quality_checklist=["Necessary", "Unambiguous", "Verifiable"],
+    )
+
+    captured: dict = {}
+
+    class _CapturingScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            captured["category_checklist"] = category_checklist
+            return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[{"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}],
+    )
+    build_survey_tree(
+        _small_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=vector_store,
+        model="qwen3:4b",
+        scoring_client=_CapturingScoringClient(),
+    )
+
+    assert captured["category_checklist"] == ["Necessary", "Unambiguous", "Verifiable"]
+
+
+def test_build_survey_tree_falls_back_to_none_checklist_when_grounding_document_never_had_one_extracted(tmp_path, monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "agentic KB text", [{"source_file": "old_doc.pdf", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    # Ingested WITHOUT a checklist_client -- pre-dates this capability.
+    vector_store.upsert_chunk(
+        chunk_id="s1:old_doc.pdf:0", embedding=[1.0, 0.0, 0.0], text="some text", user_id="Project\\Area1",
+        source_file="old_doc.pdf", source_id="s1", chunk_index=0, file_hash="h1",
+    )
+
+    captured: dict = {}
+
+    class _CapturingScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            captured["category_checklist"] = category_checklist
+            return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[{"source_file": "old_doc.pdf", "similarity": 0.9, "text": "agentic KB text"}],
+    )
+    build_survey_tree(
+        _small_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=vector_store,
+        model="qwen3:4b",
+        scoring_client=_CapturingScoringClient(),
+    )
+
+    assert captured["category_checklist"] is None
+
+
+def test_build_survey_tree_scoring_is_actually_grounded_on_the_agentic_path() -> None:
+    # Regression: scoring's kb_context always came from the OUTER kb_context
+    # parameter, which is None on the agentic (tool-capable model) path --
+    # only the fallback path ever populates it upfront. So scoring ran
+    # completely ungrounded even when the model successfully pulled real KB
+    # content via query_kb during analysis. The agentic path's own raw_hits
+    # already carry each hit's full retrieved text (see
+    # _execute_agentic_tool_call's citations.extend(hits)) -- must be
+    # assembled into a real kb_context string and threaded to scoring.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    class _FakeScoringClient:
+        def __init__(self):
+            self.received_kb_context = "unset"
+
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            self.received_kb_context = kb_context
+            return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[
+            {"source_file": "a.docx", "similarity": 0.9, "text": "Real retrieved KB text about displays."},
+        ],
+    )
+    scoring_client = _FakeScoringClient()
+
+    build_survey_tree(
+        _small_doc(),
+        fake,
+        scoring_client=scoring_client,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="qwen3:4b",
+    )
+
+    assert scoring_client.received_kb_context == "Real retrieved KB text about displays."
+
+
 def test_resolve_caps_known_tool_capable_model() -> None:
     from app.leveling.llm_leveling import _resolve_caps
 
     caps = _resolve_caps("qwen3:4b")
     assert caps.supports_tools is True
+
+
+def test_resolve_caps_gemma4_12b_is_tool_capable() -> None:
+    # Regression: gemma4:12b (the orchestrator's actual configured
+    # LLM_CHAT_MODEL default) was missing from _MODEL_CAPS entirely --
+    # confirmed live via Ollama's /api/show that it supports tools/vision
+    # just like gemma4:e4b, but any job leaving the wizard's model field on
+    # "Default" silently fell through to the unknown-model, no-tools path.
+    from app.leveling.llm_leveling import _resolve_caps
+
+    caps = _resolve_caps("gemma4:12b")
+    assert caps.supports_tools is True
+
+
+def test_resolve_caps_qwen2_5_32b_instruct_uses_the_empirically_tested_coverage_budget() -> None:
+    # Regression/documentation: confirmed live against the real 682-block
+    # AirPro ICD that this model's dropped-block rate roughly HALVES at
+    # coverage_budget_tokens=20_000 vs the shared local-model default of
+    # 10_000 (45% -> 23%), with MORE nodes produced (not fewer) and faster
+    # overall wall time -- a genuinely tested value, not an assumption from
+    # this model's larger parameter count or context window alone.
+    from app.leveling.llm_leveling import _resolve_caps
+
+    caps = _resolve_caps("qwen2.5:32b-instruct")
+    assert caps.supports_tools is True
+    assert caps.coverage_budget_tokens == 20_000
+    assert caps.context_budget_tokens == 32_000
+
+
+def test_resolve_caps_qwen3_6_35b_uses_the_empirically_tested_coverage_budget() -> None:
+    # Regression/documentation: confirmed live against the same real
+    # 682-block AirPro ICD (with `think: False` -- see
+    # orchestrator_llm_client.py's analyze_section doc comment) that this
+    # MoE model dominates qwen2.5:32b-instruct outright: ~4x faster, more
+    # nodes, roughly a quarter the drop rate. coverage_budget_tokens=20_000
+    # was marginally better than 10_000 on every metric for this model too.
+    from app.leveling.llm_leveling import _resolve_caps
+
+    caps = _resolve_caps("qwen3.6:35b")
+    assert caps.supports_tools is True
+    assert caps.coverage_budget_tokens == 20_000
+    assert caps.context_budget_tokens == 32_000
 
 
 def test_resolve_caps_unknown_model_defaults_to_no_tools() -> None:
@@ -943,7 +1571,11 @@ def test_build_survey_tree_reuses_same_kb_context_for_scoring_as_other_calls(mon
 
     class _CapturingScoringClient:
         def score_requirements_for_document(
-            self, descriptions_by_node_id: dict[str, str], criteria_context: str | None = None, kb_context: str | None = None
+            self,
+            descriptions_by_node_id: dict[str, str],
+            criteria_context: str | None = None,
+            kb_context: str | None = None,
+            category_checklist: list[str] | None = None,
         ) -> dict[str, dict]:
             captured["scoring_kb_context"] = kb_context
             return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
@@ -1112,6 +1744,21 @@ def test_build_survey_tree_without_link_type_client_leaves_trace_links_empty() -
     assert tree.trace_links == []
 
 
+def test_build_survey_tree_sends_trace_link_nodes_without_a_redundant_title_key() -> None:
+    # title duplicated description's content for no signal (the model
+    # references node_id, not title, in its output) -- dropped to save
+    # tokens. text must NOT be truncated (a separate, deliberate
+    # non-change) since external ref ids can appear anywhere in it.
+    fake_client = FakeTraceLinkInferenceClient()
+    build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(),
+        link_type_client=fake_client, link_type_catalog=[],
+    )
+    assert len(fake_client.calls) == 1
+    for node in fake_client.calls[0]["nodes"]:
+        assert set(node.keys()) == {"node_id", "type", "text"}
+
+
 def test_build_survey_tree_calls_infer_trace_links_exactly_once_with_the_catalog() -> None:
     fake_client = FakeTraceLinkInferenceClient()
     catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
@@ -1121,6 +1768,54 @@ def test_build_survey_tree_calls_infer_trace_links_exactly_once_with_the_catalog
     )
     assert len(fake_client.calls) == 1
     assert fake_client.calls[0]["link_type_catalog"] == catalog
+
+
+def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises() -> None:
+    # Confirmed real job failure: infer_trace_links serializes every node in
+    # the whole document into one prompt (the largest single payload in this
+    # module) and a model occasionally ignores the "no prose" instruction,
+    # producing a non-JSON reply that raises ValueError. This is purely an
+    # enrichment pass over already-completed analysis/scoring work -- same
+    # "must never fail a SURVEY job" fail-open philosophy already applied to
+    # KB retrieval/relevance verification -- so it must degrade to
+    # trace_links=[] with a warning, not abort the whole job and discard
+    # everything already produced.
+    class _RaisingTraceLinkClient:
+        def infer_trace_links(self, nodes, link_type_catalog, kb_context=None):
+            raise ValueError("malformed JSON in LLM response content: 'Based'")
+
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(),
+        link_type_client=_RaisingTraceLinkClient(), link_type_catalog=[],
+    )
+    assert tree.trace_links == []
+    assert len(tree.nodes) == 2  # analysis output is unaffected
+    assert any("Trace/coverage link inference failed" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_captures_the_raw_response_when_trace_link_inference_fails() -> None:
+    class _RaisingTraceLinkClient:
+        def infer_trace_links(self, nodes, link_type_catalog, kb_context=None):
+            raise ValueError("malformed JSON in LLM response content: 'Based'")
+
+    class _FakeDebugCapture:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        def capture(self, kind: str, identifier: str, raw_response: str) -> None:
+            self.calls.append((kind, identifier, raw_response))
+
+    debug_capture = _FakeDebugCapture()
+    build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(),
+        link_type_client=_RaisingTraceLinkClient(), link_type_catalog=[],
+        debug_capture=debug_capture,
+    )
+    assert len(debug_capture.calls) == 1
+    kind, identifier, raw_response = debug_capture.calls[0]
+    assert kind == "infer_trace_links"
+    assert identifier == "document"
+    assert "malformed JSON in LLM response content: 'Based'" in raw_response
 
 
 def test_build_survey_tree_resolves_intra_job_link_target() -> None:
@@ -1241,8 +1936,12 @@ def test_build_survey_tree_progress_callback_carries_the_sections_heading_as_its
     _force_multi_branch(monkeypatch)
     events = []
     build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
-    assert events[0].section_label == "Display"
-    assert events[1].section_label == "Audio"
+    # Each branch now fires two events (analyze_section, then section_complete
+    # once its nodes are finalized) -- filter to the phase that starts each
+    # branch to keep this test about section labeling, not event count.
+    analyze_events = [e for e in events if e.phase == "analyze_section"]
+    assert analyze_events[0].section_label == "Display"
+    assert analyze_events[1].section_label == "Audio"
 
 
 def test_build_survey_tree_progress_callback_falls_back_to_an_excerpt_when_the_section_has_no_heading() -> None:
@@ -1274,7 +1973,7 @@ def test_build_survey_tree_fires_progress_callback_for_each_real_step_boundary()
     )
 
     phases = [e.phase for e in events]
-    assert phases == ["analyze_section"]  # the two old phases collapse into one holistic call
+    assert phases == ["analyze_section", "section_complete"]
     assert all(e.branch_index == 0 for e in events)
     assert all(e.branch_count == 1 for e in events)
     assert all(e.kb_grounded is False for e in events)
@@ -1284,7 +1983,7 @@ def test_build_survey_tree_progress_callback_fires_score_requirements_when_scori
     events = []
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
             return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
 
     build_survey_tree(
@@ -1294,7 +1993,87 @@ def test_build_survey_tree_progress_callback_fires_score_requirements_when_scori
         progress_callback=lambda p: events.append(p),
     )
 
-    assert [e.phase for e in events] == ["analyze_section", "score_requirements"]
+    # §2c: scoring is a whole-document pass that runs AFTER every branch's
+    # own section_complete (scoring is no longer per-branch/inline).
+    assert [e.phase for e in events] == [
+        "analyze_section",
+        "section_complete",
+        "score_requirements",
+        "score_requirements_done",
+    ]
+
+
+def test_build_survey_tree_progress_callback_carries_the_sections_finished_nodes() -> None:
+    # The real "parsed and formatted response" for a section -- lets a
+    # reviewer inspect what THIS section actually produced live, without
+    # waiting for the whole job to reach diff_ready.
+    events = []
+
+    class _FakeScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            return {node_id: {"score": 87, "issues": ["vague_term"]} for node_id in descriptions_by_node_id}
+
+    build_survey_tree(
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        scoring_client=_FakeScoringClient(),
+        progress_callback=lambda p: events.append(p),
+    )
+
+    completed = next(e for e in events if e.phase == "section_complete")
+    assert completed.section_nodes is not None
+    assert len(completed.section_nodes) == 2
+    requirement_node = next(n for n in completed.section_nodes if n["type"] == "Requirement")
+    assert requirement_node["title"]
+    assert requirement_node["text"]
+    # §2c: scoring is now a whole-document pass that runs AFTER every
+    # branch's section_complete fires -- quality_score is always None at
+    # section_complete time; the frontend patches it in once
+    # score_requirements_done arrives for this node.
+    assert requirement_node["quality_score"] is None
+    feature_node = next(n for n in completed.section_nodes if n["type"] == "Feature")
+    assert feature_node["quality_score"] is None
+
+
+def test_build_survey_tree_progress_callback_carries_model_draft_count_and_issues_found() -> None:
+    # FakeSectionAnalysisClient (the usual double) has no `.model` attribute
+    # at all -- confirms the real getattr(client, 'model', None) lookup in
+    # _build_survey_tree_for_branch's _fire is truly optional, not a
+    # required Protocol member every test double must implement.
+    class _AnalysisClientWithModel(FakeSectionAnalysisClient):
+        model = "qwen2.5:32b"
+
+    class _FakeScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            # One node scored with two issues, the rest clean -- exercises a
+            # real non-zero issues_found sum, not just a trivial 0 case.
+            first_id = next(iter(descriptions_by_node_id))
+            return {
+                node_id: (
+                    {"score": 60, "issues": ["vague_term", "compound"]}
+                    if node_id == first_id
+                    else {"score": 95, "issues": []}
+                )
+                for node_id in descriptions_by_node_id
+            }
+
+    events = []
+    build_survey_tree(
+        _small_doc(),
+        _AnalysisClientWithModel(),
+        scoring_client=_FakeScoringClient(),
+        progress_callback=lambda p: events.append(p),
+    )
+
+    by_phase = {e.phase: e for e in events}
+    assert all(e.model == "qwen2.5:32b" for e in events)
+    # _DEFAULT_NODES is one Feature + one Requirement -- draft_count reflects
+    # only the Requirement-type nodes actually sent for scoring (see
+    # test_..._scores_only_requirement_type_nodes...), not every node the
+    # section produced.
+    requirement_count = sum(1 for n in _DEFAULT_NODES if n["type"] == "Requirement")
+    assert by_phase["score_requirements"].draft_count == requirement_count
+    assert by_phase["score_requirements_done"].issues_found == 2
 
 
 def test_render_section_interleaves_a_table_at_its_real_document_position() -> None:
@@ -1360,6 +2139,50 @@ def test_build_survey_tree_warns_on_a_referenced_attachment_it_did_not_ingest() 
 def test_build_survey_tree_does_not_warn_on_a_section_with_no_attachment_references() -> None:
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     assert not any("did not ingest" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_warns_on_an_unfilled_reqid_placeholder() -> None:
+    # §10.4 fix: the regex used to require actual digits (reqid\s*\d+) and
+    # silently missed a real document's own unfilled authoring placeholder
+    # text ("ReqID XXXX", not a filled-in number) -- widened to match
+    # "reqid" alone so this genuinely-unresolvable reference is flagged.
+    path = "referenced_placeholder.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="According to ReqID XXXX: EMI/EMC table.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "According to ReqID XXXX: EMI/EMC table.", "tags": []}]
+    )
+    tree = build_survey_tree(doc, fake)
+    # The match itself is bare "ReqID" (no trailing digits to capture from
+    # the unfilled "XXXX" placeholder) -- still enough to flag the section.
+    assert any("ReqID" in w and "did not ingest" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_does_not_double_report_a_block_as_both_dropped_and_referenced() -> None:
+    # §10.4 dedup: a block matching the external-reference pattern gets its
+    # own, more actionable warning -- it must not ALSO show up in the
+    # generic "did not reference N of M blocks" list for the same content.
+    path = "referenced_and_dropped.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(
+                id="b0", kind=BlockKind.PARAGRAPH,
+                text="According to ReqID XXXX the EMI/EMC shielding values are defined externally.",
+                source_ref=_sr(path),
+            ),
+        ],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "An unrelated requirement.", "tags": []}]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert any("did not ingest" in w for w in tree.warnings)
+    assert not any("did not reference" in w for w in tree.warnings)
 
 
 def test_build_survey_tree_produces_a_non_empty_tree_for_a_table_only_xlsx_doc() -> None:
@@ -1456,3 +2279,118 @@ def test_small_document_stays_single_call_and_byte_identical_with_named_model() 
     assert len(fake.calls) == 1
     assert fake.calls[0]["whole_document"] is True
     assert {node.local_id for node in tree.nodes} == {"n0", "n1"}
+
+
+def test_build_survey_tree_reparents_a_requirement_directly_under_an_epic() -> None:
+    # Confirmed real bug (user-reported): the model occasionally skips the
+    # Feature level entirely, putting a Requirement straight under an Epic --
+    # a real Epic->Feature->Requirement chain violation the prompt alone
+    # (soft LLM instruction) doesn't always prevent.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "System outcome.", "tags": []},
+            {"temp_id": "n1", "type": "Feature", "parent_temp_id": "n0", "text": "A capability.", "tags": []},
+            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n0", "text": "Shall do X.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert len(tree.nodes) == 3  # re-parented, not synthesized -- a real Feature (n1) was available
+    assert by_id["n2"].parent_local_id == "n1"
+    assert any("re-parented under Feature n1" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_reparents_a_requirement_chained_under_another_requirement() -> None:
+    # Requirement -> Requirement -> Feature: the repair must walk UP the
+    # chain to find the real Feature ancestor, not just check the immediate
+    # parent's type and give up.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "text": "A capability.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "text": "Shall do X.", "tags": []},
+            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n1", "text": "Shall do Y.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n2"].parent_local_id == "n0"
+    assert any("re-parented under Feature n0" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_synthesizes_a_feature_when_no_real_feature_exists_at_all() -> None:
+    # Confirmed real bug (user-reported): two "standalone" Requirements with
+    # no Feature or Epic anywhere in the branch -- there is nothing real to
+    # re-parent under, so a grouping Feature must be synthesized rather than
+    # leaving them orphaned roots.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Y.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    assert len(tree.nodes) == 3  # 2 requirements + 1 synthesized Feature
+    by_id = {node.local_id: node for node in tree.nodes}
+    synthesized = [n for n in tree.nodes if n.type == WorkItemType.FEATURE]
+    assert len(synthesized) == 1
+    # Both requirements land under the SAME synthesized Feature, not one each.
+    assert by_id["n0"].parent_local_id == synthesized[0].local_id
+    assert by_id["n1"].parent_local_id == synthesized[0].local_id
+    assert any("inserted a synthesized grouping Feature" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_does_not_touch_an_already_valid_hierarchy() -> None:
+    # No-op guard: a correctly-shaped Epic -> Feature -> Requirement tree
+    # must not be modified or warned about at all.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "System outcome.", "tags": []},
+            {"temp_id": "n1", "type": "Feature", "parent_temp_id": "n0", "text": "A capability.", "tags": []},
+            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n1", "text": "Shall do X.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    assert len(tree.nodes) == 3
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n2"].parent_local_id == "n1"
+    assert not any("re-parented" in w or "synthesized" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_does_not_touch_a_genuinely_sole_root_requirement() -> None:
+    # Regression guard for the O(n^2) hoist in _repair_requirement_hierarchy
+    # (root_count/has_epic_or_feature precomputed once instead of rescanned
+    # per violation): a single standalone Requirement with no Feature/Epic
+    # anywhere is legitimate (a section that's just one atomic requirement)
+    # and must NOT be forced under a synthesized bridge Feature.
+    fake = FakeSectionAnalysisClient(
+        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []}]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    assert len(tree.nodes) == 1
+    assert tree.nodes[0].parent_local_id is None
+    assert not any("re-parented" in w or "synthesized" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_synthesizes_one_feature_shared_by_three_root_requirements() -> None:
+    # Regression guard for the same hoist: with 3+ originally-root
+    # Requirements and no real Feature anywhere, every one of them must
+    # still land under the SAME synthesized bridge, including the LAST one
+    # processed (by which point the earlier two have already been
+    # re-parented and are no longer "null parent" nodes themselves) --
+    # proving has_epic_or_feature's in-place update after synthesis keeps
+    # working even after the precomputed root_count itself has gone stale.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Y.", "tags": []},
+            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": None, "text": "Shall do Z.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    assert len(tree.nodes) == 4  # 3 requirements + 1 synthesized Feature
+    by_id = {node.local_id: node for node in tree.nodes}
+    synthesized = [n for n in tree.nodes if n.type == WorkItemType.FEATURE]
+    assert len(synthesized) == 1
+    assert by_id["n0"].parent_local_id == synthesized[0].local_id
+    assert by_id["n1"].parent_local_id == synthesized[0].local_id
+    assert by_id["n2"].parent_local_id == synthesized[0].local_id

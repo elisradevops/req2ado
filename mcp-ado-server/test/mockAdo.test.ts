@@ -87,4 +87,10 @@ describe('MockAdoBackend.setFields', () => {
     expect(updated?.fields['System.Title']).toBe('Title');
     expect(updated?.fields['System.State']).toBe('Active');
   });
+
+  it('discoverWorkItemTypeCategories resolves CMMI-shaped defaults', async () => {
+    const backend = new MockAdoBackend(':memory:');
+    const result = await backend.discoverWorkItemTypeCategories();
+    expect(result).toEqual({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' });
+  });
 });

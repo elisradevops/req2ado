@@ -1,13 +1,14 @@
-import Stack from '@mui/material/Stack';
-import Chip from '@mui/material/Chip';
+import { Chip } from '../ui/Chip';
 import { tagColor } from '../utils/tagColors';
 
 export function TagChips({ tags }: { tags: string[] | undefined }): React.ReactElement {
   return (
-    <Stack direction="row" spacing={0.5} flexWrap="wrap">
+    <div className="flex flex-wrap gap-1">
       {(tags ?? []).map((tag) => (
-        <Chip key={tag} label={tag} size="small" sx={{ backgroundColor: tagColor(tag), color: '#fff' }} />
+        <Chip key={tag} bg={tagColor(tag)} color="#fff">
+          {tag}
+        </Chip>
       ))}
-    </Stack>
+    </div>
   );
 }

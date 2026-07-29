@@ -8,7 +8,8 @@ export type JobStage =
   | 'generate_requirements_start'
   | 'generate_requirements_done'
   | 'diff_ready'
-  | 'failed';
+  | 'failed'
+  | 'cancelled';
 
 // Publishes coarse pipeline-progress events over Redis pub/sub so the
 // orchestrator HTTP process's JobEventsController can relay them to SSE

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
-import type { LlmChatOptions, LlmChatResult, LlmClient } from './llm-client.interface';
+import type { LlmChatOptions, LlmChatResult, LlmClient, LlmStreamChunk } from './llm-client.interface';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 
 function buildResponseFormat(opts: LlmChatOptions | undefined, includeSchema: boolean): OpenAI.ResponseFormatJSONSchema | undefined {
@@ -67,6 +67,21 @@ export class OpenWebUiClient implements LlmClient {
       // chain-of-thought + answer (see LlmChatOptions.maxTokens doc comment).
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
+      // `reasoning_effort: 'none'` -- NOT an Ollama-native `options.*` field
+      // like numCtx/topK/minP above; it's Ollama's OpenAI-compat endpoint's
+      // OWN top-level field for controlling reasoning (confirmed against
+      // Ollama's own openai/openai.go: ChatCompletionRequest.ReasoningEffort,
+      // mapped internally to api.ThinkValue -- a bare `think`/`options.think`
+      // field is silently ignored by this endpoint, confirmed live: it
+      // produced a real `reasoning` field in the response and no speedup).
+      // The OpenAI SDK's own ReasoningEffort type is 'low'|'medium'|'high'|
+      // null (real OpenAI o1/o3 models don't support 'none') -- 'none' is
+      // an Ollama-specific extension of the same field, confirmed valid
+      // server-side even though the SDK's TS union doesn't know about it;
+      // cast past that narrower type rather than widen it repo-wide. Only
+      // sent when explicitly `false`; omitted otherwise so every other
+      // caller's default reasoning behavior is unaffected.
+      ...(opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
     });
@@ -92,7 +107,7 @@ export class OpenWebUiClient implements LlmClient {
     return page.data.map((m) => m.id);
   }
 
-  async *streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<string> {
+  async *streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<LlmStreamChunk> {
     const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
     const buildParams = (includeSchema: boolean) => ({
       model: opts?.model ?? this.config.LLM_CHAT_MODEL,
@@ -112,9 +127,16 @@ export class OpenWebUiClient implements LlmClient {
         throw err;
       }
     }
-    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string } }[] }>) {
-      const delta = chunk.choices[0]?.delta?.content;
-      if (delta) yield delta;
+    // `reasoning` is Ollama's OpenAI-compat streaming delta field for a
+    // reasoning model's chain-of-thought (the streaming counterpart of the
+    // non-stream response's `message.reasoning`, confirmed live above) --
+    // not part of the OpenAI SDK's own delta type, hence the inline shape.
+    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string; reasoning?: string } }[] }>) {
+      const delta = chunk.choices[0]?.delta;
+      if (!delta) continue;
+      if (delta.content || delta.reasoning) {
+        yield { ...(delta.content ? { content: delta.content } : {}), ...(delta.reasoning ? { reasoning: delta.reasoning } : {}) };
+      }
     }
   }
 
@@ -163,6 +185,27 @@ export class OpenWebUiClient implements LlmClient {
     const response = await this.openai.chat.completions.create({
       model,
       messages: [{ role: 'user', content }],
+      // Confirmed real root cause of run-to-run SURVEY node-count variance
+      // (74 vs ~120 nodes for the identical document): unlike every other
+      // call in this module, this one previously set neither temperature
+      // nor seed, so each figure's caption was freshly (re-)sampled on
+      // every job -- and caption text feeds directly into
+      // llm_leveling.py's token-budget branch splitter, so a differently
+      // worded caption can shift branch boundaries and, with them, total
+      // node count. A caption is structured extraction (describe what's in
+      // the image), not creative writing -- temperature 0 is the correct
+      // setting on its own merits, seed is defensive/hygiene on top of
+      // that in case this backend ever runs at a non-zero temperature.
+      temperature: 0,
+      seed: 0,
+      // No output cap previously existed here at all -- the prompt asks
+      // for "one or two sentences" (orchestrator_vision_client.py's
+      // _DESCRIBE_FIGURE_PROMPT), so a real caption is short, but nothing
+      // bounded the worst case (a reasoning-capable vision model going
+      // off the rails on a pathological image). Bounds latency risk only;
+      // the byte-hash cache (main.py's figure-caption memoization) already
+      // removes the repeat cost of a slow caption on re-runs.
+      max_tokens: 200,
     });
     return response.choices[0]?.message?.content ?? '';
   }

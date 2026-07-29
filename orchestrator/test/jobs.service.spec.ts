@@ -1,4 +1,6 @@
+import { Queue } from 'bullmq';
 import { JobsService } from '../src/modules/pipeline/jobs.service';
+import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 
 describe('JobsService.confirm', () => {
   it('creates items in tree order and links each child to its already-created parent', async () => {
@@ -26,7 +28,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild } as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -36,6 +38,47 @@ describe('JobsService.confirm', () => {
 
     expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
     expect(linkParentChild).toHaveBeenCalledWith(101, 100, undefined);
+  });
+
+  it('creates work items using the project\'s REAL work-item type name, not req2ado\'s internal Epic/Feature/Requirement label', async () => {
+    // Confirmed real bug: entry.type ("Requirement") was previously sent
+    // straight to ADO as the literal type name -- 404s on any non-CMMI
+    // process template. An Agile project's real Requirement-category type
+    // is "User Story".
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 })
+      .mockResolvedValueOnce({ id: 101 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const discoverWorkItemTypeCategories = jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' });
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready', state: 'Proposed',
+          areaPath: 'AgileProject\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(discoverWorkItemTypeCategories).toHaveBeenCalledWith('AgileProject', undefined);
+    expect(createWorkItem.mock.calls[0][0]).toBe('Feature');
+    expect(createWorkItem.mock.calls[1][0]).toBe('User Story');
   });
 
   it('links a child to a REUSED parent (existingAdoId), not just newly-created parents', async () => {
@@ -58,7 +101,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild } as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -90,7 +133,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -103,7 +146,7 @@ describe('JobsService.confirm', () => {
       'Requirement',
       {
         'System.Title': 'T',
-        'System.Description': 'D',
+        'System.Description': toAdoDescriptionHtml('D'),
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
         'Custom.CustomerRequirementId': 'CUST-1',
@@ -131,7 +174,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -143,7 +186,7 @@ describe('JobsService.confirm', () => {
       'Requirement',
       {
         'System.Title': 'T',
-        'System.Description': 'D',
+        'System.Description': toAdoDescriptionHtml('D'),
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
         'System.Tags': 'CustomerId:CUST-1',
@@ -175,7 +218,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -205,7 +248,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -245,7 +288,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -257,7 +300,7 @@ describe('JobsService.confirm', () => {
       'Requirement',
       {
         'System.Title': 'T',
-        'System.Description': 'D',
+        'System.Description': toAdoDescriptionHtml('D'),
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
         'Custom.SourceDocument': '/tmp/doc.docx#offset=10-20',
@@ -290,7 +333,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -302,7 +345,7 @@ describe('JobsService.confirm', () => {
       'Requirement',
       {
         'System.Title': 'T',
-        'System.Description': 'D',
+        'System.Description': toAdoDescriptionHtml('D'),
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
         'System.Tags': 'SourceRef:/tmp/doc.docx#offset=10-20',
@@ -335,7 +378,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -372,7 +415,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -405,7 +448,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -438,7 +481,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -472,7 +515,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild } as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch } as any,
       'redis://unused',
@@ -510,7 +553,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild } as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -546,7 +589,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch } as any,
       'redis://unused',
@@ -586,7 +629,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -620,7 +663,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch } as any,
       'redis://unused',
@@ -654,7 +697,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn() } as any,
       'redis://unused',
@@ -694,7 +737,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn().mockResolvedValue(undefined) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -725,7 +768,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn().mockResolvedValue(undefined) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -762,7 +805,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn().mockResolvedValue(undefined) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -800,7 +843,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild } as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn().mockResolvedValue(undefined) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -837,7 +880,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild } as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn().mockResolvedValue(undefined) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -871,7 +914,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn().mockResolvedValue(undefined) } as any,
+      { createWorkItem, linkParentChild: jest.fn().mockResolvedValue(undefined), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn().mockResolvedValue(undefined) } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -906,7 +949,7 @@ describe('JobsService.confirm — row deselect', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -939,7 +982,7 @@ describe('JobsService.confirm — row deselect', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild } as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -970,7 +1013,7 @@ describe('JobsService.confirm — row deselect', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -1021,6 +1064,29 @@ describe('JobsService.reject', () => {
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     await expect(service.reject('unknown')).rejects.toThrow('is not in a rejectable state');
+  });
+});
+
+describe('JobsService.getDebugCaptures', () => {
+  it('returns whatever the ingestion client returns', async () => {
+    const ingestionClient = {
+      getDebugCaptures: jest.fn().mockResolvedValue([{ kind: 'infer_trace_links', identifier: 'document', content: 'raw content' }]),
+    };
+    const service = new JobsService({} as any, {} as any, { record: jest.fn() } as any, ingestionClient as any, 'redis://unused');
+
+    const result = await service.getDebugCaptures('job-1');
+
+    expect(ingestionClient.getDebugCaptures).toHaveBeenCalledWith('job-1');
+    expect(result).toEqual([{ kind: 'infer_trace_links', identifier: 'document', content: 'raw content' }]);
+  });
+
+  it('returns an empty array when the ingestion client is unreachable, rather than failing the Audit tab', async () => {
+    const ingestionClient = { getDebugCaptures: jest.fn().mockRejectedValue(new Error('connection refused')) };
+    const service = new JobsService({} as any, {} as any, { record: jest.fn() } as any, ingestionClient as any, 'redis://unused');
+
+    const result = await service.getDebugCaptures('job-1');
+
+    expect(result).toEqual([]);
   });
 });
 
@@ -1132,8 +1198,8 @@ describe('JobsService.validateCreatedTree', () => {
 
   it('reports valid:true when every ADO field/parent matches the dry-run diff', async () => {
     const getWorkItemsBatch = jest.fn().mockResolvedValue([
-      { id: 100, type: 'Feature', fields: { 'System.Title': 'Parent', 'System.Description': 'd0' }, parentId: null },
-      { id: 101, type: 'Requirement', fields: { 'System.Title': 'Child', 'System.Description': 'd1' }, parentId: 100 },
+      { id: 100, type: 'Feature', fields: { 'System.Title': 'Parent', 'System.Description': toAdoDescriptionHtml('d0') }, parentId: null },
+      { id: 101, type: 'Requirement', fields: { 'System.Title': 'Child', 'System.Description': toAdoDescriptionHtml('d1') }, parentId: 100 },
     ]);
     const service = makeService(
       {
@@ -1158,7 +1224,7 @@ describe('JobsService.validateCreatedTree', () => {
 
   it('reports a mismatch when the real ADO title differs from the dry-run diff', async () => {
     const getWorkItemsBatch = jest.fn().mockResolvedValue([
-      { id: 100, type: 'Requirement', fields: { 'System.Title': 'Truncated Ti', 'System.Description': 'd0' }, parentId: null },
+      { id: 100, type: 'Requirement', fields: { 'System.Title': 'Truncated Ti', 'System.Description': toAdoDescriptionHtml('d0') }, parentId: null },
     ]);
     const service = makeService(
       { id: 'job-1', dryRunDiff: [{ localId: 'n0', parentLocalId: null, title: 'Truncated Title', description: 'd0' }] },
@@ -1176,8 +1242,8 @@ describe('JobsService.validateCreatedTree', () => {
 
   it('reports a mismatch when the real ADO parent link differs from the dry-run diff', async () => {
     const getWorkItemsBatch = jest.fn().mockResolvedValue([
-      { id: 100, type: 'Feature', fields: { 'System.Title': 'Parent', 'System.Description': 'd0' }, parentId: null },
-      { id: 101, type: 'Requirement', fields: { 'System.Title': 'Child', 'System.Description': 'd1' }, parentId: null },
+      { id: 100, type: 'Feature', fields: { 'System.Title': 'Parent', 'System.Description': toAdoDescriptionHtml('d0') }, parentId: null },
+      { id: 101, type: 'Requirement', fields: { 'System.Title': 'Child', 'System.Description': toAdoDescriptionHtml('d1') }, parentId: null },
     ]);
     const service = makeService(
       {
@@ -1450,7 +1516,7 @@ describe('JobsService.confirm — exclusion', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn() } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -1491,7 +1557,7 @@ describe('JobsService.confirm — trace links', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild, linkWorkItems } as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -1526,7 +1592,7 @@ describe('JobsService.confirm — trace links', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild, linkWorkItems } as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -1562,7 +1628,7 @@ describe('JobsService.confirm — trace links', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild, linkWorkItems } as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -1600,7 +1666,7 @@ describe('JobsService.confirm — trace links', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild, linkWorkItems } as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -1611,15 +1677,320 @@ describe('JobsService.confirm — trace links', () => {
     expect(linkWorkItems).toHaveBeenCalledWith(101, 100, 'Elisra.CoveredBy-Reverse', undefined);
     expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
   });
+
+  it('attempts every trace link even when one of several rejects, now that they run concurrently instead of one at a time', async () => {
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 }) // n0
+      .mockResolvedValueOnce({ id: 101 }) // n1
+      .mockResolvedValueOnce({ id: 102 }); // n2
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const linkWorkItems = jest.fn()
+      .mockRejectedValueOnce(new Error('ADO rejected the rel'))
+      .mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
+            {
+              localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Cust Req 1', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null,
+              traceLinks: [
+                { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Reverse', displayName: 'Covers', targetKind: 'intraJob', targetLocalId: 'n0', resolutionStatus: 'pending' },
+              ],
+            },
+            {
+              localId: 'n2', parentLocalId: 'n0', type: 'Requirement', title: 'Cust Req 2', description: 'd2', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: null,
+              traceLinks: [
+                { sourceLocalId: 'n2', referenceName: 'Elisra.CoveredBy-Reverse', displayName: 'Covers', targetKind: 'intraJob', targetLocalId: 'n0', resolutionStatus: 'pending' },
+              ],
+            },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    // Both trace links attempted despite the first one rejecting -- a
+    // sequential loop with an unguarded await would have stopped after the
+    // first failure (or, pre-fix, thrown out of confirm entirely).
+    expect(linkWorkItems).toHaveBeenCalledTimes(2);
+    expect(linkWorkItems).toHaveBeenCalledWith(101, 100, 'Elisra.CoveredBy-Reverse', undefined);
+    expect(linkWorkItems).toHaveBeenCalledWith(102, 100, 'Elisra.CoveredBy-Reverse', undefined);
+    expect(result).toEqual({ status: 'succeeded', createdCount: 3 });
+  });
+});
+
+describe('JobsService.cancel', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('throws not found for an unknown job', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.cancel('unknown')).rejects.toThrow('not found');
+  });
+
+  it('throws a conflict when the job is not pending or running (e.g. already diff_ready)', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready' }) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.cancel('job-1')).rejects.toThrow("cannot be cancelled from status 'diff_ready'");
+  });
+
+  it('removes the still-queued BullMQ job and marks the row cancelled when it has not been picked up yet', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'pending' }), update: jest.fn().mockResolvedValue(undefined) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const remove = jest.fn().mockResolvedValue(undefined);
+    const getState = jest.fn().mockResolvedValue('waiting');
+    jest.spyOn(Queue.prototype, 'getJob').mockResolvedValue({ getState, remove } as any);
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.cancel('job-1');
+
+    expect(remove).toHaveBeenCalled();
+    expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'cancelled' } });
+    expect(prisma.auditEntry.create).toHaveBeenCalledWith({ data: { jobId: 'job-1', message: 'Job cancelled by user' } });
+    expect(result).toEqual({ status: 'cancelled' });
+  });
+
+  it('does not try to remove an already-active BullMQ job, but still marks the row cancelled', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'running' }), update: jest.fn().mockResolvedValue(undefined) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const remove = jest.fn().mockResolvedValue(undefined);
+    const getState = jest.fn().mockResolvedValue('active');
+    jest.spyOn(Queue.prototype, 'getJob').mockResolvedValue({ getState, remove } as any);
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.cancel('job-1');
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'cancelled' } });
+    expect(result).toEqual({ status: 'cancelled' });
+  });
+
+  it('still marks the row cancelled when the BullMQ job is already gone (race with completion)', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'running' }), update: jest.fn().mockResolvedValue(undefined) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    jest.spyOn(Queue.prototype, 'getJob').mockResolvedValue(undefined);
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.cancel('job-1');
+
+    expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'cancelled' } });
+    expect(result).toEqual({ status: 'cancelled' });
+  });
+});
+
+describe('JobsService.delete', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('throws not found for an unknown job', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.delete('unknown')).rejects.toThrow('not found');
+  });
+
+  it.each(['pending', 'running', 'writing'])('throws a conflict when the job is %s', async (status) => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status }) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.delete('job-1')).rejects.toThrow(`cannot be deleted while '${status}'`);
+  });
+
+  it.each(['diff_ready', 'succeeded', 'failed', 'rejected', 'cancelled'])(
+    'deletes a %s job and every child row in one transaction, but never touches IdempotencyMapping',
+    async (status) => {
+      const chatMessageDeleteMany = jest.fn().mockResolvedValue(undefined);
+      const createdItemMappingDeleteMany = jest.fn().mockResolvedValue(undefined);
+      const dedupSkipAuditDeleteMany = jest.fn().mockResolvedValue(undefined);
+      const auditEntryDeleteMany = jest.fn().mockResolvedValue(undefined);
+      const jobSourceFileDeleteMany = jest.fn().mockResolvedValue(undefined);
+      const jobDelete = jest.fn().mockResolvedValue(undefined);
+      const prisma = {
+        job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status }), delete: jobDelete },
+        chatMessage: { deleteMany: chatMessageDeleteMany },
+        createdItemMapping: { deleteMany: createdItemMappingDeleteMany },
+        dedupSkipAudit: { deleteMany: dedupSkipAuditDeleteMany },
+        auditEntry: { deleteMany: auditEntryDeleteMany },
+        jobSourceFile: { deleteMany: jobSourceFileDeleteMany },
+        idempotencyMapping: { deleteMany: jest.fn() },
+        $transaction: jest.fn(async (ops: unknown[]) => Promise.all(ops)),
+      };
+      const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+      const result = await service.delete('job-1');
+
+      expect(chatMessageDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+      expect(createdItemMappingDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+      expect(dedupSkipAuditDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+      expect(auditEntryDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+      expect(jobSourceFileDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+      expect(jobDelete).toHaveBeenCalledWith({ where: { id: 'job-1' } });
+      expect(prisma.idempotencyMapping.deleteMany).not.toHaveBeenCalled();
+      expect(result).toEqual({ deleted: true });
+    },
+  );
+});
+
+describe('JobsService.submit', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('persists the uploaded bytes as a JobSourceFile row when under the size cap', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const jobSourceFileCreate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: { create: jest.fn().mockResolvedValue({ id: 'job-1' }) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      jobSourceFile: { create: jobSourceFileCreate },
+    };
+    const service = new JobsService(
+      prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused',
+      undefined, undefined, undefined, 1000, // maxStoredSourceBytes
+    );
+
+    await service.submit({
+      areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline',
+      fileBuffer: Buffer.from('small file'), filename: 'doc.txt', sourceHash: 'hash-1',
+    });
+
+    expect(jobSourceFileCreate).toHaveBeenCalledWith({ data: { jobId: 'job-1', bytes: Buffer.from('small file') } });
+  });
+
+  it('does not persist bytes over the size cap', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const jobSourceFileCreate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: { create: jest.fn().mockResolvedValue({ id: 'job-1' }) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      jobSourceFile: { create: jobSourceFileCreate },
+    };
+    const service = new JobsService(
+      prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused',
+      undefined, undefined, undefined, 5, // maxStoredSourceBytes -- smaller than the test buffer
+    );
+
+    await service.submit({
+      areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline',
+      fileBuffer: Buffer.from('a file bigger than 5 bytes'), filename: 'doc.txt', sourceHash: 'hash-1',
+    });
+
+    expect(jobSourceFileCreate).not.toHaveBeenCalled();
+  });
+
+  it('does not fail submit when persisting the source file throws (best-effort retention)', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const prisma = {
+      job: { create: jest.fn().mockResolvedValue({ id: 'job-1' }) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      jobSourceFile: { create: jest.fn().mockRejectedValue(new Error('disk full')) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.submit({
+      areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline',
+      fileBuffer: Buffer.from('small file'), filename: 'doc.txt', sourceHash: 'hash-1',
+    });
+
+    expect(result).toEqual({ jobId: 'job-1' });
+  });
+});
+
+describe('JobsService.resubmit', () => {
+  it('throws not found for an unknown job', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.resubmit('unknown')).rejects.toThrow('not found');
+  });
+
+  it('throws not found when the job has no retained source file', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1' }) },
+      jobSourceFile: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.resubmit('job-1')).rejects.toThrow('no retained source file');
+  });
+
+  it('creates a new job with the original config and bytes, without mutating the source job', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const jobCreate = jest.fn().mockResolvedValue({ id: 'job-2' });
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', customerId: 'CUST-1', mode: 'survey',
+          followUp: true, originalFilename: 'doc.txt', sourceHash: 'hash-1', state: 'Approved', iterationPath: 'Iter\\1',
+        }),
+        create: jobCreate,
+      },
+      jobSourceFile: { findUnique: jest.fn().mockResolvedValue({ jobId: 'job-1', bytes: Buffer.from('original bytes') }) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.resubmit('job-1');
+
+    expect(jobCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        areaPath: 'Project\\Area1', userId: 'user-1', customerId: 'CUST-1', mode: 'survey',
+        followUp: true, state: 'Approved', iterationPath: 'Iter\\1', originalFilename: 'doc.txt', sourceHash: 'hash-1',
+      }),
+    });
+    expect(result).toEqual({ jobId: 'job-2' });
+  });
 });
 
 describe('JobsService.list', () => {
-  it('lists jobs newest-first with item counts derived from dryRunDiff length', async () => {
+  it('lists jobs newest-first with item counts derived from dryRunDiff length and real created-item counts', async () => {
     const prisma = {
       job: {
         findMany: jest.fn().mockResolvedValue([
-          { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', dryRunDiff: [{}, {}, {}], createdAt: new Date('2026-07-09T10:00:00Z') },
-          { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', dryRunDiff: [{}], createdAt: new Date('2026-07-08T10:00:00Z') },
+          {
+            id: 'j2',
+            mode: 'survey',
+            status: 'diff_ready',
+            areaPath: 'Proj\\B',
+            originalFilename: 'b.docx',
+            dryRunDiff: [{}, {}, {}],
+            createdAt: new Date('2026-07-09T10:00:00Z'),
+            _count: { createdItemMappings: 0 },
+          },
+          {
+            id: 'j1',
+            mode: 'baseline',
+            status: 'succeeded',
+            areaPath: 'Proj\\A',
+            originalFilename: 'a.docx',
+            dryRunDiff: [{}],
+            createdAt: new Date('2026-07-08T10:00:00Z'),
+            _count: { createdItemMappings: 1 },
+          },
         ]),
       },
     };
@@ -1629,9 +2000,27 @@ describe('JobsService.list', () => {
 
     expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { createdAt: 'desc' } }));
     expect(result).toEqual([
-      { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', itemCount: 3, createdAt: new Date('2026-07-09T10:00:00Z') },
-      { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', itemCount: 1, createdAt: new Date('2026-07-08T10:00:00Z') },
+      { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', originalFilename: 'b.docx', itemCount: 3, createdItemCount: 0, createdAt: new Date('2026-07-09T10:00:00Z') },
+      { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 1, createdItemCount: 1, createdAt: new Date('2026-07-08T10:00:00Z') },
     ]);
+  });
+
+  it('scopes the query to userId when provided -- ownership, matching every per-job route', async () => {
+    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.list('user-1');
+
+    expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'user-1' } }));
+  });
+
+  it('queries all jobs (no where filter) when userId is omitted', async () => {
+    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.list();
+
+    expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {} }));
   });
 });
 

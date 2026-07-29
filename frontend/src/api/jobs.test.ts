@@ -24,12 +24,10 @@ describe('jobs api', () => {
     expect(form.get('followUp')).toBe('false');
   });
 
-  it('confirmJob sends PAT headers when a credential is provided', async () => {
+  it('confirmJob posts with no credential -- the orchestrator resolves the PAT server-side from the vault', async () => {
     (httpClient.post as any).mockResolvedValue({ data: { status: 'succeeded', createdCount: 3 } });
-    await confirmJob('job-1', { orgUrl: 'https://ado.example', pat: 'pat-1' });
-    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/confirm', undefined, {
-      headers: { 'X-Ado-Org-Url': 'https://ado.example', 'X-Ado-Pat': 'pat-1' },
-    });
+    await confirmJob('job-1');
+    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/confirm');
   });
 
   it('editDiffEntry PATCHes title/description to the right URL', async () => {

@@ -38,6 +38,30 @@ class KbCitation(BaseModel):
     relevance: KbCitationRelevance = KbCitationRelevance.UNKNOWN
 
 
+# Per-dimension 0-100 breakdown backing the single overall quality_score
+# below -- added because a lone number (e.g. 40) with only a closed-
+# vocabulary issue TAG list (e.g. ['ambiguous', 'vague_term']) told a
+# reviewer THAT something was wrong but not HOW WRONG, nor what was
+# actually fine. Each dimension is its own independent judgment call from
+# the same scoring prompt (see
+# orchestrator_llm_client.score_requirements_for_document), not derived
+# mechanically from the issue tags.
+#
+# A dynamic key->0-100-score dict, NOT a fixed 5-field model -- confirmed
+# real gap (user-reported): when an org has ingested its own quality-
+# checklist standard into the Knowledge Base (e.g. a 10-item Necessary/
+# Correct level/Unambiguous/.../Modifiable checklist), the model derives
+# categoryScores keys FROM that document's own checklist instead of being
+# locked to a fixed clarity/testability/atomicity/style/rationale vocabulary
+# that ignores it. The 5-dimension scheme (mapping onto
+# RequirementQualityIssue's 7 tags: clarity=ambiguous/vague_term,
+# testability=not_testable/missing_acceptance_criteria, atomicity=compound,
+# style=passive_voice, rationale=missing_rationale) is used ONLY as the
+# fallback when no KB standard is available -- see
+# score_requirements_for_document's own docstring.
+QualityCategoryScores = dict[str, int]
+
+
 class RequirementQualityIssue(str, Enum):
     """Closed vocabulary of quality issues a SURVEY requirement's final
     formalized description can be flagged with, judged against
@@ -147,6 +171,12 @@ class WorkItemNode(BaseModel):
     # llm_leveling.score_requirements_for_document.
     quality_score: int | None = None
     quality_issues: list[RequirementQualityIssue] = Field(default_factory=list)
+    # Per-dimension breakdown backing quality_score -- see
+    # QualityCategoryScores' own docstring. None whenever quality_score is
+    # None (no scoring_client supplied, or this node's scoring entry was
+    # missing/malformed) -- same all-or-nothing tolerance as quality_score
+    # itself, never partially populated.
+    quality_category_scores: QualityCategoryScores | None = None
 
 
 class WorkItemTree(BaseModel):

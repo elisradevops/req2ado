@@ -7,8 +7,11 @@ import re
 from typing import Callable
 
 import httpx
+from json_repair import repair_json
 
 from app.survey._response_schemas import (
+    checklist_extraction_schema,
+    epic_feature_scores_schema,
     kb_relevance_schema,
     scores_schema,
     section_analysis_schema,
@@ -17,6 +20,16 @@ from app.survey._response_schemas import (
 logger = logging.getLogger(__name__)
 
 _JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
+# Same fence shape, NOT anchored to the whole string -- confirmed live (real
+# job failure, qwen3.6:35b via analyze_section_agentic): unlike the other
+# schema-constrained calls in this module, the agentic tool-calling path
+# gets a free-form conversational reply, so nothing stops the model from
+# prefacing the fence with prose ("Based on the analysis... here is the
+# synthesized work-item tree:\n\n```json\n{...}\n```") -- the anchored
+# pattern above never matches that shape at all, and the caller's
+# subsequent raw_decode() then fails on the leading prose, crashing the
+# whole SURVEY job.
+_JSON_FENCE_ANYWHERE_PATTERN = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
 
 # httpx's default timeout (5s total) is far too short for a real local LLM —
 # observed directly: a 12b-class Ollama model took several minutes to over
@@ -46,14 +59,39 @@ _LLM_REQUEST_TIMEOUT_SECONDS = 1800.0
 # instead of guaranteeing truncation.
 _MAX_OUTPUT_TOKENS = 20000
 
+# extract_quality_checklist: a checklist definition is a small,
+# self-contained part of a document (a table or short list), not something
+# that needs whole-document comprehension -- caps worst-case input size for
+# this structured-extraction call. ~12,000 chars covers several pages of
+# real checklist content with margin.
+_CHECKLIST_EXTRACTION_MAX_CHARS = 12_000
+
+# extract_quality_checklist's own output sanity bounds -- a real checklist
+# is a short, named list of categories, not prose. Guards two distinct
+# failure modes at once: (1) untrusted KB document text steering the
+# extraction into returning something huge/garbled (security-adjacent --
+# this stored value is replayed verbatim into every future scoring prompt
+# for documents citing this KB source), and (2) a nonsense extraction (too
+# few/many items) silently corrupting every later scoring call, since
+# _parse_category_scores only validates score VALUES, never that the KEYS
+# are sensible.
+_CHECKLIST_MIN_ITEMS = 2
+_CHECKLIST_MAX_ITEMS = 30
+_CHECKLIST_MIN_ITEM_CHARS = 2
+_CHECKLIST_MAX_ITEM_CHARS = 60
+
 
 def _strip_json_fence(content: str) -> str:
     """Local models (Ollama included — the golden test's real target) often
     wrap JSON in markdown fences despite being explicitly told not to. Strip
     a single leading/trailing fence if present; otherwise return unchanged.
     Cheap insurance against a single fenced response failing an entire job."""
-    match = _JSON_FENCE_PATTERN.match(content.strip())
-    return match.group(1).strip() if match else content.strip()
+    stripped = content.strip()
+    match = _JSON_FENCE_PATTERN.match(stripped)
+    if match:
+        return match.group(1).strip()
+    match = _JSON_FENCE_ANYWHERE_PATTERN.search(stripped)
+    return match.group(1).strip() if match else stripped
 
 
 def _parse_json_object(content: str):
@@ -90,7 +128,22 @@ def _parse_json_object(content: str):
     this exact shape -- only retried when the error message is literally
     "Expecting ',' delimiter" AND the offending character is `]` -- inserting
     a single '}' at that position closes the truncated node object and lets
-    the rest of the response parse correctly. Any other malformation still
+    the rest of the response parse correctly.
+
+    A final, general-purpose fallback (json_repair, only reached once every
+    narrower tolerance above has already failed): confirmed live against a
+    real AirPro job that a model can embed bare, unescaped double quotes
+    INSIDE a string value for emphasis -- e.g. `"...storing the "Power-ON"
+    Event..."` -- which breaks the string mid-value and produces the same
+    "Expecting ',' delimiter" message as the third tolerance above, but at a
+    position no single-character positional fix can repair (the string
+    needs re-escaping, not a missing brace). Rather than writing a new
+    narrow, positional heuristic for every fresh malformation shape a local
+    model happens to produce (the pattern the three tolerances above
+    already show), a mature, purpose-built repair library is used as the
+    LAST resort -- deliberately last, since it's a general fixer rather
+    than a confirmed, understood failure shape. Its output is validated
+    (must be a dict or list) before being trusted; anything else still
     raises exactly as before."""
     try:
         obj, _end = json.JSONDecoder().raw_decode(content)
@@ -105,7 +158,13 @@ def _parse_json_object(content: str):
                     return obj
                 except json.JSONDecodeError:
                     pass
-            raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
+            try:
+                obj = repair_json(content, return_objects=True)
+            except Exception:
+                raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
+            if not isinstance(obj, (dict, list)):
+                raise ValueError(f"malformed JSON in LLM response content: {content!r}") from exc
+            return obj
     return obj
 
 
@@ -210,16 +269,31 @@ _SECTION_ANALYSIS_SYSTEM_PROMPT = (
     "operation, maintenance, feature, behavior). Emit as many or as few nodes as "
     "the section genuinely contains. No prose, no markdown fences -- the body "
     "must be valid JSON on its own.\n\n"
+    "Every figure in this section (each rendered as '[FIGURE: <description>]') "
+    "that describes real technical content (dimensions, pin-outs, connections, "
+    "architecture, values) must have that content reflected in at least one "
+    "node's 'text' -- do not silently omit a figure's technical content just "
+    "because it wasn't already phrased as a requirement.\n\n"
     "IMPORTANT on parent_temp_id: null means 'this node has no parent at all "
     "-- it is a root of the tree', NOT a placeholder or default. At most ONE "
     "node in your entire response should have parent_temp_id null (the single "
     "section root -- usually the first Epic or Feature you emit). EVERY other "
     "node -- including the LAST ones you emit, however many nodes there are -- "
     "must set parent_temp_id to an already-emitted temp_id from earlier in "
-    "this same array (its Epic, Feature, or another Requirement it belongs "
-    "under). Do not let parent_temp_id drift to null for later nodes just "
-    "because the response is long -- re-check this field for every single "
-    "node before finishing."
+    "this same array. Do not let parent_temp_id drift to null for later nodes "
+    "just because the response is long -- re-check this field for every "
+    "single node before finishing.\n\n"
+    "IMPORTANT on the type hierarchy: this is a strict 3-level chain -- Epic "
+    "groups Features, Feature groups Requirements. A Requirement's parent "
+    "must ALWAYS be a Feature -- never an Epic directly, never another "
+    "Requirement, and never null unless this Requirement is genuinely the "
+    "section's only node. An Epic's children must ALWAYS be Features -- "
+    "never a Requirement directly. If a section's content only warrants one "
+    "level below its root (e.g. a root Feature with only atomic "
+    "requirements under it, no separate Epic), that is fine -- the point is "
+    "never to skip a level in the chain that IS present: once you emit an "
+    "Epic, every Requirement under it must go through an intermediate "
+    "Feature, even a single one grouping all of that Epic's Requirements."
 )
 
 _SECTION_ANALYSIS_TOOL_HINT = (
@@ -286,6 +360,33 @@ def _whole_document_hint(topic_count: int | None) -> str:
     )
 
 
+def _branch_topic_hint(topic_count: int | None) -> str:
+    """Same countable-floor mechanism as _whole_document_hint (confirmed
+    live: a concrete, countable floor beats a qualitative reminder), worded
+    for a single BRANCH of a multi-branch document instead of the whole
+    document -- the multi-branch path previously had no countable
+    instruction at all, only the base prompt's own permissive "as many or
+    as few nodes as genuinely necessary" guidance, exactly the open-ended
+    judgment that contributes to run-to-run node-count variance for the
+    same document. `topic_count` of 0/None (a headingless branch) falls
+    back to the same qualitative hint whole-document uses when it has no
+    count either."""
+    if not topic_count:
+        return _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT
+    return (
+        "\n\nNOTE: this section contains approximately "
+        f"{topic_count} distinct headed sub-topics. Your response should "
+        f"contain AT LEAST {topic_count} nodes -- at least one clearly "
+        "attributable to each headed sub-topic; a sub-topic with several "
+        f"distinct requirements needs several nodes, so {topic_count} is a "
+        "FLOOR, not a target or a cap. This overrides the 'as many or as few "
+        "nodes as genuinely necessary' guidance above -- do not under-emit "
+        f"for brevity. Emitting fewer than {topic_count} nodes is acceptable "
+        "ONLY where a sub-topic genuinely states no distinct requirement; "
+        "never invent, pad, or duplicate content to reach the count."
+    )
+
+
 def _nodes_from_parsed(parsed: object) -> list[dict]:
     """Both analyze_section and analyze_section_agentic return {"nodes": [...]}
     (see section_analysis_schema's object-wrapping rationale) -- unwrap
@@ -304,6 +405,66 @@ def _with_kb_context(system_prompt: str, kb_context: str | None) -> str:
     return (
         "Reference material from the knowledge base (may be incomplete or "
         "irrelevant — use only what's genuinely helpful):\n\n"
+        f"{kb_context}\n\n"
+        f"{system_prompt}"
+    )
+
+
+def _with_kb_context_as_scoring_rubric(
+    system_prompt: str, kb_context: str | None, categories_are_fixed: bool = False
+) -> str:
+    """Scoring-specific variant of _with_kb_context's framing -- deliberately
+    STRONGER, not just "use what's helpful". For requirement-quality scoring,
+    an org's own ingested KB document (e.g. a requirements-writing standard)
+    isn't background material to weigh against the model's generic EARS/
+    INCOSE/ISO knowledge -- if it defines its own conventions for clarity,
+    testability, acceptance-criteria phrasing, etc., THOSE are what a
+    reviewer at that org actually judges against, and should override the
+    generic public-standard rubric wherever the two disagree. The public
+    rubric only fills in dimensions the KB material doesn't address, rather
+    than being applied "strictly" regardless of the org's own real
+    conventions. Grounding call sites (analyze_section/agentic) intentionally
+    keep _with_kb_context's softer framing -- that's about domain content
+    possibly being irrelevant to a given section, a different concern from
+    scoring's rubric-authority question.
+
+    `categories_are_fixed` (True when score_requirements_for_document was
+    given a pre-extracted `category_checklist`) drops the "derive your
+    categoryScores key names from this material" clause -- confirmed real
+    prompt contradiction otherwise: score_requirements_for_document's own
+    fixed-checklist branch separately instructs "use EXACTLY these
+    categories... do not add, omit, rename, or reorder any", and having
+    BOTH instructions in the same prompt put a naming/deriving instruction
+    right next to a "these are fixed, don't touch them" instruction. The
+    fixed-checklist path is a hard, cross-run determinism requirement
+    (user-reported); this framing must never suggest there's a naming
+    decision left to make when one has already been made and stored."""
+    if kb_context is None:
+        return system_prompt
+    if categories_are_fixed:
+        return (
+            "The following knowledge-base material was retrieved for this "
+            "organization. If it defines its own requirements-writing "
+            "conventions or standards, treat THOSE as the authoritative rubric "
+            "for this organization -- judge how strictly each requirement meets "
+            "them, not just the generic public EARS/INCOSE/ISO/IEC/IEEE 29148 "
+            "criteria. Only fall back to the generic criteria/dimensions for "
+            "anything this material doesn't address. (Your categoryScores key "
+            "names are fixed separately below -- this material informs how you "
+            "judge each one, not what the keys are.):\n\n"
+            f"{kb_context}\n\n"
+            f"{system_prompt}"
+        )
+    return (
+        "The following knowledge-base material was retrieved for this "
+        "organization. If it defines its own requirements-writing "
+        "conventions, standards, or quality checklist, treat THOSE as the "
+        "authoritative rubric for this organization -- score against them "
+        "(including deriving your categoryScores key names from this "
+        "material's own checklist items, see below), not just the generic "
+        "public EARS/INCOSE/ISO/IEC/IEEE 29148 criteria. Only fall back to "
+        "the generic criteria/dimensions for anything this material doesn't "
+        "address:\n\n"
         f"{kb_context}\n\n"
         f"{system_prompt}"
     )
@@ -337,12 +498,19 @@ class OrchestratorLlmClient:
         # behavior exactly.
         self._model = model
         # Ollama's actual runtime context window (§6 of the whole-document
-        # redesign) -- forwarded only on analyze_section/analyze_section_agentic,
-        # the two calls the §3 whole-document gate actually depends on being
-        # backed by a real, large-enough context window. Sized by the caller
-        # (app.main's /level route) from the SAME _resolve_caps(model) budget
-        # build_survey_tree itself gates on. None (the default) omits the
-        # field entirely, matching pre-num_ctx behavior exactly.
+        # redesign) -- originally forwarded only on analyze_section/
+        # analyze_section_agentic, the two calls the §3 whole-document gate
+        # actually depends on being backed by a real, large-enough context
+        # window. Confirmed missing (a real bug, not a deliberate omission)
+        # on score_requirements_for_document/infer_trace_links/
+        # judge_kb_relevance -- without it, Ollama silently truncates any
+        # of those calls' input to its own small default regardless of
+        # actual size, very likely the real cause of the "Quality scoring
+        # returned no valid score for N node(s)" warning class. Now
+        # forwarded on all five real LLM calls in this module. Sized by the
+        # caller (app.main's /level route) from the SAME _resolve_caps(model)
+        # budget build_survey_tree itself gates on. None (the default) omits
+        # the field entirely, matching pre-num_ctx behavior exactly.
         self._num_ctx = num_ctx
         # Gemma4 repetition-collapse mitigation (confirmed upstream bug,
         # ollama/ollama#15502/#15783 -- see orchestrator's
@@ -355,6 +523,14 @@ class OrchestratorLlmClient:
         self._top_k = top_k
         self._min_p = min_p
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
+
+    @property
+    def model(self) -> str | None:
+        """Public read-only accessor for the per-job model override -- exists
+        purely so llm_leveling.py's narration (`_fire`/`getattr(client,
+        'model', None)`) can surface which model is doing the work on the
+        running page, without this class needing to know narration exists."""
+        return self._model
 
     def generate_requirements(self, block_text: str) -> list[dict]:
         system_prompt = (
@@ -406,7 +582,7 @@ class OrchestratorLlmClient:
             "the most common case is a System Requirement covering/tracing a Customer "
             "Requirement, but use your judgment on the actual relationship implied by the "
             "text. You are given a JSON array of nodes, each with 'node_id', 'type', "
-            "'title', and 'text'. You may propose zero or more links. For each link, "
+            "and 'text'. You may propose zero or more links. For each link, "
             "choose EXACTLY ONE reference_name from this list — never invent one, and "
             "omit the link entirely if none genuinely fits:\n\n"
             f"{catalog_lines}\n\n"
@@ -432,6 +608,20 @@ class OrchestratorLlmClient:
             # Defended by the existing reference_name-not-in-catalog filter
             # in llm_leveling.py instead.
             "maxTokens": _MAX_OUTPUT_TOKENS,
+            # Confirmed missing here (unlike analyze_section/agentic, which
+            # already forward this): without an explicit num_ctx, Ollama
+            # silently truncates the prompt to its own small default
+            # regardless of actual size (see LlmChatOptions.numCtx's own
+            # doc comment) -- this call serializes EVERY node in the whole
+            # tree (nodes_json above), the largest single payload in this
+            # module, making it the most exposed call to that truncation.
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            # Relationship inference over already-generated nodes is
+            # structured extraction, not open-ended reasoning -- same
+            # confirmed-live finding (3-10x wall-clock cost, no accuracy
+            # benefit) as analyze_section/analyze_section_agentic and
+            # score_requirements_for_document.
+            "think": False,
         }
         with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
@@ -448,6 +638,7 @@ class OrchestratorLlmClient:
         descriptions_by_node_id: dict[str, str],
         criteria_context: str | None = None,
         kb_context: str | None = None,
+        category_checklist: list[str] | None = None,
     ) -> dict[str, dict]:
         """Batched quality-scoring call: one LLM call judging every node's
         FINAL formalized description in the branch, not one call per node —
@@ -462,7 +653,66 @@ class OrchestratorLlmClient:
         additive org-specific reference material -- the two grounding
         sources are independent and orthogonal (customer content vs quality
         criteria) and either or both may be omitted, keeping the prompt
-        byte-identical to before either capability existed."""
+        byte-identical to before either capability existed.
+
+        `category_checklist` (see app.kb.checklist_extraction), when
+        supplied, is a FIXED list of categoryScores key names extracted ONCE
+        at KB ingestion time -- a genuine cross-run determinism guarantee
+        (user-reported requirement: the SAME document run 4 times must
+        yield the SAME categories), since the model is told to use this
+        EXACT list rather than derive anything live. Takes priority over
+        `kb_context`'s own (live, best-effort) derive-from-material
+        fallback, which only applies when no stored checklist exists yet
+        for the grounding document (e.g. ingested before this existed)."""
+        # categoryScores' key vocabulary, in priority order:
+        # 1. `category_checklist` -- a FIXED, pre-extracted list (genuinely
+        #    deterministic across runs, see this method's own docstring).
+        # 2. `kb_context` present but no stored checklist -- best-effort
+        #    live derivation from whatever KB material was retrieved (NOT
+        #    guaranteed identical across runs -- a live LLM judgment call).
+        # 3. Neither -- the original fixed 5-dimension scheme, byte-
+        #    identical to before either capability existed.
+        if category_checklist:
+            checklist_json = json.dumps(category_checklist)
+            category_instruction = (
+                "'categoryScores' -- an object with EXACTLY these categories as "
+                f"keys (this organization's own ingested quality-checklist "
+                f"category names, fixed for this document -- do not add, omit, "
+                f"rename, or reorder any): {checklist_json}. Each key mapped to an "
+                "independent integer 0-100 judgment (100 = fully compliant on "
+                "that dimension alone).\n"
+            )
+        elif kb_context:
+            category_instruction = (
+                "'categoryScores' -- an object whose KEYS you derive from the "
+                "organization's own ingested quality-checklist material referenced "
+                "above (e.g. if it defines a checklist like Necessary, Correct "
+                "level, Unambiguous, Singular, Complete, Feasible, Verifiable, "
+                "Consistent, Traceable, Modifiable, use exactly those names as your "
+                "keys), each mapped to an independent integer 0-100 judgment (100 = "
+                "fully compliant on that dimension alone). Decide the category "
+                "names ONCE from that material and use the EXACT SAME set of keys, "
+                "spelled identically, for every single node_id in your response -- "
+                "never a different key set per node. If the material defines no "
+                "clear checklist to score against, fall back to these five generic "
+                "dimensions instead: clarity, testability, atomicity, style, "
+                "rationale.\n"
+            )
+        else:
+            category_instruction = (
+                "'categoryScores' -- an object with FIVE independent integer 0-100 "
+                "judgments (100 = fully compliant on that dimension alone, judge "
+                "each one on its own merits, do not just derive them mechanically "
+                "from whether an issue tag was flagged):\n"
+                "  - clarity: is the wording unambiguous and free of vague terms?\n"
+                "  - testability: can this be objectively verified, with clear "
+                "acceptance criteria?\n"
+                "  - atomicity: is this ONE single requirement, not several "
+                "bundled together?\n"
+                "  - style: active voice, EARS-style phrasing?\n"
+                "  - rationale: does it state WHY when the reason isn't "
+                "self-evident?\n"
+            )
         system_prompt = (
             "You judge the quality of formal 'shall'-style requirement statements "
             "against EARS, INCOSE, and ISO/IEC/IEEE 29148 criteria (unambiguous, "
@@ -471,10 +721,22 @@ class OrchestratorLlmClient:
             "rationale when non-obvious). You are given a JSON object mapping each "
             "requirement's node_id to its final text. Return ONLY a JSON object "
             "with the SAME node_id keys, each mapped to an object with 'score' "
-            "(an integer 0-100, where 100 is a fully compliant requirement) and "
+            "(an integer 0-100, where 100 is a fully compliant requirement), "
             "'issues' (a list of zero or more of: ambiguous, not_testable, "
             "compound, missing_acceptance_criteria, vague_term, passive_voice, "
-            "missing_rationale). Never invent a node_id not present in the input. "
+            "missing_rationale), and " + category_instruction +
+            "Never invent a node_id not present in the input. "
+            # Concrete, countable completeness instruction -- same
+            # confirmed-live pattern as _whole_document_hint/
+            # _branch_topic_hint ("a concrete, countable floor beats a
+            # qualitative reminder"). Addresses a real, already-observed
+            # failure mode (llm_leveling.py's "Quality scoring returned no
+            # valid score for N node(s)" warning): nothing previously told
+            # the model it must cover EVERY input key, only that it must
+            # not invent new ones.
+            f"The input contains exactly {len(descriptions_by_node_id)} node_id(s). "
+            f"Return exactly {len(descriptions_by_node_id)} entries in your response "
+            "-- one for EVERY node_id in the input, none omitted, none invented. "
             "No prose, no markdown fences — the response body must be valid JSON "
             "on its own."
         )
@@ -483,7 +745,9 @@ class OrchestratorLlmClient:
                 "\n\nThe following reference criteria were retrieved as most relevant "
                 f"to these requirements -- cite them in your judgment:\n{criteria_context}"
             )
-        system_prompt = _with_kb_context(system_prompt, kb_context)
+        system_prompt = _with_kb_context_as_scoring_rubric(
+            system_prompt, kb_context, categories_are_fixed=bool(category_checklist)
+        )
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -492,6 +756,196 @@ class OrchestratorLlmClient:
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
             "responseSchema": scores_schema(),
+            # Confirmed real cause of this call being extremely slow (user-
+            # reported: a 83-requirement batch stalling well past normal):
+            # unlike analyze_section/analyze_section_agentic (which both
+            # already disable this with the identical doc comment/finding),
+            # this call never set `think: False` -- a reasoning-capable
+            # model (qwen3.6:35b) burns hidden chain-of-thought tokens
+            # before ANY output, for EVERY one of the 83 items in one call,
+            # with no observed accuracy benefit on this kind of structured-
+            # extraction task. maxTokens caps worst-case output the same
+            # way the other two calls already do.
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            # Same numCtx gap as infer_trace_links/judge_kb_relevance --
+            # without it, Ollama silently truncates this call's input to
+            # its own small default regardless of how many requirements are
+            # actually being scored. Very likely the real cause of the
+            # "Quality scoring returned no valid score for N node(s)"
+            # warning below: the tail of a large descriptions_by_node_id
+            # JSON blob past the truncation point is never seen by the
+            # model at all, so those node_ids can never appear in its
+            # response no matter how well-behaved the model is.
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
+    def extract_quality_checklist(self, document_text: str) -> list[str]:
+        """Runs ONCE per document, at KB ingestion time (see
+        app.kb.ingest_service), never per scoring call -- the real fix for a
+        confirmed real determinism gap (user-reported): asking the scoring
+        model to "derive" categoryScores key names live, per call, is not a
+        cross-run guarantee even at temperature=0. Extracting the checklist
+        ONCE and storing it (KbVectorStore.upsert_chunk's quality_checklist
+        param) makes the category set a genuine property of the ingested
+        document -- every later scoring call reads the stored value instead
+        of ever re-deriving it, so the SAME document run any number of times
+        yields the SAME categories, guaranteed.
+
+        Returns [] (not None) when the document genuinely defines no
+        checklist -- a real, storable "checked, found nothing" signal,
+        distinct from extraction never having run at all (see
+        KbVectorStore.get_quality_checklist's own docstring for why that
+        distinction matters). Capped input length: a checklist definition
+        is a small, self-contained part of a document; this is structured
+        extraction, not whole-document comprehension."""
+        system_prompt = (
+            "You are given the full text of one document ingested into a company's "
+            "requirements-engineering Knowledge Base. Determine whether this "
+            "document defines a QUALITY CHECKLIST for evaluating individual "
+            "requirements -- a named list of criteria, questions, or attributes "
+            "used to judge whether a requirement is well-written (e.g. a table of "
+            "'Question'/'Pass condition' rows, or a list like 'Necessary, "
+            "Unambiguous, Verifiable, ...'). If it does, return a JSON array of "
+            "the checklist's own category/question names, exactly as they appear "
+            "in the document (short, 1-4 words each), in the SAME order the "
+            "document presents them. If this document does NOT define such a "
+            "checklist (e.g. it's general reference material, a template, or "
+            "unrelated content), return an empty array []. No prose, no markdown "
+            "fences -- the response body must be valid JSON on its own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS]},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": checklist_extraction_schema(),
+            "think": False,
+            "maxTokens": 2000,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        parsed = _parse_json_object(content)
+        if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+            raise ValueError(f"malformed JSON in LLM response content: {content!r}")
+        return self._sanitize_checklist(parsed)
+
+    def _sanitize_checklist(self, raw_items: list[str]) -> list[str]:
+        """Strips/dedups/bounds a structurally-valid (list-of-strings)
+        checklist extraction before it's stored and replayed into every
+        future scoring prompt. Returns [] -- the module's existing "checked,
+        found nothing" signal -- when the sanitized result falls outside a
+        sane checklist shape, rather than raising: a bad extraction should
+        degrade the same way "this document defines no checklist" already
+        does, not fail the KB ingestion job it's part of. An empty input
+        (the model's own genuine "no checklist here" response) returns []
+        immediately, without a warning -- that is the correct, expected
+        outcome, not a sanitization failure."""
+        if not raw_items:
+            return []
+        seen_lower: set[str] = set()
+        cleaned: list[str] = []
+        for raw_item in raw_items:
+            item = " ".join(raw_item.split())  # strips whitespace, collapses/rejects embedded newlines
+            if not (_CHECKLIST_MIN_ITEM_CHARS <= len(item) <= _CHECKLIST_MAX_ITEM_CHARS):
+                continue
+            item_lower = item.lower()
+            if item_lower in seen_lower:  # case-insensitive dedup, first-seen casing/order kept
+                continue
+            seen_lower.add(item_lower)
+            cleaned.append(item)
+        if not (_CHECKLIST_MIN_ITEMS <= len(cleaned) <= _CHECKLIST_MAX_ITEMS):
+            logger.warning(
+                "extract_quality_checklist produced %d usable item(s) after sanitization "
+                "(raw count %d) -- outside the sane [%d, %d] range, treating as "
+                "'no checklist found': %r",
+                len(cleaned), len(raw_items), _CHECKLIST_MIN_ITEMS, _CHECKLIST_MAX_ITEMS,
+                cleaned[:3],
+            )
+            return []
+        return cleaned
+
+    def score_epics_and_features_for_document(self, nodes_by_id: dict[str, dict]) -> dict[str, dict]:
+        """Batched Epic/Feature quality review -- the counterpart to
+        score_requirements_for_document, deliberately kept as a SEPARATE
+        call/prompt rather than folded into it: RequirementQualityIssue's
+        closed vocabulary (ambiguous, not_testable, compound, ...) and the
+        "formal shall-style requirement statement" framing describe atomic
+        requirements, not what an Epic/Feature GROUPING is (see
+        llm_leveling.py's own comment on why scoring was originally scoped
+        to Requirement-type nodes only) -- reusing that prompt's wording
+        verbatim for an Epic/Feature would judge them against a rubric that
+        was never about them.
+
+        `nodes_by_id` maps each node_id to {'type': 'Epic'|'Feature',
+        'text': description} -- one call judges both types together (typical
+        documents have far fewer Epics/Features than Requirements, so this
+        stays cheap as one batched call rather than two). Returns node_id ->
+        {'score': int, 'categoryScores': dict[str, int]} -- no 'issues' key,
+        see epic_feature_scores_schema's own docstring for why."""
+        system_prompt = (
+            "You judge the quality of Epic and Feature work items in a CMMI-style "
+            "requirements hierarchy (Epic groups Features, Feature groups "
+            "Requirements -- see the CMMI guidance on what makes each level "
+            "well-scoped). You are given a JSON object mapping each node's "
+            "node_id to an object with 'type' ('Epic' or 'Feature') and 'text' "
+            "(its description). Return ONLY a JSON object with the SAME "
+            "node_id keys, each mapped to an object with 'score' (an integer "
+            "0-100, where 100 is fully compliant) and 'categoryScores', judged "
+            "against the criteria for THAT node's own type:\n"
+            "For an EPIC, judge:\n"
+            "  - scopeCoherence: could multiple independently valuable "
+            "Features genuinely be delivered under this outcome -- not one "
+            "narrow task, and not several unrelated outcomes bundled "
+            "together?\n"
+            "  - outcomeClarity: does it state a clear business/system "
+            "outcome and why it matters, staying at that level rather than "
+            "describing implementation detail?\n"
+            "For a FEATURE, judge:\n"
+            "  - capabilityClarity: does it describe ONE coherent, "
+            "demonstrable capability -- not several unrelated capabilities "
+            "bundled together, and not a single atomic requirement dressed "
+            "up as a Feature?\n"
+            "  - decomposability: can it genuinely be decomposed into "
+            "several distinct, testable Requirements?\n"
+            "Each category is an independent integer 0-100 judgment (100 = "
+            "fully compliant on that dimension alone). Never invent a "
+            "node_id not present in the input. "
+            f"The input contains exactly {len(nodes_by_id)} node_id(s). Return "
+            f"exactly {len(nodes_by_id)} entries in your response -- one for "
+            "EVERY node_id in the input, none omitted, none invented. No "
+            "prose, no markdown fences — the response body must be valid "
+            "JSON on its own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(nodes_by_id)},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": epic_feature_scores_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
         with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
@@ -541,6 +995,19 @@ class OrchestratorLlmClient:
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
             "responseSchema": kb_relevance_schema(),
+            # Confirmed missing here: this was the ONE call in this module
+            # with no output cap at all -- the exact unbounded-hidden-
+            # reasoning exposure _MAX_OUTPUT_TOKENS's own doc comment
+            # documents (a reasoning model observed generating 40+ minute
+            # single calls with no cap in place). Output here is a tiny
+            # index->enum map, so this is pure downside-bounding, not a
+            # real content constraint.
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            # Binary relevant/not_relevant judgment per snippet -- structured
+            # classification, not open-ended reasoning. Same confirmed-live
+            # finding as every other non-conversational call in this module.
+            "think": False,
         }
         with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
@@ -603,6 +1070,8 @@ class OrchestratorLlmClient:
         system_prompt = _with_kb_context(_SECTION_ANALYSIS_SYSTEM_PROMPT, kb_context)
         if whole_document:
             system_prompt += _whole_document_hint(topic_count)
+        elif topic_count is not None:
+            system_prompt += _branch_topic_hint(topic_count)
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -612,6 +1081,15 @@ class OrchestratorLlmClient:
             **({"model": self._model} if self._model else {}),
             "responseSchema": section_analysis_schema(),
             "maxTokens": _MAX_OUTPUT_TOKENS,
+            # Confirmed live (qwen3.6:35b, gemma4:31b): a reasoning-capable
+            # model's hidden chain-of-thought adds 3-10x wall-clock time on
+            # this holistic-JSON-extraction call with no observed accuracy
+            # benefit -- disabling it via the orchestrator's `think` passthrough
+            # (see LlmChatOptions.think's doc comment) is a pure win here. Not
+            # applied to every LLM call in this file -- only the two SURVEY
+            # section-analysis paths (this one and analyze_section_agentic)
+            # this finding was actually tested against.
+            "think": False,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
@@ -691,17 +1169,30 @@ class OrchestratorLlmClient:
         system_prompt = _SECTION_ANALYSIS_SYSTEM_PROMPT + tool_hint
         if whole_document:
             system_prompt += _whole_document_hint(topic_count)
+        elif topic_count is not None:
+            system_prompt += _branch_topic_hint(topic_count)
         messages: list[dict] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": section_text},
         ]
         citations: list[dict] = []
-        for _ in range(_MAX_TOOL_ROUNDS):
+        for round_index in range(_MAX_TOOL_ROUNDS):
+            # On the last permitted round, force a final answer instead of
+            # allowing yet another tool call -- confirmed real cause of a
+            # branch silently contributing 0 nodes: a model that keeps
+            # calling query_kb/read_kb_document right up to the round
+            # budget previously fell straight into the "exceeded
+            # _MAX_TOOL_ROUNDS" branch below with no final answer ever
+            # produced. toolChoice:'none' on the OpenAI-compat wire (already
+            # plumbed end-to-end, just never set by any caller) tells the
+            # model tool use is off the table THIS round, so it must answer.
+            is_last_round = round_index == _MAX_TOOL_ROUNDS - 1
             payload = {
                 "messages": messages,
                 "temperature": 0,
                 **({"model": self._model} if self._model else {}),
                 "tools": tools,
+                **({"toolChoice": "none"} if is_last_round else {}),
                 # Root cause of the confirmed live JSON-malformation failures
                 # (missing node-object closing brace; unescaped quote inside a
                 # "text" string value): this call previously sent NO
@@ -721,6 +1212,9 @@ class OrchestratorLlmClient:
                 # analyze_section already had all along.
                 "responseSchema": section_analysis_schema(),
                 "maxTokens": _MAX_OUTPUT_TOKENS,
+                # See analyze_section's identical doc comment -- same
+                # confirmed-live finding, same two SURVEY call sites.
+                "think": False,
                 **({"numCtx": self._num_ctx} if self._num_ctx else {}),
                 **({"topK": self._top_k} if self._top_k else {}),
                 **({"minP": self._min_p} if self._min_p else {}),
@@ -734,7 +1228,7 @@ class OrchestratorLlmClient:
             response.raise_for_status()
             body = response.json()
             tool_calls = body.get("toolCalls")
-            if tool_calls:
+            if tool_calls and not is_last_round:
                 messages.append({"role": "assistant", "tool_calls": tool_calls})
                 for call in tool_calls:
                     try:
@@ -749,13 +1243,27 @@ class OrchestratorLlmClient:
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": tool_result})
                 continue
             content = _strip_json_fence(body.get("content", ""))
-            nodes = _nodes_from_parsed(_parse_json_object(content))
-            truncated = body.get("finishReason") == "length"
+            if content:
+                nodes = _nodes_from_parsed(_parse_json_object(content))
+                truncated = body.get("finishReason") == "length"
+                logger.warning(
+                    "analyze_section_agentic result: node_count=%d finishReason=%r truncated=%s query_kb_calls=%d topic_count=%r",
+                    len(nodes), body.get("finishReason"), truncated, len(citations), topic_count,
+                )
+                return nodes, citations, truncated
+            # Contradicts toolChoice:'none' on the last round (or the model
+            # returned neither tool_calls nor content on an earlier round) --
+            # extremely unlikely per the API contract, but fall back to a
+            # single non-agentic analyze_section call over the same section
+            # text rather than silently returning 0 nodes for this branch.
             logger.warning(
-                "analyze_section_agentic result: node_count=%d finishReason=%r truncated=%s query_kb_calls=%d topic_count=%r",
-                len(nodes), body.get("finishReason"), truncated, len(citations), topic_count,
+                "analyze_section_agentic: round %d produced neither tool_calls nor content -- falling back to analyze_section",
+                round_index,
             )
-            return nodes, citations, truncated
+            fallback_nodes, fallback_truncated = self.analyze_section(
+                section_text, kb_context=None, whole_document=whole_document, topic_count=topic_count
+            )
+            return fallback_nodes, citations, fallback_truncated
         # Exceeded _MAX_TOOL_ROUNDS without a final answer -- degrade to no
         # nodes for this branch rather than looping forever; the branch's
         # existing coverage/completeness warnings surface the gap. Not a

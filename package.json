@@ -5,8 +5,7 @@
   "description": "Requirements-to-ADO ingestion platform (TS/Python monorepo)",
   "scripts": {
     "build": "pnpm -r --filter=./frontend --filter=./orchestrator --filter=./mcp-ado-server run build",
-    "test": "pnpm -r --filter=./frontend --filter=./orchestrator --filter=./mcp-ado-server run test",
-    "lint": "pnpm -r --filter=./frontend --filter=./orchestrator --filter=./mcp-ado-server run lint"
+    "test": "pnpm -r --filter=./frontend --filter=./orchestrator --filter=./mcp-ado-server run test"
   },
   "engines": {
     "node": ">=22"

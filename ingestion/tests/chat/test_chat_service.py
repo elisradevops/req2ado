@@ -116,23 +116,30 @@ def test_sentinel_window_flush_after_no_sentinel_returns_remaining_buffer() -> N
 
 
 class _FakeChatClient:
-    def __init__(self, deltas: list[str]) -> None:
+    def __init__(self, deltas: list[str], reasoning_deltas: list[str] | None = None) -> None:
         self._deltas = deltas
+        self._reasoning_deltas = reasoning_deltas or []
 
     async def stream_reply(self, messages, model):  # noqa: ANN001, ARG002 - test double
+        for delta in self._reasoning_deltas:
+            yield "", delta
         for delta in self._deltas:
-            yield delta
+            yield delta, ""
 
 
 class _FakePublisher:
     def __init__(self, aborted: bool = False) -> None:
         self.chunks: list[str] = []
+        self.reasoning_chunks: list[str] = []
         self.done: dict | None = None
         self.errors: list[str] = []
         self._aborted = aborted
 
     async def publish_chunk(self, job_id, local_id, delta):  # noqa: ANN001, ARG002
         self.chunks.append(delta)
+
+    async def publish_reasoning_chunk(self, job_id, local_id, delta):  # noqa: ANN001, ARG002
+        self.reasoning_chunks.append(delta)
 
     async def publish_done(  # noqa: ANN001, ARG002
         self, job_id, local_id, message, proposed_title, proposed_description, model
@@ -214,6 +221,33 @@ async def test_run_chat_turn_extracts_proposal_and_hides_json_from_chunks() -> N
 
 
 @pytest.mark.asyncio
+async def test_run_chat_turn_publishes_reasoning_chunks_separately_and_never_persists_them() -> None:
+    # A reasoning model's chain-of-thought bypasses the sentinel window
+    # entirely (it's never scanned for PROPOSAL_SENTINEL or folded into
+    # publish_done's persisted message) -- confirmed by asserting it lands
+    # only on publish_reasoning_chunk, never in publisher.chunks or done.
+    chat_client = _FakeChatClient(["Sure, ", "here's why."], reasoning_deltas=["Hmm, ", "let me think."])
+    publisher = _FakePublisher()
+
+    await run_chat_turn(
+        "job-1", "n0",
+        {
+            "type": "Requirement",
+            "title": "T",
+            "description": "D",
+            "childType": None,
+            "qualityIssues": [],
+        },
+        [], "why is this ambiguous?", "llama3.1", None, None, None,
+        chat_client, publisher,
+    )
+
+    assert "".join(publisher.reasoning_chunks) == "Hmm, let me think."
+    assert "".join(publisher.chunks) == "Sure, here's why."
+    assert publisher.done["message"] == "Sure, here's why."
+
+
+@pytest.mark.asyncio
 async def test_run_chat_turn_stops_and_publishes_error_when_aborted() -> None:
     chat_client = _FakeChatClient(["one", "two", "three"])
     publisher = _FakePublisher(aborted=True)
@@ -251,7 +285,7 @@ async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_pat
     class _CapturingChatClient:
         async def stream_reply(self, messages, model):  # noqa: ANN001, ARG002 - test double
             captured["messages"] = messages
-            yield "Sure."
+            yield "Sure.", ""
 
     publisher = _FakePublisher()
 

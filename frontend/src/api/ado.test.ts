@@ -4,17 +4,18 @@ import { getAreaPaths, getProjects } from './ado';
 
 vi.mock('./httpClient');
 
+// No credential is passed/asserted here anymore -- the orchestrator
+// resolves the caller's ADO PAT server-side from the credential vault,
+// keyed by the session cookie (httpClient sends it via withCredentials).
+
 describe('ado api', () => {
-  it('getAreaPaths sends depth as a query param and PAT credentials as headers', async () => {
+  it('getAreaPaths sends depth as a query param', async () => {
     const areaPathTree = { path: 'Project', children: [] };
     (httpClient.get as any).mockResolvedValue({ data: areaPathTree });
 
-    const result = await getAreaPaths(2, { orgUrl: 'https://ado.example', pat: 'pat-1' });
+    const result = await getAreaPaths(2);
 
-    expect(httpClient.get).toHaveBeenCalledWith('/ado/area-paths', {
-      params: { depth: 2 },
-      headers: { 'X-Ado-Org-Url': 'https://ado.example', 'X-Ado-Pat': 'pat-1' },
-    });
+    expect(httpClient.get).toHaveBeenCalledWith('/ado/area-paths', { params: { depth: 2 } });
     expect(result).toEqual(areaPathTree);
   });
 
@@ -22,23 +23,18 @@ describe('ado api', () => {
     const areaPathTree = { path: 'OtherProject', children: [] };
     (httpClient.get as any).mockResolvedValue({ data: areaPathTree });
 
-    await getAreaPaths(2, { orgUrl: 'https://ado.example', pat: 'pat-1' }, 'OtherProject');
+    await getAreaPaths(2, 'OtherProject');
 
-    expect(httpClient.get).toHaveBeenCalledWith('/ado/area-paths', {
-      params: { depth: 2, project: 'OtherProject' },
-      headers: { 'X-Ado-Org-Url': 'https://ado.example', 'X-Ado-Pat': 'pat-1' },
-    });
+    expect(httpClient.get).toHaveBeenCalledWith('/ado/area-paths', { params: { depth: 2, project: 'OtherProject' } });
   });
 
-  it('getProjects sends PAT credentials as headers and returns the project list', async () => {
+  it('getProjects returns the project list', async () => {
     const projects = [{ id: '1', name: 'Project' }];
     (httpClient.get as any).mockResolvedValue({ data: projects });
 
-    const result = await getProjects({ orgUrl: 'https://ado.example', pat: 'pat-1' });
+    const result = await getProjects();
 
-    expect(httpClient.get).toHaveBeenCalledWith('/ado/projects', {
-      headers: { 'X-Ado-Org-Url': 'https://ado.example', 'X-Ado-Pat': 'pat-1' },
-    });
+    expect(httpClient.get).toHaveBeenCalledWith('/ado/projects');
     expect(result).toEqual(projects);
   });
 });

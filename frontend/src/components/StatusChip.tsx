@@ -1,17 +1,25 @@
-import Chip from '@mui/material/Chip';
-import { themeTokens } from '../theme/tokens';
+import { Chip } from '../ui/Chip';
+import { Tooltip } from '../ui/Tooltip';
+import { jobStatusLabel } from '../utils/labels';
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: themeTokens.color.textSecondary },
-  running: { label: 'Running', color: themeTokens.color.liveAccent },
-  diff_ready: { label: 'Diff Ready', color: themeTokens.color.info },
-  writing: { label: 'Writing', color: themeTokens.color.liveAccent },
-  succeeded: { label: 'Succeeded', color: themeTokens.color.success },
-  failed: { label: 'Failed', color: themeTokens.color.danger },
-  rejected: { label: 'Rejected', color: themeTokens.color.textSecondary },
+  pending: { label: 'Pending', color: 'var(--color-ink-2)' },
+  running: { label: 'Running', color: 'var(--color-live)' },
+  diff_ready: { label: 'Diff Ready', color: 'var(--color-info)' },
+  writing: { label: 'Writing', color: 'var(--color-live)' },
+  succeeded: { label: 'Succeeded', color: 'var(--color-ok)' },
+  failed: { label: 'Failed', color: 'var(--color-danger)' },
+  rejected: { label: 'Rejected', color: 'var(--color-ink-2)' },
+  cancelled: { label: 'Cancelled', color: 'var(--color-ink-2)' },
 };
 
 export function StatusChip({ status }: { status: string }): React.ReactElement {
-  const config = STATUS_CONFIG[status] ?? { label: status, color: themeTokens.color.textSecondary };
-  return <Chip label={config.label} sx={{ backgroundColor: config.color, color: '#fff' }} size="small" />;
+  const config = STATUS_CONFIG[status] ?? { label: status, color: 'var(--color-ink-2)' };
+  const { description } = jobStatusLabel(status);
+  const chip = (
+    <Chip bg={config.color} color="#fff">
+      {config.label}
+    </Chip>
+  );
+  return description ? <Tooltip content={description}>{chip}</Tooltip> : chip;
 }

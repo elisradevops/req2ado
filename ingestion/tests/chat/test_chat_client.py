@@ -67,9 +67,27 @@ async def test_stream_reply_yields_deltas_from_ndjson_lines() -> None:
     client = ChatLlmClient("http://orchestrator:3001", "test-token")
     client._transport = transport  # noqa: SLF001 - test injection seam
 
-    deltas = [delta async for delta in client.stream_reply([{"role": "user", "content": "hi"}], model="llama3.1")]
+    chunks = [chunk async for chunk in client.stream_reply([{"role": "user", "content": "hi"}], model="llama3.1")]
 
-    assert deltas == ["Hel", "lo"]
+    assert chunks == [("Hel", ""), ("lo", "")]
+
+
+@pytest.mark.asyncio
+async def test_stream_reply_yields_reasoning_deltas_separately_from_content() -> None:
+    # A reasoning model's chain-of-thought arrives on its own wire field
+    # (reasoningDelta) from orchestrator's llm.controller.ts -- confirmed
+    # each chunk carries at most one of the two.
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = b'{"reasoningDelta": "Hmm, "}\n{"reasoningDelta": "let me think."}\n{"delta": "Sure."}\n'
+        return httpx.Response(200, content=body)
+
+    transport = httpx.MockTransport(handler)
+    client = ChatLlmClient("http://orchestrator:3001", "test-token")
+    client._transport = transport  # noqa: SLF001
+
+    chunks = [chunk async for chunk in client.stream_reply([{"role": "user", "content": "hi"}], model="llama3.1")]
+
+    assert chunks == [("", "Hmm, "), ("", "let me think."), ("Sure.", "")]
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,11 @@ import { Controller, Get, HttpException, HttpStatus, type OnModuleDestroy } from
 // the HealthController (?, Function)".
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
+import { Public } from '../auth/public.decorator';
 
+// k8s liveness/readiness probes carry no session cookie -- this controller
+// must stay reachable with no auth at all, same as before AuthGuard existed.
+@Public()
 @Controller()
 export class HealthController implements OnModuleDestroy {
   constructor(

@@ -58,6 +58,9 @@ export const llmChatRequestSchema = z.object({
   minP: z.number().min(0).max(1).optional(),
   tools: z.array(toolDefinitionSchema).optional(),
   toolChoice: z.union([z.literal('auto'), z.literal('none'), z.literal('required')]).optional(),
+  // See LlmChatOptions.think's own doc comment (llm-client.interface.ts) --
+  // explicit `false` disables a reasoning model's hidden chain-of-thought.
+  think: z.boolean().optional(),
 });
 
 export type LlmChatRequestBody = z.infer<typeof llmChatRequestSchema>;

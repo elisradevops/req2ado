@@ -1,9 +1,13 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, Button, Card, CardContent, Stack, TextField, Typography, Alert } from '@mui/material';
 import { httpClient } from '../api/httpClient.js';
 import { useAuthStore } from '../store/authStore.js';
+import { TextField } from '../ui/TextField';
+import { Button } from '../ui/Button';
+import { Alert } from '../ui/Alert';
+import { Spinner } from '../ui/Spinner';
+import { InfoTip } from '../ui/Tooltip';
 
 /**
  * Single-step login: the ADO Server itself is the identity provider. The
@@ -29,18 +33,15 @@ export function Login(): JSX.Element {
   const navigate = useNavigate();
   const [adoOrgUrl, setAdoOrgUrl] = useState('');
   const [pat, setPat] = useState('');
-  const [status, setStatus] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
+  const [status, setStatus] = useState<'idle' | 'checking' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [displayName, setDisplayName] = useState<string | null>(null);
 
   const handleLogin = async (): Promise<void> => {
     setStatus('checking');
     setErrorMessage(null);
     try {
       const response = await httpClient.post('/auth/login', { adoOrgUrl, pat });
-      setDisplayName(response.data.displayName);
-      setStatus('ok');
-      useAuthStore.getState().login(adoOrgUrl, pat, response.data.displayName, response.data.userId);
+      useAuthStore.getState().login(adoOrgUrl, response.data.displayName, response.data.userId);
       navigate('/jobs');
     } catch (err) {
       setStatus('error');
@@ -49,23 +50,22 @@ export function Login(): JSX.Element {
   };
 
   return (
-    <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'background.default', px: 2 }}>
-      <Card sx={{ maxWidth: 420, width: '100%' }}>
-        <CardContent sx={{ p: 4 }}>
-          <Typography variant="h5" gutterBottom>
-            Sign in to req2ado
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            Your ADO Personal Access Token identifies you and grants exactly the permissions your ADO account already has.
-          </Typography>
+    <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void handleLogin();
+        }}
+        className="w-full max-w-[420px] rounded-md border border-hairline bg-surface p-8 shadow-card"
+      >
+        <h1 className="text-lg font-semibold">Sign in to req2ado</h1>
+        <p className="mb-6 mt-1 text-sm text-ink-3">
+          Your ADO Personal Access Token identifies you and grants exactly the permissions your ADO account already has.
+        </p>
 
-          <Stack spacing={2}>
-            <TextField
-              label="ADO Organization URL"
-              value={adoOrgUrl}
-              onChange={(e) => setAdoOrgUrl(e.target.value)}
-              fullWidth
-            />
+        <div className="flex flex-col gap-3">
+          <TextField label="ADO Organization URL" value={adoOrgUrl} onChange={(e) => setAdoOrgUrl(e.target.value)} fullWidth autoFocus />
+          <div className="flex items-end gap-1.5">
             <TextField
               label="Personal Access Token"
               type="password"
@@ -73,14 +73,15 @@ export function Login(): JSX.Element {
               onChange={(e) => setPat(e.target.value)}
               fullWidth
             />
-            <Button variant="contained" onClick={handleLogin} disabled={!adoOrgUrl || !pat || status === 'checking'}>
-              Sign in
-            </Button>
-            {status === 'ok' && <Alert severity="success">Signed in as {displayName}.</Alert>}
-            {status === 'error' && <Alert severity="error">{errorMessage}</Alert>}
-          </Stack>
-        </CardContent>
-      </Card>
-    </Box>
+            <InfoTip content="In Azure DevOps: User settings → Personal access tokens → New Token. Grant Work Items (Read, write, & manage) at minimum — that's the only scope req2ado needs." />
+          </div>
+          <Button type="submit" disabled={!adoOrgUrl || !pat || status === 'checking'}>
+            {status === 'checking' && <Spinner />}
+            Sign in
+          </Button>
+          {status === 'error' && <Alert severity="error">{errorMessage}</Alert>}
+        </div>
+      </form>
+    </div>
   );
 }

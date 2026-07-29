@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
-import Autocomplete from '@mui/material/Autocomplete';
-import TextField from '@mui/material/TextField';
 import { getAreaPaths, type AreaPathNode } from '../api/ado';
-import type { AdoRequestCredential } from '../api/jobs';
 import { useToast } from './ToastProvider';
+import { Combobox } from '../ui/Combobox';
 
 function flatten(node: AreaPathNode): string[] {
   return [node.path, ...node.children.flatMap(flatten)];
@@ -12,43 +10,49 @@ function flatten(node: AreaPathNode): string[] {
 export function AreaPathPicker({
   value,
   onChange,
-  credential,
   project,
+  labelExtra,
 }: {
   value: string;
   onChange: (path: string) => void;
-  credential: AdoRequestCredential;
   // Optional: when set, scopes the area-path fetch to this team project
   // instead of the backend's configured default. When unset (no project
   // picker in use yet), behaves byte-identically to before this prop
   // existed.
   project?: string;
+  labelExtra?: React.ReactNode;
 }): React.ReactElement {
   const [options, setOptions] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
   const { showToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
-    getAreaPaths(5, credential, project)
+    setLoading(true);
+    getAreaPaths(5, project)
       .then((tree) => {
         if (!cancelled) setOptions(flatten(tree));
       })
       .catch(() => {
         if (!cancelled) showToast('Failed to load area paths — you can still type one manually.', 'error');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [credential, project, showToast]);
+  }, [project, showToast]);
 
   return (
-    <Autocomplete
-      freeSolo
+    <Combobox
+      label="Area Path"
+      labelExtra={labelExtra}
+      value={value}
+      onChange={onChange}
       options={options}
-      value={value || null}
-      onChange={(_event, newValue) => onChange(newValue ?? '')}
-      onInputChange={(_event, newInputValue) => onChange(newInputValue)}
-      renderInput={(params) => <TextField {...params} label="Area Path" />}
+      loading={loading}
+      fullWidth
     />
   );
 }

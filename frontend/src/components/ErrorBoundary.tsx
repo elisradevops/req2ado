@@ -1,6 +1,6 @@
 import { Component, type ReactNode } from 'react';
-import Box from '@mui/material/Box';
-import Typography from '@mui/material/Typography';
+import { TriangleAlert } from 'lucide-react';
+import { Button } from '../ui/Button';
 
 interface State {
   hasError: boolean;
@@ -16,10 +16,14 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   render(): ReactNode {
     if (this.state.hasError) {
       return (
-        <Box p={4}>
-          <Typography variant="h5">Something went wrong.</Typography>
-          <Typography>Reload the page to continue.</Typography>
-        </Box>
+        <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-canvas px-4 text-center">
+          <TriangleAlert className="h-8 w-8 text-danger" />
+          <h1 className="text-lg font-semibold">Something went wrong.</h1>
+          <p className="text-sm text-ink-3">An unexpected error occurred. Reloading usually fixes it.</p>
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            Reload the page
+          </Button>
+        </div>
       );
     }
     return this.props.children;

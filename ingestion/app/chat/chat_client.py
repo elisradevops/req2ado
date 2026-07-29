@@ -50,7 +50,11 @@ class ChatLlmClient:
         self._bearer_token = bearer_token
         self._transport: httpx.AsyncBaseTransport | None = None  # test-only injection seam
 
-    async def stream_reply(self, messages: list[dict], model: str | None) -> AsyncIterator[str]:
+    async def stream_reply(self, messages: list[dict], model: str | None) -> AsyncIterator[tuple[str, str]]:
+        """Yields (content_delta, reasoning_delta) pairs -- exactly one of the
+        pair is non-empty per chunk (a reasoning model's chain-of-thought
+        arrives on a separate wire field, `reasoningDelta`, from the final
+        answer's `delta` -- see llm.controller.ts's chatStream doc comment)."""
         payload: dict = {"messages": messages, "temperature": 0.3}
         if model is not None:
             payload["model"] = model
@@ -67,5 +71,6 @@ class ChatLlmClient:
                         continue
                     chunk = json.loads(line)
                     delta = chunk.get("delta", "")
-                    if delta:
-                        yield delta
+                    reasoning_delta = chunk.get("reasoningDelta", "")
+                    if delta or reasoning_delta:
+                        yield delta, reasoning_delta

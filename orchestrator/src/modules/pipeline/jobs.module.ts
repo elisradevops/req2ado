@@ -7,18 +7,21 @@ import { AdoController } from './ado.controller';
 import { JobEventsController, REDIS_SUBSCRIBER_FACTORY } from './job-events.controller';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
+import { WorkItemTypeCatalogService } from './work-item-type-catalog.service';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { IdempotencyService } from '../writeback/idempotency.service';
 import { JobEventsPublisher } from './job-events.publisher';
 import { BackfillService } from '../writeback/backfill.service';
 import { BackfillController } from '../writeback/backfill.controller';
 import { LlmModule } from '../llm/llm.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [ConfigModule, LlmModule],
+  imports: [ConfigModule, LlmModule, AuthModule],
   controllers: [JobsController, AdoController, JobEventsController, BackfillController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
+    WorkItemTypeCatalogService,
     {
       provide: McpClient,
       inject: [ConfigService],
@@ -76,6 +79,10 @@ import { LlmModule } from '../llm/llm.module';
             ?.split(',')
             .map((s) => s.trim())
             .filter(Boolean),
+          // Same MAX_UPLOAD_SIZE_MB config the upload-acceptance check
+          // already uses (see 'MAX_UPLOAD_SIZE_BYTES' provider below) --
+          // reused for resubmit retention rather than a second config knob.
+          config.get<number>('MAX_UPLOAD_SIZE_MB')! * 1024 * 1024,
         ),
     },
     {

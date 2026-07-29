@@ -84,6 +84,17 @@ export interface LlmChatOptions {
   minP?: number;
   tools?: LlmToolDefinition[];
   toolChoice?: 'auto' | 'none' | 'required';
+  // Explicit `false` disables a reasoning-capable model's hidden chain-of-
+  // thought (forwarded as OpenAI-compat `reasoning_effort: 'none'` -- see
+  // openwebui.client.ts's doc comment for why this field, not a
+  // `think`/`options.think` passthrough, is what Ollama's OpenAI-compat
+  // endpoint actually honors). Confirmed live: a holistic section-analysis
+  // call that only needs a structured JSON answer gained no measurable
+  // benefit from thinking and cost 3-10x the wall-clock time. `true`/
+  // omitted leaves the model's own default behavior untouched -- this is
+  // an opt-out, not a blanket setting, so callers that DO want reasoning
+  // (e.g. a user-facing chat turn) are unaffected.
+  think?: boolean;
 }
 
 /**
@@ -95,10 +106,23 @@ export interface LlmChatOptions {
  * to match the full interface shape from the architecture doc, but are not
  * implemented until Phase 6 (embeddings) / vision work is scheduled.
  */
+// A reasoning/"thinking" model (qwen3.6 confirmed live) streams its
+// chain-of-thought as a SEPARATE delta field from the final answer, not
+// interleaved into `content` -- chat (unlike leveling/SURVEY calls, which
+// pass `think: false` to skip reasoning outright, see LlmChatOptions.think)
+// wants that reasoning surfaced live, since a real turn was confirmed live
+// to spend most of its ~2 minutes in this phase with zero visible content
+// deltas otherwise. `content`/`reasoning` are each optional per chunk (a
+// given delta carries one or the other, sometimes neither on a keepalive).
+export interface LlmStreamChunk {
+  content?: string;
+  reasoning?: string;
+}
+
 export interface LlmClient {
   chat(messages: ChatMessage[], opts?: LlmChatOptions): Promise<LlmChatResult>;
   listModels(): Promise<string[]>;
-  streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<string>;
+  streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<LlmStreamChunk>;
   embed(texts: string[], opts?: { model?: string }): Promise<number[][]>;
   vision(prompt: string, images: Buffer[], opts?: { model?: string; mimeType?: string }): Promise<string>;
 }

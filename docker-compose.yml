@@ -1,3 +1,15 @@
+# Shared log-rotation stanza -- no rotation/retention was configured
+# anywhere before this, so Docker's json-file default (unbounded) applied to
+# every service. Applied only to the three services with meaningful
+# application logs (ingestion, orchestrator, pipeline-worker); infra
+# containers (postgres/redis/chroma/mcp-ado-server) are left on the default.
+x-app-logging: &app-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -78,6 +90,7 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: 8000
       REDIS_URL: redis://redis:6379
+    <<: *app-logging
     ports:
       # Host port 8000 is taken by an unrelated container on dev machines
       # (see scripts/run-golden-e2e.sh) — map to 8010 instead, matching the
@@ -135,6 +148,7 @@ services:
       # so it's stale either way. Re-add (pointed at a CURRENT bundle) only
       # if back on a network that actually intercepts this traffic.
     command: ["node", "dist/main.js"]
+    <<: *app-logging
     ports:
       - "3001:3001"
     depends_on:
@@ -158,6 +172,7 @@ services:
       DATABASE_URL: postgresql://req2ado:req2ado@postgres:5432/req2ado
       INGESTION_BASE_URL: http://ingestion:8000
     command: ["node", "dist/modules/pipeline/pipeline-worker.main.js"]
+    <<: *app-logging
     depends_on:
       postgres:
         condition: service_started

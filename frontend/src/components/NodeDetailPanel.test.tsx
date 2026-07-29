@@ -1,45 +1,71 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import { NodeDetailPanel } from './NodeDetailPanel';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { NodeDetailPanel, canEditEntry, editabilityOf } from './NodeDetailPanel';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
-import * as chatApi from '../api/chat';
 
-// NodeDetailPanel now renders ChatPanel (Task 11) whenever entry is non-null,
-// which calls useToast() unconditionally and hits the chat API/WS on mount.
-// Mock both so these pre-existing tests stay focused on NodeDetailPanel's own
-// title/description/tags/quality-score/Edit behavior.
-vi.mock('../api/chat');
-vi.mock('../hooks/useChatSocket', async () => {
-  const actual = await vi.importActual<typeof import('../hooks/useChatSocket')>('../hooks/useChatSocket');
-  return { ...actual, useChatSocket: vi.fn() };
-});
-
+// NodeDetailPanel is item-details ONLY -- chat lives in NodeDetailDialog's
+// own right pane (ChatPanel, a sibling not a child) since the dialog
+// redesign put details and chat in separate panes side by side. Chat's own
+// behavior (disabled message, Suggest-a-title, etc.) is covered in
+// ChatPanel.test.tsx; canEditEntry's status-gating rule is covered directly
+// below and in NodeDetailDialog.test.tsx.
 function renderPanel(ui: React.ReactElement) {
   return render(<ToastProvider>{ui}</ToastProvider>);
 }
 
-describe('NodeDetailPanel', () => {
-  beforeEach(() => {
-    // Clear accumulated mock call history/implementations between tests --
-    // previously absent, meaning e.g. sendChatTurn's call count carried
-    // over across `it()` blocks. Only surfaced once a test asserted an
-    // ABSOLUTE call count (see "does not fire a second sendChatTurn call");
-    // clearing here is the correct general fix, not a one-off workaround.
-    vi.clearAllMocks();
-    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
-    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+describe('canEditEntry', () => {
+  const baseEntry: DryRunDiffEntry = {
+    localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', customerId: null,
+  };
+
+  it('is true for a create entry while diff_ready, or when jobStatus is omitted (backward compatible)', () => {
+    expect(canEditEntry(baseEntry, 'diff_ready')).toBe(true);
+    expect(canEditEntry(baseEntry, undefined)).toBe(true);
   });
 
+  it('is false once the job leaves diff_ready', () => {
+    expect(canEditEntry(baseEntry, 'succeeded')).toBe(false);
+  });
+
+  it('is false for a reuse entry or an excluded entry regardless of status', () => {
+    expect(canEditEntry({ ...baseEntry, action: 'reuse' }, 'diff_ready')).toBe(false);
+    expect(canEditEntry({ ...baseEntry, excluded: true }, 'diff_ready')).toBe(false);
+  });
+});
+
+describe('editabilityOf', () => {
+  const baseEntry: DryRunDiffEntry = {
+    localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', customerId: null,
+  };
+
+  it('reports "matched" for a reuse/dedup_skip entry, not just false', () => {
+    expect(editabilityOf({ ...baseEntry, action: 'reuse' }, 'diff_ready')).toEqual({ editable: false, reason: 'matched' });
+    expect(editabilityOf({ ...baseEntry, action: 'dedup_skip' }, 'diff_ready')).toEqual({ editable: false, reason: 'matched' });
+  });
+
+  it('reports "excluded" for an excluded create entry', () => {
+    expect(editabilityOf({ ...baseEntry, excluded: true }, 'diff_ready')).toEqual({ editable: false, reason: 'excluded' });
+  });
+
+  it('reports "job_locked" once the job leaves diff_ready, even for a create entry', () => {
+    expect(editabilityOf(baseEntry, 'writing')).toEqual({ editable: false, reason: 'job_locked' });
+  });
+
+  it('reports editable:true for a create entry while diff_ready', () => {
+    expect(editabilityOf(baseEntry, 'diff_ready')).toEqual({ editable: true });
+  });
+});
+
+describe('NodeDetailPanel', () => {
   it('renders a placeholder when nothing is selected', () => {
-    renderPanel(<NodeDetailPanel jobId="job-1" entry={null} />);
+    renderPanel(<NodeDetailPanel entry={null} />);
     expect(screen.getByText(/select a node/i)).toBeInTheDocument();
   });
 
   it('renders the entry title, description, type, and tags when selected', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: ['functional'] }}
       />,
     );
@@ -48,24 +74,36 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText('functional')).toBeInTheDocument();
   });
 
+  it('renders the description as real markdown -- bold/lists show as formatted elements, not literal ** or -', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{
+          localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title',
+          description: '**Bold** rule:\n- one\n- two',
+          action: 'create', customerId: null, tags: [],
+        }}
+      />,
+    );
+    expect(screen.getByText('Bold').tagName).toBe('STRONG');
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
+  });
+
   it('renders the quality score and issue chips when present', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         entry={{
           localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
           action: 'create', customerId: null, tags: [], qualityScore: 72, qualityIssues: ['vague_term'],
         }}
       />,
     );
-    expect(screen.getByText(/72\s*\/\s*100/)).toBeInTheDocument();
-    expect(screen.getByText('vague_term')).toBeInTheDocument();
+    expect(screen.getByText('72')).toBeInTheDocument();
+    expect(screen.getByText(/Vague term/i)).toBeInTheDocument();
   });
 
   it('renders no score line when qualityScore is absent', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
       />,
     );
@@ -77,7 +115,6 @@ describe('NodeDetailPanel', () => {
     const user = userEvent.setup();
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
         onSave={vi.fn()}
       />,
@@ -93,7 +130,6 @@ describe('NodeDetailPanel', () => {
     const onSave = vi.fn();
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
         onSave={onSave}
       />,
@@ -119,7 +155,7 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, tags: [],
     };
 
-    const { rerender } = renderPanel(<NodeDetailPanel jobId="job-1" entry={nodeA} onSave={vi.fn()} />);
+    const { rerender } = renderPanel(<NodeDetailPanel entry={nodeA} onSave={vi.fn()} />);
 
     // Start editing node A and dirty the draft without saving/cancelling.
     await user.click(screen.getByRole('button', { name: /edit/i }));
@@ -131,7 +167,7 @@ describe('NodeDetailPanel', () => {
     // still-mounted component) without the user clicking Save or Cancel first.
     rerender(
       <ToastProvider>
-        <NodeDetailPanel jobId="job-1" entry={nodeB} onSave={vi.fn()} />
+        <NodeDetailPanel entry={nodeB} onSave={vi.fn()} />
       </ToastProvider>,
     );
 
@@ -143,30 +179,104 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByRole('button', { name: /edit/i })).toBeInTheDocument();
   });
 
-  it('does not show an Edit button for a reuse entry', () => {
+  it('renders the source document provenance when sourceRef is present', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
+        entry={{
+          localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+          action: 'create', customerId: null, tags: [],
+          sourceRef: { documentPath: 'spec.docx', startOffset: 100, endOffset: 200, page: 3 },
+        }}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('spec.docx · p. 3 · chars 100–200')).toBeInTheDocument();
+  });
+
+  it('renders no provenance line for a manually-added entry (sourceRef null)', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{
+          localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+          action: 'create', customerId: null, tags: [], sourceRef: null,
+        }}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/chars \d/)).not.toBeInTheDocument();
+  });
+
+  it('does not show an Edit button for a reuse entry, and explains why instead of rendering nothing', () => {
+    renderPanel(
+      <NodeDetailPanel
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
         onSave={vi.fn()}
       />,
     );
     expect(screen.queryByRole('button', { name: /edit/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/read-only/i)).toBeInTheDocument();
+    expect(screen.getByText('WI-42')).toBeInTheDocument();
+  });
+
+  it('explains the read-only reason for a dedup_skip entry too', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'dedup_skip', existingAdoId: 7, customerId: null, tags: [] }}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/read-only/i)).toBeInTheDocument();
+    expect(screen.getByText('WI-7')).toBeInTheDocument();
+  });
+
+  it('explains "job no longer editable" for a create entry once the job leaves diff_ready', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        jobStatus="writing"
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/no longer editable/i)).toBeInTheDocument();
+    expect(screen.getByText(/writing/i)).toBeInTheDocument();
+  });
+
+  it('hides the Edit button once the job leaves diff_ready', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        jobStatus="succeeded"
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+  });
+
+  it('still shows Edit while diff_ready, and when jobStatus is omitted entirely (backward compatible)', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        jobStatus="diff_ready"
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
   });
 
   it('shows the standards line and KB references for a SURVEY create entry with citations', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         jobMode="survey"
         kbCitations={[
           { sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' },
           { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
         ]}
-        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], qualityScore: 80 }}
       />,
     );
-    expect(screen.getByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).toBeInTheDocument();
+    // Mentions the knowledge base by name when it actually contributed --
+    // "Judged against EARS/INCOSE/ISO" alone would be misleading here.
+    expect(screen.getByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148, and your knowledge base/)).toBeInTheDocument();
     expect(screen.getByText('doc-a.docx')).toBeInTheDocument();
     expect(screen.getByText('doc-b.pdf')).toBeInTheDocument();
   });
@@ -174,20 +284,30 @@ describe('NodeDetailPanel', () => {
   it('shows the standards line but no KB references line when kbCitations is empty', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         jobMode="survey"
         kbCitations={[]}
-        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], qualityScore: 80 }}
       />,
     );
     expect(screen.getByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).toBeInTheDocument();
+    expect(screen.queryByText(/, and your knowledge base/)).not.toBeInTheDocument();
     expect(screen.queryByText(/KB references/i)).not.toBeInTheDocument();
+  });
+
+  it('does not claim a judgment happened for a node that was never scored (e.g. an Epic with no qualityScore set)', () => {
+    renderPanel(
+      <NodeDetailPanel
+        jobMode="survey"
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.queryByText(/Judged against/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Sources')).not.toBeInTheDocument();
   });
 
   it('does not show the Sources section for a BASELINE job', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         jobMode="baseline"
         kbCitations={[]}
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
@@ -199,7 +319,6 @@ describe('NodeDetailPanel', () => {
   it('does not show the Sources section for a reuse entry, even in a SURVEY job', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         jobMode="survey"
         kbCitations={[{ sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' }]}
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
@@ -211,93 +330,10 @@ describe('NodeDetailPanel', () => {
   it('does not show the Sources section when jobMode is omitted (backward compatible with pre-existing callers)', () => {
     renderPanel(
       <NodeDetailPanel
-        jobId="job-1"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
       />,
     );
     expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
-  });
-
-  it('shows a "Suggest a title" button for a create entry and sends a fixed prompt via chat when clicked, for a BASELINE job', async () => {
-    // Correction to a prior report claim: ChatPanel (and the chat backend)
-    // have no SURVEY-only gate -- the propose/accept mechanism already runs
-    // for BASELINE nodes today. This proves the new button isn't
-    // accidentally mode-gated: no jobMode prop is passed at all here.
-    const { default: userEvent } = await import('@testing-library/user-event');
-    const user = userEvent.setup();
-    vi.mocked(chatApi.sendChatTurn).mockResolvedValue(undefined);
-
-    renderPanel(
-      <NodeDetailPanel
-        jobId="job-1"
-        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
-      />,
-    );
-    await user.click(screen.getByRole('button', { name: /suggest a title/i }));
-
-    expect(chatApi.sendChatTurn).toHaveBeenCalledWith(
-      'job-1',
-      'e1',
-      expect.stringMatching(/title/i),
-    );
-  });
-
-  it('shows an error toast and re-enables the button when sendChatTurn rejects', async () => {
-    const { default: userEvent } = await import('@testing-library/user-event');
-    const user = userEvent.setup();
-    vi.mocked(chatApi.sendChatTurn).mockRejectedValue(new Error('network down'));
-
-    renderPanel(
-      <NodeDetailPanel
-        jobId="job-1"
-        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
-      />,
-    );
-    const button = screen.getByRole('button', { name: /suggest a title/i });
-    await user.click(button);
-
-    await waitFor(() => expect(screen.getByText(/failed to request a title suggestion/i)).toBeInTheDocument());
-    expect(button).not.toBeDisabled();
-  });
-
-  it('does not fire a second sendChatTurn call while the first request is still in flight', async () => {
-    // Uses fireEvent (not userEvent) deliberately: userEvent correctly
-    // refuses to click a button once React has committed disabled=true
-    // (confirming the UI-level guard works), but the useRef guard exists
-    // specifically for the narrower case userEvent can't simulate --
-    // several synchronous clicks landing BEFORE the first re-render, where
-    // a useState-only guard would still read its stale `false` closure
-    // value and let every click through. fireEvent dispatches directly,
-    // bypassing the pointer-events/disabled check, to exercise exactly that.
-    const { fireEvent } = await import('@testing-library/react');
-    let resolveTurn: () => void = () => {};
-    vi.mocked(chatApi.sendChatTurn).mockImplementation(
-      () => new Promise((resolve) => { resolveTurn = () => resolve(undefined); }),
-    );
-
-    renderPanel(
-      <NodeDetailPanel
-        jobId="job-1"
-        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
-      />,
-    );
-    const button = screen.getByRole('button', { name: /suggest a title/i });
-    fireEvent.click(button);
-    fireEvent.click(button);
-    fireEvent.click(button);
-
-    expect(chatApi.sendChatTurn).toHaveBeenCalledTimes(1);
-    resolveTurn();
-  });
-
-  it('does not show a "Suggest a title" button for a reuse entry', () => {
-    renderPanel(
-      <NodeDetailPanel
-        jobId="job-1"
-        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
-      />,
-    );
-    expect(screen.queryByRole('button', { name: /suggest a title/i })).not.toBeInTheDocument();
   });
 
   it('shows the full trace link list for the selected node', () => {
@@ -308,9 +344,80 @@ describe('NodeDetailPanel', () => {
       ],
     };
 
-    renderPanel(<NodeDetailPanel jobId="job-1" entry={entry} />);
+    renderPanel(<NodeDetailPanel entry={entry} />);
 
     expect(screen.getByText(/Affects/i)).toBeInTheDocument();
     expect(screen.getByText(/REQ-SYS-099/i)).toBeInTheDocument();
+  });
+
+  it('resolves an intraJob trace link target to its real title when traceTargetTitles is supplied', () => {
+    const entry: DryRunDiffEntry = {
+      localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Sys Req', description: 'd', action: 'create', customerId: null,
+      traceLinks: [
+        { sourceLocalId: 'n0', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'intraJob', targetLocalId: 'br0_n7', resolutionStatus: 'pending' },
+      ],
+    };
+
+    renderPanel(<NodeDetailPanel entry={entry} traceTargetTitles={{ br0_n7: 'Power supply shall regulate output voltage' }} />);
+
+    expect(screen.getByText(/Power supply shall regulate output voltage/i)).toBeInTheDocument();
+    expect(screen.queryByText(/br0_n7/i)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the raw internal id when no title is available for an intraJob link', () => {
+    const entry: DryRunDiffEntry = {
+      localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Sys Req', description: 'd', action: 'create', customerId: null,
+      traceLinks: [
+        { sourceLocalId: 'n0', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'intraJob', targetLocalId: 'br0_n7', resolutionStatus: 'pending' },
+      ],
+    };
+
+    renderPanel(<NodeDetailPanel entry={entry} />);
+
+    expect(screen.getByText(/br0_n7/i)).toBeInTheDocument();
+  });
+
+  it('tells the reviewer a similar parent already exists when a create child\'s parent resolved to dedup_skip', () => {
+    const child: DryRunDiffEntry = {
+      localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd', action: 'create', customerId: null,
+    };
+    const parent: DryRunDiffEntry = {
+      localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd', action: 'dedup_skip',
+      existingAdoId: 4242, similarity: 0.86, customerId: null,
+    };
+
+    renderPanel(<NodeDetailPanel entry={child} parentEntry={parent} />);
+
+    expect(screen.getByText(/similar parent item already exists/i)).toBeInTheDocument();
+    expect(screen.getByText(/WI-4242/)).toBeInTheDocument();
+    expect(screen.getByText(/near-duplicate/i)).toBeInTheDocument();
+  });
+
+  it('tells the reviewer a parent already exists (exact match) when the parent resolved to reuse', () => {
+    const child: DryRunDiffEntry = {
+      localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd', action: 'create', customerId: null,
+    };
+    const parent: DryRunDiffEntry = {
+      localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd', action: 'reuse',
+      existingAdoId: 99, similarity: null, customerId: null,
+    };
+
+    renderPanel(<NodeDetailPanel entry={child} parentEntry={parent} />);
+
+    expect(screen.getByText(/similar parent item already exists/i)).toBeInTheDocument();
+    expect(screen.getByText(/exact match/i)).toBeInTheDocument();
+  });
+
+  it('shows no parent-exists notice when the parent is itself a plain create (nothing already exists)', () => {
+    const child: DryRunDiffEntry = {
+      localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd', action: 'create', customerId: null,
+    };
+    const parent: DryRunDiffEntry = {
+      localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd', action: 'create', customerId: null,
+    };
+
+    renderPanel(<NodeDetailPanel entry={child} parentEntry={parent} />);
+
+    expect(screen.queryByText(/similar parent item already exists/i)).not.toBeInTheDocument();
   });
 });

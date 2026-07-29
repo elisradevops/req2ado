@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     )
     graph_base_url: str = "https://graph.microsoft.com/v1.0"
     redis_url: str = "redis://localhost:6379"
+    # No logging config existed anywhere in this service before -- whatever
+    # uvicorn's own defaults produced. Named so it's configurable without a
+    # code change per deployment (e.g. DEBUG locally, INFO/WARNING in prod).
+    log_level: str = "INFO"
 
     class Config:
         env_prefix = ""

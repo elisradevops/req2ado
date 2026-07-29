@@ -17,6 +17,16 @@ def _mock_transport(response_json: dict, expected_status: int = 200) -> httpx.Mo
     return httpx.MockTransport(handler)
 
 
+def test_model_property_exposes_the_configured_per_job_override() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen2.5:32b")
+    assert client.model == "qwen2.5:32b"
+
+
+def test_model_property_is_none_when_no_override_was_configured() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    assert client.model is None
+
+
 def test_generate_requirements_parses_valid_json_response() -> None:
     response_json = {
         "content": '[{"text": "The unit shall survive a 1m drop.", "tags": ["safety"]}]'
@@ -193,6 +203,60 @@ def test_score_requirements_for_document_sends_temperature_zero() -> None:
     assert captured["temperature"] == 0
 
 
+def test_score_requirements_for_document_forwards_num_ctx_when_configured() -> None:
+    # Regression guard: this call previously never forwarded num_ctx at
+    # all -- Ollama silently truncates the prompt to its own small default
+    # without it, regardless of how many requirements are being scored.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768)
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"n0": "text"})
+
+    assert captured["body"]["numCtx"] == 32768
+
+
+def test_score_requirements_for_document_omits_num_ctx_when_not_configured() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"n0": "text"})
+
+    assert "numCtx" not in captured["body"]
+
+
+def test_score_requirements_for_document_prompt_states_the_exact_expected_entry_count() -> None:
+    # Regression guard, same confirmed-live pattern as _whole_document_hint/
+    # _branch_topic_hint: a concrete, countable completeness instruction,
+    # not just "never invent a node_id" -- addresses the real, already-
+    # observed "no valid score for N node(s)" failure mode.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"n0": "text", "n1": "text2", "n2": "text3"})
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "exactly 3 node_id(s)" in system_prompt
+    assert "exactly 3 entries" in system_prompt
+
+
 def test_score_requirements_for_document_raises_on_malformed_json_content() -> None:
     response_json = {"content": "not valid json"}
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
@@ -202,7 +266,32 @@ def test_score_requirements_for_document_raises_on_malformed_json_content() -> N
         client.score_requirements_for_document({"0": "text"})
 
 
-def test_score_requirements_for_document_prepends_kb_context_when_present() -> None:
+def test_score_requirements_for_document_repairs_a_bare_unescaped_quote_inside_a_string_value() -> None:
+    # Confirmed real job failure (AirPro Backplane ICD, job d8cd0779): the
+    # model embedded literal, unescaped double quotes inside a string value
+    # for emphasis -- e.g. `the "Power-ON" Event` -- breaking the JSON
+    # string mid-value. None of the three narrow, positional tolerances in
+    # _parse_json_object (missing outer brace / missing node-object brace)
+    # can repair this shape (it needs re-escaping, not a missing brace) --
+    # only the general-purpose json_repair fallback reaches it. Previously
+    # this raised "malformed JSON" and failed the whole job.
+    raw_broken_json = (
+        '{"n0": {"score": 40, "issues": [], '
+        '"note": "the shall include the "Power-ON" Event function"}}'
+    )
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": raw_broken_json})
+
+    result = client.score_requirements_for_document({"n0": "text"})
+    assert result["n0"]["score"] == 40
+
+
+def test_score_requirements_for_document_prepends_kb_context_as_an_authoritative_rubric() -> None:
+    # Scoring's kb_context framing is deliberately STRONGER than the
+    # grounding call sites' "may be incomplete or irrelevant" wording -- an
+    # org's own ingested requirements-writing standard should be treated as
+    # the authoritative rubric for judging these requirements, not generic
+    # background material the model may or may not use.
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -214,10 +303,11 @@ def test_score_requirements_for_document_prepends_kb_context_when_present() -> N
 
     client.score_requirements_for_document({"0": "text"}, kb_context="Org rule: always specify units.")
     assert captured["system_prompt"].startswith(
-        "Reference material from the knowledge base (may be incomplete or "
-        "irrelevant — use only what's genuinely helpful):\n\n"
-        "Org rule: always specify units.\n\n"
+        "The following knowledge-base material was retrieved for this "
+        "organization. If it defines its own requirements-writing "
     )
+    assert "Org rule: always specify units." in captured["system_prompt"]
+    assert "authoritative rubric for this organization" in captured["system_prompt"]
     assert "EARS" in captured["system_prompt"] or "INCOSE" in captured["system_prompt"]
 
 
@@ -233,6 +323,129 @@ def test_score_requirements_for_document_prompt_unchanged_when_kb_context_is_non
 
     client.score_requirements_for_document({"0": "text"})
     assert "Reference material from the knowledge base" not in captured["system_prompt"]
+
+
+def test_extract_quality_checklist_parses_a_real_list() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(["Necessary", "Unambiguous", "Verifiable"])})
+
+    result = client.extract_quality_checklist("3.3 Customer requirement quality checklist\n...")
+    assert result == ["Necessary", "Unambiguous", "Verifiable"]
+
+
+def test_extract_quality_checklist_returns_empty_list_when_document_has_no_checklist() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "[]"})
+
+    result = client.extract_quality_checklist("Some unrelated document about airplanes.")
+    assert result == []
+
+
+def test_extract_quality_checklist_raises_on_a_non_list_response() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": '{"not": "a list"}'})
+
+    with pytest.raises(ValueError, match="malformed JSON"):
+        client.extract_quality_checklist("text")
+
+
+def test_extract_quality_checklist_raises_on_a_list_with_non_string_items() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "[1, 2, 3]"})
+
+    with pytest.raises(ValueError, match="malformed JSON"):
+        client.extract_quality_checklist("text")
+
+
+def test_extract_quality_checklist_caps_input_length() -> None:
+    # Confirmed real design constraint: a checklist definition is a small,
+    # self-contained part of a document, not something needing whole-
+    # document comprehension -- input is capped, not sent in full.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.extract_quality_checklist("x" * 50_000)
+
+    user_content = captured["body"]["messages"][1]["content"]
+    assert len(user_content) < 50_000
+
+
+def test_extract_quality_checklist_falls_back_to_empty_when_too_many_items() -> None:
+    # A nonsense/runaway extraction (way more than a real checklist would
+    # ever have) is treated as "no checklist found" rather than stored and
+    # replayed into every future scoring prompt.
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps([f"Item {i}" for i in range(40)])})
+
+    result = client.extract_quality_checklist("text")
+    assert result == []
+
+
+def test_extract_quality_checklist_falls_back_to_empty_when_only_one_item_survives() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(["Solo item"])})
+
+    result = client.extract_quality_checklist("text")
+    assert result == []
+
+
+def test_extract_quality_checklist_drops_an_oversized_item_but_keeps_the_rest() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    oversized = "x" * 500
+    client._transport = _mock_transport(
+        {"content": json.dumps(["Necessary", "Unambiguous", "Verifiable", oversized])}
+    )
+
+    result = client.extract_quality_checklist("text")
+    assert result == ["Necessary", "Unambiguous", "Verifiable"]
+
+
+def test_extract_quality_checklist_dedups_case_insensitively_preserving_first_seen_order_and_casing() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(
+        {"content": json.dumps(["Necessary", "NECESSARY", "Unambiguous", "unambiguous", "Verifiable"])}
+    )
+
+    result = client.extract_quality_checklist("text")
+    assert result == ["Necessary", "Unambiguous", "Verifiable"]
+
+
+def test_extract_quality_checklist_well_formed_eleven_item_list_passes_through_unchanged() -> None:
+    items = [
+        "Necessary", "Unambiguous", "Verifiable", "Complete", "Consistent",
+        "Feasible", "Traceable", "Correct", "Singular", "Testable", "Ranked",
+    ]
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(items)})
+
+    result = client.extract_quality_checklist("text")
+    assert result == items
+
+
+def test_extract_quality_checklist_sends_temperature_zero_and_think_false() -> None:
+    # Determinism requirement (user-reported): this runs ONCE per document
+    # at ingest time and its result is stored/reused forever -- must itself
+    # be as deterministic as this codebase's other structured-extraction
+    # calls (temperature=0, think=False, same as analyze_section/scoring).
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.extract_quality_checklist("text")
+
+    assert captured["body"]["temperature"] == 0
+    assert captured["body"]["think"] is False
 
 
 def test_infer_trace_links_sends_nodes_and_catalog_returns_parsed_links() -> None:
@@ -352,6 +565,172 @@ def test_score_requirements_for_document_includes_an_issues_enum_schema_with_add
     assert set(issues_enum) == {i.value for i in RequirementQualityIssue}
 
 
+def test_score_requirements_for_document_schema_allows_dynamic_category_scores() -> None:
+    # Confirmed real gap fixed here: categoryScores was previously a FIXED
+    # 5-property schema, which could never accept an org's own ingested KB
+    # checklist category names (e.g. Necessary/Unambiguous/Verifiable/...).
+    # additionalProperties (dynamic keys), not a fixed properties list --
+    # same pattern this module already uses for the outer node_id-keyed
+    # object and kb_relevance_schema.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"0": "The unit shall survive a 1m drop."})
+
+    entry_schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
+    assert "categoryScores" in entry_schema["required"]
+    category_schema = entry_schema["properties"]["categoryScores"]
+    assert "properties" not in category_schema
+    assert category_schema["additionalProperties"] == {"type": "integer", "minimum": 0, "maximum": 100}
+
+
+def test_score_requirements_for_document_prompt_explains_all_five_categories() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"0": "text"})
+
+    for keyword in ("clarity", "testability", "atomicity", "style", "rationale"):
+        assert keyword in captured["system_prompt"]
+
+
+def test_score_requirements_for_document_derives_dynamic_categories_when_kb_context_is_present() -> None:
+    # Confirmed real gap fixed here (user-reported): with a real ingested KB
+    # standard, the prompt must ask the model to derive categoryScores KEYS
+    # from that material's own checklist instead of always locking to the
+    # generic clarity/testability/atomicity/style/rationale 5-tuple.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"0": "text"}, kb_context="Org standard: Necessary, Unambiguous, Verifiable.")
+
+    prompt = captured["system_prompt"]
+    assert "you derive from the organization" in prompt
+    assert "Necessary" in prompt  # example checklist names surfaced to the model
+    # Determinism instruction: same key set across every node in the batch.
+    assert "EXACT SAME set of keys" in prompt
+    # Still documents the fallback for when the material has no clear checklist.
+    assert "clarity, testability, atomicity, style, rationale" in prompt
+
+
+def test_score_requirements_for_document_uses_fixed_categories_without_kb_context() -> None:
+    # Backward-compat: no kb_context -> byte-identical fixed 5-category
+    # instruction, no "derive"/dynamic-key language at all.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"0": "text"})
+
+    prompt = captured["system_prompt"]
+    assert "FIVE independent integer" in prompt
+    assert "you derive from the organization" not in prompt
+
+
+def test_score_requirements_for_document_with_fixed_checklist_and_kb_context_drops_derive_language() -> None:
+    # Real contradiction fixed here: when category_checklist (fixed,
+    # pre-extracted) AND kb_context are BOTH present -- the common case --
+    # the prompt used to contain both "derive your categoryScores key names
+    # from this material" (from _with_kb_context_as_scoring_rubric) and,
+    # separately, "use EXACTLY these categories... do not add, omit,
+    # rename, or reorder any" (from the fixed-checklist category_instruction
+    # branch). The fixed instruction must be the only one present -- no
+    # "derive" language survives alongside it.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document(
+        {"0": "text"},
+        kb_context="Org standard: Necessary, Unambiguous, Verifiable.",
+        category_checklist=["Necessary", "Unambiguous", "Verifiable"],
+    )
+
+    prompt = captured["system_prompt"]
+    assert "you derive from the organization" not in prompt
+    assert "derive your categoryScores key names" not in prompt
+    assert "do not add, omit, rename, or reorder any" in prompt
+    assert "Necessary" in prompt
+
+
+def test_score_epics_and_features_for_document_sends_type_aware_prompt_and_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_epics_and_features_for_document(
+        {
+            "n0": {"type": "Epic", "text": "Automated Customer Requirements Processing."},
+            "n1": {"type": "Feature", "text": "Parse and normalize uploaded requirement documents."},
+        }
+    )
+
+    prompt = captured["body"]["messages"][0]["content"]
+    assert "scopeCoherence" in prompt
+    assert "outcomeClarity" in prompt
+    assert "capabilityClarity" in prompt
+    assert "decomposability" in prompt
+    assert "exactly 2 node_id(s)" in prompt
+    assert "exactly 2 entries" in prompt
+    # No 'issues' vocabulary at all -- RequirementQualityIssue's closed
+    # vocabulary (ambiguous, not_testable, ...) describes atomic statements,
+    # not what an Epic/Feature grouping is.
+    assert "not_testable" not in prompt
+    schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
+    assert set(schema["required"]) == {"score", "categoryScores"}
+    assert captured["body"]["temperature"] == 0
+    assert captured["body"]["think"] is False
+
+
+def test_score_epics_and_features_for_document_parses_valid_response() -> None:
+    response_json = {
+        "content": json.dumps(
+            {
+                "n0": {"score": 85, "categoryScores": {"scopeCoherence": 90, "outcomeClarity": 80}},
+            }
+        )
+    }
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "text"}})
+    assert result["n0"]["score"] == 85
+    assert result["n0"]["categoryScores"] == {"scopeCoherence": 90, "outcomeClarity": 80}
+
+
 def test_infer_trace_links_never_sends_response_schema_even_with_a_nonempty_catalog() -> None:
     # Same GBNF array-wedge risk as infer_hierarchy (up to ~200 nodes across
     # a whole tree). Must stay omitted regardless of catalog size --
@@ -373,6 +752,51 @@ def test_infer_trace_links_never_sends_response_schema_even_with_a_nonempty_cata
 
     assert "responseSchema" not in captured["body"]
     assert captured["body"]["maxTokens"] == 20000
+
+
+def test_infer_trace_links_disables_reasoning_and_forwards_num_ctx_when_configured() -> None:
+    # Regression guard: relationship inference over already-generated nodes
+    # is structured extraction, not open-ended reasoning -- same
+    # confirmed-live finding (3-10x wall-clock cost, no accuracy benefit)
+    # as analyze_section/analyze_section_agentic/score_requirements_for_document.
+    # num_ctx was also missing entirely -- this call serializes EVERY node
+    # in the whole tree, the largest single payload in this module, making
+    # it the most exposed to Ollama's silent default-context truncation.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768)
+    client._transport = httpx.MockTransport(handler)
+
+    client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=[])
+
+    assert captured["body"]["think"] is False
+    assert captured["body"]["numCtx"] == 32768
+
+
+def test_judge_kb_relevance_disables_reasoning_caps_output_and_forwards_num_ctx() -> None:
+    # Regression guard: this was the ONE call in this module with no
+    # output cap at all -- the exact unbounded-hidden-reasoning exposure
+    # _MAX_OUTPUT_TOKENS's own doc comment documents (a reasoning model
+    # observed generating 40+ minute single calls with no cap in place).
+    # Also missing num_ctx and think:False, same fix as its siblings.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768)
+    client._transport = httpx.MockTransport(handler)
+
+    client.judge_kb_relevance("some section content", [{"source_file": "a.pdf", "text": "snippet"}])
+
+    assert captured["body"]["think"] is False
+    assert captured["body"]["maxTokens"] == 20000
+    assert captured["body"]["numCtx"] == 32768
 
 
 def test_judge_kb_relevance_parses_the_verdict_map_and_includes_an_enum_schema() -> None:
@@ -468,6 +892,50 @@ def test_analyze_section_caps_max_tokens_to_avoid_silent_truncation() -> None:
     assert captured["body"]["maxTokens"] == _MAX_OUTPUT_TOKENS
 
 
+def test_analyze_section_disables_reasoning_via_the_think_field() -> None:
+    # Confirmed live (qwen3.6:35b, gemma4:31b): a reasoning-capable model's
+    # hidden chain-of-thought added 3-10x wall-clock time on this holistic
+    # JSON-extraction call with no observed accuracy benefit -- must be
+    # disabled via the orchestrator's `think` passthrough (see
+    # LlmChatOptions.think in the orchestrator's llm-client.interface.ts).
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+
+    assert captured["body"]["think"] is False
+
+
+def test_score_requirements_for_document_disables_reasoning_via_the_think_field() -> None:
+    # Regression guard for a confirmed real user complaint (scoring 83
+    # requirements in one call ran extremely slowly): unlike
+    # analyze_section/analyze_section_agentic (both already proven to be
+    # 3-10x faster with reasoning disabled, same finding, see those tests'
+    # own doc comments), this call never set `think: False` at all --
+    # meaning a reasoning-capable model burned hidden chain-of-thought
+    # tokens before ANY output, for every one of the batch's items, on a
+    # call that is pure structured judgment, not creative reasoning.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"n0": "text"})
+
+    assert captured["body"]["think"] is False
+    assert captured["body"]["maxTokens"] == 20000
+
+
 def test_analyze_section_agentic_caps_max_tokens_to_avoid_silent_truncation() -> None:
     from app.survey.orchestrator_llm_client import _MAX_OUTPUT_TOKENS
 
@@ -483,6 +951,21 @@ def test_analyze_section_agentic_caps_max_tokens_to_avoid_silent_truncation() ->
     client.analyze_section_agentic("Some section text.", lambda query: (None, []))
 
     assert captured["body"]["maxTokens"] == _MAX_OUTPUT_TOKENS
+
+
+def test_analyze_section_agentic_disables_reasoning_via_the_think_field() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+
+    assert captured["body"]["think"] is False
 
 
 def test_analyze_section_includes_the_whole_document_hint_only_when_requested() -> None:
@@ -604,11 +1087,49 @@ def test_analyze_section_agentic_reports_truncated_when_final_answer_hits_finish
     assert truncated is True
 
 
-def test_analyze_section_agentic_reports_not_truncated_when_max_tool_rounds_exhausted() -> None:
-    # Exhausting _MAX_TOOL_ROUNDS without ever reaching a final answer is a
-    # DIFFERENT failure mode from a length-capped final answer -- the loop
-    # gave up, it never got far enough to see a real finishReason.
+def test_analyze_section_agentic_forces_a_final_answer_on_the_last_round_instead_of_returning_0_nodes() -> None:
+    # Regression guard for a confirmed real cause of a branch silently
+    # contributing 0 nodes: a model that kept calling query_kb right up to
+    # the round budget previously fell straight into "exceeded
+    # _MAX_TOOL_ROUNDS -- 0 nodes" with no final answer ever produced.
+    # toolChoice:'none' on the last round tells the model tool use is off
+    # the table, so a compliant model answers instead of calling a tool
+    # again.
+    from app.survey.orchestrator_llm_client import _MAX_TOOL_ROUNDS
+
+    final_nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Grounded requirement.", "tags": []}]
+    call_count = {"n": 0}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        body = json.loads(request.content)
+        if body.get("toolChoice") == "none":
+            # The forced-final round -- a compliant model answers.
+            return httpx.Response(200, json={"content": json.dumps({"nodes": final_nodes})})
+        return httpx.Response(
+            200, json={"toolCalls": [{"id": "call-1", "function": {"name": "query_kb", "arguments": '{"query": "x"}'}}]}
+        )
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, _, truncated = client.analyze_section_agentic("Some section text.", lambda query: (None, []))
+
+    assert nodes == final_nodes
+    assert truncated is False
+    assert call_count["n"] == _MAX_TOOL_ROUNDS  # forced to answer on the last round, not a 5th call
+
+
+def test_analyze_section_agentic_falls_back_to_analyze_section_when_a_model_ignores_tool_choice_none() -> None:
+    # Defensive edge case: a model that contradicts toolChoice:'none' (still
+    # emits tool_calls on the forced-final round) must not crash or silently
+    # return 0 nodes -- falls back to one non-agentic analyze_section call
+    # over the same section text instead.
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "tools" not in body:
+            # The fallback analyze_section call -- no tools offered at all.
+            return httpx.Response(200, json={"content": json.dumps({"nodes": [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Fallback requirement.", "tags": []}]})})
         return httpx.Response(
             200, json={"toolCalls": [{"id": "call-1", "function": {"name": "query_kb", "arguments": '{"query": "x"}'}}]}
         )
@@ -617,7 +1138,8 @@ def test_analyze_section_agentic_reports_not_truncated_when_max_tool_rounds_exha
     client._transport = httpx.MockTransport(handler)
 
     nodes, citations, truncated = client.analyze_section_agentic("Some section text.", lambda query: (None, []))
-    assert nodes == []
+
+    assert nodes == [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Fallback requirement.", "tags": []}]
     assert truncated is False
 
 
@@ -850,6 +1372,29 @@ def test_analyze_section_agentic_calls_retrieve_fn_then_returns_final_nodes() ->
     assert call_count["n"] == 2
 
 
+def test_analyze_section_agentic_parses_json_prefaced_with_conversational_prose() -> None:
+    # Regression guard for a confirmed real job failure (qwen3.6:35b): the
+    # agentic path gets a free-form chat reply, not a schema-constrained
+    # completion, so the model prefaced its fenced JSON with prose instead
+    # of returning bare JSON -- _strip_json_fence's old anchored-only regex
+    # never matched this shape at all, and the whole SURVEY job crashed.
+    final_nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Grounded requirement.", "tags": []}]
+    prefaced_content = (
+        "Based on the analysis of Section 1, here is the synthesized work-item tree:\n\n"
+        f"```json\n{json.dumps({'nodes': final_nodes})}\n```"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": prefaced_content})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, citations, _ = client.analyze_section_agentic("Some section text.", None)
+
+    assert nodes == final_nodes
+
+
 def test_analyze_section_agentic_sends_both_tools_and_response_schema() -> None:
     # Regression guard for a confirmed real bug: this call previously sent
     # tools WITHOUT responseSchema at all -- an implementation gap (every
@@ -878,13 +1423,17 @@ def test_analyze_section_agentic_sends_both_tools_and_response_schema() -> None:
     assert "maxItems" not in captured["body"]["responseSchema"]["schema"]["properties"]["nodes"]
 
 
-def test_analyze_section_agentic_bounds_at_max_tool_rounds() -> None:
-    # A misbehaving model that keeps calling query_kb forever must not loop
-    # forever -- _MAX_TOOL_ROUNDS is a hard ceiling; degrades to no nodes
-    # rather than hanging.
+def test_analyze_section_agentic_bounds_at_max_tool_rounds_then_forces_a_final_answer() -> None:
+    # A misbehaving model that keeps calling query_kb must not loop forever
+    # -- _MAX_TOOL_ROUNDS is a hard ceiling on TOOL rounds -- but the last
+    # round now forces toolChoice:'none' instead of just giving up, so a
+    # compliant model still produces real nodes rather than [].
     from app.survey.orchestrator_llm_client import _MAX_TOOL_ROUNDS
 
     def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("toolChoice") == "none":
+            return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
         return httpx.Response(
             200,
             json={
@@ -906,8 +1455,10 @@ def test_analyze_section_agentic_bounds_at_max_tool_rounds() -> None:
     nodes, citations, _ = client.analyze_section_agentic("Some section text.", retrieve_fn)
 
     assert nodes == []
-    assert call_count["n"] == _MAX_TOOL_ROUNDS
-    assert len(citations) == _MAX_TOOL_ROUNDS  # one hit accumulated per round before giving up
+    # _MAX_TOOL_ROUNDS - 1 real tool rounds (retrieve_fn actually called),
+    # then the last round is forced to a final answer instead of a tool call.
+    assert call_count["n"] == _MAX_TOOL_ROUNDS - 1
+    assert len(citations) == _MAX_TOOL_ROUNDS - 1
 
 
 def test_analyze_section_agentic_offers_full_document_tools_when_both_fns_supplied() -> None:

@@ -15,6 +15,7 @@ describe('HealthController (e2e)', () => {
     process.env.LLM_CHAT_MODEL = 'test-model';
     process.env.LLM_PROXY_BEARER = 'test-llm-proxy-bearer';
     process.env.EMBED_MODEL = 'test-embed-model';
+    process.env.CREDENTIAL_ENC_KEY = 'test-credential-enc-key';
 
     // AppModule (and its ConfigModule.forRoot() validation) must be imported only
     // after the env vars above are set, since @Module() decorator arguments are

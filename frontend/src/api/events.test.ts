@@ -4,11 +4,13 @@ import { subscribeToJobEvents } from './events';
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
   url: string;
+  withCredentials: boolean;
   closed = false;
   listeners: Record<string, ((event: MessageEvent) => void)[]> = {};
 
-  constructor(url: string) {
+  constructor(url: string, options?: { withCredentials?: boolean }) {
     this.url = url;
+    this.withCredentials = options?.withCredentials ?? false;
     FakeEventSource.instances.push(this);
   }
 
@@ -43,6 +45,11 @@ describe('subscribeToJobEvents', () => {
 
     const source = FakeEventSource.instances[0];
     expect(source.url).toBe('https://api.example/jobs/job-1/events');
+    // Real regression: without this, the session cookie AuthGuard requires
+    // is never sent (EventSource defaults to no credentials on a
+    // cross-origin request), the SSE connection 401s, and the job silently
+    // looks stuck forever even though it's progressing server-side.
+    expect(source.withCredentials).toBe(true);
 
     source.emit('stage', { stage: 'parse' });
     expect(onStage).toHaveBeenCalledWith('parse');

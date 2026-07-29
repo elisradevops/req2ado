@@ -7,6 +7,7 @@ import { llmVisionRequestSchema } from './llm-vision.dto';
 import type { LlmToolCall } from './llm-client.interface';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClient } from './openwebui.client';
+import { Public } from '../auth/public.decorator';
 
 // Every route here is internal service-to-service traffic already gated by
 // LlmProxyBearerGuard (ingestion's shared bearer token), not public traffic
@@ -15,7 +16,11 @@ import { OpenWebUiClient } from './openwebui.client';
 // (see ingestion/app/survey/orchestrator_llm_client.py) can fire several
 // /llm/embed calls per branch, making throttle pressure here newly likely,
 // not just theoretical.
+// @Public(): this is bearer-guarded service-to-service traffic (ingestion
+// calling in), not a browser session -- the global session AuthGuard
+// (app.module.ts) must not also demand a cookie here.
 @SkipThrottle()
+@Public()
 @Controller('llm')
 @UseGuards(LlmProxyBearerGuard)
 export class LlmController {
@@ -38,6 +43,7 @@ export class LlmController {
       ...(body.minP !== undefined ? { minP: body.minP } : {}),
       ...(body.tools !== undefined ? { tools: body.tools } : {}),
       ...(body.toolChoice !== undefined ? { toolChoice: body.toolChoice } : {}),
+      ...(body.think !== undefined ? { think: body.think } : {}),
     });
     return result;
   }
@@ -66,13 +72,16 @@ export class LlmController {
       clientDisconnected = true;
     });
     try {
-      for await (const delta of this.llmClient.streamChat(body.messages, {
+      for await (const chunk of this.llmClient.streamChat(body.messages, {
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
         ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
         ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
       })) {
-        res.write(`${JSON.stringify({ delta })}\n`);
+        // `delta` stays the wire name for final-answer content (backward
+        // compatible with every existing consumer); `reasoningDelta` is new,
+        // additive, and only present on a reasoning-model chunk.
+        res.write(`${JSON.stringify({ ...(chunk.content ? { delta: chunk.content } : {}), ...(chunk.reasoning ? { reasoningDelta: chunk.reasoning } : {}) })}\n`);
         if (clientDisconnected) break;
       }
     } finally {

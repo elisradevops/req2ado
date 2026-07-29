@@ -141,6 +141,36 @@ describe('OpenWebUiClient', () => {
     );
   });
 
+  it('forwards think: false as reasoning_effort: none (Ollama-specific, not the OpenAI-typed low/medium/high)', async () => {
+    // Confirmed live against Ollama's OpenAI-compat endpoint: a bare
+    // `think`/`options.think` field is silently ignored (a real `reasoning`
+    // field still appears in the response, no speedup) -- reasoning_effort
+    // is the field Ollama's own openai.go actually maps to its internal
+    // think toggle, confirmed via Ollama's source (ReasoningEffort ->
+    // api.ThinkValue), and 'none' is an Ollama-specific extension beyond
+    // real OpenAI's low/medium/high/null.
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { think: false });
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ reasoning_effort: 'none' }));
+  });
+
+  it('omits reasoning_effort when think is true or not provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { think: true });
+    expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('reasoning_effort');
+
+    await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('reasoning_effort');
+  });
+
   it('forwards responseSchema as response_format: json_schema when provided', async () => {
     const client = new OpenWebUiClient(config);
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: '[]' } }] });
@@ -282,19 +312,38 @@ describe('OpenWebUiClient', () => {
     async function* fakeStream() {
       yield { choices: [{ delta: { content: 'Hel' } }] };
       yield { choices: [{ delta: { content: 'lo' } }] };
-      yield { choices: [{ delta: {} }] }; // no content — must be skipped, not yielded as ''
+      yield { choices: [{ delta: {} }] }; // no content/reasoning — must be skipped, not yielded empty
     }
     const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
 
-    const deltas: string[] = [];
-    for await (const delta of client.streamChat([{ role: 'user', content: 'hi' }], { model: 'llama3.1' })) {
-      deltas.push(delta);
+    const chunks: { content?: string; reasoning?: string }[] = [];
+    for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }], { model: 'llama3.1' })) {
+      chunks.push(chunk);
     }
 
-    expect(deltas).toEqual(['Hel', 'lo']);
+    expect(chunks).toEqual([{ content: 'Hel' }, { content: 'lo' }]);
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'llama3.1', stream: true }));
+  });
+
+  it('streamChat yields a reasoning model\'s chain-of-thought on a separate field from content', async () => {
+    const client = new OpenWebUiClient(config);
+    async function* fakeStream() {
+      yield { choices: [{ delta: { reasoning: 'Hmm, ' } }] };
+      yield { choices: [{ delta: { reasoning: 'let me think.' } }] };
+      yield { choices: [{ delta: { content: 'Sure.' } }] };
+    }
+    const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const chunks: { content?: string; reasoning?: string }[] = [];
+    for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }], { model: 'llama3.1' })) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toEqual([{ reasoning: 'Hmm, ' }, { reasoning: 'let me think.' }, { content: 'Sure.' }]);
   });
 
   it('embed() throws not-implemented in this phase', async () => {
@@ -327,6 +376,9 @@ describe('OpenWebUiClient', () => {
           ],
         },
       ],
+      temperature: 0,
+      seed: 0,
+      max_tokens: 200,
     });
   });
 
@@ -363,6 +415,28 @@ describe('OpenWebUiClient', () => {
 
     const sentContent = fakeCreate.mock.calls[0][0].messages[0].content;
     expect(sentContent[1].image_url.url).toBe(`data:image/jpeg;base64,${Buffer.from('fake-jpeg-bytes').toString('base64')}`);
+  });
+
+  it('vision() sends temperature 0 and a fixed seed -- a caption is structured extraction, not creative writing, and feeds branch-splitting downstream', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('img')]);
+
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ temperature: 0, seed: 0 }));
+  });
+
+  it('vision() caps output length -- previously unbounded, unlike every other call in this class', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('img')]);
+
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
   });
 
   it('vision() defaults to image/png in the data URI when opts.mimeType is not supplied', async () => {

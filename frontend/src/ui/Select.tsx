@@ -1,0 +1,130 @@
+import { Children, forwardRef, isValidElement, useId, type OptionHTMLAttributes, type ReactNode } from 'react';
+import { Select as RadixSelect } from 'radix-ui';
+import { Check, ChevronDown } from 'lucide-react';
+import { cn } from '../lib/cn';
+
+// Radix's Select.Item forbids an empty-string value (it reserves '' to mean
+// "nothing selected" internally) -- but this app's callers all pass native
+// <option value=""> for their "Default"/placeholder entry (ProjectPicker,
+// StatePicker, AddChildForm, ChatPanel's model picker). Map '' to this
+// sentinel on the way in and back to '' on the way out, so every existing
+// call site keeps working unchanged.
+const EMPTY_VALUE = '__select_empty__';
+
+/**
+ * Was a native <select> -- replaced because a real macOS Safari bug (native
+ * select popups can render detached from their trigger after the page has
+ * scrolled, a known WebKit positioning defect, not something page CSS can
+ * fix) made every picker in the app look broken. Radix Select renders its
+ * own JS-positioned popup instead, so this can't happen.
+ *
+ * Public API is unchanged from the native version: pass <option> children,
+ * a value string, and onChange(event) reading event.target.value -- every
+ * existing call site (ProjectPicker, StatePicker, AddChildForm, ChatPanel,
+ * JobDetail's filter, NewJobWizard) needed zero changes.
+ */
+export const Select = forwardRef<
+  HTMLButtonElement,
+  {
+    label?: string;
+    // Rendered inline next to the label (not below the field), so an
+    // InfoTip's vertical position never depends on whether THIS field or a
+    // sibling field happens to have helper text under it.
+    labelExtra?: ReactNode;
+    helperText?: ReactNode;
+    fullWidth?: boolean;
+    className?: string;
+    id?: string;
+    name?: string;
+    value?: string;
+    defaultValue?: string;
+    disabled?: boolean;
+    'aria-label'?: string;
+    onChange?: (event: { target: { value: string; name?: string } }) => void;
+    children?: ReactNode;
+  }
+>(function Select(
+  { label, labelExtra, helperText, fullWidth, className, id, name, value, defaultValue, disabled, onChange, children, ...rest },
+  ref,
+) {
+  const generatedId = useId();
+  const fieldId = id ?? generatedId;
+  const ariaLabel = rest['aria-label'] ?? label;
+
+  const options = Children.toArray(children).filter(isValidElement) as React.ReactElement<
+    OptionHTMLAttributes<HTMLOptionElement>
+  >[];
+
+  function toRadixValue(raw: string | undefined): string | undefined {
+    if (raw === undefined) return undefined;
+    return raw === '' ? EMPTY_VALUE : raw;
+  }
+
+  function handleValueChange(next: string): void {
+    onChange?.({ target: { value: next === EMPTY_VALUE ? '' : next, name } });
+  }
+
+  return (
+    <div className={cn('flex flex-col gap-1.5', fullWidth && 'w-full')}>
+      {(label || labelExtra) && (
+        <div className="flex items-center justify-between gap-1.5">
+          {label && (
+            <label htmlFor={fieldId} className="text-[11.5px] font-semibold uppercase tracking-wide text-ink-2">
+              {label}
+            </label>
+          )}
+          {labelExtra}
+        </div>
+      )}
+      <RadixSelect.Root
+        value={toRadixValue(value)}
+        defaultValue={toRadixValue(defaultValue)}
+        onValueChange={handleValueChange}
+        disabled={disabled}
+        name={name}
+      >
+        <RadixSelect.Trigger
+          ref={ref}
+          id={fieldId}
+          aria-label={ariaLabel}
+          className={cn(
+            'flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm border border-hairline-strong bg-surface px-2.5 py-1.5 text-sm text-ink-1 focus:border-navy-600 focus:outline-none focus:ring-[3px] focus:ring-signal/40 disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
+            className,
+          )}
+        >
+          <RadixSelect.Value />
+          <RadixSelect.Icon>
+            <ChevronDown className="h-3.5 w-3.5 flex-none text-ink-3" />
+          </RadixSelect.Icon>
+        </RadixSelect.Trigger>
+        <RadixSelect.Portal>
+          <RadixSelect.Content
+            position="popper"
+            sideOffset={4}
+            className="z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-sm border border-hairline-strong bg-surface shadow-popover"
+          >
+            <RadixSelect.Viewport className="p-1">
+              {options.map((option) => {
+                const optionValue = String(option.props.value ?? '');
+                return (
+                  <RadixSelect.Item
+                    key={optionValue}
+                    value={optionValue === '' ? EMPTY_VALUE : optionValue}
+                    disabled={option.props.disabled}
+                    className="relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-sm py-1.5 pl-2.5 pr-7 text-sm text-ink-1 outline-none data-[disabled]:cursor-not-allowed data-[disabled]:text-ink-3 data-[highlighted]:bg-navy-600 data-[highlighted]:text-white"
+                  >
+                    <RadixSelect.ItemText>{option.props.children}</RadixSelect.ItemText>
+                    <RadixSelect.ItemIndicator className="absolute right-2 inline-flex items-center">
+                      <Check className="h-3.5 w-3.5" />
+                    </RadixSelect.ItemIndicator>
+                  </RadixSelect.Item>
+                );
+              })}
+            </RadixSelect.Viewport>
+          </RadixSelect.Content>
+        </RadixSelect.Portal>
+      </RadixSelect.Root>
+      {helperText && <span className="text-xs text-ink-3">{helperText}</span>}
+    </div>
+  );
+});

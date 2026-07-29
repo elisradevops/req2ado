@@ -65,6 +65,17 @@ export const configSchema = z.object({
   // commented-out frontend service). Set for local dev, where Vite serves the
   // frontend on its own origin/port (5173) against this API (3001).
   CORS_ORIGIN: z.string().optional(),
+  // Encrypts every row in ExternalCredential (ADO PAT, SharePoint token,
+  // LLM key) -- see credential-vault.service.ts. Required: there is no
+  // meaningful default for a secret-encryption key, and running with a
+  // hardcoded/well-known key would defeat the vault's whole purpose.
+  CREDENTIAL_ENC_KEY: z.string().min(1),
+  // Optional: the previous value of CREDENTIAL_ENC_KEY, kept for one
+  // rotation cycle. CredentialVaultService.get() falls back to this key on
+  // a current-key decrypt failure and lazily re-encrypts under the current
+  // key -- rotating CREDENTIAL_ENC_KEY never requires a big-bang migration
+  // or invalidates every stored credential at once.
+  CREDENTIAL_ENC_KEY_PREVIOUS: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

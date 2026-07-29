@@ -24,6 +24,29 @@ export class IngestionHttpError extends Error {
   }
 }
 
+// Confirmed real UX gap (user-reported): every one of this client's
+// non-ok checks previously threw `new Error(\`... failed: ${status}\`)`,
+// discarding whatever real error detail ingestion's response body carried
+// -- so a failed job's audit trail only ever showed a bare status code
+// ("Ingestion /level request failed: 500"), useless for figuring out what
+// actually went wrong. ingestion's own exception handlers (main.py) now
+// return `{"detail": "<the real exception message>"}` on failure -- this
+// reads that detail (falling back to the raw response text, then the bare
+// status, for a body that isn't the expected JSON shape) so the real
+// message survives all the way to the job's audit entry.
+async function _readErrorDetail(response: Response): Promise<string> {
+  const text = typeof response.text === 'function' ? await response.text().catch(() => '') : '';
+  if (!text) return String(response.status);
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === 'string' && parsed.detail.length > 0) return parsed.detail;
+  } catch {
+    // Not JSON (e.g. a proxy/gateway's own HTML error page) -- fall through
+    // to the raw text below rather than losing it entirely.
+  }
+  return text;
+}
+
 /**
  * Calls the Python ingestion service's real /ingest and /level endpoints
  * (Phase 1/4, already built and tested) directly over HTTP — plain
@@ -60,6 +83,13 @@ export class IngestionHttpClient {
     filename: string,
     skipVision = false,
     mode: 'baseline' | 'survey' = 'baseline',
+    // Optional -- present only for a real job submission (pipeline.worker.ts
+    // passes job.id), absent for /jobs/preview's own call. Lets ingestion
+    // publish real parse-stage narration (figure-by-figure vision progress,
+    // parse summary) on the same job-events channel /level's SURVEY
+    // narration already uses, instead of the parse stage being a total
+    // black box for however long figure captioning takes.
+    jobId?: string,
   ): Promise<Record<string, unknown>> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
@@ -67,10 +97,13 @@ export class IngestionHttpClient {
     if (skipVision) {
       params.set('skip_vision', 'true');
     }
+    if (jobId) {
+      params.set('job_id', jobId);
+    }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
     const response = await fetch(url, { method: 'POST', body: form, dispatcher: LONG_RUNNING_AGENT });
     if (!response.ok) {
-      throw new Error(`Ingestion /ingest request failed: ${response.status}`);
+      throw new IngestionHttpError(response.status, `Ingestion /ingest request failed: ${await _readErrorDetail(response)}`);
     }
     return (await response.json()) as Record<string, unknown>;
   }
@@ -115,7 +148,7 @@ export class IngestionHttpClient {
       dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {
-      throw new Error(`Ingestion /level request failed: ${response.status}`);
+      throw new IngestionHttpError(response.status, `Ingestion /level request failed: ${await _readErrorDetail(response)}`);
     }
     return (await response.json()) as Record<string, unknown>;
   }
@@ -127,7 +160,7 @@ export class IngestionHttpClient {
       body: JSON.stringify({ text, area_path: areaPath }),
     });
     if (!response.ok) {
-      throw new Error(`Ingestion /dedup/check request failed: ${response.status}`);
+      throw new IngestionHttpError(response.status, `Ingestion /dedup/check request failed: ${await _readErrorDetail(response)}`);
     }
     const body = (await response.json()) as { is_duplicate: boolean; matched_item_id: string | null; similarity: number | null };
     return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
@@ -140,7 +173,7 @@ export class IngestionHttpClient {
       body: JSON.stringify({ item_id: itemId, text, area_path: areaPath }),
     });
     if (!response.ok) {
-      throw new Error(`Ingestion /dedup/upsert request failed: ${response.status}`);
+      throw new IngestionHttpError(response.status, `Ingestion /dedup/upsert request failed: ${await _readErrorDetail(response)}`);
     }
   }
 
@@ -160,7 +193,7 @@ export class IngestionHttpClient {
       }),
     });
     if (!response.ok) {
-      throw new Error(`Ingestion /dedup/upsert-batch request failed: ${response.status}`);
+      throw new IngestionHttpError(response.status, `Ingestion /dedup/upsert-batch request failed: ${await _readErrorDetail(response)}`);
     }
   }
 
@@ -168,6 +201,7 @@ export class IngestionHttpClient {
     url: string,
     userId: string,
     docType: string | null,
+    graphToken?: string | null,
   ): Promise<{
     documentName: string;
     driveitemId: string;
@@ -179,11 +213,11 @@ export class IngestionHttpClient {
     const response = await fetch(`${this.baseUrl}/kb/ingest-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, user_id: userId, doc_type: docType }),
+      body: JSON.stringify({ url, user_id: userId, doc_type: docType, graph_token: graphToken ?? null }),
       dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-url request failed: ${response.status}`);
+      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-url request failed: ${await _readErrorDetail(response)}`);
     }
     const body = (await response.json()) as {
       document_name: string;
@@ -208,6 +242,7 @@ export class IngestionHttpClient {
     userId: string,
     docType: string | null,
     recursive = false,
+    graphToken?: string | null,
   ): Promise<{
     files: {
       file: string;
@@ -223,11 +258,11 @@ export class IngestionHttpClient {
     const response = await fetch(`${this.baseUrl}/kb/ingest-folder-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, user_id: userId, doc_type: docType, recursive }),
+      body: JSON.stringify({ url, user_id: userId, doc_type: docType, recursive, graph_token: graphToken ?? null }),
       dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-folder-url request failed: ${response.status}`);
+      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-folder-url request failed: ${await _readErrorDetail(response)}`);
     }
     const body = (await response.json()) as {
       files: {
@@ -254,4 +289,157 @@ export class IngestionHttpClient {
       })),
     };
   }
+
+  // Ingests exactly one file already returned by browseFolder/browseChildren
+  // (addressed by its Graph download URL, not a sharing link) -- backs the
+  // tree view's per-row ingest action.
+  async ingestItem(
+    name: string,
+    itemId: string,
+    downloadUrl: string,
+    userId: string,
+    docType: string | null,
+    graphToken?: string | null,
+  ): Promise<{
+    documentName: string;
+    driveitemId: string;
+    mimeType: string | null;
+    sizeBytes: number;
+    chunksStored: number;
+    skippedUnchanged: boolean;
+  }> {
+    const response = await fetch(`${this.baseUrl}/kb/ingest-item`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        item_id: itemId,
+        download_url: downloadUrl,
+        user_id: userId,
+        doc_type: docType,
+        graph_token: graphToken ?? null,
+      }),
+      dispatcher: LONG_RUNNING_AGENT,
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-item request failed: ${await _readErrorDetail(response)}`);
+    }
+    const body = (await response.json()) as {
+      document_name: string;
+      driveitem_id: string;
+      mime_type: string | null;
+      size_bytes: number;
+      chunks_stored: number;
+      skipped_unchanged: boolean;
+    };
+    return {
+      documentName: body.document_name,
+      driveitemId: body.driveitem_id,
+      mimeType: body.mime_type,
+      sizeBytes: body.size_bytes,
+      chunksStored: body.chunks_stored,
+      skippedUnchanged: body.skipped_unchanged,
+    };
+  }
+
+  async deleteDocument(userId: string, sourceFile: string, sourceId: string): Promise<void> {
+    const params = new URLSearchParams({ user_id: userId, source_file: sourceFile, source_id: sourceId });
+    const response = await fetch(`${this.baseUrl}/kb/documents?${params.toString()}`, { method: 'DELETE' });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion DELETE /kb/documents request failed: ${await _readErrorDetail(response)}`);
+    }
+  }
+
+  async browseFolder(url: string, graphToken?: string | null): Promise<FolderChild[]> {
+    const response = await fetch(`${this.baseUrl}/kb/browse-folder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, graph_token: graphToken ?? null }),
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /kb/browse-folder request failed: ${await _readErrorDetail(response)}`);
+    }
+    return mapFolderChildren(
+      (await response.json()) as { id: string; name: string; mime_type: string | null; size_bytes: number; is_folder: boolean; drive_id: string | null; download_url: string | null }[],
+    );
+  }
+
+  async browseChildren(driveId: string, itemId: string, graphToken?: string | null): Promise<FolderChild[]> {
+    const response = await fetch(`${this.baseUrl}/kb/browse-children`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ drive_id: driveId, item_id: itemId, graph_token: graphToken ?? null }),
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /kb/browse-children request failed: ${await _readErrorDetail(response)}`);
+    }
+    return mapFolderChildren(
+      (await response.json()) as { id: string; name: string; mime_type: string | null; size_bytes: number; is_folder: boolean; drive_id: string | null; download_url: string | null }[],
+    );
+  }
+
+  // Raw model-response captures behind any soft-failure warning this job's
+  // SURVEY run produced (see app.debug_capture) -- surfaced to the caller
+  // (jobs.controller.ts's GET /jobs/:id/debug) so a reviewer can see what
+  // the model actually said without re-running the job. Empty array is the
+  // common case (no soft failures occurred).
+  async getDebugCaptures(jobId: string): Promise<{ kind: string; identifier: string; content: string }[]> {
+    const response = await fetch(`${this.baseUrl}/debug/${encodeURIComponent(jobId)}`);
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /debug request failed: ${await _readErrorDetail(response)}`);
+    }
+    return (await response.json()) as { kind: string; identifier: string; content: string }[];
+  }
+
+  async getSharePointStatus(graphToken?: string | null): Promise<SharePointStatus> {
+    const response = await fetch(`${this.baseUrl}/kb/sharepoint/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph_token: graphToken ?? null }),
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /kb/sharepoint/status request failed: ${await _readErrorDetail(response)}`);
+    }
+    const body = (await response.json()) as { status: SharePointStatus['status']; expires_in_seconds: number | null };
+    return { status: body.status, expiresInSeconds: body.expires_in_seconds };
+  }
+}
+
+export interface SharePointStatus {
+  status: 'not_configured' | 'valid' | 'invalid' | 'unreachable';
+  expiresInSeconds: number | null;
+}
+
+export interface FolderChild {
+  id: string;
+  name: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  isFolder: boolean;
+  driveId: string | null;
+  // Files only -- Graph's pre-signed download URL, needed to ingest this
+  // exact item via /kb/ingest-item without its own sharing link.
+  downloadUrl: string | null;
+}
+
+function mapFolderChildren(
+  body: {
+    id: string;
+    name: string;
+    mime_type: string | null;
+    size_bytes: number;
+    is_folder: boolean;
+    drive_id: string | null;
+    download_url: string | null;
+  }[],
+): FolderChild[] {
+  return body.map((item) => ({
+    id: item.id,
+    name: item.name,
+    mimeType: item.mime_type,
+    sizeBytes: item.size_bytes,
+    isFolder: item.is_folder,
+    driveId: item.drive_id,
+    downloadUrl: item.download_url,
+  }));
 }

@@ -4,9 +4,11 @@ import { PrismaClient } from '@prisma/client';
 import { KbController } from './kb.controller';
 import { KbService } from './kb.service';
 import { IngestionHttpClient } from '../pipeline/ingestion-http.client';
+import { AuthModule } from '../auth/auth.module';
+import { CredentialVaultService } from '../auth/credential-vault.service';
 
 @Module({
-  imports: [ConfigModule],
+  imports: [ConfigModule, AuthModule],
   controllers: [KbController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
@@ -17,8 +19,9 @@ import { IngestionHttpClient } from '../pipeline/ingestion-http.client';
     },
     {
       provide: KbService,
-      inject: [PrismaClient, IngestionHttpClient],
-      useFactory: (prisma: PrismaClient, ingestionClient: IngestionHttpClient) => new KbService(prisma, ingestionClient),
+      inject: [PrismaClient, IngestionHttpClient, CredentialVaultService],
+      useFactory: (prisma: PrismaClient, ingestionClient: IngestionHttpClient, credentialVault: CredentialVaultService) =>
+        new KbService(prisma, ingestionClient, credentialVault),
     },
   ],
 })

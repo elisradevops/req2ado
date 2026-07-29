@@ -465,6 +465,117 @@ describe('RealAdoBackend.readAreaPaths', () => {
   });
 });
 
+describe('RealAdoBackend.readStates', () => {
+  it('uses config.adoProject by default', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({ status: 200, data: { value: [{ name: 'Proposed' }, { name: 'Active' }] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.readStates('Requirement');
+
+    expect(getSpy.mock.calls[1][0]).toContain('/MyProject/_apis/wit/workitemtypes/Requirement/states');
+    expect(result).toEqual(['Proposed', 'Active']);
+  });
+
+  it('overrides config.adoProject when a project argument is passed -- process templates (and their states) can genuinely differ per project', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({ status: 200, data: { value: [{ name: 'New' }, { name: 'Committed' }, { name: 'Done' }] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.readStates('Requirement', 'OtherProject');
+
+    expect(getSpy.mock.calls[1][0]).toContain('/OtherProject/_apis/wit/workitemtypes/Requirement/states');
+    expect(result).toEqual(['New', 'Committed', 'Done']);
+  });
+});
+
+describe('RealAdoBackend.discoverWorkItemTypeCategories', () => {
+  it('resolves Epic/Feature/Requirement categories to their real defaultWorkItemType names', async () => {
+    // Confirmed real bug this fixes: createWorkItem previously sent
+    // req2ado's internal "Requirement" label straight to ADO as the type
+    // name -- correct only for CMMI. An Agile project's real
+    // Requirement-category type is "User Story" -- this is the case that
+    // matters most.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          value: [
+            { referenceName: 'Microsoft.EpicCategory', defaultWorkItemType: { name: 'Epic' } },
+            { referenceName: 'Microsoft.FeatureCategory', defaultWorkItemType: { name: 'Feature' } },
+            { referenceName: 'Microsoft.RequirementCategory', defaultWorkItemType: { name: 'User Story' } },
+            { referenceName: 'Microsoft.TaskCategory', defaultWorkItemType: { name: 'Task' } },
+          ],
+        },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.discoverWorkItemTypeCategories();
+
+    expect(getSpy.mock.calls[1][0]).toContain('/MyProject/_apis/wit/workitemtypecategories');
+    expect(result).toEqual({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' });
+  });
+
+  it('overrides config.adoProject when a project argument is passed', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          value: [
+            { referenceName: 'Microsoft.EpicCategory', defaultWorkItemType: { name: 'Epic' } },
+            { referenceName: 'Microsoft.FeatureCategory', defaultWorkItemType: { name: 'Feature' } },
+            { referenceName: 'Microsoft.RequirementCategory', defaultWorkItemType: { name: 'Product Backlog Item' } },
+          ],
+        },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.discoverWorkItemTypeCategories('OtherProject');
+
+    expect(result.Requirement).toBe('Product Backlog Item');
+  });
+
+  it('throws a clear error when a category is missing from the process template response', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          value: [
+            { referenceName: 'Microsoft.EpicCategory', defaultWorkItemType: { name: 'Epic' } },
+            { referenceName: 'Microsoft.FeatureCategory', defaultWorkItemType: { name: 'Feature' } },
+            // Requirement category missing entirely
+          ],
+        },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await expect(backend.discoverWorkItemTypeCategories()).rejects.toThrow(/missing an expected work-item-type category/);
+  });
+});
+
 describe('RealAdoBackend.discoverProjects', () => {
   it('GETs the collection-level projects endpoint and maps id/name', async () => {
     const backend = new RealAdoBackend(testConfig, credential);
@@ -487,6 +598,53 @@ describe('RealAdoBackend.discoverProjects', () => {
       { id: 'abc-1', name: 'Project' },
       { id: 'abc-2', name: 'OtherProject' },
     ]);
+  });
+});
+
+describe('RealAdoBackend.getWorkItemIcon', () => {
+  it('embeds api-version inside the Accept header, matching the real SDK -- a bare image/svg+xml still negotiates to JSON', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        headers: { 'content-type': 'image/svg+xml' },
+        data: Buffer.from('<svg></svg>'),
+      });
+    // @ts-expect-error -- injecting the spied client for the test
+    backend.httpClient = httpClient;
+
+    const result = await backend.getWorkItemIcon('icon_clipboard', 'AD3737');
+
+    const iconCall = httpClient.get.mock.calls[1];
+    expect(iconCall[0]).toContain('/_apis/wit/workitemicons/icon_clipboard');
+    // testConfig.apiVersionLadder is ['7.1'] -- confirmed against
+    // azure-devops-node-api's own ClientApiBase.createAcceptHeader
+    // (`type + ';api-version=' + apiVersion`), the exact mechanism the
+    // official SDK uses for this endpoint's getWorkItemIconSvg.
+    expect(iconCall[1]?.headers?.Accept).toBe('image/svg+xml;api-version=7.1');
+    expect(result.contentType).toBe('image/svg+xml');
+  });
+
+  it('falls back to a bare image/svg+xml Accept header when the api-version ladder resolves to none', async () => {
+    const backend = new RealAdoBackend({ ...testConfig, apiVersionLadder: ['none'] }, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        headers: { 'content-type': 'image/svg+xml' },
+        data: Buffer.from('<svg></svg>'),
+      });
+    // @ts-expect-error -- injecting the spied client for the test
+    backend.httpClient = httpClient;
+
+    await backend.getWorkItemIcon('icon_clipboard', 'AD3737');
+
+    const iconCall = httpClient.get.mock.calls[1];
+    expect(iconCall[1]?.headers?.Accept).toBe('image/svg+xml');
+    expect(iconCall[0]).not.toContain('api-version');
   });
 });
 

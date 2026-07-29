@@ -5,18 +5,50 @@ import type { AdoLinkType } from '../domain/adoLinkTypes.js';
  * (this phase) and a future `RealAdoBackend` (Phase 7) both implement this,
  * so MCP tools never need to know which one is wired in.
  */
+// req2ado's OWN internal, process-template-agnostic category vocabulary --
+// NOT necessarily a real ADO work-item type name. Confirmed real bug: this
+// was previously treated as if it WERE always the literal ADO type name
+// (createWorkItem/discoverFields/readStates sent it straight into
+// `_apis/wit/workitemtypes/$Epic` etc.), which only happens to work for a
+// CMMI process template. Agile calls its Requirement-category type "User
+// Story", Scrum calls it "Product Backlog Item", Basic calls it "Issue" --
+// see WorkItemTypeCategoryMap below, which resolves this category to
+// whichever real type name the TARGET PROJECT'S actual process template
+// uses, via ADO's own universal work-item-type-categories concept (the same
+// categorization Azure Boards' backlog levels use, identical across every
+// process template family).
 export type WorkItemType = 'Epic' | 'Feature' | 'Requirement';
 
 export interface WorkItemRecord {
   id: number;
-  type: WorkItemType;
+  // The REAL ADO type name (e.g. "User Story" on an Agile project) -- NOT
+  // necessarily one of WorkItemType's 3 category labels. See WorkItemType's
+  // own doc comment for why these are different things.
+  type: string;
   fields: Record<string, string>;
   parentId: number | null;
 }
 
 export interface CreateWorkItemInput {
-  type: WorkItemType;
+  // The REAL ADO type name for the target project, already resolved via
+  // WorkItemTypeCategoryMap by the caller -- see WorkItemType's doc comment.
+  type: string;
   fields: Record<string, string>;
+}
+
+// Maps req2ado's 3 internal category labels to the REAL work-item type name
+// active for a given project's process template -- e.g. `{ Epic: "Epic",
+// Feature: "Feature", Requirement: "User Story" }` on an Agile project.
+// Resolved once via `_apis/wit/workitemtypecategories`, a category concept
+// (Microsoft.EpicCategory/FeatureCategory/RequirementCategory) that exists
+// identically across every process template (Agile/Scrum/CMMI/Basic/
+// custom) -- confirmed against Microsoft's own docs: "Epics group Features,
+// Features group Requirements (User Stories, Product Backlog Items,
+// Issues, or Requirements)".
+export interface WorkItemTypeCategoryMap {
+  Epic: string;
+  Feature: string;
+  Requirement: string;
 }
 
 export interface AreaPathNode {
@@ -27,6 +59,19 @@ export interface AreaPathNode {
 export interface AdoProject {
   id: string;
   name: string;
+}
+
+export interface WorkItemTypeDefinition {
+  name: string;
+  // Hex, no leading '#' -- matches ADO's own wire format from
+  // GET _apis/wit/workitemtypes. Callers that need CSS add the '#'.
+  color: string;
+  icon: { id: string; url: string };
+}
+
+export interface WorkItemIcon {
+  contentType: string;
+  dataBase64: string;
 }
 
 export interface AdoBackend {
@@ -61,7 +106,7 @@ export interface AdoBackend {
    * candidate-list algorithm (Phase 4/7). The priority-list matching logic
    * itself lives in the caller (see Task 9's write-back driver), not here.
    */
-  discoverFields(workItemType: WorkItemType): Promise<string[]>;
+  discoverFields(workItemType: string): Promise<string[]>;
   /** Updates (merges) fields on an existing work item without changing its type or parent link. */
   setFields(id: number, fields: Record<string, string>): Promise<void>;
   /**
@@ -70,6 +115,24 @@ export interface AdoBackend {
    * default project (config.adoProject) for this call only.
    */
   readAreaPaths(depth: number, project?: string): Promise<AreaPathNode>;
+  /**
+   * Reads the ADO classification-node iteration-path tree, nested to `depth`
+   * levels -- same shape and same endpoint family as readAreaPaths, against
+   * `_apis/wit/classificationnodes/iterations` instead of `/areas`.
+   */
+  readIterationPaths(depth: number, project?: string): Promise<AreaPathNode>;
+  /**
+   * Lists the workflow states defined for a work-item type on the target
+   * project's process template (e.g. CMMI Requirement:
+   * Proposed/Active/Resolved/Closed) -- real backing for a state picker
+   * instead of the hardcoded 'Proposed' default. `project` optionally
+   * overrides the server's configured default project, matching
+   * readAreaPaths/readIterationPaths/discoverWorkItemTypes's own optional
+   * override -- a process template's states can genuinely differ between
+   * projects, so a picker scoped to the wrong project silently shows the
+   * wrong states.
+   */
+  readStates(workItemType: string, project?: string): Promise<string[]>;
   /** Lists ADO team projects in the org (collection-level, not project-scoped). */
   discoverProjects(): Promise<AdoProject[]>;
   /**
@@ -80,4 +143,29 @@ export interface AdoBackend {
    * contract without a real ADO server.
    */
   discoverLinkTypes(): Promise<AdoLinkType[]>;
+  /**
+   * Lists work-item types defined by the target project's actual process
+   * template (Agile/CMMI/Scrum/Basic/custom), each with its real color and
+   * icon reference -- replaces the hardcoded Epic/Feature/Requirement color
+   * map in the frontend's WorkItemTypeBadge/clause-spine chip.
+   */
+  discoverWorkItemTypes(project?: string): Promise<WorkItemTypeDefinition[]>;
+  /**
+   * Resolves req2ado's 3 internal category labels (Epic/Feature/Requirement
+   * -- see WorkItemType's own doc comment) to the real work-item type name
+   * this project's actual process template uses for each, via ADO's
+   * universal work-item-type-categories concept. Every caller that needs to
+   * send a work-item type name to ADO (createWorkItem, discoverFields,
+   * readStates) must translate through this first -- passing our internal
+   * category label straight through only happens to work for CMMI.
+   */
+  discoverWorkItemTypeCategories(project?: string): Promise<WorkItemTypeCategoryMap>;
+  /**
+   * Fetches the icon image bytes for a given icon id + color (both as
+   * returned by discoverWorkItemTypes). Server-scoped endpoint (not
+   * project-scoped) on real ADO. Base64-encoded since MCP tool results are
+   * text-only; the orchestrator decodes and re-serves as a real image
+   * response.
+   */
+  getWorkItemIcon(iconId: string, color: string): Promise<WorkItemIcon>;
 }

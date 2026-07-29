@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useNow } from '../hooks/useNow';
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
@@ -10,12 +10,6 @@ function formatElapsed(ms: number): string {
 }
 
 export function ElapsedTimer({ startedAt }: { startedAt: string }): React.ReactElement {
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    const intervalId = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(intervalId);
-  }, []);
-
-  return <span>{formatElapsed(now - new Date(startedAt).getTime())}</span>;
+  const now = useNow();
+  return <span className="font-mono tabular-nums">{formatElapsed(now - new Date(startedAt).getTime())}</span>;
 }

@@ -2,6 +2,22 @@ import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnGatewayConnection, OnGatewayDisconnect, WebSocketGateway } from '@nestjs/websockets';
 import type Redis from 'ioredis';
 import { ChatService } from './chat.service';
+import { SessionService } from '../auth/session.service';
+import { SESSION_COOKIE_NAME } from '../auth/session.constants';
+
+// The WS upgrade request bypasses Express middleware entirely (`ws`
+// listens on the HTTP server's raw 'upgrade' event, not through Express's
+// request pipeline) -- cookie-parser's req.cookies is never populated
+// here, so the session cookie has to be parsed out of the raw Cookie
+// header by hand.
+function readSessionCookie(cookieHeader: string | undefined): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(';')) {
+    const [rawName, ...rawValue] = part.trim().split('=');
+    if (rawName === SESSION_COOKIE_NAME) return decodeURIComponent(rawValue.join('='));
+  }
+  return undefined;
+}
 
 // Must stay strictly greater than ingestion's own stream timeout
 // (_STREAM_REQUEST_TIMEOUT_SECONDS = 120s in chat_client.py) — otherwise a
@@ -42,6 +58,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
   constructor(
     @Inject('CHAT_REDIS_SUBSCRIBER') private readonly subscriber: Redis,
     private readonly chatService: ChatService,
+    private readonly sessionService: SessionService,
   ) {
     // Single shared subscriber for ALL open chats (pattern-subscribe), not
     // one dedicated Redis connection per open chat — deliberate deviation
@@ -53,7 +70,18 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     });
   }
 
-  handleConnection(client: ChatSocket, request: { url?: string }): void {
+  async handleConnection(client: ChatSocket, request: { url?: string; headers?: Record<string, string | string[] | undefined> }): Promise<void> {
+    // The cookie is what makes this handshake authenticable at all -- a
+    // WebSocket handshake can't carry a bearer header the way a normal
+    // fetch can, but it does send cookies (same-origin, browser-native).
+    const cookieHeader = request.headers?.cookie;
+    const token = readSessionCookie(Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader);
+    const user = token ? await this.sessionService.validate(token) : null;
+    if (!user) {
+      client.close(1008, 'Not signed in');
+      return;
+    }
+
     const url = new URL(request.url ?? '', 'http://localhost');
     const jobId = url.searchParams.get('jobId');
     const localId = url.searchParams.get('localId');

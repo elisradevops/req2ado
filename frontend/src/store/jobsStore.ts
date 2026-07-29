@@ -6,7 +6,9 @@ export interface JobSummary {
   mode: string;
   status: string;
   areaPath: string;
+  originalFilename: string;
   itemCount: number;
+  createdItemCount: number;
   createdAt: string;
 }
 
@@ -21,6 +23,14 @@ export interface JobDetail {
   // count) -- distinct from per-node quality/grounding signals.
   warnings?: string[];
   createdAt: string;
+  areaPath: string;
+  originalFilename: string;
+  // Resolved entirely server-side (real ADO type discovery + icon bytes,
+  // see WorkItemTypeCatalogService) and embedded directly in this response
+  // -- no separate frontend request needed. {} when there's no diff yet, no
+  // vaulted ADO credential, or the resolve itself failed; WorkItemTypeBadge
+  // falls back to its own hardcoded color/icon map in that case.
+  workItemTypeCatalog?: Record<string, { color: string; iconDataUrl: string }>;
 }
 
 interface JobsState {

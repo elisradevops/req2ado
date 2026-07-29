@@ -8,6 +8,8 @@ import { IdempotencyService } from '../writeback/idempotency.service';
 import { JobEventsPublisher } from './job-events.publisher';
 import { McpClient } from './mcp.client';
 import { runPipelineJob, type PipelineJobInput } from './pipeline.worker';
+import { CredentialVaultService } from '../auth/credential-vault.service';
+import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 
 /**
  * BullMQ sandboxed processor: runs in its OWN child process, spawned/pooled
@@ -47,11 +49,22 @@ jobEventsPublisherRedis.on('error', (err) => {
 });
 const jobEventsPublisher = new JobEventsPublisher(jobEventsPublisherRedis as any);
 const mcpClient = new McpClient(`${config.MCP_URL}/mcp`, config.MCP_BEARER, config.MCP_REQUEST_TIMEOUT_MS);
+const credentialVault = new CredentialVaultService(prisma, config.CREDENTIAL_ENC_KEY, config.CREDENTIAL_ENC_KEY_PREVIOUS);
+const adoCredentialResolver = new AdoCredentialResolver(credentialVault);
 
 type QueuedJobData = Omit<PipelineJobInput, 'fileBuffer'> & { fileBufferBase64: string };
 
 export default async function processPipelineJob(job: SandboxedJob<QueuedJobData>) {
   const { fileBufferBase64, ...rest } = job.data;
   const jobInput: PipelineJobInput = { ...rest, fileBuffer: Buffer.from(fileBufferBase64, 'base64') };
-  return runPipelineJob(jobInput, { ingestionClient, dryRunService, idempotencyService, prisma, jobEventsPublisher, mcpClient });
+  return runPipelineJob(jobInput, {
+    ingestionClient,
+    dryRunService,
+    idempotencyService,
+    prisma,
+    jobEventsPublisher,
+    mcpClient,
+    adoCredentialResolver,
+    defaultLlmModel: config.LLM_CHAT_MODEL,
+  });
 }

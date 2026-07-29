@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import Box from '@mui/material/Box';
-import TextField from '@mui/material/TextField';
-import Button from '@mui/material/Button';
-import MenuItem from '@mui/material/MenuItem';
+import { TextField, TextArea } from '../ui/TextField';
+import { Select } from '../ui/Select';
+import { Button } from '../ui/Button';
 import type { DryRunDiffEntry } from './DiffTree';
 
 const ALL_TYPES = ['Epic', 'Feature', 'Requirement'];
@@ -31,27 +30,27 @@ export function AddChildForm({
   }
 
   return (
-    <Box p={2}>
+    <div className="flex flex-col gap-3 p-4">
+      <div>
+        <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Add child item</p>
+        <p className="text-xs text-ink-3">Manually add another item under this one -- it's written to ADO alongside the rest on Confirm.</p>
+      </div>
       {jobMode === 'baseline' ? (
-        <TextField label="Type" value={type} disabled fullWidth margin="normal" />
+        <TextField label="Type" value={type} disabled fullWidth />
       ) : (
-        <TextField
-          select
-          label="Type"
-          value={surveyType}
-          onChange={(e) => setSurveyType(e.target.value)}
-          fullWidth
-          margin="normal"
-          slotProps={{ select: { 'aria-label': 'Type' } as any }}
-        >
+        <Select label="Type" aria-label="Type" value={surveyType} onChange={(e) => setSurveyType(e.target.value)} fullWidth>
           {ALL_TYPES.map((t) => (
-            <MenuItem key={t} value={t}>{t}</MenuItem>
+            <option key={t} value={t}>
+              {t}
+            </option>
           ))}
-        </TextField>
+        </Select>
       )}
-      <TextField label="Title" value={title} onChange={(e) => setTitle(e.target.value)} fullWidth margin="normal" />
-      <TextField label="Description" value={description} onChange={(e) => setDescription(e.target.value)} fullWidth multiline margin="normal" />
-      <Button variant="contained" onClick={submit}>Add</Button>
-    </Box>
+      <TextField label="Title" value={title} onChange={(e) => setTitle(e.target.value)} fullWidth />
+      <TextArea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} fullWidth />
+      <Button onClick={submit} className="self-start">
+        Add
+      </Button>
+    </div>
   );
 }

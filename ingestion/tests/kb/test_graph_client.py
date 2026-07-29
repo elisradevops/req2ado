@@ -3,7 +3,14 @@ import base64
 import httpx
 import pytest
 
-from app.kb.graph_client import GraphApiError, GraphClient, GraphDriveItem, GraphFolderChild, encode_share_id
+from app.kb.graph_client import (
+    GraphApiError,
+    GraphClient,
+    GraphDriveItem,
+    GraphFolderChild,
+    decode_jwt_expiry_seconds,
+    encode_share_id,
+)
 
 
 def _patch_transport(monkeypatch, transport: httpx.MockTransport) -> None:
@@ -303,3 +310,103 @@ def test_list_children_by_id_raises_graph_api_error_on_404(monkeypatch) -> None:
         client.list_children_by_id("drive-xyz", "item-2")
 
     assert excinfo.value.status == 404
+
+
+def test_validate_succeeds_on_200_from_me(monkeypatch) -> None:
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"id": "user-1"})
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    client.validate()  # must not raise
+
+    assert captured["url"].endswith("/me")
+
+
+def test_validate_falls_back_to_drive_root_on_403(monkeypatch) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if str(request.url).endswith("/me"):
+            return httpx.Response(403, json={"error": "forbidden"})
+        return httpx.Response(200, json={"id": "root"})
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    client.validate()  # must not raise -- fallback succeeded
+
+    assert any(url.endswith("/me") for url in calls)
+    assert any(url.endswith("/me/drive/root") for url in calls)
+
+
+def test_validate_raises_on_401(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.validate()
+
+    assert excinfo.value.status == 401
+
+
+def test_validate_raises_when_the_403_fallback_also_fails(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/me"):
+            return httpx.Response(403, json={"error": "forbidden"})
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+
+    client = GraphClient("tok-1", "https://graph.microsoft.com/v1.0")
+    with pytest.raises(GraphApiError) as excinfo:
+        client.validate()
+
+    assert excinfo.value.status == 403
+
+
+def _fake_jwt(exp: int | float) -> str:
+    import base64
+    import json
+
+    header = base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).rstrip(b"=").decode()
+    return f"{header}.{payload}.unsigned"
+
+
+def test_decode_jwt_expiry_seconds_reads_the_exp_claim() -> None:
+    import time
+
+    token = _fake_jwt(time.time() + 3000)
+    seconds = decode_jwt_expiry_seconds(token)
+
+    assert seconds is not None
+    assert 2990 <= seconds <= 3000
+
+
+def test_decode_jwt_expiry_seconds_floors_at_zero_for_an_already_expired_token() -> None:
+    token = _fake_jwt(0)
+    assert decode_jwt_expiry_seconds(token) == 0
+
+
+def test_decode_jwt_expiry_seconds_returns_none_for_a_non_jwt_opaque_token() -> None:
+    assert decode_jwt_expiry_seconds("opaque-token-not-a-jwt") is None
+
+
+def test_decode_jwt_expiry_seconds_returns_none_when_exp_claim_is_missing() -> None:
+    import base64
+    import json
+
+    header = base64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": "x"}).encode()).rstrip(b"=").decode()
+    token = f"{header}.{payload}.unsigned"
+
+    assert decode_jwt_expiry_seconds(token) is None

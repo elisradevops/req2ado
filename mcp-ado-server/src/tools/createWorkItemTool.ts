@@ -8,9 +8,9 @@ export function registerCreateWorkItemTool(server: McpServer, backend: AdoBacken
     'ado_create_work_item',
     {
       title: 'Create an ADO work item',
-      description: 'Creates a new work item of the given type with the given fields. Does not link a parent — use ado_link_parent_child separately.',
+      description: 'Creates a new work item of the given type with the given fields. Does not link a parent — use ado_link_parent_child separately. `type` must be the REAL ADO type name for this project (resolve via ado_discover_work_item_type_categories first, not req2ado\'s internal Epic/Feature/Requirement labels) -- process templates other than CMMI use different real names (e.g. "User Story").',
       inputSchema: {
-        type: z.enum(['Epic', 'Feature', 'Requirement']),
+        type: z.string(),
         fields: z.record(z.string()),
       },
     },

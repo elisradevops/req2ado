@@ -9,6 +9,19 @@ export interface DryRunSourceRef {
   page: number | null;
 }
 
+// Mirrors ingestion's quality_category_scores (app.workitem.model) --
+// deliberately independent judgments per dimension, not derived from
+// whether a quality-issue tag was flagged. See its own docstring for why a
+// lone overall score + closed issue tags wasn't informative enough.
+//
+// A dynamic key->0-100-score map, NOT a fixed 5-field shape -- when an org
+// has ingested its own quality-checklist standard into the Knowledge Base,
+// the model derives category names FROM that document's own checklist
+// (e.g. "Necessary"/"Unambiguous"/"Verifiable"/etc.) instead of the generic
+// clarity/testability/atomicity/style/rationale fallback used when no KB
+// standard is available. See orchestrator_llm_client.score_requirements_for_document.
+export type QualityCategoryScores = Record<string, number>;
+
 export interface TraceLink {
   sourceLocalId: string;
   referenceName: string;
@@ -44,6 +57,11 @@ export interface DryRunTreeNode {
   groundingScore?: number | null;
   qualityScore?: number | null;
   qualityIssues?: string[];
+  // Per-dimension 0-100 breakdown backing qualityScore -- see ingestion's
+  // QualityCategoryScores docstring. undefined/null for BASELINE, or any
+  // SURVEY node whose scoring entry was missing/malformed (same
+  // all-or-nothing tolerance as qualityScore itself).
+  qualityCategoryScores?: QualityCategoryScores | null;
   // Carried from ingestion's WorkItemNode (source_ref/child_type/trace_links)
   // so confirm() can eventually write a traceability link, classification
   // tags, and child-type-derived fields to ADO -- previously dropped at
@@ -79,6 +97,7 @@ export interface DryRunDiffEntry {
   groundingScore?: number | null;
   qualityScore?: number | null;
   qualityIssues?: string[];
+  qualityCategoryScores?: QualityCategoryScores | null;
   sourceRef?: DryRunSourceRef | null;
   childType?: string | null;
   traceLinks?: TraceLink[];
@@ -153,7 +172,8 @@ export class DryRunService {
           title: node.title, description: node.description, action: 'reuse' as const,
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
           tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
-          qualityIssues: node.qualityIssues, sourceRef: node.sourceRef, childType: node.childType,
+          qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
+          sourceRef: node.sourceRef, childType: node.childType,
           traceLinks: node.traceLinks,
         };
       }
@@ -174,6 +194,7 @@ export class DryRunService {
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
               groundingScore: node.groundingScore, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
+              qualityCategoryScores: node.qualityCategoryScores,
               sourceRef: node.sourceRef, childType: node.childType, traceLinks: node.traceLinks,
             };
           }
@@ -187,7 +208,8 @@ export class DryRunService {
         title: node.title, description: node.description, action: 'create' as const,
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
         tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
-        qualityIssues: node.qualityIssues, sourceRef: node.sourceRef, childType: node.childType,
+        qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
+        sourceRef: node.sourceRef, childType: node.childType,
         traceLinks: node.traceLinks,
       };
     });

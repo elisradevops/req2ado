@@ -6,6 +6,7 @@ import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { JobEventsPublisher } from './job-events.publisher';
 import type { McpClient } from './mcp.client';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
+import type { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 
 export interface PipelineJobInput {
   id: string;
@@ -40,6 +41,56 @@ export interface PipelineWorkerDeps {
   prisma: PrismaClient;
   jobEventsPublisher: JobEventsPublisher;
   mcpClient: McpClient;
+  // Resolves the submitting user's vaulted ADO credential (by job.userId)
+  // for the real-ADO-backend discovery calls below (discoverLinkTypes,
+  // discoverFields) -- previously these ran with NO credential at all
+  // (this worker is a separate BullMQ process with no request-scoped
+  // header to read), silently 401ing against a real ADO backend and
+  // falling back to an empty/seed catalog. The vault is what makes a
+  // per-user credential available here at all.
+  adoCredentialResolver: AdoCredentialResolver;
+  // The orchestrator's own configured LLM_CHAT_MODEL -- when job.model is
+  // unset (the wizard's "Default" option), this worker previously sent
+  // `undefined` straight through to ingestion's /level route, and
+  // ingestion's _resolve_caps(None) has NO way to know what "the
+  // orchestrator's default" actually resolves to -- it silently fell back
+  // to the smallest/most-conservative caps (supports_tools=False, a 28k
+  // token budget) even for a model that genuinely supports tool-calling
+  // and a much larger context. Resolving to this concrete name here (see
+  // runPipelineJob's own model resolution below) means ingestion always
+  // receives a real, known model string for a SURVEY job.
+  defaultLlmModel: string;
+}
+
+/**
+ * Signals that JobsService.cancel() flipped this job's status to
+ * 'cancelled' while the worker was already mid-run (the only case where a
+ * cancel request can't just remove the still-queued BullMQ job outright --
+ * see cancel()'s own doc comment). Thrown by assertNotCancelled at the
+ * cooperative checkpoints below; the outer catch special-cases it so it
+ * does NOT get overwritten back to 'failed' the way every other error does.
+ */
+class JobCancelledError extends Error {
+  constructor(jobId: string) {
+    super(`Job ${jobId} was cancelled`);
+    this.name = 'JobCancelledError';
+  }
+}
+
+/**
+ * Cooperative-cancellation checkpoint. There's no cross-process abort
+ * channel to interrupt an in-flight ingestionClient.level() HTTP call (that
+ * runs in this same sandboxed child process, not something a concurrent
+ * cancel() request from the HTTP process can reach into) -- so cancellation
+ * only takes effect the next time this function is called, not mid-call.
+ * The one call site that matters most is right after level() resolves,
+ * since that's the dominant wall-clock cost for a real SURVEY job.
+ */
+async function assertNotCancelled(prisma: PrismaClient, jobId: string): Promise<void> {
+  const current = await prisma.job.findUnique({ where: { id: jobId }, select: { status: true } });
+  if (current?.status === 'cancelled') {
+    throw new JobCancelledError(jobId);
+  }
 }
 
 interface LeveledSourceRef {
@@ -76,6 +127,10 @@ interface LeveledNode {
   grounding_score?: number | null;
   quality_score?: number | null;
   quality_issues?: string[];
+  // Per-dimension 0-100 breakdown backing quality_score -- see ingestion's
+  // QualityCategoryScores docstring (app.workitem.model). Optional for the
+  // same backward-compat reason as the other scoring fields.
+  quality_category_scores?: { clarity: number; testability: number; atomicity: number; style: number; rationale: number } | null;
   // Previously computed by ingestion (WorkItemNode.source_ref/tags) but
   // dropped here -- neither reached DryRunTreeNode nor any ADO field.
   // Optional for the same backward-compat reason as the scoring fields above.
@@ -107,6 +162,12 @@ export async function runPipelineJob(
   deps: PipelineWorkerDeps,
 ): Promise<ReturnType<DryRunService['diff']> extends Promise<infer T> ? T : never> {
   try {
+    // Narrow but real race: cancel() couldn't remove the BullMQ job because
+    // the worker had already picked it up (state 'active') the instant
+    // before this line runs, so it flipped Job.status straight to
+    // 'cancelled' instead. Without this check the line below would
+    // immediately clobber that back to 'running'.
+    await assertNotCancelled(deps.prisma, job.id);
     // Real lifecycle: 'pending' (set on submit) -> 'running' (here) ->
     // 'diff_ready'/'failed'. Without this write the Job row sits at
     // 'pending' for the entire worker run, so the frontend's
@@ -116,8 +177,11 @@ export async function runPipelineJob(
     await deps.jobEventsPublisher.publish(job.id, 'parse');
     // mode threaded through so BASELINE never opens ingestion's vision-LLM
     // gate (see IngestionHttpClient.ingest's own doc comment) -- a real job
-    // submission never sets skipVision, unlike /jobs/preview.
-    const doc = await deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode);
+    // submission never sets skipVision, unlike /jobs/preview. job.id is
+    // passed so ingestion can publish real parse-stage narration (figure
+    // vision-captioning progress, parse summary) instead of the parse stage
+    // being a silent black box.
+    const doc = await deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id);
 
     // ingestion's /level call runs infer_hierarchy + generate_requirements
     // internally in one HTTP round trip with no intermediate signal back to
@@ -135,31 +199,53 @@ export async function runPipelineJob(
     // choose from and every node's trace_links stays empty, never blocking
     // the rest of the job.
     //
-    // Known limitation: this BullMQ worker runs with no per-user ADO
-    // credential (only confirm(), a synchronous request-scoped call,
-    // receives the submitting user's PAT via headers). In real-ADO backend
-    // mode this call will 401 and degrade to the empty-catalog fallback
-    // above — trace-link inference is effectively mock-backend-only until a
-    // future task threads a credential through the job queue. Accepted for
-    // this slice; not a bug.
+    // Resolves the submitting user's vaulted ADO credential by job.userId
+    // (see PipelineWorkerDeps.adoCredentialResolver's doc comment) --
+    // previously ran with no credential at all against a real ADO backend.
+    const credential = job.userId ? await deps.adoCredentialResolver.resolve(job.userId) : undefined;
     let linkTypeCatalog: { referenceName: string; name: string; semanticHint?: string }[] = [];
     try {
-      linkTypeCatalog = await deps.mcpClient.discoverLinkTypes();
+      linkTypeCatalog = await deps.mcpClient.discoverLinkTypes(credential);
     } catch {
       linkTypeCatalog = [];
     }
+    // Hierarchy-Forward/Reverse ("Child"/"Parent") are real ADO work-item
+    // relation types, so they pass discoverLinkTypes' own
+    // isWorkItemRelationType filter -- but trace-link inference exists to
+    // find relationships the hierarchy DOESN'T already express (coverage,
+    // testing, affects), not to re-discover parent-child structure that's
+    // already fully captured via each node's parent_local_id. Without this
+    // filter the model was redundantly proposing "Parent -> br0_n1" (etc.)
+    // for nearly every node, cluttering the diff view with noise that
+    // states nothing new. This is the ONLY consumer of this specific
+    // catalog (confirmed: discoverLinkTypes has no other caller), so
+    // filtering here is safe -- Hierarchy-Forward/Reverse remain legitimate
+    // elsewhere (e.g. the actual ADO parent/child writeback).
+    linkTypeCatalog = linkTypeCatalog.filter(
+      (t) => t.referenceName !== 'System.LinkTypes.Hierarchy-Forward' && t.referenceName !== 'System.LinkTypes.Hierarchy-Reverse',
+    );
 
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
     // job.userId (KB scope), NOT job.areaPath (ADO write-back destination --
     // see diffInputs[].areaPath and checkDuplicate below, both correctly
     // still using job.areaPath).
-    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.userId ?? undefined, linkTypeCatalog, job.model, job.id)) as {
+    // job.model ?? deps.defaultLlmModel (see PipelineWorkerDeps.defaultLlmModel's
+    // doc comment) -- always send a concrete model name, never undefined,
+    // so ingestion's _resolve_caps can resolve real caps/tool-support
+    // instead of silently falling back to the conservative unknown-model
+    // default for the (common) "Default" wizard selection.
+    const model = job.model ?? deps.defaultLlmModel;
+    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id)) as {
       nodes: LeveledNode[];
       warnings?: string[];
       kb_citations?: { source_file: string; similarity: number; relevance: string }[];
       trace_links?: LeveledTraceLink[];
     };
     await deps.jobEventsPublisher.publish(job.id, 'generate_requirements_done');
+    // The dominant wall-clock cost (15-40+ min for SURVEY) just finished --
+    // this is the most valuable checkpoint to notice a cancel() request
+    // that arrived while it was running.
+    await assertNotCancelled(deps.prisma, job.id);
 
     const traceLinksByLocalId = new Map<string, DryRunTreeNode['traceLinks']>();
     for (const link of tree.trace_links ?? []) {
@@ -200,6 +286,7 @@ export async function runPipelineJob(
       groundingScore: node.grounding_score ?? null,
       qualityScore: node.quality_score,
       qualityIssues: node.quality_issues,
+      qualityCategoryScores: node.quality_category_scores,
       sourceRef: node.source_ref
         ? {
             documentPath: node.source_ref.document_path,
@@ -214,33 +301,42 @@ export async function runPipelineJob(
     }));
 
     const customerIdFieldCandidates = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES;
-    // Cross-job trace-link targets are always Requirement-type items in
+    // Cross-job trace-link targets are always Requirement-CATEGORY items in
     // practice (System/Customer requirement pairs — the driving use case),
-    // so a single discoverFields('Requirement') call is enough; if this
-    // assumption stops holding, thread the actual target type through
-    // instead of hardcoding it here.
-    // Same credential gap as discoverLinkTypes above: this worker has no
-    // per-user ADO PAT, so discoverFields/queryIds below will 401 in
-    // real-ADO backend mode and fall back to their empty-result defaults —
-    // crossJob resolution silently yields nothing. Mock-backend-only for now.
+    // so a single discoverFields call is enough; if this assumption stops
+    // holding, thread the actual target type through instead of hardcoding
+    // it here. Confirmed real bug (fixed here): 'Requirement' is req2ado's
+    // internal category label, not necessarily the real ADO type name for
+    // this project's process template (Agile's is "User Story", Scrum's is
+    // "Product Backlog Item") -- resolved via the same
+    // discoverWorkItemTypeCategories concept jobs.service.ts's confirm()
+    // uses at write time.
+    // Same vaulted credential as discoverLinkTypes above.
     let resolvedCustomerIdField: string | null = null;
     if ((tree.trace_links ?? []).some((l) => l.target_kind === 'crossJob')) {
-      const availableFields = await deps.mcpClient.discoverFields('Requirement').catch(() => [] as string[]);
+      const project = job.areaPath.split('\\')[0];
+      const realRequirementType = await deps.mcpClient
+        .discoverWorkItemTypeCategories(project, credential)
+        .then((categories) => categories.Requirement)
+        .catch(() => 'Requirement');
+      const availableFields = await deps.mcpClient.discoverFields(realRequirementType, credential).catch(() => [] as string[]);
       resolvedCustomerIdField =
         customerIdFieldCandidates.find((candidate) => availableFields.includes(candidate)) ?? null;
     }
 
-    // Dedup only runs for a follow-up ingestion (see Job.followUp's
-    // schema.prisma doc comment) -- a first-time document has nothing to
-    // compare against under this area path, so skipping the check is both
-    // correct and avoids wasted embed calls. dryRunService.diff's third
-    // arg is already optional (see its own signature) -- omitting it (via
-    // `undefined`) makes every node fall straight through to 'create',
-    // exactly like before dedup existed.
+    // Always run the near-duplicate check, regardless of Job.followUp --
+    // deciding whether a work item already exists under this area path is a
+    // required step of every ingestion, not an opt-in extra a user has to
+    // remember to tick. A first-time area path simply has nothing indexed
+    // yet, so every check legitimately comes back "not a duplicate" at
+    // negligible cost (one embed call per node, already fail-open on any
+    // dedup-service error -- see dryRunService.diff's own doc comment).
+    // Job.followUp itself is left alone (unused now, no schema/DTO churn
+    // for a field that's harmless to leave in place).
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      job.followUp ? (text, areaPath) => deps.ingestionClient.checkDuplicate(text, areaPath) : undefined,
+      (text, areaPath) => deps.ingestionClient.checkDuplicate(text, areaPath),
     );
 
     const resolvedDiff =
@@ -250,7 +346,7 @@ export async function runPipelineJob(
               ...entry,
               traceLinks: entry.traceLinks
                 ? await resolveCrossJobTraceLinks(entry.traceLinks, async (customerId) =>
-                    deps.mcpClient.queryIds({ [resolvedCustomerIdField as string]: customerId }),
+                    deps.mcpClient.queryIds({ [resolvedCustomerIdField as string]: customerId }, credential),
                   )
                 : entry.traceLinks,
             })),
@@ -304,6 +400,16 @@ export async function runPipelineJob(
     await deps.jobEventsPublisher.publish(job.id, 'diff_ready');
     return resolvedDiff;
   } catch (error) {
+    if (error instanceof JobCancelledError) {
+      // Status is already 'cancelled' (set by JobsService.cancel(), which
+      // is what threw this via assertNotCancelled) -- must NOT be
+      // overwritten to 'failed' the way every other error below is.
+      await deps.prisma.auditEntry.create({
+        data: { jobId: job.id, message: 'Pipeline stopped: job was cancelled' },
+      });
+      await deps.jobEventsPublisher.publish(job.id, 'cancelled');
+      return [];
+    }
     await deps.prisma.job.update({ where: { id: job.id }, data: { status: 'failed' } });
     await deps.prisma.auditEntry.create({
       data: { jobId: job.id, message: `Pipeline failed: ${error instanceof Error ? error.message : String(error)}` },

@@ -1,0 +1,43 @@
+name: CI
+
+# No test workflow existed anywhere in this repo before this file -- every
+# jest/vitest/pytest suite in this codebase (frontend/orchestrator/
+# mcp-ado-server/ingestion) only ever ran locally, on whoever remembered to.
+# This is what gives the hex-color ratchet test (src/design/palette.test.ts)
+# and every other test in the repo somewhere to actually enforce anything
+# for a second contributor's PR, not just the person who happens to run
+# `pnpm test` by hand.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    name: Node (frontend / orchestrator / mcp-ado-server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+
+  ingestion:
+    name: Ingestion (pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingestion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -e ".[dev]"
+      - run: pytest

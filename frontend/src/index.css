@@ -1,0 +1,204 @@
+@import 'tailwindcss';
+
+/**
+ * Design tokens — navy (#0F1B3D rail) + yellow (#FDE134) accent, reserved
+ * strictly for "this needs your decision" surfaces (confirm gate,
+ * awaiting-review status, focus ring), never decorative. Values match the
+ * approved glow-up mockup (tuning B: navy rail only, tinted canvas, white
+ * cards). Tailwind v4 CSS-first config — these become both CSS custom
+ * properties and Tailwind utility classes (e.g. bg-navy-900, text-ink-2,
+ * font-mono, rounded-md, shadow-card).
+ *
+ * Identifiers (clause numbers, ADO ids, job ids, source hashes, timers)
+ * render in font-mono — a distinct type class from prose, since the app's
+ * real artifact is a traceability ledger (clause 3.2.1 -> WI-1234).
+ */
+@theme {
+  --color-navy-900: #0f1b3d;
+  --color-navy-700: #17306b;
+  --color-navy-600: #1b458f;
+  --color-navy-300: #3b60c0;
+
+  --color-signal: #fde134;
+  --color-signal-deep: #7a5c00;
+
+  --color-canvas: #f1f4fa;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f1f4fa;
+
+  --color-hairline: #dde4ee;
+  --color-hairline-strong: #c9d2e2;
+
+  --color-ink-1: #0b1220;
+  --color-ink-2: #334155;
+  --color-ink-3: #64748b;
+
+  --color-ok: #15803d;
+  --color-danger: #d1434b;
+  --color-warning: #b45309;
+  --color-info: #2563eb;
+  --color-live: #06b6d4;
+
+  /* Real Azure DevOps work-item-type colors (Agile/CMMI defaults) — never
+     hardcode these in components beyond this token; the real app fetches
+     them live per-project from ADO and these are only the fallback. */
+  --color-wt-epic: #ff7b00;
+  --color-wt-feature: #773b93;
+  --color-wt-requirement: #009ccc;
+
+  /* Real Azure DevOps state-dot colors (Agile process defaults). */
+  --color-state-new: #b2b2b2;
+  --color-state-proposed: #b2b2b2;
+  --color-state-active: #007acc;
+  --color-state-resolved: #ff9d00;
+  --color-state-closed: #339933;
+  --color-state-removed: #7f7f7f;
+
+  --font-display: 'Inter Tight Variable', 'Inter Tight', -apple-system, sans-serif;
+  --font-sans: 'Inter Variable', 'Inter', -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  --shadow-sm: 0px 1px 2px rgba(15, 27, 61, 0.05);
+  --shadow-card: 0px 1px 2px rgba(15, 27, 61, 0.05), 0px 8px 20px rgba(15, 27, 61, 0.055);
+  --shadow-popover: 0px 2px 4px rgba(15, 27, 61, 0.07), 0px 16px 34px rgba(15, 27, 61, 0.1);
+  --shadow-dialog: 0px 24px 64px rgba(11, 18, 32, 0.32);
+
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* Exit counterparts to fadeIn/dialogIn -- without an animation bound to
+   data-[state="closed"], Radix's own animationend-based unmount timing
+   sees a 0ms duration and removes the element instantly, so a toast/dialog
+   close was previously a hard cut with no visual acknowledgement. */
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes dialogOut {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.97);
+  }
+}
+
+@keyframes typedot {
+  0%,
+  80%,
+  100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes listItemIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes indeterminate-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(330%);
+  }
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-canvas text-ink-1 font-sans;
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 1px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-hairline-strong);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}

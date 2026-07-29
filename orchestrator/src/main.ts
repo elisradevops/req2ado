@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { WsAdapter } from '@nestjs/platform-ws';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
@@ -24,6 +25,9 @@ async function bootstrap(): Promise<void> {
   // SIGTERM/SIGINT before the process actually exits.
   app.enableShutdownHooks();
   app.use(helmet());
+  // Session cookie (AuthGuard, auth.controller.ts) is read via
+  // req.cookies -- must run before any guard/route handler.
+  app.use(cookieParser());
   // ChatGateway (modules/chat) needs a raw `ws` WebSocket adapter -- Nest's
   // default platform (socket.io) is a different wire protocol the frontend's
   // chat client doesn't speak.

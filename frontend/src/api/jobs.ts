@@ -1,20 +1,25 @@
 import { httpClient } from './httpClient';
 import type { JobSummary, JobDetail } from '../store/jobsStore';
 
-export interface AdoRequestCredential {
-  orgUrl: string;
-  pat: string;
-}
-
 export interface AuditEntry {
   id: string;
   message: string;
   createdAt: string;
 }
 
-function credentialHeaders(credential?: AdoRequestCredential): { headers: Record<string, string> } | undefined {
-  if (!credential) return undefined;
-  return { headers: { 'X-Ado-Org-Url': credential.orgUrl, 'X-Ado-Pat': credential.pat } };
+// Raw model-response captured behind a soft-failure warning (KB relevance
+// verification, trace-link inference, Epic/Feature scoring) -- see
+// ingestion's app.debug_capture. Empty array is the common case (no soft
+// failures occurred during this job's run).
+export interface DebugCaptureEntry {
+  kind: string;
+  identifier: string;
+  content: string;
+}
+
+export async function getDebugCaptures(id: string): Promise<DebugCaptureEntry[]> {
+  const response = await httpClient.get<DebugCaptureEntry[]>(`/jobs/${id}/debug`);
+  return response.data;
 }
 
 export async function listJobs(): Promise<JobSummary[]> {
@@ -22,7 +27,9 @@ export async function listJobs(): Promise<JobSummary[]> {
   return response.data;
 }
 
-export async function previewJob(file: File): Promise<{ blockCount: number; sectionCount: number; fileType: string }> {
+export async function previewJob(
+  file: File,
+): Promise<{ blockCount: number; sectionCount: number; figureCount: number; depth: number; fileType: string }> {
   const form = new FormData();
   form.append('file', file);
   const response = await httpClient.post('/jobs/preview', form);
@@ -32,11 +39,6 @@ export async function previewJob(file: File): Promise<{ blockCount: number; sect
 export interface SubmitJobParams {
   file: File;
   areaPath: string;
-  // The submitting user's stable ADO identity (see authStore's userId) --
-  // the Knowledge Base scope key, kept separate from areaPath (the ADO
-  // write-back destination, unrelated concern). Optional: an unauthenticated
-  // caller simply gets no KB grounding for this job.
-  userId?: string | null;
   customerId?: string;
   mode: 'baseline' | 'survey';
   state?: string;
@@ -56,7 +58,6 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   form.append('file', params.file);
   form.append('areaPath', params.areaPath);
   form.append('mode', params.mode);
-  if (params.userId) form.append('userId', params.userId);
   if (params.customerId) form.append('customerId', params.customerId);
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);
@@ -76,8 +77,8 @@ export async function getJob(id: string): Promise<JobDetail> {
   return response.data;
 }
 
-export async function confirmJob(id: string, credential?: AdoRequestCredential): Promise<{ status: string; createdCount: number }> {
-  const response = await httpClient.post(`/jobs/${id}/confirm`, undefined, credentialHeaders(credential));
+export async function confirmJob(id: string): Promise<{ status: string; createdCount: number }> {
+  const response = await httpClient.post(`/jobs/${id}/confirm`);
   return response.data;
 }
 
@@ -114,6 +115,27 @@ export async function addDiffEntry(jobId: string, input: AddDiffEntryInput): Pro
 
 export async function rejectJob(id: string): Promise<{ status: string }> {
   const response = await httpClient.post(`/jobs/${id}/reject`);
+  return response.data;
+}
+
+export async function cancelJob(id: string): Promise<{ status: string }> {
+  const response = await httpClient.post(`/jobs/${id}/cancel`);
+  return response.data;
+}
+
+export async function deleteJob(id: string): Promise<{ deleted: true }> {
+  const response = await httpClient.delete(`/jobs/${id}`);
+  return response.data;
+}
+
+// Re-runs a job's ORIGINAL upload without the user re-selecting the file --
+// only available when the source bytes were retained (JobSourceFile,
+// capped at MAX_UPLOAD_SIZE_MB server-side). Creates a brand-new job; the
+// source job is untouched. Same sourceHash as the original, so confirm()
+// reuses existing ADO items via IdempotencyMapping rather than duplicating
+// them -- expected, not a bug, but worth the caller surfacing that copy.
+export async function resubmitJob(id: string): Promise<{ jobId: string }> {
+  const response = await httpClient.post(`/jobs/${id}/resubmit`);
   return response.data;
 }
 

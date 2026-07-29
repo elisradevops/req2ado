@@ -23,6 +23,27 @@ export interface AdoProject {
   name: string;
 }
 
+export interface WorkItemTypeDefinition {
+  name: string;
+  color: string;
+  icon: { id: string; url: string };
+}
+
+// req2ado's 3 internal category labels resolved to the REAL work-item type
+// name the target project's actual process template uses for each -- see
+// mcp-ado-server's WorkItemTypeCategoryMap doc comment for why this exists
+// (Agile's Requirement-category type is "User Story", not "Requirement").
+export interface WorkItemTypeCategoryMap {
+  Epic: string;
+  Feature: string;
+  Requirement: string;
+}
+
+export interface WorkItemIcon {
+  contentType: string;
+  dataBase64: string;
+}
+
 /**
  * Thrown when a single MCP round trip (connect + tool call + close) exceeds
  * requestTimeoutMs. Extends Error so every existing untyped catch (both
@@ -148,6 +169,53 @@ export class McpClient {
         name: 'ado_read_area_paths',
         arguments: { depth, ...(project ? { project } : {}) },
       });
+      return this.parseToolTextResult(result as any);
+    });
+  }
+
+  async readIterationPaths(depth: number, project?: string, credential?: AdoRequestCredential): Promise<unknown> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({
+        name: 'ado_read_iteration_paths',
+        arguments: { depth, ...(project ? { project } : {}) },
+      });
+      return this.parseToolTextResult(result as any);
+    });
+  }
+
+  async readStates(workItemType: string, project?: string, credential?: AdoRequestCredential): Promise<string[]> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({
+        name: 'ado_read_states',
+        arguments: { workItemType, ...(project ? { project } : {}) },
+      });
+      return this.parseToolTextResult(result as any);
+    });
+  }
+
+  async discoverWorkItemTypes(project?: string, credential?: AdoRequestCredential): Promise<WorkItemTypeDefinition[]> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({
+        name: 'ado_discover_work_item_types',
+        arguments: { ...(project ? { project } : {}) },
+      });
+      return this.parseToolTextResult(result as any);
+    });
+  }
+
+  async discoverWorkItemTypeCategories(project?: string, credential?: AdoRequestCredential): Promise<WorkItemTypeCategoryMap> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({
+        name: 'ado_discover_work_item_type_categories',
+        arguments: { ...(project ? { project } : {}) },
+      });
+      return this.parseToolTextResult(result as any);
+    });
+  }
+
+  async getWorkItemIcon(iconId: string, color: string, credential?: AdoRequestCredential): Promise<WorkItemIcon> {
+    return this.withClient(credential, async (client) => {
+      const result = await client.callTool({ name: 'ado_get_work_item_icon', arguments: { iconId, color } });
       return this.parseToolTextResult(result as any);
     });
   }

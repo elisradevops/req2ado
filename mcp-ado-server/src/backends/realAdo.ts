@@ -3,7 +3,16 @@ import axios from 'axios';
 import { readFileSync } from 'fs';
 import https from 'https';
 import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
-import type { AdoBackend, AdoProject, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
+import type {
+  AdoBackend,
+  AdoProject,
+  AreaPathNode,
+  CreateWorkItemInput,
+  WorkItemIcon,
+  WorkItemRecord,
+  WorkItemTypeCategoryMap,
+  WorkItemTypeDefinition,
+} from './types.js';
 import type { AdoMcpConfig } from '../config/env.js';
 import { retryWithBackoff } from './retryWithBackoff.js';
 import { SEED_LINK_TYPES, isWorkItemRelationType, type AdoLinkType } from '../domain/adoLinkTypes.js';
@@ -174,7 +183,7 @@ export class RealAdoBackend implements AdoBackend {
       const data = response.data;
       return {
         id: data.id,
-        type: data.fields['System.WorkItemType'] as WorkItemType,
+        type: data.fields['System.WorkItemType'] as string,
         fields: data.fields,
         parentId: parentIdFromRelations(data.relations),
       };
@@ -218,7 +227,7 @@ export class RealAdoBackend implements AdoBackend {
     );
     return response.data.value.map((data: { id: number; fields: Record<string, string>; relations?: unknown }) => ({
       id: data.id,
-      type: data.fields['System.WorkItemType'] as WorkItemType,
+      type: data.fields['System.WorkItemType'] as string,
       fields: data.fields,
       parentId: parentIdFromRelations(data.relations as { rel: string; url: string }[] | undefined),
     }));
@@ -279,7 +288,7 @@ export class RealAdoBackend implements AdoBackend {
     );
   }
 
-  async discoverFields(workItemType: WorkItemType): Promise<string[]> {
+  async discoverFields(workItemType: string): Promise<string[]> {
     const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/workitemtypes/${workItemType}/fields${versionQueryParam(version)}`;
     const response = await retryWithBackoff(() =>
@@ -298,6 +307,26 @@ export class RealAdoBackend implements AdoBackend {
     return this.toAreaPathNode(response.data, proj);
   }
 
+  async readIterationPaths(depth: number, project?: string): Promise<AreaPathNode> {
+    const proj = project ?? this.config.adoProject;
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/classificationnodes/iterations${versionQueryParam(version)}${version === 'none' ? '?' : '&'}$depth=${depth}`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+    );
+    return this.toAreaPathNode(response.data, proj);
+  }
+
+  async readStates(workItemType: string, project?: string): Promise<string[]> {
+    const proj = project ?? this.config.adoProject;
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitemtypes/${workItemType}/states${versionQueryParam(version)}`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+    );
+    return (response.data.value as { name: string }[]).map((s) => s.name);
+  }
+
   async discoverProjects(): Promise<AdoProject[]> {
     // Collection-level endpoint -- no project segment in the URL, unlike
     // every other real call here.
@@ -307,6 +336,83 @@ export class RealAdoBackend implements AdoBackend {
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
     );
     return (response.data.value as { id: string; name: string }[]).map((p) => ({ id: p.id, name: p.name }));
+  }
+
+  async discoverWorkItemTypes(project?: string): Promise<WorkItemTypeDefinition[]> {
+    const proj = project ?? this.config.adoProject;
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitemtypes${versionQueryParam(version)}`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+    );
+    return (response.data.value as { name: string; color: string; icon: { id: string; url: string } }[]).map((t) => ({
+      name: t.name,
+      color: t.color,
+      icon: t.icon,
+    }));
+  }
+
+  // Confirmed real bug this fixes: createWorkItem/discoverFields/readStates
+  // previously received req2ado's internal "Epic"/"Feature"/"Requirement"
+  // category label and sent it AS-IS as the real ADO type name -- correct
+  // by coincidence only for a CMMI process template (whose Requirement-
+  // category type happens to be literally named "Requirement"). An Agile
+  // project's Requirement-category type is "User Story", Scrum's is
+  // "Product Backlog Item", Basic's is "Issue" -- every one of those would
+  // 404 against `_apis/wit/workitems/$Requirement`. `workitemtypecategories`
+  // is ADO's own universal category concept (identical across every process
+  // template family, including custom ones) -- `defaultWorkItemType.name` on
+  // each category is the real type name to use.
+  async discoverWorkItemTypeCategories(project?: string): Promise<WorkItemTypeCategoryMap> {
+    const proj = project ?? this.config.adoProject;
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitemtypecategories${versionQueryParam(version)}`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+    );
+    const categories = response.data.value as { referenceName: string; defaultWorkItemType: { name: string } }[];
+    const byRef = new Map(categories.map((c) => [c.referenceName, c.defaultWorkItemType.name]));
+    const epic = byRef.get('Microsoft.EpicCategory');
+    const feature = byRef.get('Microsoft.FeatureCategory');
+    const requirement = byRef.get('Microsoft.RequirementCategory');
+    if (!epic || !feature || !requirement) {
+      throw new Error(
+        `Project ${proj}'s process template is missing an expected work-item-type category ` +
+          `(Epic/Feature/Requirement) -- found: ${[...byRef.keys()].join(', ')}`,
+      );
+    }
+    return { Epic: epic, Feature: feature, Requirement: requirement };
+  }
+
+  async getWorkItemIcon(iconId: string, color: string): Promise<WorkItemIcon> {
+    const version = await this.getApiVersion();
+    const base = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitemicons/${iconId}`;
+    const url = version === 'none' ? `${base}?color=${color}` : `${base}?color=${color}&api-version=${version}`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, {
+        headers: {
+          Authorization: this.authHeader(),
+          // A bare `Accept: image/svg+xml` still 200s with the JSON
+          // icon-reference object, not SVG bytes -- confirmed live twice
+          // (once against a broken <img>, once by refetching this exact
+          // endpoint with that header set and finding content-type still
+          // application/json). The real azure-devops-node-api SDK's own
+          // getWorkItemIconSvg (ClientApiBase.createAcceptHeader) reveals
+          // why: ADO's REST content negotiation for this endpoint keys off
+          // the api-version encoded INSIDE the Accept header's media-type
+          // parameters (`image/svg+xml;api-version=X`), not a bare MIME
+          // type -- the version query param alone isn't enough to select
+          // the SVG variant. version==='none' has no api-version to embed
+          // and falls back to the bare type, matching every other
+          // version==='none' code path in this file (no api-version query
+          // param either, in that case).
+          Accept: version === 'none' ? 'image/svg+xml' : `image/svg+xml;api-version=${version}`,
+        },
+        responseType: 'arraybuffer',
+      }),
+    );
+    const contentType = (response.headers['content-type'] as string | undefined) ?? 'image/svg+xml';
+    return { contentType, dataBase64: Buffer.from(response.data as ArrayBuffer).toString('base64') };
   }
 
   private toAreaPathNode(raw: { name: string; children?: unknown[] }, pathPrefix: string): AreaPathNode {

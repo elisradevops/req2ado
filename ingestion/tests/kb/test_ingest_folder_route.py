@@ -32,7 +32,7 @@ def test_folder_ingest_forwards_the_recursive_flag_to_the_service(monkeypatch) -
     monkeypatch.setattr(settings, "sharepoint_token", "test-token")
     captured = {}
 
-    def fake_ingest_folder_from_url(url, user_id, doc_type, graph_client, embed_client, vector_store, recursive=False, describe_figure=None):
+    def fake_ingest_folder_from_url(url, user_id, doc_type, graph_client, embed_client, vector_store, recursive=False, describe_figure=None, checklist_client=None):
         captured["recursive"] = recursive
         from app.kb.ingest_service import FolderIngestResult
 

@@ -1,5 +1,7 @@
 import { KbService } from '../src/modules/kb/kb.service';
 
+const fakeCredentialVault = { get: jest.fn().mockResolvedValue(null), set: jest.fn(), delete: jest.fn(), has: jest.fn() };
+
 describe('KbService', () => {
   it('ingestUrl() calls the ingestion client and upserts an IngestedDocument, returning the ingest result', async () => {
     const ingestResult = {
@@ -12,11 +14,11 @@ describe('KbService', () => {
     };
     const ingestionClient = { ingestUrl: jest.fn().mockResolvedValue(ingestResult) };
     const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
-    const service = new KbService(prisma as any, ingestionClient as any);
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
 
     const result = await service.ingestUrl('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD');
 
-    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD');
+    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD', null);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith({
       where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-1' } },
       create: { userId: 'Project\\Area1', driveItemId: 'drive-1', name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD' },
@@ -27,7 +29,7 @@ describe('KbService', () => {
 
   it('listDocuments() filters by userId when provided', async () => {
     const prisma = { ingestedDocument: { findMany: jest.fn().mockResolvedValue([]) } };
-    const service = new KbService(prisma as any, {} as any);
+    const service = new KbService(prisma as any, {} as any, fakeCredentialVault as any);
 
     await service.listDocuments('Project\\Area1');
 
@@ -36,7 +38,7 @@ describe('KbService', () => {
 
   it('listDocuments() returns all documents ordered newest-first when userId is omitted', async () => {
     const prisma = { ingestedDocument: { findMany: jest.fn().mockResolvedValue([]) } };
-    const service = new KbService(prisma as any, {} as any);
+    const service = new KbService(prisma as any, {} as any, fakeCredentialVault as any);
 
     await service.listDocuments();
 
@@ -53,11 +55,11 @@ describe('KbService', () => {
     };
     const ingestionClient = { ingestFolderUrl: jest.fn().mockResolvedValue(folderResult) };
     const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
-    const service = new KbService(prisma as any, ingestionClient as any);
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
 
     const result = await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD');
 
-    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', false);
+    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', false, null);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledTimes(2);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-a' } } }),
@@ -76,11 +78,11 @@ describe('KbService', () => {
     };
     const ingestionClient = { ingestFolderUrl: jest.fn().mockResolvedValue(folderResult) };
     const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
-    const service = new KbService(prisma as any, ingestionClient as any);
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
 
     await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', true);
 
-    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', true);
+    expect(ingestionClient.ingestFolderUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD', true, null);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ create: expect.objectContaining({ name: 'Sub/nested.docx' }) }),
     );
@@ -102,7 +104,7 @@ describe('KbService', () => {
           .mockRejectedValueOnce(new Error('db unavailable')),
       },
     };
-    const service = new KbService(prisma as any, ingestionClient as any);
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
 
     const result = await service.ingestFolderUrl('https://contoso.sharepoint.com/folder', 'Project\\Area1', 'SRD');
 
@@ -112,5 +114,55 @@ describe('KbService', () => {
     expect(result.files.find((f) => f.file === 'b.docx')).toEqual(
       expect.objectContaining({ status: 'failed', reason: expect.stringContaining('db unavailable') }),
     );
+  });
+
+  it('getSharePointStatus() checks the vaulted override token when one has been rotated', async () => {
+    const vaulted = JSON.stringify({ token: 'vaulted-tok', rotatedByUserId: 'user-1', rotatedAt: '2026-01-01T00:00:00.000Z' });
+    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 }) };
+    const credentialVault = { get: jest.fn().mockResolvedValue(vaulted) };
+    const service = new KbService({} as any, ingestionClient as any, credentialVault as any);
+
+    const result = await service.getSharePointStatus();
+
+    expect(credentialVault.get).toHaveBeenCalledWith('shared', 'sharepoint_token');
+    expect(ingestionClient.getSharePointStatus).toHaveBeenCalledWith('vaulted-tok');
+    expect(result).toEqual({ status: 'valid', expiresInSeconds: 3600 });
+  });
+
+  it('getSharePointStatus() falls back to no override when nothing has been rotated yet', async () => {
+    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'not_configured', expiresInSeconds: null }) };
+    const credentialVault = { get: jest.fn().mockResolvedValue(null) };
+    const service = new KbService({} as any, ingestionClient as any, credentialVault as any);
+
+    await service.getSharePointStatus();
+
+    expect(ingestionClient.getSharePointStatus).toHaveBeenCalledWith(null);
+  });
+
+  it('reconnectSharePointToken() validates before vaulting -- an invalid token is never stored', async () => {
+    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'invalid', expiresInSeconds: null }) };
+    const credentialVault = { get: jest.fn(), set: jest.fn() };
+    const service = new KbService({} as any, ingestionClient as any, credentialVault as any);
+
+    const result = await service.reconnectSharePointToken('bad-token', 'user-1');
+
+    expect(ingestionClient.getSharePointStatus).toHaveBeenCalledWith('bad-token');
+    expect(credentialVault.set).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'invalid', expiresInSeconds: null });
+  });
+
+  it('reconnectSharePointToken() vaults the token with rotation attribution when valid', async () => {
+    const ingestionClient = { getSharePointStatus: jest.fn().mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 }) };
+    const credentialVault = { get: jest.fn(), set: jest.fn().mockResolvedValue(undefined) };
+    const service = new KbService({} as any, ingestionClient as any, credentialVault as any);
+
+    await service.reconnectSharePointToken('good-token', 'user-1');
+
+    expect(credentialVault.set).toHaveBeenCalledWith(
+      'shared',
+      'sharepoint_token',
+      expect.stringContaining('"token":"good-token"'),
+    );
+    expect(credentialVault.set).toHaveBeenCalledWith('shared', 'sharepoint_token', expect.stringContaining('"rotatedByUserId":"user-1"'));
   });
 });

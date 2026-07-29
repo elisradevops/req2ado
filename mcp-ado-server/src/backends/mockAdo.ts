@@ -1,5 +1,14 @@
 import Database from 'better-sqlite3';
-import type { AdoBackend, AdoProject, AreaPathNode, CreateWorkItemInput, WorkItemRecord, WorkItemType } from './types.js';
+import type {
+  AdoBackend,
+  AdoProject,
+  AreaPathNode,
+  CreateWorkItemInput,
+  WorkItemIcon,
+  WorkItemRecord,
+  WorkItemTypeCategoryMap,
+  WorkItemTypeDefinition,
+} from './types.js';
 import { SEED_LINK_TYPES, type AdoLinkType } from '../domain/adoLinkTypes.js';
 
 /**
@@ -38,7 +47,7 @@ export class MockAdoBackend implements AdoBackend {
   async getWorkItem(id: number): Promise<WorkItemRecord | null> {
     const row = this.db
       .prepare('SELECT id, type, fields, parent_id as parentId FROM work_items WHERE id = ?')
-      .get(id) as { id: number; type: WorkItemType; fields: string; parentId: number | null } | undefined;
+      .get(id) as { id: number; type: string; fields: string; parentId: number | null } | undefined;
     if (!row) return null;
     return { id: row.id, type: row.type, fields: JSON.parse(row.fields), parentId: row.parentId };
   }
@@ -77,7 +86,7 @@ export class MockAdoBackend implements AdoBackend {
     this.db.prepare('UPDATE work_items SET fields = ? WHERE id = ?').run(JSON.stringify(merged), id);
   }
 
-  async discoverFields(_workItemType: WorkItemType): Promise<string[]> {
+  async discoverFields(_workItemType: string): Promise<string[]> {
     // Hardcoded, realistic field set for off-network dev/tests — good enough
     // to exercise the Customer ID candidate-matching logic without a real
     // ADO server. Includes one of the three real candidate names so callers
@@ -102,11 +111,52 @@ export class MockAdoBackend implements AdoBackend {
     };
   }
 
+  async readIterationPaths(_depth: number, _project?: string): Promise<AreaPathNode> {
+    return {
+      path: 'Project',
+      children: [
+        { path: 'Project\\Sprint 1', children: [] },
+        { path: 'Project\\Sprint 2', children: [] },
+      ],
+    };
+  }
+
+  async readStates(_workItemType: string, _project?: string): Promise<string[]> {
+    return ['Proposed', 'Active', 'Resolved', 'Closed'];
+  }
+
+  async discoverWorkItemTypeCategories(_project?: string): Promise<WorkItemTypeCategoryMap> {
+    // CMMI-shaped mock (matches discoverWorkItemTypes' own mock types
+    // above) -- good enough to exercise the tool contract off-network;
+    // Agile/Scrum-shaped resolution only matters against a real ADO
+    // process template, which only the real backend can actually reflect.
+    return { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' };
+  }
+
   async discoverProjects(): Promise<AdoProject[]> {
     return [
       { id: '1', name: 'Project' },
       { id: '2', name: 'OtherProject' },
     ];
+  }
+
+  async discoverWorkItemTypes(_project?: string): Promise<WorkItemTypeDefinition[]> {
+    // Matches the frontend's pre-existing hardcoded fallback colors so a
+    // dev/mock run and the eventual real-ADO run render identically for
+    // these three types.
+    return [
+      { name: 'Epic', color: 'FF7B00', icon: { id: 'icon_crown', url: '' } },
+      { name: 'Feature', color: '773B93', icon: { id: 'icon_trophy_award', url: '' } },
+      { name: 'Requirement', color: '009CCC', icon: { id: 'icon_book', url: '' } },
+    ];
+  }
+
+  async getWorkItemIcon(_iconId: string, color: string): Promise<WorkItemIcon> {
+    // Deterministic tiny colored square SVG -- good enough to exercise the
+    // real proxy/decode/render path (content-type, base64 round trip, <img>
+    // display) without a real ADO server's icon set.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" rx="3" fill="#${color}"/></svg>`;
+    return { contentType: 'image/svg+xml', dataBase64: Buffer.from(svg, 'utf-8').toString('base64') };
   }
 
   async discoverLinkTypes(): Promise<AdoLinkType[]> {

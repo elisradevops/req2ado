@@ -7,10 +7,56 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// A real, revocable server session -- opaque 32-byte token in an httpOnly
+// cookie, only sha256(token) persisted here (never the raw token, same
+// reasoning as never persisting a PAT in plaintext: a DB read alone must
+// never be enough to impersonate a session). userId is the ADO
+// authenticatedUser.descriptor (AdoPatProvider.validateAndIdentify), the
+// same identity Job.userId/IngestedDocument.userId already key on.
+// Revocation (logout) is a real DELETE, not a JWT that stays valid until
+// expiry regardless of what the server thinks -- this is exactly why this
+// is a DB-backed session and not a JWT.
+model Session {
+  id           String   @id @default(uuid())
+  tokenHash    String   @unique
+  userId       String
+  displayName  String
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+}
+
+// Server-side encrypted credential store -- the ADO PAT, SharePoint token,
+// and (optional) per-user Open WebUI API key all live here now instead of
+// being resent per-request by the browser (PAT) or living only in a shared
+// server env var (SharePoint token, LLM key). AES-256-GCM via Node crypto
+// (credential-vault.service.ts); `ciphertext`/`iv`/`authTag` are each
+// base64. AAD is bound to `ownerKey|kind` at encrypt time so a ciphertext
+// row can't be decrypted correctly if transplanted onto a different
+// owner/kind pair. `ownerKey` is `user:<descriptor>` for per-user
+// credentials (pat, llm_api_key) or the literal string `shared` for the
+// one shared SharePoint token (matches today's single-shared-identity
+// SharePoint design -- see docs/architecture.md). `keyVersion` records
+// which of CREDENTIAL_ENC_KEY / CREDENTIAL_ENC_KEY_PREVIOUS decrypted this
+// row, so rotating the encryption key can re-encrypt lazily instead of
+// needing a big-bang migration.
+model ExternalCredential {
+  id         String   @id @default(uuid())
+  ownerKey   String
+  kind       String // "ado_pat" | "sharepoint_token" | "llm_api_key"
+  ciphertext String
+  iv         String
+  authTag    String
+  keyVersion Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([ownerKey, kind])
+}
+
 model Job {
   id               String    @id @default(uuid())
   mode             String // "baseline" | "survey"
-  status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed" | "rejected"
+  status           String // "pending" | "running" | "diff_ready" | "writing" | "succeeded" | "failed" | "rejected" | "cancelled"
   sourceHash       String
   areaPath         String
   // The submitting user's stable ADO identity (authenticatedUser.descriptor,
@@ -47,6 +93,21 @@ model Job {
   auditEntries     AuditEntry[]
   dedupSkipAudits  DedupSkipAudit[]
   createdItemMappings CreatedItemMapping[]
+  sourceFile       JobSourceFile?
+}
+
+// Retains the original uploaded file's bytes so a job can be re-submitted
+// without the user re-uploading it -- kept in its OWN table, not a column
+// on Job, so ordinary Job queries (list/getById) never pull large blob
+// bytes along for the ride. Capped at MAX_STORED_SOURCE_BYTES
+// (jobs.service.ts) -- an upload larger than the cap still processes
+// normally, it just isn't retained for resubmit (no row is written).
+// Deleted alongside its Job in JobsService.delete's transaction.
+model JobSourceFile {
+  jobId     String   @id
+  job       Job      @relation(fields: [jobId], references: [id])
+  bytes     Bytes
+  createdAt DateTime @default(now())
 }
 
 model AuditEntry {

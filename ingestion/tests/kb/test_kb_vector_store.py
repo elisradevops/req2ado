@@ -25,6 +25,44 @@ def test_upsert_chunk_then_existing_file_hash_returns_the_stored_hash() -> None:
         assert store.existing_file_hash("Project\\Area1", "doc.txt", "source-1") == "hash-1"
 
 
+def test_get_quality_checklist_returns_none_when_extraction_never_ran() -> None:
+    # None (extraction never ran, e.g. ingested before this existed) is a
+    # distinct signal from [] (extraction ran, found genuinely nothing) --
+    # the caller's own live-derive/fixed-5-dimension fallback applies to
+    # both, but they mean different things for observability.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        assert store.get_quality_checklist("Project\\Area1", "doc.txt") is None
+
+
+def test_upsert_chunk_then_get_quality_checklist_round_trips_the_stored_list() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            quality_checklist=["Necessary", "Unambiguous", "Verifiable"],
+        )
+        assert store.get_quality_checklist("Project\\Area1", "doc.txt") == ["Necessary", "Unambiguous", "Verifiable"]
+
+
+def test_get_quality_checklist_round_trips_a_genuinely_empty_list() -> None:
+    # [] (extraction ran, found no checklist) must survive the round trip
+    # distinct from None -- not silently coerced to "never ran".
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            quality_checklist=[],
+        )
+        assert store.get_quality_checklist("Project\\Area1", "doc.txt") == []
+
+
 def test_kb_collections_are_isolated_from_dedup_collections_for_the_same_area_path() -> None:
     from app.dedup.vector_store import ChromaVectorStore
 
@@ -126,7 +164,7 @@ def test_query_returns_nearest_chunks_ordered_by_distance() -> None:
 def test_get_document_returns_none_for_a_never_ingested_file() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
-        assert store.get_document("Project\\Area1", "doc.txt") is None
+        assert store.get_document("Project\\Area1", "doc.txt") == (None, False)
 
 
 def test_get_document_reassembles_chunks_in_chunk_index_order() -> None:
@@ -145,7 +183,7 @@ def test_get_document_reassembles_chunks_in_chunk_index_order() -> None:
             user_id="Project\\Area1", source_file="spec.docx", source_id="source-1",
             chunk_index=0, file_hash="hash-1",
         )
-        assert store.get_document("Project\\Area1", "spec.docx") == "first part\n\nsecond part"
+        assert store.get_document("Project\\Area1", "spec.docx") == ("first part\n\nsecond part", False)
 
 
 def test_get_document_only_returns_chunks_for_the_requested_source_file() -> None:
@@ -161,7 +199,7 @@ def test_get_document_only_returns_chunks_for_the_requested_source_file() -> Non
             user_id="Project\\Area1", source_file="other.docx", source_id="source-1",
             chunk_index=0, file_hash="hash-2",
         )
-        assert store.get_document("Project\\Area1", "spec.docx") == "spec content"
+        assert store.get_document("Project\\Area1", "spec.docx") == ("spec content", False)
 
 
 def test_list_documents_returns_empty_list_for_a_never_ingested_area_path() -> None:
@@ -199,3 +237,79 @@ def test_query_respects_top_k() -> None:
             )
         results = store.query("Project\\Area1", embedding=[1.0, 0.0, 0.0], top_k=2)
         assert len(results) == 2
+
+
+def test_get_document_pages_past_a_single_get_page(monkeypatch) -> None:
+    # Constants patched small so the test doesn't need thousands of real
+    # upserts to exercise the paging loop.
+    import app.kb.kb_vector_store as kb_vector_store_module
+
+    monkeypatch.setattr(kb_vector_store_module, "_GET_PAGE_SIZE", 3)
+    monkeypatch.setattr(kb_vector_store_module, "_MAX_DOCUMENT_CHUNKS", 100)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        chunk_count = 7  # more than one page (3) but under the cap (100)
+        for i in reversed(range(chunk_count)):
+            store.upsert_chunk(
+                chunk_id=f"source-1:doc.txt:{i}", embedding=[float(i), 0.0, 0.0],
+                text=f"chunk {i}", user_id="Project\\Area1", source_file="doc.txt",
+                source_id="source-1", chunk_index=i, file_hash="hash-1",
+            )
+        text, truncated = store.get_document("Project\\Area1", "doc.txt")
+        assert text == "\n\n".join(f"chunk {i}" for i in range(chunk_count))
+        assert truncated is False
+
+
+def test_get_document_stops_at_the_chunk_ceiling_and_reports_truncation(monkeypatch) -> None:
+    import app.kb.kb_vector_store as kb_vector_store_module
+
+    monkeypatch.setattr(kb_vector_store_module, "_GET_PAGE_SIZE", 3)
+    monkeypatch.setattr(kb_vector_store_module, "_MAX_DOCUMENT_CHUNKS", 5)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        chunk_count = 8  # more than the cap (5)
+        for i in range(chunk_count):
+            store.upsert_chunk(
+                chunk_id=f"source-1:doc.txt:{i}", embedding=[float(i), 0.0, 0.0],
+                text=f"chunk {i}", user_id="Project\\Area1", source_file="doc.txt",
+                source_id="source-1", chunk_index=i, file_hash="hash-1",
+            )
+        text, truncated = store.get_document("Project\\Area1", "doc.txt")
+        assert truncated is True
+        # First 5 chunks by chunk_index, not an arbitrary subset.
+        assert text == "\n\n".join(f"chunk {i}" for i in range(5))
+
+
+def test_list_documents_pages_past_a_single_get_page(monkeypatch) -> None:
+    import app.kb.kb_vector_store as kb_vector_store_module
+
+    monkeypatch.setattr(kb_vector_store_module, "_GET_PAGE_SIZE", 2)
+    monkeypatch.setattr(kb_vector_store_module, "_MAX_LISTED_DOCUMENTS", 100)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        filenames = [f"doc{i}.txt" for i in range(5)]  # more than one page (2)
+        for i, name in enumerate(filenames):
+            store.upsert_chunk(
+                chunk_id=f"source-1:{name}:0", embedding=[float(i), 0.0, 0.0],
+                text="content", user_id="Project\\Area1", source_file=name,
+                source_id="source-1", chunk_index=0, file_hash="hash-1",
+            )
+        assert store.list_documents("Project\\Area1") == sorted(filenames)
+
+
+def test_list_documents_stops_at_the_document_ceiling(monkeypatch) -> None:
+    import app.kb.kb_vector_store as kb_vector_store_module
+
+    monkeypatch.setattr(kb_vector_store_module, "_GET_PAGE_SIZE", 2)
+    monkeypatch.setattr(kb_vector_store_module, "_MAX_LISTED_DOCUMENTS", 3)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        filenames = [f"doc{i}.txt" for i in range(5)]  # more than the cap (3)
+        for i, name in enumerate(filenames):
+            store.upsert_chunk(
+                chunk_id=f"source-1:{name}:0", embedding=[float(i), 0.0, 0.0],
+                text="content", user_id="Project\\Area1", source_file=name,
+                source_id="source-1", chunk_index=0, file_hash="hash-1",
+            )
+        result = store.list_documents("Project\\Area1")
+        assert len(result) == 3

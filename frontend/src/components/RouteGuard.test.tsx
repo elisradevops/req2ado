@@ -22,7 +22,7 @@ describe('RouteGuard', () => {
   });
 
   it('renders children when authenticated', () => {
-    useAuthStore.getState().login('https://ado.example', 'pat-1', 'Jane');
+    useAuthStore.getState().login('https://ado.example', 'Jane', 'user-descriptor-1');
     render(
       <MemoryRouter initialEntries={['/jobs']}>
         <Routes>

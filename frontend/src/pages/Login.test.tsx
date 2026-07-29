@@ -45,7 +45,7 @@ describe('Login page', () => {
     });
   });
 
-  it('populates useAuthStore with the org URL, PAT, and display name on successful login', async () => {
+  it('populates useAuthStore with the org URL and display name on successful login -- never the PAT, which is vaulted server-side', async () => {
     vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { displayName: 'Jane Doe' } });
 
     renderLogin();
@@ -54,11 +54,12 @@ describe('Login page', () => {
     fireEvent.click(screen.getByText('Sign in'));
 
     await waitFor(() => expect(screen.getByText('Jobs Page')).toBeInTheDocument());
-    expect(useAuthStore.getState()).toMatchObject({
+    const state = useAuthStore.getState();
+    expect(state).toMatchObject({
       orgUrl: 'https://tfs.internal/tfs/Collection',
-      pat: 'fake-pat',
       displayName: 'Jane Doe',
     });
+    expect(state).not.toHaveProperty('pat');
   });
 
   it('shows an error alert when sign-in fails', async () => {

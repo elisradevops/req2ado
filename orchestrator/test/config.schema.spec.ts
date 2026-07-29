@@ -9,6 +9,7 @@ const BASE_ENV = {
   LLM_CHAT_MODEL: 'llama3.1',
   LLM_PROXY_BEARER: 'test-llm-proxy-bearer',
   EMBED_MODEL: 'nomic-embed-text',
+  CREDENTIAL_ENC_KEY: 'test-credential-enc-key',
 };
 
 describe('configSchema LLM fields', () => {
@@ -52,6 +53,7 @@ describe('configSchema embed fields', () => {
     LLM_CHAT_MODEL: 'llama3.1',
     LLM_PROXY_BEARER: 'test-llm-proxy-bearer',
     EMBED_MODEL: 'nomic-embed-text',
+    CREDENTIAL_ENC_KEY: 'test-credential-enc-key',
   };
 
   it('defaults EMBED_TRANSPORT to ollama', () => {

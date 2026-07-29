@@ -1,11 +1,36 @@
 from __future__ import annotations
 
 import base64
+import json
+import time
 
 import httpx
 from pydantic import BaseModel
 
 from app.kb.url_security import validate_fetch_url
+
+
+def decode_jwt_expiry_seconds(token: str) -> int | None:
+    """Best-effort remaining-lifetime read for the KB status strip --
+    decodes the JWT `exp` claim WITHOUT verifying the signature (this
+    process has no way to verify an AAD-issued token's signature, and
+    doesn't need to: the token is only ever used by sending it straight to
+    Graph, which does its own verification. This is display-only, to render
+    "expires in 47m"). Returns None for a non-JWT/opaque token or any
+    malformed segment -- callers must treat that as "unknown", not "expired"."""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload = parts[1]
+    padded = payload + "=" * (-len(payload) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+        exp = claims.get("exp")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(exp, (int, float)):
+        return None
+    return max(0, int(exp - time.time()))
 
 
 class GraphDriveItem(BaseModel):
@@ -94,6 +119,25 @@ class GraphClient:
         if response.status_code != 200:
             raise _error_for_status(response.status_code)
         return response.content
+
+    def validate(self) -> None:
+        """Checks the configured token against Graph's own /me endpoint --
+        the cheapest live call that proves the token is both well-formed and
+        not yet revoked/expired, without needing a real sharing URL on hand.
+        Falls back to /me/drive/root on 403: some app-only tokens carry
+        Files.Read but not the delegated User.Read /me needs, and this
+        connector only ever needs file access. Raises GraphApiError on
+        failure (401/403 -> invalid, other -> 502-class); returns nothing on
+        success, since the caller only cares whether this raised."""
+        response = self._get(f"{self.base_url}/me")
+        if response.status_code == 200:
+            return
+        if response.status_code == 403:
+            fallback = self._get(f"{self.base_url}/me/drive/root")
+            if fallback.status_code == 200:
+                return
+            raise _error_for_status(fallback.status_code)
+        raise _error_for_status(response.status_code)
 
     def list_folder_children(self, url: str) -> list[GraphFolderChild]:
         """Lists the immediate children of a shared folder. Each file child

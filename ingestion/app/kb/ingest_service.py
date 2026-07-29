@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -12,6 +13,8 @@ from app.dispatch import dispatch_by_extension
 from app.kb.chunker import chunk_canonical_doc
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.url_security import MAX_FILE_SIZE_BYTES, validate_share_url, verify_supported_content
+
+logger = logging.getLogger(__name__)
 
 
 class IngestResult(BaseModel):
@@ -57,6 +60,7 @@ def _store_document(
     embed_client,
     vector_store: KbVectorStore,
     describe_figure: Callable[[bytes], str] | None = None,
+    checklist_client: object | None = None,
 ) -> IngestResult:
     """Shared core once a document's bytes are in hand, regardless of
     whether they came from a single-document share link or a folder
@@ -68,7 +72,21 @@ def _store_document(
     the bare '[FIGURE: none]' placeholder -- mirrors app.main's /ingest route
     (see _describe_figure there), which this KB path previously never
     received. None (the pre-existing default, and every existing caller
-    before this change) preserves the placeholder-only behavior exactly."""
+    before this change) preserves the placeholder-only behavior exactly.
+
+    `checklist_client`, when supplied, runs quality-checklist extraction
+    (see app.survey.orchestrator_llm_client.OrchestratorLlmClient.
+    extract_quality_checklist) ONCE for this document -- the real fix for a
+    confirmed determinism gap (see that method's own docstring): asking the
+    scoring LLM to derive categoryScores names live, per job run, is not a
+    cross-run guarantee. Extracting once here and storing the result on
+    every chunk makes the checklist a property of the ingested document
+    itself. None (the default) skips extraction entirely -- e.g. for a
+    caller with no LLM client wired up, or a re-ingest that intentionally
+    doesn't need to re-run it. A failure here is an enhancement failing,
+    never a reason to fail the whole ingest -- caught and logged, falling
+    back to `None` (extraction never happened), same tolerant philosophy as
+    every other best-effort KB enhancement in this codebase."""
     verify_supported_content(name, content)
 
     file_hash = hashlib.sha256(content).hexdigest()
@@ -93,6 +111,22 @@ def _store_document(
 
     chunks = chunk_canonical_doc(doc)
 
+    # Extracted ONCE per document, here at ingestion time -- not per
+    # scoring call (see this function's own docstring + extract_quality_
+    # checklist's docstring for the determinism problem this fixes). Reuses
+    # the already-chunked text rather than re-rendering the document a
+    # second time. `None` (extraction skipped or failed) is stored
+    # as-is -- distinguishable from `[]` (extraction ran, found nothing),
+    # see KbVectorStore.get_quality_checklist's own docstring.
+    quality_checklist: list[str] | None = None
+    if checklist_client is not None:
+        try:
+            full_text = "\n\n".join(chunk.text for chunk in chunks)
+            quality_checklist = checklist_client.extract_quality_checklist(full_text)
+        except Exception as exc:  # noqa: BLE001 - checklist extraction must never fail an ingest
+            logger.warning("Quality-checklist extraction failed for %s: %s", name, exc)
+            quality_checklist = None
+
     # Embed every chunk BEFORE deleting the file's old chunks or upserting
     # any new one: if embedding fails partway through, the old chunks stay
     # intact and the stored file_hash still reflects the last successfully
@@ -112,6 +146,7 @@ def _store_document(
             chunk_index=chunk.chunk_index,
             file_hash=file_hash,
             doc_type=doc_type,
+            quality_checklist=quality_checklist,
         )
 
     return IngestResult(
@@ -132,13 +167,15 @@ def ingest_document_from_url(
     embed_client,
     vector_store: KbVectorStore,
     describe_figure: Callable[[bytes], str] | None = None,
+    checklist_client: object | None = None,
 ) -> IngestResult:
     """Ingests a single document from a SharePoint/OneDrive sharing URL via
     the Microsoft Graph client: validate -> fetch metadata + bytes -> verify
     size/content-type -> skip if unchanged -> parse -> chunk -> embed ->
     store. This handles exactly one document, so any failure (ValueError,
     GraphApiError) propagates to the caller instead of being collected into
-    a failures list. `describe_figure` -- see _store_document's docstring."""
+    a failures list. `describe_figure`/`checklist_client` -- see
+    _store_document's docstring."""
     validate_share_url(url)
 
     item = graph_client.get_drive_item(url)
@@ -150,9 +187,38 @@ def ingest_document_from_url(
         raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
 
     result = _store_document(
-        item.name, item.id, content, user_id, doc_type, embed_client, vector_store, describe_figure=describe_figure
+        item.name, item.id, content, user_id, doc_type, embed_client, vector_store,
+        describe_figure=describe_figure, checklist_client=checklist_client,
     )
     return result.model_copy(update={"mime_type": item.mime_type})
+
+
+def ingest_folder_child(
+    name: str,
+    item_id: str,
+    download_url: str,
+    doc_type: str | None,
+    user_id: str,
+    graph_client,
+    embed_client,
+    vector_store: KbVectorStore,
+    describe_figure: Callable[[bytes], str] | None = None,
+    checklist_client: object | None = None,
+) -> IngestResult:
+    """Ingests exactly one file the caller already saw via
+    browse_shared_folder/browse_subfolder, addressed by its pre-signed Graph
+    download URL rather than a sharing URL -- lets a reviewer ingest a
+    single file straight from the tree view without that file's own share
+    link (browsing alone never produces one). Same fetch -> verify -> store
+    pipeline as ingest_folder_from_url's per-child path, for one
+    caller-chosen file instead of every child in a folder."""
+    content = graph_client.fetch_child_content(download_url)
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
+    return _store_document(
+        name, item_id, content, user_id, doc_type, embed_client, vector_store,
+        describe_figure=describe_figure, checklist_client=checklist_client,
+    )
 
 
 def _ingest_folder_children(
@@ -167,6 +233,7 @@ def _ingest_folder_children(
     recursive: bool,
     results: list[FolderIngestFileResult],
     describe_figure: Callable[[bytes], str] | None = None,
+    checklist_client: object | None = None,
 ) -> None:
     """Processes one folder level's children in place, appending to
     `results`. Files are stored via `_store_document`; folders are
@@ -199,6 +266,7 @@ def _ingest_folder_children(
                 recursive,
                 results,
                 describe_figure=describe_figure,
+                checklist_client=checklist_client,
             )
             continue
 
@@ -213,7 +281,8 @@ def _ingest_folder_children(
                 raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
 
             result = _store_document(
-                child.name, child.id, content, user_id, doc_type, embed_client, vector_store, describe_figure=describe_figure
+                child.name, child.id, content, user_id, doc_type, embed_client, vector_store,
+                describe_figure=describe_figure, checklist_client=checklist_client,
             )
             results.append(
                 FolderIngestFileResult(
@@ -239,6 +308,7 @@ def ingest_folder_from_url(
     vector_store: KbVectorStore,
     recursive: bool = False,
     describe_figure: Callable[[bytes], str] | None = None,
+    checklist_client: object | None = None,
 ) -> FolderIngestResult:
     """Ingests every file inside a shared SharePoint/OneDrive folder.
     Single-level by default; when `recursive` is set, descends into
@@ -246,7 +316,7 @@ def ingest_folder_from_url(
     the non-recursive path's simple per-file isolation, just applied
     per-subtree too). One file's or one subfolder's failure never aborts
     the rest of the batch; each outcome is collected and returned.
-    `describe_figure` -- see _store_document's docstring."""
+    `describe_figure`/`checklist_client` -- see _store_document's docstring."""
     validate_share_url(url)
     children = graph_client.list_folder_children(url)
 
@@ -255,6 +325,7 @@ def ingest_folder_from_url(
     # a folder found 5 levels down from the root is listed but not descended
     # into (its own children, at depth 6, are never fetched).
     _ingest_folder_children(
-        children, "", 1, user_id, doc_type, graph_client, embed_client, vector_store, recursive, results, describe_figure=describe_figure
+        children, "", 1, user_id, doc_type, graph_client, embed_client, vector_store, recursive,
+        results, describe_figure=describe_figure, checklist_client=checklist_client,
     )
     return FolderIngestResult(files=results)

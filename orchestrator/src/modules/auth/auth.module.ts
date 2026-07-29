@@ -1,16 +1,41 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
+import { PrismaClient } from '@prisma/client';
 import { AdoPatProvider } from './ado-pat.provider';
 import { AuthController } from './auth.controller';
+import { SessionService } from './session.service';
+import { AuthGuard } from './auth.guard';
+import { CredentialVaultService } from './credential-vault.service';
+import { AdoCredentialResolver } from './ado-credential.resolver';
 
-/** DocGen-pattern login: the ADO org URL + PAT ARE the identity and the
- * permissions (see AdoPatProvider) — no app-level session/JWT, no Azure AD,
- * no User table. Dropped in the login-simplification round (see CR4 of the
- * corrected work plan) after confirming the prior JWT session token was
- * issued but never consumed by any route guard. */
+/**
+ * Real server sessions (Session table, httpOnly cookie) layered on top of
+ * the unchanged ADO-PAT-as-identity login (AdoPatProvider) -- the PAT
+ * itself is now vaulted (CredentialVaultService, ExternalCredential table),
+ * not resent by the browser on every write. AuthGuard is exported so
+ * AppModule can register it globally via APP_GUARD; SessionService and
+ * CredentialVaultService are exported so other modules (jobs, kb) can
+ * resolve @CurrentUser() and the caller's stored ADO credential without a
+ * circular import back through this module's own controller.
+ */
 @Module({
+  imports: [ConfigModule],
   controllers: [AuthController],
-  providers: [AdoPatProvider, Reflector],
-  exports: [AdoPatProvider],
+  providers: [
+    { provide: PrismaClient, useValue: new PrismaClient() },
+    AdoPatProvider,
+    SessionService,
+    AuthGuard,
+    Reflector,
+    {
+      provide: CredentialVaultService,
+      inject: [PrismaClient, ConfigService],
+      useFactory: (prisma: PrismaClient, config: ConfigService) =>
+        new CredentialVaultService(prisma, config.get<string>('CREDENTIAL_ENC_KEY')!, config.get<string>('CREDENTIAL_ENC_KEY_PREVIOUS')),
+    },
+    AdoCredentialResolver,
+  ],
+  exports: [AdoPatProvider, SessionService, AuthGuard, CredentialVaultService, AdoCredentialResolver],
 })
 export class AuthModule {}
