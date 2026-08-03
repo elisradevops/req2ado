@@ -3,9 +3,19 @@ import { render, screen } from '@testing-library/react';
 import { TagChips } from './TagChips';
 
 describe('TagChips', () => {
-  it('renders one chip per tag', () => {
+  it('renders one chip per tag, humanized (not raw snake_case)', () => {
     render(<TagChips tags={['functional', 'safety']} />);
-    expect(screen.getByText('functional')).toBeInTheDocument();
-    expect(screen.getByText('safety')).toBeInTheDocument();
+    expect(screen.getByText('Functional')).toBeInTheDocument();
+    expect(screen.getByText('Safety')).toBeInTheDocument();
+  });
+
+  it('falls back to the raw tag string for an unknown tag', () => {
+    render(<TagChips tags={['some_new_tag']} />);
+    expect(screen.getByText('some_new_tag')).toBeInTheDocument();
+  });
+
+  it('renders nothing when tags is undefined', () => {
+    const { container } = render(<TagChips tags={undefined} />);
+    expect(container.querySelectorAll('span').length).toBe(0);
   });
 });

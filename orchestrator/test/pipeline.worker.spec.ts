@@ -227,6 +227,7 @@ describe('runPipelineJob', () => {
       ],
       fakeIdempotencyService,
       expect.any(Function),
+      expect.any(Function),
     );
   });
 
@@ -305,6 +306,7 @@ describe('runPipelineJob', () => {
       ],
       fakeIdempotencyService,
       expect.any(Function),
+      expect.any(Function),
     );
   });
 
@@ -362,6 +364,7 @@ describe('runPipelineJob', () => {
       ],
       fakeIdempotencyService,
       expect.any(Function),
+      expect.any(Function),
     );
   });
 
@@ -406,6 +409,7 @@ describe('runPipelineJob', () => {
       ],
       fakeIdempotencyService,
       expect.any(Function),
+      expect.any(Function),
     );
   });
 
@@ -448,6 +452,7 @@ describe('runPipelineJob', () => {
         }),
       ],
       fakeIdempotencyService,
+      expect.any(Function),
       expect.any(Function),
     );
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
@@ -572,6 +577,7 @@ describe('runPipelineJob', () => {
       'parse',
       'infer_hierarchy_start',
       'generate_requirements_done',
+      'dedup_check',
       'diff_ready',
     ]);
   });

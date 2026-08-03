@@ -71,7 +71,7 @@ describe('NodeDetailPanel', () => {
     );
     expect(screen.getByText('Req Title')).toBeInTheDocument();
     expect(screen.getByText('Req body')).toBeInTheDocument();
-    expect(screen.getByText('functional')).toBeInTheDocument();
+    expect(screen.getByText('Functional')).toBeInTheDocument();
   });
 
   it('renders the description as real markdown -- bold/lists show as formatted elements, not literal ** or -', () => {

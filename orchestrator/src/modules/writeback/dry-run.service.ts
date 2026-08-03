@@ -158,8 +158,46 @@ export class DryRunService {
     nodes: DryRunTreeNode[],
     idempotencyService: IdempotencyService,
     dedupCheck?: (text: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+    // Optional -- previously this burst (confirmed live: ~543 calls on a
+    // real job) published NO progress signal at all, so the UI showed
+    // nothing for however long it took. `completed`/`total` (not a
+    // percentage) so a caller decides its own display format; called after
+    // EVERY node rather than throttled, since the redis publish this
+    // drives is trivial next to the per-node idempotency/embed/Chroma
+    // round trips already happening.
+    onProgress?: (completed: number, total: number) => void,
   ): Promise<DryRunDiffEntry[]> {
+    let completedCount = 0;
     const settled = await mapWithConcurrency(nodes, this.concurrency, async (node) => {
+      try {
+        return await this.diffOneNode(node, idempotencyService, dedupCheck);
+      } finally {
+        completedCount += 1;
+        onProgress?.(completedCount, nodes.length);
+      }
+    });
+
+    // Preserve the exact pre-parallelization failure semantics: an
+    // unguarded idempotencyService.lookup throwing previously propagated
+    // straight out of this loop, aborting the whole diff() call (and the
+    // pipeline job with it). mapWithConcurrency instead captures a
+    // per-item exception into a rejected result rather than letting it
+    // propagate on its own -- re-throw the first one here so a DB failure
+    // still fails the job exactly as it did before, instead of silently
+    // degrading into a partial/incomplete diff.
+    const firstError = settled.find((r) => r.status === 'rejected');
+    if (firstError && firstError.status === 'rejected') {
+      throw firstError.reason;
+    }
+    return settled.map((r) => (r as { status: 'fulfilled'; value: DryRunDiffEntry }).value);
+  }
+
+  private async diffOneNode(
+    node: DryRunTreeNode,
+    idempotencyService: IdempotencyService,
+    dedupCheck?: (text: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+  ): Promise<DryRunDiffEntry> {
+    {
       const existingAdoId = await idempotencyService.lookup(
         node.sourceHash,
         node.customerId,
@@ -212,20 +250,6 @@ export class DryRunService {
         sourceRef: node.sourceRef, childType: node.childType,
         traceLinks: node.traceLinks,
       };
-    });
-
-    // Preserve the exact pre-parallelization failure semantics: an
-    // unguarded idempotencyService.lookup throwing previously propagated
-    // straight out of this loop, aborting the whole diff() call (and the
-    // pipeline job with it). mapWithConcurrency instead captures a
-    // per-item exception into a rejected result rather than letting it
-    // propagate on its own -- re-throw the first one here so a DB failure
-    // still fails the job exactly as it did before, instead of silently
-    // degrading into a partial/incomplete diff.
-    const firstError = settled.find((r) => r.status === 'rejected');
-    if (firstError && firstError.status === 'rejected') {
-      throw firstError.reason;
     }
-    return settled.map((r) => (r as { status: 'fulfilled'; value: DryRunDiffEntry }).value);
   }
 }

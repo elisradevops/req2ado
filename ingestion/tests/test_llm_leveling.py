@@ -1,11 +1,47 @@
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table
-from app.leveling.llm_leveling import SectionAnalysisClient, _grounding_score, build_survey_tree, render_section
+from app.leveling.llm_leveling import (
+    SectionAnalysisClient,
+    _detect_conflicting_duplicates,
+    _ensure_root_features_have_epic_parent,
+    _grounding_score,
+    _group_label_became_a_node,
+    _regroup_disconnected_roots,
+    _repair_group_attachment,
+    build_survey_tree,
+    render_section,
+)
+from app.leveling.narration_publisher import LevelingProgress
+from app.leveling.table_groups import TableGroupInfo
 from app.workitem.model import KbCitationRelevance
-from app.workitem.model import RequirementTag, WorkItemMode, WorkItemType
+from app.workitem.model import RequirementQualityIssue, RequirementTag, WorkItemMode, WorkItemNode, WorkItemType
 
 
 def _sr(path: str) -> SourceRef:
     return SourceRef(document_path=path, start_offset=0, end_offset=10)
+
+
+def _node(
+    local_id: str, node_type: WorkItemType, parent_local_id: str | None, title: str,
+) -> WorkItemNode:
+    """Minimal WorkItemNode builder for unit-testing the repair/matching
+    functions directly, bypassing build_survey_tree -- used where the
+    table-driven deterministic path (id_hierarchy/id_tree_builder) now
+    claims any table that would otherwise reach these functions via the
+    LLM path, making an end-to-end table fixture unable to exercise them
+    any more (see each converted test's own docstring)."""
+    ref = _sr("x.docx")
+    return WorkItemNode(
+        local_id=local_id, type=node_type, parent_local_id=parent_local_id, title=title,
+        description=title, source_ref=ref, mode=WorkItemMode.SURVEY,
+    )
+
+
+def _req_node(local_id: str, description: str) -> WorkItemNode:
+    return WorkItemNode(
+        local_id=local_id, type=WorkItemType.REQUIREMENT, parent_local_id=None,
+        title=description[:60], description=description, source_ref=_sr("x.docx"),
+        mode=WorkItemMode.SURVEY,
+    )
 
 
 def _force_multi_branch(monkeypatch) -> None:
@@ -75,17 +111,22 @@ class FakeSectionAnalysisClient:
 
     def analyze_section(
         self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
-        topic_count: int | None = None,
+        topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
     ) -> tuple[list[dict], bool]:
         self.calls.append({
             "section_text": section_text, "kb_context": kb_context,
             "whole_document": whole_document, "topic_count": topic_count,
+            "table_group_hints": table_group_hints,
+            "expected_root_count": expected_root_count,
         })
         return self._nodes, self._truncated
 
     def analyze_section_agentic(
         self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
         read_other_section_fn=None, whole_document: bool = False, topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
         self.agentic_calls.append(
             {
@@ -96,6 +137,8 @@ class FakeSectionAnalysisClient:
                 "read_other_section_fn": read_other_section_fn,
                 "whole_document": whole_document,
                 "topic_count": topic_count,
+                "table_group_hints": table_group_hints,
+                "expected_root_count": expected_root_count,
             }
         )
         return self._agentic_nodes, self._agentic_citations, self._truncated
@@ -399,6 +442,391 @@ def test_build_survey_tree_passes_a_per_branch_topic_count_on_the_multi_branch_p
     build_survey_tree(_two_branch_doc(), fake)
     assert len(fake.calls) == 2
     assert all(call["topic_count"] == 1 for call in fake.calls)
+
+
+def _table_with_group(rows: list[list[str]], path: str = "survey_input.txt", offset: int = 0) -> Table:
+    return Table(
+        id="t0", rows=rows,
+        source_ref=SourceRef(document_path=path, start_offset=offset, end_offset=offset + 10),
+    )
+
+
+def test_build_survey_tree_builds_a_qualifying_table_deterministically() -> None:
+    # Superseded by the deterministic table-driven builder
+    # (id_hierarchy.rows_from_table / _detect_deterministic_subtrees): a
+    # table whose rows qualify as a real ID hierarchy (2+ children, no
+    # "shall" on the group row) is now built directly from the table's
+    # own structure -- it is claimed entirely before the LLM path ever
+    # sees it, so table_group_hints/topic_count's table-floor contribution
+    # (the OLD hint-based mechanism this test used to pin) no longer fires
+    # for a table that fully qualifies; see
+    # test_build_survey_tree_ignores_a_non_conforming_table_for_topic_count
+    # for the still-live non-qualifying-table case.
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "External Source Detection"],
+                    ["1.1.1", "The system shall detect X."],
+                    ["1.1.2", "The system shall detect Y."],
+                ])
+            ]
+        }
+    )
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+    # table_group_hints/topic_count's table contribution no longer fires --
+    # llm_doc.tables is empty by the time the LLM path runs.
+    assert fake.calls[0]["topic_count"] == 0
+    assert fake.calls[0]["table_group_hints"] is None
+    group_node = next(n for n in tree.nodes if n.title == "External Source Detection")
+    assert group_node.type == WorkItemType.FEATURE
+    children = [n for n in tree.nodes if n.parent_local_id == group_node.local_id]
+    assert {n.title for n in children} == {"The system shall detect X.", "The system shall detect Y."}
+
+
+def test_build_survey_tree_does_not_count_a_one_child_group_toward_topic_count() -> None:
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "External Source Detection"],
+                    ["1.1.1", "The system shall detect X."],
+                ])
+            ]
+        }
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert fake.calls[0]["topic_count"] == 0  # zero headings, no qualifying group -- unchanged
+    assert fake.calls[0]["table_group_hints"] is None
+
+
+def test_build_survey_tree_ignores_a_non_conforming_table_for_topic_count() -> None:
+    # Matches the existing throwaway 2-cell-non-ID table fixture already
+    # used elsewhere in this file -- confirms zero regression for every
+    # other test that attaches a trivial, non-conforming table.
+    doc = _small_doc().model_copy(update={"tables": [_table_with_group([["a", "b"]])]})
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert fake.calls[0]["topic_count"] == 0
+    assert fake.calls[0]["table_group_hints"] is None
+
+
+def test_build_survey_tree_scopes_table_group_floor_per_branch(monkeypatch) -> None:
+    # A single Table's rows are never split across branches (whole tables
+    # are bucketed by source_ref, see _partition_tables_by_branch) -- the
+    # correct multi-branch fixture is two SEPARATE tables, each landing in
+    # a different branch, each with its own qualifying group. Real,
+    # DISTINCT per-block offsets are required here (unlike _two_branch_doc,
+    # whose blocks all share the same dummy _sr() offset and so can't
+    # actually distinguish branch boundaries for table partitioning).
+    _force_multi_branch(monkeypatch)
+    path = "two_branch_survey_input.txt"
+
+    def sr(start: int, end: int) -> SourceRef:
+        return SourceRef(document_path=path, start_offset=start, end_offset=end)
+
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=sr(0, 5)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=sr(5, 15)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=sr(100, 105)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=sr(105, 115)),
+        ],
+        tables=[
+            _table_with_group(
+                [
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "Display Group"],
+                    ["1.1.1", "The system shall do A."],
+                    ["1.1.2", "The system shall do B."],
+                ],
+                path=path, offset=10,  # inside branch 1's range (0-15), before branch 2 starts at 100
+            ),
+            _table_with_group(
+                [
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "Audio Group"],
+                    ["1.1.1", "The system shall do C."],
+                    ["1.1.2", "The system shall do D."],
+                ],
+                path=path, offset=110,  # inside branch 2's range (100-115)
+            ),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+    assert len(fake.calls) == 2
+    # Both tables now fully qualify for the deterministic table-driven
+    # builder (id_hierarchy.rows_from_table) and are claimed before either
+    # branch's LLM call -- table_group_hints/the table's own topic_count
+    # contribution no longer fire; each branch's own heading is the only
+    # remaining contribution.
+    assert fake.calls[0]["table_group_hints"] is None
+    assert fake.calls[1]["table_group_hints"] is None
+    assert fake.calls[0]["topic_count"] == 1
+    assert fake.calls[1]["topic_count"] == 1
+    assert {n.title for n in tree.nodes if n.type == WorkItemType.FEATURE} >= {"Display Group", "Audio Group"}
+
+
+def test_build_survey_tree_derives_expected_root_count_from_top_level_groups() -> None:
+    # Superseded by the deterministic table-driven builder for a table
+    # that fully qualifies: "Television Receiver"/"Remote Control" are now
+    # built as 2 real, independent deterministic root nodes directly (not
+    # steered toward via an LLM prompt hint) -- expected_root_count's own
+    # table contribution no longer fires since the table is claimed before
+    # the LLM path runs at all.
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1", "Television Receiver"],
+                    ["1.1", "The system shall do A."],
+                    ["1.2", "The system shall do B."],
+                    ["2", "Remote Control"],
+                    ["2.1", "The system shall do C."],
+                    ["2.2", "The system shall do D."],
+                ])
+            ]
+        }
+    )
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+    assert fake.calls[0]["expected_root_count"] is None
+    det_roots = [
+        n for n in tree.nodes
+        if n.parent_local_id is None and n.title in ("Television Receiver", "Remote Control")
+    ]
+    assert len(det_roots) == 2
+
+
+def test_build_survey_tree_leaves_expected_root_count_none_with_a_single_top_level_group() -> None:
+    # Fewer than 2 independent top-level groups -- today's default
+    # single-root prompt wording must stay in effect (None, not 1).
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1", "Television Receiver"],
+                    ["1.1", "The system shall do A."],
+                    ["1.2", "The system shall do B."],
+                ])
+            ]
+        }
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert fake.calls[0]["expected_root_count"] is None
+
+
+def test_build_survey_tree_builds_the_group_deterministically_regardless_of_llm_output() -> None:
+    # Superseded by the deterministic table-driven builder: a qualifying
+    # table's group node is now built directly from the table's own
+    # structure, independent of whatever the LLM returns for the
+    # document's residual (non-table) content -- the old "coverage
+    # warning" CATCH mechanism (steer via prompt hint, warn if steering
+    # failed) is no longer needed for a table that fully qualifies, since
+    # there's no LLM steering involved in producing it at all.
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "External Source Detection"],
+                    ["1.1.1", "The system shall detect X."],
+                    ["1.1.2", "The system shall detect Y."],
+                ])
+            ]
+        }
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Unrelated Feature", "text": "Shall do X.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert any(n.title == "External Source Detection" for n in tree.nodes)
+    assert not any("did not produce a distinctly-titled node" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_does_not_warn_when_a_qualifying_group_did_become_a_node() -> None:
+    # Positive control: the coverage check must NOT fire just because a
+    # table group exists -- only when no node's title reflects it.
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "External Source Detection"],
+                    ["1.1.1", "The system shall detect X."],
+                    ["1.1.2", "The system shall detect Y."],
+                ])
+            ]
+        }
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "External Source Detection", "text": "Shall do X.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Detect X", "text": "Shall detect X.", "tags": []},
+            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n0", "title": "Detect Y", "text": "Shall detect Y.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert not any("did not produce a distinctly-titled node" in w for w in tree.warnings)
+
+
+def test_repair_group_attachment_resolves_the_correct_parent_despite_common_word_ambiguity() -> None:
+    # Confirmed live against the real TV-receiver/remote-control document:
+    # a short, common-word label like "Audio Control" fractional-overlap
+    # matched 6 different unrelated node titles (any title containing
+    # EITHER "audio" or "control" alone was enough under the old
+    # threshold-based check), which silently defeated the repair entirely
+    # -- it correctly refused to guess among 6 candidates, so it never
+    # fired for exactly the case it exists to fix. Full-word-containment +
+    # fewest-extra-words tie-break must resolve this to the one node
+    # containing BOTH words with the least noise ("Audio Control Settings"),
+    # not treat it as ambiguous.
+    #
+    # Tested directly against _repair_group_attachment rather than via
+    # build_survey_tree: a table this fully-qualifying is now claimed
+    # entirely by the deterministic table-driven builder
+    # (id_hierarchy.rows_from_table) before the LLM path ever runs, so an
+    # end-to-end table fixture can no longer exercise this LLM-output
+    # repair function at all -- it only ever fires for a table that does
+    # NOT fully qualify for the deterministic path but still has some
+    # residual table_groups signal, or (unexercised here) a future
+    # heading-hierarchy caller.
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "Audio Control Settings"),
+        _node("n1", WorkItemType.REQUIREMENT, "n0", "Adjust Volume Level"),
+        _node("n2", WorkItemType.FEATURE, None, "Remote-Control Buttons"),
+        _node("n3", WorkItemType.REQUIREMENT, "n2", "Select Audio Output Device"),
+        # Model attached "Mute Behavior" under the wrong Feature (n2).
+        _node("n4", WorkItemType.REQUIREMENT, "n2", "Mute Behavior"),
+        _node("n5", WorkItemType.REQUIREMENT, "n4", "Restore Volume on Unmute"),
+        _node("n6", WorkItemType.REQUIREMENT, "n4", "Volume Change While Muted"),
+    ]
+    table_groups = [
+        TableGroupInfo(label="Mute Behavior", child_count=2, id_text="1.2", suggested_type="Requirement", parent_label="Audio Control"),
+    ]
+    warnings: list[str] = []
+    _repair_group_attachment(nodes, table_groups, "", warnings)
+    mute_node = next(n for n in nodes if n.title == "Mute Behavior")
+    audio_control_node = next(n for n in nodes if n.title == "Audio Control Settings")
+    assert mute_node.parent_local_id == audio_control_node.local_id
+    assert any("attached under the wrong ancestor" in w for w in warnings)
+
+
+def test_repair_group_attachment_repairs_a_group_attached_to_the_wrong_ancestor() -> None:
+    # Confirmed live: a group can be correctly detected, typed, and split
+    # into real child nodes, yet still land under the WRONG parent (e.g.
+    # "Mute and Volume-Restore Behavior" under "Channel Scan" instead of
+    # "Audio Control"). The table's own ID hierarchy already knows the
+    # correct parent ("Audio Control") -- this repairs it deterministically
+    # after generation rather than trusting the model's own placement.
+    #
+    # Tested directly (see the previous test's docstring for why an
+    # end-to-end table fixture can no longer reach this function).
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "Audio Control"),
+        _node("n1", WorkItemType.REQUIREMENT, "n0", "Adjust Volume Level"),
+        _node("n2", WorkItemType.FEATURE, None, "Channel Scan"),
+        _node("n3", WorkItemType.REQUIREMENT, "n2", "Scan Channels"),
+        # Model attached "Mute Behavior" under Channel Scan (n2) instead
+        # of its real parent Audio Control (n0) -- the bug under test.
+        _node("n4", WorkItemType.REQUIREMENT, "n2", "Mute Behavior"),
+        _node("n5", WorkItemType.REQUIREMENT, "n4", "Restore Volume on Unmute"),
+        _node("n6", WorkItemType.REQUIREMENT, "n4", "Volume Change While Muted"),
+    ]
+    table_groups = [
+        TableGroupInfo(label="Mute Behavior", child_count=2, id_text="1.2", suggested_type="Requirement", parent_label="Audio Control"),
+    ]
+    warnings: list[str] = []
+    _repair_group_attachment(nodes, table_groups, "", warnings)
+    mute_node = next(n for n in nodes if n.title == "Mute Behavior")
+    audio_control_node = next(n for n in nodes if n.title == "Audio Control")
+    assert mute_node.parent_local_id == audio_control_node.local_id
+    assert any("attached under the wrong ancestor" in w for w in warnings)
+
+
+def test_build_survey_tree_does_not_repair_attachment_when_already_correct() -> None:
+    # True no-op when the model already attached the group correctly --
+    # must never fire a repair or warning just because a parent_label exists.
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "Audio Control"],
+                    ["1.1.1", "The system shall control volume."],
+                    ["1.1.2", "Mute Behavior"],
+                    ["1.1.2.a", "The system shall restore volume on unmute."],
+                    ["1.1.2.b", "The system shall allow volume changes while muted."],
+                ])
+            ]
+        }
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Audio Control", "text": "Shall handle audio.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Adjust Volume Level", "text": "Shall control volume.", "tags": []},
+            {"temp_id": "n4", "type": "Requirement", "parent_temp_id": "n0", "title": "Mute Behavior", "text": "General mute behavior.", "tags": []},
+            {"temp_id": "n5", "type": "Requirement", "parent_temp_id": "n4", "title": "Restore Volume on Unmute", "text": "Shall restore volume.", "tags": []},
+            {"temp_id": "n6", "type": "Requirement", "parent_temp_id": "n4", "title": "Volume Change While Muted", "text": "Shall allow changes.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert not any("attached under the wrong ancestor" in w for w in tree.warnings)
+
+
+def test_repair_group_attachment_does_not_repair_when_correct_parent_node_is_missing() -> None:
+    # The group's own node exists, but the node matching its known correct
+    # parent_label was never generated at all -- nothing correct to
+    # re-parent to. Must not guess/synthesize; the separate coverage-check
+    # warning already reports Audio Control as missing.
+    #
+    # Tested directly (see the first converted test's docstring above for
+    # why an end-to-end table fixture can no longer reach this function).
+    nodes = [
+        # "Audio Control" itself never became its own node.
+        _node("n1", WorkItemType.REQUIREMENT, None, "Adjust Volume Level"),
+        _node("n4", WorkItemType.REQUIREMENT, "n1", "Mute Behavior"),
+        _node("n5", WorkItemType.REQUIREMENT, "n4", "Restore Volume on Unmute"),
+        _node("n6", WorkItemType.REQUIREMENT, "n4", "Volume Change While Muted"),
+    ]
+    table_groups = [
+        TableGroupInfo(label="Mute Behavior", child_count=2, id_text="1.2", suggested_type="Requirement", parent_label="Audio Control"),
+    ]
+    warnings: list[str] = []
+    _repair_group_attachment(nodes, table_groups, "", warnings)
+    mute_node = next(n for n in nodes if n.title == "Mute Behavior")
+    volume_control_node = next(n for n in nodes if n.title == "Adjust Volume Level")
+    # Left exactly where the model put it -- no repair attempted.
+    assert mute_node.parent_local_id == volume_control_node.local_id
+    assert not any("attached under the wrong ancestor" in w for w in warnings)
+
+
+def test_group_label_became_a_node_is_not_fooled_by_a_single_common_word() -> None:
+    # Confirmed live: the pre-fix fractional-overlap check silently
+    # swallowed 2 of 3 genuinely-missing Epics because each shared exactly
+    # ONE common word with an unrelated node's title ("settings" /
+    # "description") -- the coverage-check warning must now correctly fire.
+    #
+    # Tested directly against _group_label_became_a_node (see the first
+    # converted test's docstring above for why an end-to-end table
+    # fixture can no longer reach this via build_survey_tree for a fully
+    # qualifying table).
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "Audio Control Settings"),
+        _node("n1", WorkItemType.REQUIREMENT, "n0", "Do A"),
+    ]
+    assert not _group_label_became_a_node("System Settings and User Experience", nodes)
 
 
 def test_build_survey_tree_passes_whole_document_true_on_the_agentic_path_too(monkeypatch) -> None:
@@ -826,6 +1254,47 @@ def test_build_survey_tree_excludes_a_synthesized_bridge_feature_from_epic_featu
     assert synthesized[0].quality_score is None
 
 
+def test_score_epics_and_features_excludes_a_per_epic_bridge_feature() -> None:
+    # Regression: the deterministic-path reparent fix (Phase 1) changed a
+    # per-Epic bridge Feature's local_id from the shared
+    # "..._synth_feature" to "..._synth_feature_{epic_local_id}" (see
+    # ensure_bridge_feature) so each Epic gets its OWN bridge instead of
+    # sharing one document-global bridge -- but the scoring-exclusion
+    # check here originally used `.endswith("synth_feature")`, which no
+    # longer matches the per-Epic variant (it ends with the epic's own
+    # id, not the literal string "synth_feature"). Confirmed this would
+    # have silently sent every per-Epic bridge Feature to real Epic/
+    # Feature quality review, scoring a mechanically-inserted node as if
+    # it were a real authorial decision.
+    from app.leveling.llm_leveling import _score_epics_and_features
+
+    class _RecordingScoringClient:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def score_epics_and_features_for_document(self, nodes_by_id):
+            self.calls.append(nodes_by_id)
+            return {node_id: {"score": 50, "categoryScores": {}} for node_id in nodes_by_id}
+
+    epic = WorkItemNode(
+        local_id="det0_h1", type=WorkItemType.EPIC, parent_local_id=None, title="Epic A",
+        description="Epic A", source_ref=_sr("x.docx"), mode=WorkItemMode.SURVEY,
+    )
+    per_epic_bridge = WorkItemNode(
+        local_id="det0_synth_feature_det0_h1", type=WorkItemType.FEATURE, parent_local_id="det0_h1",
+        title="(auto-grouped) ...", description="Auto-inserted grouping Feature -- ...",
+        source_ref=_sr("x.docx"), mode=WorkItemMode.SURVEY,
+    )
+    scoring_client = _RecordingScoringClient()
+    warnings: list[str] = []
+
+    _score_epics_and_features([epic, per_epic_bridge], scoring_client, warnings, None, None, 0, 0)
+
+    assert len(scoring_client.calls) == 1
+    assert "det0_synth_feature_det0_h1" not in scoring_client.calls[0]
+    assert per_epic_bridge.quality_score is None
+
+
 def test_build_survey_tree_epic_feature_scoring_is_a_noop_without_scoring_client() -> None:
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     by_id = {node.local_id: node for node in tree.nodes}
@@ -1024,12 +1493,21 @@ def test_build_survey_tree_calls_scoring_once_for_the_whole_document_not_once_pe
     # §2c: scoring moved to whole-document scope -- a multi-branch document
     # gets ONE batched scoring call over every branch's requirement nodes
     # combined (chunked only past _SCORING_CHUNK_NODE_COUNT), not one call
-    # per branch as before.
+    # per branch as before. br0_n1/br1_n1 share IDENTICAL description text
+    # (FakeSectionAnalysisClient's default fixture), so cross-branch
+    # deduplication-before-chunking (see _score_all_requirements' own
+    # docstring) means only ONE of them is actually sent to the model --
+    # the other gets the same result copied over, not a second LLM
+    # judgment of the same text.
     _force_multi_branch(monkeypatch)
     scoring_client = FakeScoringClient()
-    build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), scoring_client)
+    tree = build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), scoring_client)
     assert len(scoring_client.calls) == 1
-    assert set(scoring_client.calls[0].keys()) == {"br0_n1", "br1_n1"}
+    assert len(scoring_client.calls[0]) == 1  # only one representative sent, not both duplicates
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["br0_n1"].quality_score is not None
+    assert by_id["br1_n1"].quality_score is not None
+    assert by_id["br0_n1"].quality_score == by_id["br1_n1"].quality_score  # fanned out, same result
 
 
 def test_build_survey_tree_defaults_an_invalid_analysis_type_to_requirement() -> None:
@@ -1900,7 +2378,8 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
 
         def analyze_section(
             self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
-            topic_count: int | None = None,
+            topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
+            expected_root_count: int | None = None,
         ) -> tuple[list[dict], bool]:
             self.call_count += 1
             # §3.3: doesn't-fit branches get the compact document outline
@@ -1948,7 +2427,8 @@ def test_build_survey_tree_progress_callback_falls_back_to_an_excerpt_when_the_s
     tree_doc = _small_doc()  # two plain PARAGRAPH blocks, no HEADING
     events = []
     build_survey_tree(tree_doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
-    assert events[0].section_label == "Display"  # first block's own text
+    first_section_event = next(e for e in events if e.branch_index is not None)
+    assert first_section_event.section_label == "Display"  # first block's own text
 
 
 def test_build_survey_tree_progress_callback_falls_back_to_a_tables_caption_for_a_blocks_empty_branch() -> None:
@@ -1960,7 +2440,8 @@ def test_build_survey_tree_progress_callback_falls_back_to_a_tables_caption_for_
     )
     events = []
     build_survey_tree(doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
-    assert events[0].section_label == "Sheet1"
+    first_section_event = next(e for e in events if e.branch_index is not None)
+    assert first_section_event.section_label == "Sheet1"
 
 
 def test_build_survey_tree_fires_progress_callback_for_each_real_step_boundary() -> None:
@@ -1973,9 +2454,13 @@ def test_build_survey_tree_fires_progress_callback_for_each_real_step_boundary()
     )
 
     phases = [e.phase for e in events]
-    assert phases == ["analyze_section", "section_complete"]
-    assert all(e.branch_index == 0 for e in events)
-    assert all(e.branch_count == 1 for e in events)
+    # preparing_analysis fires first (see its own docstring) -- whole-tree,
+    # no section/branch context yet, so it's excluded from the per-section
+    # branch_index/branch_count assertions below.
+    assert phases == ["preparing_analysis", "analyze_section", "section_complete"]
+    section_events = events[1:]
+    assert all(e.branch_index == 0 for e in section_events)
+    assert all(e.branch_count == 1 for e in section_events)
     assert all(e.kb_grounded is False for e in events)
 
 
@@ -1996,6 +2481,7 @@ def test_build_survey_tree_progress_callback_fires_score_requirements_when_scori
     # §2c: scoring is a whole-document pass that runs AFTER every branch's
     # own section_complete (scoring is no longer per-branch/inline).
     assert [e.phase for e in events] == [
+        "preparing_analysis",
         "analyze_section",
         "section_complete",
         "score_requirements",
@@ -2300,10 +2786,13 @@ def test_build_survey_tree_reparents_a_requirement_directly_under_an_epic() -> N
     assert any("re-parented under Feature n1" in w for w in tree.warnings)
 
 
-def test_build_survey_tree_reparents_a_requirement_chained_under_another_requirement() -> None:
-    # Requirement -> Requirement -> Feature: the repair must walk UP the
-    # chain to find the real Feature ancestor, not just check the immediate
-    # parent's type and give up.
+def test_build_survey_tree_keeps_a_child_requirement_parented_under_its_requirement() -> None:
+    # Real gap fixed here, live-tested against a reference CMMI structure:
+    # a Requirement parented under ANOTHER Requirement is a legitimate child
+    # Requirement (exceptions/conditions/follow-up behavior of a general
+    # parent, e.g. "Automatic Switching to an Active Source" ->
+    # "Multiple Active Sources"/"User Dismisses the Suggestion") -- must be
+    # preserved, not re-parented up to the nearest Feature.
     fake = FakeSectionAnalysisClient(
         nodes=[
             {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "text": "A capability.", "tags": []},
@@ -2313,8 +2802,32 @@ def test_build_survey_tree_reparents_a_requirement_chained_under_another_require
     )
     tree = build_survey_tree(_small_doc(), fake)
     by_id = {node.local_id: node for node in tree.nodes}
-    assert by_id["n2"].parent_local_id == "n0"
-    assert any("re-parented under Feature n0" in w for w in tree.warnings)
+    assert by_id["n1"].parent_local_id == "n0"
+    assert by_id["n2"].parent_local_id == "n1"  # child Requirement preserved, not re-parented
+    assert not any("re-parented" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_reparents_a_requirement_chain_that_bypasses_every_feature() -> None:
+    # A Requirement->Requirement chain is only valid when it still resolves
+    # to a real Feature ancestor somewhere up the chain -- if it instead
+    # runs straight into an Epic (skipping Feature entirely), that's still
+    # a genuine violation and must be repaired by walking up to the
+    # nearest real Feature elsewhere in the branch.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "System outcome.", "tags": []},
+            {"temp_id": "n1", "type": "Feature", "parent_temp_id": "n0", "text": "A capability.", "tags": []},
+            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n0", "text": "Shall do X.", "tags": []},
+            {"temp_id": "n3", "type": "Requirement", "parent_temp_id": "n2", "text": "Shall do Y.", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    by_id = {node.local_id: node for node in tree.nodes}
+    # n2 (parented directly under the Epic) gets repaired to the real Feature.
+    assert by_id["n2"].parent_local_id == "n1"
+    # n3 (parented under n2, now a Requirement -- valid) is untouched.
+    assert by_id["n3"].parent_local_id == "n2"
+    assert any("re-parented under Feature n1" in w for w in tree.warnings)
 
 
 def test_build_survey_tree_synthesizes_a_feature_when_no_real_feature_exists_at_all() -> None:
@@ -2394,3 +2907,523 @@ def test_build_survey_tree_synthesizes_one_feature_shared_by_three_root_requirem
     assert by_id["n0"].parent_local_id == synthesized[0].local_id
     assert by_id["n1"].parent_local_id == synthesized[0].local_id
     assert by_id["n2"].parent_local_id == synthesized[0].local_id
+
+
+# ---------------------------------------------------------------------------
+# Deterministic hierarchy detection pipeline (_detect_deterministic_subtrees)
+# ---------------------------------------------------------------------------
+
+
+def _structural_heading_doc() -> CanonicalDoc:
+    """A pure structural-heading document (convention 3 -- no ID text,
+    just heading_level nesting + real shall content) that should be
+    handled ENTIRELY deterministically, with zero residual content for
+    the LLM path."""
+    path = "structural_survey_input.txt"
+
+    def h(block_id: str, level: int, text: str) -> Block:
+        return Block(id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=_sr(path))
+
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            h("b0", 1, "System Domain"),
+            h("b1", 2, "The system shall do A."),
+            h("b2", 2, "The system shall do B."),
+            h("b3", 2, "The system shall do C."),
+            h("b4", 2, "The system shall do D."),
+            h("b5", 2, "The system shall do E."),
+        ],
+    )
+
+
+def test_build_survey_tree_folds_a_real_figure_caption_deterministically() -> None:
+    # Confirmed real bug (user-reported, live review): a FIGURE-kind
+    # block's raw wire-format text ("[FIGURE: {caption or 'none'}]") was
+    # being folded into a deterministic node's description completely
+    # unfiltered, unlike the LLM-analysis path's render_section (which
+    # already uses _figure_line for exactly this). A real caption must
+    # still fold in, just formatted the same way render_section does.
+    path = "structural_survey_input.txt"
+    doc = _structural_heading_doc().model_copy(
+        update={
+            "blocks": [
+                *_structural_heading_doc().blocks,
+                Block(
+                    id="fig0", kind=BlockKind.FIGURE,
+                    text="[FIGURE: a wiring diagram of the power supply]", source_ref=_sr(path),
+                ),
+            ],
+        }
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
+    assert "> Figure: a wiring diagram of the power supply" in last_leaf.description
+    assert "[FIGURE:" not in last_leaf.description  # raw wire format never leaks through
+
+
+def test_build_survey_tree_drops_a_placeholder_figure_caption_deterministically() -> None:
+    # The "none" case -- no real caption (vision disabled, or the vision
+    # call found nothing) -- must be silently omitted, never leaked into
+    # the description as the literal placeholder string.
+    path = "structural_survey_input.txt"
+    doc = _structural_heading_doc().model_copy(
+        update={
+            "blocks": [
+                *_structural_heading_doc().blocks,
+                Block(
+                    id="fig0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path),
+                ),
+            ],
+        }
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
+    assert "[FIGURE" not in last_leaf.description
+    assert "none" not in last_leaf.description.lower()
+
+
+def test_build_survey_tree_never_calls_the_llm_for_a_pure_deterministic_document() -> None:
+    class ExplodingClient:
+        model = None
+
+        def analyze_section(self, *a, **k):
+            raise AssertionError("LLM analysis must not be called for a pure-deterministic doc")
+
+        def analyze_section_agentic(self, *a, **k):
+            raise AssertionError("LLM analysis must not be called for a pure-deterministic doc")
+
+    tree = build_survey_tree(_structural_heading_doc(), ExplodingClient())
+    assert len(tree.nodes) == 6
+    assert any("no language-model analysis was needed" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_merges_deterministic_and_llm_nodes_as_sibling_roots() -> None:
+    # A hybrid document: the structural-heading subtree is fully
+    # deterministic, but the residual paragraph blocks still need the LLM
+    # path -- both must land as independent, un-nested roots. Distinct
+    # block ids from _structural_heading_doc()'s own ("b0".."b5") --
+    # real loaders never reuse ids across a document, and a collision
+    # would wrongly filter the residual too (a real block's id doubling
+    # as a claimed heading's id purely by fixture coincidence). Placed
+    # BEFORE the heading blocks, not after: span-claiming greedily folds
+    # every trailing non-heading block following the LAST claimed heading
+    # (there being no further heading to bound the span) -- content
+    # placed before the FIRST heading is the position guaranteed to stay
+    # outside every span.
+    path = "hybrid_survey_input.txt"
+    residual = [
+        Block(id="r0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)),
+        Block(
+            id="r1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.",
+            source_ref=_sr(path),
+        ),
+    ]
+    doc = _structural_heading_doc().model_copy(
+        update={"blocks": residual + _structural_heading_doc().blocks}
+    )
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+    det_root = next(n for n in tree.nodes if n.title == "System Domain")
+    llm_root = next(n for n in tree.nodes if n.title == "Display")
+    assert det_root.parent_local_id is None
+    assert llm_root.parent_local_id is None
+    assert any("were built deterministically" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_retrieves_kb_context_on_the_pure_deterministic_path() -> None:
+    # Confirmed real gap: the pure-deterministic guard previously hardcoded
+    # kb_context=None/kb_citations=[] for scoring unconditionally, even when
+    # real user_id/embed_client/vector_store deps were supplied -- the org's
+    # own KB grounding never applied to a deterministically-built document.
+    # Same end-to-end pattern as
+    # test_build_survey_tree_end_to_end_injects_real_ingested_kb_chunk
+    # (real KbVectorStore, no monkeypatching), just against a pure-
+    # deterministic document instead of an LLM-analyzed one.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    store = KbVectorStore(persist_path="/tmp/unused-in-this-test-det-kb")
+    store.upsert_chunk(
+        chunk_id="source-1:spec.docx:0",
+        embedding=[1.0, 0.0, 0.0],
+        text="The system shall be reviewed against this reference material.",
+        user_id="Project\\Area1",
+        source_file="spec.docx",
+        source_id="source-1",
+        chunk_index=0,
+        file_hash="hash-1",
+    )
+
+    class _FakeEmbedClient:
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 0.0, 0.0]]
+
+    tree = build_survey_tree(
+        _structural_heading_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=_FakeEmbedClient(),
+        vector_store=store,
+    )
+    assert [c.source_file for c in tree.kb_citations] == ["spec.docx"]
+
+
+def test_build_survey_tree_infers_trace_links_on_the_pure_deterministic_path() -> None:
+    # Confirmed real gap: the pure-deterministic guard previously hardcoded
+    # trace_links=[] unconditionally, even when a real link_type_client was
+    # supplied -- a real cross-reference in the source text (e.g. "see
+    # Requirement 282393") never resolved to an actual TraceLink. Whole-tree
+    # trace-link inference must now run here exactly like the LLM-analysis
+    # path.
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[{"source_node_id": "det0_h1", "reference_name": "Rel", "target_ref": "det0_h1_1"}]
+    )
+    catalog = [{"reference_name": "Rel", "name": "Related", "semantic_hint": None}]
+    tree = build_survey_tree(
+        _structural_heading_doc(), FakeSectionAnalysisClient(),
+        link_type_client=fake_client, link_type_catalog=catalog,
+    )
+    assert len(fake_client.calls) == 1
+    assert any(link.source_local_id == "det0_h1" for link in tree.trace_links)
+
+
+def test_build_survey_tree_is_a_true_no_op_when_nothing_qualifies() -> None:
+    # A document matching none of the 3 conventions -- llm_doc must be the
+    # exact same object as doc (a true no-op, not a copy), and no
+    # provenance warning should fire.
+    doc = _small_doc()
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+    assert not any("built deterministically" in w for w in tree.warnings)
+
+
+# ---------------------------------------------------------------------------
+# _detect_conflicting_duplicates (near-duplicate clustering -> conflict
+# detection) -- real capability gap: this codebase previously had NO
+# conflict/contradiction detection anywhere.
+# ---------------------------------------------------------------------------
+
+
+class _FakeEmbedClientForConflicts:
+    """Deterministic fake: returns a hand-picked embedding per text so
+    cosine similarity is fully controlled by the test, not a real model."""
+
+    def __init__(self, embedding_by_text: dict[str, list[float]]) -> None:
+        self._embedding_by_text = embedding_by_text
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [self._embedding_by_text[t] for t in texts]
+
+
+class _FakeConflictClient:
+    def __init__(self, verdict: dict) -> None:
+        self._verdict = verdict
+        self.calls: list[dict[str, str]] = []
+
+    def judge_duplicate_cluster(self, texts_by_id: dict[str, str]) -> dict:
+        self.calls.append(texts_by_id)
+        return self._verdict
+
+
+def test_detect_conflicting_duplicates_is_a_noop_without_both_clients() -> None:
+    nodes = [_req_node("n0", "A"), _req_node("n1", "A")]
+    warnings: list[str] = []
+    verdict = {"verdict": "contradictory", "conflicting_values": []}
+    _detect_conflicting_duplicates(nodes, None, _FakeConflictClient(verdict), warnings)
+    embed_client = _FakeEmbedClientForConflicts({"A": [1.0]})
+    _detect_conflicting_duplicates(nodes, embed_client, None, warnings)
+    assert warnings == []
+    assert nodes[0].quality_issues == []
+
+
+def test_detect_conflicting_duplicates_flags_a_contradictory_cluster() -> None:
+    text_a = "Power-supply efficiency shall be at least 85%."
+    text_b = "Power-supply efficiency shall be at-least 93%."
+    nodes = [_req_node("n0", text_a), _req_node("n1", text_b)]
+    embed_client = _FakeEmbedClientForConflicts({text_a: [1.0, 0.0], text_b: [0.99, 0.01]})
+    verdict = {"verdict": "contradictory", "conflicting_values": ["85%", "93%"]}
+    conflict_client = _FakeConflictClient(verdict)
+    warnings: list[str] = []
+
+    _detect_conflicting_duplicates(nodes, embed_client, conflict_client, warnings)
+
+    assert len(conflict_client.calls) == 1
+    assert set(conflict_client.calls[0].keys()) == {"n0", "n1"}
+    assert any("conflicting values" in w for w in warnings)
+    for node in nodes:
+        assert RequirementQualityIssue.CONFLICTING_VALUE in node.quality_issues
+    # Confirmed real gap (user-reported): a bare local_id list means
+    # nothing to a reviewer -- the real TITLE must appear too, alongside a
+    # stable, parseable "[localId: ...]" marker the frontend uses to build
+    # a real jump-to-node link.
+    conflict_warning = next(w for w in warnings if "conflicting values" in w)
+    assert nodes[0].title in conflict_warning
+    assert nodes[1].title in conflict_warning
+    assert "[localId: n0]" in conflict_warning
+    assert "[localId: n1]" in conflict_warning
+
+
+def test_detect_conflicting_duplicates_emits_progress_narration_before_the_llm_call() -> None:
+    # Real gap this closes: previously this pass ran completely silently --
+    # confirmed live, a multi-minute gap with zero narration between
+    # scoring finishing and trace-link inference starting on a large
+    # document, exactly where this embed+judge pass runs.
+    text_a = "Power-supply efficiency shall be at least 85%."
+    text_b = "Power-supply efficiency shall be at-least 93%."
+    nodes = [_req_node("n0", text_a), _req_node("n1", text_b)]
+    embed_client = _FakeEmbedClientForConflicts({text_a: [1.0, 0.0], text_b: [0.99, 0.01]})
+    conflict_client = _FakeConflictClient({"verdict": "redundant", "conflicting_values": []})
+    events: list[LevelingProgress] = []
+
+    _detect_conflicting_duplicates(
+        nodes, embed_client, conflict_client, [], events.append, 42, 7,
+    )
+
+    assert len(events) == 1
+    assert events[0].phase == "detect_conflicts"
+    assert events[0].blocks_total == 42
+    assert events[0].branch_count == 7
+
+
+def test_detect_conflicting_duplicates_emits_no_narration_when_it_is_a_noop() -> None:
+    nodes = [_req_node("n0", "Only one candidate.")]
+    events: list[LevelingProgress] = []
+
+    _detect_conflicting_duplicates(nodes, None, None, [], events.append)
+
+    assert events == []
+
+
+def test_detect_conflicting_duplicates_leaves_a_redundant_cluster_untagged() -> None:
+    text_a = "The system shall log every login attempt."
+    text_b = "The system shall log every login attempt."
+    nodes = [_req_node("n0", text_a), _req_node("n1", text_b)]
+    # both nodes share the same text
+    embed_client = _FakeEmbedClientForConflicts({text_a: [1.0, 0.0]})
+    conflict_client = _FakeConflictClient({"verdict": "redundant", "conflicting_values": []})
+    warnings: list[str] = []
+
+    _detect_conflicting_duplicates(nodes, embed_client, conflict_client, warnings)
+
+    assert len(conflict_client.calls) == 1
+    assert warnings == []
+    for node in nodes:
+        assert RequirementQualityIssue.CONFLICTING_VALUE not in node.quality_issues
+
+
+def test_detect_conflicting_duplicates_never_clusters_dissimilar_nodes() -> None:
+    text_a = "The power supply shall accept 28VDC input."
+    text_b = "The system shall support LDAP authentication."
+    nodes = [_req_node("n0", text_a), _req_node("n1", text_b)]
+    embed_client = _FakeEmbedClientForConflicts({text_a: [1.0, 0.0], text_b: [0.0, 1.0]})
+    conflict_client = _FakeConflictClient({"verdict": "contradictory", "conflicting_values": []})
+    warnings: list[str] = []
+
+    _detect_conflicting_duplicates(nodes, embed_client, conflict_client, warnings)
+
+    assert conflict_client.calls == []  # never clustered -- orthogonal embeddings
+    assert warnings == []
+
+
+def test_detect_conflicting_duplicates_is_fail_open_on_embed_error() -> None:
+    class RaisingEmbedClient:
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("boom")
+
+    nodes = [_req_node("n0", "A"), _req_node("n1", "B")]
+    warnings: list[str] = []
+    conflict_client = _FakeConflictClient({"verdict": "contradictory", "conflicting_values": []})
+    _detect_conflicting_duplicates(nodes, RaisingEmbedClient(), conflict_client, warnings)
+    assert nodes[0].quality_issues == []
+
+
+# ---------------------------------------------------------------------------
+# _regroup_disconnected_roots (topical root regrouping) -- real gap:
+# a document with no single top heading produces many disconnected root
+# nodes, unlike a holistic LLM-authored hierarchy which naturally groups
+# them under one coherent tree.
+# ---------------------------------------------------------------------------
+
+
+class _FakeGroupingClient:
+    def __init__(self, result: dict) -> None:
+        self._result = result
+        self.calls: list[dict[str, str]] = []
+
+    def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+        self.calls.append(titles_by_id)
+        return self._result
+
+
+def test_regroup_disconnected_roots_is_a_noop_without_a_client() -> None:
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+    ]
+    warnings: list[str] = []
+    _regroup_disconnected_roots(nodes, "regroup_", None, warnings)
+    assert nodes[0].parent_local_id is None
+    assert nodes[1].parent_local_id is None
+    assert warnings == []
+
+
+def test_regroup_disconnected_roots_is_a_noop_with_fewer_than_two_roots() -> None:
+    nodes = [_node("n0", WorkItemType.FEATURE, None, "Only Root")]
+    client = _FakeGroupingClient({"groups": []})
+    warnings: list[str] = []
+    _regroup_disconnected_roots(nodes, "regroup_", client, warnings)
+    assert client.calls == []
+
+
+def test_regroup_disconnected_roots_emits_progress_narration_before_the_llm_call() -> None:
+    # Real gap this closes: previously this pass (77 disconnected roots on a
+    # real document) ran completely silently, indistinguishable from a
+    # frozen/stalled job.
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+    ]
+    client = _FakeGroupingClient({"groups": []})
+    events: list[LevelingProgress] = []
+
+    _regroup_disconnected_roots(nodes, "regroup_", client, [], events.append, 99, 12)
+
+    assert len(events) == 1
+    assert events[0].phase == "regroup_roots"
+    assert events[0].blocks_total == 99
+    assert events[0].branch_count == 12
+
+
+def test_regroup_disconnected_roots_emits_no_narration_when_it_is_a_noop() -> None:
+    nodes = [_node("n0", WorkItemType.FEATURE, None, "Only Root")]
+    events: list[LevelingProgress] = []
+
+    _regroup_disconnected_roots(nodes, "regroup_", None, [], events.append)
+
+    assert events == []
+
+
+def test_regroup_disconnected_roots_groups_matching_roots_under_a_new_feature() -> None:
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+        _node("n2", WorkItemType.EPIC, None, "Unrelated Standalone Domain"),
+    ]
+    client = _FakeGroupingClient(
+        {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]}
+    )
+    warnings: list[str] = []
+
+    _regroup_disconnected_roots(nodes, "regroup_", client, warnings)
+
+    group_node = next(n for n in nodes if n.title == "VPX Utility & Management Signals")
+    assert group_node.type == WorkItemType.FEATURE  # no Epic member -> Feature, not Epic
+    assert group_node.parent_local_id is None  # the new group is itself a root
+    assert group_node.local_id.startswith("regroup_synth_group_")
+    n0 = next(n for n in nodes if n.local_id == "n0")
+    n1 = next(n for n in nodes if n.local_id == "n1")
+    n2 = next(n for n in nodes if n.local_id == "n2")
+    assert n0.parent_local_id == group_node.local_id
+    assert n1.parent_local_id == group_node.local_id
+    assert n2.parent_local_id is None  # left untouched -- not mentioned in any group
+    assert any("Grouped 2" in w for w in warnings)
+
+
+def test_regroup_disconnected_roots_uses_epic_type_when_any_member_is_an_epic() -> None:
+    # CMMI validity: a Feature can never parent an Epic, so a group
+    # containing an Epic-typed member must itself be an Epic.
+    nodes = [
+        _node("n0", WorkItemType.EPIC, None, "Domain A"),
+        _node("n1", WorkItemType.FEATURE, None, "Domain B"),
+    ]
+    group_result = {"groups": [{"title": "Combined Domain", "member_ids": ["n0", "n1"]}]}
+    client = _FakeGroupingClient(group_result)
+    _regroup_disconnected_roots(nodes, "regroup_", client, [])
+    group_node = next(n for n in nodes if n.title == "Combined Domain")
+    assert group_node.type == WorkItemType.EPIC
+
+
+def test_regroup_disconnected_roots_ignores_an_invented_member_id() -> None:
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+    ]
+    # "does-not-exist" is not a real root id -- the group should still form
+    # from the two real ids, the invented one simply dropped.
+    client = _FakeGroupingClient(
+        {"groups": [{"title": "Group", "member_ids": ["n0", "n1", "does-not-exist"]}]}
+    )
+    _regroup_disconnected_roots(nodes, "regroup_", client, [])
+    group_node = next(n for n in nodes if n.title == "Group")
+    assert {n.parent_local_id for n in nodes if n.local_id in ("n0", "n1")} == {group_node.local_id}
+
+
+def test_regroup_disconnected_roots_skips_a_single_member_group() -> None:
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+    ]
+    client = _FakeGroupingClient({"groups": [{"title": "Lonely Group", "member_ids": ["n0"]}]})
+    _regroup_disconnected_roots(nodes, "regroup_", client, [])
+    assert not any(n.title == "Lonely Group" for n in nodes)
+    assert nodes[0].parent_local_id is None
+
+
+def test_regroup_disconnected_roots_is_fail_open() -> None:
+    class RaisingGroupingClient:
+        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+            raise RuntimeError("boom")
+
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+    ]
+    warnings: list[str] = []
+    _regroup_disconnected_roots(nodes, "regroup_", RaisingGroupingClient(), warnings)
+    assert nodes[0].parent_local_id is None
+    assert nodes[1].parent_local_id is None
+
+
+# ---------------------------------------------------------------------------
+# _ensure_root_features_have_epic_parent -- real gap (user-reported, live
+# review): a mixed bag of Epic-typed and bare Feature-typed roots sitting
+# as inconsistent siblings after topical regrouping.
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_root_features_have_epic_parent_is_a_noop_with_no_epic_anywhere() -> None:
+    # A document whose whole tree is uniformly Feature-topped (no Epic tier
+    # at all) is a legitimate, already-tested shape -- must be left alone.
+    nodes = [_node("n0", WorkItemType.FEATURE, None, "Lone Domain")]
+    warnings: list[str] = []
+    _ensure_root_features_have_epic_parent(nodes, "regroup_", warnings)
+    assert nodes[0].parent_local_id is None
+    assert warnings == []
+
+
+def test_ensure_root_features_have_epic_parent_wraps_orphan_features_when_an_epic_exists() -> None:
+    nodes = [
+        _node("epic0", WorkItemType.EPIC, None, "Real Epic Domain"),
+        _node("n0", WorkItemType.FEATURE, None, "Orphan Feature A"),
+        _node("n1", WorkItemType.FEATURE, None, "Orphan Feature B"),
+    ]
+    warnings: list[str] = []
+    _ensure_root_features_have_epic_parent(nodes, "regroup_", warnings)
+    catch_all = next(n for n in nodes if n.local_id == "regroup_synth_root_epic")
+    assert catch_all.type == WorkItemType.EPIC
+    assert catch_all.parent_local_id is None
+    n0 = next(n for n in nodes if n.local_id == "n0")
+    n1 = next(n for n in nodes if n.local_id == "n1")
+    epic0 = next(n for n in nodes if n.local_id == "epic0")
+    assert n0.parent_local_id == catch_all.local_id
+    assert n1.parent_local_id == catch_all.local_id
+    assert epic0.parent_local_id is None  # a real root Epic is left untouched
+    assert any("2 root Feature(s) had no Epic ancestor" in w for w in warnings)
+
+
+def test_ensure_root_features_have_epic_parent_is_a_noop_without_orphan_features() -> None:
+    nodes = [_node("epic0", WorkItemType.EPIC, None, "Real Epic Domain")]
+    warnings: list[str] = []
+    _ensure_root_features_have_epic_parent(nodes, "regroup_", warnings)
+    assert warnings == []
+    assert not any(n.local_id == "regroup_synth_root_epic" for n in nodes)

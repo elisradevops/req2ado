@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, type OnModuleDestroy } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
@@ -9,6 +16,7 @@ import type { DryRunDiffEntry } from '../writeback/dry-run.service';
 import { mapWithConcurrency } from './map-with-concurrency';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import { toAdoDescriptionHtml } from './description-html';
+import type { JobEventsPublisher } from './job-events.publisher';
 
 export interface SubmitJobInput {
   areaPath: string;
@@ -55,7 +63,7 @@ export interface JobSummary {
 }
 
 @Injectable()
-export class JobsService implements OnModuleDestroy {
+export class JobsService implements OnModuleInit, OnModuleDestroy {
   private readonly queue: Queue;
 
   constructor(
@@ -72,8 +80,65 @@ export class JobsService implements OnModuleDestroy {
     // for resubmit, not acceptance: an upload larger than this still
     // processes normally, it just isn't retained (no JobSourceFile row).
     private readonly maxStoredSourceBytes: number = 25 * 1024 * 1024,
+    // Optional and trailing (not required alongside prisma/ingestionClient
+    // above) so every existing test call site constructing JobsService
+    // directly with a short positional arg list keeps working unchanged --
+    // onModuleInit() below tolerates its absence (skips the SSE publish
+    // step, still updates Job.status/AuditEntry) since a unit test
+    // exercising unrelated methods has no reason to also wire up Redis.
+    private readonly jobEventsPublisher?: JobEventsPublisher,
   ) {
     this.queue = new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any });
+  }
+
+  /**
+   * Reconciles Job rows against BullMQ's actual queue state on orchestrator
+   * boot. Job.status (Postgres) and the BullMQ queue (Redis) are two
+   * separate stores with no automatic reconciliation between them --
+   * confirmed live: a Redis restart (e.g. `docker-compose up --build`
+   * recreating the redis container with no persistent volume) wipes every
+   * in-flight BullMQ job while Postgres's Job rows survive untouched, so a
+   * job whose worker no longer exists keeps reading 'pending'/'running'/
+   * 'writing' forever -- indistinguishable from a real in-progress job
+   * until someone notices it never moves. 'writing' (mid ADO write-back) is
+   * included deliberately: same reasoning as cancel()'s own restriction
+   * would normally exclude it, but a 'writing' job with NO queue entry at
+   * all can't possibly still be writing -- that combination only happens
+   * when the worker that owned it is already gone, not mid-write.
+   *
+   * Runs once at startup, not on a timer: this fixes the "stuck forever"
+   * failure mode (a crash/restart that already happened before this
+   * process started), not a live race against a currently-healthy worker.
+   *
+   * Fails soft: this is a startup enhancement, not a hard dependency for
+   * the app to come up -- a transient DB/Redis hiccup at the exact moment
+   * of boot must not crash the whole orchestrator process (confirmed real:
+   * this broke several e2e suites that bootstrap the full AppModule
+   * against no live Postgres/Redis at all before this fix added the
+   * try/catch). Same "enhancement, never fails the caller" convention as
+   * app.kb.retrieval.retrieve_context on the ingestion side.
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      const orphanCandidates = await this.prisma.job.findMany({
+        where: { status: { in: ['pending', 'running', 'writing'] } },
+      });
+      for (const job of orphanCandidates) {
+        const bullJob = await this.queue.getJob(job.id);
+        if (bullJob) continue; // still tracked by a real queue entry, not orphaned
+        await this.prisma.job.update({ where: { id: job.id }, data: { status: 'failed' } });
+        await this.prisma.auditEntry.create({
+          data: {
+            jobId: job.id,
+            message: `Job marked failed on startup: no matching queue entry found for a '${job.status}' job (worker/queue restarted mid-run)`,
+          },
+        });
+        await this.jobEventsPublisher?.publish(job.id, 'failed');
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console -- no structured logger in this module yet
+      console.error('JobsService.onModuleInit: orphaned-job reconciliation failed, continuing startup:', error);
+    }
   }
 
   /**
@@ -606,6 +671,12 @@ export class JobsService implements OnModuleDestroy {
       throw new Error(`Job ${id} is not in a confirmable state`);
     }
     await this.prisma.job.update({ where: { id }, data: { status: 'writing' } });
+    // Previously confirm() had no JobEventsPublisher at all -- structurally
+    // incapable of publishing anything, and JobDetail.tsx had no render
+    // branch for status === 'writing' either (contrast with the explicit
+    // 'pending' branch), so a job mid real-ADO-write showed NOTHING in the
+    // UI for however long the create/link/trace-link phases below took.
+    await this.jobEventsPublisher?.publish(id, 'writing');
 
     // Each diff entry carries its own sourceHash/customerId (per-node content
     // hash), NOT job.sourceHash (a whole-file hash) — see DryRunDiffEntry's
@@ -743,6 +814,13 @@ export class JobsService implements OnModuleDestroy {
       // wire boundary.
       let realType: (type: string) => string = (type) => type;
       if (toCreate.length > 0) {
+        await this.jobEventsPublisher?.publishNarration(id, {
+          phase: 'writing',
+          writeSubPhase: 'discover_types',
+          blocksDone: 0,
+          blocksTotal: toCreate.length,
+          message: 'Resolving work-item type/field configuration for this project',
+        });
         const project = job.areaPath.split('\\')[0];
         const workItemTypeCategories = await this.mcpClient.discoverWorkItemTypeCategories(project, credential);
         realType = (type: string): string => workItemTypeCategories[type as keyof typeof workItemTypeCategories] ?? type;
@@ -769,6 +847,7 @@ export class JobsService implements OnModuleDestroy {
       // bounded concurrency instead of the previous one-ADO-round-trip-at-
       // a-time sequential loop. mapWithConcurrency preserves array order in
       // its results regardless of completion order.
+      let createProgress = 0;
       const createResults = await mapWithConcurrency(toCreate, this.writeConcurrency, async (entry) => {
         const fields: Record<string, string> = {
           'System.Title': entry.title,
@@ -833,6 +912,14 @@ export class JobsService implements OnModuleDestroy {
           create: { jobId: id, localId: entry.localId, adoWorkItemId: created.id },
           update: { adoWorkItemId: created.id },
         });
+        createProgress += 1;
+        void this.jobEventsPublisher?.publishNarration(id, {
+          phase: 'writing',
+          writeSubPhase: 'create',
+          blocksDone: createProgress,
+          blocksTotal: toCreate.length,
+          message: `Creating work items in ADO -- ${createProgress} of ${toCreate.length}`,
+        });
         return created;
       });
 
@@ -889,6 +976,7 @@ export class JobsService implements OnModuleDestroy {
         if (alreadyLinkedLocalIds.has(entry.localId)) return false;
         return adoIdByLocalId.has(entry.localId) && adoIdByLocalId.has(entry.parentLocalId as string);
       });
+      let linkProgress = 0;
       const linkResults = await mapWithConcurrency(toLink, this.writeConcurrency, async (entry) => {
         await this.mcpClient.linkParentChild(
           adoIdByLocalId.get(entry.localId) as number,
@@ -900,6 +988,14 @@ export class JobsService implements OnModuleDestroy {
         await this.prisma.createdItemMapping.update({
           where: { jobId_localId: { jobId: id, localId: entry.localId } },
           data: { linked: true },
+        });
+        linkProgress += 1;
+        void this.jobEventsPublisher?.publishNarration(id, {
+          phase: 'writing',
+          writeSubPhase: 'link_parents',
+          blocksDone: linkProgress,
+          blocksTotal: toLink.length,
+          message: `Linking parent/child relations -- ${linkProgress} of ${toLink.length}`,
         });
       });
       const firstLinkError = linkResults.find((r) => r.status === 'rejected');
@@ -934,6 +1030,7 @@ export class JobsService implements OnModuleDestroy {
           toTraceLink.push({ sourceAdoId, targetAdoId, referenceName: link.referenceName });
         }
       }
+      let traceLinkProgress = 0;
       await mapWithConcurrency(toTraceLink, this.writeConcurrency, async (link) => {
         // Best-effort: a trace-link write failure (rejected rel, deleted
         // crossJob target, transient network error) must not abort confirm()
@@ -947,6 +1044,15 @@ export class JobsService implements OnModuleDestroy {
         } catch (error) {
           // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
           console.error(`Trace-link write failed for ${link.sourceAdoId} -> ${link.targetAdoId}:`, error);
+        } finally {
+          traceLinkProgress += 1;
+          void this.jobEventsPublisher?.publishNarration(id, {
+            phase: 'writing',
+            writeSubPhase: 'trace_links',
+            blocksDone: traceLinkProgress,
+            blocksTotal: toTraceLink.length,
+            message: `Writing trace links -- ${traceLinkProgress} of ${toTraceLink.length}`,
+          });
         }
       });
     } catch (error) {

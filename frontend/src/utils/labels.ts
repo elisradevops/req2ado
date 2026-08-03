@@ -7,9 +7,13 @@ export interface QualityIssueLabel {
   description: string;
 }
 
-// The closed set of 7 issue codes an LLM judgment can flag on a requirement
-// (ingestion/app/workitem/model.py:41-56). Descriptions explain what to fix,
-// not just name the code.
+// The closed set of issue codes an LLM judgment can flag on a requirement
+// (ingestion/app/workitem/model.py's RequirementQualityIssue). Descriptions
+// explain what to fix, not just name the code. The 6 entries after
+// missing_rationale were added alongside a new completeness_as_requirement
+// scoring dimension -- the original 7 all presupposed the input was already
+// a well-formed requirement statement, with no way to flag a bare fragment
+// or table-cell value as not being one at all.
 export const QUALITY_ISSUE_LABELS: Record<string, QualityIssueLabel> = {
   ambiguous: {
     label: 'Ambiguous',
@@ -39,10 +43,61 @@ export const QUALITY_ISSUE_LABELS: Record<string, QualityIssueLabel> = {
     label: 'Missing rationale',
     description: 'No stated reason this requirement exists -- add a rationale so reviewers can judge whether it still applies.',
   },
+  not_a_requirement: {
+    label: 'Not a requirement',
+    description: 'Missing a subject, a modal (shall/should/must), and a verifiable predicate -- this reads as a label or fragment, not an obligation.',
+  },
+  fragment: {
+    label: 'Fragment',
+    description: 'A short extracted phrase or table value, not a complete requirement statement -- rewrite it as one, or remove it.',
+  },
+  placeholder: {
+    label: 'Placeholder',
+    description: 'References an unresolved placeholder from the source document (e.g. a literal "ReqID XXXX" or "??") -- resolve it to a real value or cross-reference.',
+  },
+  open_item_tbd: {
+    label: 'Open item / TBD',
+    description: 'Marked as an open question or unresolved issue in the source document -- not yet a committed requirement.',
+  },
+  rationale_as_requirement: {
+    label: 'Rationale, not a requirement',
+    description: 'Explains WHY a design choice was made rather than stating an obligation -- move it to support a nearby requirement instead.',
+  },
+  conflicting_value: {
+    label: 'Conflicting value',
+    description: 'The source document states two different values for what looks like the same parameter -- resolve the conflict before this can be finalized.',
+  },
 };
 
 export function qualityIssueLabel(code: string): QualityIssueLabel {
   return QUALITY_ISSUE_LABELS[code] ?? { label: code, description: '' };
+}
+
+// The closed set of category tags SURVEY assigns to a requirement
+// (ingestion/app/workitem/model.py's RequirementTag). Most read fine
+// title-cased on their own, but a few (regulatory vs operation vs
+// maintenance) are easy to conflate without a real definition -- same
+// {label, description} shape as QUALITY_ISSUE_LABELS so TagChips can reuse
+// IssueChips' own Tooltip-wrapping pattern verbatim.
+export const REQUIREMENT_TAG_LABELS: Record<string, QualityIssueLabel> = {
+  functional: { label: 'Functional', description: 'Describes something the system must DO.' },
+  non_functional: {
+    label: 'Non-functional',
+    description: 'Describes a quality/constraint on the system (performance, reliability, etc.), not a specific behavior.',
+  },
+  interface: { label: 'Interface', description: 'Defines a boundary/connection point between the system and something else.' },
+  performance: { label: 'Performance', description: 'A measurable speed, throughput, capacity, or timing requirement.' },
+  regulatory: { label: 'Regulatory', description: 'Required by an external standard, law, or certification body.' },
+  safety: { label: 'Safety', description: 'Prevents harm to people, equipment, or mission -- typically has independent verification.' },
+  security: { label: 'Security', description: 'Protects against unauthorized access, tampering, or data loss.' },
+  operation: { label: 'Operation', description: 'Describes how the system behaves during normal, in-service use.' },
+  maintenance: { label: 'Maintenance', description: 'Describes servicing, repair, or upkeep activity, not normal operation.' },
+  feature: { label: 'Feature', description: 'A user-facing capability, rather than an internal/technical constraint.' },
+  behavior: { label: 'Behavior', description: 'Describes a specific response the system produces to a given condition or input.' },
+};
+
+export function requirementTagLabel(tag: string): QualityIssueLabel {
+  return REQUIREMENT_TAG_LABELS[tag] ?? { label: tag, description: '' };
 }
 
 export const RELEVANCE_LABELS: Record<string, string> = {

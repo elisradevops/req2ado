@@ -17,6 +17,8 @@ const STAGE_LABELS: Record<JobStage, string> = {
   generate_requirements_start: 'Generating requirements...',
   generate_requirements_done: 'Finalizing...',
   diff_ready: 'Diff ready.',
+  dedup_check: 'Checking for existing/duplicate work items...',
+  writing: 'Writing work items to Azure DevOps...',
   failed: 'Job failed.',
   cancelled: 'Job cancelled.',
 };
@@ -31,13 +33,22 @@ const STAGE_LABELS: Record<JobStage, string> = {
 const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   describe_figure: 'Describing figures',
   parse_done: 'Parsing complete',
+  preparing_analysis: 'Preparing analysis',
   analyze_section: 'Analyzing and synthesizing requirements',
   infer_hierarchy: 'Analyzing structure',
   generate_requirements: 'Generating requirements',
   score_requirements: 'Scoring quality',
   score_requirements_done: 'Scoring complete',
   section_complete: 'Section complete',
+  detect_conflicts: 'Checking for conflicts',
+  regroup_roots: 'Grouping by topic',
   infer_trace_links: 'Resolving trace links',
+  // Never actually looked up (both have branchCount 0 -- see the
+  // SectionStepList render guard, gated on branchCount > 0 -- so no
+  // per-section row ever reads these), present only so this Record stays
+  // exhaustive.
+  dedup_check: 'Checking for existing/duplicate work items',
+  writing: 'Writing to Azure DevOps',
 };
 
 // Fraction of ONE section's own work considered done once a given phase
@@ -51,13 +62,23 @@ const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
 const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   describe_figure: 0,
   parse_done: 0,
+  preparing_analysis: 0,
   analyze_section: 0,
   infer_hierarchy: 0,
   generate_requirements: 0.4,
   score_requirements: 0.75,
   score_requirements_done: 1,
   section_complete: 1,
+  detect_conflicts: 1,
+  regroup_roots: 1,
   infer_trace_links: 1,
+  // Never actually read: dedup_check/writing both carry branchCount 0, so
+  // the `averageSectionShare * PHASE_START_WEIGHT[...]` term this Record
+  // feeds is always multiplied by 0 anyway -- their blocksDone/blocksTotal
+  // is already a real, direct completed/total count (not "sections done"),
+  // unlike every other phase this Record actually matters for.
+  dedup_check: 0,
+  writing: 0,
 };
 
 // The prototype's 3-column `.phasebar` overview -- gives an at-a-glance
@@ -77,7 +98,16 @@ const MACRO_PHASES: { key: MacroPhase; label: string }[] = [
 function macroPhaseFor(latest: NarrationEvent | null): MacroPhase {
   if (!latest) return 'reading';
   if (latest.phase === 'describe_figure' || latest.phase === 'parse_done') return 'reading';
-  return latest.phase === 'infer_trace_links' ? 'building' : 'analysing';
+  if (
+    latest.phase === 'detect_conflicts' ||
+    latest.phase === 'regroup_roots' ||
+    latest.phase === 'infer_trace_links' ||
+    latest.phase === 'dedup_check' ||
+    latest.phase === 'writing'
+  ) {
+    return 'building';
+  }
+  return 'analysing';
 }
 
 // One distinct hue per macro phase -- never signal-yellow (reserved for
@@ -151,7 +181,15 @@ export function ProgressBanner({
   const isTailPhase =
     latest?.phase === 'score_requirements' ||
     latest?.phase === 'score_requirements_done' ||
+    latest?.phase === 'detect_conflicts' ||
+    latest?.phase === 'regroup_roots' ||
     latest?.phase === 'infer_trace_links';
+  // Distinct from isTailPhase -- this phase runs at the very START of
+  // analysis (before branchCount is even known), so "Finishing up…" would
+  // be actively misleading here. Only shares isTailPhase's OTHER effect:
+  // the metrics box showing real "no fixed step count" text instead of
+  // rendering blank (see the "cannot be blank" fix below).
+  const isPreparingAnalysis = latest?.phase === 'preparing_analysis';
   let completedUnits: number | undefined;
   if (latest && latest.blocksTotal > 0 && !isTailPhase) {
     const averageSectionShare = latest.branchCount > 0 ? latest.blocksTotal / latest.branchCount : 0;
@@ -197,8 +235,16 @@ export function ProgressBanner({
   // Whether THIS specific step's own message is grounded in the knowledge
   // base -- shown explicitly (not just implied by an empty citation list)
   // so "is the model using my KB data" has a definite answer instead of a
-  // silent absence. Parse-stage phases have no grounding concept at all.
-  const showKbGroundingNote = !!latest && latest.phase !== 'describe_figure' && latest.phase !== 'parse_done';
+  // silent absence. Parse-stage phases, and the dedup-check/writing phases
+  // (no KB retrieval concept at all -- these check ADO/Chroma, not the KB),
+  // have no grounding concept at all.
+  const showKbGroundingNote =
+    !!latest &&
+    latest.phase !== 'describe_figure' &&
+    latest.phase !== 'parse_done' &&
+    latest.phase !== 'preparing_analysis' && // KB retrieval hasn't run yet AT this exact event -- nothing to report
+    latest.phase !== 'dedup_check' &&
+    latest.phase !== 'writing';
 
   return (
     <div className='rounded-md border border-hairline bg-surface shadow-card'>
@@ -212,7 +258,7 @@ export function ProgressBanner({
             <span className='absolute inline-flex h-full w-full animate-ping rounded-full bg-white/70' />
             <span className='relative inline-flex h-2 w-2 rounded-full bg-white' />
           </span>
-          Running
+          {stage === 'writing' ? 'Writing to ADO' : 'Running'}
         </Chip>
         <span className='ml-auto flex items-center gap-1.5'>
           {narrations && narrations.length > 0 && (
@@ -256,14 +302,34 @@ export function ProgressBanner({
         </div>
 
         {/* The one thing worth reading first on a page a user glances at for
-            15-40 minutes: what the system is doing RIGHT NOW. Bumped to the
-            loudest text on the card -- previously the same weight as every
-            supporting chip below it, which was the real root of the "no
-            visual hierarchy" complaint. */}
-        <p className='mb-3 flex items-center gap-1.5 text-base leading-snug font-semibold text-ink-1'>
-          {latest ? latest.message : STAGE_LABELS[stage]}
-          <InfoTip content='BASELINE finishes in seconds. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- typically 15-40+ minutes for a real document.' />
-        </p>
+            15-40 minutes: what the system is doing RIGHT NOW. This is
+            deliberately the loudest, most prominent element on the whole
+            card (real user feedback: the narrative message needs to "pop
+            out and be the main focus," not compete for attention with the
+            supporting chips below it) -- a colored left-accent card with
+            its own spinner, not just a plain text line. The "Xs ago"
+            freshness indicator is repeated HERE (not only in the far-away
+            header chip) so "is this actually still moving" never requires
+            looking elsewhere on the page -- the single biggest source of a
+            job looking "stuck" is real, ongoing work with genuinely nothing
+            new to report for a while (see preparing_analysis's own
+            docstring), which this can't eliminate, but at least makes
+            legible: elapsed time is always visible right next to the claim
+            that something is happening. */}
+        <div className='mb-3 flex items-start gap-2.5 rounded-md border-l-[3px] border-l-[var(--color-live)] bg-surface-alt/60 py-2.5 pl-3.5 pr-3'>
+          <Spinner className='mt-0.5 h-4 w-4 flex-none text-live' />
+          <div className='flex min-w-0 flex-1 flex-col gap-1'>
+            <p className='flex items-start gap-1.5 text-[15px] leading-snug font-semibold text-ink-1'>
+              <span>{latest ? latest.message : STAGE_LABELS[stage]}</span>
+              <InfoTip content='BASELINE finishes in seconds. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- typically 15-40+ minutes for a real document.' />
+            </p>
+            {narrations && narrations.length > 0 && (
+              <p className='font-mono text-[11px] tabular-nums text-ink-3'>
+                Last update {secondsSinceUpdate}s ago
+              </p>
+            )}
+          </div>
+        </div>
 
         {/* One grouped "current status" panel -- previously these facts
             (stat chips, KB grounding, progress bar, its own label) were five
@@ -341,9 +407,16 @@ export function ProgressBanner({
             ))}
           <div>
             <div className='mb-1 text-xs text-ink-3'>
+              {/* Must NEVER render blank -- a genuinely empty line here
+                  (the previous behavior when neither branch matched) read
+                  as "stuck," indistinguishable from a frozen page. Every
+                  branch below is real, honest text -- never a fabricated
+                  percentage. */}
               {clampedProgress !== undefined
                 ? `~${Math.round(clampedProgress)}% of this section (est.)`
-                : isTailPhase && 'A single whole-document pass -- no fixed step count to measure against.'}
+                : isTailPhase || isPreparingAnalysis
+                  ? 'A single whole-document pass -- no fixed step count to measure against.'
+                  : 'Working — no progress estimate for this step yet.'}
             </div>
             <ProgressBar value={clampedProgress} />
           </div>
@@ -432,8 +505,10 @@ function SectionStepList({
   // "Resolving trace links") instead of silently falling through the
   // per-section check.
   const scoringActive = latest.phase === 'score_requirements' || latest.phase === 'score_requirements_done';
+  const conflictsActive = latest.phase === 'detect_conflicts';
+  const regroupActive = latest.phase === 'regroup_roots';
   const traceLinksActive = latest.phase === 'infer_trace_links';
-  const allSectionsDone = scoringActive || traceLinksActive;
+  const allSectionsDone = scoringActive || conflictsActive || regroupActive || traceLinksActive;
 
   // Accumulated from EVERY narration event seen so far, not just the
   // latest -- without this, once a section finishes and a later section's
@@ -461,8 +536,15 @@ function SectionStepList({
   // pipeline (sections + the two whole-document passes), not just this
   // section list in isolation -- directly answers "what's left to do".
   const sectionsDone = allSectionsDone ? latest.branchCount : Math.max(0, latest.branchIndex ?? 0);
-  const totalSteps = latest.branchCount + 2; // + scoring + trace links
-  const stepsDone = sectionsDone + (traceLinksActive ? 1 : 0);
+  const totalSteps = latest.branchCount + 4; // + scoring + detect-conflicts + regroup-roots + trace links
+  const wholeDocStepsDone = regroupActive
+    ? 2
+    : conflictsActive
+      ? 1
+      : traceLinksActive
+        ? 3
+        : 0;
+  const stepsDone = sectionsDone + wholeDocStepsDone;
   const stepsLeft = Math.max(0, totalSteps - stepsDone);
 
   return (
@@ -523,7 +605,7 @@ function SectionStepList({
         );
       })}
       <div className={rowClass(scoringActive)}>
-        {traceLinksActive ? (
+        {conflictsActive || regroupActive || traceLinksActive ? (
           <Check
             data-testid='scoring-check-icon'
             className='h-4 w-4 flex-none text-ok'
@@ -537,7 +619,7 @@ function SectionStepList({
           <p
             className={cn(
               'text-sm',
-              scoringActive ? 'font-semibold text-ink-1' : traceLinksActive ? 'text-ink-2' : 'text-ink-3',
+              scoringActive ? 'font-semibold text-ink-1' : 'text-ink-3',
             )}
           >
             Scoring requirement quality
@@ -545,6 +627,36 @@ function SectionStepList({
           </p>
           {scoringActive && <MiniProgress value={activeSectionProgress} />}
         </div>
+      </div>
+      <div className={rowClass(conflictsActive)}>
+        {regroupActive || traceLinksActive ? (
+          <Check
+            data-testid='conflicts-check-icon'
+            className='h-4 w-4 flex-none text-ok'
+          />
+        ) : conflictsActive ? (
+          <Spinner className='text-live' />
+        ) : (
+          <Circle className='h-4 w-4 flex-none text-ink-3/50' />
+        )}
+        <p className={cn('text-sm', conflictsActive ? 'font-semibold text-ink-1' : 'text-ink-3')}>
+          Checking for conflicting near-duplicates
+        </p>
+      </div>
+      <div className={rowClass(regroupActive)}>
+        {traceLinksActive ? (
+          <Check
+            data-testid='regroup-check-icon'
+            className='h-4 w-4 flex-none text-ok'
+          />
+        ) : regroupActive ? (
+          <Spinner className='text-live' />
+        ) : (
+          <Circle className='h-4 w-4 flex-none text-ink-3/50' />
+        )}
+        <p className={cn('text-sm', regroupActive ? 'font-semibold text-ink-1' : 'text-ink-3')}>
+          Grouping disconnected sections by topic
+        </p>
       </div>
       <div className={rowClass(traceLinksActive)}>
         {traceLinksActive ? (

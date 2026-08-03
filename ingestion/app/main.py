@@ -328,6 +328,31 @@ def _build_survey_tree_with_scoring(
             progress_callback=progress_callback,
             model=model,
             debug_capture=_debug_capture,
+            # Confirmed real gap: this was never passed at all, so every
+            # deterministically-built node kept its raw
+            # extract_baseline_title-derived title (e.g. "The P." from "The
+            # P. S shall include electronic fuses...") and empty tags in
+            # production, even though title_and_tags_for_rows/
+            # _apply_title_tag_pass were both fully built and tested. Same
+            # client as everything else above -- OrchestratorLlmClient
+            # implements the TitleTagClient protocol directly.
+            title_tag_client=client,
+            # Same client, implements SynthesisClient directly -- the actual
+            # quality fix for deterministic leaves flagged needs_synthesis
+            # (see id_hierarchy.HierarchyRow's own docstring): a fragment or
+            # spec-table cell gets rewritten into a real requirement
+            # statement instead of being emitted verbatim.
+            synthesis_client=client,
+            # Same client, implements ConflictJudgeClient directly -- real
+            # capability gap closed here: this codebase previously had no
+            # conflict/contradiction detection anywhere (see
+            # _detect_conflicting_duplicates's own docstring).
+            conflict_client=client,
+            # Same client, implements RootGroupingClient directly -- closes
+            # a document with no single top heading (e.g. AirPro's 77
+            # disconnected root nodes, see _regroup_disconnected_roots's
+            # own docstring) into a coherent hierarchy, structure-only.
+            grouping_client=client,
         )
 
 

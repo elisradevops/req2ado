@@ -280,6 +280,45 @@ describe('ProgressBanner', () => {
     expect(screen.getByText('Reading document').closest('li')?.querySelector('[data-state]')).toHaveAttribute('data-state', 'active');
   });
 
+  it('advances past "Reading document" once preparing_analysis fires, not stuck on parse_done', () => {
+    // Real regression this fixes (user-reported, live): a multi-minute
+    // silent window between parse_done and the first analyze_section event
+    // previously left "Reading document" spinning as the LAST real event
+    // stayed parse_done, even though the pipeline had already moved on to
+    // analysis (KB retrieval, branch splitting) with real work in flight.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'parse_done', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], blockCount: 682, tableCount: 5, figureCount: 39, message: 'Finished parsing the document' },
+          { phase: 'preparing_analysis', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], message: 'Preparing analysis' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Reading document').closest('li')?.querySelector('[data-state]')).toHaveAttribute('data-state', 'done');
+    expect(screen.getByText('Analysing sections').closest('li')?.querySelector('[data-state]')).toHaveAttribute('data-state', 'active');
+  });
+
+  it('never renders a blank metrics line during preparing_analysis (must always show real text)', () => {
+    // Real regression this fixes: blocksTotal is 0 for preparing_analysis
+    // (not known yet), which previously made the progress-estimate line
+    // render nothing at all -- a visually blank box that read as "stuck."
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'preparing_analysis', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], message: 'Preparing analysis' },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/no fixed step count to measure against/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not grounded against your knowledge base/i)).not.toBeInTheDocument();
+  });
+
   it('renders a parse_done narration with real block/table/figure counts', () => {
     render(
       <ProgressBanner
@@ -338,6 +377,9 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    expect(screen.getByText(/\d+s ago/i)).toBeInTheDocument();
+    // Shown twice now -- once in the header chip, once inline next to the
+    // hero narrative message (real user feedback: "is this still moving"
+    // must be answerable without looking away from the current message).
+    expect(screen.getAllByText(/\d+s ago/i).length).toBeGreaterThan(0);
   });
 });

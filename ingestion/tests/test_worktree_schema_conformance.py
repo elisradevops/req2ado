@@ -56,7 +56,8 @@ class FakeSectionAnalysisClient:
 
     def analyze_section(
         self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
-        topic_count: int | None = None,
+        topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
     ) -> tuple[list[dict], bool]:
         return [
             {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display", "text": "The system shall handle: Display", "tags": []},

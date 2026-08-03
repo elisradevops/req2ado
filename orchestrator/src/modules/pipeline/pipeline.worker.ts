@@ -333,10 +333,24 @@ export async function runPipelineJob(
     // dedup-service error -- see dryRunService.diff's own doc comment).
     // Job.followUp itself is left alone (unused now, no schema/DTO churn
     // for a field that's harmless to leave in place).
+    // Previously this whole burst (confirmed live: ~543 nodes on a real
+    // job) published NO progress signal at all -- 'diff_ready' was the very
+    // next event after 'generate_requirements_done', so a job could sit
+    // silent for however long the idempotency/dedup-check burst took with
+    // no way to tell it from a stall.
+    await deps.jobEventsPublisher.publish(job.id, 'dedup_check');
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
       (text, areaPath) => deps.ingestionClient.checkDuplicate(text, areaPath),
+      (completed, total) => {
+        void deps.jobEventsPublisher.publishNarration(job.id, {
+          phase: 'dedup_check',
+          blocksDone: completed,
+          blocksTotal: total,
+          message: `Checking for existing/duplicate work items -- ${completed} of ${total}`,
+        });
+      },
     );
 
     const resolvedDiff =

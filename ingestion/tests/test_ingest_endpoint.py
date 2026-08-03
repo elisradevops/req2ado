@@ -289,6 +289,15 @@ def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_i
         def set(self, key, value, ex=None):
             pass
 
+        def rpush(self, key, value):
+            pass
+
+        def ltrim(self, key, start, end):
+            pass
+
+        def expire(self, key, seconds):
+            pass
+
         def publish(self, channel, payload):
             self.published.append(payload)
 
@@ -338,6 +347,15 @@ def test_ingest_publishes_no_narration_when_job_id_is_omitted(monkeypatch) -> No
             self.published: list[str] = []
 
         def set(self, key, value, ex=None):
+            pass
+
+        def rpush(self, key, value):
+            pass
+
+        def ltrim(self, key, start, end):
+            pass
+
+        def expire(self, key, seconds):
             pass
 
         def publish(self, channel, payload):
@@ -497,6 +515,44 @@ def test_level_survey_reports_a_genuine_internal_error_as_500() -> None:
         assert response.json()["detail"] == "unexpected internal failure"
     finally:
         main_module._build_survey_tree_with_scoring = original
+
+
+def test_build_survey_tree_with_scoring_passes_the_client_as_title_tag_client() -> None:
+    # Confirmed real gap: main.py's /level call site never actually passed
+    # a title_tag_client at all, so every deterministically-built node kept
+    # its raw extract_baseline_title-derived title and empty tags in
+    # production, even though the title/tag enhancement pass was fully
+    # built and tested. OrchestratorLlmClient implements the TitleTagClient
+    # protocol directly, so it's the SAME client already passed as
+    # analysis_client/scoring_client/etc above.
+    import app.main as main_module
+    from app.canonical.model import CanonicalDoc, Document, DocumentFormat
+    from app.leveling.tree_builder import WorkItemTree
+
+    captured: dict[str, object] = {}
+
+    def _capture(doc, **kwargs):
+        captured.update(kwargs)
+        return WorkItemTree(nodes=[], warnings=[], kb_citations=[], trace_links=[])
+
+    original = main_module.build_survey_tree
+    main_module.build_survey_tree = _capture
+    try:
+        fake_client = object()
+        main_module._build_survey_tree_with_scoring(
+            doc=CanonicalDoc(
+                document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+                blocks=[], tables=[], figures=[],
+            ),
+            client=fake_client,
+            customer_id=None,
+            user_id=None,
+            link_type_catalog=None,
+            job_id=None,
+        )
+        assert captured["title_tag_client"] is fake_client
+    finally:
+        main_module.build_survey_tree = original
 
 
 def test_ingest_unsupported_extension_returns_400() -> None:

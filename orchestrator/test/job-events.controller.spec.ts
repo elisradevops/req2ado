@@ -34,6 +34,7 @@ describe('JobEventsController', () => {
     const handlers: Record<string, (...args: any[]) => void> = {};
     return {
       get: jest.fn().mockResolvedValue(null),
+      lrange: jest.fn().mockResolvedValue([]),
       subscribe: jest.fn().mockResolvedValue(1),
       unsubscribe: jest.fn().mockResolvedValue(undefined),
       quit: jest.fn().mockResolvedValue(undefined),
@@ -187,9 +188,9 @@ describe('JobEventsController', () => {
   it('replays the last-known narration on connect, from a separate Redis key than stage', async () => {
     const subscriber = makeSubscriber();
     const narrationPayload = JSON.stringify({ type: 'narration', phase: 'infer_hierarchy', message: 'Analyzing structure' });
-    subscriber.get.mockImplementation((key: string) => {
-      if (key === 'job-events:job-1:narration') return Promise.resolve(narrationPayload);
-      return Promise.resolve(null);
+    subscriber.lrange.mockImplementation((key: string) => {
+      if (key === 'job-events:job-1:narration-log') return Promise.resolve([narrationPayload]);
+      return Promise.resolve([]);
     });
     const factory = jest.fn().mockReturnValue(subscriber);
     const controller = new JobEventsController(factory as any, fakeJobsService as any);
@@ -197,8 +198,31 @@ describe('JobEventsController', () => {
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
 
-    expect(subscriber.get).toHaveBeenCalledWith('job-events:job-1:narration');
+    expect(subscriber.lrange).toHaveBeenCalledWith('job-events:job-1:narration-log', 0, -1);
     expect(res.write).toHaveBeenCalledWith(`event: narration\ndata: ${narrationPayload}\n\n`);
+  });
+
+  it('replays the whole bounded narration history in order, not just the latest entry', async () => {
+    // Real gap this closes: previously a reconnecting client only ever saw
+    // the single most recent narration event -- a page reload silently
+    // lost all prior activity-log history even though the job kept
+    // progressing server-side.
+    const subscriber = makeSubscriber();
+    const first = JSON.stringify({ type: 'narration', phase: 'parse_done', message: 'Finished parsing' });
+    const second = JSON.stringify({ type: 'narration', phase: 'analyze_section', message: 'Analyzing section 1' });
+    subscriber.lrange.mockResolvedValue([first, second]);
+    const factory = jest.fn().mockReturnValue(subscriber);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any, TEST_USER);
+
+    const writeCalls = res.write.mock.calls.map((call: unknown[]) => call[0]);
+    expect(writeCalls).toContain(`event: narration\ndata: ${first}\n\n`);
+    expect(writeCalls).toContain(`event: narration\ndata: ${second}\n\n`);
+    expect(writeCalls.indexOf(`event: narration\ndata: ${first}\n\n`)).toBeLessThan(
+      writeCalls.indexOf(`event: narration\ndata: ${second}\n\n`),
+    );
   });
 
   it('quits the leaked subscriber connection when subscribe() rejects', async () => {

@@ -9,30 +9,57 @@ if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, Table
+from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_CHUNKS
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import retrieve_context
+from app.leveling.conflict_detection import (
+    ConflictJudgeClient,
+    _detect_conflicting_duplicates,
+)
 from app.leveling.depth import resolve_block_depth
+from app.leveling.id_hierarchy import (
+    rows_from_heading_structure,
+    rows_from_id_headings,
+    rows_from_table,
+)
+from app.leveling.id_tree_builder import (
+    SynthesisClient,
+    TitleTagClient,
+    build_hierarchy_subtree,
+    recompute_child_types,
+)
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
-from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL
+from app.leveling.root_regrouping import (
+    RootGroupingClient,
+    _ensure_root_features_have_epic_parent,
+    _regroup_disconnected_roots,
+    _repair_requirement_hierarchy,
+)
+from app.leveling.scoring import (
+    BatchedScoringClient,
+    _score_all_requirements,
+    _score_epics_and_features,
+)
+from app.leveling.table_groups import TableGroupInfo, qualifying_table_groups
+from app.leveling.trace_links import TraceLinkInferenceClient, _infer_trace_links_for_nodes
 from app.leveling.tree_builder import (
     _bound_branch_size,
+    _hash_description,
     _hash_identity,
     _order_key,
     _partition_tables_by_branch,
     _split_into_branches,
+    _table_to_html,
 )
 from app.quality.criteria_retrieval import CriteriaRetriever
+from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL
 from app.workitem.model import (
     KbCitation,
     KbCitationRelevance,
-    QualityCategoryScores,
-    RequirementQualityIssue,
     RequirementTag,
     TraceLink,
-    TraceLinkResolutionStatus,
-    TraceLinkTargetKind,
     WorkItemMode,
     WorkItemNode,
     WorkItemTree,
@@ -296,6 +323,181 @@ def _grounding_score(generated_text: str, source_text: str) -> float:
 _MIN_SIGNIFICANT_WORDS_FOR_COVERAGE_CHECK = 2
 
 
+def _label_match_candidates(label: str, nodes: list[WorkItemNode]) -> list[WorkItemNode]:
+    """Shared matching core for both _group_label_became_a_node (existence)
+    and _find_node_by_label (identification) -- factored out after
+    confirming live (see _find_node_by_label's own docstring history) that
+    a single fractional-word-overlap threshold was both too loose to
+    IDENTIFY one specific node (false ambiguity: "Audio Control"
+    fractional-matched 6 unrelated titles) AND, separately confirmed via
+    the same real document, too loose to reliably signal EXISTENCE either:
+    "System Settings and User Experience" and "System Description and
+    Information" (both genuinely MISSING as their own nodes) each
+    fractional-matched an unrelated node on a single common word
+    ("settings" / "description" respectively), silently swallowing 2 of 3
+    real missing-Epic cases from the "did not produce a distinctly-titled
+    node" coverage-check warning -- the warning that exists specifically to
+    catch this.
+
+    Returns, tightest first:
+    1. Every node whose title exactly equals `label` (case/whitespace-
+       insensitive) -- the generated title IS frequently the model's own
+       verbatim attempt at the source label.
+    2. Failing that, every node whose title FULLY CONTAINS every one of the
+       label's significant words (not just a fraction), ordered by fewest
+       extra words beyond the label (closest, most specific match first).
+    Returns [] when nothing matches at either tier. Deliberately does not
+    rank across tiers or invent a match beyond these two -- "under-trigger,
+    don't over-trigger" is the same accepted trade-off this module's
+    table_groups sibling documents for its own "shall"-based
+    discriminator."""
+    label_words = _significant_words(label)
+    if not label_words:
+        return []
+    normalized_label = " ".join(label.split()).casefold()
+    exact_matches = [
+        node for node in nodes if " ".join(node.title.split()).casefold() == normalized_label
+    ]
+    if exact_matches:
+        return exact_matches
+
+    candidates: list[tuple[int, WorkItemNode]] = []
+    for node in nodes:
+        title_words = _significant_words(node.title)
+        if label_words <= title_words:
+            candidates.append((len(title_words - label_words), node))
+    candidates.sort(key=lambda pair: pair[0])
+    return [node for _extra, node in candidates]
+
+
+def _group_label_became_a_node(label: str, nodes: list[WorkItemNode]) -> bool:
+    """True if some generated node's own TITLE (not its full description
+    body) identifies this source table group's label -- an EXISTENCE check
+    only (unlike _find_node_by_label, a tie between multiple equally-close
+    candidates still counts as "yes, it became A node somewhere", since
+    this function never needs to pick ONE of them). Checked against TITLES
+    specifically, NOT the combined-description-text check
+    _block_content_appears_in_generated_output uses -- confirmed live that
+    every leaf requirement under a missing group still survives somewhere
+    in SOME node's description even when the group itself never became its
+    own node (that's the exact bug this check exists to catch), so a
+    body-text overlap check would trivially "find" the group via its own
+    merged children's vocabulary and never fire. Checking titles targets
+    the real question: did this group get its OWN node, not just did its
+    content survive somewhere.
+
+    Empty `label` returns True (nothing meaningful to check for), matching
+    _label_match_candidates' own "no significant words -> []" convention
+    inverted for this function's existence semantics."""
+    if not _significant_words(label):
+        return True
+    return bool(_label_match_candidates(label, nodes))
+
+
+def _find_node_by_label(label: str, nodes: list[WorkItemNode]) -> WorkItemNode | None:
+    """The single node that best identifies `label`, or None when there is
+    no match or a genuine tie -- deliberately does not guess (see
+    _repair_group_attachment's own docstring for why). Uses
+    _label_match_candidates (exact title match first, then full word
+    containment ordered closest-first) and resolves to a single answer only
+    when the top candidate is unambiguous: exactly one exact-tier match, OR
+    (no exact match, and either only one containment candidate, or the
+    closest containment candidate is STRICTLY closer than the next)."""
+    label_words = _significant_words(label)
+    if not label_words:
+        return None
+    candidates = _label_match_candidates(label, nodes)
+    if not candidates:
+        return None
+    normalized_label = " ".join(label.split()).casefold()
+    if " ".join(candidates[0].title.split()).casefold() == normalized_label:
+        # Exact-tier result -- _label_match_candidates returns ALL exact
+        # matches when any exist, never a containment fallback alongside
+        # them, so more than one entry here means a genuine exact-title tie.
+        return candidates[0] if len(candidates) == 1 else None
+    if len(candidates) == 1:
+        return candidates[0]
+    extra_first = len(_significant_words(candidates[0].title) - label_words)
+    extra_second = len(_significant_words(candidates[1].title) - label_words)
+    return candidates[0] if extra_first < extra_second else None
+
+
+def _repair_group_attachment(
+    nodes: list[WorkItemNode],
+    table_groups: list[TableGroupInfo] | None,
+    node_id_prefix: str,
+    warnings: list[str],
+) -> None:
+    """Confirmed real bug, live-tested against a human-authored reference
+    hierarchy: a source table group that DID get correctly detected,
+    correctly typed, and correctly split into its own child nodes can still
+    end up attached to the WRONG ancestor in the generated tree (e.g. "Mute
+    and Volume-Restore Behavior" landing under "Channel Scan and Automatic
+    Search" instead of "Audio Control") -- a different failure mode from
+    _repair_requirement_hierarchy's (wrong node TYPE in the parent slot);
+    this is a wrong SPECIFIC node in an otherwise-valid parent slot.
+
+    The table's own ID hierarchy already fully determines the correct
+    parent for every qualifying group (see TableGroupInfo.parent_label) --
+    a fact already 100% known before generation even starts. A prior fix
+    this session tried threading MORE of this into the prompt (a
+    root-count instruction) and confirmed a real regression: the model
+    over-anchored on the added instruction at the expense of unrelated
+    coverage, collapsing total node count. Given prompt real estate is a
+    scarce, shared resource across every instruction already in
+    _SECTION_ANALYSIS_SYSTEM_PROMPT, this repairs the known-wrong
+    attachment DETERMINISTICALLY after generation instead of asking the
+    model (again) to get it right -- zero risk to any other prompt-driven
+    behavior, mirroring _repair_requirement_hierarchy's own established
+    "fix a known-bad shape after the fact" pattern rather than adding a
+    5th round of prompt tuning.
+
+    Deliberately conservative, matching this module's "under-trigger, not
+    over-trigger" convention: does nothing (no repair, no warning) when
+    either the group's own node or its correct parent's node can't be
+    found, or is ambiguous (_find_node_by_label returns None for both
+    cases) -- a genuinely missing group is already reported by the
+    separate _group_label_became_a_node coverage-check warning; there is
+    nothing correct to re-parent to if the correct parent was never itself
+    emitted as a node, and guessing among multiple ambiguous candidates
+    risks a WRONG repair, worse than leaving the original (already wrong)
+    attachment as-is. Also a no-op when the node is already correctly
+    parented -- must never repeat this action or warn every run."""
+    if not table_groups:
+        return
+    for group in table_groups:
+        if not group.parent_label:
+            continue
+        node = _find_node_by_label(group.label, nodes)
+        if node is None:
+            continue
+        correct_parent = _find_node_by_label(group.parent_label, nodes)
+        if correct_parent is None or correct_parent.local_id == node.local_id:
+            continue
+        if node.parent_local_id == correct_parent.local_id:
+            continue  # already correctly parented -- true no-op
+        if node.type == WorkItemType.REQUIREMENT and correct_parent.type == WorkItemType.EPIC:
+            # A REQUIREMENT-typed group's correct parent (per the table's ID
+            # hierarchy) can itself be an EPIC-typed group -- structurally
+            # legal per TableGroupInfo, but re-parenting straight there would
+            # violate the Epic -> Feature -> Requirement chain
+            # _repair_requirement_hierarchy already established (which runs
+            # BEFORE this pass and won't see this new violation). Not
+            # observed on any document so far -- a generality guard, not a
+            # live regression -- so leave the existing (already
+            # chain-valid) attachment alone rather than re-breaking it.
+            continue
+        message = (
+            f"Node {node.local_id} ({node.type.value}) matching source table group "
+            f"'{group.label}' was attached under the wrong ancestor -- re-parented under "
+            f"{correct_parent.local_id} to match its known correct parent '{group.parent_label}' "
+            "from the table's own ID hierarchy."
+        )
+        logger.warning(message)
+        warnings.append(message)
+        node.parent_local_id = correct_parent.local_id
+
+
 def _block_content_appears_in_generated_output(block_text: str, combined_words: set[str]) -> bool:
     """True if the block's own significant vocabulary meaningfully overlaps
     with the generated output taken as a WHOLE (every node's text, not just
@@ -316,56 +518,6 @@ def _block_content_appears_in_generated_output(block_text: str, combined_words: 
         return True
     overlap = len(block_words & combined_words) / len(block_words)
     return overlap >= _BLOCK_COVERAGE_OVERLAP_THRESHOLD
-
-
-class BatchedScoringClient(Protocol):
-    """Interface for whole-document (or whole-branch) SURVEY quality
-    scoring — one call judging every node's FINAL formalized description
-    against EARS/INCOSE/ISO/IEC/IEEE-29148 criteria, not one call per node.
-    Fully optional in build_survey_tree (a None scoring_client, the
-    default, means no scoring at all — byte-identical to before this
-    capability existed).
-
-    `criteria_context` is optional retrieval-grounded reference material
-    (see app.quality.criteria_retrieval.CriteriaRetriever) -- when supplied,
-    a real implementation should cite it in the judgment instead of relying
-    solely on the model's own parametric knowledge of the public standards.
-    `kb_context` is the SAME SharePoint/OneDrive KB context already computed
-    for infer_hierarchy/generate_requirements_for_document, threaded through
-    for consistency across all three calls. Both grounding params are
-    independent and orthogonal -- one grounds against customer content, the
-    other against quality-criteria reference material -- and either or both
-    may be omitted (None), byte-identical to before either capability
-    existed.
-
-    `category_checklist` is a FIXED categoryScores key list extracted once
-    at KB ingestion time (see KbVectorStore.get_quality_checklist) -- a
-    genuine cross-run determinism guarantee, taking priority over
-    `kb_context`'s own live-derive fallback. Optional; omitting it is
-    byte-identical to before this capability existed."""
-
-    def score_requirements_for_document(
-        self,
-        descriptions_by_node_id: dict[str, str],
-        criteria_context: str | None = None,
-        kb_context: str | None = None,
-        category_checklist: list[str] | None = None,
-    ) -> dict[str, dict]: ...
-
-
-class TraceLinkInferenceClient(Protocol):
-    """Interface for SURVEY-mode trace/coverage link inference — one call
-    covering every node ACROSS THE WHOLE TREE (all branches combined, not
-    per-branch — a trace/coverage link can legitimately point from one
-    branch's node to another's), mirroring BatchedRequirementClient's
-    one-call-per-document rationale. Given the full node list and a
-    discovered ADO link-type catalog, proposes zero or more links; anything
-    the model returns with a reference_name outside the supplied catalog is
-    dropped by build_survey_tree, never trusted blind."""
-
-    def infer_trace_links(
-        self, nodes: list[dict], link_type_catalog: list[dict], kb_context: str | None = None
-    ) -> list[dict]: ...
 
 
 class KbRelevanceClient(Protocol):
@@ -416,6 +568,19 @@ class SectionAnalysisClient(Protocol):
         kb_context: str | None = None,
         whole_document: bool = False,
         topic_count: int | None = None,
+        # (label, suggested_type) pairs for this section's own qualifying
+        # table groups (see table_groups.qualifying_table_groups) -- names
+        # the specific groups counted in topic_count's floor AND states
+        # which work-item type each one should become, so the model knows
+        # WHICH groups must get their own node, not just how many, and
+        # isn't left to guess Feature vs Requirement vs Epic on its own.
+        table_group_hints: list[tuple[str, str]] | None = None,
+        # Count of independent top-level table groups (see
+        # table_groups.TableGroupInfo.is_top_level) with no common
+        # ancestor -- lets the model know a real multi-root document is
+        # expected instead of the default single-root assumption. None/<2
+        # (the common case) preserves today's exact single-root wording.
+        expected_root_count: int | None = None,
     ) -> tuple[list[dict], bool]: ...
 
     def analyze_section_agentic(
@@ -427,6 +592,8 @@ class SectionAnalysisClient(Protocol):
         read_other_section_fn: Callable[[str], str | None] | None = None,
         whole_document: bool = False,
         topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
     ) -> tuple[list[dict], list[dict], bool]: ...
 
 
@@ -649,6 +816,240 @@ def render_section(blocks: list[Block], tables: list[Table] | None = None, figur
     return "\n".join(line for _, line in entries)
 
 
+def _detect_deterministic_subtrees(
+    doc: CanonicalDoc,
+    customer_id: str | None,
+    title_tag_client: TitleTagClient | None,
+    synthesis_client: SynthesisClient | None = None,
+) -> tuple[list[WorkItemNode], list[str], CanonicalDoc]:
+    """Detects and builds every deterministic hierarchy subtree this
+    document's own structure already encodes -- a 2-column dotted-ID
+    table (`rows_from_table`), a native Word Heading hierarchy with the ID
+    typed directly into the heading text (`rows_from_id_headings`), or a
+    native Word Heading hierarchy with no ID text at all
+    (`rows_from_heading_structure`) -- and returns (deterministic_nodes,
+    deterministic_warnings, llm_doc), where `llm_doc` is `doc` with every
+    claimed block/table removed, ready to feed unchanged into this
+    module's existing LLM-driven branch/analysis machinery for whatever
+    residual content (if any) remains.
+
+    Every qualifying Table becomes its OWN subtree (IDs are table-scoped,
+    see `qualifying_groups`'s own docstring) -- D1 always runs regardless
+    of the heading detectors, since tables and blocks are disjoint
+    substrates. For headings, D2 (ID-bearing) is tried first and wins
+    outright whenever it qualifies -- it carries strictly more information
+    than D3 (real document IDs, is_top_level-derived root count, the
+    lettered-vs-numeric-children Requirement/Feature distinction D3's
+    child-count-only rule cannot express) -- D3 (pure structural) is only
+    tried when D2 finds nothing. This mirrors the confirmed measurement
+    that the two detectors don't compete ambiguously in practice (a
+    document with real IDs typed into its headings measures ~1.0 ID-shaped
+    fraction; one without measures near 0).
+
+    Claimed headings also claim their own SPAN -- every following
+    non-HEADING block, and every Table whose own document-order position
+    falls before the next HEADING block in `doc.blocks` -- folded into
+    that heading's own node description (recomputing both hashes), so
+    real source content between two headings is never silently dropped
+    from either the deterministic tree OR the LLM-handled residual.
+
+    Returns `(det_nodes, [], doc)` unchanged (a true no-op) when nothing
+    in `doc` matches any of the three conventions -- the exact guarantee
+    every one of these detectors already gives individually."""
+    det_nodes: list[WorkItemNode] = []
+    det_warnings: list[str] = []
+    claimed_table_ids: set[str] = set()
+    subtree_index = 0
+
+    for table in doc.tables:
+        rows = rows_from_table(table)
+        if not rows:
+            continue
+        nodes, warnings = build_hierarchy_subtree(
+            rows, f"det{subtree_index}_", customer_id, title_tag_client, synthesis_client,
+        )
+        # Post-hoc structural safety net -- same reasoning and same
+        # already-tested function the LLM-analysis path uses (see its own
+        # docstring): a deterministic subtree can still end up with a
+        # Requirement directly under an Epic (e.g. a group-of-groups row
+        # whose direct children mix a further-split sub-group with a lone
+        # leaf shall statement) -- confirmed live this cannot be fixed by
+        # blindly retyping the parent (see id_tree_builder's own removed-
+        # demotion-logic comment for the real bug that caused). Must run
+        # BEFORE recompute_child_types, which depends on the FINAL
+        # parent/child structure.
+        _repair_requirement_hierarchy(nodes, f"det{subtree_index}_", warnings)
+        recompute_child_types(nodes)
+        det_nodes.extend(nodes)
+        det_warnings.extend(warnings)
+        claimed_table_ids.add(table.id)
+        subtree_index += 1
+
+    heading_rows, heading_warnings, heading_block_ids = rows_from_id_headings(doc.blocks)
+    if not heading_rows:
+        heading_rows, heading_warnings, heading_block_ids = rows_from_heading_structure(doc.blocks)
+
+    claimed_heading_block_ids: set[str] = set()
+    if heading_rows:
+        nodes, build_warnings = build_hierarchy_subtree(
+            heading_rows, f"det{subtree_index}_", customer_id, title_tag_client, synthesis_client,
+        )
+        # See the table-subtree call site's identical comment above.
+        _repair_requirement_hierarchy(nodes, f"det{subtree_index}_", build_warnings)
+        recompute_child_types(nodes)
+        det_nodes.extend(nodes)
+        det_warnings.extend(heading_warnings)
+        det_warnings.extend(build_warnings)
+        claimed_heading_block_ids = set(heading_block_ids)
+        node_by_local_id = {n.local_id: n for n in nodes}
+        row_local_id = [
+            f"det{subtree_index}_{row.id_text.replace('.', '_')}" for row in heading_rows
+        ]
+        block_id_to_row_index = {bid: i for i, bid in enumerate(heading_block_ids)}
+        id_disambiguator_needed = any(row.id_disambiguator_needed for row in heading_rows)
+
+        def _resolve_span_target(row_index: int) -> WorkItemNode | None:
+            seen: set[int] = set()
+            idx: int | None = row_index
+            while idx is not None and idx not in seen:
+                seen.add(idx)
+                row = heading_rows[idx]
+                if row.node_type is not None:
+                    return node_by_local_id.get(row_local_id[idx])
+                idx = row.parent_index
+            return None
+
+        # Span claiming: every heading block (in doc.blocks order) marks a
+        # boundary; a claimed heading's span runs from just after itself to
+        # just before the NEXT heading block in the document (claimed or
+        # not) -- exactly the boundary a real Word outline reader would
+        # perceive, regardless of which headings this pass happened to
+        # claim.
+        heading_boundaries = [
+            i for i, b in enumerate(doc.blocks)
+            if b.kind == BlockKind.HEADING and b.heading_level is not None
+        ]
+        current_target: WorkItemNode | None = None
+        boundary_ptr = 0
+        for i, block in enumerate(doc.blocks):
+            while boundary_ptr < len(heading_boundaries) and heading_boundaries[boundary_ptr] < i:
+                boundary_ptr += 1
+            is_boundary = (
+                boundary_ptr < len(heading_boundaries) and heading_boundaries[boundary_ptr] == i
+            )
+            if is_boundary:
+                if block.id in block_id_to_row_index:
+                    current_target = _resolve_span_target(block_id_to_row_index[block.id])
+                else:
+                    current_target = None  # an un-claimed heading resets the span -- its own
+                    # content (and anything after it) belongs to the LLM path, not folded
+                    # into whatever deterministic heading preceded it.
+                continue
+            if current_target is None or block.id in claimed_heading_block_ids:
+                continue
+            claimed_heading_block_ids.add(block.id)
+            # A FIGURE-kind block's raw text is the literal
+            # "[FIGURE: {caption or 'none'}]" wire format (see
+            # docx_loader.py/pdf_loader.py) -- folding it in unfiltered
+            # leaks the bare placeholder string into a deterministic
+            # node's description verbatim whenever a figure has no real
+            # caption (vision disabled, or genuinely non-informative).
+            # `_figure_line` already exists and is already proven correct
+            # for exactly this (the LLM-analysis path's `render_section`
+            # uses it), it just was never reused here -- None means "no
+            # real caption, fold nothing"; a real caption folds in as the
+            # same clearly-labeled "> Figure: ..." line the LLM path uses.
+            span_text = _figure_line(block) if block.kind == BlockKind.FIGURE else block.text
+            if span_text is None:
+                continue
+            current_target.description = assemble_description(
+                current_target.description, span_text,
+            )
+            current_target.fidelity_hash = _hash_description(current_target.description)
+            current_target.identity_hash = _hash_identity(
+                current_target.description, current_target.source_ref,
+            )
+
+        for table in doc.tables:
+            if table.id in claimed_table_ids:
+                continue
+            table_key = _order_key(table.source_ref)
+            owning_boundary_idx: int | None = None
+            for boundary_idx in heading_boundaries:
+                boundary_block = doc.blocks[boundary_idx]
+                if boundary_block.id not in block_id_to_row_index:
+                    continue
+                next_boundaries = [b for b in heading_boundaries if b > boundary_idx]
+                upper = (
+                    _order_key(doc.blocks[next_boundaries[0]].source_ref)
+                    if next_boundaries
+                    else None
+                )
+                lower = _order_key(boundary_block.source_ref)
+                if lower <= table_key and (upper is None or table_key < upper):
+                    owning_boundary_idx = boundary_idx
+                    break
+            if owning_boundary_idx is None:
+                continue
+            target = _resolve_span_target(block_id_to_row_index[doc.blocks[owning_boundary_idx].id])
+            if target is None:
+                continue
+            claimed_table_ids.add(table.id)
+            target.description = assemble_description(target.description, _table_to_html(table))
+            target.fidelity_hash = _hash_description(target.description)
+            target.identity_hash = _hash_identity(target.description, target.source_ref)
+        del id_disambiguator_needed  # only used to document the branch above; both heading
+        # adapters always pass id_disambiguator_needed=False, so span-fold hashing always
+        # uses the plain _hash_identity, never the table-row disambiguated variant.
+
+    if not claimed_heading_block_ids and not claimed_table_ids:
+        return det_nodes, det_warnings, doc
+
+    residual_blocks = [b for b in doc.blocks if b.id not in claimed_heading_block_ids]
+    residual_tables = [t for t in doc.tables if t.id not in claimed_table_ids]
+    # Every Figure has a paired inline FIGURE-kind Block sharing its EXACT
+    # source_ref (see docx_loader.py's own construction of the pair) --
+    # render_section/_derive_section_label never consult `figures` for
+    # content at all (both explicitly `del figures`, relying entirely on
+    # the inline Block.text), so a Figure whose paired block was just
+    # claimed above carries no content the LLM path would otherwise see;
+    # excluding it here is what lets a real, fully-heading-structured
+    # document (confirmed live: AirPro, 39 inline figures all claimed via
+    # block span-claiming) actually reach the pure-deterministic guard
+    # instead of being kept "non-empty" by 39 redundant Figure objects.
+    claimed_figure_offsets = {
+        (b.source_ref.document_path, b.source_ref.start_offset)
+        for b in doc.blocks
+        if b.kind == BlockKind.FIGURE and b.id in claimed_heading_block_ids
+    }
+    residual_figures = [
+        f for f in doc.figures
+        if (f.source_ref.document_path, f.source_ref.start_offset) not in claimed_figure_offsets
+    ]
+    llm_doc = doc.model_copy(
+        update={"blocks": residual_blocks, "tables": residual_tables, "figures": residual_figures},
+    )
+
+    total_content = len(doc.blocks) + sum(len(t.rows) for t in doc.tables)
+    det_content = len(claimed_heading_block_ids) + sum(
+        len(t.rows) for t in doc.tables if t.id in claimed_table_ids
+    )
+    if det_content and det_content < total_content:
+        det_warnings.append(
+            f"{det_content} of {total_content} source block(s)/table row(s) were built "
+            f"deterministically from the document's own structure into {len(det_nodes)} work "
+            "item(s); the rest were authored by the language model from the residual content."
+        )
+    elif det_content and det_content >= total_content:
+        det_warnings.append(
+            f"All {total_content} source block(s)/table row(s) were built deterministically "
+            f"from the document's own structure into {len(det_nodes)} work item(s) -- no "
+            "language-model analysis was needed for this document."
+        )
+
+    return det_nodes, det_warnings, llm_doc
+
+
 def build_survey_tree(
     doc: CanonicalDoc,
     analysis_client: SectionAnalysisClient,
@@ -669,6 +1070,30 @@ def build_survey_tree(
     # byte-identical to before this capability existed; every warning still
     # fires exactly as it did.
     debug_capture: "DebugCapture | None" = None,
+    # Optional per-document title/tag enhancement for the DETERMINISTIC
+    # hierarchy path (see _detect_deterministic_subtrees) -- entirely
+    # separate from analysis_client above (which drives the LLM-analyzed
+    # residual, if any). None (the default) is byte-identical to before
+    # this capability existed: deterministic nodes keep their own
+    # extract_baseline_title-derived titles and empty tags.
+    title_tag_client: TitleTagClient | None = None,
+    # Optional requirement-TEXT synthesis for deterministic leaves flagged
+    # needs_synthesis (see id_hierarchy.HierarchyRow's own docstring for
+    # the per-root-subtree fragment gate that sets it) -- None (the
+    # default) is byte-identical to before this capability existed: a
+    # flagged leaf keeps its raw, verbatim source text exactly as
+    # constructed.
+    synthesis_client: SynthesisClient | None = None,
+    # Optional near-duplicate conflict detection (see
+    # _detect_conflicting_duplicates's own docstring) -- None (the
+    # default) is byte-identical to before this capability existed: a
+    # near-duplicate Requirement pair is never checked for conflict.
+    conflict_client: ConflictJudgeClient | None = None,
+    # Optional topical root regrouping (see
+    # _regroup_disconnected_roots's own docstring) -- None (the default)
+    # is byte-identical to before this capability existed: disconnected
+    # root nodes are left exactly as-is.
+    grouping_client: RootGroupingClient | None = None,
 ) -> WorkItemTree:
     """SURVEY-mode leveling entry point. Splits the document into top-level
     branches (_split_into_branches, the same depth-1-heading split
@@ -757,6 +1182,137 @@ def build_survey_tree(
     that catalog is dropped too. A link's target_ref is classified as
     intraJob when it matches another node's local_id in this same tree, and
     as crossJob (an opaque customer-id string) otherwise."""
+    # Deterministic hierarchy detection (table-row / ID-bearing-heading /
+    # structural-heading conventions -- see _detect_deterministic_subtrees's
+    # own docstring) runs BEFORE anything else in this function: every
+    # claimed block/table is removed from `doc` for the remainder of this
+    # function (via `llm_doc`), so the existing LLM-driven machinery below
+    # is completely unaware this detection ever happened for a document
+    # that doesn't use any of these conventions -- `llm_doc is doc` in that
+    # case (a true no-op, not a copy).
+    det_nodes, det_warnings, llm_doc = _detect_deterministic_subtrees(
+        doc, customer_id, title_tag_client, synthesis_client,
+    )
+
+    if llm_doc.blocks == [] and llm_doc.tables == [] and llm_doc.figures == []:
+        # Pure-deterministic guard: this document's ENTIRE real content was
+        # already claimed above -- skip the whole-doc-gate/branch-splitting/
+        # analysis_client machinery entirely rather than firing it on empty
+        # input. Everything else a normal SURVEY document gets -- KB
+        # retrieval + rubric-checklist grounding for scoring, and whole-tree
+        # trace-link inference -- previously was NOT run here at all
+        # (confirmed live: every node from a real job came back with
+        # `tags: []` and no trace links even where the source text had
+        # clear cross-references like "see Requirement 282393"). Uses `doc`
+        # -- still the ORIGINAL, full document at this point, since the
+        # `doc = llm_doc` reassignment below hasn't happened yet -- so the
+        # KB query is grounded in real document content, not the (empty)
+        # residual.
+        all_nodes: list[WorkItemNode] = list(det_nodes)
+        all_warnings: list[str] = list(det_warnings)
+
+        # Real gap (user-reported, live): KB retrieval right below can take
+        # real time (a network/embedding call), and this guard path's own
+        # first progress_callback call otherwise doesn't fire until scoring
+        # starts -- a silent window with nothing newer than parse_done to
+        # show, which made the UI's "Reading document" step look stuck.
+        if progress_callback is not None:
+            progress_callback(
+                LevelingProgress(
+                    phase="preparing_analysis", branch_index=None, branch_count=0,
+                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    model=getattr(analysis_client, "model", None),
+                )
+            )
+
+        kb_deps_present = (
+            user_id is not None and embed_client is not None and vector_store is not None
+        )
+        doc_kb_context: str | None = None
+        doc_kb_citations: list[KbCitation] = []
+        if kb_deps_present:
+            query_text = _document_level_query_text(doc)
+            doc_kb_context, raw_doc_citations = retrieve_context(
+                user_id, query_text, embed_client, vector_store,
+            )
+            doc_kb_citations = _resolve_kb_citations(
+                query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture
+            )
+        deduped_citations = sorted(doc_kb_citations, key=lambda c: c.source_file)
+
+        if scoring_client is not None:
+            model_name = getattr(analysis_client, "model", None)
+            requirement_nodes = [
+                node for node in all_nodes if node.type == WorkItemType.REQUIREMENT
+            ]
+            if requirement_nodes:
+                # Same cross-run determinism convention the LLM-analysis
+                # path already uses (see its own comment further down this
+                # function): a fixed, pre-extracted checklist for the most
+                # relevant grounding document, if one exists, takes priority
+                # over asking the scoring model to derive categories live.
+                category_checklist: list[str] | None = None
+                if vector_store is not None and user_id is not None:
+                    sorted_citations = sorted(
+                        doc_kb_citations, key=lambda c: c.similarity, reverse=True,
+                    )
+                    for citation in sorted_citations:
+                        checklist = vector_store.get_quality_checklist(
+                            user_id, citation.source_file,
+                        )
+                        if checklist:
+                            category_checklist = checklist
+                            break
+                _score_all_requirements(
+                    requirement_nodes, scoring_client, all_warnings, criteria_retriever,
+                    doc_kb_context, doc_kb_citations, progress_callback, model_name,
+                    len(det_nodes), 0, category_checklist,
+                )
+            _score_epics_and_features(
+                all_nodes, scoring_client, all_warnings, progress_callback, model_name,
+                len(det_nodes), 0, debug_capture=debug_capture,
+            )
+
+        _detect_conflicting_duplicates(
+            all_nodes, embed_client, conflict_client, all_warnings,
+            progress_callback, len(det_nodes), 0,
+        )
+        _regroup_disconnected_roots(
+            all_nodes, "regroup_", grouping_client, all_warnings,
+            progress_callback, len(det_nodes), 0,
+        )
+        _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
+        recompute_child_types(all_nodes)
+
+        trace_links: list[TraceLink] = []
+        if link_type_client is not None:
+            trace_links = _infer_trace_links_for_nodes(
+                all_nodes, link_type_client, link_type_catalog or [], all_warnings,
+                progress_callback, len(det_nodes), 0, debug_capture=debug_capture,
+            )
+
+        return WorkItemTree(
+            nodes=all_nodes, warnings=all_warnings,
+            kb_citations=deduped_citations, trace_links=trace_links,
+        )
+
+    doc = llm_doc  # every remaining read below sees only the residual, non-claimed content
+
+    # Real gap (user-reported, live): confirmed on a real job, a multi-
+    # minute silent window between parse_done and the first analyze_section
+    # event, during which branch splitting/merging and KB retrieval (a real
+    # network/embedding call) run with zero narration -- the UI's "Reading
+    # document" step looked permanently stuck even though the pipeline had
+    # already moved on.
+    if progress_callback is not None:
+        progress_callback(
+            LevelingProgress(
+                phase="preparing_analysis", branch_index=None, branch_count=0,
+                blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                model=getattr(analysis_client, "model", None),
+            )
+        )
+
     branch_cap, context_budget_tokens, coverage_budget_tokens, supports_tools = _resolve_caps(model)
 
     # §3: whole-document single-call gate. A single long-context call over
@@ -786,6 +1342,15 @@ def build_survey_tree(
     # bug). Only meaningful on the single-branch path (whole_document=True
     # there); the multi-branch loop never uses it.
     heading_count = sum(1 for b in doc.blocks if b.kind == BlockKind.HEADING)
+    # Confirmed real gap, live-tested: source TABLE rows that are pure group
+    # labels (a dotted-ID row with no 'shall' statement, grouping 2+ child
+    # rows -- e.g. "1.2.1 Display", "2.2.4 Media Buttons") never contributed
+    # to this floor at all -- heading_count only ever looked at
+    # BlockKind.HEADING blocks. Folded ADDITIVELY into the same topic_count
+    # integer below (one coherent floor number in the prompt, not a second
+    # parallel N) -- see table_groups.qualifying_table_groups's own
+    # docstring for the detection heuristic and its documented limitations.
+    doc_table_groups = qualifying_table_groups(doc.tables)
 
     global_context: str | None = None
     if fits_whole_document:
@@ -891,8 +1456,12 @@ def build_survey_tree(
         def read_other_section_fn(section_id: str, _texts=branch_texts_by_id) -> str | None:
             return _texts.get(section_id)
 
-    all_nodes: list[WorkItemNode] = []
-    all_warnings: list[str] = []
+    # Deterministic nodes first -- they are the source-derived primary
+    # structure this document's own author wrote; the LLM-handled residual
+    # (below) is appended after. No cheap document-order key exists across
+    # the two (LLM nodes share a coarse branch-representative source_ref).
+    all_nodes: list[WorkItemNode] = list(det_nodes)
+    all_warnings: list[str] = list(det_warnings)
     all_kb_citations: list[KbCitation] = list(doc_kb_citations)
     # Every branch's own scoring-grounding text (see _BranchAnalysisResult's
     # docstring) -- collected here so the single whole-document scoring pass
@@ -941,7 +1510,8 @@ def build_survey_tree(
             # branch on the doesn't-fit path (§4), which is NOT the
             # whole-doc-gate's "fits in one call outright" case.
             whole_document=(global_context is None),
-            topic_count=heading_count,
+            topic_count=heading_count + len(doc_table_groups),
+            table_groups=doc_table_groups,
             branch_index=0, branch_count=1, blocks_done_before=0, blocks_total=blocks_total,
             progress_callback=progress_callback,
         )
@@ -960,6 +1530,15 @@ def build_survey_tree(
             # which previously passed no topic_count here at all. See
             # orchestrator_llm_client._branch_topic_hint's own docstring.
             branch_heading_count = sum(1 for b in branch_blocks if b.kind == BlockKind.HEADING)
+            # Per-branch table-group floor -- mirrors branch_heading_count's
+            # own per-branch scoping directly above. A single Table's rows
+            # are never split across branches (branch_tables buckets whole
+            # tables by source_ref, see _partition_tables_by_branch), so
+            # this only ever sees the table(s) actually routed to THIS
+            # branch, never another branch's groups.
+            branch_table_groups = qualifying_table_groups(
+                branch_tables[branch_index] if branch_tables is not None else None
+            )
             branch_result = _build_survey_tree_for_branch(
                 branch_blocks, analysis_client,
                 node_id_prefix=f"br{branch_index}_", customer_id=customer_id,
@@ -967,7 +1546,8 @@ def build_survey_tree(
                 supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
                 list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
                 global_context=global_context, read_other_section_fn=read_other_section_fn,
-                topic_count=branch_heading_count,
+                topic_count=branch_heading_count + len(branch_table_groups),
+                table_groups=branch_table_groups,
                 branch_index=branch_index, branch_count=len(branches), blocks_done_before=blocks_done,
                 blocks_total=blocks_total, progress_callback=progress_callback,
             )
@@ -1036,220 +1616,27 @@ def build_survey_tree(
             debug_capture=debug_capture,
         )
 
+    _detect_conflicting_duplicates(
+        all_nodes, embed_client, conflict_client, all_warnings,
+        progress_callback, blocks_total, len(branches),
+    )
+    _regroup_disconnected_roots(
+        all_nodes, "regroup_", grouping_client, all_warnings,
+        progress_callback, blocks_total, len(branches),
+    )
+    _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
+    recompute_child_types(all_nodes)
+
     trace_links: list[TraceLink] = []
     if link_type_client is not None:
-        catalog = link_type_catalog or []
-        valid_reference_names = {entry["reference_name"] for entry in catalog}
-        node_by_local_id = {node.local_id: node for node in all_nodes}
-        # title dropped -- description already carries the same content, and
-        # the model references node_id (not title) in its output; sending
-        # both wasted ~8-12 tokens/node for no signal. text is NOT truncated
-        # here (and must not be) -- external ref ids like "REQ-SYS-012" can
-        # appear anywhere in the description and the prompt above depends on
-        # seeing them in full.
-        llm_nodes = [
-            {"node_id": node.local_id, "type": node.type.value, "text": node.description}
-            for node in all_nodes
-        ]
-        # Trace-link inference judges relationships between already-generated
-        # nodes, not raw source text, so it isn't grounded against KB context
-        # the way the other three calls are -- passing None here is a
-        # deliberate simplification, not an oversight.
-        if progress_callback is not None:
-            progress_callback(
-                LevelingProgress(
-                    phase="infer_trace_links", branch_index=None, branch_count=len(branches),
-                    blocks_done=blocks_total, blocks_total=blocks_total, kb_grounded=False, kb_citations=[],
-                    model=getattr(link_type_client, "model", None),
-                )
-            )
-        # Confirmed real job failure: this call serializes EVERY node in the
-        # whole document into one prompt (the largest single payload in this
-        # module) and, unlike analyze_section/scoring, has no fallback
-        # degradation of its own -- a model occasionally ignoring the "no
-        # prose" instruction (observed live: a 5-character non-JSON reply,
-        # 'Based') previously raised ValueError and aborted the ENTIRE job,
-        # discarding all already-completed analysis and scoring work over
-        # what is purely an enrichment pass. Same "must never fail a SURVEY
-        # job" fail-open philosophy already applied to KB retrieval
-        # (retrieve_context) and KB relevance verification
-        # (_resolve_kb_citations) above -- trace links degrade to [], not
-        # the whole job.
-        try:
-            raw_links = link_type_client.infer_trace_links(llm_nodes, catalog, kb_context=None)
-        except ValueError as exc:
-            logger.warning("Trace-link inference failed: %s", exc)
-            if debug_capture is not None:
-                debug_capture.capture("infer_trace_links", "document", str(exc))
-            all_warnings.append(
-                "Trace/coverage link inference failed for this document -- no trace links were added, "
-                "but every proposed work item above is otherwise unaffected."
-            )
-            raw_links = []
-        catalog_by_ref = {entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog}
-        for raw_link in raw_links:
-            source_node_id = raw_link.get("source_node_id")
-            reference_name = raw_link.get("reference_name")
-            target_ref = raw_link.get("target_ref")
-            if source_node_id not in node_by_local_id:
-                continue
-            if catalog and reference_name not in valid_reference_names:
-                continue
-            if target_ref in node_by_local_id:
-                trace_links.append(
-                    TraceLink(
-                        source_local_id=source_node_id,
-                        reference_name=reference_name,
-                        display_name=catalog_by_ref.get(reference_name, reference_name),
-                        target_kind=TraceLinkTargetKind.INTRA_JOB,
-                        target_local_id=target_ref,
-                        resolution_status=TraceLinkResolutionStatus.PENDING,
-                    )
-                )
-            elif target_ref:
-                trace_links.append(
-                    TraceLink(
-                        source_local_id=source_node_id,
-                        reference_name=reference_name,
-                        display_name=catalog_by_ref.get(reference_name, reference_name),
-                        target_kind=TraceLinkTargetKind.CROSS_JOB,
-                        target_customer_id=target_ref,
-                        resolution_status=TraceLinkResolutionStatus.PENDING,
-                    )
-                )
+        trace_links = _infer_trace_links_for_nodes(
+            all_nodes, link_type_client, link_type_catalog or [], all_warnings,
+            progress_callback, blocks_total, len(branches), debug_capture=debug_capture,
+        )
 
     return WorkItemTree(nodes=all_nodes, warnings=all_warnings, kb_citations=deduped_citations, trace_links=trace_links)
 
 
-def _repair_requirement_hierarchy(nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[str]) -> None:
-    """Confirmed real bug (user-reported): the model occasionally ignores
-    the strict Epic->Feature->Requirement chain the prompt now explicitly
-    states (see _SECTION_ANALYSIS_SYSTEM_PROMPT's hierarchy paragraph) --
-    emitting a Requirement directly under an Epic, chained under another
-    Requirement, or with no parent at all even though Epic/Feature nodes
-    exist elsewhere in the same branch. A prompt instruction alone is a
-    soft LLM signal with no backstop (confirmed: this codebase's own tests
-    already had fixtures asserting two sibling-root Requirements as
-    unremarkable output before this fix). This runs once per branch, after
-    every node already exists, mutating `nodes` in place.
-
-    For each Requirement whose resolved parent isn't a Feature: walks UP
-    the existing parent chain looking for the nearest real Feature
-    ancestor (handles a Requirement->Requirement->...->Feature chain
-    correctly, not just a single bad hop) and re-parents there. Falls back
-    to the branch's first real Feature if none is found on that specific
-    chain, and only as an absolute last resort -- no Feature exists in the
-    branch at all -- synthesizes ONE grouping Feature (created lazily, at
-    most once) so the chain is never broken by a hole neither the model
-    nor this repair can fill from what's already there."""
-    by_id = {node.local_id: node for node in nodes}
-    synthesized_feature: WorkItemNode | None = None
-    # Precomputed once, not per violating Requirement -- the null-parent
-    # branch below previously ran two full `any(...)` scans over `nodes`
-    # PER violation, and the Feature-fallback ran a third full scan
-    # (`next(...)`) per violation, making a from-scratch-heavy branch
-    # O(n^2). Only bites at very large branch sizes (frontier-model branch
-    # caps, _ModelCaps.branch_cap=100_000) -- at today's typical branch
-    # sizes this was invisible, but cheap to fix regardless.
-    root_count = sum(1 for n in nodes if n.parent_local_id is None)
-    has_epic_or_feature = any(n.type in (WorkItemType.EPIC, WorkItemType.FEATURE) for n in nodes)
-    first_feature = next((n for n in nodes if n.type == WorkItemType.FEATURE), None)
-
-    def ensure_bridge_feature(requirement: WorkItemNode) -> WorkItemNode:
-        nonlocal synthesized_feature, has_epic_or_feature
-        if synthesized_feature is not None:
-            return synthesized_feature
-        synth_id = f"{node_id_prefix}synth_feature"
-        feature = WorkItemNode(
-            local_id=synth_id,
-            type=WorkItemType.FEATURE,
-            parent_local_id=None,
-            title=f"(auto-grouped) {requirement.title[:60]}",
-            description=(
-                "Auto-inserted grouping Feature -- the model emitted one or more "
-                "Requirements in this section without a Feature parent."
-            ),
-            customer_id=requirement.customer_id,
-            source_ref=requirement.source_ref,
-            fidelity_hash=hashlib.sha256(synth_id.encode()).hexdigest(),
-            identity_hash=_hash_identity(synth_id, requirement.source_ref),
-            tags=[],
-            mode=WorkItemMode.SURVEY,
-            grounding_score=1.0,
-        )
-        nodes.append(feature)
-        by_id[feature.local_id] = feature
-        message = (
-            f"Section ({node_id_prefix.rstrip('_') or '(root)'}) had Requirement(s) with no Feature "
-            "ancestor anywhere in the branch -- inserted a synthesized grouping Feature to keep the "
-            "Epic -> Feature -> Requirement chain intact."
-        )
-        logger.warning(message)
-        warnings.append(message)
-        synthesized_feature = feature
-        # The synthesized Feature makes has_epic_or_feature true from this
-        # point on (it can only ever become MORE true, never less, as nodes
-        # are added) -- must be updated in place so a LATER root Requirement
-        # correctly sees this bridge as a real Feature ancestor requiring
-        # repair, not a stale "no Feature anywhere" snapshot.
-        has_epic_or_feature = True
-        return feature
-
-    for node in list(nodes):
-        if node.type != WorkItemType.REQUIREMENT:
-            continue
-        parent = by_id.get(node.parent_local_id) if node.parent_local_id else None
-        if parent is None:
-            # A null parent is only a violation if this Requirement ISN'T
-            # genuinely the section's sole root -- i.e. some other node
-            # already owns that slot, or an Epic/Feature exists elsewhere
-            # in this branch that should have been its real ancestor.
-            # root_count was computed once, before this loop -- node itself
-            # is only counted in it when node.parent_local_id is None (the
-            # dangling-parent-id case below reaches here with a non-None
-            # parent_local_id that just failed to resolve, so node is NOT
-            # one of the counted roots in that case).
-            other_root_exists = (root_count > 1) if node.parent_local_id is None else (root_count > 0)
-            violates = other_root_exists or has_epic_or_feature
-        else:
-            violates = parent.type != WorkItemType.FEATURE
-        if not violates:
-            continue
-
-        original_parent_label = "no parent" if parent is None else f"a {parent.type.value} parent"
-        # Walk up the (possibly Requirement-chained) parent links looking
-        # for the nearest real Feature ancestor before giving up.
-        ancestor_id = node.parent_local_id
-        seen_ids: set[str] = set()
-        nearest_feature: WorkItemNode | None = None
-        while ancestor_id and ancestor_id not in seen_ids:
-            seen_ids.add(ancestor_id)
-            ancestor = by_id.get(ancestor_id)
-            if ancestor is None:
-                break
-            if ancestor.type == WorkItemType.FEATURE:
-                nearest_feature = ancestor
-                break
-            ancestor_id = ancestor.parent_local_id
-        target = (
-            nearest_feature
-            # first_feature was computed once, before this loop -- node is
-            # always type REQUIREMENT here (filtered at the top of the
-            # loop), so it can never equal first_feature (a FEATURE),
-            # matching the original per-node scan's "and n is not node"
-            # guard without needing to re-check it.
-            or first_feature
-            or ensure_bridge_feature(node)
-        )
-        if target.local_id == node.local_id or node.parent_local_id == target.local_id:
-            continue
-        message = (
-            f"Node {node.local_id} (Requirement) had {original_parent_label} -- re-parented under "
-            f"Feature {target.local_id} to keep the Epic -> Feature -> Requirement chain intact."
-        )
-        logger.warning(message)
-        warnings.append(message)
-        node.parent_local_id = target.local_id
 
 
 class _BranchAnalysisResult(NamedTuple):
@@ -1283,6 +1670,13 @@ def _build_survey_tree_for_branch(
     read_other_section_fn: Callable[[str], str | None] | None = None,
     whole_document: bool = False,
     topic_count: int | None = None,
+    # Full TableGroupInfo objects (label + child_count + id_text) for THIS
+    # branch's own qualifying table groups -- used two ways below: reduced
+    # to bare labels and forwarded to the analysis client for the
+    # generation-time hint, and kept in full for the post-hoc coverage-check
+    # warning after nodes are built (see qualifying_table_groups's own
+    # docstring for the detection heuristic).
+    table_groups: list[TableGroupInfo] | None = None,
     branch_index: int = 0,
     branch_count: int = 1,
     blocks_done_before: int = 0,
@@ -1400,11 +1794,32 @@ def _build_survey_tree_for_branch(
     # scoring. Defaults to the outer `kb_context` param (fallback path, or
     # None when no query_kb calls happened / no KB deps at all).
     scoring_kb_context = kb_context
+    # (label, suggested_type) pairs cross into the client -- child_count/
+    # id_text are this function's own bookkeeping for the coverage-check
+    # warning below, the client only needs to know what to name AND what
+    # type to use for its prompt hint (see qualifying_table_groups's own
+    # docstring for how suggested_type is determined).
+    table_group_hints = (
+        [(g.label, g.suggested_type) for g in table_groups] if table_groups else None
+    )
+    # Count of this branch's own independent top-level table groups (no
+    # common ancestor in the table's ID hierarchy) -- e.g. "Television
+    # Receiver" and "Remote Control" each their own root Epic. Confirmed
+    # live: both were already individually named in table_group_hints, yet
+    # the model still invented a single wrapping root, because the base
+    # prompt's hardcoded "at most ONE null-parent node" rule left no room
+    # for a real multi-root document. `None` (fewer than 2 top-level
+    # groups, or no qualifying groups at all) preserves today's exact
+    # single-root prompt wording -- see
+    # orchestrator_llm_client._root_count_clause's own docstring.
+    top_level_group_count = sum(1 for g in (table_groups or []) if g.is_top_level)
+    expected_root_count = top_level_group_count if top_level_group_count >= 2 else None
     if supports_tools and retrieve_fn is not None:
         _fire("analyze_section", kb_grounded=False, kb_citations_raw=[])
         raw_nodes, raw_hits, truncated = analysis_client.analyze_section_agentic(
             section_text, retrieve_fn, list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
             read_other_section_fn=read_other_section_fn, whole_document=whole_document, topic_count=topic_count,
+            table_group_hints=table_group_hints, expected_root_count=expected_root_count,
         )
         # The model chose to pull and use these snippets itself, so relevance
         # verification (kb_relevance_client) doesn't apply on this path --
@@ -1447,7 +1862,9 @@ def _build_survey_tree_for_branch(
         )
         _fire("analyze_section", kb_grounded=bool(kb_context), kb_citations_raw=kb_citations_raw_dicts)
         raw_nodes, truncated = analysis_client.analyze_section(
-            section_text, kb_context=kb_context, whole_document=whole_document, topic_count=topic_count
+            section_text, kb_context=kb_context, whole_document=whole_document,
+            topic_count=topic_count, table_group_hints=table_group_hints,
+            expected_root_count=expected_root_count,
         )
         kb_citations = []  # doc-level citations are collected once in build_survey_tree, not per-branch
 
@@ -1547,6 +1964,16 @@ def _build_survey_tree_for_branch(
     # this branch already exists, so it can walk the real parent chain.
     _repair_requirement_hierarchy(nodes, node_id_prefix, warnings)
 
+    # Correct known-wrong ATTACHMENT for a group that otherwise generated
+    # correctly (right type, right content, right children) -- see
+    # _repair_group_attachment's own docstring for why this runs as a
+    # deterministic post-hoc repair instead of more prompt tuning. Runs
+    # after _repair_requirement_hierarchy so a node that was JUST re-parented
+    # onto a real Feature (type-repair) can still be corrected to the
+    # SPECIFIC right Feature/Epic here if the table's own ID hierarchy says
+    # otherwise.
+    _repair_group_attachment(nodes, table_groups, node_id_prefix, warnings)
+
     if not nodes and (blocks or tables or figures):
         # A non-empty branch contributing exactly 0 nodes was previously
         # silent (only a debug-level logger.warning inside
@@ -1607,6 +2034,31 @@ def _build_survey_tree_for_branch(
         logger.warning(message)
         warnings.append(message)
 
+    # Table-group coverage check -- the "catch" half of this fix, pairing
+    # with the generation-time floor (topic_count + _table_group_hint)
+    # threaded in above, which is the "steer" half. Steering can still fail
+    # even with a good hint (confirmed live: the floor alone doesn't
+    # guarantee every named group gets used) -- this gives a human-visible
+    # signal when it does, the same complementary relationship
+    # topic_count/_whole_document_hint (steer) and the dropped_blocks check
+    # above (catch) already have for paragraph blocks. A missing table
+    # group previously produced ZERO warning of any kind (the dropped_blocks
+    # check above only ever scans `blocks`, never table rows).
+    missing_groups = [
+        g for g in (table_groups or []) if not _group_label_became_a_node(g.label, nodes)
+    ]
+    if missing_groups:
+        group_previews = "; ".join(
+            f"'{g.label}' (row {g.id_text}, {g.child_count} children)" for g in missing_groups[:10]
+        )
+        message = (
+            f"{len(missing_groups)} source table group(s) with 2+ child items of their own did not "
+            "produce a distinctly-titled node in SURVEY analysis (their children may have been "
+            f"folded into a broader ancestor instead): {group_previews}"
+        )
+        logger.warning(message)
+        warnings.append(message)
+
     warnings.extend(_referenced_attachment_warnings(section_text, node_id_prefix))
 
     # Quality scoring moved to whole-document scope (see
@@ -1649,298 +2101,3 @@ def _build_survey_tree_for_branch(
         scoring_kb_context=scoring_kb_context,
     )
 
-
-def _build_criteria_context(criteria_retriever: CriteriaRetriever, nodes: list[WorkItemNode]) -> str:
-    """Retrieves the top-k criteria most relevant to this BRANCH's nodes as a
-    whole (one retrieve() call on the concatenated descriptions, not one per
-    node -- see CriteriaRetriever's docstring for why), formatted as plain
-    reference text the scoring prompt can cite. Empty string if the branch's
-    nodes have no description text at all (nothing to retrieve against)."""
-    combined_text = " ".join(node.description for node in nodes if node.description)
-    if not combined_text.strip():
-        return ""
-    criteria = criteria_retriever.retrieve(combined_text)
-    return "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
-
-
-# §2c: output-token budget derived cap, not an arbitrary round number --
-# _MAX_OUTPUT_TOKENS (orchestrator_llm_client.py) is 20_000; a scoring
-# response entry (score + up to 7 issue tags + a 5-field categoryScores
-# breakdown) runs ~80 tokens/node observed live, and reserving 40% of the
-# cap for JSON structural overhead (braces, keys, node_id strings) leaves
-# room for ~150 nodes before a single call risks truncation.
-_SCORING_CHUNK_NODE_COUNT = 150
-
-
-def _score_all_requirements(
-    nodes: list[WorkItemNode],
-    scoring_client: BatchedScoringClient,
-    warnings: list[str],
-    criteria_retriever: CriteriaRetriever | None,
-    kb_context: str | None,
-    kb_citations: list[KbCitation],
-    progress_callback: ProgressCallback | None,
-    model_name: str | None,
-    blocks_total: int,
-    branch_count: int,
-    category_checklist: list[str] | None = None,
-) -> None:
-    """Whole-document quality scoring (§2c redesign): replaces the old
-    one-batched-call-per-branch design with one (or, for a very large
-    document, a handful of chunked) call(s) over every Requirement-type node
-    across the WHOLE document -- fewer, larger LLM calls instead of many
-    small ones, the same token-efficiency motivation as this module's other
-    batching decisions. `nodes` mutated in place via _apply_quality_scores,
-    same as before.
-
-    `criteria_context` is built ONCE here (over every requirement node's
-    description, not per chunk) -- see _build_criteria_context's own
-    per-call docstring for why a single retrieve() call over the combined
-    text is preferred to one per node; doing it once here instead of once
-    per chunk is the same principle applied one level up.
-
-    Chunked by _SCORING_CHUNK_NODE_COUNT so a document with hundreds of
-    requirement nodes doesn't risk one call's output being truncated by the
-    model's output-token cap (see that constant's own docstring). A
-    document with <= that many requirement nodes (the common case) makes
-    exactly one call, byte-identical in spirit to the old per-branch design
-    when there was only one branch."""
-    if not nodes:
-        return
-    criteria_context = (
-        _build_criteria_context(criteria_retriever, nodes)
-        if criteria_retriever is not None
-        else None
-    )
-    kb_citations_raw = [
-        {"source_file": c.source_file, "similarity": c.similarity} for c in kb_citations
-    ]
-
-    def _fire(phase: Phase, chunk: list[WorkItemNode], issues_found: int | None = None) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(
-            LevelingProgress(
-                # branch_index=None + the document's REAL branch_count (not
-                # hardcoded 1) -- SectionStepList's rendering (ProgressBanner.tsx)
-                # derives its section-count display from the latest event's
-                # own branchCount, so hardcoding 1 here would visibly shrink
-                # the section list to 1 for the duration of scoring.
-                phase=phase, branch_index=None, branch_count=branch_count,
-                blocks_done=blocks_total, blocks_total=blocks_total,
-                kb_grounded=bool(kb_context), kb_citations=kb_citations_raw,
-                model=model_name, draft_count=len(chunk), issues_found=issues_found,
-            )
-        )
-
-    for start in range(0, len(nodes), _SCORING_CHUNK_NODE_COUNT):
-        chunk = nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
-        _fire("score_requirements", chunk)
-        _apply_quality_scores(chunk, scoring_client, warnings, "", criteria_context, kb_context, category_checklist)
-        issues_found = sum(len(node.quality_issues) for node in chunk)
-        _fire("score_requirements_done", chunk, issues_found=issues_found)
-
-
-def _score_epics_and_features(
-    nodes: list[WorkItemNode],
-    scoring_client: object,
-    warnings: list[str],
-    progress_callback: ProgressCallback | None,
-    model_name: str | None,
-    blocks_total: int,
-    branch_count: int,
-    debug_capture: "DebugCapture | None" = None,
-) -> None:
-    """Epic/Feature quality review -- the counterpart to
-    _score_all_requirements, run separately (see
-    OrchestratorLlmClient.score_epics_and_features_for_document's own
-    docstring for why this is a different call/prompt, not the same one
-    widened). Optional capability: `scoring_client` is duck-typed via
-    getattr rather than a required Protocol method, since a test double (or
-    a future scoring backend) implementing only score_requirements_for_
-    document must keep working unchanged -- reusing this same object
-    (rather than a second constructor param) since the real
-    OrchestratorLlmClient implements both. Reuses the existing
-    score_requirements/score_requirements_done narration phases (no new
-    Phase enum value needed for what is, narration-wise, a brief
-    continuation of the same "scoring" activity) -- draft_count reflects
-    however many Epic/Feature nodes this pass covers, distinguishing it
-    from the Requirement pass's own count.
-
-    A failure here (network error, malformed response) is an enhancement
-    failing, never a reason to fail the whole SURVEY job -- caught, logged,
-    and warned, same tolerant philosophy as every other best-effort scoring
-    path in this module. quality_issues is deliberately left untouched
-    ([], its default) -- see epic_feature_scores_schema's own docstring for
-    why Epic/Feature review has no issues vocabulary."""
-    score_fn = getattr(scoring_client, "score_epics_and_features_for_document", None)
-    if score_fn is None:
-        return
-    epic_feature_types = (WorkItemType.EPIC, WorkItemType.FEATURE)
-    epic_feature_nodes = [
-        node
-        for node in nodes
-        if node.type in epic_feature_types
-        # A bridge Feature synthesized by _repair_requirement_hierarchy
-        # (local_id always ends "synth_feature", see ensure_bridge_feature)
-        # was never a real authorial decision -- it's a mechanically
-        # inserted grouping node whose own description literally says so
-        # ("Auto-inserted grouping Feature..."). Scoring it against
-        # scopeCoherence/capabilityClarity would produce a guaranteed-low,
-        # misleading score the reviewer can't act on, so it's excluded from
-        # Epic/Feature quality review entirely rather than scored and shown
-        # as if it were a real quality judgment.
-        and not node.local_id.endswith("synth_feature")
-    ]
-    if not epic_feature_nodes:
-        return
-
-    def _fire(phase: Phase, chunk: list[WorkItemNode]) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(
-            LevelingProgress(
-                phase=phase, branch_index=None, branch_count=branch_count,
-                blocks_done=blocks_total, blocks_total=blocks_total,
-                kb_grounded=False, kb_citations=[],
-                model=model_name, draft_count=len(chunk),
-            )
-        )
-
-    for start in range(0, len(epic_feature_nodes), _SCORING_CHUNK_NODE_COUNT):
-        chunk = epic_feature_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
-        nodes_by_id = {
-            node.local_id: {"type": node.type.value, "text": node.description} for node in chunk
-        }
-        _fire("score_requirements", chunk)
-        try:
-            scores_by_id = score_fn(nodes_by_id)
-        except Exception as exc:  # noqa: BLE001 - Epic/Feature scoring must never fail a SURVEY job
-            message = f"Epic/Feature quality scoring failed: {exc}"
-            logger.warning(message)
-            if debug_capture is not None:
-                debug_capture.capture("score_epics_and_features", f"chunk_{start}", str(exc))
-            warnings.append(message)
-            continue
-        for node in chunk:
-            entry = scores_by_id.get(node.local_id)
-            if not isinstance(entry, dict):
-                continue
-            raw_score = entry.get("score")
-            is_int = isinstance(raw_score, int) and not isinstance(raw_score, bool)
-            if is_int and 0 <= raw_score <= 100:
-                node.quality_score = raw_score
-            node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
-        _fire("score_requirements_done", chunk)
-
-
-def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
-    """Tolerant of a missing/malformed/wrongly-shaped categoryScores entry --
-    same all-or-nothing philosophy as quality_score itself: any single
-    dimension being absent, non-int, or out of 0-100 range discards the
-    WHOLE breakdown for this node (a partial breakdown would be misleading
-    -- e.g. showing clarity but silently omitting testability reads as
-    "testability wasn't judged" rather than "the model's response was
-    malformed"), falling back to quality_category_scores=None, never
-    crashing the batch.
-
-    Dynamic keys (not the old fixed clarity/testability/atomicity/style/
-    rationale 5-tuple) -- see QualityCategoryScores' own docstring (app.
-    workitem.model) for why: an org's ingested KB checklist can define its
-    own category names. Still requires at least one entry and every value
-    to be a genuine 0-100 int -- an empty object or one malformed value
-    still discards the whole thing, same tolerance as before."""
-    if not isinstance(raw, dict) or not raw:
-        return None
-    values: dict[str, int] = {}
-    for key, value in raw.items():
-        if not isinstance(value, int) or isinstance(value, bool) or not (0 <= value <= 100):
-            return None
-        values[key] = value
-    return values
-
-
-def _apply_quality_scores(
-    nodes: list[WorkItemNode],
-    scoring_client: BatchedScoringClient,
-    warnings: list[str],
-    node_id_prefix: str,
-    criteria_context: str | None = None,
-    kb_context: str | None = None,
-    category_checklist: list[str] | None = None,
-) -> None:
-    """Judges every node's FINAL formalized description in ONE batched call
-    (mutates `nodes` in place -- WorkItemNode is a plain, mutable pydantic
-    model). Tolerant of a missing, malformed (non-int, out of 0-100 range),
-    or wrongly-shaped scoring entry for one node_id -- falls back to
-    quality_score=None/quality_issues=[] for that node only, never crashes
-    the batch or affects sibling nodes, same philosophy as every other
-    LLM-response-parsing path in this module.
-
-    `criteria_context` is a PRECOMPUTED reference-criteria string (see
-    _build_criteria_context) -- built ONCE by the caller over the whole
-    document's requirement nodes, not per chunk, so a document scored across
-    several chunks (see _score_all_requirements) doesn't re-run retrieval
-    once per chunk. `kb_context` is the same SharePoint/OneDrive KB context
-    computed once for the whole document, threaded through for consistency.
-    `category_checklist` (see KbVectorStore.get_quality_checklist), when
-    supplied, is the FIXED categoryScores key list extracted once at KB
-    ingestion time for the grounding document -- takes priority over
-    `kb_context`'s own live-derive fallback (see score_requirements_for_
-    document's own docstring for the determinism guarantee this provides).
-    All three are independent/optional; omitting them is byte-identical to
-    before any of these capabilities existed."""
-    descriptions_by_node_id = {node.local_id: node.description for node in nodes}
-    scores_by_node_id = scoring_client.score_requirements_for_document(
-        descriptions_by_node_id, criteria_context, kb_context, category_checklist
-    )
-    valid_issue_values = {i.value for i in RequirementQualityIssue}
-
-    for node in nodes:
-        entry = scores_by_node_id.get(node.local_id)
-        if not isinstance(entry, dict):
-            continue
-        raw_score = entry.get("score")
-        if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100:
-            node.quality_score = raw_score
-        node.quality_issues = sorted(
-            {
-                RequirementQualityIssue(issue)
-                for issue in entry.get("issues", [])
-                if issue in valid_issue_values
-            },
-            key=lambda i: i.value,
-        )
-        node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
-
-    missing_or_invalid = [node.local_id for node in nodes if node.quality_score is None]
-    if missing_or_invalid:
-        message = (
-            f"Quality scoring returned no valid score for {len(missing_or_invalid)} node(s) in branch "
-            f"'{node_id_prefix or '(root)'}': {missing_or_invalid[:10]}"
-        )
-        logger.warning(message)
-        warnings.append(message)
-
-    # Determinism guard (user-reported concern): categoryScores keys are now
-    # dynamic (see QualityCategoryScores' own docstring) -- the model is
-    # instructed to fix its category names ONCE from the KB material and
-    # reuse the SAME set for every node in this call, but nothing besides
-    # the prompt enforces that. A model that drifts to a different key set
-    # partway through the SAME batched response is a real correctness
-    # signal worth surfacing to a reviewer (inconsistent categories would
-    # render as different gauge dimensions per node in the UI) -- not a
-    # crash, since each node's own breakdown is still independently valid.
-    scored_key_sets = {
-        frozenset(node.quality_category_scores.keys())
-        for node in nodes
-        if node.quality_category_scores
-    }
-    if len(scored_key_sets) > 1:
-        message = (
-            f"Quality scoring returned inconsistent categoryScores key sets across nodes in branch "
-            f"'{node_id_prefix or '(root)'}' ({len(scored_key_sets)} distinct sets) -- the model did not "
-            "use the same category names for every node in this batch."
-        )
-        logger.warning(message)
-        warnings.append(message)

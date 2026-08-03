@@ -14,13 +14,36 @@ logger = logging.getLogger(__name__)
 # actual expected job lifetime.
 _CURRENT_NARRATION_TTL_SECONDS = 3600
 
+# Real gap this closes (user-reported): a reconnecting client (page reload,
+# dropped SSE connection) previously only ever replayed the SINGLE latest
+# narration event (a `SET`-overwritten key) -- a full activity-log history
+# accumulated client-side in JobDetail.tsx's own React state was silently
+# lost on any reload, even though the job kept progressing server-side.
+# Bounded to match JobDetail.tsx's own client-side cap (`.slice(-50)`) --
+# replaying more than the frontend keeps anyway would be wasted bandwidth.
+_NARRATION_LOG_MAX_ENTRIES = 50
+
 Phase = Literal[
     "describe_figure",
     "parse_done",
+    # Real gap this closes (user-reported, live): a multi-minute SILENT
+    # window between parse_done and the first analyze_section event, during
+    # which build_survey_tree does real, sometimes-slow setup work (KB
+    # grounding retrieval, branch splitting/merging, deterministic-subtree
+    # detection) with zero narration -- the UI had nothing to show but the
+    # LAST real event (parse_done), which made the "Reading document" step
+    # indicator look permanently stuck even though the pipeline had already
+    # moved on to analysis. Fired exactly once, before that setup work
+    # begins, in both build_survey_tree's main path and its
+    # pure-deterministic guard (both do KB retrieval before their own first
+    # progress_callback call).
+    "preparing_analysis",
     "analyze_section",
     "score_requirements",
     "score_requirements_done",
     "section_complete",
+    "detect_conflicts",
+    "regroup_roots",
     "infer_trace_links",
 ]
 
@@ -122,10 +145,13 @@ def _truncate_caption(caption: str) -> str:
 _PHASE_MESSAGES: dict[Phase, str] = {
     "describe_figure": "Describing an embedded figure via the vision model",
     "parse_done": "Finished parsing the document",
+    "preparing_analysis": "Preparing analysis -- splitting sections, retrieving context",
     "analyze_section": "Analyzing and synthesizing requirements",
     "score_requirements": "Scoring requirement quality",
     "score_requirements_done": "Scoring complete",
     "section_complete": "Finished analyzing section",
+    "detect_conflicts": "Checking near-duplicate requirements for conflicting values",
+    "regroup_roots": "Grouping disconnected sections by topic",
     "infer_trace_links": "Resolving trace/coverage links",
 }
 
@@ -143,11 +169,23 @@ def _format_message(progress: LevelingProgress) -> str:
         # model see"). Without the second event, N figures produced N
         # identical "figure N so far" lines with no way to tell them apart
         # or spot which one the model actually failed to describe usefully.
-        if progress.figure_caption is not None:
-            index_prefix = f"Figure {progress.figure_index}: " if progress.figure_index is not None else "Figure: "
+        index_prefix = (
+            f"Figure {progress.figure_index}: " if progress.figure_index is not None else "Figure: "
+        )
+        if progress.figure_caption:
             return index_prefix + _truncate_caption(progress.figure_caption)
+        # `figure_caption == ""` (a real vision-model reply, just an empty
+        # one -- distinct from `None`, "in flight") previously produced a
+        # bare "Figure N: " with nothing after the colon -- confirmed live,
+        # a genuinely blank-looking activity-log line, exactly the kind of
+        # "cannot be blank" gap this narration system exists to prevent.
+        # Falls back to the same honest wording `None` already gets.
+        if progress.figure_caption is not None:
+            return index_prefix + "no useful caption returned"
         if progress.figure_index is not None:
             base += f" (figure {progress.figure_index} so far)"
+        return base
+    if progress.phase == "preparing_analysis":
         return base
     if progress.phase == "parse_done":
         parts = []
@@ -248,7 +286,14 @@ class NarrationPublisher:
             }
         )
         try:
-            self._redis.set(f"job-events:{self._job_id}:narration", payload, ex=_CURRENT_NARRATION_TTL_SECONDS)
+            # A bounded LIST (not the old single-key SET-overwrite) so a
+            # reconnecting client can replay the last N events, not just the
+            # very latest one -- see JobEventsController.streamEvents
+            # (orchestrator), which reads this same key via LRANGE.
+            log_key = f"job-events:{self._job_id}:narration-log"
+            self._redis.rpush(log_key, payload)
+            self._redis.ltrim(log_key, -_NARRATION_LOG_MAX_ENTRIES, -1)
+            self._redis.expire(log_key, _CURRENT_NARRATION_TTL_SECONDS)
             self._redis.publish(f"job-events:{self._job_id}", payload)
         except Exception as exc:  # noqa: BLE001 - narration must never fail a SURVEY job
             logger.warning("Failed to publish narration for job %s: %s", self._job_id, exc)

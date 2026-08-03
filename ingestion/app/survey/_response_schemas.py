@@ -195,3 +195,96 @@ def epic_feature_scores_schema() -> dict:
             },
         },
     }
+
+
+def title_tags_schema() -> dict:
+    """title_and_tags_for_rows (OrchestratorLlmClient, backing
+    TitleTagClient/id_tree_builder._apply_title_tag_pass): a dynamic
+    row-id-keyed object, same additionalProperties shape family as
+    scores_schema. 'tags' is constrained to the closed RequirementTag
+    vocabulary the same way _apply_title_tag_pass's own runtime filter
+    (`_VALID_TAGS`) already defends against -- this schema is the
+    generation-time tightening, that filter stays as defense-in-depth."""
+    return {
+        "name": "title_tags_by_row",
+        "schema": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string", "enum": _TAGS}},
+                },
+                "required": ["title", "tags"],
+            },
+        },
+    }
+
+
+def synthesis_schema() -> dict:
+    """synthesize_leaf_requirements (OrchestratorLlmClient, backing
+    SynthesisClient/id_tree_builder._apply_synthesis_pass): a dynamic
+    row-id-keyed object, same additionalProperties shape family as
+    title_tags_schema, plus the synthesized requirement 'text' itself."""
+    return {
+        "name": "synthesized_requirements_by_row",
+        "schema": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "text": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string", "enum": _TAGS}},
+                },
+                "required": ["title", "text", "tags"],
+            },
+        },
+    }
+
+
+def duplicate_cluster_verdict_schema() -> dict:
+    """judge_duplicate_cluster (OrchestratorLlmClient): a FIXED-shape
+    object, not a dynamic row-id-keyed one -- one verdict per cluster
+    call, not one per node (see this method's own docstring for why:
+    redundant/contradictory/distinct is a judgment about the CLUSTER as a
+    whole, not any single member of it)."""
+    return {
+        "name": "duplicate_cluster_verdict",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["redundant", "contradictory", "distinct"]},
+                "conflicting_values": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["verdict", "conflicting_values"],
+        },
+    }
+
+
+def root_grouping_schema() -> dict:
+    """group_root_topics (OrchestratorLlmClient): a fixed 'groups' array,
+    each item a title + member id list. Unbounded (no maxItems) on both
+    the outer array and each group's member_ids -- see this module's own
+    header docstring on why a BOUNDED array is the expensive case for
+    Ollama's GBNF grammar compilation, not an unbounded one."""
+    return {
+        "name": "root_topic_groups",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "member_ids": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["title", "member_ids"],
+                    },
+                },
+            },
+            "required": ["groups"],
+        },
+    }

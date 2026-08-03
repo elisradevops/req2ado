@@ -31,7 +31,7 @@ export function Stepper({
         const active = index === activeIndex;
         const color = colors?.[index];
         return (
-          <li key={step} className="flex items-center gap-2">
+          <li key={step} className="flex shrink-0 items-center gap-2">
             <span
               data-state={done ? 'done' : active ? 'active' : 'pending'}
               style={color && (done || active) ? { backgroundColor: color, borderColor: color } : undefined}
@@ -51,7 +51,9 @@ export function Stepper({
             >
               {done ? <Check className="h-3.5 w-3.5" /> : active && activeSpinner ? <Spinner className="h-3.5 w-3.5 text-white" /> : index + 1}
             </span>
-            <span className={cn('text-xs font-medium', active ? 'text-ink-1' : 'text-ink-3')}>{step}</span>
+            <span className={cn('whitespace-nowrap text-xs font-medium', active ? 'text-ink-1' : 'text-ink-3')}>
+              {step}
+            </span>
             {index < steps.length - 1 && (
               <span
                 className={cn('mx-1 h-px w-8 transition-colors duration-200', !done && 'bg-hairline-strong')}

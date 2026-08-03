@@ -3,7 +3,13 @@ import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, TriangleAlert, FileSearch, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
 
-type WarningGroupKind = 'dropped-block' | 'external-reference' | 'other';
+type WarningGroupKind = 'dropped-block' | 'external-reference' | 'conflict' | 'other';
+
+const CONFLICT_LOCAL_ID_RE = /\[localId: ([^\]]+)\]/g;
+
+function extractConflictLocalIds(warning: string): string[] {
+  return [...warning.matchAll(CONFLICT_LOCAL_ID_RE)].map((match) => match[1]);
+}
 
 // Classifies a raw warning string by its known prefix -- both patterns
 // come from a small, fixed set of message templates in
@@ -17,6 +23,7 @@ type WarningGroupKind = 'dropped-block' | 'external-reference' | 'other';
 function classifyWarning(warning: string): WarningGroupKind {
   if (warning.startsWith('SURVEY analysis did not reference')) return 'dropped-block';
   if (warning.includes('references an external artifact')) return 'external-reference';
+  if (warning.startsWith('Near-duplicate items')) return 'conflict';
   return 'other';
 }
 
@@ -41,6 +48,17 @@ const GROUP_META: Record<
       'that was never ingested -- SURVEY can\'t verify or incorporate content it doesn\'t have. Add the referenced ' +
       'document to your knowledge base so future runs can ground against it.',
   },
+  conflict: {
+    icon: TriangleAlert,
+    title: 'Near-duplicate items with conflicting values',
+    tip:
+      'These items describe the same thing but state different values (e.g. two different power figures for the ' +
+      'same spec) -- likely the source document restates the same parameter inconsistently, or the model split one ' +
+      'requirement into near-duplicates. The "[localId: ...]" tag is an internal reference for THIS run only -- ' +
+      'never a real Azure DevOps work item number -- use the buttons below to actually locate each item: "Review ' +
+      'item" jumps to it in the diff tree; "View WI #N in Azure DevOps" (shown only when this item already exists ' +
+      'there) opens the real work item.',
+  },
   other: {
     icon: Info,
     title: 'Other analysis notices',
@@ -52,7 +70,7 @@ const GROUP_META: Record<
   },
 };
 
-const GROUP_ORDER: WarningGroupKind[] = ['dropped-block', 'external-reference', 'other'];
+const GROUP_ORDER: WarningGroupKind[] = ['dropped-block', 'external-reference', 'conflict', 'other'];
 
 // SURVEY's integrity warnings (dropped-block references, external-artifact
 // mentions, and assorted lower-level analysis notices) can run into the
@@ -61,12 +79,39 @@ const GROUP_ORDER: WarningGroupKind[] = ['dropped-block', 'external-reference', 
 // happens and WHAT to do about it once, rather than re-reading the same
 // prose fragment N times -- and external-reference warnings get a real
 // action (jump to the knowledge base) instead of just describing one.
-export function CollapsibleWarnings({ warnings }: { warnings: string[] }): React.ReactElement | null {
+export function CollapsibleWarnings({
+  warnings,
+  onJumpToNode,
+  adoIdByLocalId,
+  orgUrl,
+}: {
+  warnings: string[];
+  onJumpToNode?: (localId: string) => void;
+  // Real gap this closes (user-reported): a conflict warning's
+  // "[localId: ...]" is an internal, THIS-RUN-ONLY reference that never
+  // means anything outside the app -- for an item that's a near-duplicate
+  // of something ALREADY in Azure DevOps (dedup_skip/reuse, see
+  // DryRunDiffEntry.existingAdoId), the localId alone gave no way to find
+  // the REAL work item to actually verify the conflict against. Caller
+  // (JobDetail.tsx) builds this from the diff it already has -- localId ->
+  // existingAdoId, only for entries that have one.
+  adoIdByLocalId?: Record<string, number>;
+  // Needed to construct a real, clickable ADO deep link
+  // (`${orgUrl}/_workitems/edit/{id}`) -- null/undefined (no ADO
+  // credential connected yet) just omits the link, same as every other
+  // ADO-dependent affordance in this app.
+  orgUrl?: string | null;
+}): React.ReactElement | null {
   const [expandedGroups, setExpandedGroups] = useState<Set<WarningGroupKind>>(new Set());
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   if (warnings.length === 0) return null;
 
-  const grouped: Record<WarningGroupKind, string[]> = { 'dropped-block': [], 'external-reference': [], other: [] };
+  const grouped: Record<WarningGroupKind, string[]> = {
+    'dropped-block': [],
+    'external-reference': [],
+    conflict: [],
+    other: [],
+  };
   for (const warning of warnings) {
     grouped[classifyWarning(warning)].push(warning);
   }
@@ -132,7 +177,40 @@ export function CollapsibleWarnings({ warnings }: { warnings: string[] }): React
                       <ul className="flex flex-col gap-2 border-t border-[#EED8B4]/60 pt-2">
                         {items.map((warning, index) => (
                           <li key={index} className={cn('text-sm text-[#7A4F0B]', index > 0 && 'border-t border-[#EED8B4]/40 pt-2')}>
-                            {warning}
+                            <p>{warning}</p>
+                            {kind === 'conflict' && (onJumpToNode || adoIdByLocalId) && (
+                              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                {extractConflictLocalIds(warning).map((localId) => {
+                                  const adoId = adoIdByLocalId?.[localId];
+                                  return (
+                                    <span key={localId} className="flex flex-wrap gap-1.5">
+                                      {onJumpToNode && (
+                                        <button
+                                          type="button"
+                                          onClick={() => onJumpToNode(localId)}
+                                          className="rounded-sm border border-[#EED8B4] bg-white px-2 py-0.5 text-xs font-medium text-[#7A4F0B] hover:border-[#9A6B1F]"
+                                        >
+                                          Review item →
+                                        </button>
+                                      )}
+                                      {/* Only rendered when this item already exists in ADO
+                                          (dedup_skip/reuse) -- a plain "create" item has no real
+                                          work item yet, so there's nothing to link to. */}
+                                      {adoId != null && orgUrl && (
+                                        <a
+                                          href={`${orgUrl}/_workitems/edit/${adoId}`}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="rounded-sm border border-[#EED8B4] bg-white px-2 py-0.5 text-xs font-medium text-[#7A4F0B] hover:border-[#9A6B1F]"
+                                        >
+                                          View WI #{adoId} in Azure DevOps ↗
+                                        </a>
+                                      )}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </li>
                         ))}
                       </ul>

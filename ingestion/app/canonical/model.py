@@ -36,9 +36,13 @@ class SourceRef(BaseModel):
     - pdf loader: real character offsets, but relative to each page's
       independently-extracted text (not document-global).
     - docx loader: a synthetic running counter over extracted paragraph
-      text, NOT an offset into the underlying .docx XML/zip structure.
-    - all Table objects (every loader): placeholder (0, 0) — no extraction
-      library exposes a natural text offset for a table region.
+      text, NOT an offset into the underlying .docx XML/zip structure. A
+      Table object shares this same counter (a real, distinct offset per
+      table, confirmed live) -- but ALL ROWS of one table share that one
+      table-level offset, since no extraction library exposes a natural
+      per-row text offset.
+    - other loaders (pdf/xlsx/csv, etc.): a Table object still gets the
+      (0, 0) placeholder where no natural table-region offset exists.
     A later phase (BASELINE fidelity hashing) must account for these
     per-loader differences rather than assuming a single offset contract.
     """

@@ -44,6 +44,20 @@ export function useChatSocket(
         const parsed = JSON.parse(event.data as string) as StreamEvent;
         onEventRef.current(parsed);
       };
+      // Previously unhandled entirely -- a dropped connection mid-stream
+      // (network hiccup, server restart) left ChatPanel's isStreaming stuck
+      // true forever: the only server-side recovery (the orchestrator's
+      // turn timeout) fires into the Redis channel, not this already-closed
+      // socket, so it can never reach the client. `cancelled` is already
+      // set true by this effect's own cleanup BEFORE it calls socket.close()
+      // (see below), so a real unmount/dep-change close is silently skipped
+      // here -- only a genuinely unexpected close synthesizes an 'error'
+      // event, reusing ChatPanel's existing error-handling path verbatim
+      // (resets isStreaming, shows a toast) rather than adding a second one.
+      socket.onclose = () => {
+        if (cancelled) return;
+        onEventRef.current({ type: 'error', reason: 'Connection to the server was lost.' });
+      };
     });
 
     return () => {

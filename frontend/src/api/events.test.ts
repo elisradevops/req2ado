@@ -82,6 +82,57 @@ describe('subscribeToJobEvents', () => {
     expect(() => source.emit('narration', { phase: 'infer_hierarchy', message: 'x' })).not.toThrow();
   });
 
+  it('skips (and logs) a malformed narration payload instead of forwarding undefined fields', () => {
+    // Previously a blind `as NarrationEvent` cast -- a shape mismatch (a
+    // renamed/dropped field on the backend) silently propagated `undefined`
+    // into typed state with no signal at all.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onNarration = vi.fn();
+    subscribeToJobEvents('job-1', 'https://api.example', vi.fn(), onNarration);
+    const source = FakeEventSource.instances[0];
+
+    source.emit('narration', { phase: 'infer_hierarchy', message: 'x' }); // missing branchCount/blocksDone/etc
+
+    expect(onNarration).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('skips (and logs) a narration payload with an unrecognized phase', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onNarration = vi.fn();
+    subscribeToJobEvents('job-1', 'https://api.example', vi.fn(), onNarration);
+    const source = FakeEventSource.instances[0];
+
+    source.emit('narration', {
+      phase: 'some_future_phase_this_frontend_does_not_know_about',
+      branchIndex: 0,
+      branchCount: 3,
+      blocksDone: 10,
+      blocksTotal: 50,
+      kbGrounded: false,
+      kbCitations: [],
+      message: 'x',
+    });
+
+    expect(onNarration).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('skips (and logs) a malformed stage payload instead of forwarding an unrecognized stage', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onStage = vi.fn();
+    subscribeToJobEvents('job-1', 'https://api.example', onStage);
+    const source = FakeEventSource.instances[0];
+
+    source.emit('stage', { stage: 'some_future_stage_this_frontend_does_not_know_about' });
+
+    expect(onStage).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   it('returns a function that closes the underlying EventSource', () => {
     const unsubscribe = subscribeToJobEvents('job-1', 'https://api.example', vi.fn());
     const source = FakeEventSource.instances[0];

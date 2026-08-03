@@ -1,13 +1,23 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { CollapsibleWarnings } from './CollapsibleWarnings';
 
-function renderWarnings(warnings: string[]) {
+function renderWarnings(
+  warnings: string[],
+  onJumpToNode?: (localId: string) => void,
+  adoIdByLocalId?: Record<string, number>,
+  orgUrl?: string | null,
+) {
   return render(
     <MemoryRouter>
-      <CollapsibleWarnings warnings={warnings} />
+      <CollapsibleWarnings
+        warnings={warnings}
+        onJumpToNode={onJumpToNode}
+        adoIdByLocalId={adoIdByLocalId}
+        orgUrl={orgUrl}
+      />
     </MemoryRouter>,
   );
 }
@@ -65,5 +75,66 @@ describe('CollapsibleWarnings', () => {
     await userEvent.click(screen.getByText('Content the model may have dropped'));
 
     expect(screen.getAllByText(/under-synthesized/i).length).toBe(1);
+  });
+
+  it('groups near-duplicate conflict warnings and offers a jump-to-node action per referenced item', async () => {
+    const onJumpToNode = vi.fn();
+    renderWarnings(
+      [
+        "Near-duplicate items 'Power supply efficiency' [localId: n0], 'Power supply efficiency (appendix)' [localId: n1] appear to state conflicting values for the same parameter (['85%', '93%']) -- resolve before this can be finalized.",
+      ],
+      onJumpToNode,
+    );
+
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Near-duplicate items with conflicting values'));
+
+    const jumpButtons = screen.getAllByRole('button', { name: /review item/i });
+    expect(jumpButtons).toHaveLength(2);
+
+    await userEvent.click(jumpButtons[0]);
+    expect(onJumpToNode).toHaveBeenCalledWith('n0');
+
+    await userEvent.click(jumpButtons[1]);
+    expect(onJumpToNode).toHaveBeenCalledWith('n1');
+  });
+
+  it('links to the real ADO work item for a conflict item that already exists there, alongside the jump-to-node action', async () => {
+    // Real gap this closes (user-reported): "[localId: n1]" is an internal,
+    // this-run-only reference -- for a near-duplicate that's already a
+    // real ADO work item (dedup_skip/reuse), there was previously no way
+    // to find the ACTUAL item to verify the conflict against.
+    renderWarnings(
+      [
+        "Near-duplicate items 'RS-232 Receiver Support' [localId: n0], 'LVCMOS Driver Support' [localId: n1] appear to state conflicting values for the same parameter (['eight RS-232', 'eight LVCMOS']) -- resolve before this can be finalized.",
+      ],
+      vi.fn(),
+      { n1: 604 }, // only n1 already exists in ADO -- n0 is a plain 'create'
+      'https://dev.azure.com/example-org',
+    );
+
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Near-duplicate items with conflicting values'));
+
+    expect(screen.getAllByRole('button', { name: /review item/i })).toHaveLength(2); // still offered for both
+    const adoLink = screen.getByRole('link', { name: /view wi #604 in azure devops/i });
+    expect(adoLink).toHaveAttribute('href', 'https://dev.azure.com/example-org/_workitems/edit/604');
+    expect(screen.queryByRole('link', { name: /view wi #.*n0/i })).not.toBeInTheDocument();
+  });
+
+  it('offers no ADO link for a conflict item that is still only a proposed create', async () => {
+    renderWarnings(
+      [
+        "Near-duplicate items 'A' [localId: n0], 'B' [localId: n1] appear to state conflicting values for the same parameter (['x', 'y']) -- resolve before this can be finalized.",
+      ],
+      vi.fn(),
+      {}, // neither n0 nor n1 exists in ADO yet
+      'https://dev.azure.com/example-org',
+    );
+
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Near-duplicate items with conflicting values'));
+
+    expect(screen.queryByRole('link', { name: /view wi/i })).not.toBeInTheDocument();
   });
 });

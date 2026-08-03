@@ -48,7 +48,7 @@ const BASELINE_HEX_COUNTS: Record<string, number> = {
   'components/StatusChip.tsx': 1,
   'components/ActionBadge.tsx': 4,
   'components/TagChips.tsx': 1,
-  'components/CollapsibleWarnings.tsx': 16,
+  'components/CollapsibleWarnings.tsx': 22,
   'components/FileDropzone.tsx': 2,
   'components/IssueChips.tsx': 2,
   'pages/Settings.tsx': 1,

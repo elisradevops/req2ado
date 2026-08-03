@@ -9,6 +9,7 @@ import type { DryRunDiffEntry } from './DiffTree';
 import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Markdown } from '../ui/Markdown';
+import { InfoTip } from '../ui/Tooltip';
 import { formatSourceRef } from '../utils/sourceRef';
 
 // Item-details ONLY -- chat lives in NodeDetailDialog's own right pane
@@ -253,8 +254,17 @@ export function NodeDetailPanel({
               the three fixed public standards regardless of whether KB
               grounding was used. */}
           {entry.qualityScore != null && (
-            <p className="text-sm text-ink-2">
-              Judged against EARS, INCOSE, ISO/IEC/IEEE 29148{kbCitations && kbCitations.length > 0 ? ', and your knowledge base' : ''}
+            <p className="flex items-center gap-1 text-sm text-ink-2">
+              <span>
+                Judged against EARS, INCOSE, ISO/IEC/IEEE 29148
+                {kbCitations && kbCitations.length > 0 ? ', and your knowledge base' : ''}
+              </span>
+              {/* These three acronyms were previously unexplained anywhere
+                  in the app -- a Systems Engineer reviewing this tool may
+                  know their own domain standards (SOSA/VITA/MIL-STD) without
+                  knowing THESE requirement-writing/quality standards, which
+                  are internal to how req2ado itself judges quality. */}
+              <InfoTip content="EARS: a standard sentence pattern for writing unambiguous requirements. INCOSE: the systems-engineering professional body that publishes requirement-writing best practices. ISO/IEC/IEEE 29148: the international standard for requirements engineering this rubric is based on." />
             </p>
           )}
           {kbCitations && kbCitations.length > 0 && (

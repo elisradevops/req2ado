@@ -68,4 +68,44 @@ CRITERIA_CORPUS: list[QualityCriterion] = [
         "reviewer can judge whether the constraint still applies if the "
         "surrounding context changes.",
     ),
+    QualityCriterion(
+        RequirementQualityIssue.NOT_A_REQUIREMENT,
+        "A candidate must be a real requirement statement -- a subject, a modal "
+        "(shall/should/must), and a verifiable predicate -- not a bare label, "
+        "heading, or extracted table-cell value with no obligation stated at "
+        "all.",
+    ),
+    QualityCriterion(
+        RequirementQualityIssue.FRAGMENT,
+        "A short extracted phrase or spec-table value (e.g. a size, a signal "
+        "name, an on/off state) is a fragment, not a complete requirement, even "
+        "when it is technically unambiguous -- it lacks the subject/modal/"
+        "predicate structure a requirement needs.",
+    ),
+    QualityCriterion(
+        RequirementQualityIssue.PLACEHOLDER,
+        "A requirement that references an unresolved placeholder in the source "
+        "document (e.g. a literal 'ReqID XXXX' or '??' left where a real value "
+        "or cross-reference belongs) is incomplete until that placeholder is "
+        "resolved to a concrete value.",
+    ),
+    QualityCriterion(
+        RequirementQualityIssue.OPEN_ITEM_TBD,
+        "A requirement explicitly marked as an open question, unresolved issue, "
+        "or 'TBD' in the source document is not yet a committed requirement and "
+        "must be flagged as such rather than treated as finalized.",
+    ),
+    QualityCriterion(
+        RequirementQualityIssue.RATIONALE_AS_REQUIREMENT,
+        "Explanatory rationale or justification text (the 'why' behind a design "
+        "choice) is not itself a requirement -- it should support a nearby "
+        "requirement, not be extracted as one on its own.",
+    ),
+    QualityCriterion(
+        RequirementQualityIssue.CONFLICTING_VALUE,
+        "When the source document states two different values for what appears "
+        "to be the same parameter (e.g. two different power ratings or input "
+        "voltage types for the same component), the conflict must be flagged "
+        "and resolved rather than silently kept as two separate requirements.",
+    ),
 ]

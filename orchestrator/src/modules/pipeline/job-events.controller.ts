@@ -64,9 +64,15 @@ export class JobEventsController {
     // for ingestion's narration events (see NarrationPublisher, Python
     // side) -- published to the SAME channel this controller subscribes to
     // below, distinguished only by `type: 'narration'` on the message.
-    const currentNarration = await subscriber.get(`job-events:${id}:narration`);
-    if (currentNarration) {
-      res.write(`event: narration\ndata: ${currentNarration}\n\n`);
+    // Replays the WHOLE bounded history (LRANGE), not just the latest
+    // entry -- previously a reconnecting client (page reload, dropped SSE
+    // connection) only ever saw the single most recent narration event via
+    // a SET-overwritten key, silently losing all prior activity-log history
+    // client-side (JobDetail.tsx's own `narrations` state starts empty on
+    // every mount) even though the job kept progressing server-side.
+    const narrationLog = await subscriber.lrange(`job-events:${id}:narration-log`, 0, -1);
+    for (const narration of narrationLog) {
+      res.write(`event: narration\ndata: ${narration}\n\n`);
     }
 
     try {

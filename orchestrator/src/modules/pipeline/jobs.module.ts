@@ -55,12 +55,13 @@ import { AuthModule } from '../auth/auth.module';
     },
     {
       provide: JobsService,
-      inject: [PrismaClient, McpClient, IdempotencyService, IngestionHttpClient, ConfigService],
+      inject: [PrismaClient, McpClient, IdempotencyService, IngestionHttpClient, JobEventsPublisher, ConfigService],
       useFactory: (
         prisma: PrismaClient,
         mcpClient: McpClient,
         idempotencyService: IdempotencyService,
         ingestionClient: IngestionHttpClient,
+        jobEventsPublisher: JobEventsPublisher,
         config: ConfigService,
       ) =>
         new JobsService(
@@ -83,6 +84,7 @@ import { AuthModule } from '../auth/auth.module';
           // already uses (see 'MAX_UPLOAD_SIZE_BYTES' provider below) --
           // reused for resubmit retention rather than a second config knob.
           config.get<number>('MAX_UPLOAD_SIZE_MB')! * 1024 * 1024,
+          jobEventsPublisher,
         ),
     },
     {

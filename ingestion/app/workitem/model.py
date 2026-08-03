@@ -78,6 +78,18 @@ class RequirementQualityIssue(str, Enum):
     VAGUE_TERM = "vague_term"
     PASSIVE_VOICE = "passive_voice"
     MISSING_RATIONALE = "missing_rationale"
+    # Confirmed real gap (deterministic-hierarchy quality investigation):
+    # every tag above presupposes the input IS a requirement statement --
+    # none of them can express "this candidate isn't a requirement at all,"
+    # so a bare table-cell fragment or heading (e.g. "Size: 3U 1\"") scored
+    # as if it were a well-formed, fully atomic requirement (atomicity=100)
+    # with no tag available to say why that's wrong.
+    NOT_A_REQUIREMENT = "not_a_requirement"
+    FRAGMENT = "fragment"
+    PLACEHOLDER = "placeholder"
+    OPEN_ITEM_TBD = "open_item_tbd"
+    RATIONALE_AS_REQUIREMENT = "rationale_as_requirement"
+    CONFLICTING_VALUE = "conflicting_value"
 
 
 class RequirementTag(str, Enum):
@@ -177,6 +189,14 @@ class WorkItemNode(BaseModel):
     # missing/malformed) -- same all-or-nothing tolerance as quality_score
     # itself, never partially populated.
     quality_category_scores: QualityCategoryScores | None = None
+    # Internal-only, never serialized (exclude=True) -- deterministic-
+    # hierarchy path only (see id_hierarchy.HierarchyRow.needs_synthesis's
+    # own docstring for the per-root-subtree gate that sets this). Signals
+    # id_tree_builder's own synthesis pass that this node's `description`
+    # is real, source-derived text but reads as a fragment/label, not
+    # finished requirement prose -- consumed and cleared within the same
+    # request, never meant to reach the API response or the frontend.
+    needs_synthesis: bool = Field(default=False, exclude=True)
 
 
 class WorkItemTree(BaseModel):

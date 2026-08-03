@@ -47,6 +47,21 @@ class ChromaVectorStore:
             self._client = chromadb.HttpClient(host=host, port=port)
         else:
             self._client = chromadb.PersistentClient(path=persist_path)
+        # Perf fix (2026-08-01): a real job's dedup-check burst calls
+        # query_nearest once per candidate item (~543 in a real observed
+        # run), every one against the SAME area path's collection --
+        # get_or_create_collection is a Chroma round trip and was being
+        # paid 543 times for an identical result. The collection handle
+        # itself never goes stale (it's just a client-side reference, not
+        # a snapshot of its contents), so caching it per area path is safe
+        # with no invalidation needed at all.
+        self._collection_cache: dict[str, chromadb.Collection] = {}
+        # count(), unlike the collection handle, DOES reflect live content
+        # -- cached separately and invalidated on any upsert to that same
+        # area path, so a dedup-check burst that never upserts mid-burst
+        # (the real, only, current call pattern) pays for count() once
+        # instead of once per check.
+        self._count_cache: dict[str, int] = {}
 
     def ping(self) -> bool:
         """Cheap reachability check for /ready -- previously nothing in
@@ -59,10 +74,15 @@ class ChromaVectorStore:
             return False
 
     def _get_collection(self, area_path: str):
-        return self._client.get_or_create_collection(
+        cached = self._collection_cache.get(area_path)
+        if cached is not None:
+            return cached
+        collection = self._client.get_or_create_collection(
             name=_collection_name_for_area_path(area_path),
             metadata={"hnsw:space": "cosine"},
         )
+        self._collection_cache[area_path] = collection
+        return collection
 
     def upsert(self, item_id: str, embedding: list[float], area_path: str, document: str | None = None) -> None:
         # `document` (optional) stores the item's original text alongside its
@@ -76,6 +96,7 @@ class ChromaVectorStore:
         # that honestly as `matched_document=None` rather than guessing.
         collection = self._get_collection(area_path)
         collection.upsert(ids=[item_id], embeddings=[embedding], documents=[document] if document else None)
+        self._count_cache.pop(area_path, None)
 
     def upsert_many(self, items: list[tuple[str, list[float], str | None]], area_path: str) -> None:
         """Batched upsert for N items sharing the same area_path -- one
@@ -93,10 +114,15 @@ class ChromaVectorStore:
         embeddings = [embedding for _, embedding, _ in items]
         documents = [document for _, _, document in items]
         collection.upsert(ids=ids, embeddings=embeddings, documents=documents if all(documents) else None)
+        self._count_cache.pop(area_path, None)
 
     def query_nearest(self, embedding: list[float], area_path: str) -> tuple[str, float, str | None] | None:
         collection = self._get_collection(area_path)
-        if collection.count() == 0:
+        count = self._count_cache.get(area_path)
+        if count is None:
+            count = collection.count()
+            self._count_cache[area_path] = count
+        if count == 0:
             return None
         result = collection.query(query_embeddings=[embedding], n_results=1, include=["distances", "documents"])
         matched_id = result["ids"][0][0]

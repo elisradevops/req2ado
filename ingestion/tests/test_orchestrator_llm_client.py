@@ -486,6 +486,26 @@ def test_infer_trace_links_raises_on_malformed_json() -> None:
         client.infer_trace_links(nodes=[], link_type_catalog=[])
 
 
+def test_infer_trace_links_parses_json_prefaced_with_unfenced_conversational_prose() -> None:
+    # Regression guard for a confirmed real job failure (qwen3.6:35b, a
+    # real 554-node document -- the largest single-call payload in this
+    # module): the model prefaced its reply with bare prose and NO markdown
+    # fence at all ("Based on the provided nodes..."), so neither
+    # _JSON_FENCE_PATTERN nor _JSON_FENCE_ANYWHERE_PATTERN matched (both
+    # require a fence), and raw_decode() then failed at position 0 on the
+    # word "Based" -- crashing trace-link inference for the whole job with
+    # "malformed JSON in LLM response content: 'Based'".
+    link = {"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}
+    preamble = "Based on the provided nodes, here are the inferred links:\n\n"
+    unfenced_prefaced_content = preamble + json.dumps([link])
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": unfenced_prefaced_content})
+
+    result = client.infer_trace_links(nodes=[], link_type_catalog=[])
+
+    assert result == [link]
+
+
 def test_infer_trace_links_with_no_catalog_still_sends_a_valid_request() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -604,6 +624,31 @@ def test_score_requirements_for_document_prompt_explains_all_five_categories() -
 
     for keyword in ("clarity", "testability", "atomicity", "style", "rationale"):
         assert keyword in captured["system_prompt"]
+
+
+def test_score_requirements_for_document_prompt_covers_completeness_and_new_issue_tags() -> None:
+    # Confirmed real gap: the prompt previously presupposed every candidate
+    # was already a well-formed requirement statement, so a bare fragment
+    # (e.g. "Size: 3U 1\"") scored as fully atomic with no way to flag it as
+    # not-a-requirement at all.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["system_prompt"] = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"0": "text"})
+
+    prompt = captured["system_prompt"]
+    assert "completeness_as_requirement" in prompt
+    for issue in (
+        "not_a_requirement", "fragment", "placeholder", "open_item_tbd",
+        "rationale_as_requirement", "conflicting_value",
+    ):
+        assert issue in prompt
 
 
 def test_score_requirements_for_document_derives_dynamic_categories_when_kb_context_is_present() -> None:
@@ -729,6 +774,163 @@ def test_score_epics_and_features_for_document_parses_valid_response() -> None:
     result = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "text"}})
     assert result["n0"]["score"] == 85
     assert result["n0"]["categoryScores"] == {"scopeCoherence": 90, "outcomeClarity": 80}
+
+
+def test_title_and_tags_for_rows_sends_the_closed_tag_vocabulary_and_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.title_and_tags_for_rows({"det0_h1": "Size: 3U 1\"", "det0_h2": "Over-current"})
+
+    prompt = captured["body"]["messages"][0]["content"]
+    assert "exactly 2 row(s)" in prompt
+    assert "exactly 2 entries" in prompt
+    assert "functional" in prompt and "safety" in prompt  # closed RequirementTag vocabulary present
+    schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
+    assert set(schema["required"]) == {"title", "tags"}
+    assert captured["body"]["temperature"] == 0
+    assert captured["body"]["think"] is False
+
+
+def test_title_and_tags_for_rows_parses_valid_response() -> None:
+    response_json = {
+        "content": json.dumps(
+            {"det0_h1": {"title": "COTS power supply form factor", "tags": ["interface"]}}
+        )
+    }
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.title_and_tags_for_rows({"det0_h1": "Size: 3U 1\""})
+    assert result["det0_h1"]["title"] == "COTS power supply form factor"
+    assert result["det0_h1"]["tags"] == ["interface"]
+
+
+def test_synthesize_leaf_requirements_sends_context_and_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.synthesize_leaf_requirements(
+        {"det0_h1": {"text": "Size: 3U 1\"", "context": "Power Supply"}}
+    )
+
+    body = captured["body"]
+    assert json.loads(body["messages"][1]["content"]) == {
+        "det0_h1": {"text": "Size: 3U 1\"", "context": "Power Supply"}
+    }
+    prompt = body["messages"][0]["content"]
+    assert "exactly 1 row(s)" in prompt
+    assert "exactly 1 entries" in prompt
+    schema = body["responseSchema"]["schema"]["additionalProperties"]
+    assert set(schema["required"]) == {"title", "text", "tags"}
+    assert body["temperature"] == 0
+    assert body["think"] is False
+
+
+def test_synthesize_leaf_requirements_parses_valid_response() -> None:
+    response_json = {
+        "content": json.dumps(
+            {
+                "det0_h1": {
+                    "title": "COTS power supply form factor",
+                    "text": "The COTS power supply shall have a 3U, 1-inch form factor.",
+                    "tags": ["interface"],
+                }
+            }
+        )
+    }
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.synthesize_leaf_requirements(
+        {"det0_h1": {"text": "Size: 3U 1\"", "context": "Power Supply"}}
+    )
+    assert result["det0_h1"]["text"] == "The COTS power supply shall have a 3U, 1-inch form factor."
+    assert result["det0_h1"]["title"] == "COTS power supply form factor"
+    assert result["det0_h1"]["tags"] == ["interface"]
+
+
+def test_judge_duplicate_cluster_sends_the_verdict_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.judge_duplicate_cluster({"n0": "at least 85%", "n1": "at-least 93%"})
+
+    body = captured["body"]
+    prompt = body["messages"][0]["content"]
+    assert "contradictory" in prompt
+    assert "redundant" in prompt
+    schema = body["responseSchema"]["schema"]
+    assert set(schema["properties"]["verdict"]["enum"]) == {"redundant", "contradictory", "distinct"}
+    assert schema["required"] == ["verdict", "conflicting_values"]
+    assert body["temperature"] == 0
+    assert body["think"] is False
+
+
+def test_judge_duplicate_cluster_parses_a_contradictory_verdict() -> None:
+    response_json = {
+        "content": json.dumps({"verdict": "contradictory", "conflicting_values": ["85%", "93%"]})
+    }
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.judge_duplicate_cluster({"n0": "at least 85%", "n1": "at-least 93%"})
+    assert result["verdict"] == "contradictory"
+    assert result["conflicting_values"] == ["85%", "93%"]
+
+
+def test_group_root_topics_sends_only_titles_and_the_groups_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.group_root_topics({"n0": "PS_SYSRESET", "n1": "PS_SYNC"})
+
+    body = captured["body"]
+    assert json.loads(body["messages"][1]["content"]) == {"n0": "PS_SYSRESET", "n1": "PS_SYNC"}
+    schema = body["responseSchema"]["schema"]
+    assert schema["required"] == ["groups"]
+    group_item_schema = schema["properties"]["groups"]["items"]
+    assert set(group_item_schema["required"]) == {"title", "member_ids"}
+    assert body["temperature"] == 0
+    assert body["think"] is False
+
+
+def test_group_root_topics_parses_a_valid_response() -> None:
+    response_json = {
+        "content": json.dumps(
+            {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]}
+        )
+    }
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.group_root_topics({"n0": "PS_SYSRESET", "n1": "PS_SYNC"})
+    assert result["groups"][0]["title"] == "VPX Utility & Management Signals"
+    assert result["groups"][0]["member_ids"] == ["n0", "n1"]
 
 
 def test_infer_trace_links_never_sends_response_schema_even_with_a_nonempty_catalog() -> None:
@@ -1040,6 +1242,167 @@ def test_analyze_section_agentic_whole_document_hint_states_the_topic_count() ->
     system_content = captured["body"]["messages"][0]["content"]
     assert "79" in system_content
     assert "AT LEAST 79" in system_content
+
+
+def test_analyze_section_includes_table_group_hints_when_supplied() -> None:
+    # Confirmed live (a real 3-run re-test): a QUALITATIVE-only instruction
+    # to "use the source's own group label" measured ZERO effect on model
+    # behavior. This concrete, named-groups hint is the fix -- states the
+    # real count, the actual labels, AND each one's own suggested type
+    # (Epic/Feature/Requirement -- a second confirmed gap: the original
+    # version never mentioned Epic as an option at all).
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section(
+        "Some section text.", topic_count=3,
+        table_group_hints=[("Display", "Feature"), ("Television Receiver", "Epic")],
+    )
+    system_content = captured["body"]["messages"][0]["content"]
+    assert "'Display' (Feature)" in system_content
+    assert "'Television Receiver' (Epic)" in system_content
+    assert "2 structural group(s)" in system_content
+
+
+def test_analyze_section_agentic_includes_table_group_hints_when_supplied() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []), topic_count=3,
+        table_group_hints=[("Display", "Feature")],
+    )
+    system_content = captured["body"]["messages"][0]["content"]
+    assert "'Display' (Feature)" in system_content
+
+
+def test_analyze_section_omits_table_group_hint_when_no_labels_supplied() -> None:
+    # Byte-identical-to-before-this-capability behavior when there are no
+    # qualifying table groups (the overwhelmingly common case for
+    # heading-leveled documents like AirPro-style ICDs).
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.", topic_count=3)
+    system_content = captured["body"]["messages"][0]["content"]
+    assert "structural group(s)" not in system_content
+
+
+def test_table_group_hint_logs_a_warning_when_feature_groups_are_dropped(caplog) -> None:
+    from app.survey.orchestrator_llm_client import _table_group_hint
+
+    hints = [(f"Group {i}", "Feature") for i in range(50)]
+    with caplog.at_level("WARNING"):
+        _table_group_hint(hints)
+    assert any("dropped" in record.message for record in caplog.records)
+
+
+def test_analyze_section_default_root_wording_when_no_expected_root_count() -> None:
+    # Byte-identical to today's single-root wording when expected_root_count
+    # is omitted/None/<2 -- the overwhelmingly common case.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+    system_content = captured["body"]["messages"][0]["content"]
+    assert "At most ONE node in your entire response should have parent_temp_id null" in system_content
+
+
+def test_analyze_section_states_the_expected_root_count_when_multi_root() -> None:
+    # Confirmed live: 2 independent top-level Epics ("Television Receiver",
+    # "Remote Control") were both individually named in the table-group
+    # hint, yet the model still invented a single wrapping root -- because
+    # the hardcoded "at most ONE" rule left no room for a real multi-root
+    # document. This concrete count is the fix.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.", expected_root_count=2)
+    system_content = captured["body"]["messages"][0]["content"]
+    assert "At most ONE node" not in system_content
+    assert "up to 2 nodes may have parent_temp_id null" in system_content
+    assert "invented wrapping ancestor" in system_content
+
+
+def test_analyze_section_agentic_states_the_expected_root_count_when_multi_root() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []), expected_root_count=3
+    )
+    system_content = captured["body"]["messages"][0]["content"]
+    assert "up to 3 nodes may have parent_temp_id null" in system_content
+
+
+def test_table_group_hint_caps_the_number_of_feature_labels_spelled_out_verbatim() -> None:
+    from app.survey.orchestrator_llm_client import _table_group_hint
+
+    hints = [(f"Group {i}", "Feature") for i in range(50)]
+    hint = _table_group_hint(hints)
+    assert "50 structural group(s)" in hint  # true count always stated in full
+    assert "Group 0" in hint
+    assert "Group 39" in hint
+    assert "Group 49" not in hint  # beyond the Feature-only display cap
+    assert "10 more" in hint
+
+
+def test_table_group_hint_never_caps_epic_or_requirement_groups() -> None:
+    """Confirmed live: a flat positional cap silently dropped 2 REAL groups
+    (a Feature and a Requirement) purely because of table order, not
+    because they were less significant -- EPIC/REQUIREMENT groups must
+    never be subject to any cap, only the common FEATURE case."""
+    from app.survey.orchestrator_llm_client import _table_group_hint
+
+    hints = [(f"Feature Group {i}", "Feature") for i in range(50)]
+    hints.append(("Late Epic", "Epic"))
+    hints.append(("Late Requirement", "Requirement"))
+    hint = _table_group_hint(hints)
+    assert "Late Epic" in hint
+    assert "Late Requirement" in hint
+
+
+def test_table_group_hint_is_empty_for_no_labels() -> None:
+    from app.survey.orchestrator_llm_client import _table_group_hint
+
+    assert _table_group_hint(None) == ""
+    assert _table_group_hint([]) == ""
 
 
 def test_whole_document_hint_falls_back_to_qualitative_when_no_topics() -> None:

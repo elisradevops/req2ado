@@ -6,13 +6,21 @@ from app.leveling.narration_publisher import LevelingProgress, NarrationPublishe
 class _FakeRedis:
     def __init__(self, raises: Exception | None = None) -> None:
         self._raises = raises
-        self.set_calls: list[tuple] = []
+        self.rpush_calls: list[tuple] = []
+        self.ltrim_calls: list[tuple] = []
+        self.expire_calls: list[tuple] = []
         self.publish_calls: list[tuple] = []
 
-    def set(self, key, value, ex=None):
+    def rpush(self, key, value):
         if self._raises:
             raise self._raises
-        self.set_calls.append((key, value, ex))
+        self.rpush_calls.append((key, value))
+
+    def ltrim(self, key, start, end):
+        self.ltrim_calls.append((key, start, end))
+
+    def expire(self, key, seconds):
+        self.expire_calls.append((key, seconds))
 
     def publish(self, channel, payload):
         self.publish_calls.append((channel, payload))
@@ -32,13 +40,20 @@ def _progress(**overrides) -> LevelingProgress:
     return LevelingProgress(**defaults)
 
 
-def test_publish_writes_current_key_and_publishes_to_channel() -> None:
+def test_publish_appends_to_a_bounded_narration_log_and_publishes_to_channel() -> None:
+    # Real gap this closes: previously a single SET-overwritten key meant a
+    # reconnecting client could only ever replay the LATEST narration event,
+    # losing all prior activity-log history on any page reload even though
+    # the job kept progressing server-side.
     redis_client = _FakeRedis()
     publisher = NarrationPublisher(redis_client, "job-1")
 
     publisher.publish(_progress())
 
-    assert redis_client.set_calls[0][0] == "job-events:job-1:narration"
+    assert redis_client.rpush_calls[0][0] == "job-events:job-1:narration-log"
+    assert redis_client.ltrim_calls[0][0] == "job-events:job-1:narration-log"
+    assert redis_client.ltrim_calls[0][1:] == (-50, -1)  # same cap JobDetail.tsx keeps client-side
+    assert redis_client.expire_calls[0][0] == "job-events:job-1:narration-log"
     assert redis_client.publish_calls[0][0] == "job-events:job-1"
     payload = json.loads(redis_client.publish_calls[0][1])
     assert payload["type"] == "narration"
@@ -211,6 +226,51 @@ def test_publish_describe_figure_with_a_caption_shows_the_real_result_not_the_ge
     assert "so far" not in payload["message"]
 
 
+def test_publish_describe_figure_with_an_empty_caption_falls_back_to_honest_wording_not_a_blank_line() -> None:
+    # Real gap this closes (user-reported, live): a real vision-model reply
+    # that's an empty string (distinct from None -- "in flight") previously
+    # produced a bare "Figure N: " with nothing after the colon, a genuinely
+    # blank-looking activity-log line.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        LevelingProgress(
+            phase="describe_figure",
+            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+            kb_grounded=False, kb_citations=[],
+            figure_index=38, figure_caption="",
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["message"] == "Figure 38: no useful caption returned"
+    assert not payload["message"].endswith(": ")
+
+
+def test_publish_preparing_analysis_carries_a_real_message() -> None:
+    # Real gap this closes (user-reported, live): a multi-minute silent
+    # window between parse_done and the first analyze_section event
+    # previously left the UI showing nothing newer than "Finished parsing
+    # the document", which made the "Reading document" step look
+    # permanently stuck even though the pipeline had moved on.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        LevelingProgress(
+            phase="preparing_analysis",
+            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+            kb_grounded=False, kb_citations=[],
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["phase"] == "preparing_analysis"
+    assert "Preparing analysis" in payload["message"]
+    assert "0 of 0" not in payload["message"]  # no bogus block-count suffix, blocksTotal isn't known yet
+
+
 def test_publish_describe_figure_caption_is_truncated_in_the_message_but_not_in_the_raw_field() -> None:
     redis_client = _FakeRedis()
     publisher = NarrationPublisher(redis_client, "job-1")
@@ -281,3 +341,22 @@ def test_publish_section_nodes_is_null_when_not_supplied() -> None:
 
     payload = json.loads(redis_client.publish_calls[0][1])
     assert payload["sectionNodes"] is None
+
+
+def test_publish_detect_conflicts_and_regroup_roots_carry_a_real_message() -> None:
+    # These two whole-tree passes previously had no narration phase at all --
+    # confirmed live, a multi-minute silent gap between the last
+    # score_requirements_done event and infer_trace_links on a large
+    # document, exactly where these two LLM-calling passes run.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(phase="detect_conflicts", branch_index=None))
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["phase"] == "detect_conflicts"
+    assert "conflict" in payload["message"].lower()
+
+    publisher.publish(_progress(phase="regroup_roots", branch_index=None))
+    payload = json.loads(redis_client.publish_calls[1][1])
+    assert payload["phase"] == "regroup_roots"
+    assert "topic" in payload["message"].lower()

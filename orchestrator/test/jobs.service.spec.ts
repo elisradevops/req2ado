@@ -40,6 +40,51 @@ describe('JobsService.confirm', () => {
     expect(linkParentChild).toHaveBeenCalledWith(101, 100, undefined);
   });
 
+  it('publishes a writing stage and per-sub-phase narration when a JobEventsPublisher is provided', async () => {
+    // Regression coverage: previously JobsService held no
+    // JobEventsPublisher at all, so confirm() was structurally incapable
+    // of publishing anything -- a 'writing' job showed zero progress UI.
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 100 });
+    const record = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready', state: 'Proposed',
+          areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const publish = jest.fn().mockResolvedValue(undefined);
+    const publishNarration = jest.fn().mockResolvedValue(undefined);
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { publish, publishNarration } as any,
+    );
+
+    await service.confirm('job-1');
+
+    expect(publish).toHaveBeenCalledWith('job-1', 'writing');
+    expect(publishNarration).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({ phase: 'writing', writeSubPhase: 'create', blocksDone: 1, blocksTotal: 1 }),
+    );
+  });
+
   it('creates work items using the project\'s REAL work-item type name, not req2ado\'s internal Epic/Feature/Requirement label', async () => {
     // Confirmed real bug: entry.type ("Requirement") was previously sent
     // straight to ADO as the literal type name -- 404s on any non-CMMI

@@ -1,6 +1,10 @@
 import { cn } from '../lib/cn';
 
-const MODE_COPY = {
+// Exported so ModeBadge.tsx (the persistent chip shown in job list/detail
+// headers, after creation) can reuse the exact same description as this
+// picker (shown once, only at job creation) -- previously the mode was only
+// ever explained the FIRST time, never again once a job existed.
+export const MODE_COPY = {
   baseline: {
     title: 'BASELINE',
     description: 'Deterministic, verbatim extraction. No LLM. Fast.',

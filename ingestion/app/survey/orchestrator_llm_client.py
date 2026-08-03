@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Callable
 
 import httpx
@@ -11,11 +12,16 @@ from json_repair import repair_json
 
 from app.survey._response_schemas import (
     checklist_extraction_schema,
+    duplicate_cluster_verdict_schema,
     epic_feature_scores_schema,
     kb_relevance_schema,
+    root_grouping_schema,
     scores_schema,
     section_analysis_schema,
+    synthesis_schema,
+    title_tags_schema,
 )
+from app.workitem.model import RequirementTag
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +97,25 @@ def _strip_json_fence(content: str) -> str:
     if match:
         return match.group(1).strip()
     match = _JSON_FENCE_ANYWHERE_PATTERN.search(stripped)
-    return match.group(1).strip() if match else stripped
+    if match:
+        return match.group(1).strip()
+    # Confirmed real failure, live (infer_trace_links, qwen3.6:35b, the
+    # largest single-call payload in this module -- 554 nodes serialized):
+    # the model prefaced its reply with bare prose and NO markdown fence at
+    # all ("Based on the provided nodes..."), so neither fence pattern
+    # above matches, and the caller's raw_decode() then fails at position 0
+    # on the word "Based" -- crashing trace-link inference for the whole
+    # job. Same "no prose" instruction violation the fence-anywhere pattern
+    # already tolerates, just without the fence. If the content doesn't
+    # already start with a JSON value, find the first '[' or '{' and slice
+    # from there -- if no bracket exists anywhere, return unchanged so
+    # _parse_json_object still raises its own honest error rather than
+    # silently returning something meaningless.
+    if stripped[:1] not in ("[", "{"):
+        bracket_positions = [i for i in (stripped.find("["), stripped.find("{")) if i != -1]
+        if bracket_positions:
+            return stripped[min(bracket_positions):].strip()
+    return stripped
 
 
 def _parse_json_object(content: str):
@@ -275,26 +299,148 @@ _SECTION_ANALYSIS_SYSTEM_PROMPT = (
     "node's 'text' -- do not silently omit a figure's technical content just "
     "because it wasn't already phrased as a requirement.\n\n"
     "IMPORTANT on parent_temp_id: null means 'this node has no parent at all "
-    "-- it is a root of the tree', NOT a placeholder or default. At most ONE "
-    "node in your entire response should have parent_temp_id null (the single "
-    "section root -- usually the first Epic or Feature you emit). EVERY other "
+    "-- it is a root of the tree', NOT a placeholder or default. "
+    "__ROOT_COUNT_CLAUSE__ EVERY other "
     "node -- including the LAST ones you emit, however many nodes there are -- "
     "must set parent_temp_id to an already-emitted temp_id from earlier in "
     "this same array. Do not let parent_temp_id drift to null for later nodes "
     "just because the response is long -- re-check this field for every "
     "single node before finishing.\n\n"
-    "IMPORTANT on the type hierarchy: this is a strict 3-level chain -- Epic "
-    "groups Features, Feature groups Requirements. A Requirement's parent "
-    "must ALWAYS be a Feature -- never an Epic directly, never another "
-    "Requirement, and never null unless this Requirement is genuinely the "
-    "section's only node. An Epic's children must ALWAYS be Features -- "
-    "never a Requirement directly. If a section's content only warrants one "
-    "level below its root (e.g. a root Feature with only atomic "
-    "requirements under it, no separate Epic), that is fine -- the point is "
-    "never to skip a level in the chain that IS present: once you emit an "
-    "Epic, every Requirement under it must go through an intermediate "
-    "Feature, even a single one grouping all of that Epic's Requirements."
+    "What each type actually MEANS (not just how they nest) -- use this to "
+    "judge scope, not only the structural rules below: an Epic is a large "
+    "body of work representing a major initiative or goal, broken down into "
+    "multiple Features, that might span several sprints or even releases. A "
+    "Feature is a significant piece of functionality that delivers real "
+    "value to the user on its own, typically covering several distinct "
+    "Requirements, and might take one or more sprints to complete. A "
+    "Requirement is a single, sprint-sized, individually testable "
+    "obligation. When the section's own structure doesn't make the right "
+    "boundary obvious, fall back to this scope test: could this genuinely "
+    "take multiple sprints and cover several distinct Features on its own? "
+    "-> Epic. Does it deliver one coherent piece of user-facing value made "
+    "of several testable Requirements? -> Feature. Is it one testable "
+    "obligation? -> Requirement.\n\n"
+    "IMPORTANT on the type hierarchy: Epic groups Features (and MAY group "
+    "other Epics, see below), Feature groups Requirements. A Requirement's "
+    "parent must ALWAYS be a Feature or another Requirement (a child "
+    "Requirement, see below) -- never an Epic directly, and never null "
+    "unless this Requirement is genuinely the section's only node. An "
+    "Epic's children must ALWAYS be Features or other Epics -- never a "
+    "Requirement directly. If a section's content only warrants one level "
+    "below its root (e.g. a root Feature with only atomic requirements "
+    "under it, no separate Epic), that is fine -- the point is never to "
+    "skip a level in the chain that IS present: once you emit an Epic, "
+    "every Requirement under it must go through an intermediate Feature, "
+    "even a single one grouping all of that Epic's Requirements.\n\n"
+    "The hierarchy is not always exactly 3 levels deep -- use these three "
+    "additional structural tools whenever the section's content genuinely "
+    "calls for them, not by default:\n"
+    "- Nested Epic: when a section spans multiple large, clearly distinct "
+    "functional domains, emit an intermediate Epic per domain under the "
+    "section's own root Epic, rather than putting every Feature directly "
+    "under one flat root (e.g. a 'Television Receiver' root Epic split "
+    "into 'Broadcast Reception', 'System Settings', 'System Information' "
+    "child Epics, each then grouping its own Features). An Epic grouping "
+    "other Epics is NOT capped at one level -- if one of those child Epics "
+    "is ITSELF large enough to represent multiple distinct sub-initiatives "
+    "(by the same scope test above, applied again one level down), split it "
+    "into its own further child Epics before reaching Features. How many "
+    "levels of Epic-under-Epic are warranted depends entirely on the "
+    "section's actual scope, not a fixed depth -- most sections need zero "
+    "or one level of Epic nesting, but do not artificially flatten a "
+    "genuinely multi-tier domain just to stop at one level.\n"
+    "- Nested Feature: when a sub-topic under a Feature is itself a "
+    "coherent capability with several Requirements of its own, emit it as "
+    "a Feature nested under that Feature, not flattened into a sibling "
+    "Requirement list (e.g. 'Picture Modes' as a Feature nested under a "
+    "'Display' Feature, itself grouping 'Movie Mode'/'Game Mode' "
+    "Requirements, instead of six flat Requirements directly under "
+    "'Display').\n"
+    "- Child Requirement: when a Requirement's exceptions, conditions, "
+    "alternative flows, or specific follow-up behavior are themselves "
+    "separately testable, emit them as Requirements parented under that "
+    "general Requirement, not as siblings under the same Feature (e.g. a "
+    "general 'Automatic Switching to an Active Source' Requirement with "
+    "child Requirements 'Multiple Active Sources' and 'User Dismisses the "
+    "Suggestion' for its two specific sub-cases).\n"
+    "Do not force any of these three when the section's content is "
+    "genuinely flat -- a Feature with only atomic, unrelated Requirements "
+    "and no real sub-capability or exception case should stay exactly that "
+    "flat, not be padded with an invented nested level.\n\n"
+    "Confirmed real gap: when the source content itself already provides an "
+    "intermediate group label -- a numbered sub-heading, or a table row that "
+    "is purely a group title with no 'shall' statement of its own -- and "
+    "that group has TWO OR MORE child items under it, that group's own "
+    "label is a strong, deliberate signal from the source document's own "
+    "author about where a node boundary belongs. Use that label as a node "
+    "(a nested Feature for a sub-capability grouping several distinct "
+    "Requirements, or a parent Requirement for a general statement grouping "
+    "its own exception/condition sub-cases) instead of skipping past it "
+    "straight to a broader ancestor and flattening its children in as that "
+    "ancestor's own direct children. A source group label with only ONE "
+    "child, or no child items of its own (pure prose), does not need this -- "
+    "only groups with two or more children are the real signal."
 )
+
+def _root_count_clause(expected_root_count: int | None) -> str:
+    """Fills the __ROOT_COUNT_CLAUSE__ marker in
+    _SECTION_ANALYSIS_SYSTEM_PROMPT. Defaults to today's exact single-root
+    wording when `expected_root_count` is None/<2 -- byte-identical
+    behavior for the overwhelmingly common case of one coherent section.
+
+    Confirmed live: a document can define MULTIPLE independent top-level
+    domains with no common ancestor (e.g. "Television Receiver" and
+    "Remote Control", each its own root Epic in a human-authored reference
+    hierarchy) -- yet the model still invented a single wrapping root Epic
+    to merge them, EVEN THOUGH both were already individually named as
+    separate qualifying Epic-type groups in the table-group hint. This is
+    not a hint-visibility problem -- it's this hardcoded "at most ONE"
+    rule leaving no room for a real multi-root document. Per this
+    codebase's own repeatedly-confirmed finding (see _table_group_hint's
+    and table_groups.py's own docstrings), a qualitative rule referencing
+    the hint data alone does not reliably change structural decisions --
+    only a concrete, countable instruction does. `expected_root_count` is
+    computed from real document structure (count of table groups with no
+    parent in the table's own ID hierarchy, see
+    table_groups.TableGroupInfo.is_top_level), the same
+    derived-not-guessed-number pattern topic_count already uses.
+
+    Toned down after a confirmed live regression: the first version of
+    this clause (long, repeating the count 3 times, "EXACTLY N" framed as
+    the dominant instruction) caused the model to over-anchor on the root
+    count specifically at the expense of overall coverage -- node count
+    collapsed from 57 (single-root wording) to 23 (byte-identical across 2
+    repeat runs, so a deterministic prompt-emphasis effect, not run-to-run
+    variance), losing most of the section's actual Requirements. This
+    version states the count ONCE, as one clause no more prominent than
+    the surrounding sentence, matching the terse register of the default
+    single-root wording it replaces."""
+    if not expected_root_count or expected_root_count < 2:
+        return (
+            "At most ONE node in your entire response should have "
+            "parent_temp_id null (the single section root -- usually the "
+            "first Epic or Feature you emit)."
+        )
+    return (
+        f"This section has {expected_root_count} independent top-level "
+        "domains with no common ancestor -- up to "
+        f"{expected_root_count} nodes may have parent_temp_id null (one "
+        "per domain) instead of just one; do not merge them under an "
+        "invented wrapping ancestor."
+    )
+
+
+def _section_analysis_system_prompt(expected_root_count: int | None = None) -> str:
+    """Fills in _SECTION_ANALYSIS_SYSTEM_PROMPT's dynamic __ROOT_COUNT_CLAUSE__
+    marker -- see _root_count_clause's own docstring for why this needs to
+    be a real substitution rather than a static string. The base template
+    contains literal JSON braces (the node-schema example), so this uses a
+    plain marker + str.replace rather than str.format (which would choke on
+    those braces)."""
+    return _SECTION_ANALYSIS_SYSTEM_PROMPT.replace(
+        "__ROOT_COUNT_CLAUSE__", _root_count_clause(expected_root_count)
+    )
+
 
 _SECTION_ANALYSIS_TOOL_HINT = (
     "\n\nYou may call the query_kb tool zero or more times first if additional "
@@ -384,6 +530,102 @@ def _branch_topic_hint(topic_count: int | None) -> str:
         f"for brevity. Emitting fewer than {topic_count} nodes is acceptable "
         "ONLY where a sub-topic genuinely states no distinct requirement; "
         "never invent, pad, or duplicate content to reach the count."
+    )
+
+
+# Caps how many FEATURE-typed group labels are spelled out verbatim in the
+# prompt, to bound worst-case prompt size on a huge table -- the arithmetic
+# sentence below always states the TRUE full count, never the capped
+# display count, so the floor itself is never understated even when the
+# label list is cut. EPIC and REQUIREMENT-typed groups are NEVER subject to
+# this cap (see the type-priority filtering in _table_group_hint below):
+# confirmed live, a flat positional cap of 15 silently dropped two REAL
+# groups from being named at all ("Media Buttons" at document-order index
+# 16, a Feature; "Recovery from Communication Loss" at index 18, a
+# Requirement) purely because of where they fell in table order, not
+# because they were less real or less structurally significant than the
+# groups that DID make the cut. Every group that stayed under the old cap
+# landed correctly in that same run; every one that fell past it did not --
+# a direct, confirmed correlation between "named in hint" and "became a
+# real node". EPIC/REQUIREMENT groups are structurally rarer and more
+# consequential than the common FEATURE case (a missed Feature-of-
+# Requirements still likely surfaces its child Requirements somewhere; a
+# missed Epic-of-Epics or Requirement-of-Requirements loses real structure
+# outright), so only FEATURE is allowed to fall off a cap at all. Token
+# cost per named group is ~10-15 tokens -- trivial against this module's
+# _MAX_OUTPUT_TOKENS budget -- so this cap exists only as a sane ceiling on
+# an unusually large table, not a meaningfully tight constraint.
+_MAX_FEATURE_TABLE_GROUPS_NAMED = 40
+
+
+def _table_group_hint(table_group_hints: list[tuple[str, str]] | None) -> str:
+    """Confirmed live: a QUALITATIVE instruction alone ("use the source's
+    own group label as a node when it has 2+ children", already merged
+    into _SECTION_ANALYSIS_SYSTEM_PROMPT) measured ZERO effect across a
+    real re-run of the same document -- identical missing-group set before
+    and after. This is the concrete, countable counterpart, same proven
+    pattern as _whole_document_hint/_branch_topic_hint above: state the
+    real number, name the actual groups, AND state each one's own
+    suggested TYPE (see table_groups.qualifying_table_groups's own
+    docstring for how that's determined) -- a second confirmed real gap:
+    the original version of this hint left Feature-vs-Requirement entirely
+    to the model's own judgment ("matching what kind of children it has")
+    and never mentioned Epic as a possibility at all, so a group-of-groups
+    domain (e.g. "Television Receiver") had no signal it could become a
+    nested Epic rather than being flattened into one Feature (or merged
+    away entirely). Combined with (not a replacement for) the qualitative
+    sentence already in the base prompt -- that sentence still supplies the
+    WHY/HOW framing; this supplies the WHICH, HOW MANY, and WHAT TYPE.
+    topic_count's own arithmetic (see _whole_document_hint/
+    _branch_topic_hint) already includes these groups in its floor -- this
+    hint only narrows down which of that floor's nodes are these specific
+    named groups and what type each should be."""
+    if not table_group_hints:
+        return ""
+    # Type-priority filtering: EPIC/REQUIREMENT groups are always named in
+    # full; only FEATURE groups (the common case) are subject to a cap. See
+    # _MAX_FEATURE_TABLE_GROUPS_NAMED's own comment for why.
+    displayed: list[tuple[str, str]] = []
+    feature_count = 0
+    dropped: list[str] = []
+    for label, suggested_type in table_group_hints:
+        if suggested_type == "Feature":
+            feature_count += 1
+            if feature_count > _MAX_FEATURE_TABLE_GROUPS_NAMED:
+                dropped.append(label)
+                continue
+        displayed.append((label, suggested_type))
+    if dropped:
+        logger.warning(
+            "table_group_hint: %d Feature-typed group(s) dropped from the "
+            "named hint past the %d cap (still counted in the numeric "
+            "floor, not individually named): %s",
+            len(dropped), _MAX_FEATURE_TABLE_GROUPS_NAMED, dropped,
+        )
+    labels_text = ", ".join(f"'{label}' ({suggested_type})" for label, suggested_type in displayed)
+    if dropped:
+        labels_text += f", and {len(dropped)} more"
+    return (
+        "\n\nNOTE: this section's source table defines "
+        f"{len(table_group_hints)} structural group(s) with two or more "
+        "child items of their own -- specifically, with the work-item TYPE "
+        f"each one should become: {labels_text}. Each of these groups is one "
+        "of the nodes counted in the floor above: your response must include "
+        "a distinct node for EACH one, using EXACTLY the stated type (Epic "
+        "for a group whose own children are themselves further split into "
+        "sub-groups -- a large functional domain, not a flat list of "
+        "requirements; Feature for a group containing distinct requirements "
+        "or a mix of requirements and sub-groups; Requirement for a general "
+        "statement whose children are its own specific exceptions or "
+        "conditions) -- do not fold its children directly into a broader "
+        "ancestor and skip past this group's own label, and do not invent a "
+        "different type than the one stated. For a group stated as "
+        "Requirement specifically: its own children (the exception/condition "
+        "items) must ALSO each become their own child Requirement node "
+        "underneath it, exactly like the Child Requirement pattern above -- "
+        "do not merge them into one combined description on the parent "
+        "Requirement itself; the parent's own text should state the general "
+        "behavior only, with each specific sub-case as a separate child."
     )
 
 
@@ -708,23 +950,49 @@ class OrchestratorLlmClient:
                 "  - testability: can this be objectively verified, with clear "
                 "acceptance criteria?\n"
                 "  - atomicity: is this ONE single requirement, not several "
-                "bundled together?\n"
+                "bundled together? A bare fragment or label (see "
+                "completeness_as_requirement below) is NOT atomic just because "
+                "it is short -- score it low here too, not high.\n"
                 "  - style: active voice, EARS-style phrasing?\n"
                 "  - rationale: does it state WHY when the reason isn't "
                 "self-evident?\n"
             )
+        # Confirmed real gap: every input to this call is assumed to already
+        # be a well-formed requirement statement, so a bare table-cell
+        # fragment or heading (e.g. "Size: 3U 1\"") scored as if it were one
+        # -- atomicity=100, no way to flag it as not-a-requirement at all.
+        # This dimension is ALWAYS added, in every category_instruction
+        # branch above (fixed-5, org-checklist, or live-derived) -- it's a
+        # structural completeness check, independent of whatever quality
+        # dimensions the org's own checklist defines.
+        category_instruction += (
+            "  - completeness_as_requirement: is this a COMPLETE candidate "
+            "requirement -- a subject, a modal (shall/should/must), and a "
+            "verifiable predicate? A bare label, value, or table cell (e.g. "
+            "'Size: 3U 1\"', 'Over-current', 'ON/OFF control') scores 0-10 here "
+            "regardless of how clear or short it is. Always include this key "
+            "in categoryScores, in addition to the categories above.\n"
+        )
         system_prompt = (
-            "You judge the quality of formal 'shall'-style requirement statements "
-            "against EARS, INCOSE, and ISO/IEC/IEEE 29148 criteria (unambiguous, "
-            "testable, atomic/not compound, has clear acceptance criteria, no vague "
-            "terms like 'user-friendly' or 'fast', active voice, states its "
-            "rationale when non-obvious). You are given a JSON object mapping each "
-            "requirement's node_id to its final text. Return ONLY a JSON object "
-            "with the SAME node_id keys, each mapped to an object with 'score' "
-            "(an integer 0-100, where 100 is a fully compliant requirement), "
+            "You judge the quality of candidate requirement items extracted from a "
+            "specification document. Some candidates are already formal 'shall'-"
+            "style requirement statements; others are NOT requirements at all -- "
+            "bare labels, table cells, headings, rationale/justification text, or "
+            "open questions/TBD items left in the source. Judge whether each "
+            "candidate IS a real requirement FIRST (see completeness_as_requirement "
+            "below), then judge its quality against EARS, INCOSE, and ISO/IEC/IEEE "
+            "29148 criteria (unambiguous, testable, atomic/not compound, has clear "
+            "acceptance criteria, no vague terms like 'user-friendly' or 'fast', "
+            "active voice, states its rationale when non-obvious). You are given a "
+            "JSON object mapping each candidate's node_id to its final text. Return "
+            "ONLY a JSON object with the SAME node_id keys, each mapped to an "
+            "object with 'score' (an integer 0-100, where 100 is a fully compliant "
+            "requirement -- a non-requirement fragment should score low here too), "
             "'issues' (a list of zero or more of: ambiguous, not_testable, "
             "compound, missing_acceptance_criteria, vague_term, passive_voice, "
-            "missing_rationale), and " + category_instruction +
+            "missing_rationale, not_a_requirement, fragment, placeholder, "
+            "open_item_tbd, rationale_as_requirement, conflicting_value), and " +
+            category_instruction +
             "Never invent a node_id not present in the input. "
             # Concrete, countable completeness instruction -- same
             # confirmed-live pattern as _whole_document_hint/
@@ -779,12 +1047,25 @@ class OrchestratorLlmClient:
             # response no matter how well-behaved the model is.
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
+        # Perf-investigation instrumentation (2026-08-01): wall time + payload
+        # size per call, logged at call granularity -- lets a real job's logs
+        # answer "does call duration scale with chunk size, or is it flat/
+        # backend-queue-dominated" without guessing (see the performance
+        # review that flagged this as unmeasured before touching
+        # _SCORING_CHUNK_NODE_COUNT).
+        request_chars = len(json.dumps(payload))
+        started_at = time.monotonic()
         with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/chat",
                 json=payload,
                 headers={"Authorization": f"Bearer {self._bearer_token}"},
             )
+        elapsed_seconds = time.monotonic() - started_at
+        logger.info(
+            "score_requirements_for_document: %d node(s), %d request char(s), %.1fs wall time",
+            len(descriptions_by_node_id), request_chars, elapsed_seconds,
+        )
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -947,6 +1228,267 @@ class OrchestratorLlmClient:
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
+        # Same perf-investigation instrumentation as
+        # score_requirements_for_document -- see its own comment.
+        request_chars = len(json.dumps(payload))
+        started_at = time.monotonic()
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        elapsed_seconds = time.monotonic() - started_at
+        logger.info(
+            "score_epics_and_features_for_document: %d node(s), %d request char(s), "
+            "%.1fs wall time",
+            len(nodes_by_id), request_chars, elapsed_seconds,
+        )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
+    def title_and_tags_for_rows(self, texts_by_row_id: dict[str, str]) -> dict[str, dict]:
+        """Backs the TitleTagClient protocol (id_tree_builder.py) -- the
+        deterministic-hierarchy path's optional per-document title/tag
+        enhancement pass. Confirmed real gap: `main.py`'s /level call site
+        never actually constructed and passed a real TitleTagClient, so
+        every deterministically-built node kept its raw
+        extract_baseline_title-derived title (e.g. "The P." from "The P. S
+        shall include electronic fuses...") and empty tags in production,
+        even though `_apply_title_tag_pass` was fully built and tested.
+
+        `texts_by_row_id` maps each deterministic leaf's own id to its
+        (verbatim, unsynthesized) description text. Returns row_id ->
+        {'title': str, 'tags': list[str]} -- a short, scannable title and
+        zero or more RequirementTag values. Purely an enhancement:
+        `_apply_title_tag_pass` already fails open on any exception or
+        malformed/partial response, keeping the deterministic title/empty
+        tags exactly as constructed."""
+        system_prompt = (
+            "You are given a JSON object mapping row ids to short text extracted "
+            "verbatim from a specification document (a heading, a table-cell "
+            "value, or a short requirement statement -- some rows may be sentence "
+            "fragments, not full requirements). For EACH row, return a SHORT, "
+            "scannable title (a few words, not the full text -- omit only if the "
+            "text is already short and clear, in which case return it unchanged) "
+            "and zero or more tags from the closed set: "
+            f"{', '.join(t.value for t in RequirementTag)}. Return ONLY a JSON "
+            "object with the SAME row id keys, each mapped to an object with "
+            "'title' (string) and 'tags' (array of zero or more of the tags "
+            "above). Never invent a row id not present in the input. "
+            f"The input contains exactly {len(texts_by_row_id)} row(s). Return "
+            f"exactly {len(texts_by_row_id)} entries in your response -- one for "
+            "EVERY row id in the input, none omitted, none invented. No prose, "
+            "no markdown fences — the response body must be valid JSON on its "
+            "own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(texts_by_row_id)},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": title_tags_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
+    def synthesize_leaf_requirements(self, items_by_id: dict[str, dict]) -> dict[str, dict]:
+        """Backs the SynthesisClient protocol (id_tree_builder.py) -- the
+        actual quality fix for the deterministic-hierarchy path's
+        fragment-as-requirement problem (confirmed real, live: raw
+        spec-table cells and headings like "Size: 3U 1\"" or "Over-current"
+        were being emitted as standalone Requirement work items with zero
+        synthesis). Reuses the exact instruction already proven in
+        `_SECTION_ANALYSIS_SYSTEM_PROMPT` for the LLM-analysis path
+        ("bullet/spec lists, tables synthesize into coherent requirements,
+        NOT one requirement per line") -- this is the one place the
+        deterministic path currently skips that synthesis entirely.
+
+        `items_by_id` maps each flagged leaf's own id to {'text': its
+        verbatim source text, 'context': a " > "-joined string of its
+        parent chain's titles, root first -- informational only, not
+        itself part of what gets judged}. Returns id -> {'title': str,
+        'text': str, 'tags': list[str]} -- a synthesized, properly-formed
+        requirement statement plus a short title and zero or more
+        RequirementTag values. Purely an enhancement:
+        `_apply_synthesis_pass` already fails open on any exception or
+        malformed/partial response, keeping the flagged leaf's verbatim
+        source text exactly as constructed."""
+        system_prompt = (
+            "You are given a JSON object mapping row ids to source material "
+            "extracted from a specification document. Each row has 'text' (the "
+            "verbatim source text -- often a short table-cell value, a bare "
+            "label, or a sentence fragment, NOT yet a complete requirement "
+            "statement) and 'context' (that row's parent section titles, most "
+            "general first, e.g. 'Power Supply > Electrical Characteristics' -- "
+            "use this ONLY to understand what the row is about, never invent "
+            "facts beyond what 'text' actually states). For EACH row, "
+            "synthesize a complete, well-formed 'shall'-style requirement "
+            "statement that expresses EXACTLY the same fact as 'text' (using "
+            "'context' to supply the missing subject when 'text' alone doesn't "
+            "name one -- e.g. text 'Size: 3U 1\"' under context 'Power Supply' "
+            "becomes 'The power supply shall have a 3U, 1-inch form factor.') "
+            "-- never add a value, threshold, or condition that isn't already "
+            "present in 'text' itself. Return ONLY a JSON object with the SAME "
+            "row id keys, each mapped to an object with 'title' (a short, "
+            "scannable title), 'text' (the synthesized requirement statement), "
+            "and 'tags' (an array of zero or more of the closed set: "
+            f"{', '.join(t.value for t in RequirementTag)}). Never invent a row "
+            f"id not present in the input. The input contains exactly "
+            f"{len(items_by_id)} row(s). Return exactly {len(items_by_id)} "
+            "entries in your response -- one for EVERY row id in the input, "
+            "none omitted, none invented. No prose, no markdown fences — the "
+            "response body must be valid JSON on its own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(items_by_id)},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": synthesis_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
+    def judge_duplicate_cluster(self, texts_by_id: dict[str, str]) -> dict:
+        """Backs the ConflictJudgeClient protocol (llm_leveling.py) --
+        real capability gap closed here: this codebase had NO
+        conflict/contradiction detection anywhere. The existing dedup
+        vector store answers "does this already exist in ADO," never "do
+        these two say opposite things" -- confirmed live, real document:
+        the SAME power-supply spec restated in a body section and its
+        appendix produced near-duplicate embeddings for "efficiency shall
+        be at least 85%" and "efficiency shall be at-least 93%", kept as
+        two unrelated Requirement nodes with no signal either was wrong.
+
+        `texts_by_id` maps each near-duplicate cluster member's own node
+        id to its text (already clustered by cosine similarity by the
+        caller -- this call only judges what the cluster's relationship
+        actually IS, it does not do its own similarity search). Returns
+        {'verdict': 'redundant'|'contradictory'|'distinct', 'conflicting_values':
+        list[str]} -- 'redundant' means the statements restate the same
+        fact (harmless duplication), 'contradictory' means they state
+        different values for what looks like the same parameter (the real
+        case this exists to catch), 'distinct' means the similarity match
+        was a false positive (genuinely different requirements)."""
+        system_prompt = (
+            "You are given a JSON object mapping node ids to near-duplicate "
+            "requirement statements from the same specification document -- "
+            "they were flagged as near-duplicates by embedding similarity, but "
+            "similarity alone cannot tell whether they actually agree. Judge "
+            "their relationship: 'redundant' if they restate the same fact "
+            "(harmless duplication, e.g. the same requirement appearing in a "
+            "body section and again in an appendix); 'contradictory' if they "
+            "state DIFFERENT values for what looks like the SAME parameter "
+            "(e.g. one says 'at least 85%' and another says 'at least 93%' for "
+            "the same efficiency spec, or 'input 28VAC' vs 'input 28VDC' for "
+            "the same input); 'distinct' if they are genuinely different "
+            "requirements that only happened to embed as similar. Return ONLY "
+            "a JSON object with 'verdict' (one of the three values above) and "
+            "'conflicting_values' (a list of the specific conflicting values "
+            "quoted from the text, e.g. ['85%', '93%'] -- empty list unless "
+            "verdict is 'contradictory'). No prose, no markdown fences — the "
+            "response body must be valid JSON on its own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(texts_by_id)},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": duplicate_cluster_verdict_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
+    def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+        """Backs the RootGroupingClient protocol (llm_leveling.py) -- real
+        gap closed here, confirmed against a real document (AirPro): a
+        deterministically-built tree with no single top heading produced
+        77 disconnected root nodes, unlike either external reference this
+        session's investigation compared against, each of which
+        synthesized ONE coherent hierarchy by regrouping topically related
+        root sections (e.g. absorbing 14 separate VPX-signal root Features
+        into one "VPX Utility & Management Signals" Feature).
+
+        `titles_by_id` maps each disconnected root's own node id to its
+        SHORT TITLE ONLY -- never full requirement content, since this
+        call proposes STRUCTURE, not text (see _regroup_disconnected_
+        roots's own docstring for why that distinction keeps this within
+        the "never invent content" policy). Returns {'groups': [{'title':
+        str, 'member_ids': list[str]}, ...]} -- a root id not mentioned in
+        any group's member_ids is left as its own standalone root by the
+        caller. A group needs at least 2 real members to matter; grouping
+        every root into one bucket, or leaving every root ungrouped, are
+        both valid answers when that's genuinely what the topics call
+        for."""
+        system_prompt = (
+            "You are given a JSON object mapping node ids to the SHORT TITLES "
+            "of a specification document's disconnected top-level sections -- "
+            "sections that ended up as separate roots because the document's "
+            "own heading outline has no single top-level heading tying them "
+            "together. Propose a topical grouping: cluster titles that belong "
+            "to the same broader subject into named groups (e.g. several "
+            "signal-name sections like 'PS_SYSRESET', 'PS_SYNC', 'PS_SM' might "
+            "all belong under a group titled something like 'VPX Utility & "
+            "Management Signals'). A section that doesn't clearly belong with "
+            "any other should simply not appear in any group -- do not force "
+            "every section into a group. Return ONLY a JSON object with a "
+            "'groups' array, each entry an object with 'title' (a short, "
+            "descriptive name for the group) and 'member_ids' (the node ids, "
+            "from the input, that belong in this group -- at least 2 per "
+            "group; never invent an id not present in the input). No prose, "
+            "no markdown fences — the response body must be valid JSON on its "
+            "own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(titles_by_id)},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": root_grouping_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
         with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/chat",
@@ -1025,6 +1567,8 @@ class OrchestratorLlmClient:
         kb_context: str | None = None,
         whole_document: bool = False,
         topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
     ) -> tuple[list[dict], bool]:
         """Single holistic SURVEY call replacing the old infer_hierarchy +
         generate_requirements_for_document pair for the whole-tree-in-one-call
@@ -1067,11 +1611,14 @@ class OrchestratorLlmClient:
         truncated response was NOT silently caught by _parse_json_object's
         limited (missing-final-brace-only) tolerance; the caller surfaces
         this as a branch warning rather than staying silent."""
-        system_prompt = _with_kb_context(_SECTION_ANALYSIS_SYSTEM_PROMPT, kb_context)
+        system_prompt = _with_kb_context(
+            _section_analysis_system_prompt(expected_root_count), kb_context
+        )
         if whole_document:
             system_prompt += _whole_document_hint(topic_count)
         elif topic_count is not None:
             system_prompt += _branch_topic_hint(topic_count)
+        system_prompt += _table_group_hint(table_group_hints)
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1120,6 +1667,8 @@ class OrchestratorLlmClient:
         read_other_section_fn: Callable[[str], str | None] | None = None,
         whole_document: bool = False,
         topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
         """Tool-calling variant of analyze_section for models that support it
         (see §5c's capability gate) -- the model actively pulls KB context via
@@ -1166,11 +1715,12 @@ class OrchestratorLlmClient:
         if other_section_tool_enabled:
             tools.append(READ_OTHER_SECTION_TOOL)
             tool_hint += _SECTION_ANALYSIS_OTHER_SECTION_TOOL_HINT
-        system_prompt = _SECTION_ANALYSIS_SYSTEM_PROMPT + tool_hint
+        system_prompt = _section_analysis_system_prompt(expected_root_count) + tool_hint
         if whole_document:
             system_prompt += _whole_document_hint(topic_count)
         elif topic_count is not None:
             system_prompt += _branch_topic_hint(topic_count)
+        system_prompt += _table_group_hint(table_group_hints)
         messages: list[dict] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": section_text},

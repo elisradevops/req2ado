@@ -23,6 +23,7 @@ import { useOrgUrl } from '../store/authStore';
 import { StatusChip } from '../components/StatusChip';
 import { ModeBadge } from '../components/ModeBadge';
 import { ProgressBanner } from '../components/ProgressBanner';
+import { SurveyPipelineSteps } from '../components/SurveyPipelineSteps';
 import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
 import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { useToast } from '../components/ToastProvider';
@@ -166,8 +167,12 @@ export function JobDetail(): React.ReactElement {
   // silently dropped (only partially masked by the SSE controller's
   // replay-last-known-value behavior on reconnect). isLive stays true
   // across the pending->running transition, so the subscription survives
-  // it untouched.
-  const isLive = status === 'pending' || status === 'running';
+  // it untouched. 'writing' included for the same reason -- confirm() now
+  // publishes its own stage/narration events (previously it published
+  // nothing at all), and handleConfirm below sets status to 'writing'
+  // optimistically, before its own confirmJob() call even resolves, so the
+  // subscription needs to already be (or become) live for that status too.
+  const isLive = status === 'pending' || status === 'running' || status === 'writing';
   useEffect(() => {
     if (!id || !isLive) return;
     let unsubscribe: (() => void) | undefined;
@@ -236,14 +241,26 @@ export function JobDetail(): React.ReactElement {
     isMutatingRef.current = true;
     setIsMutating(true);
     setMutationError(null);
+    setConfirmDialogOpen(false);
+    // Optimistic, BEFORE awaiting confirmJob (which now itself takes real
+    // minutes and only resolves once the whole write-back finishes) --
+    // previously status only flipped to 'writing' AFTER this await
+    // resolved, by which point the write-back was already done, so
+    // ProgressBanner never had a chance to render during it at all.
+    setStatus('writing');
     try {
       const result = await confirmJob(id);
       const job = await getJob(id);
       setStatus(job.status);
-      setConfirmDialogOpen(false);
       showToast(`Confirmed — ${result.createdCount} work item(s) written to Azure DevOps.`, 'success');
     } catch {
       setMutationError('Confirm failed — the job may be safe to retry. Check the Audit tab for details.');
+      // Re-sync with the server's actual status rather than leaving the
+      // optimistic 'writing' stuck on screen after a failure -- confirm()
+      // durably records partial progress (CreatedItemMapping) even on
+      // failure, so job.status reflects the real, safe-to-retry state.
+      const job = await getJob(id).catch(() => null);
+      if (job) setStatus(job.status);
     } finally {
       isMutatingRef.current = false;
       setIsMutating(false);
@@ -447,6 +464,20 @@ export function JobDetail(): React.ReactElement {
   // parent" instead of leaving that only implicit in the parent row's own
   // badge, several rows away in the tree.
   const diffByLocalId = useMemo(() => Object.fromEntries(diff.map((e) => [e.localId, e])), [diff]);
+
+  // Real gap this closes (user-reported): a conflict warning's
+  // "[localId: ...]" is internal to THIS run and never a real ADO work
+  // item number -- for a near-duplicate that's already an ADO item
+  // (dedup_skip/reuse), this lets CollapsibleWarnings offer a real deep
+  // link to it instead of only the meaningless-outside-this-app localId.
+  // Only entries with a real existingAdoId are included.
+  const adoIdByLocalId = useMemo(() => {
+    const result: Record<string, number> = {};
+    for (const entry of diff) {
+      if (entry.existingAdoId != null) result[entry.localId] = entry.existingAdoId;
+    }
+    return result;
+  }, [diff]);
 
   // Same filter predicate DiffTree applies internally (see its own `rows`
   // useMemo) -- NOT collapse-aware, since collapse state is internal to
@@ -686,6 +717,9 @@ export function JobDetail(): React.ReactElement {
           {mutationError}
         </Alert>
       )}
+      {mode === 'survey' && status && (
+        <SurveyPipelineSteps status={status} stage={stage} latestNarrationPhase={narrations.at(-1)?.phase ?? null} />
+      )}
       {status === 'pending' && (
         <Alert severity="info">
           <span className="flex items-center gap-2">
@@ -693,7 +727,7 @@ export function JobDetail(): React.ReactElement {
           </span>
         </Alert>
       )}
-      {status === 'running' && stage && mode && startedAt && (
+      {(status === 'running' || status === 'writing') && stage && mode && startedAt && (
         <ProgressBanner stage={stage} startedAt={startedAt} mode={mode as 'baseline' | 'survey'} narrations={narrations} />
       )}
       <FigureDescriptions items={figureDescriptions} />
@@ -705,7 +739,15 @@ export function JobDetail(): React.ReactElement {
           <StatTile value={summary.dedupSkipped} label="Duplicates skipped" tone={summary.dedupSkipped > 0 ? 'warning' : 'dim'} />
         </div>
       )}
-      <CollapsibleWarnings warnings={warnings} />
+      <CollapsibleWarnings
+        warnings={warnings}
+        onJumpToNode={(localId) => {
+          setTab('tree');
+          setSelectedId(localId);
+        }}
+        adoIdByLocalId={adoIdByLocalId}
+        orgUrl={orgUrl}
+      />
       <Tabs
         value={tab}
         onValueChange={(value) => (value === 'audit' ? handleShowAudit() : setTab(value as 'tree' | 'audit'))}

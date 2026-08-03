@@ -670,6 +670,26 @@ describe('DryRunService', () => {
     );
     expect(result[0].childType).toBe('Requirement');
   });
+
+  it('calls onProgress once per node with a monotonically-increasing completed count, final call at the total', async () => {
+    // Regression coverage for the previously-silent dedup-check burst (see
+    // pipeline.worker.ts's own comment: confirmed live, ~543 nodes, zero
+    // progress signal). onProgress is optional and must not change diff()'s
+    // own return value or ordering guarantees.
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const service = new DryRunService();
+    const nodes = Array.from({ length: 5 }, (_, i) => ({
+      localId: `n${i}`, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
+      sourceHash: `h${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
+    }));
+    const progressCalls: [number, number][] = [];
+    await service.diff(nodes, fakeIdempotencyService, undefined, (completed, total) => {
+      progressCalls.push([completed, total]);
+    });
+    expect(progressCalls).toHaveLength(5);
+    expect(progressCalls.every(([, total]) => total === 5)).toBe(true);
+    expect(progressCalls.map(([completed]) => completed).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+  });
 });
 
 describe('resolveCrossJobTraceLinks', () => {
