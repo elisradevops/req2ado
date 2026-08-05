@@ -677,3 +677,96 @@ if it's a real, recurring backend problem rather than one-off contention.
 `ingestion-http.client.ts:19` (small, safe, immediate mitigation), AND separately
 investigate Ollama/Open WebUI's own state/logs the next time a scoring call runs
 unusually long, before assuming the raised timeout alone is a complete fix.
+
+## 18. NodeDetailPanel's description preview doesn't match what actually gets written to ADO (BACKLOG, not yet implemented)
+
+**Status:** SPEC ONLY. No code changed. User asked about `System.Description`'s ADO field
+type (`"type": "html"`) and wanting "nicely formatted text" consistently in both the
+review UI and the real ADO work item.
+
+**Root cause:** investigated end to end -- two of three layers already agree that
+`description` is markdown, converted to real HTML: orchestrator's write-back
+(`orchestrator/src/modules/pipeline/description-html.ts`'s `toAdoDescriptionHtml()`,
+used at `jobs.service.ts:875`) runs the description through `marked.parse()` before
+sending it to ADO's `System.Description`, and the frontend's `NodeDetailPanel.tsx:219`
+already renders it through `<Markdown>` (react-markdown + remarkGfm), not a plain `<p>`.
+Markdown formatting (**bold**, lists) already round-trips correctly today if the LLM
+produces it (see item 19 for why it currently doesn't).
+
+**The real, confirmed inconsistency:** BASELINE mode folds raw HTML `<table>` fragments
+directly into a node's description (`ingestion/app/leveling/tree_builder.py`'s
+`_table_to_html`) -- `toAdoDescriptionHtml()` has a `TABLE_BLOCK_PATTERN` carve-out that
+passes these through untouched (correctly rendered once written to ADO). But the
+frontend's react-markdown has no `rehype-raw` plugin, so that SAME raw HTML renders as
+literal escaped text in the review UI, not as a table. A reviewer sees something
+different from what will actually be written -- a "preview lies" bug, not a formatting
+gap.
+
+**Proposed fix (not yet implemented):** make the frontend preview render the exact same
+HTML the write-back path will send, so review matches reality. Options: run the same
+markdown+table-passthrough conversion client-side (port or share `toAdoDescriptionHtml`'s
+logic) and render the result through a sanitized HTML renderer, OR add `rehype-raw` to
+`NodeDetailPanel`'s `<Markdown>` config scoped ONLY to the already-trusted, already-escaped
+table fragments ingestion produces (never arbitrary raw HTML from elsewhere). Small,
+well-scoped once the approach is picked.
+
+## 19. SURVEY-drafted descriptions never use markdown formatting (BACKLOG, not yet implemented)
+
+**Status:** SPEC ONLY. No code changed. Distinct from item 18 (that's a render-consistency
+bug; this is a content-generation gap) -- user wants "nicely formatted text," and today's
+SURVEY output is flat, unformatted prose.
+
+**Root cause:** `OrchestratorLlmClient`'s section-analysis prompt
+(`ingestion/app/survey/orchestrator_llm_client.py:280-296`) asks the model for "a single
+formal shall-style requirement statement" with no instruction to use markdown structure
+at all (bold key terms, bullet lists for multi-part conditions, etc.). The write-back and
+frontend render paths already fully support markdown (see item 18) -- the model simply
+never produces any.
+
+**Proposed fix (not yet implemented):** extend the section-analysis prompt to
+instruct/permit markdown formatting for genuinely multi-part or emphasis-worthy content
+(e.g. a compound condition as a bullet list, a key parameter name in bold) -- a prompt
+change, not a plumbing change. Needs care: SURVEY's contract is a single formal
+requirement statement per node, so formatting should enhance readability of that one
+statement, not fragment it into something that no longer reads as one requirement.
+Should be validated against real documents (does the model actually produce useful
+structure, or just decorative noise) before considering it done.
+
+## 20. No way to attach relevant figures/tables to a work item, LLM-judged (BACKLOG, not yet implemented)
+
+**Status:** SPEC ONLY. No code changed. User asked whether a work item can get relevant
+figures/tables appended to its description, with the LLM deciding relevance.
+
+**Root cause / current state (confirmed via investigation, nothing exists today):**
+- `WorkItemNode`/`SourceRef` (`ingestion/app/workitem/model.py`) never links to a
+  specific `Figure`/`Table` id -- `SourceRef` only carries `document_path`/
+  `start_offset`/`end_offset`/`page`. Figure captions and table content DO reach the
+  synthesis LLM as context (folded into node text via `[FIGURE: ...]` markers and
+  markdown/HTML table rendering) but once folded in, there's no back-reference to which
+  Figure.id/Table.id produced that content.
+- `mcp-ado-server` has **zero attachment capability** -- confirmed via
+  `grep -rn "attachment" mcp-ado-server/src/`, zero hits. Its tools only set field
+  values (`ado_create_work_item`/`ado_set_fields`); there is no upload-a-file-to-a-
+  work-item tool of any kind.
+- Attaching the *source document itself* to a work item was already evaluated and
+  explicitly REJECTED in an earlier design pass (`jobs.service.ts:284-293` -- no object
+  storage exists, and appending it to `System.Description` would violate BASELINE's
+  verbatim-fidelity contract). Figures/tables are a narrower case but hit the exact same
+  missing infrastructure (no attachment mechanism exists at all, for anything).
+
+**Proposed fix (not yet implemented), three real pieces:**
+1. Give the synthesis LLM call the candidate figures/tables (id + caption/content) for
+   the section it's working on, and have it name which one(s) (if any) are relevant to
+   the requirement it's drafting -- a real relevance JUDGMENT, not "attach everything
+   nearby."
+2. Tables are the easy half -- content can be embedded directly in the description as
+   HTML (`_table_to_html` already exists) once a node names which table it wants.
+3. Figures need REAL ADO attachment upload -- a genuinely new mcp-ado-server tool
+   (`POST .../_apis/wit/attachmentsuploads` + linking the uploaded attachment into the
+   work item, then referencing it via an `<img>` tag pointing at the attachment URL in
+   the description HTML). Nothing today uploads anything to ADO; this is new surface
+   area on the write-back path, not a small extension of existing tools.
+
+**Scope note:** this is the largest of the three items logged today -- new LLM-judgment
+step, new data linking (figure/table id -> node), and genuinely new ADO write capability
+(file upload) that doesn't exist anywhere in this codebase yet.
