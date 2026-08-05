@@ -198,8 +198,13 @@ export class RealAdoBackend implements AdoBackend {
    * endpoint is 200) and dispatches chunks with bounded concurrency
    * (`config.concurrency`) instead of one getWorkItem call per id -- both
    * config fields were previously declared but never referenced anywhere.
-   * Unknown ids are simply absent from the result; ADO's own endpoint drops
-   * them rather than erroring, matched here rather than treated as a fault.
+   * Unknown ids are absent from the result via `errorPolicy=Omit`
+   * (getWorkItemsChunk) -- ADO's own default for this endpoint is to FAIL
+   * the entire request (400 TF401232) if ANY id in the batch doesn't
+   * exist, not to omit it; without this param, a batch containing even
+   * one stale/deleted id would throw for the whole chunk. This is the
+   * exact detection signal DryRunService's stale-match verification
+   * (a deleted-in-ADO reuse/dedup_skip match) depends on.
    */
   async getWorkItemsBatch(ids: number[]): Promise<WorkItemRecord[]> {
     if (ids.length === 0) return [];
@@ -219,7 +224,7 @@ export class RealAdoBackend implements AdoBackend {
   }
 
   private async getWorkItemsChunk(ids: number[], version: string): Promise<WorkItemRecord[]> {
-    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems?ids=${ids.join(',')}&$expand=relations${
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems?ids=${ids.join(',')}&$expand=relations&errorPolicy=Omit${
       version === 'none' ? '' : `&api-version=${version}`
     }`;
     const response = await retryWithBackoff(() =>

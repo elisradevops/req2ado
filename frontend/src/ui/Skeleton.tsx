@@ -4,10 +4,10 @@ export function Skeleton({ className }: { className?: string }): React.ReactElem
   return (
     <span
       className={cn(
-        'block animate-pulse rounded bg-[linear-gradient(90deg,var(--color-hairline)_25%,#E6EBF4_37%,var(--color-hairline)_63%)] bg-[length:400%_100%]',
+        'block rounded-sm bg-[linear-gradient(90deg,var(--color-hairline)_25%,var(--color-shimmer-highlight)_37%,var(--color-hairline)_63%)] bg-[length:400%_100%]',
         className,
       )}
-      style={{ animation: 'shimmer 1.5s linear infinite' }}
+      style={{ animation: 'shimmer var(--duration-ambient) var(--ease-linear) infinite' }}
     />
   );
 }

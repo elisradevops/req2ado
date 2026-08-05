@@ -179,6 +179,46 @@ def test_publish_score_requirements_done_message_reports_issues_found() -> None:
     assert "3 quality issue(s) flagged" in payload["message"]
 
 
+def test_publish_score_requirements_message_includes_batch_progress_when_chunk_fields_are_set() -> None:
+    # Unlike figure/table totals, the whole document's requirement count is
+    # known upfront -- chunk_index/chunk_count is real progress, not a guess.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(phase="score_requirements", draft_count=150, chunk_index=1, chunk_count=4))
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["chunkIndex"] == 1
+    assert payload["chunkCount"] == 4
+    assert "batch 2 of 4" in payload["message"]
+
+
+def test_publish_score_requirements_done_message_includes_batch_progress() -> None:
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(phase="score_requirements_done", issues_found=2, chunk_index=0, chunk_count=2))
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["chunkIndex"] == 0
+    assert payload["chunkCount"] == 2
+    assert "batch 1 of 2" in payload["message"]
+
+
+def test_publish_score_requirements_message_omits_batch_progress_when_chunk_fields_are_absent() -> None:
+    # A single-chunk document (the common case) never sets chunk_index/
+    # chunk_count -- the message must not show a stray "batch" fragment.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(phase="score_requirements", draft_count=12))
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["chunkIndex"] is None
+    assert payload["chunkCount"] is None
+    assert "batch" not in payload["message"]
+
+
 def test_publish_describe_figure_reports_a_running_count_not_a_fraction() -> None:
     # The parse-stage figure loop doesn't know the document's total figure
     # count until it finishes walking the whole document, so this is
@@ -360,3 +400,138 @@ def test_publish_detect_conflicts_and_regroup_roots_carry_a_real_message() -> No
     payload = json.loads(redis_client.publish_calls[1][1])
     assert payload["phase"] == "regroup_roots"
     assert "topic" in payload["message"].lower()
+
+
+def test_publish_deterministic_subtree_carries_index_count_and_label() -> None:
+    # Real gap this closes: _detect_deterministic_subtrees ran immediately
+    # after preparing_analysis with zero narration of its own -- confirmed
+    # live as a genuine 20+ minute silent window on a document with many
+    # ID-hierarchy rows.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        _progress(
+            phase="deterministic_subtree", branch_index=None, branch_count=0,
+            subtree_index=1, subtree_count=3, subtree_label="Table t2",
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["subtreeIndex"] == 1
+    assert payload["subtreeCount"] == 3
+    assert payload["subtreeLabel"] == "Table t2"
+    assert "2 of 3" in payload["message"]
+    assert "Table t2" in payload["message"]
+
+
+def test_publish_table_detected_reports_row_count_and_qualifying_status() -> None:
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        _progress(
+            phase="table_detected", branch_index=None, branch_count=0,
+            table_id="t1", table_row_count=42, table_qualifies=True,
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["tableId"] == "t1"
+    assert payload["tableRowCount"] == 42
+    assert payload["tableQualifies"] is True
+    assert "t1" in payload["message"]
+    assert "42 row" in payload["message"]
+    assert "qualifies" in payload["message"].lower()
+
+
+def test_publish_table_detected_reports_non_qualifying_tables_honestly() -> None:
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        _progress(
+            phase="table_detected", branch_index=None, branch_count=0,
+            table_id="t2", table_row_count=0, table_qualifies=False,
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert "not id-shaped" in payload["message"].lower()
+
+
+def test_publish_score_requirements_message_includes_sample_titles() -> None:
+    # Previously only a bare count ("150 drafted requirement(s)") -- no way
+    # to tell which actual items were being scored.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        _progress(
+            phase="score_requirements", draft_count=2,
+            sample_titles=["12V Compliance Standards", "3.3V Aux Compliance Standards"],
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["sampleTitles"] == ["12V Compliance Standards", "3.3V Aux Compliance Standards"]
+    assert "12V Compliance Standards" in payload["message"]
+
+
+def test_publish_job_failed_reports_error_type_message_elapsed_and_last_phase() -> None:
+    # Real gap this closes: a job that failed deep inside build_survey_tree
+    # previously surfaced nothing beyond a flattened one-line AuditEntry
+    # ("Pipeline failed: Ingestion /level request failed: timed out") -- no
+    # phase, no elapsed time, no real exception type.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        _progress(
+            phase="job_failed", branch_index=None, branch_count=0,
+            error_type="ReadTimeout", error_message="timed out",
+            elapsed_seconds=1523.4, last_phase="score_requirements",
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["errorType"] == "ReadTimeout"
+    assert payload["errorMessage"] == "timed out"
+    assert payload["elapsedSeconds"] == 1523.4
+    assert payload["lastPhase"] == "score_requirements"
+    assert "timed out" in payload["message"]
+    assert "ReadTimeout" in payload["message"]
+    assert "score_requirements" in payload["message"]
+    assert "1523" in payload["message"]
+
+
+def test_last_known_phase_is_recorded_on_every_publish_and_readable_across_instances() -> None:
+    # _LAST_PHASE_BY_JOB is process-global, keyed by job_id -- /level's
+    # exception handler constructs a FRESH NarrationPublisher instance to
+    # send job_failed, so this must be readable independent of which
+    # publisher instance recorded it.
+    from app.leveling.narration_publisher import last_known_phase
+
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-last-phase-test")
+
+    assert last_known_phase("job-last-phase-test") is None
+    publisher.publish(_progress(phase="analyze_section"))
+    assert last_known_phase("job-last-phase-test") == "analyze_section"
+    publisher.publish(_progress(phase="score_requirements"))
+    assert last_known_phase("job-last-phase-test") == "score_requirements"
+
+
+def test_last_known_phase_is_recorded_even_when_the_redis_publish_itself_fails() -> None:
+    # Exactly the scenario job_failed narration most needs to be accurate
+    # in -- a Redis outage is a plausible co-occurring failure, not just an
+    # LLM timeout, and last_known_phase must not depend on publish()
+    # actually succeeding.
+    from app.leveling.narration_publisher import last_known_phase
+
+    redis_client = _FakeRedis(raises=ConnectionError("boom"))
+    publisher = NarrationPublisher(redis_client, "job-last-phase-outage")
+
+    publisher.publish(_progress(phase="regroup_roots"))
+
+    assert last_known_phase("job-last-phase-outage") == "regroup_roots"

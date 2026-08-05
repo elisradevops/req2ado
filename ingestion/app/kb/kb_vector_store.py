@@ -70,6 +70,7 @@ class KbVectorStore:
         file_hash: str,
         doc_type: str | None = None,
         quality_checklist: list[str] | None = None,
+        retrieval_mode: str | None = None,
     ) -> None:
         collection = self._get_collection(user_id)
         metadata = {
@@ -83,6 +84,16 @@ class KbVectorStore:
         # pass doc_type keep working unchanged).
         if doc_type is not None:
             metadata["doc_type"] = doc_type
+        # `retrieval_mode` mirrors Open WebUI's own Knowledge feature: a file
+        # is either similarity-gated ("retrieve", the default -- not stored,
+        # same optional-metadata convention as doc_type above) or always
+        # injected in full ("always_include", see
+        # retrieval.fetch_always_include_context) -- right for small,
+        # static reference material (a CMMI/requirements-writing-standards
+        # doc) whose relevance is definitional, not topical, so a
+        # similarity score can never legitimately gate it.
+        if retrieval_mode is not None and retrieval_mode != "retrieve":
+            metadata["retrieval_mode"] = retrieval_mode
         # Confirmed real determinism gap (user-reported): asking the scoring
         # LLM to "derive" quality-checklist category names live, per scoring
         # call, is not a hard cross-run guarantee even at temperature=0 --
@@ -217,6 +228,38 @@ class KbVectorStore:
         offset = 0
         while True:
             page = collection.get(limit=_GET_PAGE_SIZE, offset=offset, include=["metadatas"])
+            page_metadatas = page.get("metadatas") or []
+            if not page_metadatas:
+                break
+            names.update(m["source_file"] for m in page_metadatas if "source_file" in m)
+            if len(page_metadatas) < _GET_PAGE_SIZE:
+                break  # real last page
+            if len(names) >= _MAX_LISTED_DOCUMENTS:
+                break
+            offset += _GET_PAGE_SIZE
+        return sorted(names)[:_MAX_LISTED_DOCUMENTS]
+
+    def list_always_include_documents(self, user_id: str) -> list[str]:
+        """Distinct source_file names tagged retrieval_mode="always_include"
+        at upload time -- for fetch_always_include_context (app.kb.
+        retrieval), the Full-Context-mode counterpart to list_documents/
+        retrieve_context's similarity-gated path. Filters server-side via
+        chromadb's `where` (not a client-side scan of list_documents'
+        output) since most documents are the "retrieve" default and would
+        otherwise be fetched and discarded for nothing. Same pagination/cap
+        convention as list_documents -- see its own docstring."""
+        collection = self._get_collection(user_id)
+        if collection.count() == 0:
+            return []
+        names: set[str] = set()
+        offset = 0
+        while True:
+            page = collection.get(
+                where={"retrieval_mode": "always_include"},
+                limit=_GET_PAGE_SIZE,
+                offset=offset,
+                include=["metadatas"],
+            )
             page_metadatas = page.get("metadatas") or []
             if not page_metadatas:
                 break

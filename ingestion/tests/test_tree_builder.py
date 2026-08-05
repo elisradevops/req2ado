@@ -76,7 +76,36 @@ def test_icd_style_branch_autodetects_and_builds_feature_requirement() -> None:
     assert types == [WorkItemType.FEATURE, WorkItemType.REQUIREMENT]
     requirement_node = tree.nodes[1]
     assert "OPEN: confirm connector part number" in requirement_node.description
-    assert "[FIGURE: none]" in requirement_node.description
+    # A placeholder-only figure (no real caption) must be omitted, not leak
+    # the literal "[FIGURE: none]" wire-format string into the work item
+    # description -- see _figure_line in tree_builder.py.
+    assert "[FIGURE:" not in requirement_node.description
+
+
+def test_baseline_fold_renders_a_real_figure_caption_as_a_blockquote() -> None:
+    # BASELINE mode never calls a vision model, but a caption CAN still be
+    # present (e.g. a caption embedded in the source doc's own alt-text).
+    # This must render the same clearly-labeled way SURVEY mode does, not
+    # leak the raw "[FIGURE: ...]" wire-format text.
+    path = "backplane_icd.md"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.MD, sha256="icdhash2"),
+        blocks=[
+            Block(id="d0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(
+                id="d1",
+                kind=BlockKind.HEADING,
+                heading_level=2,
+                text="3.3V Rail Requirements",
+                source_ref=_sr(path, 20, 43),
+            ),
+            Block(id="d2", kind=BlockKind.FIGURE, text="[FIGURE: Rail topology diagram]", source_ref=_sr(path, 44, 76)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    requirement_node = tree.nodes[-1]
+    assert "> Figure: Rail topology diagram" in requirement_node.description
+    assert "[FIGURE:" not in requirement_node.description
 
 
 def test_same_depth_produces_different_types_per_branch() -> None:
@@ -105,14 +134,13 @@ def test_build_baseline_tree_is_deterministic() -> None:
     assert tree1.model_dump() == tree2.model_dump()
 
 
-def test_a_branch_starting_with_no_recognized_heading_drops_its_orphan_block_but_now_warns() -> None:
-    # Regression: a depth=None block reached before any node is open in its
-    # branch (its first line has no heading/numbering the parser
-    # recognized) is still dropped -- there is no node to fold it into --
-    # but this must no longer be SILENT. verify_fidelity structurally cannot
-    # catch this case (a dropped block never becomes part of any node's
-    # description to hash-mismatch against), so WorkItemTree.warnings is the
-    # only place this loss can ever surface to a human reviewer.
+def test_a_branch_starting_with_no_recognized_heading_folds_its_orphan_block_into_front_matter() -> None:
+    # A depth=None block reached before any node is open in its branch (its
+    # first line has no heading/numbering the parser recognized) is no
+    # longer dropped -- it is buffered and folded into a synthetic
+    # front-matter node once the document's first real node is created (see
+    # tree_builder.py's orphan_entries buffer). A warning still fires so a
+    # human reviewer can see it happened, distinct from a normal fold.
     path = "orphan.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="orphanhash"),
@@ -123,9 +151,8 @@ def test_a_branch_starting_with_no_recognized_heading_drops_its_orphan_block_but
         ],
     )
     tree = build_baseline_tree(doc)
-    # The orphan line never becomes a node and never taints any node's
-    # description -- unchanged behavior, just no longer silent about it.
-    assert not any("stray line" in n.description for n in tree.nodes)
+    front_matter_node = next(n for n in tree.nodes if "stray line" in n.description)
+    assert front_matter_node.title.startswith("Front Matter:")
     assert len(tree.warnings) == 1
     assert "b0" in tree.warnings[0]
     assert "stray line" in tree.warnings[0]
@@ -323,19 +350,18 @@ def test_long_title_with_word_boundaries_is_trimmed_not_hard_cut() -> None:
 
 
 def test_description_assembly_is_used_for_unleveled_block_folding() -> None:
-    # ICD-style fixture already proves OPEN:/[FIGURE:] text lands in the
-    # description (Phase 2's test_icd_style_branch_... test) — this test
-    # additionally proves the exact newline-joined shape matches
-    # assemble_description's contract precisely (not just "contains").
+    # ICD-style fixture already proves OPEN: text lands in the description
+    # (Phase 2's test_icd_style_branch_... test) — this test additionally
+    # proves the exact newline-joined shape matches assemble_description's
+    # contract precisely (not just "contains"). The fixture's trailing
+    # placeholder-only FIGURE block folds in nothing (see _figure_line) --
+    # it never reaches assemble_description at all.
     from app.distillation.description import assemble_description
 
     icd_doc = _icd_style_doc()
     tree = build_baseline_tree(icd_doc)
     requirement_node = tree.nodes[1]
-    expected = assemble_description(
-        assemble_description("3.3V Rail Requirements", "OPEN: confirm connector part number before release."),
-        "[FIGURE: none]",
-    )
+    expected = assemble_description("3.3V Rail Requirements", "OPEN: confirm connector part number before release.")
     assert requirement_node.description == expected
 
 
@@ -619,9 +645,11 @@ def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_
     assert tree.warnings == []
 
 
-def test_a_table_before_any_heading_in_its_branch_is_dropped_with_a_warning() -> None:
-    # Companion to the drop-warning test for blocks: a table can be orphaned
-    # exactly the same way a block can (no node open yet to fold into).
+def test_a_table_before_any_heading_in_its_branch_is_folded_into_front_matter() -> None:
+    # Companion to the front-matter fold test for blocks: a table can be
+    # orphaned exactly the same way a block can (no node open yet to fold
+    # into) -- it is folded into the same synthetic front-matter node, not
+    # dropped.
     path = "table_orphan.docx"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
@@ -630,10 +658,44 @@ def test_a_table_before_any_heading_in_its_branch_is_dropped_with_a_warning() ->
     )
     tree = build_baseline_tree(doc)
 
-    assert len(tree.nodes) == 1
-    assert "Rail" not in tree.nodes[0].description
+    assert len(tree.nodes) == 2
+    front_matter_node = next(n for n in tree.nodes if "Rail" in n.description)
+    assert front_matter_node.parent_local_id == tree.nodes[0].local_id
     assert len(tree.warnings) == 1
     assert "t0" in tree.warnings[0]
+
+
+def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -> None:
+    # A document's real preamble is rarely a single orphan -- a cover table
+    # AND intro prose can both precede the first heading. Both must land in
+    # the SAME synthetic front-matter node (joined via assemble_description,
+    # in document order), not one dropped for only one buffered.
+    path = "mixed_front_matter.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="Scope: this document covers the power subsystem.", source_ref=_sr(path, 0, 10)),
+            Block(id="b1", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 40, 59)),
+            # A second, nested heading -- without it this branch would be a
+            # single lone block, and _split_into_branches/build_baseline_tree
+            # would route the WHOLE document through _build_flat_list_tree
+            # instead of the structured per-branch path this test targets.
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail", source_ref=_sr(path, 60, 69)),
+        ],
+        tables=[Table(id="t0", rows=[["Rev", "Date"], ["A", "2026-01-01"]], caption="Revision History", source_ref=_sr(path, 20, 21))],
+    )
+    tree = build_baseline_tree(doc)
+
+    assert len(tree.nodes) == 3
+    front_matter_node = next(n for n in tree.nodes if n.title.startswith("Front Matter:"))
+    assert front_matter_node.parent_local_id == tree.nodes[0].local_id
+    assert "Scope: this document covers the power subsystem." in front_matter_node.description
+    assert "Rev" in front_matter_node.description and "2026-01-01" in front_matter_node.description
+    # Document order preserved: the table (offset 20) sits between the
+    # prose (offset 0) and the heading (offset 40) -- it must appear AFTER
+    # the prose in the joined description, not before.
+    assert front_matter_node.description.index("Scope:") < front_matter_node.description.index("Rev")
+    assert len(tree.warnings) == 2
 
 
 def test_document_with_both_headings_and_tables_skips_a_fully_blank_table() -> None:

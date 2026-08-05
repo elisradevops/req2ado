@@ -130,19 +130,22 @@ def test_load_docx_places_each_inline_figure_at_its_own_real_position() -> None:
 def test_load_docx_end_to_end_folds_each_figure_into_its_own_section() -> None:
     # Same fixture, run through build_baseline_tree end to end: proves the
     # placement fix actually changes which node each figure's Description
-    # ends up in, not just the block ordering in isolation.
+    # ends up in, not just the block ordering in isolation. A real caption
+    # is supplied (describe_figure) because a placeholder-only figure is
+    # now omitted from the description entirely (see tree_builder.py's
+    # _figure_line) -- a caption is required to observe where it folds.
     from app.leveling.tree_builder import build_baseline_tree
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         docx_path = _build_two_section_docx_with_inline_images(Path(tmp_dir))
-        doc = load_docx(str(docx_path))
+        doc = load_docx(str(docx_path), describe_figure=lambda _bytes: "diagram")
 
     tree = build_baseline_tree(doc)
     section_one = next(n for n in tree.nodes if n.title == "Section One")
     section_two = next(n for n in tree.nodes if n.title == "Section Two")
 
-    assert "[FIGURE:" in section_one.description
-    assert "[FIGURE:" in section_two.description
+    assert "> Figure: diagram" in section_one.description
+    assert "> Figure: diagram" in section_two.description
     # Each section's own figure did NOT leak into the other section.
-    assert section_one.description.count("[FIGURE:") == 1
-    assert section_two.description.count("[FIGURE:") == 1
+    assert section_one.description.count("> Figure:") == 1
+    assert section_two.description.count("> Figure:") == 1

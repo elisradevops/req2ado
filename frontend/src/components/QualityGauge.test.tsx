@@ -59,4 +59,14 @@ describe('QualityGauge', () => {
     render(<QualityGauge score={90} categoryScores={{}} />);
     expect(screen.queryByText('Clarity')).not.toBeInTheDocument();
   });
+
+  it('humanizes a snake_case KB-derived category key into space-separated words', () => {
+    // Regression: categoryLabel previously only uppercased the first
+    // character, leaving "completeness_as_requirement" (a real ADO org's
+    // own ingested checklist key) rendered as the literal, underscore-
+    // joined "Completeness_as_requirement".
+    render(<QualityGauge score={72} categoryScores={{ completeness_as_requirement: 40 }} />);
+    expect(screen.getByText('Completeness As Requirement')).toBeInTheDocument();
+    expect(screen.queryByText(/completeness_as_requirement/i)).not.toBeInTheDocument();
+  });
 });

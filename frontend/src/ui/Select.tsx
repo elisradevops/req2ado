@@ -69,7 +69,7 @@ export const Select = forwardRef<
       {(label || labelExtra) && (
         <div className="flex items-center justify-between gap-1.5">
           {label && (
-            <label htmlFor={fieldId} className="text-[11.5px] font-semibold uppercase tracking-wide text-ink-2">
+            <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
               {label}
             </label>
           )}
@@ -88,7 +88,7 @@ export const Select = forwardRef<
           id={fieldId}
           aria-label={ariaLabel}
           className={cn(
-            'flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm border border-hairline-strong bg-surface px-2.5 py-1.5 text-sm text-ink-1 focus:border-navy-600 focus:outline-none focus:ring-[3px] focus:ring-signal/40 disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
+            'flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm border border-field-border bg-surface px-2.5 py-1.5 text-sm text-ink-1 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-danger disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
             className,
           )}
         >
@@ -111,7 +111,7 @@ export const Select = forwardRef<
                     key={optionValue}
                     value={optionValue === '' ? EMPTY_VALUE : optionValue}
                     disabled={option.props.disabled}
-                    className="relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-sm py-1.5 pl-2.5 pr-7 text-sm text-ink-1 outline-none data-[disabled]:cursor-not-allowed data-[disabled]:text-ink-3 data-[highlighted]:bg-navy-600 data-[highlighted]:text-white"
+                    className="relative flex cursor-pointer select-none items-center justify-between gap-2 rounded-sm py-1.5 pl-2.5 pr-7 text-sm text-ink-1 outline-none data-[disabled]:cursor-not-allowed data-[disabled]:text-ink-3 data-[highlighted]:bg-accent-soft data-[highlighted]:text-accent-ink"
                   >
                     <RadixSelect.ItemText>{option.props.children}</RadixSelect.ItemText>
                     <RadixSelect.ItemIndicator className="absolute right-2 inline-flex items-center">

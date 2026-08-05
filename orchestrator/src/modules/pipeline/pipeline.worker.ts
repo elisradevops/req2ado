@@ -1,12 +1,58 @@
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
-import { resolveCrossJobTraceLinks } from '../writeback/dry-run.service';
+import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist } from '../writeback/dry-run.service';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
+import type { BackfillService } from '../writeback/backfill.service';
 import type { JobEventsPublisher } from './job-events.publisher';
-import type { McpClient } from './mcp.client';
+import type { McpClient, AdoRequestCredential } from './mcp.client';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import type { AdoCredentialResolver } from '../auth/ado-credential.resolver';
+
+// A full area-path WIQL scan + batch fetch + embed + upsert (see
+// BackfillService.backfillAreaPath) is real cost that shouldn't repeat on
+// every single job against a busy, already-backfilled area path -- 24h is
+// long enough that a manually-created ADO item still surfaces to the very
+// next job submitted against that area path in any realistic same-day
+// workflow, short enough that a stale scan self-heals within a day with
+// zero manual action.
+const AREA_PATH_BACKFILL_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Closes the "manually-created ADO items are invisible to dedup" gap for
+ * THIS job's own areaPath, with no user action ever needed -- previously
+ * BackfillService.backfillAreaPath was only reachable via a raw, un-linked
+ * POST /backfill admin call (see backfill.controller.ts), so unless
+ * someone manually curled it first, req2ado had zero knowledge of an item
+ * an engineer created directly in the ADO UI. Throttled per area path
+ * (AreaPathBackfill.lastBackfilledAt) so a repeat job against the same
+ * area path doesn't re-pay the scan cost. Fail-open, same "must never fail
+ * a SURVEY job" philosophy as every other optional pipeline enrichment --
+ * a backfill failure only means this job (and any before the next
+ * successful backfill) won't see manually-created items, never a reason
+ * to fail the job itself.
+ */
+async function maybeBackfillAreaPath(
+  prisma: PrismaClient,
+  backfillService: BackfillService,
+  areaPath: string,
+  credential: AdoRequestCredential | undefined,
+): Promise<void> {
+  try {
+    const existing = await prisma.areaPathBackfill.findUnique({ where: { areaPath } });
+    const isStale = !existing || Date.now() - existing.lastBackfilledAt.getTime() > AREA_PATH_BACKFILL_STALE_AFTER_MS;
+    if (!isStale) return;
+    await backfillService.backfillAreaPath(areaPath, credential);
+    await prisma.areaPathBackfill.upsert({
+      where: { areaPath },
+      create: { areaPath, lastBackfilledAt: new Date() },
+      update: { lastBackfilledAt: new Date() },
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console -- worker process logging, not app logging
+    console.error(`Area-path backfill failed for ${areaPath}:`, error);
+  }
+}
 
 export interface PipelineJobInput {
   id: string;
@@ -41,6 +87,8 @@ export interface PipelineWorkerDeps {
   prisma: PrismaClient;
   jobEventsPublisher: JobEventsPublisher;
   mcpClient: McpClient;
+  // See maybeBackfillAreaPath's own doc comment.
+  backfillService: BackfillService;
   // Resolves the submitting user's vaulted ADO credential (by job.userId)
   // for the real-ADO-backend discovery calls below (discoverLinkTypes,
   // discoverFields) -- previously these ran with NO credential at all
@@ -91,6 +139,17 @@ async function assertNotCancelled(prisma: PrismaClient, jobId: string): Promise<
   if (current?.status === 'cancelled') {
     throw new JobCancelledError(jobId);
   }
+}
+
+// Mirrors ingestion's Figure model (app/canonical/model.py, no field
+// aliasing -- JSON keys are the literal Python field names) as returned
+// inside the /ingest response's `figures` array. caption is null when
+// vision is disabled/failed for that image (see main.py's
+// _describe_figure), same convention as every other optional caption
+// field in this pipeline.
+interface LeveledFigure {
+  id: string;
+  caption: string | null;
 }
 
 interface LeveledSourceRef {
@@ -175,13 +234,37 @@ export async function runPipelineJob(
     // ProgressBanner) never activates.
     await deps.prisma.job.update({ where: { id: job.id }, data: { status: 'running' } });
     await deps.jobEventsPublisher.publish(job.id, 'parse');
+    // Resolved BEFORE ingest (rather than after, as before) so it's ready
+    // for maybeBackfillAreaPath below without a second, redundant vault
+    // lookup -- see PipelineWorkerDeps.adoCredentialResolver's doc comment.
+    const credential = job.userId ? await deps.adoCredentialResolver.resolve(job.userId) : undefined;
     // mode threaded through so BASELINE never opens ingestion's vision-LLM
     // gate (see IngestionHttpClient.ingest's own doc comment) -- a real job
     // submission never sets skipVision, unlike /jobs/preview. job.id is
     // passed so ingestion can publish real parse-stage narration (figure
     // vision-captioning progress, parse summary) instead of the parse stage
     // being a silent black box.
-    const doc = await deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id);
+    //
+    // Runs concurrently with the area-path backfill check (see
+    // maybeBackfillAreaPath's own doc comment) -- an independent concern
+    // with no data dependency on ingest, so there's no reason to pay its
+    // cost serially on top of /ingest's own wall-clock time.
+    const [doc] = await Promise.all([
+      deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id),
+      maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential),
+    ]);
+    // Captions are already here -- no ingestion/`/level` change needed.
+    // 1-based index by array position matches the sequential order
+    // main.py's per-request vision-call counter narrates figures with
+    // (figure_index), which is what the frontend's FigureDescriptions
+    // panel keys captions by. Entries with no real caption (vision
+    // disabled/failed) are dropped -- same "nothing to show" rule the live
+    // SSE narration path already applies (see JobDetail.tsx's narration
+    // handler, which only ever sets a caption when figureCaption is
+    // truthy).
+    const figureDescriptions = ((doc.figures ?? []) as LeveledFigure[])
+      .map((figure, index) => ({ figureIndex: index + 1, caption: figure.caption }))
+      .filter((entry): entry is { figureIndex: number; caption: string } => Boolean(entry.caption));
 
     // ingestion's /level call runs infer_hierarchy + generate_requirements
     // internally in one HTTP round trip with no intermediate signal back to
@@ -199,10 +282,7 @@ export async function runPipelineJob(
     // choose from and every node's trace_links stays empty, never blocking
     // the rest of the job.
     //
-    // Resolves the submitting user's vaulted ADO credential by job.userId
-    // (see PipelineWorkerDeps.adoCredentialResolver's doc comment) --
-    // previously ran with no credential at all against a real ADO backend.
-    const credential = job.userId ? await deps.adoCredentialResolver.resolve(job.userId) : undefined;
+    // credential already resolved above (before ingest/backfill).
     let linkTypeCatalog: { referenceName: string; name: string; semanticHint?: string }[] = [];
     try {
       linkTypeCatalog = await deps.mcpClient.discoverLinkTypes(credential);
@@ -343,20 +423,57 @@ export async function runPipelineJob(
       diffInputs,
       deps.idempotencyService,
       (text, areaPath) => deps.ingestionClient.checkDuplicate(text, areaPath),
-      (completed, total) => {
+      (completed, total, currentTitle) => {
         void deps.jobEventsPublisher.publishNarration(job.id, {
           phase: 'dedup_check',
           blocksDone: completed,
           blocksTotal: total,
-          message: `Checking for existing/duplicate work items -- ${completed} of ${total}`,
+          currentTitle,
+          message: `Checking for existing/duplicate work items -- ${completed} of ${total} (${currentTitle})`,
         });
       },
     );
 
+    // Real gap this closes (confirmed live): a reuse/dedup_skip match is
+    // recorded once and trusted forever after, even once the ADO item it
+    // points at is deleted directly in ADO -- see verifyExistingAdoIdsStillExist's
+    // own doc comment. Runs BEFORE the crossJob trace-link resolution below
+    // so a stale match is already downgraded to 'create' in what that step
+    // (and the Prisma write after it) both operate on.
+    const verificationWarnings: string[] = [];
+    const verifiedDiff = await verifyExistingAdoIdsStillExist(
+      diff,
+      (ids) => deps.mcpClient.getWorkItemsBatch(ids, credential),
+      (message) => {
+        // eslint-disable-next-line no-console -- operational visibility for a best-effort verification pass, not app logging
+        console.error(`verifyExistingAdoIdsStillExist failed for job ${job.id}:`, message);
+        verificationWarnings.push(message);
+      },
+    );
+    // Best-effort cleanup: a 'reuse' (exact-hash IdempotencyMapping) match
+    // that just got downgraded means that row now points at a dead ADO
+    // id -- delete it so this SAME node doesn't match the same stale id
+    // again on every future job against this area path. dedup_skip's
+    // Chroma-side match has no equivalent per-id delete path today (a
+    // known, separately-tracked gap, not fixed here) -- only 'reuse' is
+    // cleaned up. Failure here must never fail the job itself; the
+    // downgrade to 'create' has already happened either way.
+    const staleReuseIds = diff
+      .filter((entry, i) => entry.action === 'reuse' && verifiedDiff[i].action === 'create')
+      .map((entry) => entry.existingAdoId as number);
+    for (const staleId of staleReuseIds) {
+      try {
+        await deps.idempotencyService.deleteByAdoWorkItemId(staleId);
+      } catch (error) {
+        // eslint-disable-next-line no-console -- operational visibility for a best-effort cleanup path, not app logging
+        console.error(`Failed to delete stale IdempotencyMapping row for ADO id ${staleId}:`, error);
+      }
+    }
+
     const resolvedDiff =
       resolvedCustomerIdField !== null
         ? await Promise.all(
-            diff.map(async (entry) => ({
+            verifiedDiff.map(async (entry) => ({
               ...entry,
               traceLinks: entry.traceLinks
                 ? await resolveCrossJobTraceLinks(entry.traceLinks, async (customerId) =>
@@ -365,7 +482,7 @@ export async function runPipelineJob(
                 : entry.traceLinks,
             })),
           )
-        : diff;
+        : verifiedDiff;
 
     // `resolvedDiff` is a plain JSON-serializable array of DryRunDiffEntry;
     // cast past Prisma's generated InputJsonValue type (its structural check
@@ -376,12 +493,13 @@ export async function runPipelineJob(
       data: {
         status: 'diff_ready',
         dryRunDiff: resolvedDiff as any,
-        warnings: (tree.warnings ?? []) as any,
+        warnings: [...(tree.warnings ?? []), ...verificationWarnings] as any,
         kbCitations: (tree.kb_citations ?? []).map((c) => ({
           sourceFile: c.source_file,
           similarity: c.similarity,
           relevance: c.relevance,
         })) as any,
+        figureDescriptions: figureDescriptions as any,
       },
     });
     await deps.prisma.auditEntry.create({

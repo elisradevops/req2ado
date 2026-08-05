@@ -53,6 +53,9 @@ export class KbController {
     @CurrentUser() user: SessionUser,
     @Body('url') url: string | undefined,
     @Body('docType') docType: string | undefined,
+    // "retrieve" (default, omitted also means this) or "always_include" --
+    // see KbVectorStore.upsert_chunk's own docstring (ingestion side).
+    @Body('retrievalMode') retrievalMode?: string,
   ): Promise<IngestUrlResult> {
     if (!url) {
       throw new BadRequestException('url is required');
@@ -61,7 +64,7 @@ export class KbController {
       throw new BadRequestException('url must be a SharePoint/OneDrive URL');
     }
     try {
-      return await this.kbService.ingestUrl(url, user.userId, docType ?? null);
+      return await this.kbService.ingestUrl(url, user.userId, docType ?? null, retrievalMode ?? null);
     } catch (err) {
       if (err instanceof IngestionHttpError) {
         throw new HttpException(err.message, mapIngestionErrorStatus(err.status));
@@ -120,12 +123,15 @@ export class KbController {
     @Body('downloadUrl') downloadUrl: string | undefined,
     @Body('relativePath') relativePath: string | undefined,
     @Body('docType') docType: string | undefined,
+    @Body('retrievalMode') retrievalMode?: string,
   ): Promise<IngestUrlResult> {
     if (!name || !itemId || !downloadUrl) {
       throw new BadRequestException('name, itemId, and downloadUrl are required');
     }
     try {
-      return await this.kbService.ingestItem(name, itemId, downloadUrl, relativePath ?? name, user.userId, docType ?? null);
+      return await this.kbService.ingestItem(
+        name, itemId, downloadUrl, relativePath ?? name, user.userId, docType ?? null, retrievalMode ?? null,
+      );
     } catch (err) {
       if (err instanceof IngestionHttpError) {
         throw new HttpException(err.message, mapIngestionErrorStatus(err.status));

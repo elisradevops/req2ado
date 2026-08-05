@@ -11,10 +11,11 @@ export interface FigureDescriptionEntry {
 // plus a 160-char-truncated preview of each message -- a document with
 // dozens of figures otherwise has no way to read any vision-model caption
 // in full once a later event pushes it out of view. This panel keeps every
-// distinct figure's full caption for as long as the job page stays open
-// (not persisted -- reloading the page loses it, same as the rest of the
-// live narration state), same collapsed-by-default pattern as
-// CollapsibleWarnings.
+// distinct figure's full caption for as long as the job page stays open,
+// live from SSE narration during a run, seeded from the persisted
+// Job.figureDescriptions column on mount otherwise -- so it survives a
+// reload or reopening a completed job (see JobDetail.tsx's loadJob).
+// Collapsed-by-default, same pattern as CollapsibleWarnings.
 export function FigureDescriptions({ items }: { items: FigureDescriptionEntry[] }): React.ReactElement | null {
   const [expanded, setExpanded] = useState(false);
   if (items.length === 0) return null;

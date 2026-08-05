@@ -10,7 +10,7 @@ export function ProgressBar({ value }: { value?: number }): React.ReactElement {
       className="relative h-1.5 overflow-hidden rounded-full bg-canvas"
     >
       <span
-        className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-navy-600 to-navy-300"
+        className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-accent-active to-accent"
         style={
           determinate
             ? { width: `${clamped}%`, transition: 'width 900ms var(--ease-in-out)' }

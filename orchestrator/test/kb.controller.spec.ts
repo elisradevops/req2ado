@@ -34,8 +34,32 @@ describe('KbController', () => {
 
     const result = await controller.ingestUrl(TEST_USER, 'https://contoso.sharepoint.com/sites/s/doc.pdf', 'SRD');
 
-    expect(kbService.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/sites/s/doc.pdf', TEST_USER.userId, 'SRD');
+    expect(kbService.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/sites/s/doc.pdf', TEST_USER.userId, 'SRD', null);
     expect(result).toBe(ingestResult);
+  });
+
+  it('ingestUrl() forwards retrievalMode to the service', async () => {
+    const ingestResult = { documentName: 'standards.docx', driveitemId: 'drive-2', mimeType: null, sizeBytes: 10, chunksStored: 1, skippedUnchanged: false };
+    const kbService = { ingestUrl: jest.fn().mockResolvedValue(ingestResult) };
+    const controller = new KbController(kbService as any);
+
+    await controller.ingestUrl(TEST_USER, 'https://contoso.sharepoint.com/sites/s/standards.docx', undefined, 'always_include');
+
+    expect(kbService.ingestUrl).toHaveBeenCalledWith(
+      'https://contoso.sharepoint.com/sites/s/standards.docx', TEST_USER.userId, null, 'always_include',
+    );
+  });
+
+  it('ingestItem() forwards retrievalMode to the service', async () => {
+    const ingestResult = { documentName: 'standards.docx', driveitemId: 'drive-3', mimeType: null, sizeBytes: 10, chunksStored: 1, skippedUnchanged: false, ingestedDocumentId: 'doc-1' };
+    const kbService = { ingestItem: jest.fn().mockResolvedValue(ingestResult) };
+    const controller = new KbController(kbService as any);
+
+    await controller.ingestItem(TEST_USER, 'standards.docx', 'item-1', 'https://download.example/x', undefined, undefined, 'always_include');
+
+    expect(kbService.ingestItem).toHaveBeenCalledWith(
+      'standards.docx', 'item-1', 'https://download.example/x', 'standards.docx', TEST_USER.userId, null, 'always_include',
+    );
   });
 
   it('ingestUrl() accepts a 1drv.ms short link', async () => {
@@ -45,7 +69,7 @@ describe('KbController', () => {
 
     const result = await controller.ingestUrl(TEST_USER, 'https://1drv.ms/w/s!AbCdEf', undefined);
 
-    expect(kbService.ingestUrl).toHaveBeenCalledWith('https://1drv.ms/w/s!AbCdEf', TEST_USER.userId, null);
+    expect(kbService.ingestUrl).toHaveBeenCalledWith('https://1drv.ms/w/s!AbCdEf', TEST_USER.userId, null, null);
     expect(result).toBe(ingestResult);
   });
 

@@ -62,6 +62,22 @@ describe('Login page', () => {
     expect(state).not.toHaveProperty('pat');
   });
 
+  it('strips a trailing slash from the org URL before sending it and storing it -- prevents a broken // in work-item links built as `${orgUrl}/_workitems/edit/{id}`', async () => {
+    vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ data: { displayName: 'Jane Doe' } });
+
+    renderLogin();
+    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://dev.azure.com/elisradevops/' } });
+    fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
+    fireEvent.click(screen.getByText('Sign in'));
+
+    await waitFor(() => expect(screen.getByText('Jobs Page')).toBeInTheDocument());
+    expect(httpClient.post).toHaveBeenCalledWith('/auth/login', {
+      adoOrgUrl: 'https://dev.azure.com/elisradevops',
+      pat: 'fake-pat',
+    });
+    expect(useAuthStore.getState().orgUrl).toBe('https://dev.azure.com/elisradevops');
+  });
+
   it('shows an error alert when sign-in fails', async () => {
     vi.spyOn(httpClient, 'post').mockRejectedValueOnce(new Error('Invalid ADO organization URL or Personal Access Token'));
 

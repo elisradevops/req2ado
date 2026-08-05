@@ -66,6 +66,21 @@ describe('LlmController', () => {
     await expect(controller.chat({})).rejects.toThrow(BadRequestException);
   });
 
+  it('POST /llm/show forwards the model and returns llmClient.showModel()', async () => {
+    const showModel = jest.fn().mockResolvedValue({ contextLength: 32000, capabilities: ['completion', 'tools'] });
+    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), showModel } as any);
+
+    const result = await controller.show({ model: 'qwen3.6:35b' });
+
+    expect(showModel).toHaveBeenCalledWith('qwen3.6:35b');
+    expect(result).toEqual({ contextLength: 32000, capabilities: ['completion', 'tools'] });
+  });
+
+  it('POST /llm/show throws BadRequestException when model is missing', async () => {
+    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), showModel: jest.fn() } as any);
+    await expect(controller.show({})).rejects.toThrow(BadRequestException);
+  });
+
   it('GET /llm/models returns the catalog from llmClient.listModels()', async () => {
     const listModels = jest.fn().mockResolvedValue(['llama3.1', 'qwen2.5:14b']);
     const controller = new LlmController({ chat: jest.fn(), listModels } as any);

@@ -123,8 +123,8 @@ export function NodeDetailPanel({
       // footer chrome uses.
       <div className="flex min-h-full flex-col gap-5 p-5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">{entry.type}</span>
-          <span className="rounded-full bg-surface-alt px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-ink-2">
+          <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">{entry.type}</span>
+          <span className="rounded-full bg-surface-alt px-2 py-0.5 text-micro font-semibold uppercase tracking-wide text-ink-2">
             Editing
           </span>
         </div>
@@ -164,8 +164,8 @@ export function NodeDetailPanel({
           trace-links/sources, disconnected from what it acts on. */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
-          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">{entry.type}</span>
-          <h3 className="text-[17px] font-semibold leading-snug tracking-tight">{entry.title}</h3>
+          <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">{entry.type}</span>
+          <h3 className="text-title leading-snug">{entry.title}</h3>
         </div>
         {canEdit && (
           <Button variant="outline" size="sm" onClick={startEditing} className="flex-none">
@@ -208,7 +208,6 @@ export function NodeDetailPanel({
             </span>
           </div>
         )}
-      {addChildSlot}
       {/* Real markdown, not whitespace-pre-line plain text -- descriptions
           are now authored (via Edit/chat) as markdown (**bold**, lists,
           ~~strikethrough~~) and written to ADO as real HTML via the same
@@ -219,11 +218,25 @@ export function NodeDetailPanel({
       <div className="max-w-[68ch] text-sm leading-relaxed text-ink-2">
         <Markdown>{entry.description}</Markdown>
       </div>
-      <TagChips tags={entry.tags} />
+      {/* Classification (tags) and active flags (quality issues) side by
+          side -- both are short chip lists, matching the reference detail
+          layout's two-column summary row, rather than each stacked as its
+          own full-width block with no label of its own. */}
+      {(entry.tags && entry.tags.length > 0) || (entry.qualityIssues && entry.qualityIssues.length > 0) ? (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Classification</span>
+            <TagChips tags={entry.tags} />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Active Flags</span>
+            <IssueChips issues={entry.qualityIssues} />
+          </div>
+        </div>
+      ) : null}
       {entry.qualityScore != null && (
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
           <QualityGauge score={entry.qualityScore} categoryScores={entry.qualityCategoryScores} />
-          <IssueChips issues={entry.qualityIssues} />
         </div>
       )}
       {entry.traceLinks && entry.traceLinks.length > 0 && (
@@ -275,6 +288,11 @@ export function NodeDetailPanel({
           )}
         </div>
       )}
+      {/* Add Child sits LAST, after everything the reviewer might read
+          about this node -- it used to sit right below the title, ahead of
+          the description/classification/quality/trace-link/sources stack
+          it has nothing to do with. */}
+      {addChildSlot}
     </div>
   );
 }

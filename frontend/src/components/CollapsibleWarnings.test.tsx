@@ -9,6 +9,7 @@ function renderWarnings(
   onJumpToNode?: (localId: string) => void,
   adoIdByLocalId?: Record<string, number>,
   orgUrl?: string | null,
+  project?: string | null,
 ) {
   return render(
     <MemoryRouter>
@@ -17,6 +18,7 @@ function renderWarnings(
         onJumpToNode={onJumpToNode}
         adoIdByLocalId={adoIdByLocalId}
         orgUrl={orgUrl}
+        project={project}
       />
     </MemoryRouter>,
   );
@@ -120,6 +122,24 @@ describe('CollapsibleWarnings', () => {
     const adoLink = screen.getByRole('link', { name: /view wi #604 in azure devops/i });
     expect(adoLink).toHaveAttribute('href', 'https://dev.azure.com/example-org/_workitems/edit/604');
     expect(screen.queryByRole('link', { name: /view wi #.*n0/i })).not.toBeInTheDocument();
+  });
+
+  it('includes the project segment in the ADO link when project is provided', async () => {
+    renderWarnings(
+      [
+        "Near-duplicate items 'RS-232 Receiver Support' [localId: n0], 'LVCMOS Driver Support' [localId: n1] appear to state conflicting values for the same parameter (['eight RS-232', 'eight LVCMOS']) -- resolve before this can be finalized.",
+      ],
+      vi.fn(),
+      { n1: 604 },
+      'https://dev.azure.com/example-org',
+      'elisradevops-project',
+    );
+
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Near-duplicate items with conflicting values'));
+
+    const adoLink = screen.getByRole('link', { name: /view wi #604 in azure devops/i });
+    expect(adoLink).toHaveAttribute('href', 'https://dev.azure.com/example-org/elisradevops-project/_workitems/edit/604');
   });
 
   it('offers no ADO link for a conflict item that is still only a proposed create', async () => {

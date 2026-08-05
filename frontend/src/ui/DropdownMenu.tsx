@@ -10,7 +10,7 @@ export function DropdownMenu({ trigger, children }: { trigger: ReactNode; childr
         <RadixDropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="z-40 w-[266px] rounded-md border border-hairline-strong bg-surface py-1 shadow-popover data-[state=open]:animate-[fadeIn_120ms_ease-out]"
+          className="z-40 w-[266px] origin-top-right rounded-md border border-hairline-strong bg-surface py-1 shadow-popover data-[state=open]:animate-[popIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[popOut_var(--duration-exit)_var(--ease-in)]"
         >
           {children}
         </RadixDropdownMenu.Content>
@@ -40,8 +40,8 @@ export function DropdownMenuItem({
     <RadixDropdownMenu.Item
       onSelect={onSelect}
       className={cn(
-        'flex cursor-pointer items-center gap-2.5 px-3.5 py-1.5 text-sm outline-none data-[highlighted]:bg-canvas',
-        danger ? 'text-danger' : 'text-ink-1',
+        'flex cursor-pointer items-center gap-2.5 px-3.5 py-1.5 text-sm outline-none transition-colors duration-instant',
+        danger ? 'text-danger data-[highlighted]:bg-danger-soft' : 'text-ink-1 data-[highlighted]:bg-accent-soft data-[highlighted]:text-accent-ink',
       )}
     >
       {children}

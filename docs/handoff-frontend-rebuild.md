@@ -1,5 +1,7 @@
 # Handoff: req2ado — Phase 1 + KB (Graph) Shipped
 
+> Point-in-time handoff, 2026-07. Visual-system claims superseded by `/DESIGN.md`.
+
 **Purpose of this doc:** context for a *new* session picking up work after Phase 1's frontend rebuild, its post-merge gap closures, and the Phase-2 knowledge-base connector all landed on `master`. **Note on history:** the KB connector was first built as a SharePoint-REST folder-crawl (commit `375da94`, "P2a") and then **replaced** by a Microsoft Graph single-share-link ingest (commit `8f22cec`). This doc describes the *current* Graph model; ignore any older doc/spec text describing folder-crawl / `KbSource` / `/kb/sources` — that connector no longer exists. Roadmap: `docs/req2ado-roadmap.md`.
 
 ---
@@ -37,7 +39,7 @@ Converts a customer requirements document (contract-signed spec, informal narrat
   - `pages/KnowledgeBase.tsx` — KB document ingest (current Graph model, §4a): form with **Sharing URL / "This is a folder" checkbox / Area Path / Doc Type (optional)** + an Ingest button (async-mutation-guarded, shared between both modes) — unchecked = single document via `ingestUrl`, checked = every file directly inside a shared folder via `ingestFolderUrl` (single level, no subfolders); a list of ingested documents (name, docType, size, ingestedAt). **No bearer-token field** — the SharePoint/Graph token is a server-side env var now, not a user input. A helper line states this.
   - `pages/Wiki.tsx` — unchanged, renders `GET /wiki` markdown.
 - **Components:** `AppShell.tsx` (nav now includes Knowledge Base), `RouteGuard`, `StatusChip`/`ModeBadge`/`ActionBadge`/`TagChips` (now null-safe — see §4), `DiffTree` (virtualized via `react-window`, `tags` field now optional to match legacy DB rows), `NodeDetailPanel`, `AreaPathPicker` (MUI Autocomplete, now `freeSolo` + error-toasts on fetch failure), `FileDropzone`, `ModeCards`, `ProgressBanner`+`ElapsedTimer`, `ErrorBoundary`, `ToastProvider`+`useToast()`.
-- **Theme:** `theme/tokens.ts` — DocGen tokens (`#1B458F` primary) + `railBackground: '#0F1B3D'` + `liveAccent: '#06B6D4'`.
+- **Theme:** Tailwind v4 CSS-first tokens in `frontend/src/index.css` (`@theme`). There is no `theme/tokens.ts`. Token semantics are normative in `/DESIGN.md`.
 - **API client:** `api/httpClient.ts` — axios instance, runtime-configured `baseURL` via `/config.json`. `api/jobs.ts`, `api/ado.ts`, `api/events.ts`, `api/kb.ts` wrap all backend routes. The ADO PAT/org-URL travel only as per-request `X-Ado-Org-Url`/`X-Ado-Pat` headers, never persisted server-side. The SharePoint/Graph token is **not** a frontend concern at all anymore — it lives in the ingestion service's env (see §4a).
 
 ## 4. Phase 1 gaps — now closed (previously listed here as open)

@@ -297,6 +297,44 @@ def test_list_documents_pages_past_a_single_get_page(monkeypatch) -> None:
         assert store.list_documents("Project\\Area1") == sorted(filenames)
 
 
+def test_list_always_include_documents_returns_empty_list_when_none_are_tagged() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        assert store.list_always_include_documents("Project\\Area1") == []
+
+
+def test_list_always_include_documents_returns_only_tagged_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:standards.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
+            source_file="standards.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            retrieval_mode="always_include",
+        )
+        store.upsert_chunk(
+            chunk_id="source-1:spec.docx:0", embedding=[0.0, 1.0, 0.0], text="t", user_id="Project\\Area1",
+            source_file="spec.docx", source_id="source-1", chunk_index=0, file_hash="hash-2",
+        )
+        assert store.list_always_include_documents("Project\\Area1") == ["standards.docx"]
+
+
+def test_upsert_chunk_default_retrieval_mode_is_not_stored_as_always_include() -> None:
+    # retrieval_mode omitted (the common case) must behave byte-identically
+    # to before this field existed -- never accidentally tagged.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            retrieval_mode="retrieve",
+        )
+        assert store.list_always_include_documents("Project\\Area1") == []
+
+
 def test_list_documents_stops_at_the_document_ceiling(monkeypatch) -> None:
     import app.kb.kb_vector_store as kb_vector_store_module
 

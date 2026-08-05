@@ -5,6 +5,7 @@ describe('IdempotencyService', () => {
     idempotencyMapping: {
       findFirst: jest.fn(),
       create: jest.fn(),
+      deleteMany: jest.fn(),
     },
   };
 
@@ -45,6 +46,13 @@ describe('IdempotencyService', () => {
     expect(fakePrisma.idempotencyMapping.create).toHaveBeenCalledWith({
       data: { sourceHash: 'hash1', customerId: 'CUST-1', areaPath: 'Project\\Area1', adoWorkItemId: 42 },
     });
+  });
+
+  it('deleteByAdoWorkItemId removes every mapping row referencing a since-deleted ADO item', async () => {
+    // @ts-expect-error -- fake Prisma client for the test
+    const service = new IdempotencyService(fakePrisma);
+    await service.deleteByAdoWorkItemId(533);
+    expect(fakePrisma.idempotencyMapping.deleteMany).toHaveBeenCalledWith({ where: { adoWorkItemId: 533 } });
   });
 
   it('lookup and record both accept a null customerId', async () => {

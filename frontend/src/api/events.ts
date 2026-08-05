@@ -28,6 +28,9 @@ export interface NarrationEvent {
     // parsing finishes with real block/table/figure counts.
     | 'describe_figure'
     | 'parse_done'
+    // Fired once per Table found during parsing, right after parse_done --
+    // answers "did my tables ingest correctly" before analysis/scoring.
+    | 'table_detected'
     // Real gap this closes (user-reported, live): a multi-minute silent
     // window between parse_done and the first analyze_section event --
     // branch splitting/merging and KB retrieval run with zero narration --
@@ -35,6 +38,13 @@ export interface NarrationEvent {
     // the document", making the "Reading document" step look permanently
     // stuck even though the pipeline had already moved on to analysis.
     | 'preparing_analysis'
+    // Real gap this closes (confirmed live, AirPro 682-block document):
+    // _detect_deterministic_subtrees runs immediately after
+    // preparing_analysis and, for a document with many ID-hierarchy table/
+    // heading rows, makes a real, unbounded number of sequential per-subtree
+    // LLM calls with ZERO narration of its own -- confirmed live as a
+    // genuine 20+ minute silent window.
+    | 'deterministic_subtree'
     | 'analyze_section'
     | 'infer_hierarchy'
     | 'generate_requirements'
@@ -62,7 +72,12 @@ export interface NarrationEvent {
     // for a plain N-of-M counter rather than new field names, matching
     // every other phase's convention here.
     | 'dedup_check'
-    | 'writing';
+    | 'writing'
+    // Fired once, from /level's top-level exception handler, when an
+    // unhandled exception (e.g. an LLM-call timeout) aborts the job --
+    // replaces a flattened one-line AuditEntry with real structured context
+    // (errorType/errorMessage/elapsedSeconds/lastPhase below).
+    | 'job_failed';
   // 'writing' only -- confirm() is several sequential sub-phases
   // (discover_types/create/link_parents/trace_links), not one flat burst;
   // null/undefined on every other phase.
@@ -105,6 +120,40 @@ export interface NarrationEvent {
   // section_complete only: this branch's finished nodes, in generation
   // order -- null on every other phase.
   sectionNodes?: { type: string; title: string; text: string; qualityScore: number | null }[] | null;
+  // deterministic_subtree only: which subtree (0-based) out of how many
+  // total, and a human label (the source Table's id, or "Heading
+  // hierarchy") -- same "N of M plus a real name" pattern branchIndex/
+  // branchCount/sectionLabel already use for analyze_section.
+  subtreeIndex?: number | null;
+  subtreeCount?: number | null;
+  subtreeLabel?: string | null;
+  // table_detected only.
+  tableId?: string | null;
+  tableRowCount?: number | null;
+  tableQualifies?: boolean | null;
+  // score_requirements/score_requirements_done/infer_trace_links only: real
+  // item titles (or, for infer_trace_links's completion fire, "A -> B
+  // (type)" endpoint labels) for a prefix of the items involved --
+  // previously only a bare count with no way to tell which actual items
+  // were involved.
+  sampleTitles?: string[] | null;
+  // score_requirements/score_requirements_done only: which chunk (0-based)
+  // out of how many total -- real progress (the whole document's
+  // requirement count is known before scoring starts, unlike figure/table
+  // totals), unlike blocksDone/blocksTotal's fabricated-100% behavior on
+  // every other whole-document tail phase.
+  chunkIndex?: number | null;
+  chunkCount?: number | null;
+  // dedup_check only (published by the orchestrator): the node that just
+  // finished its idempotency/dedup lookup.
+  currentTitle?: string | null;
+  // job_failed only: the real exception's class name, message, how long
+  // the job had been running, and whatever phase was last known before it
+  // failed.
+  errorType?: string | null;
+  errorMessage?: string | null;
+  elapsedSeconds?: number | null;
+  lastPhase?: string | null;
   message: string;
 }
 
@@ -119,7 +168,9 @@ export interface NarrationEvent {
 export const INGESTION_NARRATION_PHASES = [
   'describe_figure',
   'parse_done',
+  'table_detected',
   'preparing_analysis',
+  'deterministic_subtree',
   'analyze_section',
   'score_requirements',
   'score_requirements_done',
@@ -127,6 +178,7 @@ export const INGESTION_NARRATION_PHASES = [
   'detect_conflicts',
   'regroup_roots',
   'infer_trace_links',
+  'job_failed',
 ] as const;
 
 // Never emitted by ingestion -- 'infer_hierarchy'/'generate_requirements'

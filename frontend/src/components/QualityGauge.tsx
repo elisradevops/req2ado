@@ -42,8 +42,16 @@ function categoryDescription(key: string): string {
   );
 }
 
+// A KB-derived category key can be snake_case verbatim from the org's own
+// ingested checklist document (e.g. "completeness_as_requirement") --
+// capitalizing only the first character left the rest as a literal,
+// underscore-joined string ("Completeness_as_requirement"). Splits on
+// '_'/'-' and capitalizes every word instead.
 function categoryLabel(key: string): string {
-  return key.charAt(0).toUpperCase() + key.slice(1);
+  return key
+    .split(/[_-]/)
+    .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .join(' ');
 }
 
 function categoryColor(value: number): string {
@@ -133,7 +141,7 @@ export function QualityGauge({
           this, "90 · Solid" reads as a bare assertion; with it, a reviewer
           can see 90 sits well inside the 75-100 Solid range and judge for
           themselves how close a borderline score is to the next band. */}
-      <div className="flex justify-between text-[10.5px]">
+      <div className="flex justify-between text-micro">
         {BANDS.map((b) => (
           <span
             key={b.label}

@@ -18,13 +18,37 @@ describe('KbService', () => {
 
     const result = await service.ingestUrl('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD');
 
-    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD', null);
+    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', 'SRD', null, null);
     expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith({
       where: { userId_driveItemId: { userId: 'Project\\Area1', driveItemId: 'drive-1' } },
-      create: { userId: 'Project\\Area1', driveItemId: 'drive-1', name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD' },
-      update: { name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', ingestedAt: expect.any(Date) },
+      create: { userId: 'Project\\Area1', driveItemId: 'drive-1', name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: null },
+      update: { name: 'doc.pdf', sizeBytes: 1024, mimeType: 'application/pdf', docType: 'SRD', retrievalMode: null, ingestedAt: expect.any(Date) },
     });
     expect(result).toEqual(ingestResult);
+  });
+
+  it('ingestUrl() forwards retrievalMode to the ingestion client and persists it', async () => {
+    const ingestResult = {
+      documentName: 'standards.docx',
+      driveitemId: 'drive-2',
+      mimeType: 'application/pdf',
+      sizeBytes: 512,
+      chunksStored: 1,
+      skippedUnchanged: false,
+    };
+    const ingestionClient = { ingestUrl: jest.fn().mockResolvedValue(ingestResult) };
+    const prisma = { ingestedDocument: { upsert: jest.fn().mockResolvedValue(undefined) } };
+    const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+    await service.ingestUrl('https://contoso.sharepoint.com/x', 'Project\\Area1', null, 'always_include');
+
+    expect(ingestionClient.ingestUrl).toHaveBeenCalledWith('https://contoso.sharepoint.com/x', 'Project\\Area1', null, null, 'always_include');
+    expect(prisma.ingestedDocument.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ retrievalMode: 'always_include' }),
+        update: expect.objectContaining({ retrievalMode: 'always_include' }),
+      }),
+    );
   });
 
   it('listDocuments() filters by userId when provided', async () => {

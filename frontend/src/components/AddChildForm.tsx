@@ -32,7 +32,7 @@ export function AddChildForm({
   return (
     <div className="flex flex-col gap-3 p-4">
       <div>
-        <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Add child item</p>
+        <p className="text-micro font-semibold uppercase tracking-wide text-ink-3">Add child item</p>
         <p className="text-xs text-ink-3">Manually add another item under this one -- it's written to ADO alongside the rest on Confirm.</p>
       </div>
       {jobMode === 'baseline' ? (

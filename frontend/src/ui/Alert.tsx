@@ -5,10 +5,10 @@ import { cn } from '../lib/cn';
 export type AlertSeverity = 'info' | 'warning' | 'success' | 'error';
 
 const SEVERITY_CLASSES: Record<AlertSeverity, string> = {
-  info: 'bg-[#EEF3FD] border-[#C6D6F3] text-navy-600',
-  warning: 'bg-[#FDF6EC] border-[#EED8B4] text-[#7A4F0B]',
-  success: 'bg-[#ECF7F0] border-[#B7E0C3] text-[#15603A]',
-  error: 'bg-[#FBE9EA] border-[#EFC4C7] text-[#8A2229]',
+  info: 'bg-info-soft border-info-border text-info-ink',
+  warning: 'bg-warning-soft border-warning-border text-warning-ink',
+  success: 'bg-ok-soft border-ok-border text-ok-ink',
+  error: 'bg-danger-soft border-danger-border text-danger-ink',
 };
 
 const SEVERITY_ICON: Record<AlertSeverity, typeof Info> = {

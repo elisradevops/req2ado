@@ -13,7 +13,7 @@ from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_CHUNKS
 from app.kb.kb_vector_store import KbVectorStore
-from app.kb.retrieval import retrieve_context
+from app.kb.retrieval import fetch_always_include_context, retrieve_context
 from app.leveling.conflict_detection import (
     ConflictJudgeClient,
     _detect_conflicting_duplicates,
@@ -25,8 +25,10 @@ from app.leveling.id_hierarchy import (
     rows_from_table,
 )
 from app.leveling.id_tree_builder import (
+    ParentSummaryClient,
     SynthesisClient,
     TitleTagClient,
+    _apply_parent_summary_pass,
     build_hierarchy_subtree,
     recompute_child_types,
 )
@@ -46,6 +48,7 @@ from app.leveling.table_groups import TableGroupInfo, qualifying_table_groups
 from app.leveling.trace_links import TraceLinkInferenceClient, _infer_trace_links_for_nodes
 from app.leveling.tree_builder import (
     _bound_branch_size,
+    _figure_line,
     _hash_description,
     _hash_identity,
     _order_key,
@@ -195,17 +198,90 @@ _MODEL_CAPS: dict[str, _ModelCaps] = {
 }
 
 
-def _resolve_caps(model: str | None) -> _ModelCaps:
+class ModelCapsClient(Protocol):
+    """Optional, narrow LLM capability: a live per-model capability lookup
+    (Ollama's real /api/show endpoint, proxied through the orchestrator's
+    /llm/show route) for any model NOT in `_MODEL_CAPS` below. Every entry
+    in that table was populated by a human manually running /api/show ONCE
+    per model and hardcoding the result -- an unknown model previously got
+    the same blanket conservative guess regardless of what it actually is.
+    This closes that gap for the fallback case only; a model already in
+    `_MODEL_CAPS` is never second-guessed by a live lookup (see
+    _resolve_caps's own docstring for why the static table stays
+    authoritative where it exists: those numbers reflect real empirical
+    coverage-quality tuning a generic derivation can't replicate)."""
+
+    def show_model(self, model: str) -> dict: ...
+
+
+# Process-lifetime cache -- a live show_model() call is a real HTTP round
+# trip; the same unknown model name resolving repeatedly within one
+# ingestion process (e.g. many jobs against the same non-cataloged model)
+# should only ever pay that cost once.
+_LIVE_MODEL_CAPS_CACHE: dict[str, _ModelCaps] = {}
+
+# Same order of magnitude as this module's own hardcoded frontier entries
+# (gpt-5.5, and the claude-opus/gpt-5 prefix fallback below) -- replaces
+# NAME-PREFIX matching with a REAL measured threshold for an unrecognized
+# model: at or above this, treat it as frontier-shaped (coverage budget ==
+# full context, no lost-in-the-middle guard); below it, keep today's
+# conservative local-model defaults, since no empirical A/B data exists
+# for an arbitrary unknown local model the way it does for every entry
+# already in _MODEL_CAPS.
+_FRONTIER_SCALE_CONTEXT_THRESHOLD = 100_000
+
+
+def _derive_caps_from_live_lookup(model: str, caps_client: ModelCapsClient) -> _ModelCaps:
+    """Real gap closed here: an unknown model previously got the same
+    blanket `context=28_000, coverage=_COVERAGE_BUDGET_TOKENS,
+    supports_tools=False` guess regardless of what it actually is. Derives
+    real caps from a live Ollama /api/show lookup instead -- context
+    length from the model's own reported architecture context length,
+    tool support from its own reported capabilities array. Any exception
+    (network error, non-Ollama backend with no /api/show at all,
+    malformed response) is caught by the CALLER (_resolve_caps), never
+    here -- this function's job is only the derivation, not the fail-open
+    fallback."""
+    info = caps_client.show_model(model)
+    context_length = info.get("context_length")
+    context_budget_tokens = context_length if isinstance(context_length, int) and context_length > 0 else 28_000
+    capabilities = info.get("capabilities") or []
+    supports_tools = "tools" in capabilities
+    if context_budget_tokens >= _FRONTIER_SCALE_CONTEXT_THRESHOLD:
+        return _ModelCaps(100_000, context_budget_tokens, context_budget_tokens, supports_tools)
+    return _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, context_budget_tokens, _COVERAGE_BUDGET_TOKENS, supports_tools)
+
+
+def _resolve_caps(model: str | None, caps_client: ModelCapsClient | None = None) -> _ModelCaps:
     """Resolves a model name to its branch-size cap, context-token budget, and
     tool-calling support. Frontier models (production target, see
     build_survey_tree's docstring) get much larger caps/budgets since they run
-    huge context windows; an unknown model conservatively gets the small
-    local-model cap/budget and supports_tools=False."""
+    huge context windows.
+
+    `caps_client` (optional, default None -- byte-identical to before this
+    param existed, zero I/O) only ever applies to a model NOT already in
+    `_MODEL_CAPS` and not matching the frontier name-prefix check: when
+    supplied, a genuinely unknown model gets a REAL live-derived measurement
+    (see _derive_caps_from_live_lookup) instead of the old blanket
+    conservative guess, cached for the rest of this process's lifetime.
+    Any failure from the live lookup (unreachable orchestrator, non-Ollama
+    backend, malformed response) falls straight through to exactly today's
+    static default -- this must never raise, never block a job."""
     if model and model in _MODEL_CAPS:
         return _MODEL_CAPS[model]
     if model and model.startswith(("claude-opus", "gpt-5")):
         return _ModelCaps(100_000, 150_000, 150_000, True)
-    return _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 28_000, _COVERAGE_BUDGET_TOKENS, False)
+    static_default = _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 28_000, _COVERAGE_BUDGET_TOKENS, False)
+    if not model or caps_client is None:
+        return static_default
+    if model in _LIVE_MODEL_CAPS_CACHE:
+        return _LIVE_MODEL_CAPS_CACHE[model]
+    try:
+        derived = _derive_caps_from_live_lookup(model, caps_client)
+    except Exception:
+        return static_default
+    _LIVE_MODEL_CAPS_CACHE[model] = derived
+    return derived
 
 
 # Reserved out of coverage_budget_tokens for the KB context, system prompt,
@@ -633,6 +709,34 @@ def _resolve_kb_citations(
     return citations
 
 
+def _merge_always_include_context(
+    kb_context: str | None,
+    kb_citations: list[KbCitation],
+    user_id: str,
+    vector_store: KbVectorStore,
+) -> tuple[str | None, list[KbCitation]]:
+    """Prepends every "always_include" KB file's full text to `kb_context`
+    (see fetch_always_include_context's own docstring) and appends its
+    citation to `kb_citations` -- called at BOTH doc-level kb_context
+    computation sites (fallback and agentic) so an always-include file
+    grounds a call regardless of whether the model is tool-capable, unlike
+    retrieve_context's similarity-gated result which the agentic path skips
+    in favor of the model pulling context itself via query_kb.
+    Relevance is set to RELEVANT directly, never run through
+    _resolve_kb_citations' judge -- an always-include file's relevance is a
+    property of upload-time intent, not something a per-call verification
+    should be able to override."""
+    always_include_context, always_include_raw = fetch_always_include_context(user_id, vector_store)
+    if always_include_context is None:
+        return kb_context, kb_citations
+    merged_context = always_include_context if kb_context is None else f"{always_include_context}\n\n{kb_context}"
+    merged_citations = [
+        *kb_citations,
+        *(KbCitation(source_file=c["source_file"], similarity=c["similarity"], relevance=KbCitationRelevance.RELEVANT) for c in always_include_raw),
+    ]
+    return merged_context, merged_citations
+
+
 _DOC_LEVEL_QUERY_FALLBACK_CHARS = 2000
 
 
@@ -726,23 +830,6 @@ def _build_document_outline(branches: list[list[Block]]) -> str:
     return "\n".join(lines)
 
 
-_FIGURE_TEXT_PATTERN = re.compile(r"^\[FIGURE:\s*(.*?)\s*\]$")
-
-
-def _figure_line(block: Block) -> str | None:
-    """FIGURE-kind blocks carry their caption embedded in block.text as
-    "[FIGURE: {caption or 'none'}]" (see docx_loader.py/pdf_loader.py) --
-    parse it back out. A 'none' placeholder (no real caption -- vision
-    disabled, or the vision call failed for this image) is omitted from the
-    rendered section entirely: the literal placeholder string must never
-    reach the model and be mistaken for real content (the root cause of the
-    "[FIGURE: none]" fake-requirement bug this redesign fixes). A real
-    caption is rendered as a clearly-labeled blockquote line."""
-    match = _FIGURE_TEXT_PATTERN.match(block.text)
-    caption = match.group(1) if match else block.text
-    if not caption or caption.lower() == "none":
-        return None
-    return f"> Figure: {caption}"
 
 
 def _table_to_markdown(table: Table) -> str | None:
@@ -816,11 +903,53 @@ def render_section(blocks: list[Block], tables: list[Table] | None = None, figur
     return "\n".join(line for _, line in entries)
 
 
+def _apply_det_parent_summary(
+    det_nodes: list[WorkItemNode],
+    det_warnings: list[str],
+    parent_summary_client: ParentSummaryClient | None,
+    model: str | None = None,
+) -> None:
+    """Runs the Epic/Feature title+description enhancement pass over EVERY
+    deterministic subtree at once, only after all of them (and every
+    subsequent span-claiming/repair mutation _detect_deterministic_subtrees
+    performs on det_nodes) has fully settled -- see build_hierarchy_subtree's
+    own comment on why this can't run inside it: _repair_requirement_hierarchy
+    and the heading-span-claiming pass below both still mutate parent/child
+    structure and descriptions AFTER build_hierarchy_subtree returns, so a
+    parent's summary would risk being based on a child set that's about to
+    change.
+
+    Every Epic AND Feature node passed in ONE combined call, any order --
+    _apply_parent_summary_pass builds each one's payload from its full
+    descendant-Requirement rollup (however deeply nested), not from a
+    sibling/ancestor's own title, so there is no Feature-before-Epic (or
+    nested-Epic-depth) ordering dependency to get right. The spec's own
+    hierarchy rule allows arbitrary nesting at every tier -- a Requirement
+    nested under another Requirement, or an Epic nested under another
+    Epic (id_hierarchy.classify_by_nesting's own docstring) -- a fixed
+    two-round Feature-then-Epic split would have gotten a nested Epic's
+    ordering wrong; this doesn't need rounds at all."""
+    if parent_summary_client is None:
+        return
+    parent_ids = [n.local_id for n in det_nodes if n.type in (WorkItemType.EPIC, WorkItemType.FEATURE)]
+    # parent_summary_client is the same OrchestratorLlmClient instance
+    # already implementing every other Protocol here -- reused as the
+    # live per-model token-budget lookup (ModelCapsClient), replacing the
+    # flat default with a real derived budget for a model not already in
+    # _MODEL_CAPS. _resolve_caps itself fails open to that same flat
+    # default on any lookup failure, so this can never raise.
+    token_budget = _resolve_caps(model, caps_client=parent_summary_client).coverage_budget_tokens
+    _apply_parent_summary_pass(det_nodes, parent_ids, parent_summary_client, det_warnings, token_budget=token_budget)
+
+
 def _detect_deterministic_subtrees(
     doc: CanonicalDoc,
     customer_id: str | None,
     title_tag_client: TitleTagClient | None,
     synthesis_client: SynthesisClient | None = None,
+    parent_summary_client: ParentSummaryClient | None = None,
+    model: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> tuple[list[WorkItemNode], list[str], CanonicalDoc]:
     """Detects and builds every deterministic hierarchy subtree this
     document's own structure already encodes -- a 2-column dotted-ID
@@ -861,12 +990,40 @@ def _detect_deterministic_subtrees(
     claimed_table_ids: set[str] = set()
     subtree_index = 0
 
-    for table in doc.tables:
-        rows = rows_from_table(table)
-        if not rows:
-            continue
+    # Precomputed upfront (rows_from_table per table, rows_from_id_headings/
+    # rows_from_heading_structure once) so subtree_count -- the "N of M"
+    # narration below needs a real total, not just a running index -- is
+    # known before the first event fires, rather than growing as we go.
+    # rows_from_id_headings/rows_from_heading_structure themselves are pure
+    # reads of doc.blocks and don't depend on which tables get claimed below
+    # (tables and headings are disjoint substrates, per this function's own
+    # docstring), so hoisting this computation earlier changes nothing about
+    # which nodes end up in det_nodes or their order -- only WHEN the rows
+    # are computed, not what they contain.
+    qualifying_table_rows = [(table, rows_from_table(table)) for table in doc.tables]
+    qualifying_table_rows = [(table, rows) for table, rows in qualifying_table_rows if rows]
+    heading_rows_preview, _, _ = rows_from_id_headings(doc.blocks)
+    if not heading_rows_preview:
+        heading_rows_preview, _, _ = rows_from_heading_structure(doc.blocks)
+    subtree_count = len(qualifying_table_rows) + (1 if heading_rows_preview else 0)
+
+    def _fire_subtree(label: str) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            LevelingProgress(
+                phase="deterministic_subtree", branch_index=None, branch_count=0,
+                blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                subtree_index=subtree_index, subtree_count=subtree_count, subtree_label=label,
+            )
+        )
+
+    for table, rows in qualifying_table_rows:
+        _fire_subtree(f"Table {table.id}")
         nodes, warnings = build_hierarchy_subtree(
             rows, f"det{subtree_index}_", customer_id, title_tag_client, synthesis_client,
+            progress_callback=progress_callback, subtree_index=subtree_index,
+            subtree_count=subtree_count, subtree_label=f"Table {table.id}",
         )
         # Post-hoc structural safety net -- same reasoning and same
         # already-tested function the LLM-analysis path uses (see its own
@@ -891,8 +1048,11 @@ def _detect_deterministic_subtrees(
 
     claimed_heading_block_ids: set[str] = set()
     if heading_rows:
+        _fire_subtree("Heading hierarchy")
         nodes, build_warnings = build_hierarchy_subtree(
             heading_rows, f"det{subtree_index}_", customer_id, title_tag_client, synthesis_client,
+            progress_callback=progress_callback, subtree_index=subtree_index,
+            subtree_count=subtree_count, subtree_label="Heading hierarchy",
         )
         # See the table-subtree call site's identical comment above.
         _repair_requirement_hierarchy(nodes, f"det{subtree_index}_", build_warnings)
@@ -1003,6 +1163,7 @@ def _detect_deterministic_subtrees(
         # uses the plain _hash_identity, never the table-row disambiguated variant.
 
     if not claimed_heading_block_ids and not claimed_table_ids:
+        _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model)
         return det_nodes, det_warnings, doc
 
     residual_blocks = [b for b in doc.blocks if b.id not in claimed_heading_block_ids]
@@ -1047,6 +1208,7 @@ def _detect_deterministic_subtrees(
             "language-model analysis was needed for this document."
         )
 
+    _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model)
     return det_nodes, det_warnings, llm_doc
 
 
@@ -1084,6 +1246,12 @@ def build_survey_tree(
     # flagged leaf keeps its raw, verbatim source text exactly as
     # constructed.
     synthesis_client: SynthesisClient | None = None,
+    # Optional Epic/Feature title+description enhancement for the
+    # DETERMINISTIC hierarchy path (see _apply_det_parent_summary) -- None
+    # (the default) is byte-identical to before this capability existed:
+    # an Epic/Feature keeps its verbatim heading-derived title, identical
+    # to its description.
+    parent_summary_client: ParentSummaryClient | None = None,
     # Optional near-duplicate conflict detection (see
     # _detect_conflicting_duplicates's own docstring) -- None (the
     # default) is byte-identical to before this capability existed: a
@@ -1182,6 +1350,29 @@ def build_survey_tree(
     that catalog is dropped too. A link's target_ref is classified as
     intraJob when it matches another node's local_id in this same tree, and
     as crossJob (an opaque customer-id string) otherwise."""
+    # Real gap (confirmed live, 682-block AirPro ICD document): the
+    # preparing_analysis kickoffs further down this function (previously the
+    # ONLY ones) both fire AFTER _detect_deterministic_subtrees below --
+    # which itself does real, sometimes-slow synchronous CPU work across
+    # every block (numbering parsing, ID-hierarchy row extraction, subtree
+    # classification) with zero narration. A large/complex document leaves
+    # the UI showing nothing newer than parse_done (the end of the SEPARATE,
+    # earlier /ingest call) for however long that pass takes -- exactly the
+    # "multi-minute silent window" this phase's own docstring already
+    # claims to close, but didn't. Firing here, before ANY work in this
+    # function, actually closes it. The two later preparing_analysis calls
+    # (each guarding a different subsequent synchronous span) are now
+    # redundant with this one and have been removed rather than left to
+    # double-fire the identical message back-to-back in the ticker.
+    if progress_callback is not None:
+        progress_callback(
+            LevelingProgress(
+                phase="preparing_analysis", branch_index=None, branch_count=0,
+                blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                model=getattr(analysis_client, "model", None),
+            )
+        )
+
     # Deterministic hierarchy detection (table-row / ID-bearing-heading /
     # structural-heading conventions -- see _detect_deterministic_subtrees's
     # own docstring) runs BEFORE anything else in this function: every
@@ -1191,7 +1382,8 @@ def build_survey_tree(
     # that doesn't use any of these conventions -- `llm_doc is doc` in that
     # case (a true no-op, not a copy).
     det_nodes, det_warnings, llm_doc = _detect_deterministic_subtrees(
-        doc, customer_id, title_tag_client, synthesis_client,
+        doc, customer_id, title_tag_client, synthesis_client, parent_summary_client, model,
+        progress_callback=progress_callback,
     )
 
     if llm_doc.blocks == [] and llm_doc.tables == [] and llm_doc.figures == []:
@@ -1211,20 +1403,9 @@ def build_survey_tree(
         all_nodes: list[WorkItemNode] = list(det_nodes)
         all_warnings: list[str] = list(det_warnings)
 
-        # Real gap (user-reported, live): KB retrieval right below can take
-        # real time (a network/embedding call), and this guard path's own
-        # first progress_callback call otherwise doesn't fire until scoring
-        # starts -- a silent window with nothing newer than parse_done to
-        # show, which made the UI's "Reading document" step look stuck.
-        if progress_callback is not None:
-            progress_callback(
-                LevelingProgress(
-                    phase="preparing_analysis", branch_index=None, branch_count=0,
-                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
-                    model=getattr(analysis_client, "model", None),
-                )
-            )
-
+        # preparing_analysis already fired at function entry, before
+        # _detect_deterministic_subtrees ran -- covers this guard's own KB
+        # retrieval below too, so no second kickoff needed here.
         kb_deps_present = (
             user_id is not None and embed_client is not None and vector_store is not None
         )
@@ -1237,6 +1418,9 @@ def build_survey_tree(
             )
             doc_kb_citations = _resolve_kb_citations(
                 query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture
+            )
+            doc_kb_context, doc_kb_citations = _merge_always_include_context(
+                doc_kb_context, doc_kb_citations, user_id, vector_store,
             )
         deduped_citations = sorted(doc_kb_citations, key=lambda c: c.source_file)
 
@@ -1298,22 +1482,13 @@ def build_survey_tree(
 
     doc = llm_doc  # every remaining read below sees only the residual, non-claimed content
 
-    # Real gap (user-reported, live): confirmed on a real job, a multi-
-    # minute silent window between parse_done and the first analyze_section
-    # event, during which branch splitting/merging and KB retrieval (a real
-    # network/embedding call) run with zero narration -- the UI's "Reading
-    # document" step looked permanently stuck even though the pipeline had
-    # already moved on.
-    if progress_callback is not None:
-        progress_callback(
-            LevelingProgress(
-                phase="preparing_analysis", branch_index=None, branch_count=0,
-                blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
-                model=getattr(analysis_client, "model", None),
-            )
-        )
-
-    branch_cap, context_budget_tokens, coverage_budget_tokens, supports_tools = _resolve_caps(model)
+    # preparing_analysis already fired at function entry, before
+    # _detect_deterministic_subtrees ran -- covers the branch splitting/
+    # merging and KB retrieval below too, so no second kickoff needed here.
+    # analysis_client is the same OrchestratorLlmClient instance already
+    # implementing every other Protocol here -- reused as the live caps
+    # lookup for a model not already in _MODEL_CAPS, no new client wiring.
+    branch_cap, context_budget_tokens, coverage_budget_tokens, supports_tools = _resolve_caps(model, caps_client=analysis_client)
 
     # §3: whole-document single-call gate. A single long-context call over
     # the WHOLE document is not the "repeated raw-text stuffing across many
@@ -1413,6 +1588,9 @@ def build_survey_tree(
         doc_kb_citations = _resolve_kb_citations(
             query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture
         )
+        doc_kb_context, doc_kb_citations = _merge_always_include_context(
+            doc_kb_context, doc_kb_citations, user_id, vector_store,
+        )
     elif kb_deps_present and supports_tools:
         # Agentic path (§5c): the model pulls KB context itself via query_kb
         # during analyze_section_agentic -- retrieve_fn just executes
@@ -1442,6 +1620,17 @@ def build_survey_tree(
                     "query_kb question for the rest)"
                 )
             return text
+
+        # Unlike retrieve_context's similarity-gated result (which the
+        # agentic path deliberately skips in favor of the model pulling
+        # context itself via query_kb), an always-include file's whole
+        # point is that its relevance is NOT something the model should
+        # have to decide to go looking for -- merged into doc_kb_context
+        # here too so it grounds every branch call the same way it does on
+        # the fallback path above.
+        doc_kb_context, doc_kb_citations = _merge_always_include_context(
+            doc_kb_context, doc_kb_citations, user_id, vector_store,
+        )
 
     # §3.3: only built on the compact-outline path (global_context is set) --
     # lets a tool-capable model pull a specific OTHER section's full text on

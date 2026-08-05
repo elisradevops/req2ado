@@ -35,6 +35,13 @@ export const configSchema = z.object({
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),
   EMBED_PATH: z.string().default('/api/embed'),
+  // Same "raw Ollama vs Open WebUI proxy" path distinction EMBED_PATH
+  // already exists for -- Open WebUI does not expose a bare /api/show at
+  // all (405 Method Not Allowed, confirmed live), only /ollama/api/show
+  // (its own Ollama-native-API proxy prefix). Default assumes a direct
+  // Ollama backend (this codebase's original target); set to
+  // /ollama/api/show when LLM_BASE_URL points at Open WebUI instead.
+  SHOW_PATH: z.string().default('/api/show'),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().default(25),
   // Initial System.State written on every created work item. Hardcoded
   // 'Proposed' previously -- an on-prem custom process template without
@@ -51,6 +58,14 @@ export const configSchema = z.object({
   // tree of hundreds of nodes took ~2N serial round-trips with no way to
   // speed it up. Default matches mcp-ado-server's own ADO_CONCURRENCY.
   CONFIRM_WRITE_CONCURRENCY: z.coerce.number().default(8),
+  // StaleJobWatchdogService's poll interval and staleness threshold -- a
+  // pending/running job with no JobEvent activity for longer than the
+  // threshold gets auto-cancelled (see that service's own doc comment for
+  // why). Threshold default (60 min) sits comfortably above the single-call
+  // LLM timeout (_LLM_REQUEST_TIMEOUT_SECONDS, ingestion-side, 30 min) so it
+  // never fires on a legitimately slow-but-alive call.
+  STALE_JOB_CHECK_INTERVAL_MS: z.coerce.number().default(5 * 60_000),
+  STALE_JOB_THRESHOLD_MS: z.coerce.number().default(60 * 60_000),
   // How many BullMQ pipeline jobs pipeline-worker.main.ts processes
   // concurrently -- previously unset (bullmq's own implicit default is 1),
   // a real horizontal-scaling throughput blocker even before considering

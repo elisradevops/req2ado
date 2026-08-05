@@ -202,6 +202,7 @@ export class IngestionHttpClient {
     userId: string,
     docType: string | null,
     graphToken?: string | null,
+    retrievalMode?: string | null,
   ): Promise<{
     documentName: string;
     driveitemId: string;
@@ -213,7 +214,13 @@ export class IngestionHttpClient {
     const response = await fetch(`${this.baseUrl}/kb/ingest-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, user_id: userId, doc_type: docType, graph_token: graphToken ?? null }),
+      body: JSON.stringify({
+        url,
+        user_id: userId,
+        doc_type: docType,
+        graph_token: graphToken ?? null,
+        retrieval_mode: retrievalMode ?? null,
+      }),
       dispatcher: LONG_RUNNING_AGENT,
     });
     if (!response.ok) {
@@ -300,6 +307,7 @@ export class IngestionHttpClient {
     userId: string,
     docType: string | null,
     graphToken?: string | null,
+    retrievalMode?: string | null,
   ): Promise<{
     documentName: string;
     driveitemId: string;
@@ -318,6 +326,7 @@ export class IngestionHttpClient {
         user_id: userId,
         doc_type: docType,
         graph_token: graphToken ?? null,
+        retrieval_mode: retrievalMode ?? null,
       }),
       dispatcher: LONG_RUNNING_AGENT,
     });

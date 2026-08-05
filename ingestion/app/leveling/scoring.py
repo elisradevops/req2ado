@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
-from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
+from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback, _sample_titles
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.workitem.model import (
     KbCitation,
@@ -134,8 +134,16 @@ def _score_all_requirements(
     for node in nodes:
         nodes_by_description.setdefault(node.description, []).append(node)
     representative_nodes = [group[0] for group in nodes_by_description.values()]
+    # Known upfront -- unlike figure/table totals (not known until parsing
+    # finishes walking the document), every representative node to score is
+    # already in hand before this loop starts, so chunk_index/chunk_count
+    # and nodes_done/nodes_total below are real progress, not a guess.
+    total_nodes = len(representative_nodes)
+    total_chunks = -(-total_nodes // _SCORING_CHUNK_NODE_COUNT) if total_nodes else 0
 
-    def _fire(phase: Phase, chunk: list[WorkItemNode], issues_found: int | None = None) -> None:
+    def _fire(
+        phase: Phase, chunk: list[WorkItemNode], nodes_done: int, chunk_index: int, issues_found: int | None = None,
+    ) -> None:
         if progress_callback is None:
             return
         progress_callback(
@@ -146,15 +154,26 @@ def _score_all_requirements(
                 # own branchCount, so hardcoding 1 here would visibly shrink
                 # the section list to 1 for the duration of scoring.
                 phase=phase, branch_index=None, branch_count=branch_count,
-                blocks_done=blocks_total, blocks_total=blocks_total,
+                # Real cumulative node-scoring progress -- previously always
+                # blocks_done=blocks_total (fabricated 100%), confirmed live
+                # as actively misleading (the UI showed a "done" chip while
+                # scoring was still running). nodes_done/total_nodes IS a
+                # real, known-upfront count now.
+                blocks_done=nodes_done, blocks_total=total_nodes,
                 kb_grounded=bool(kb_context), kb_citations=kb_citations_raw,
                 model=model_name, draft_count=len(chunk), issues_found=issues_found,
+                # Real titles for (a prefix of) this chunk -- previously only
+                # a bare count ("150 drafted requirement(s)") with no way to
+                # tell which actual items were being scored.
+                sample_titles=_sample_titles([n.title for n in chunk]),
+                chunk_index=chunk_index, chunk_count=total_chunks,
             )
         )
 
     for start in range(0, len(representative_nodes), _SCORING_CHUNK_NODE_COUNT):
         chunk = representative_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
-        _fire("score_requirements", chunk)
+        chunk_index = start // _SCORING_CHUNK_NODE_COUNT
+        _fire("score_requirements", chunk, nodes_done=start, chunk_index=chunk_index)
         _apply_quality_scores(chunk, scoring_client, warnings, "", criteria_context, kb_context, category_checklist)
         # Fan each representative's real result out to every OTHER node
         # sharing that same description text -- see this function's own
@@ -165,7 +184,7 @@ def _score_all_requirements(
                 duplicate.quality_issues = representative.quality_issues
                 duplicate.quality_category_scores = representative.quality_category_scores
         issues_found = sum(len(node.quality_issues) for node in chunk)
-        _fire("score_requirements_done", chunk, issues_found=issues_found)
+        _fire("score_requirements_done", chunk, nodes_done=start + len(chunk), chunk_index=chunk_index, issues_found=issues_found)
 
 
 def _score_epics_and_features(
@@ -226,24 +245,30 @@ def _score_epics_and_features(
     if not epic_feature_nodes:
         return
 
-    def _fire(phase: Phase, chunk: list[WorkItemNode]) -> None:
+    total_epic_feature_nodes = len(epic_feature_nodes)
+    total_chunks = -(-total_epic_feature_nodes // _SCORING_CHUNK_NODE_COUNT)
+
+    def _fire(phase: Phase, chunk: list[WorkItemNode], nodes_done: int, chunk_index: int) -> None:
         if progress_callback is None:
             return
         progress_callback(
             LevelingProgress(
                 phase=phase, branch_index=None, branch_count=branch_count,
-                blocks_done=blocks_total, blocks_total=blocks_total,
+                blocks_done=nodes_done, blocks_total=total_epic_feature_nodes,
                 kb_grounded=False, kb_citations=[],
                 model=model_name, draft_count=len(chunk),
+                sample_titles=_sample_titles([n.title for n in chunk]),
+                chunk_index=chunk_index, chunk_count=total_chunks,
             )
         )
 
     for start in range(0, len(epic_feature_nodes), _SCORING_CHUNK_NODE_COUNT):
         chunk = epic_feature_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
+        chunk_index = start // _SCORING_CHUNK_NODE_COUNT
         nodes_by_id = {
             node.local_id: {"type": node.type.value, "text": node.description} for node in chunk
         }
-        _fire("score_requirements", chunk)
+        _fire("score_requirements", chunk, nodes_done=start, chunk_index=chunk_index)
         try:
             scores_by_id = score_fn(nodes_by_id)
         except Exception as exc:  # noqa: BLE001 - Epic/Feature scoring must never fail a SURVEY job
@@ -262,7 +287,7 @@ def _score_epics_and_features(
             if is_int and 0 <= raw_score <= 100:
                 node.quality_score = raw_score
             node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
-        _fire("score_requirements_done", chunk)
+        _fire("score_requirements_done", chunk, nodes_done=start + len(chunk), chunk_index=chunk_index)
 
 
 def _parse_category_scores(raw: object) -> QualityCategoryScores | None:

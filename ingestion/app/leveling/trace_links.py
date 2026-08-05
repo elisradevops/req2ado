@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
-from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
+from app.leveling.narration_publisher import LevelingProgress, ProgressCallback, _sample_titles
 from app.workitem.model import (
     TraceLink,
     TraceLinkResolutionStatus,
@@ -127,4 +127,25 @@ def _infer_trace_links_for_nodes(
                     resolution_status=TraceLinkResolutionStatus.PENDING,
                 )
             )
+    # Completion event, real endpoint titles rather than a bare phase name --
+    # the single kickoff fire above only signals "this whole-tree call is
+    # starting"; without this there was previously no way to see WHICH
+    # relationships were actually found (source_node_id/target_ref are
+    # opaque local ids, meaningless to a human reading the activity log).
+    if progress_callback is not None and trace_links:
+        endpoint_labels = [
+            f"{node_by_local_id[link.source_local_id].title} -> "
+            f"{node_by_local_id[link.target_local_id].title if link.target_local_id else link.target_customer_id} "
+            f"({link.display_name})"
+            for link in trace_links
+            if link.source_local_id in node_by_local_id
+        ]
+        progress_callback(
+            LevelingProgress(
+                phase="infer_trace_links", branch_index=None, branch_count=branch_count,
+                blocks_done=blocks_total, blocks_total=blocks_total, kb_grounded=False, kb_citations=[],
+                model=getattr(link_type_client, "model", None),
+                sample_titles=_sample_titles(endpoint_labels),
+            )
+        )
     return trace_links

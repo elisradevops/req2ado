@@ -3,6 +3,7 @@ import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { llmChatRequestSchema } from './llm-chat.dto';
 import { llmEmbedRequestSchema } from './llm-embed.dto';
+import { llmShowRequestSchema } from './llm-show.dto';
 import { llmVisionRequestSchema } from './llm-vision.dto';
 import type { LlmToolCall } from './llm-client.interface';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
@@ -103,6 +104,20 @@ export class LlmController {
     }
     const embeddings = await this.llmClient.embed(parseResult.data.texts);
     return { embeddings };
+  }
+
+  // Backs ingestion's optional live per-model capability lookup
+  // (_resolve_caps's caps_client param, llm_leveling.py) -- replaces a
+  // blind conservative guess for any model NOT in that module's hand-
+  // maintained table with a real measurement of THIS model's actual
+  // context length/capabilities.
+  @Post('show')
+  async show(@Body() rawBody: unknown): Promise<{ contextLength: number | null; capabilities: string[] }> {
+    const parseResult = llmShowRequestSchema.safeParse(rawBody);
+    if (!parseResult.success) {
+      throw new BadRequestException('Invalid request body: model must be a non-empty string');
+    }
+    return this.llmClient.showModel(parseResult.data.model);
   }
 
   @Post('vision')

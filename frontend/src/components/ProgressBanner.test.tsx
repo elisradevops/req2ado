@@ -4,15 +4,6 @@ import userEvent from '@testing-library/user-event';
 import { ProgressBanner } from './ProgressBanner';
 
 describe('ProgressBanner', () => {
-  it.each([
-    ['parse', /parsing/i],
-    ['infer_hierarchy_start', /analyzing structure/i],
-    ['generate_requirements_done', /finalizing/i],
-  ])('renders a human label for stage %s', (stage, expectedText) => {
-    render(<ProgressBanner stage={stage as any} startedAt="2026-07-09T10:00:00Z" mode="survey" />);
-    expect(screen.getByText(expectedText)).toBeInTheDocument();
-  });
-
   it('shows no ETA chip before any narration has arrived', () => {
     // No narration yet -- there's no real progress data to calculate a
     // rate from, so no ETA (calculated or "Estimating...") should render
@@ -39,27 +30,48 @@ describe('ProgressBanner', () => {
     expect(screen.getByText(/~.+ left/i)).toBeInTheDocument();
   });
 
-  it('never shows a fabricated "~0s left" during the scoring/trace-link tail phases', () => {
-    // Confirmed real bug (screenshot): score_requirements/score_requirements_done
-    // and infer_trace_links report blocksDone === blocksTotal (every section
-    // is already finished by the time either runs) -- the old calc added
-    // withinSectionCredit on top of an already-full blocksDone, overshooting
-    // blocksTotal, going negative, and clamping to a fake "~0s left" while
-    // the job was still genuinely working. Must show "Finishing up…" and an
-    // indeterminate bar instead of any fabricated number.
+  it('never shows a fabricated "~0s left" during the detect_conflicts/regroup_roots/trace-link tail phases', () => {
+    // Confirmed real bug (screenshot): these whole-document tail phases
+    // report blocksDone === blocksTotal (every section is already finished
+    // by the time any of them run) -- the old calc added withinSectionCredit
+    // on top of an already-full blocksDone, overshooting blocksTotal, going
+    // negative, and clamping to a fake "~0s left" while the job was still
+    // genuinely working. Must show "Finishing up…" and an indeterminate bar
+    // instead of any fabricated number. score_requirements is deliberately
+    // NOT included here anymore -- see the dedicated test below for why.
     render(
       <ProgressBanner
         stage="infer_hierarchy_start"
         startedAt="2026-07-09T10:00:00Z"
         mode="survey"
         narrations={[
-          { phase: 'score_requirements', branchIndex: null, branchCount: 4, blocksDone: 682, blocksTotal: 682, kbGrounded: true, kbCitations: [], message: 'x', draftCount: 150 },
+          { phase: 'infer_trace_links', branchIndex: null, branchCount: 4, blocksDone: 682, blocksTotal: 682, kbGrounded: true, kbCitations: [], message: 'x' },
         ]}
       />,
     );
     expect(screen.queryByText(/~0s left/i)).not.toBeInTheDocument();
     expect(screen.getByText('Finishing up…')).toBeInTheDocument();
     expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
+  });
+
+  it('shows real determinate progress and a batch chip during score_requirements -- unlike other tail phases, the total is known upfront', () => {
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'score_requirements', branchIndex: null, branchCount: 4, blocksDone: 150, blocksTotal: 553,
+            kbGrounded: false, kbCitations: [], message: 'x', draftCount: 150, chunkIndex: 0, chunkCount: 4,
+          },
+        ]}
+      />,
+    );
+    expect(screen.queryByText('Finishing up…')).not.toBeInTheDocument();
+    expect(screen.getByText('150 / 553 requirements')).toBeInTheDocument();
+    expect(screen.getByText('batch 1 of 4')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow');
   });
 
   it('shows the latest narration message instead of the coarse stage label when narrations are present', () => {
@@ -79,11 +91,6 @@ describe('ProgressBanner', () => {
     // tolerates that expected duplication.
     expect(screen.getAllByText('Generating formal requirements (section 1 of 3)').length).toBeGreaterThan(0);
     expect(screen.queryByText(/analyzing structure\.\.\./i)).not.toBeInTheDocument();
-  });
-
-  it('falls back to the coarse stage label when narrations is empty (baseline mode / no narration yet)', () => {
-    render(<ProgressBanner stage="parse" startedAt="2026-07-09T10:00:00Z" mode="baseline" narrations={[]} />);
-    expect(screen.getByText(/parsing/i)).toBeInTheDocument();
   });
 
   it('renders a determinate progress bar reflecting blocksDone/blocksTotal from the latest narration', () => {
@@ -220,21 +227,6 @@ describe('ProgressBanner', () => {
     expect(screen.getByText(/you can close this page/i)).toBeInTheDocument();
   });
 
-  it('highlights "Building the diff" once trace-link inference starts, not "Analysing sections"', () => {
-    render(
-      <ProgressBanner
-        stage="infer_hierarchy_start"
-        startedAt="2026-07-09T10:00:00Z"
-        mode="survey"
-        narrations={[
-          { phase: 'infer_trace_links', branchIndex: null, branchCount: 2, blocksDone: 30, blocksTotal: 30, kbGrounded: false, kbCitations: [] as { sourceFile: string; similarity: number }[], message: 'x' },
-        ]}
-      />,
-    );
-    expect(screen.getByText('Building the diff').closest('li')?.querySelector('[data-state]')).toHaveAttribute('data-state', 'active');
-    expect(screen.getByText('Analysing sections').closest('li')?.querySelector('[data-state]')).toHaveAttribute('data-state', 'done');
-  });
-
   it('expands a collapsed activity log listing every narration seen so far, on click', async () => {
     render(
       <ProgressBanner
@@ -277,28 +269,6 @@ describe('ProgressBanner', () => {
     // -- getAllByText tolerates that expected duplication.
     expect(screen.getAllByText(/figure 3 so far/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Section 1 of/)).not.toBeInTheDocument();
-    expect(screen.getByText('Reading document').closest('li')?.querySelector('[data-state]')).toHaveAttribute('data-state', 'active');
-  });
-
-  it('advances past "Reading document" once preparing_analysis fires, not stuck on parse_done', () => {
-    // Real regression this fixes (user-reported, live): a multi-minute
-    // silent window between parse_done and the first analyze_section event
-    // previously left "Reading document" spinning as the LAST real event
-    // stayed parse_done, even though the pipeline had already moved on to
-    // analysis (KB retrieval, branch splitting) with real work in flight.
-    render(
-      <ProgressBanner
-        stage="infer_hierarchy_start"
-        startedAt="2026-07-09T10:00:00Z"
-        mode="survey"
-        narrations={[
-          { phase: 'parse_done', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], blockCount: 682, tableCount: 5, figureCount: 39, message: 'Finished parsing the document' },
-          { phase: 'preparing_analysis', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0, kbGrounded: false, kbCitations: [], message: 'Preparing analysis' },
-        ]}
-      />,
-    );
-    expect(screen.getByText('Reading document').closest('li')?.querySelector('[data-state]')).toHaveAttribute('data-state', 'done');
-    expect(screen.getByText('Analysing sections').closest('li')?.querySelector('[data-state]')).toHaveAttribute('data-state', 'active');
   });
 
   it('never renders a blank metrics line during preparing_analysis (must always show real text)', () => {
@@ -349,7 +319,9 @@ describe('ProgressBanner', () => {
       />,
     );
     expect(screen.getByText('Grounded against:')).toBeInTheDocument();
-    expect(screen.getByText('requirements-standard.pdf')).toBeInTheDocument();
+    // similarity must be VISIBLE text, not only a hover title attribute
+    // (DESIGN.md Track B, phase B6) -- matched as one chip's full content.
+    expect(screen.getByText('requirements-standard.pdf · 82%')).toBeInTheDocument();
   });
 
   it('tells the user a section was NOT grounded against the knowledge base, rather than staying silent', () => {
@@ -377,9 +349,71 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    // Shown twice now -- once in the header chip, once inline next to the
-    // hero narrative message (real user feedback: "is this still moving"
-    // must be answerable without looking away from the current message).
     expect(screen.getAllByText(/\d+s ago/i).length).toBeGreaterThan(0);
+  });
+
+  it('renders a real N-of-M counter for dedup_check, despite its branchCount always being 0', () => {
+    // Regression this fixes (DESIGN.md Track B, phase B6): dedup_check
+    // always carries branchCount 0 (job-events.publisher.ts hardcodes it),
+    // so the old `branchCount > 0` guard around SectionStepList rendered
+    // NOTHING at all for this phase -- a bare spinner with no detail for
+    // however long the dedup pass took.
+    render(
+      <ProgressBanner
+        stage="dedup_check"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'dedup_check', branchIndex: null, branchCount: 0, blocksDone: 12, blocksTotal: 40, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/checking 12 of 40 proposed items/i)).toBeInTheDocument();
+    // Two progressbars render (the metrics box's + this phase's own) --
+    // this determinate one (30%) must be among them, not just the metrics
+    // box's indeterminate one.
+    const progressBars = screen.getAllByRole('progressbar');
+    expect(progressBars.some((bar) => bar.getAttribute('aria-valuenow') === '30')).toBe(true);
+  });
+
+  it.each(['discover_types', 'create', 'link_parents', 'trace_links'] as const)(
+    'renders the write sub-stepper for writeSubPhase "%s", despite writing always carrying branchCount 0',
+    (writeSubPhase) => {
+      render(
+        <ProgressBanner
+          stage="writing"
+          startedAt="2026-07-09T10:00:00Z"
+          mode="survey"
+          narrations={[
+            { phase: 'writing', writeSubPhase, branchIndex: null, branchCount: 0, blocksDone: 2, blocksTotal: 5, kbGrounded: false, kbCitations: [], message: 'x' },
+          ]}
+        />,
+      );
+      expect(screen.getByText('Resolve types')).toBeInTheDocument();
+      expect(screen.getByText('Create items')).toBeInTheDocument();
+      expect(screen.getByText('Link parents')).toBeInTheDocument();
+      expect(screen.getByText('Trace links')).toBeInTheDocument();
+      expect(screen.getByText('2 of 5 written')).toBeInTheDocument();
+    },
+  );
+
+  it('renders parse_done block/table/figure counts as real, discrete chips -- not just buried in the message string', () => {
+    render(
+      <ProgressBanner
+        stage="parse"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'parse_done', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+            kbGrounded: false, kbCitations: [], blockCount: 682, tableCount: 5, figureCount: 39,
+            message: 'Finished parsing the document',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('682 blocks')).toBeInTheDocument();
+    expect(screen.getByText('5 tables')).toBeInTheDocument();
+    expect(screen.getByText('39 figures')).toBeInTheDocument();
   });
 });

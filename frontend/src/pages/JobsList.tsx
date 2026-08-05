@@ -18,6 +18,7 @@ import { StatTile } from '../ui/StatTile';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useToast } from '../components/ToastProvider';
 import { formatRelativeTime } from '../utils/relativeTime';
+import { useDenseView, useAutoSyncLedgers } from '../store/uiPreferencesStore';
 import { cn } from '../lib/cn';
 
 // Curated buckets, not the raw seven-value backend enum -- "review" and
@@ -70,6 +71,8 @@ export function JobsList(): React.ReactElement {
   const [isResubmitting, setIsResubmitting] = useState(false);
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const denseView = useDenseView();
+  const autoSyncLedgers = useAutoSyncLedgers();
 
   function load(): void {
     setLoadError(false);
@@ -87,6 +90,19 @@ export function JobsList(): React.ReactElement {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, []);
+
+  // Real background polling (Settings' "Auto-Sync Ledgers" toggle), not a
+  // cosmetic setting -- load() itself never flips `loaded` back to false,
+  // so this refresh never re-triggers the loading skeleton, only silently
+  // refreshes the already-rendered table.
+  useEffect(() => {
+    if (!autoSyncLedgers) return;
+    const id = setInterval(load, 20_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSyncLedgers]);
+
+  const cellPaddingY = denseView ? 'py-1' : 'py-2.5';
 
   async function handleResubmit(): Promise<void> {
     if (!resubmitTarget) return;
@@ -156,10 +172,11 @@ export function JobsList(): React.ReactElement {
               </span>
             }
             accent
+            interactive
           />
-          <StatTile value={tileCounts.running} label="Running" />
-          <StatTile value={itemsWritten} label="Items written" tone="ok" />
-          <StatTile value={tileCounts.rejected} label="Rejected" tone="dim" />
+          <StatTile value={tileCounts.running} label="Running" interactive />
+          <StatTile value={itemsWritten} label="Items written" tone="ok" interactive />
+          <StatTile value={tileCounts.rejected} label="Rejected" tone="dim" interactive />
         </div>
       )}
       {loadError && (
@@ -215,7 +232,7 @@ export function JobsList(): React.ReactElement {
                   onClick={() => setStatusFilter(bucket)}
                   className={cn(
                     'border-l border-hairline-strong px-2.5 py-1.5 text-xs font-semibold text-ink-2 first:border-l-0 hover:bg-canvas',
-                    statusFilter === bucket && 'bg-navy-600 text-white hover:bg-navy-600',
+                    statusFilter === bucket && 'bg-accent text-white hover:bg-accent',
                   )}
                 >
                   {label}
@@ -233,13 +250,13 @@ export function JobsList(): React.ReactElement {
                 <table className="w-full text-sm">
                   <thead>
                     <tr>
-                      <th className="whitespace-nowrap bg-surface-alt px-3.5 py-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Document</th>
-                      <th className="whitespace-nowrap bg-surface-alt px-3.5 py-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Mode</th>
-                      <th className="whitespace-nowrap bg-surface-alt px-3.5 py-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Status</th>
-                      <th className="whitespace-nowrap bg-surface-alt px-3.5 py-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Items</th>
-                      <th className="whitespace-nowrap bg-surface-alt px-3.5 py-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Area Path</th>
-                      <th className="whitespace-nowrap bg-surface-alt px-3.5 py-2.5 text-left text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Created</th>
-                      <th className="whitespace-nowrap bg-surface-alt px-3.5 py-2.5 text-right text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Document</th>
+                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Mode</th>
+                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Status</th>
+                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Items</th>
+                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Area Path</th>
+                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Created</th>
+                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-right text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>
                         <span className="sr-only">Actions</span>
                       </th>
                     </tr>
@@ -258,32 +275,38 @@ export function JobsList(): React.ReactElement {
                         tabIndex={0}
                         role="link"
                         aria-label={`View job ${job.id}`}
-                        className="cursor-pointer border-t border-hairline transition-colors hover:bg-canvas focus-visible:bg-canvas animate-[listItemIn_180ms_ease-out_backwards]"
-                        style={{ animationDelay: `${Math.min(index, 12) * 15}ms` }}
+                        className="group cursor-pointer border-t border-hairline transition-colors duration-instant hover:bg-accent-soft focus-visible:bg-accent-soft animate-[listItemIn_var(--duration-base)_var(--ease-out)_backwards]"
+                        style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}
                       >
-                        <td className="max-w-[200px] px-3.5 py-2.5">
+                        <td className={cn('max-w-[200px] px-3.5', cellPaddingY)}>
                           <span className="block truncate text-sm font-medium">{job.originalFilename}</span>
                         </td>
-                        <td className="px-3.5 py-2.5">
+                        <td className={cn('px-3.5', cellPaddingY)}>
                           <ModeBadge mode={job.mode as 'baseline' | 'survey'} />
                         </td>
-                        <td className="px-3.5 py-2.5">
+                        <td className={cn('px-3.5', cellPaddingY)}>
                           <StatusChip status={job.status} />
                         </td>
-                        <td className="px-3.5 py-2.5">{job.itemCount}</td>
-                        <td className="max-w-[220px] px-3.5 py-2.5 font-mono text-xs">
+                        <td className={cn('px-3.5 font-mono tabular-nums', cellPaddingY)}>{job.itemCount}</td>
+                        <td className={cn('max-w-[220px] px-3.5 font-mono text-xs', cellPaddingY)}>
                           <Tooltip content={job.areaPath}>
                             <span className="block truncate">{job.areaPath}</span>
                           </Tooltip>
                         </td>
-                        <td className="whitespace-nowrap px-3.5 py-2.5 font-mono text-xs">
+                        <td className={cn('whitespace-nowrap px-3.5 font-mono text-xs', cellPaddingY)}>
                           <Tooltip content={new Date(job.createdAt).toLocaleString()}>
                             <span>{formatRelativeTime(job.createdAt)}</span>
                           </Tooltip>
                         </td>
-                        <td className="whitespace-nowrap px-3.5 py-2.5 text-right">
+                        <td className={cn('whitespace-nowrap px-3.5 text-right', cellPaddingY)}>
                           {!RUNNING_STATUSES.has(job.status) && (
-                            <>
+                            // Revealed on hover/focus, not always-on -- a row of
+                            // permanently-visible icon buttons on every row read
+                            // as UI chrome competing with the actual data; this
+                            // keeps them available (never removed from the tab
+                            // order) while visually quiet until you're pointed at
+                            // that specific row.
+                            <span className="inline-flex gap-1 opacity-0 transition-opacity duration-instant group-hover:opacity-100 group-focus-within:opacity-100">
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -309,7 +332,7 @@ export function JobsList(): React.ReactElement {
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </Button>
-                            </>
+                            </span>
                           )}
                         </td>
                       </tr>
@@ -342,7 +365,7 @@ export function JobsList(): React.ReactElement {
         confirmLabel="Delete job"
         onConfirm={handleDelete}
         isConfirming={isDeleting}
-        destructive
+        variant="destructive"
       />
     </div>
   );

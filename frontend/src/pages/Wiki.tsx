@@ -19,12 +19,12 @@ const MARKDOWN_COMPONENTS: Components = {
   ol: ({ children }) => <ol className="mb-3 flex list-decimal flex-col gap-1 pl-5 text-sm text-ink-2">{children}</ol>,
   li: ({ children }) => <li>{children}</li>,
   a: ({ children, href }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="text-navy-600 underline underline-offset-2 hover:text-navy-700">
+    <a href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:text-accent-hover">
       {children}
     </a>
   ),
-  code: ({ children }) => <code className="rounded-[3px] bg-surface-alt px-1 py-0.5 font-mono text-[13px] text-ink-1">{children}</code>,
-  pre: ({ children }) => <pre className="mb-3 overflow-x-auto rounded-sm bg-surface-alt p-3 font-mono text-[13px] text-ink-1">{children}</pre>,
+  code: ({ children }) => <code className="rounded-sm bg-surface-alt px-1 py-0.5 font-mono text-xs text-ink-1">{children}</code>,
+  pre: ({ children }) => <pre className="mb-3 overflow-x-auto rounded-sm bg-surface-alt p-3 font-mono text-xs text-ink-1">{children}</pre>,
   blockquote: ({ children }) => <blockquote className="mb-3 border-l-2 border-hairline-strong pl-3 text-sm text-ink-2 italic">{children}</blockquote>,
   hr: () => <hr className="my-4 border-hairline" />,
   table: ({ children }) => (

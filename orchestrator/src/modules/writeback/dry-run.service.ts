@@ -140,6 +140,72 @@ export async function resolveCrossJobTraceLinks(
 }
 
 /**
+ * Real gap this closes (confirmed live): a `reuse`/`dedup_skip` match is
+ * recorded once (IdempotencyMapping at confirm-time, or the Chroma dedup
+ * vector store at confirm/backfill-time) and trusted forever after, with
+ * no re-check against ADO's CURRENT state -- an item genuinely created by
+ * this app, then deleted directly in ADO by someone/something else,
+ * silently kept matching every future job against a dead reference (the
+ * diff view showed a "Near-duplicate of WI-533"/"Links to WI-533" chip
+ * whose link opens a real, correctly-formed ADO URL that resolves to
+ * nothing).
+ *
+ * Collects the distinct existingAdoId across every reuse/dedup_skip entry
+ * (a small set relative to the full node list -- 43 on a real 554-node
+ * job, not one extra API call per node) and verifies them in ONE batched
+ * call. Any id NOT present in the result is downgraded to a fresh
+ * 'create' entry -- same shape a node that never matched anything already
+ * gets, so no new DryRunDiffEntry fields are needed. `getWorkItemsBatch`
+ * is a callback (not a concrete McpClient import) for the same reason
+ * resolveCrossJobTraceLinks above takes `queryByCustomerId` as a callback
+ * -- this module stays independent of the pipeline module.
+ *
+ * Fail-open, same "never block the job over an optional verification"
+ * convention as dryRunService.diff's own dedupCheck catch: any exception
+ * from the batch call itself (ADO outage, expired credential) returns
+ * `diff` completely untouched -- an unverified match is exactly today's
+ * pre-existing behavior, not a regression.
+ *
+ * `onError` (optional): previously this catch was completely silent -- a
+ * failed verification pass was indistinguishable from a successful one that
+ * happened to confirm every match, both from logs (nothing printed either
+ * way) and from the job's own persisted state (confirmed live: a stale
+ * dedup_skip match survived to review with zero trace of whether existence
+ * verification ever ran). The caller decides what to do with the message
+ * (log it, surface it as a job warning) -- this function's own fail-open
+ * behavior is unchanged either way.
+ */
+export async function verifyExistingAdoIdsStillExist(
+  diff: DryRunDiffEntry[],
+  getWorkItemsBatch: (ids: number[]) => Promise<{ id: number }[]>,
+  onError?: (message: string) => void,
+): Promise<DryRunDiffEntry[]> {
+  const idsToVerify = [
+    ...new Set(diff.filter((e) => e.existingAdoId !== null).map((e) => e.existingAdoId as number)),
+  ];
+  if (idsToVerify.length === 0) {
+    return diff;
+  }
+  let stillExisting: Set<number>;
+  try {
+    const items = await getWorkItemsBatch(idsToVerify);
+    stillExisting = new Set(items.map((item) => item.id));
+  } catch (error) {
+    onError?.(
+      `Could not verify whether ${idsToVerify.length} matched ADO work item(s) still exist -- ` +
+        `showing them unverified. (${error instanceof Error ? error.message : String(error)})`,
+    );
+    return diff;
+  }
+  return diff.map((entry) => {
+    if (entry.existingAdoId === null || stillExisting.has(entry.existingAdoId)) {
+      return entry;
+    }
+    return { ...entry, action: 'create' as const, existingAdoId: null, similarity: null };
+  });
+}
+
+/**
  * Pure diff against the idempotency map — no MCP tool call, no ADO write.
  * Satisfies Phase 7's DoD "dry-run diff" and config.yaml's dry_run: true
  * default: a caller can show this diff to a user for confirmation before
@@ -164,8 +230,13 @@ export class DryRunService {
     // percentage) so a caller decides its own display format; called after
     // EVERY node rather than throttled, since the redis publish this
     // drives is trivial next to the per-node idempotency/embed/Chroma
-    // round trips already happening.
-    onProgress?: (completed: number, total: number) => void,
+    // round trips already happening. `currentTitle` is whichever node JUST
+    // finished (not a "now starting" signal -- concurrency=8 means several
+    // are in flight at once, there's no single "current" node to report
+    // before completion) -- previously the dedup-check narration carried
+    // only a bare N-of-M count with no way to tell which items were
+    // actually involved.
+    onProgress?: (completed: number, total: number, currentTitle: string) => void,
   ): Promise<DryRunDiffEntry[]> {
     let completedCount = 0;
     const settled = await mapWithConcurrency(nodes, this.concurrency, async (node) => {
@@ -173,7 +244,7 @@ export class DryRunService {
         return await this.diffOneNode(node, idempotencyService, dedupCheck);
       } finally {
         completedCount += 1;
-        onProgress?.(completedCount, nodes.length);
+        onProgress?.(completedCount, nodes.length, node.title);
       }
     });
 

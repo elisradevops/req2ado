@@ -87,6 +87,14 @@ model Job {
   // (WorkItemTree.warnings, SURVEY-only) -- always [] for BASELINE. Persisted
   // here so getById() can return them alongside the diff for the reviewer.
   warnings         Json?
+  // {figureIndex, caption}[] -- vision-model captions for every embedded
+  // figure with a real caption (see /ingest's response `figures` array),
+  // persisted so JobDetail's FigureDescriptions panel survives a reload or
+  // reopening a completed job -- previously this lived ONLY in live SSE
+  // narration state (pipeline.worker.ts populates this in the SAME
+  // prisma.job.update as warnings/kbCitations above). Nullable: historical
+  // jobs predate this column, same convention as warnings/userId.
+  figureDescriptions Json?
   createdAt        DateTime  @default(now())
   confirmedAt      DateTime?
   completedAt      DateTime?
@@ -94,6 +102,7 @@ model Job {
   dedupSkipAudits  DedupSkipAudit[]
   createdItemMappings CreatedItemMapping[]
   sourceFile       JobSourceFile?
+  events           JobEvent[]
 }
 
 // Retains the original uploaded file's bytes so a job can be re-submitted
@@ -118,6 +127,29 @@ model AuditEntry {
   createdAt DateTime @default(now())
 }
 
+// Durable counterpart to the Redis-backed narration-log (ingestion's
+// NarrationPublisher / orchestrator's JobEventsPublisher) -- that Redis list
+// is capped at 50 entries with a 1-hour TTL, purely a live-SSE-replay buffer;
+// this table is the permanent record, written by JobEventPersistenceService
+// (a background Redis psubscribe('job-events:*') consumer, decoupled from
+// the per-connection SSE controller) so a job's full processing trail
+// survives past its own completion/failure and past Redis's TTL. `detail`
+// carries the full narration/stage payload as received (phase-specific
+// fields like sampleTitles/subtreeIndex/errorType, not just the formatted
+// `message` string) for the event-history endpoint to render richly.
+model JobEvent {
+  id        String   @id @default(uuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id])
+  phase     String
+  message   String
+  detail    Json?
+  severity  String   @default("info") // "info" | "warning" | "error"
+  createdAt DateTime @default(now())
+
+  @@index([jobId, createdAt])
+}
+
 // Durable, structured audit trail for skipped duplicates (distinct from
 // AuditEntry's free-text messages) -- one row per node whose dry-run diff
 // action was 'dedup_skip', written at diff-ready time in pipeline.worker.ts.
@@ -130,6 +162,20 @@ model DedupSkipAudit {
   similarity    Float
   existingAdoId Int
   createdAt     DateTime @default(now())
+}
+
+// Throttle state for BackfillService.backfillAreaPath -- runPipelineJob
+// now auto-runs a backfill for its own job.areaPath (closing the
+// "manually-created ADO items are invisible to dedup" gap, previously
+// only reachable via a raw, undiscoverable POST /backfill admin call),
+// but a full area-path WIQL scan + batch fetch + embed + upsert is real
+// cost that shouldn't repeat on every single job against a busy, already-
+// backfilled area path. One row per area path; missing or stale
+// (>staleAfterMs, see pipeline.worker.ts's maybeBackfillAreaPath) means
+// due for another scan.
+model AreaPathBackfill {
+  areaPath         String   @id
+  lastBackfilledAt DateTime
 }
 
 // Durable local-id -> ADO-id resume state for confirm() (the "P4b" tree
@@ -179,14 +225,19 @@ model IdempotencyMapping {
 // duplicating it; the SAME SharePoint file ingested by two different users
 // is tracked as two independent rows (each user's own KB copy).
 model IngestedDocument {
-  id          String   @id @default(uuid())
-  userId      String
-  driveItemId String
-  name        String
-  sizeBytes   Int
-  mimeType    String?
-  docType     String?
-  ingestedAt  DateTime @default(now())
+  id            String   @id @default(uuid())
+  userId        String
+  driveItemId   String
+  name          String
+  sizeBytes     Int
+  mimeType      String?
+  docType       String?
+  // "retrieve" (default, null also means this) or "always_include" -- see
+  // KbVectorStore.upsert_chunk's own docstring (ingestion side). Persisted
+  // here too so the KB document list UI can show/edit a file's mode without
+  // a round trip to ingestion's Chroma-backed store.
+  retrievalMode String?
+  ingestedAt    DateTime @default(now())
 
   @@unique([userId, driveItemId])
 }

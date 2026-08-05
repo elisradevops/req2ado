@@ -1,13 +1,24 @@
 import { JobEventsPublisher } from '../src/modules/pipeline/job-events.publisher';
 
+// Asserting on the parsed object (with emittedAt checked separately as "a
+// real ISO timestamp", not a fixed string) rather than an exact
+// JSON.stringify string match -- emittedAt's value is real wall-clock time
+// and can never be pinned to a literal string in a test.
+function parsePublishedPayload(mockFn: jest.Mock, callIndex = 0): Record<string, unknown> {
+  return JSON.parse(mockFn.mock.calls[callIndex][mockFn.mock.calls[callIndex].length - 1] as string);
+}
+
 describe('JobEventsPublisher', () => {
-  it('publishes a JSON stage payload to the job-scoped channel', async () => {
+  it('publishes a JSON stage payload to the job-scoped channel, with a real emittedAt timestamp', async () => {
     const redis = { publish: jest.fn().mockResolvedValue(1), set: jest.fn().mockResolvedValue('OK') };
     const publisher = new JobEventsPublisher(redis as any);
 
     await publisher.publish('job-1', 'infer_hierarchy_start');
 
-    expect(redis.publish).toHaveBeenCalledWith('job-events:job-1', JSON.stringify({ stage: 'infer_hierarchy_start' }));
+    expect(redis.publish).toHaveBeenCalledWith('job-events:job-1', expect.any(String));
+    const payload = parsePublishedPayload(redis.publish);
+    expect(payload.stage).toBe('infer_hierarchy_start');
+    expect(new Date(payload.emittedAt as string).toString()).not.toBe('Invalid Date');
   });
 
   it('persists the last-known stage with an expiry so a later reconnect can replay it', async () => {
@@ -16,12 +27,9 @@ describe('JobEventsPublisher', () => {
 
     await publisher.publish('job-1', 'diff_ready');
 
-    expect(redis.set).toHaveBeenCalledWith(
-      'job-events:job-1:current',
-      JSON.stringify({ stage: 'diff_ready' }),
-      'EX',
-      3600,
-    );
+    expect(redis.set).toHaveBeenCalledWith('job-events:job-1:current', expect.any(String), 'EX', 3600);
+    const payload = JSON.parse(redis.set.mock.calls[0][1] as string);
+    expect(payload.stage).toBe('diff_ready');
   });
 
   it('publishNarration fills in the NarrationEvent-required defaults a caller does not supply', async () => {
@@ -46,7 +54,7 @@ describe('JobEventsPublisher', () => {
       message: 'Checking for existing/duplicate work items -- 3 of 543',
     });
 
-    const expectedPayload = JSON.stringify({
+    const expectedFields = {
       type: 'narration',
       branchIndex: null,
       branchCount: 0,
@@ -56,9 +64,12 @@ describe('JobEventsPublisher', () => {
       blocksDone: 3,
       blocksTotal: 543,
       message: 'Checking for existing/duplicate work items -- 3 of 543',
-    });
-    expect(redis.publish).toHaveBeenCalledWith('job-events:job-1', expectedPayload);
-    expect(redis.rpush).toHaveBeenCalledWith('job-events:job-1:narration-log', expectedPayload);
+    };
+    const publishedPayload = parsePublishedPayload(redis.publish);
+    expect(publishedPayload).toEqual(expect.objectContaining(expectedFields));
+    expect(new Date(publishedPayload.emittedAt as string).toString()).not.toBe('Invalid Date');
+    const rpushPayload = JSON.parse(redis.rpush.mock.calls[0][1] as string);
+    expect(rpushPayload).toEqual(expect.objectContaining(expectedFields));
   });
 
   it('bounds and refreshes the expiry of the narration log so a reconnect can replay recent history', async () => {

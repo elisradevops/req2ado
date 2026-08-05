@@ -26,6 +26,7 @@ export interface IngestedDocumentSummary {
   sizeBytes: number;
   mimeType: string | null;
   docType: string | null;
+  retrievalMode: string | null;
   ingestedAt: Date;
 }
 
@@ -115,9 +116,14 @@ export class KbService {
     return status;
   }
 
-  async ingestUrl(url: string, userId: string, docType: string | null): Promise<IngestUrlResult> {
+  async ingestUrl(
+    url: string,
+    userId: string,
+    docType: string | null,
+    retrievalMode: string | null = null,
+  ): Promise<IngestUrlResult> {
     const graphToken = await this.resolveGraphTokenOverride();
-    const result = await this.ingestionClient.ingestUrl(url, userId, docType, graphToken);
+    const result = await this.ingestionClient.ingestUrl(url, userId, docType, graphToken, retrievalMode);
     await this.prisma.ingestedDocument.upsert({
       where: { userId_driveItemId: { userId, driveItemId: result.driveitemId } },
       create: {
@@ -127,12 +133,14 @@ export class KbService {
         sizeBytes: result.sizeBytes,
         mimeType: result.mimeType,
         docType,
+        retrievalMode,
       },
       update: {
         name: result.documentName,
         sizeBytes: result.sizeBytes,
         mimeType: result.mimeType,
         docType,
+        retrievalMode,
         ingestedAt: new Date(),
       },
     });
@@ -216,9 +224,10 @@ export class KbService {
     relativePath: string,
     userId: string,
     docType: string | null,
+    retrievalMode: string | null = null,
   ): Promise<IngestUrlResult & { ingestedDocumentId: string }> {
     const graphToken = await this.resolveGraphTokenOverride();
-    const result = await this.ingestionClient.ingestItem(name, itemId, downloadUrl, userId, docType, graphToken);
+    const result = await this.ingestionClient.ingestItem(name, itemId, downloadUrl, userId, docType, graphToken, retrievalMode);
     const row = await this.prisma.ingestedDocument.upsert({
       where: { userId_driveItemId: { userId, driveItemId: result.driveitemId } },
       create: {
@@ -228,12 +237,14 @@ export class KbService {
         sizeBytes: result.sizeBytes,
         mimeType: result.mimeType,
         docType,
+        retrievalMode,
       },
       update: {
         name: relativePath,
         sizeBytes: result.sizeBytes,
         mimeType: result.mimeType,
         docType,
+        retrievalMode,
         ingestedAt: new Date(),
       },
     });

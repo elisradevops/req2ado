@@ -7,6 +7,10 @@ const TEST_USER: SessionUser = { userId: 'test-user-descriptor', displayName: 'T
 // separately; this fixture just needs to pass it so the rest of the
 // existing SSE-behavior assertions are unaffected.
 const fakeJobsService = { getById: jest.fn().mockResolvedValue({ userId: TEST_USER.userId }) };
+// getEventHistory's own fakePrisma -- never touched by any existing
+// streamEvents test, only present so the constructor's now-required third
+// param resolves.
+const fakePrisma = { jobEvent: { findMany: jest.fn().mockResolvedValue([]) } };
 
 // JobEventsController streams a raw Response over an open connection — a
 // real end-to-end check needs a running docker-compose stack (worker +
@@ -48,7 +52,7 @@ describe('JobEventsController', () => {
   it('sets SSE headers and subscribes to the job-scoped Redis channel', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -64,7 +68,7 @@ describe('JobEventsController', () => {
   it('forwards a published message as an SSE stage frame', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -78,7 +82,7 @@ describe('JobEventsController', () => {
   it('closes the stream and releases the subscriber on a terminal stage', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -92,7 +96,7 @@ describe('JobEventsController', () => {
   it('closes the stream and releases the subscriber on a cancelled stage -- a cancel() must not leave the SSE connection dangling', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -106,7 +110,7 @@ describe('JobEventsController', () => {
   it('releases the subscriber when the client closes the connection', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -119,7 +123,7 @@ describe('JobEventsController', () => {
   it('registers an error listener on the subscriber to avoid unhandled EventEmitter throws', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -132,7 +136,7 @@ describe('JobEventsController', () => {
   it('runs cleanup exactly once even when the terminal-stage message and the close event both fire', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -150,7 +154,7 @@ describe('JobEventsController', () => {
     const subscriber = makeSubscriber();
     subscriber.get.mockResolvedValue(JSON.stringify({ stage: 'infer_hierarchy_start' }));
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -162,7 +166,7 @@ describe('JobEventsController', () => {
   it('writes no replay frame when no stage has been recorded yet', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -173,7 +177,7 @@ describe('JobEventsController', () => {
   it('forwards a narration-typed message as an SSE narration frame, without ending the stream', async () => {
     const subscriber = makeSubscriber();
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -193,7 +197,7 @@ describe('JobEventsController', () => {
       return Promise.resolve([]);
     });
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -212,7 +216,7 @@ describe('JobEventsController', () => {
     const second = JSON.stringify({ type: 'narration', phase: 'analyze_section', message: 'Analyzing section 1' });
     subscriber.lrange.mockResolvedValue([first, second]);
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await controller.streamEvents('job-1', res as any, TEST_USER);
@@ -229,7 +233,7 @@ describe('JobEventsController', () => {
     const subscriber = makeSubscriber();
     subscriber.subscribe.mockRejectedValue(new Error('connection refused'));
     const factory = jest.fn().mockReturnValue(subscriber);
-    const controller = new JobEventsController(factory as any, fakeJobsService as any);
+    const controller = new JobEventsController(factory as any, fakeJobsService as any, fakePrisma as any);
     const res = makeRes();
 
     await expect(controller.streamEvents('job-1', res as any, TEST_USER)).rejects.toThrow('connection refused');
@@ -238,5 +242,26 @@ describe('JobEventsController', () => {
     // res.on('close') should never have been registered — streamEvents
     // threw before reaching that point.
     expect(res.__handlers.close).toBeUndefined();
+  });
+
+  describe('getEventHistory', () => {
+    it('returns the persisted event history ordered oldest-first', async () => {
+      const rows = [{ id: 'e1', phase: 'parse_done', message: 'Finished parsing', createdAt: new Date('2026-08-04T11:32:00Z') }];
+      const prisma = { jobEvent: { findMany: jest.fn().mockResolvedValue(rows) } };
+      const factory = jest.fn();
+      const controller = new JobEventsController(factory as any, fakeJobsService as any, prisma as any);
+
+      const result = await controller.getEventHistory('job-1', TEST_USER);
+
+      expect(prisma.jobEvent.findMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' }, orderBy: { createdAt: 'asc' } });
+      expect(result).toBe(rows);
+    });
+
+    it('404s for a job the user does not own -- same convention as streamEvents', async () => {
+      const otherUserJobsService = { getById: jest.fn().mockResolvedValue({ userId: 'someone-else' }) };
+      const controller = new JobEventsController(jest.fn() as any, otherUserJobsService as any, fakePrisma as any);
+
+      await expect(controller.getEventHistory('job-1', TEST_USER)).rejects.toThrow('Job job-1 not found');
+    });
   });
 });

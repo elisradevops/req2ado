@@ -228,3 +228,150 @@ def test_high_similarity_with_no_stored_document_fails_open_ignoring_the_guard()
             vector_store=store,
         )
         assert result.is_duplicate is True
+
+
+# --- LLM verification pass (DuplicateJudgeClient) ----------------------------
+#
+# Closes a real false-positive risk: `all-minilm` (this codebase's
+# configured EMBED_MODEL) is a small, general-purpose embedding -- two
+# topically-adjacent but scopally distinct short phrases (e.g. "UART and
+# USB Ports" vs "USB Communication") can embed above threshold with no
+# numeric literal for the existing veto to catch. The judge only runs when
+# the embedding+numeric-veto pipeline already says duplicate, and only
+# when there's a real matched_document to judge against.
+
+
+class RecordingJudgeClient:
+    def __init__(self, verdict: str) -> None:
+        self.verdict = verdict
+        self.calls: list[tuple[str, str]] = []
+
+    def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
+        self.calls.append((candidate_text, matched_text))
+        return {"verdict": self.verdict}
+
+
+def test_judge_client_distinct_verdict_downgrades_an_embedding_match() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="BP_MEZ USB Communication protocol")
+
+        embed_client = FakeEmbedClient({"BP_MEZ UART and USB Ports": [1.0, 0.0]})
+        judge_client = RecordingJudgeClient("distinct")
+        result = check_for_duplicates(
+            text="BP_MEZ UART and USB Ports",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+            judge_client=judge_client,
+        )
+        assert result.is_duplicate is False
+        assert result.judge_verdict == "distinct"
+        assert judge_client.calls == [("BP_MEZ UART and USB Ports", "BP_MEZ USB Communication protocol")]
+
+
+def test_judge_client_redundant_verdict_keeps_the_duplicate_flag() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="shall support terrestrial broadcast")
+
+        embed_client = FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]})
+        judge_client = RecordingJudgeClient("redundant")
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+            judge_client=judge_client,
+        )
+        assert result.is_duplicate is True
+        assert result.judge_verdict == "redundant"
+
+
+def test_judge_client_contradictory_verdict_also_keeps_the_duplicate_flag() -> None:
+    # This call only answers "does this ADO item already exist" -- conflict
+    # semantics (differing values for the same parameter) are a SEPARATE
+    # concern (conflict_detection.py's within-job cluster judge), not this
+    # cross-job check's job.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="efficiency at least 87%")
+
+        embed_client = FakeEmbedClient({"minimum efficiency at least 87%": [1.0, 0.0]})
+        judge_client = RecordingJudgeClient("contradictory")
+        result = check_for_duplicates(
+            text="minimum efficiency at least 87%",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+            judge_client=judge_client,
+        )
+        assert result.is_duplicate is True
+        assert result.judge_verdict == "contradictory"
+
+
+def test_judge_client_exception_falls_back_to_the_embedding_only_verdict() -> None:
+    class RaisingJudgeClient:
+        def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
+            raise RuntimeError("LLM unreachable")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="shall support terrestrial broadcast")
+
+        embed_client = FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]})
+        result = check_for_duplicates(
+            text="shall support terrestrial broadcast input",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+            judge_client=RaisingJudgeClient(),
+        )
+        assert result.is_duplicate is True
+        assert result.judge_verdict is None
+
+
+def test_judge_client_is_never_called_when_the_embedding_itself_says_not_duplicate() -> None:
+    import math
+
+    theta = math.acos(0.89)
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="unrelated text")
+
+        embed_client = FakeEmbedClient({"candidate text": [math.cos(theta), math.sin(theta)]})
+        judge_client = RecordingJudgeClient("distinct")
+        result = check_for_duplicates(
+            text="candidate text",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+            judge_client=judge_client,
+        )
+        assert result.is_duplicate is False
+        assert result.judge_verdict is None
+        assert judge_client.calls == []
+
+
+def test_judge_client_is_never_called_when_the_numeric_veto_already_downgraded_the_match() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="at least 87%")
+
+        embed_client = FakeEmbedClient({"at least 93%": [1.0, 0.0]})
+        judge_client = RecordingJudgeClient("redundant")
+        result = check_for_duplicates(
+            text="at least 93%",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+            judge_client=judge_client,
+        )
+        assert result.is_duplicate is False
+        assert judge_client.calls == []

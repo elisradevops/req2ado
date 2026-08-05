@@ -35,6 +35,11 @@ describe('JobDetail', () => {
     vi.spyOn(jobsApi, 'getSummary').mockResolvedValue({
       created: 0, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [],
     });
+    // Default for every test -- fired unconditionally on mount for any
+    // terminal-status job (see JobDetail.tsx's event-history effect).
+    // Individual tests override this when they need to assert against a
+    // specific event-history payload (e.g. a job_failed detail panel).
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
   });
 
   it('renders an explicit failure screen for a failed job, not a blank diff', async () => {
@@ -207,6 +212,73 @@ describe('JobDetail', () => {
     expect(screen.getAllByText('spec.pdf').length).toBeGreaterThan(0);
   });
 
+  it('renders the FigureDescriptions panel from persisted figureDescriptions on a completed job, with no SSE activity at all', async () => {
+    // Regression: previously the panel was fed ONLY by live SSE narration
+    // (figureCaptionsByIndex), so reopening a completed job -- or reloading
+    // the page -- showed nothing even though the captions had already
+    // reached ADO. This must render from the job fetch alone.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-24',
+      status: 'succeeded',
+      mode: 'survey',
+      dryRunDiff: [],
+      createdAt: new Date().toISOString(),
+      figureDescriptions: [{ figureIndex: 1, caption: 'A block diagram showing power distribution.' }],
+    } as any);
+
+    renderAt('job-24');
+
+    await waitFor(() => expect(screen.getByText(/1 figure description/i)).toBeInTheDocument());
+    const userEvent = (await import('@testing-library/user-event')).default;
+    await userEvent.click(screen.getByText(/1 figure description/i));
+    expect(screen.getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
+  });
+
+  it('omits the FigureDescriptions panel entirely when the job has no persisted figure captions', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-25', status: 'succeeded', mode: 'baseline', dryRunDiff: [], createdAt: new Date().toISOString(),
+    } as any);
+
+    renderAt('job-25');
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: /diff/i })).toBeInTheDocument());
+    expect(screen.queryByText(/figure description/i)).not.toBeInTheDocument();
+  });
+
+  it('refetches the real work-item-type catalog when the SSE stream reaches diff_ready, not just status/diff', async () => {
+    // Regression: the mount-time fetch happens while the job is still
+    // running, when the backend's own catalog-resolve gate (dryRunDiff !=
+    // null) is false -- it always returns {}. The diff_ready refetch
+    // previously applied status/dryRunDiff but dropped workItemTypeCatalog
+    // on the floor, leaving every WorkItemTypeBadge on its hardcoded
+    // fallback icon for the rest of the page's lifetime.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce({ id: 'job-26', status: 'running', mode: 'baseline', dryRunDiff: null } as any)
+      .mockResolvedValueOnce({
+        id: 'job-26',
+        status: 'diff_ready',
+        dryRunDiff: [
+          { localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Root', description: '', action: 'create', customerId: null, tags: [] },
+        ],
+        workItemTypeCatalog: { Requirement: { color: '#009CCC', iconDataUrl: 'data:image/svg+xml;base64,AAA' } },
+      } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+      onStage('diff_ready');
+      return () => {};
+    });
+
+    const { container } = renderAt('job-26');
+
+    await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());
+    // A real catalog entry renders an <img> icon; the fallback renders an
+    // inline SVG icon component instead -- no <img> at all.
+    await waitFor(() => expect(container.querySelector('img')).toBeInTheDocument());
+  });
+
   it('gates the Confirm button on diff_ready status', async () => {
     vi.stubGlobal(
       'fetch',
@@ -308,7 +380,10 @@ describe('JobDetail', () => {
     await userEvent.click(screen.getByRole('button', { name: /^cancel run$/i, hidden: false }));
 
     await waitFor(() => expect(cancelSpy).toHaveBeenCalledWith('job-7'));
-    await waitFor(() => expect(screen.getByText(/cancelled/i)).toBeInTheDocument());
+    // getAllByText tolerates expected duplication -- the StatusChip AND the
+    // no-diff-produced EmptyState fallback (this job never reached
+    // diff_ready) both now say "cancelled" somewhere in their text.
+    await waitFor(() => expect(screen.getAllByText(/cancelled/i).length).toBeGreaterThan(0));
   });
 
   it('deletes a diff_ready job and navigates back to the jobs list on success', async () => {
@@ -404,6 +479,9 @@ describe('JobDetail', () => {
 
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(screen.getByRole('button', { name: /^confirm$/i }));
+    // The confirm-to-ADO dialog is irreversible -- its Confirm button stays
+    // disabled until the acknowledgement checkbox is ticked (DESIGN.md §7/§8).
+    await userEvent.click(screen.getByRole('checkbox', { name: /cannot be undone from req2ado/i }));
     await userEvent.click(screen.getByRole('button', { name: /confirm and write/i }));
 
     await waitFor(() => expect(screen.getByText(/confirmed — 3 work item\(s\) written/i)).toBeInTheDocument());
@@ -435,5 +513,86 @@ describe('JobDetail', () => {
 
     await waitFor(() => expect(screen.queryByText(/couldn't load this job/i)).not.toBeInTheDocument());
     expect(screen.getByText(/diff \(0\)/i)).toBeInTheDocument();
+  });
+
+  describe('state-driven layout (DESIGN.md Track B, phase B7)', () => {
+    it('renders no tabs and no filter textbox while running -- no dead space for a job still parsing/analyzing', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-20', status: 'running', dryRunDiff: null } as any);
+      renderAt('job-20');
+      await waitFor(() => expect(screen.getByRole('button', { name: /cancel run/i })).toBeInTheDocument());
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      expect(screen.queryByPlaceholderText(/filter by title/i)).not.toBeInTheDocument();
+    });
+
+    it('renders only the progress header while pending -- no tabs, no tiles, no filter bar', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-21', status: 'pending', dryRunDiff: null } as any);
+      renderAt('job-21');
+      await waitFor(() => expect(screen.getByText(/queued/i)).toBeInTheDocument());
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      expect(screen.queryByPlaceholderText(/filter by title/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('New')).not.toBeInTheDocument();
+    });
+
+    it('does not render the "Cancelled before a diff was produced" panel while a job is actually running', async () => {
+      // Real bug this guards against (confirmed live): shouldShowTabs
+      // returns false for a running job too, before its first diff/audit
+      // fetch (diff.length and audit.length both still 0 at that point) --
+      // not just cancelled/failed. Without the isRunDetailStatus guard, a
+      // job actively ticking through Analyze in the live ProgressBanner
+      // ALSO rendered "Cancelled before a diff was produced" underneath it
+      // at the same time -- a running job simultaneously showing
+      // cancelled-state UI.
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-running-no-diff', status: 'running', mode: 'survey', dryRunDiff: null,
+      } as any);
+      renderAt('job-running-no-diff');
+      await waitFor(() => expect(screen.getAllByText(/running/i).length).toBeGreaterThan(0));
+      expect(screen.queryByText('Cancelled before a diff was produced')).not.toBeInTheDocument();
+      expect(screen.queryByText('No diff was produced')).not.toBeInTheDocument();
+    });
+
+    it('renders tabs and tiles, but no run-detail panel, once diff_ready', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-22',
+        status: 'diff_ready',
+        areaPath: 'Project\\Area1',
+        dryRunDiff: [{ localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Row one', description: '', action: 'create', customerId: null, tags: [] }],
+      } as any);
+      renderAt('job-22');
+      await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
+      // "New" also matches the filter Select's <option> -- getAllByText
+      // tolerates that expected duplication (the StatTile label is the
+      // second match).
+      expect(screen.getAllByText('New').length).toBeGreaterThan(1);
+      // ProgressBanner (the RunDetail panel) only ever renders for
+      // running/writing -- diff_ready is a human decision point, not a
+      // running process.
+      expect(screen.queryByText(/you can close this page/i)).not.toBeInTheDocument();
+    });
+
+    it('renders the frozen stepper and the no-diff-produced fallback for a failed job, folded into the main tree', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-23', status: 'failed', mode: 'survey', dryRunDiff: null } as any);
+      renderAt('job-23');
+      // The old dedicated "Job Failed" early-return screen is gone -- this
+      // now goes through the SAME JobLifecycleSteps + NarrationTicker every
+      // other status does, plus the no-diff EmptyState fallback (no tabs,
+      // since a failed job never reached diff_ready).
+      await waitFor(() => expect(screen.getByText('No diff was produced')).toBeInTheDocument());
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /view audit/i })).toBeInTheDocument();
+    });
+
+    it('renders the Write step as skipped, not pending, for a rejected job', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-24',
+        status: 'rejected',
+        mode: 'survey',
+        dryRunDiff: [{ localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Row one', description: '', action: 'create', customerId: null, tags: [] }],
+      } as any);
+      renderAt('job-24');
+      await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
+      const writeStep = screen.getByText('Write').closest('li')?.querySelector('[data-state]');
+      expect(writeStep).toHaveAttribute('data-state', 'skipped');
+    });
   });
 });

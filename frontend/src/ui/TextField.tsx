@@ -2,7 +2,7 @@ import { forwardRef, useId, type InputHTMLAttributes, type TextareaHTMLAttribute
 import { cn } from '../lib/cn';
 
 const FIELD_CLASSES =
-  'w-full rounded-sm border border-hairline-strong bg-surface px-2.5 py-1.5 text-sm text-ink-1 placeholder:text-ink-3 focus:border-navy-600 focus:outline-none focus:ring-[3px] focus:ring-signal/40 disabled:bg-canvas disabled:text-ink-3';
+  'w-full rounded-sm border border-field-border bg-surface px-2.5 py-1.5 text-sm text-ink-1 placeholder:text-ink-3 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-danger disabled:bg-canvas disabled:text-ink-3';
 
 interface FieldWrapperProps {
   label?: string;
@@ -28,7 +28,7 @@ export const TextField = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLIn
         {(label || labelExtra) && (
           <div className="flex items-center justify-between gap-1.5">
             {label && (
-              <label htmlFor={fieldId} className="text-[11.5px] font-semibold uppercase tracking-wide text-ink-2">
+              <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
                 {label}
               </label>
             )}
@@ -49,7 +49,7 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
     return (
       <div className={cn('flex flex-col gap-1.5', fullWidth && 'w-full')}>
         {label && (
-          <label htmlFor={fieldId} className="text-[11.5px] font-semibold uppercase tracking-wide text-ink-2">
+          <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
             {label}
           </label>
         )}

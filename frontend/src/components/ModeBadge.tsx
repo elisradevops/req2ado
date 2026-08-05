@@ -9,7 +9,7 @@ import { MODE_COPY } from './ModeCards';
 export function ModeBadge({ mode }: { mode: 'baseline' | 'survey' }): React.ReactElement {
   return (
     <Tooltip content={MODE_COPY[mode].description}>
-      <Chip className="border border-navy-300/60 font-mono text-[10.5px] tracking-wide text-navy-600" bg="transparent">
+      <Chip className="border border-accent-soft-border/60 font-mono text-micro tracking-wide text-accent" bg="transparent">
         {mode === 'survey' ? 'SURVEY' : 'BASELINE'}
       </Chip>
     </Tooltip>

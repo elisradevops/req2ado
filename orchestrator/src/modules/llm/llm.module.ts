@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LlmController } from './llm.controller';
+import { LlmStatusController } from './llm-status.controller';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClient } from './openwebui.client';
 
 @Module({
   imports: [ConfigModule],
-  controllers: [LlmController],
+  controllers: [LlmController, LlmStatusController],
   providers: [
     LlmProxyBearerGuard,
     {
@@ -23,6 +24,7 @@ import { OpenWebUiClient } from './openwebui.client';
           EMBED_BASE_URL: config.get<string>('EMBED_BASE_URL'),
           EMBED_MODEL: config.get<string>('EMBED_MODEL')!,
           EMBED_PATH: config.get<string>('EMBED_PATH')!,
+          SHOW_PATH: config.get<string>('SHOW_PATH')!,
         }),
     },
   ],

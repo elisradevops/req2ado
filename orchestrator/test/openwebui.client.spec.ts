@@ -14,6 +14,7 @@ describe('OpenWebUiClient', () => {
     EMBED_BASE_URL: undefined,
     EMBED_MODEL: 'nomic-embed-text',
     EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
   };
 
   it('redacts messages before sending, by default', async () => {
@@ -297,6 +298,35 @@ describe('OpenWebUiClient', () => {
     expect(models).toEqual(['llama3.1', 'qwen2.5:14b']);
   });
 
+  it('checkHealth reports reachable with a real latency when the backend responds', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeList = jest.fn().mockResolvedValue({ data: [] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.models.list = fakeList;
+
+    const result = await client.checkHealth();
+
+    expect(result.status).toBe('reachable');
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    // A short, explicit per-call timeout -- unlike every other call in this
+    // client, which relies on the SDK's own much longer default -- so an
+    // unreachable backend fails fast instead of leaving the UI's status dot
+    // spinning for minutes.
+    expect(fakeList).toHaveBeenCalledWith({ timeout: 5000 });
+  });
+
+  it('checkHealth reports unreachable, not a thrown error, when the backend call fails', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeList = jest.fn().mockRejectedValue(new Error('connection refused'));
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.models.list = fakeList;
+
+    const result = await client.checkHealth();
+
+    expect(result.status).toBe('unreachable');
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
   it('passes an explicit model through when provided, overriding LLM_CHAT_MODEL', async () => {
     const client = new OpenWebUiClient(config);
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
@@ -379,6 +409,7 @@ describe('OpenWebUiClient', () => {
       temperature: 0,
       seed: 0,
       max_tokens: 200,
+      reasoning_effort: 'none',
     });
   });
 
@@ -450,6 +481,23 @@ describe('OpenWebUiClient', () => {
     const sentContent = fakeCreate.mock.calls[0][0].messages[0].content;
     expect(sentContent[1].image_url.url).toMatch(/^data:image\/png;base64,/);
   });
+
+  it('vision() unconditionally disables reasoning -- a thinking-capable model must not burn max_tokens on chain-of-thought before any caption content', async () => {
+    // Real, 100%-reproducible bug this guards against (confirmed live):
+    // gemma4:e4b (a real deployed vision model reporting a "thinking"
+    // capability) consumed its entire max_tokens budget on internal
+    // reasoning tokens, leaving message.content genuinely empty for every
+    // single figure in a real document -- "no useful caption returned"
+    // for figures that unambiguously have real technical content.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'gemma4:e4b' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'A wiring diagram.' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('img')]);
+
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ reasoning_effort: 'none' }));
+  });
 });
 
 describe('OpenWebUiClient.embed (ollama transport)', () => {
@@ -462,6 +510,7 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     EMBED_BASE_URL: undefined,
     EMBED_MODEL: 'nomic-embed-text',
     EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
   };
 
   beforeEach(() => {
@@ -492,6 +541,24 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     await client.embed(['text']);
     const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
     expect(calledUrl).toBe('http://localhost:11434/api/embed');
+  });
+
+  it('sends an Authorization bearer header when LLM_API_KEY is set -- real Open WebUI 401s without one, unlike raw Ollama', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ embeddings: [[0.1]] }) });
+    const client = new OpenWebUiClient({ ...config, LLM_API_KEY: 'sk-real-key' });
+    await client.embed(['text']);
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer sk-real-key' }) }),
+    );
+  });
+
+  it('omits the Authorization header entirely when LLM_API_KEY is unset', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ embeddings: [[0.1]] }) });
+    const client = new OpenWebUiClient({ ...config, LLM_API_KEY: undefined });
+    await client.embed(['text']);
+    const headers = (global.fetch as jest.Mock).mock.calls[0][1].headers;
+    expect(headers).not.toHaveProperty('Authorization');
   });
 
   it('uses EMBED_BASE_URL directly when set, overriding the LLM_BASE_URL fallback', async () => {
@@ -529,5 +596,89 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     await client.embed(['text']);
     const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
     expect(calledUrl).toBe('http://localhost:11434/ollama/api/embed');
+  });
+});
+
+describe('OpenWebUiClient.showModel', () => {
+  const config = {
+    LLM_BASE_URL: 'http://localhost:11434/v1',
+    LLM_API_KEY: undefined,
+    LLM_CHAT_MODEL: 'llama3.1',
+    LLM_TRUSTED_LOCAL: false,
+    EMBED_TRANSPORT: 'ollama' as const,
+    EMBED_BASE_URL: undefined,
+    EMBED_MODEL: 'nomic-embed-text',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it('calls the native Ollama /api/show endpoint with {model}, stripping /v1 same as embed()', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ capabilities: ['completion', 'tools'], model_info: { 'general.architecture': 'qwen3', 'qwen3.context_length': 32768 } }),
+    });
+
+    const client = new OpenWebUiClient(config);
+    await client.showModel('qwen3.6:35b');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:11434/api/show',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ model: 'qwen3.6:35b' }) }),
+    );
+  });
+
+  it('uses SHOW_PATH when set to the Open WebUI proxy path -- a bare /api/show 405s on real Open WebUI', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ capabilities: [] }) });
+    const client = new OpenWebUiClient({ ...config, SHOW_PATH: '/ollama/api/show' });
+    await client.showModel('qwen3.6:35b');
+    const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
+    expect(calledUrl).toBe('http://localhost:11434/ollama/api/show');
+  });
+
+  it('sends an Authorization bearer header when LLM_API_KEY is set', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ capabilities: [] }) });
+    const client = new OpenWebUiClient({ ...config, LLM_API_KEY: 'sk-real-key' });
+    await client.showModel('qwen3.6:35b');
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer sk-real-key' }) }),
+    );
+  });
+
+  it('reads context length from the architecture-prefixed model_info key', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ capabilities: ['completion', 'tools', 'vision'], model_info: { 'general.architecture': 'gemma3', 'gemma3.context_length': 131072 } }),
+    });
+    const client = new OpenWebUiClient(config);
+    const result = await client.showModel('gemma4:12b');
+    expect(result).toEqual({ contextLength: 131072, capabilities: ['completion', 'tools', 'vision'] });
+  });
+
+  it('returns contextLength: null when model_info is missing entirely -- never throws on an absent field', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ capabilities: ['completion'] }) });
+    const client = new OpenWebUiClient(config);
+    const result = await client.showModel('unknown-model');
+    expect(result).toEqual({ contextLength: null, capabilities: ['completion'] });
+  });
+
+  it('returns contextLength: null when the architecture key exists but the context_length key for it does not', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ capabilities: [], model_info: { 'general.architecture': 'mystery-arch' } }),
+    });
+    const client = new OpenWebUiClient(config);
+    const result = await client.showModel('mystery-model');
+    expect(result.contextLength).toBeNull();
+  });
+
+  it('throws on a non-ok response -- lets the caller (ingestion) fall back to its static default', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404 });
+    const client = new OpenWebUiClient(config);
+    await expect(client.showModel('nonexistent')).rejects.toThrow(/show.*404/i);
   });
 });

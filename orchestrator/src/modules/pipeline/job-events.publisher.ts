@@ -39,6 +39,10 @@ export interface OrchestratorNarration {
   // trace-link) with no signal today distinguishing which one is running;
   // null for 'dedup_check', which has only one sub-phase.
   writeSubPhase?: 'discover_types' | 'create' | 'link_parents' | 'trace_links' | null;
+  // 'dedup_check' only -- the node that just finished its idempotency/dedup
+  // lookup, so the UI can show which actual item is involved instead of
+  // just a bare N-of-M count.
+  currentTitle?: string;
   message: string;
 }
 
@@ -74,7 +78,14 @@ export class JobEventsPublisher {
   constructor(private readonly redis: Redis) {}
 
   async publish(jobId: string, stage: JobStage): Promise<void> {
-    const payload = JSON.stringify({ stage });
+    // Real gap this closes: JobEventPersistenceService's own
+    // backfillMissedEvents() has no way to know when an event ACTUALLY
+    // happened versus when it got persisted -- a backfill sweep run long
+    // after the fact was inserting rows stamped with the insertion time,
+    // making a long-dead job look recently active to the stale-job
+    // watchdog. This is the one place a stage transition's real origin time
+    // can be captured, at the moment it's actually emitted.
+    const payload = JSON.stringify({ stage, emittedAt: new Date().toISOString() });
     // Pub/sub only reaches subscribers connected AT THE MOMENT of publish --
     // a client that opens the SSE stream after this event (e.g. the user
     // left the job page mid-run and came back) would otherwise see nothing
@@ -106,6 +117,7 @@ export class JobEventsPublisher {
       branchCount: 0,
       kbGrounded: false,
       kbCitations: [],
+      emittedAt: new Date().toISOString(),
       ...narration,
     });
     // A bounded LIST (not the old single-key SET-overwrite) so a

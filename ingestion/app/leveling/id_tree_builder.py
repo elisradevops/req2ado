@@ -27,6 +27,7 @@ from app.canonical.model import SourceRef
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.id_hierarchy import HierarchyRow
+from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.leveling.tree_builder import _hash_description
 from app.workitem.model import RequirementTag, WorkItemMode, WorkItemNode, WorkItemType
 
@@ -103,18 +104,44 @@ def _apply_title_tag_pass(
     leaf_node_ids: list[str],
     title_tag_client: TitleTagClient,
     warnings: list[str],
+    progress_callback: ProgressCallback | None = None,
+    subtree_index: int | None = None,
+    subtree_count: int | None = None,
+    subtree_label_prefix: str | None = None,
 ) -> None:
     """Fail-open: any exception leaves every node's deterministic title
     and empty tags exactly as constructed -- the batched call is a pure
     enhancement, never a dependency. Chunked so a large document (e.g.
     hundreds of AirPro-style leaves) doesn't risk the same bounded-
     response-size problems this codebase's own schema module documents
-    for large single calls."""
+    for large single calls.
+
+    Real gap this closes (confirmed live, AirPro document): a subtree with
+    enough leaves to need >1 chunk (or even just ONE genuinely slow chunk on
+    a big model) previously had no narration between chunks at all --
+    _detect_deterministic_subtrees's own kickoff event fires once per
+    SUBTREE, before this loop even starts, and stays frozen for however long
+    every chunk inside it takes. Firing here, per chunk, closes that."""
     if not leaf_node_ids:
         return
     by_id = {n.local_id: n for n in nodes}
+    total_chunks = -(-len(leaf_node_ids) // _TITLE_TAG_CHUNK_SIZE)  # ceil division, no float rounding
     for start in range(0, len(leaf_node_ids), _TITLE_TAG_CHUNK_SIZE):
         chunk_ids = leaf_node_ids[start : start + _TITLE_TAG_CHUNK_SIZE]
+        if progress_callback is not None:
+            chunk_num = start // _TITLE_TAG_CHUNK_SIZE + 1
+            label_prefix = f"{subtree_label_prefix} -- " if subtree_label_prefix else ""
+            progress_callback(
+                LevelingProgress(
+                    phase="deterministic_subtree", branch_index=None, branch_count=0,
+                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    subtree_index=subtree_index, subtree_count=subtree_count,
+                    subtree_label=(
+                        f"{label_prefix}enhancing titles/tags for {len(chunk_ids)} node(s) "
+                        f"(chunk {chunk_num} of {total_chunks})"
+                    ),
+                )
+            )
         texts_by_id = {node_id: by_id[node_id].description for node_id in chunk_ids}
         try:
             result = title_tag_client.title_and_tags_for_rows(texts_by_id)
@@ -145,6 +172,200 @@ def _apply_title_tag_pass(
                 node.tags = [RequirementTag(t) for t in raw_tags if t in _VALID_TAGS]
 
 
+class ParentSummaryClient(Protocol):
+    """Optional, narrow LLM capability for Epic/Feature (container) nodes --
+    distinct from TitleTagClient above, which only ever touches Requirement
+    leaves. Without this, an Epic/Feature's title AND description are both
+    `extract_baseline_title(heading_text)` -- a VERBATIM copy of the
+    source document's own section heading, identical to each other
+    (confirmed real gap, live: "Controls:", "Over 28V VDC input" read as
+    section titles, not ADO's own Epic/Feature framing -- a portfolio-level
+    strategic goal / a capability delivering direct user value,
+    respectively). Given every id -> {title, requirement_titles,
+    requirement_descriptions} (see _apply_parent_summary_pass's own
+    docstring for what those two lists actually contain -- NOT just direct
+    children), returns a distinct, synthesized {title, description} per
+    id. One batched call for every Epic/Feature in the document at once
+    (not per node), same "one call per whole unit of work" principle as
+    TitleTagClient."""
+
+    def summarize_parent_nodes(self, nodes_by_id: dict[str, dict]) -> dict[str, dict]: ...
+
+
+_PARENT_SUMMARY_CHUNK_SIZE = 150
+# Same rough estimate this codebase already uses for its other token-budget
+# gates (llm_leveling.py's own _CHARS_PER_TOKEN_ESTIMATE) -- kept as an
+# independent constant here rather than imported, since llm_leveling.py
+# imports FROM this module (id_tree_builder.py sits lower in the
+# dependency graph); importing back would be circular.
+_CHARS_PER_TOKEN_ESTIMATE = 4
+# Real gap this closes: a parent's rollup payload (see
+# _collect_descendant_requirement_texts) grows with its SUBTREE size, not
+# a fixed per-item size like TitleTagClient/SynthesisClient's inputs --
+# _PARENT_SUMMARY_CHUNK_SIZE alone (a plain node-COUNT cap) does nothing
+# to bound that. Confirmed on a real 554-node AirPro job: 126 Epic/Feature
+# nodes fit in one node-count chunk, but their combined rollup payload was
+# ~184KB (~46K estimated tokens) -- a single call that size is a real
+# latency/reliability risk (this codebase's own coverage_budget_tokens
+# fix exists for the identical class of problem on the analyze_section
+# path). Deliberately conservative for a local model's real context
+# window, same order of magnitude as llm_leveling.py's own per-call
+# budgets.
+_PARENT_SUMMARY_TOKEN_BUDGET = 6_000
+
+
+def _estimate_parent_payload_tokens(payload: dict) -> int:
+    text = payload["title"] + "".join(payload["requirement_titles"]) + "".join(payload["requirement_descriptions"])
+    return len(text) // _CHARS_PER_TOKEN_ESTIMATE
+
+
+def _collect_descendant_requirement_texts(
+    node_id: str,
+    children_by_parent: dict[str, list[str]],
+    by_id: dict[str, WorkItemNode],
+) -> list[tuple[str, str]]:
+    """Walks EVERY descendant of `node_id` (not just direct children) and
+    returns (title, description) for each REQUIREMENT-type leaf found,
+    document order. Real gap this closes: the spec's own hierarchy rule
+    allows arbitrary nesting at every tier ("a Requirement MAY be a child
+    of a Requirement (sub-Req)... an Epic child of an Epic (sub-Epic)",
+    see id_hierarchy.classify_by_nesting's own docstring) -- an Epic whose
+    direct child is a Requirement that ITSELF has nested sub-Requirement
+    children would otherwise only ever see that one direct child's own
+    text, never the grandchildren buried underneath it. Recursing through
+    every descendant regardless of type (Epic/Feature/Requirement) and
+    collecting only the REQUIREMENT leaves' real text is both correct
+    (nothing nested is invisible) and gives every Epic/Feature a
+    consistent payload built from raw leaf content, not from a sibling
+    parent's own (possibly not-yet-summarized) title -- which is what
+    lets every Epic/Feature in the whole document be summarized in ONE
+    unordered pass, with no Feature-before-Epic (or nested-Epic depth)
+    ordering dependency at all.
+
+    `seen` guards against a cycle -- same defensive pattern as this
+    module's own _nearest_producing_ancestor/_parent_chain_context,
+    though build_hierarchy_subtree's construction never produces one."""
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def _walk(current_id: str) -> None:
+        if current_id in seen:
+            return
+        seen.add(current_id)
+        for child_id in children_by_parent.get(current_id, []):
+            child = by_id[child_id]
+            if child.type == WorkItemType.REQUIREMENT:
+                results.append((child.title, child.description))
+            _walk(child_id)
+
+    _walk(node_id)
+    return results
+
+
+def _apply_parent_summary_pass(
+    nodes: list[WorkItemNode],
+    parent_node_ids: list[str],
+    client: ParentSummaryClient,
+    warnings: list[str],
+    token_budget: int = _PARENT_SUMMARY_TOKEN_BUDGET,
+) -> None:
+    """Fail-open, same convention as `_apply_title_tag_pass`/
+    `_apply_synthesis_pass`: any exception or missing/malformed response
+    entry leaves that node's existing (verbatim heading) title/description
+    exactly as constructed -- this is a pure enhancement, never a
+    dependency of the deterministic path's own correctness.
+
+    `parent_node_ids` (every Epic/Feature in the document, any order --
+    see _collect_descendant_requirement_texts for why order doesn't
+    matter here) gets `requirement_titles`/`requirement_descriptions`
+    built from EVERY descendant Requirement leaf, however deeply nested,
+    not just direct children -- correct for both real nesting shapes the
+    spec allows: a Requirement with its own nested sub-Requirements
+    (grandchildren an Epic would otherwise never see), and an Epic nested
+    under another Epic (each gets its own full descendant rollup
+    independently, so there is no dependency on a sibling/ancestor
+    Epic/Feature having already been summarized).
+
+    Chunked GREEDILY by running estimated token total against
+    `token_budget` (default `_PARENT_SUMMARY_TOKEN_BUDGET`, a fixed
+    conservative constant -- the caller may instead pass a real per-model
+    derived budget, see llm_leveling._apply_det_parent_summary), not a
+    fixed node-count slice -- a parent with a large subtree rollup can
+    alone approach or exceed the budget; it still goes out whole, alone
+    in its own chunk (never split, never truncated -- completeness over
+    cost here), it just doesn't get to share a call with any other
+    parent. Every parent is still sent exactly once; this only changes
+    how many calls that takes, never what's covered.
+    _PARENT_SUMMARY_CHUNK_SIZE (item count) still applies as a secondary
+    ceiling, same "safety net regardless of token footprint" relationship
+    _bound_branch_size has to coverage_budget_tokens's own budget-merge."""
+    if not parent_node_ids:
+        return
+    by_id = {n.local_id: n for n in nodes}
+    children_by_parent: dict[str, list[str]] = {}
+    for n in nodes:
+        if n.parent_local_id is not None:
+            children_by_parent.setdefault(n.parent_local_id, []).append(n.local_id)
+
+    payload_by_id: dict[str, dict] = {}
+    for node_id in parent_node_ids:
+        requirement_texts = _collect_descendant_requirement_texts(node_id, children_by_parent, by_id)
+        payload_by_id[node_id] = {
+            "title": by_id[node_id].title,
+            "requirement_titles": [title for title, _ in requirement_texts],
+            "requirement_descriptions": [description for _, description in requirement_texts],
+        }
+
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    current_tokens = 0
+    for node_id in parent_node_ids:
+        node_tokens = _estimate_parent_payload_tokens(payload_by_id[node_id])
+        would_exceed_budget = current and current_tokens + node_tokens > token_budget
+        would_exceed_count = len(current) >= _PARENT_SUMMARY_CHUNK_SIZE
+        if current and (would_exceed_budget or would_exceed_count):
+            chunks.append(current)
+            current = []
+            current_tokens = 0
+        current.append(node_id)
+        current_tokens += node_tokens
+    if current:
+        chunks.append(current)
+
+    for chunk_ids in chunks:
+        nodes_by_id_payload = {node_id: payload_by_id[node_id] for node_id in chunk_ids}
+        try:
+            result = client.summarize_parent_nodes(nodes_by_id_payload)
+        except Exception as exc:
+            message = (
+                f"Parent title/description enhancement call failed for {len(chunk_ids)} "
+                f"deterministic Epic/Feature node(s) -- kept their verbatim heading title "
+                f"and description: {exc}"
+            )
+            warnings.append(message)
+            continue
+
+        missing = [node_id for node_id in chunk_ids if node_id not in result]
+        if missing:
+            warnings.append(
+                f"Parent title/description enhancement response omitted {len(missing)} of "
+                f"{len(chunk_ids)} requested node(s) -- those kept their verbatim heading "
+                "title and description."
+            )
+        for node_id in chunk_ids:
+            entry = result.get(node_id)
+            if not entry:
+                continue
+            node = by_id[node_id]
+            raw_title = entry.get("title")
+            raw_description = entry.get("description")
+            if isinstance(raw_title, str) and raw_title.strip():
+                node.title = raw_title.strip()
+            if isinstance(raw_description, str) and raw_description.strip():
+                node.description = raw_description.strip()
+                node.fidelity_hash = _hash_description(node.description)
+
+
 class SynthesisClient(Protocol):
     """Optional, narrow LLM capability for the per-root-subtree fragment
     gate (see id_hierarchy.HierarchyRow.needs_synthesis's own docstring):
@@ -167,6 +388,10 @@ def _apply_synthesis_pass(
     leaf_node_ids: list[str],
     synthesis_client: SynthesisClient,
     warnings: list[str],
+    progress_callback: ProgressCallback | None = None,
+    subtree_index: int | None = None,
+    subtree_count: int | None = None,
+    subtree_label_prefix: str | None = None,
 ) -> None:
     """Fail-open, same convention as `_apply_title_tag_pass`: any exception
     or malformed/partial response leaves a flagged node's verbatim
@@ -203,8 +428,23 @@ def _apply_synthesis_pass(
             current = ancestor.parent_local_id
         return " > ".join(reversed(labels))
 
+    total_chunks = -(-len(leaf_node_ids) // _SYNTHESIS_CHUNK_SIZE)  # ceil division, no float rounding
     for start in range(0, len(leaf_node_ids), _SYNTHESIS_CHUNK_SIZE):
         chunk_ids = leaf_node_ids[start : start + _SYNTHESIS_CHUNK_SIZE]
+        if progress_callback is not None:
+            chunk_num = start // _SYNTHESIS_CHUNK_SIZE + 1
+            label_prefix = f"{subtree_label_prefix} -- " if subtree_label_prefix else ""
+            progress_callback(
+                LevelingProgress(
+                    phase="deterministic_subtree", branch_index=None, branch_count=0,
+                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    subtree_index=subtree_index, subtree_count=subtree_count,
+                    subtree_label=(
+                        f"{label_prefix}synthesizing requirement text for {len(chunk_ids)} node(s) "
+                        f"(chunk {chunk_num} of {total_chunks})"
+                    ),
+                )
+            )
         items_by_id = {
             node_id: {
                 "text": original_text_by_id[node_id],
@@ -253,6 +493,10 @@ def build_hierarchy_subtree(
     customer_id: str | None,
     title_tag_client: TitleTagClient | None = None,
     synthesis_client: SynthesisClient | None = None,
+    progress_callback: ProgressCallback | None = None,
+    subtree_index: int | None = None,
+    subtree_count: int | None = None,
+    subtree_label: str | None = None,
 ) -> tuple[list[WorkItemNode], list[str]]:
     """Constructs real WorkItemNodes from an already-hierarchy-resolved
     `rows` list (see `id_hierarchy.HierarchyRow`'s own docstring -- every
@@ -410,12 +654,28 @@ def build_hierarchy_subtree(
             for i, row in enumerate(rows)
             if row.needs_synthesis and i in node_index_by_row
         ]
-        _apply_synthesis_pass(nodes, synthesis_leaf_ids, synthesis_client, warnings)
+        _apply_synthesis_pass(
+            nodes, synthesis_leaf_ids, synthesis_client, warnings,
+            progress_callback=progress_callback, subtree_index=subtree_index,
+            subtree_count=subtree_count, subtree_label_prefix=subtree_label,
+        )
         synthesized_ids = set(synthesis_leaf_ids)
 
     if title_tag_client is not None:
         leaf_node_ids = [node_id for node_id in requirement_leaf_ids if node_id not in synthesized_ids]
-        _apply_title_tag_pass(nodes, leaf_node_ids, title_tag_client, warnings)
+        _apply_title_tag_pass(
+            nodes, leaf_node_ids, title_tag_client, warnings,
+            progress_callback=progress_callback, subtree_index=subtree_index,
+            subtree_count=subtree_count, subtree_label_prefix=subtree_label,
+        )
+
+    # parent_summary_client (Epic/Feature title+description enhancement) is
+    # deliberately NOT run here -- the caller's own _repair_requirement_hierarchy
+    # (run AFTER this function returns, per its own call-site comment) can
+    # still re-parent a node, which would leave a parent's summary based on
+    # a child set that's about to change. See _detect_deterministic_subtrees,
+    # which runs _apply_parent_summary_pass once, after every subtree's own
+    # repair has already settled the FINAL parent/child structure.
 
     return nodes, warnings
 

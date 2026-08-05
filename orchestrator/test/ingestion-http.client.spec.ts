@@ -268,6 +268,7 @@ describe('IngestionHttpClient.ingestUrl', () => {
           user_id: 'Project\\Area1',
           doc_type: 'SRD',
           graph_token: null,
+          retrieval_mode: null,
         }),
       }),
     );
@@ -279,6 +280,33 @@ describe('IngestionHttpClient.ingestUrl', () => {
       chunksStored: 3,
       skippedUnchanged: false,
     });
+  });
+
+  it('forwards retrievalMode as retrieval_mode in the request body', async () => {
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        document_name: 'standards.docx', driveitem_id: 'drive-2', mime_type: null,
+        size_bytes: 10, chunks_stored: 1, skipped_unchanged: false,
+      }),
+    });
+    global.fetch = mockFetch as any;
+
+    const client = new IngestionHttpClient('http://ingestion:8000');
+    await client.ingestUrl('https://contoso.sharepoint.com/sites/s/standards.docx', 'Project\\Area1', null, null, 'always_include');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://ingestion:8000/kb/ingest-url',
+      expect.objectContaining({
+        body: JSON.stringify({
+          url: 'https://contoso.sharepoint.com/sites/s/standards.docx',
+          user_id: 'Project\\Area1',
+          doc_type: null,
+          graph_token: null,
+          retrieval_mode: 'always_include',
+        }),
+      }),
+    );
   });
 
   it('throws an IngestionHttpError carrying the status on a non-ok response', async () => {

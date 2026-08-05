@@ -7,11 +7,14 @@ import { Tooltip } from '../ui/Tooltip';
 import { useToast } from './ToastProvider';
 import { cn } from '../lib/cn';
 
-function formatSize(bytes: number): string {
+// Exported so KbFileList.tsx (KnowledgeBase's center pane, DESIGN.md
+// Track B phase B10) can render the same size/extension formatting for its
+// own flat, non-recursive file rows without duplicating this logic.
+export function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
 }
 
-function extensionOf(name: string): string {
+export function extensionOf(name: string): string {
   const dot = name.lastIndexOf('.');
   return dot === -1 ? '' : name.slice(dot + 1);
 }
@@ -28,6 +31,9 @@ function FolderTreeNode({
   userId,
   depth,
   onRequestRemove,
+  foldersOnly,
+  selectedFolderId,
+  onSelectFolder,
 }: {
   entry: FolderTreeEntry;
   path: string;
@@ -38,6 +44,13 @@ function FolderTreeNode({
   // confirming inline here, so there's exactly one remove-confirmation
   // pattern in the app instead of two.
   onRequestRemove: (documentId: string, name: string) => void;
+  // Explorer left-pane mode (KnowledgeBase.tsx's three-pane layout) --
+  // hides file rows and their ingest/remove affordances entirely, since
+  // this pane is pure folder navigation; the selected folder's own files
+  // render in the center pane instead.
+  foldersOnly?: boolean;
+  selectedFolderId?: string | null;
+  onSelectFolder?: (entry: FolderTreeEntry, path: string) => void;
 }): React.ReactElement {
   const { showToast } = useToast();
   const [expanded, setExpanded] = useState(false);
@@ -54,6 +67,7 @@ function FolderTreeNode({
 
   async function toggle(): Promise<void> {
     if (!entry.isFolder) return;
+    onSelectFolder?.(entry, path);
     if (expanded) {
       setExpanded(false);
       return;
@@ -99,7 +113,11 @@ function FolderTreeNode({
             void toggle();
           }
         }}
-        className={cn('flex w-full items-center gap-1.5 rounded-sm py-1 pr-2 text-left text-sm hover:bg-canvas', !entry.isFolder && 'cursor-default')}
+        className={cn(
+          'flex w-full items-center gap-1.5 rounded-sm py-1 pr-2 text-left text-sm transition-colors duration-instant hover:bg-accent-soft',
+          !entry.isFolder && 'cursor-default',
+          entry.isFolder && selectedFolderId === entry.id && 'bg-accent-soft font-medium text-accent-ink',
+        )}
         style={{ paddingLeft: `${depth * 18 + 4}px` }}
       >
         {entry.isFolder ? (
@@ -110,11 +128,11 @@ function FolderTreeNode({
         {entry.isFolder ? (
           <Folder className="h-3.5 w-3.5 flex-none text-ink-3" />
         ) : (
-          <FileTypeIcon extension={extensionOf(entry.name)} className="h-4 w-4 rounded-[3px]" />
+          <FileTypeIcon extension={extensionOf(entry.name)} className="h-4 w-4 rounded-sm" />
         )}
         <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-        {!entry.isFolder && <span className="flex-none font-mono text-xs text-ink-3">{formatSize(entry.sizeBytes)}</span>}
-        {!entry.isFolder && (
+        {!foldersOnly && !entry.isFolder && <span className="flex-none font-mono text-xs text-ink-3">{formatSize(entry.sizeBytes)}</span>}
+        {!foldersOnly && !entry.isFolder && (
           <span onClick={(e) => e.stopPropagation()} className="flex-none">
             {ingested ? (
               <Tooltip content="Remove from your knowledge base">
@@ -134,7 +152,7 @@ function FolderTreeNode({
                   aria-label={`Add ${entry.name} to the knowledge base`}
                   disabled={isIngesting}
                   onClick={handleIngest}
-                  className="grid h-6 w-6 place-items-center rounded-sm text-ink-3 transition-colors hover:bg-[#EEF3FC] hover:text-navy-600 disabled:opacity-50"
+                  className="grid h-6 w-6 place-items-center rounded-sm text-ink-3 transition-colors hover:bg-[#EEF3FC] hover:text-accent disabled:opacity-50"
                 >
                   {isIngesting ? <Spinner /> : <Plus className="h-3.5 w-3.5" />}
                 </button>
@@ -160,16 +178,21 @@ function FolderTreeNode({
               Empty folder.
             </p>
           )}
-          {children?.map((child) => (
-            <FolderTreeNode
-              key={child.id}
-              entry={child}
-              path={path ? `${path}/${child.name}` : child.name}
-              userId={userId}
-              depth={depth + 1}
-              onRequestRemove={onRequestRemove}
-            />
-          ))}
+          {children
+            ?.filter((child) => !foldersOnly || child.isFolder)
+            .map((child) => (
+              <FolderTreeNode
+                key={child.id}
+                entry={child}
+                path={path ? `${path}/${child.name}` : child.name}
+                userId={userId}
+                depth={depth + 1}
+                onRequestRemove={onRequestRemove}
+                foldersOnly={foldersOnly}
+                selectedFolderId={selectedFolderId}
+                onSelectFolder={onSelectFolder}
+              />
+            ))}
         </div>
       )}
     </div>
@@ -180,16 +203,36 @@ export function SharePointFolderTree({
   entries,
   userId,
   onRequestRemove,
+  foldersOnly,
+  selectedFolderId,
+  onSelectFolder,
 }: {
   entries: FolderTreeEntry[];
   userId: string;
   onRequestRemove: (documentId: string, name: string) => void;
+  // Explorer left-pane mode (KnowledgeBase.tsx's three-pane layout) -- see
+  // FolderTreeNode's own doc comment on these three.
+  foldersOnly?: boolean;
+  selectedFolderId?: string | null;
+  onSelectFolder?: (entry: FolderTreeEntry, path: string) => void;
 }): React.ReactElement {
   return (
     <div className="flex flex-col">
-      {entries.map((entry) => (
-        <FolderTreeNode key={entry.id} entry={entry} path={entry.name} userId={userId} depth={0} onRequestRemove={onRequestRemove} />
-      ))}
+      {entries
+        .filter((entry) => !foldersOnly || entry.isFolder)
+        .map((entry) => (
+          <FolderTreeNode
+            key={entry.id}
+            entry={entry}
+            path={entry.name}
+            userId={userId}
+            depth={0}
+            onRequestRemove={onRequestRemove}
+            foldersOnly={foldersOnly}
+            selectedFolderId={selectedFolderId}
+            onSelectFolder={onSelectFolder}
+          />
+        ))}
     </div>
   );
 }

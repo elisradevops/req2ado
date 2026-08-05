@@ -285,6 +285,46 @@ describe('RealAdoBackend.getWorkItemsBatch', () => {
     expect(maxInFlight).toBeLessThanOrEqual(2);
     expect(getSpy).toHaveBeenCalledTimes(5); // 1 probe + 4 single-id chunk GETs
   });
+
+  it('requests errorPolicy=Omit -- ADO\'s default for this endpoint FAILS the whole request if any id is missing, not omits it', async () => {
+    // Real gap this closes: a deleted/nonexistent id anywhere in the batch
+    // would otherwise 400 (TF401232) the ENTIRE chunk with no ADO default
+    // omission -- the exact detection signal stale-match verification
+    // (DryRunService.verifyExistingAdoIdsStillExist) depends on.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { value: [{ id: 1, fields: { 'System.WorkItemType': 'Requirement' } }] },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.getWorkItemsBatch([1, 999999]);
+
+    expect(getSpy.mock.calls[1][0]).toContain('errorPolicy=Omit');
+  });
+
+  it('a real deleted id is simply absent from the result, not an error, when errorPolicy=Omit is honored', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        // ADO's real response when errorPolicy=Omit and one id (999999) doesn't exist.
+        status: 200,
+        data: { value: [{ id: 1, fields: { 'System.WorkItemType': 'Requirement' } }] },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const results = await backend.getWorkItemsBatch([1, 999999]);
+
+    expect(results.map((r) => r.id)).toEqual([1]);
+  });
 });
 
 describe('RealAdoBackend.linkParentChild', () => {

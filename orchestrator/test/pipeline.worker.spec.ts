@@ -3,7 +3,7 @@ import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
 describe('runPipelineJob', () => {
   const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn(), checkDuplicate: jest.fn() };
   const fakeDryRunService = { diff: jest.fn() };
-  const fakeIdempotencyService = { lookup: jest.fn(), record: jest.fn() };
+  const fakeIdempotencyService = { lookup: jest.fn(), record: jest.fn(), deleteByAdoWorkItemId: jest.fn() };
   const fakePrisma = {
     // findUnique backs assertNotCancelled's cooperative-cancellation
     // checkpoints -- defaults to 'running' (never cancelled) so every
@@ -12,13 +12,23 @@ describe('runPipelineJob', () => {
     job: { update: jest.fn(), findUnique: jest.fn().mockResolvedValue({ status: 'running' }) },
     auditEntry: { create: jest.fn() },
     dedupSkipAudit: { createMany: jest.fn() },
+    // Defaults to "recently backfilled" (findUnique resolves a fresh
+    // lastBackfilledAt) so maybeBackfillAreaPath is a no-op for every
+    // existing test's happy/failure path -- the dedicated area-path
+    // backfill describe block below overrides this per-test.
+    areaPathBackfill: {
+      findUnique: jest.fn().mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date() }),
+      upsert: jest.fn(),
+    },
   };
   const fakeJobEventsPublisher = { publish: jest.fn() };
   const fakeMcpClient = {
     discoverLinkTypes: jest.fn().mockResolvedValue([]),
     discoverFields: jest.fn().mockResolvedValue([]),
     queryIds: jest.fn().mockResolvedValue([]),
+    getWorkItemsBatch: jest.fn().mockResolvedValue([]),
   };
+  const fakeBackfillService = { backfillAreaPath: jest.fn().mockResolvedValue({ scanned: 0, seeded: 0, skipped: 0, skippedReasons: {} }) };
   const fakeAdoCredentialResolver = { resolve: jest.fn().mockResolvedValue(undefined) };
 
   afterEach(() => {
@@ -41,6 +51,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -65,6 +76,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -101,6 +113,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -134,6 +147,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -141,7 +155,7 @@ describe('runPipelineJob', () => {
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
       where: { id: 'job-1' },
-      data: { status: 'diff_ready', dryRunDiff: [], warnings: [], kbCitations: [] },
+      data: { status: 'diff_ready', dryRunDiff: [], warnings: [], kbCitations: [], figureDescriptions: [] },
     });
   });
 
@@ -159,6 +173,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -181,7 +196,8 @@ describe('runPipelineJob', () => {
           prisma: fakePrisma as any,
           jobEventsPublisher: fakeJobEventsPublisher as any,
           mcpClient: fakeMcpClient as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
         },
       ),
@@ -209,6 +225,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -266,6 +283,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -341,6 +359,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -393,6 +412,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -438,6 +458,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -462,6 +483,7 @@ describe('runPipelineJob', () => {
         dryRunDiff: [],
         warnings: ['SURVEY node count (1) diverges from source block count (5) by more than 50%'],
         kbCitations: [],
+        figureDescriptions: [],
       },
     });
   });
@@ -493,6 +515,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -519,6 +542,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -546,6 +570,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -568,6 +593,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -595,7 +621,8 @@ describe('runPipelineJob', () => {
           prisma: fakePrisma as any,
           jobEventsPublisher: fakeJobEventsPublisher as any,
           mcpClient: fakeMcpClient as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
         },
       ),
@@ -618,6 +645,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -640,6 +668,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -662,6 +691,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -684,6 +714,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -712,6 +743,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -727,7 +759,49 @@ describe('runPipelineJob', () => {
           { sourceFile: 'doc-a.docx', similarity: 0.9, relevance: 'relevant' },
           { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
         ],
+        figureDescriptions: [],
       },
+    });
+  });
+
+  it("extracts figures with a real caption from ingestion's /ingest response and persists them 1-based by array position", async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({
+      blocks: [],
+      figures: [
+        { id: 'fig-a', caption: 'A block diagram showing power distribution.' },
+        { id: 'fig-b', caption: null },
+        { id: 'fig-c', caption: 'A wiring harness cross-section.' },
+      ],
+    });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: expect.objectContaining({
+        // fig-b (no real caption) is dropped -- nothing to show, same rule
+        // live SSE narration already applies. fig-c keeps index 3 (its own
+        // array position), not 2 -- it is NOT re-numbered after fig-b drops.
+        figureDescriptions: [
+          { figureIndex: 1, caption: 'A block diagram showing power distribution.' },
+          { figureIndex: 3, caption: 'A wiring harness cross-section.' },
+        ],
+      }),
     });
   });
 
@@ -739,6 +813,10 @@ describe('runPipelineJob', () => {
       { localId: 'n1', action: 'dedup_skip', existingAdoId: 42, similarity: 0.95 },
       { localId: 'n2', action: 'dedup_skip', existingAdoId: 43, similarity: 0.91 },
     ]);
+    // Both matched ids confirmed still real in ADO -- verifyExistingAdoIdsStillExist
+    // must leave these two dedup_skip entries untouched, same as before that
+    // verification step existed.
+    fakeMcpClient.getWorkItemsBatch.mockResolvedValueOnce([{ id: 42 }, { id: 43 }]);
 
     await runPipelineJob(
       { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
@@ -749,6 +827,7 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
@@ -776,12 +855,79 @@ describe('runPipelineJob', () => {
         prisma: fakePrisma as any,
         jobEventsPublisher: fakeJobEventsPublisher as any,
         mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
         adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
       },
     );
 
     expect(fakePrisma.dedupSkipAudit.createMany).not.toHaveBeenCalled();
+  });
+
+  it("downgrades a reuse/dedup_skip match to create when verifyExistingAdoIdsStillExist proves the ADO item was deleted, and cleans up the stale IdempotencyMapping row for the downgraded reuse entry", async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([
+      { localId: 'n0', action: 'reuse', existingAdoId: 533, similarity: null }, // WI-533: deleted in ADO
+      { localId: 'n1', action: 'dedup_skip', existingAdoId: 999, similarity: 0.93 }, // also deleted
+      { localId: 'n2', action: 'reuse', existingAdoId: 42, similarity: null }, // still real
+    ]);
+    // Only 42 comes back -- 533 and 999 are confirmed gone.
+    fakeMcpClient.getWorkItemsBatch.mockResolvedValueOnce([{ id: 42 }]);
+
+    const result = await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(result).toEqual([
+      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null },
+      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null },
+      { localId: 'n2', action: 'reuse', existingAdoId: 42, similarity: null },
+    ]);
+    // Only the downgraded REUSE entry (n0/533) gets its stale IdempotencyMapping
+    // row cleaned up -- dedup_skip (n1/999) has no equivalent per-id delete
+    // path (Chroma), and the still-real entry (n2/42) was never touched.
+    expect(fakeIdempotencyService.deleteByAdoWorkItemId).toHaveBeenCalledTimes(1);
+    expect(fakeIdempotencyService.deleteByAdoWorkItemId).toHaveBeenCalledWith(533);
+  });
+
+  it('never fails the job when the stale-mapping cleanup call itself throws', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([{ localId: 'n0', action: 'reuse', existingAdoId: 533, similarity: null }]);
+    fakeMcpClient.getWorkItemsBatch.mockResolvedValueOnce([]);
+    fakeIdempotencyService.deleteByAdoWorkItemId.mockRejectedValueOnce(new Error('DB unreachable'));
+
+    const result = await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null, similarity: null }]);
+    expect(fakePrisma.job.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }),
+    );
   });
 
   describe('cooperative cancellation', () => {
@@ -799,7 +945,8 @@ describe('runPipelineJob', () => {
           prisma: fakePrisma as any,
           jobEventsPublisher: fakeJobEventsPublisher as any,
           mcpClient: fakeMcpClient as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
         },
       );
@@ -827,7 +974,8 @@ describe('runPipelineJob', () => {
           prisma: fakePrisma as any,
           jobEventsPublisher: fakeJobEventsPublisher as any,
           mcpClient: fakeMcpClient as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
         defaultLlmModel: 'gemma4:12b',
         },
       );
@@ -835,6 +983,120 @@ describe('runPipelineJob', () => {
       expect(fakePrisma.job.update).not.toHaveBeenCalled();
       expect(fakeIngestionClient.ingest).not.toHaveBeenCalled();
       expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+    });
+  });
+
+  describe('area-path backfill', () => {
+    beforeEach(() => {
+      // The cancellation describe block above persistently overrides
+      // job.findUnique to {status: 'cancelled'} on its last test, and
+      // clearAllMocks does NOT reset a mock's implementation -- restore
+      // the "not cancelled" default so assertNotCancelled's checkpoint at
+      // the very top of runPipelineJob doesn't short-circuit every test
+      // in THIS block before it ever reaches ingest/backfill.
+      fakePrisma.job.findUnique.mockResolvedValue({ status: 'running' });
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+    });
+
+    it("closes the manually-created-ADO-item gap by backfilling a fresh area path (no AreaPathBackfill row yet)", async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+
+      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', undefined);
+      expect(fakePrisma.areaPathBackfill.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { areaPath: 'Project\\Area1' } }),
+      );
+    });
+
+    it('does not re-scan an area path backfilled less than 24h ago', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue({
+        areaPath: 'Project\\Area1',
+        lastBackfilledAt: new Date(Date.now() - 60 * 60 * 1000), // 1h ago
+      });
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+
+      expect(fakeBackfillService.backfillAreaPath).not.toHaveBeenCalled();
+      expect(fakePrisma.areaPathBackfill.upsert).not.toHaveBeenCalled();
+    });
+
+    it('re-scans an area path backfilled more than 24h ago', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue({
+        areaPath: 'Project\\Area1',
+        lastBackfilledAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // 25h ago
+      });
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+
+      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', undefined);
+    });
+
+    it("never fails the job when the backfill call throws -- fail-open, same philosophy as every other optional enrichment", async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+      fakeBackfillService.backfillAreaPath.mockRejectedValueOnce(new Error('ADO unreachable'));
+
+      const result = await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+
+      expect(result).toEqual([]);
+      expect(fakePrisma.job.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }),
+      );
+      expect(fakePrisma.areaPathBackfill.upsert).not.toHaveBeenCalled();
     });
   });
 });

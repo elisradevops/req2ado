@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   getJob,
   confirmJob,
   getAudit,
+  getEventHistory,
   getDebugCaptures,
   editDiffEntry,
   setDiffEntryExcluded,
@@ -15,6 +16,7 @@ import {
   getSummary,
   type AuditEntry,
   type DebugCaptureEntry,
+  type JobEventRecord,
   type JobSummaryReport,
 } from '../api/jobs';
 import { subscribeToJobEvents, type JobStage, type NarrationEvent } from '../api/events';
@@ -23,7 +25,9 @@ import { useOrgUrl } from '../store/authStore';
 import { StatusChip } from '../components/StatusChip';
 import { ModeBadge } from '../components/ModeBadge';
 import { ProgressBanner } from '../components/ProgressBanner';
-import { SurveyPipelineSteps } from '../components/SurveyPipelineSteps';
+import { JobLifecycleSteps } from '../components/JobLifecycleSteps';
+import { NarrationTicker } from '../components/NarrationTicker';
+import { tickerFor } from '../utils/narrationTicker';
 import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
 import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { useToast } from '../components/ToastProvider';
@@ -44,6 +48,9 @@ import { CollapsibleWarnings } from '../components/CollapsibleWarnings';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
+import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar } from './jobDetailLayout';
+import { FileX2 } from 'lucide-react';
+import { EmptyState } from '../ui/EmptyState';
 
 export function JobDetail(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
@@ -75,6 +82,12 @@ export function JobDetail(): React.ReactElement {
   const [tab, setTab] = useState<'tree' | 'audit'>('tree');
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [debugCaptures, setDebugCaptures] = useState<DebugCaptureEntry[]>([]);
+  // Durable counterpart to the live SSE narration stream -- fetched once a
+  // job reaches a terminal status (see the effect below), since that's
+  // exactly when the SSE connection closes and the client-side narration
+  // array stops growing. Unlike that array (capped, gone on page reload),
+  // this survives past the job's own completion/failure.
+  const [eventHistory, setEventHistory] = useState<JobEventRecord[]>([]);
   const [summary, setSummary] = useState<JobSummaryReport | null>(null);
   // Real job creation time from the server -- NOT page-load/mount time, so
   // a refresh mid-run shows the actual elapsed duration instead of
@@ -124,6 +137,20 @@ export function JobDetail(): React.ReactElement {
         setMode(job.mode);
         setKbCitations(job.kbCitations ?? []);
         setWarnings(job.warnings ?? []);
+        // Seeds the FigureDescriptions panel from what's already durably
+        // persisted (see Job.figureDescriptions) -- previously this panel
+        // was fed ONLY by live SSE narration, so it went blank on reload or
+        // when reopening a completed job even though the captions
+        // themselves had already reached ADO. The live SSE handler below
+        // writes into this SAME state and naturally overwrites these seeded
+        // values during an active run.
+        setFigureCaptionsByIndex((current) => {
+          const seeded: Record<number, string> = {};
+          for (const entry of job.figureDescriptions ?? []) {
+            seeded[entry.figureIndex] = entry.caption;
+          }
+          return { ...seeded, ...current };
+        });
         setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
         setStartedAt(job.createdAt);
         setAreaPath(job.areaPath);
@@ -153,6 +180,29 @@ export function JobDetail(): React.ReactElement {
       .catch(() => {
         // Best-effort: the stat tiles just don't render if this fails --
         // the diff tree itself (already loaded) remains fully usable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, status]);
+
+  // Fetched once a job reaches a terminal status -- exactly when the SSE
+  // connection closes (see JobEventsController.streamEvents's
+  // terminalStages set) and the live narration array stops growing. Not
+  // gated on isLive alone (a job that fails DURING the pending-to-running
+  // switch still needs this) -- checks every non-live status directly,
+  // same set every other terminal-status branch in this file already uses.
+  useEffect(() => {
+    if (!id || status === null || status === 'pending' || status === 'running' || status === 'writing') return;
+    let cancelled = false;
+    getEventHistory(id)
+      .then((events) => {
+        if (!cancelled) setEventHistory(events);
+      })
+      .catch(() => {
+        // Best-effort: falls back to whatever's already in client-side
+        // narration state / the plain AuditEntry message -- never blocks
+        // rendering the rest of the page over this.
       });
     return () => {
       cancelled = true;
@@ -189,6 +239,13 @@ export function JobDetail(): React.ReactElement {
             getJob(id).then((job) => {
               setStatus(job.status);
               setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+              // The mount-time fetch (loadJob above) almost always got {}
+              // here -- the backend only resolves a real catalog once
+              // dryRunDiff exists, which it doesn't yet while running.
+              // Without this, WorkItemTypeBadge is stuck on its hardcoded
+              // fallback icons/colors for the rest of the page's lifetime,
+              // even though a real diff (and thus a real catalog) now exists.
+              setTypeCatalog(job.workItemTypeCatalog ?? null);
             });
           }
         },
@@ -530,61 +587,21 @@ export function JobDetail(): React.ReactElement {
     );
   }
 
-  if (status === 'failed') {
-    return (
-      <div className="flex flex-col gap-3 p-4">
-        <h1 className="text-lg font-semibold text-danger">Job Failed</h1>
-        <p className="text-sm text-ink-2">This job did not complete successfully. Check the audit trail below for details.</p>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={handleShowAudit}>
-            {audit.length > 0 ? 'Refresh audit' : 'View audit'}
-          </Button>
-          <Button variant="outline" onClick={() => setResubmitDialogOpen(true)} disabled={isMutating}>
-            Resubmit
-          </Button>
-          <Button variant="outline" onClick={() => setDeleteDialogOpen(true)} disabled={isMutating}>
-            Delete
-          </Button>
-        </div>
-        {audit.map((entry) => (
-          <p key={entry.id} className="flex gap-2.5 text-sm">
-            <span className="flex-none font-mono text-xs text-ink-3">{new Date(entry.createdAt).toLocaleString()}</span>
-            <span>{entry.message}</span>
-          </p>
-        ))}
-        <ConfirmDialog
-          open={resubmitDialogOpen}
-          onOpenChange={setResubmitDialogOpen}
-          title="Resubmit this job?"
-          description="Runs the same source document again as a new job, using the same settings."
-          confirmLabel="Resubmit"
-          onConfirm={handleResubmit}
-          isConfirming={isMutating}
-        />
-        <ConfirmDialog
-          open={deleteDialogOpen}
-          onOpenChange={setDeleteDialogOpen}
-          title="Delete this job?"
-          description="This permanently removes the job and its history from req2ado. This cannot be undone."
-          confirmLabel="Delete job"
-          onConfirm={handleDelete}
-          isConfirming={isMutating}
-          destructive
-        />
-        {mutationError && (
-          <Alert severity="error" onClose={() => setMutationError(null)}>
-            {mutationError}
-          </Alert>
-        )}
-      </div>
-    );
-  }
-
   const teamProject = areaPath?.split('\\')[0] ?? null;
   // The real ADO credential lives server-side (credential vault); orgUrl
   // being set locally just signals "this browser has completed login" --
   // that's the gate for showing Confirm as available at all.
   const canWriteToAdo = !!orgUrl;
+  const showTabs = shouldShowTabs(status, diff.length, audit.length);
+  const showFilterBar = shouldShowFilterBar(diff.length);
+  const showTiles = shouldShowTiles(status);
+  // Structured failure detail (phase/elapsed/error type/message) from the
+  // durable event history -- replaces a bare "Failed" chip + one flattened
+  // AuditEntry line with the real context /level's exception handler
+  // captured. `undefined` (not found) for jobs that predate this change,
+  // or that failed somewhere other than /level -- the EmptyState below
+  // falls back to today's plain AuditEntry-derived message in that case.
+  const jobFailedEvent = eventHistory.find((event) => event.phase === 'job_failed');
 
   return (
     // px-2 lives on this one outer container -- every child below relies on
@@ -595,13 +612,6 @@ export function JobDetail(): React.ReactElement {
     // didn't line up down the page).
     <div className="flex flex-col gap-3 px-2">
       <div className="flex flex-col gap-1 border-b border-hairline pb-2 pt-2">
-        <nav className="text-xs text-ink-3">
-          <Link to="/jobs" className="hover:text-ink-1 hover:underline">
-            Jobs
-          </Link>
-          <span className="mx-1.5">/</span>
-          <span className="font-mono">{id}</span>
-        </nav>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-2">
             {sourceFilename && <span className="truncate text-sm font-medium text-ink-1">{sourceFilename}</span>}
@@ -668,6 +678,7 @@ export function JobDetail(): React.ReactElement {
         confirmLabel="Confirm and write"
         onConfirm={handleConfirm}
         isConfirming={isMutating}
+        variant="irreversible"
       />
       <ConfirmDialog
         open={rejectDialogOpen}
@@ -677,7 +688,7 @@ export function JobDetail(): React.ReactElement {
         confirmLabel="Reject job"
         onConfirm={handleReject}
         isConfirming={isMutating}
-        destructive
+        variant="destructive"
       />
       <ConfirmDialog
         open={cancelDialogOpen}
@@ -687,7 +698,7 @@ export function JobDetail(): React.ReactElement {
         confirmLabel="Cancel run"
         onConfirm={handleCancel}
         isConfirming={isMutating}
-        destructive
+        variant="destructive"
       />
       <ConfirmDialog
         open={resubmitDialogOpen}
@@ -710,15 +721,27 @@ export function JobDetail(): React.ReactElement {
         confirmLabel="Delete job"
         onConfirm={handleDelete}
         isConfirming={isMutating}
-        destructive
+        variant="destructive"
       />
       {mutationError && (
         <Alert severity="error" onClose={() => setMutationError(null)}>
           {mutationError}
         </Alert>
       )}
-      {mode === 'survey' && status && (
-        <SurveyPipelineSteps status={status} stage={stage} latestNarrationPhase={narrations.at(-1)?.phase ?? null} />
+      {mode && status && (
+        <div className="mb-4 overflow-hidden rounded-md border border-hairline">
+          <JobLifecycleSteps
+            mode={mode as 'baseline' | 'survey'}
+            status={status}
+            stage={stage}
+            latestNarrationPhase={narrations.at(-1)?.phase ?? null}
+          />
+          <NarrationTicker
+            sentence={tickerFor({ status, stage, latest: narrations.at(-1) ?? null }).sentence}
+            isLive={(status === 'pending' || status === 'running' || status === 'writing') && !!startedAt}
+            startedAt={startedAt ?? ''}
+          />
+        </div>
       )}
       {status === 'pending' && (
         <Alert severity="info">
@@ -727,12 +750,12 @@ export function JobDetail(): React.ReactElement {
           </span>
         </Alert>
       )}
-      {(status === 'running' || status === 'writing') && stage && mode && startedAt && (
+      {isRunDetailStatus(status) && stage && mode && startedAt && (
         <ProgressBanner stage={stage} startedAt={startedAt} mode={mode as 'baseline' | 'survey'} narrations={narrations} />
       )}
       <FigureDescriptions items={figureDescriptions} />
       <SectionResults items={sectionResults} />
-      {summary && (
+      {showTiles && summary && (
         <div className="grid grid-cols-3 gap-2.5">
           <StatTile value={summary.created} label="New" tone="ok" />
           <StatTile value={summary.reused} label="Reused" />
@@ -747,104 +770,186 @@ export function JobDetail(): React.ReactElement {
         }}
         adoIdByLocalId={adoIdByLocalId}
         orgUrl={orgUrl}
+        project={teamProject}
       />
-      <Tabs
-        value={tab}
-        onValueChange={(value) => (value === 'audit' ? handleShowAudit() : setTab(value as 'tree' | 'audit'))}
-        tabs={[
-          { value: 'tree', label: `Diff (${diff.length})` },
-          { value: 'audit', label: `Audit (${audit.length})` },
-        ]}
-      >
-        {tab === 'tree' ? (
-          <div className="pt-3">
-            <Card>
-              <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
-                <TextField
-                  placeholder="Filter by title…"
-                  value={filterText}
-                  onChange={(e) => setFilterText(e.target.value)}
-                  className="max-w-[240px] flex-1"
-                />
-                <Select value={filterAction ?? ''} onChange={(e) => setFilterAction(e.target.value || null)} className="max-w-[160px]">
-                  <option value="">All actions</option>
-                  <option value="create">New</option>
-                  <option value="reuse">Reuse</option>
-                  <option value="dedup_skip">Near-duplicate</option>
-                </Select>
-                {status === 'diff_ready' && (
-                  <div className="ml-auto flex gap-2">
-                    <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(true)} disabled={isDiffMutating}>
-                      Exclude {filterAction || filterText ? 'matching' : 'all'}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(false)} disabled={isDiffMutating}>
-                      Include {filterAction || filterText ? 'matching' : 'all'}
-                    </Button>
+      {showTabs ? (
+        <Tabs
+          value={tab}
+          onValueChange={(value) => (value === 'audit' ? handleShowAudit() : setTab(value as 'tree' | 'audit'))}
+          tabs={[
+            { value: 'tree', label: `Diff (${diff.length})` },
+            { value: 'audit', label: `Audit (${audit.length})` },
+          ]}
+        >
+          {tab === 'tree' ? (
+            <div className="pt-3">
+              <Card>
+                {showFilterBar && (
+                  <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
+                    <TextField
+                      placeholder="Filter by title…"
+                      value={filterText}
+                      onChange={(e) => setFilterText(e.target.value)}
+                      className="max-w-[240px] flex-1"
+                    />
+                    <Select value={filterAction ?? ''} onChange={(e) => setFilterAction(e.target.value || null)} className="max-w-[160px]">
+                      <option value="">All actions</option>
+                      <option value="create">New</option>
+                      <option value="reuse">Reuse</option>
+                      <option value="dedup_skip">Near-duplicate</option>
+                    </Select>
+                    {status === 'diff_ready' && (
+                      <div className="ml-auto flex gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(true)} disabled={isDiffMutating}>
+                          Exclude {filterAction || filterText ? 'matching' : 'all'}
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(false)} disabled={isDiffMutating}>
+                          Include {filterAction || filterText ? 'matching' : 'all'}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-              <DiffTree
-                entries={diff}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onOpenDetails={(localId) => {
-                  setSelectedId(localId);
-                  setDialogOpen(true);
-                }}
-                filterAction={filterAction}
-                filterText={filterText}
-                onToggleExclude={handleToggleExclude}
+                <DiffTree
+                  entries={diff}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  onOpenDetails={(localId) => {
+                    setSelectedId(localId);
+                    setDialogOpen(true);
+                  }}
+                  filterAction={filterAction}
+                  filterText={filterText}
+                  onToggleExclude={handleToggleExclude}
+                  typeCatalog={typeCatalog ?? undefined}
+                  orgUrl={orgUrl}
+                  project={teamProject}
+                />
+              </Card>
+              <NodeDetailDialog
+                open={dialogOpen}
+                onOpenChange={setDialogOpen}
+                jobId={id!}
+                entry={selectedEntry}
+                jobMode={mode as 'baseline' | 'survey' | null}
+                jobStatus={status}
+                kbCitations={kbCitations}
+                traceTargetTitles={traceTargetTitles}
+                diffByLocalId={diffByLocalId}
+                onSave={handleSaveEdit}
+                onAddChild={handleAddChild}
+                onNavigate={handleNavigateDialog}
+                hasPrev={hasPrevEntry}
+                hasNext={hasNextEntry}
                 typeCatalog={typeCatalog ?? undefined}
               />
-            </Card>
-            <NodeDetailDialog
-              open={dialogOpen}
-              onOpenChange={setDialogOpen}
-              jobId={id!}
-              entry={selectedEntry}
-              jobMode={mode as 'baseline' | 'survey' | null}
-              jobStatus={status}
-              kbCitations={kbCitations}
-              traceTargetTitles={traceTargetTitles}
-              diffByLocalId={diffByLocalId}
-              onSave={handleSaveEdit}
-              onAddChild={handleAddChild}
-              onNavigate={handleNavigateDialog}
-              hasPrev={hasPrevEntry}
-              hasNext={hasNextEntry}
-              typeCatalog={typeCatalog ?? undefined}
-            />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3 p-4">
-            <div className="flex flex-col gap-1">
-              {audit.map((entry) => (
-                <p key={entry.id} className="flex gap-2.5 text-xs">
-                  <span className="flex-none font-mono text-ink-3">{new Date(entry.createdAt).toLocaleString()}</span>
-                  <span className="font-mono text-ink-2">{entry.message}</span>
-                </p>
-              ))}
             </div>
-            {debugCaptures.length > 0 && (
-              <div className="flex flex-col gap-2 border-t border-hairline pt-3">
-                <span className="text-xs font-semibold text-ink-2">
-                  Raw model responses behind flagged warnings ({debugCaptures.length})
-                </span>
-                {debugCaptures.map((capture, index) => (
-                  <details key={`${capture.kind}-${capture.identifier}-${index}`} className="rounded-sm border border-hairline bg-surface-alt p-2.5">
-                    <summary className="cursor-pointer text-xs font-medium text-ink-2">
-                      {capture.kind} — {capture.identifier}
-                    </summary>
-                    <pre className="mt-2 max-h-[300px] overflow-auto whitespace-pre-wrap font-mono text-xs text-ink-2">
-                      {capture.content}
-                    </pre>
-                  </details>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </Tabs>
+          ) : (
+            <div className="flex flex-col gap-3 p-4">
+              <AuditEntryList entries={audit} />
+              {debugCaptures.length > 0 && (
+                <div className="flex flex-col gap-2 border-t border-hairline pt-3">
+                  <span className="text-xs font-semibold text-ink-2">
+                    Raw model responses behind flagged warnings ({debugCaptures.length})
+                  </span>
+                  {debugCaptures.map((capture, index) => (
+                    <details key={`${capture.kind}-${capture.identifier}-${index}`} className="rounded-sm border border-hairline bg-surface-alt p-2.5">
+                      <summary className="cursor-pointer text-xs font-medium text-ink-2">
+                        {capture.kind} — {capture.identifier}
+                      </summary>
+                      <pre className="mt-2 max-h-[300px] overflow-auto whitespace-pre-wrap font-mono text-xs text-ink-2">
+                        {capture.content}
+                      </pre>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </Tabs>
+      ) : isRunDetailStatus(status) ? (
+        // Real bug this fixes (confirmed live): shouldShowTabs also returns
+        // false for a genuinely RUNNING job before its first diff/audit
+        // fetch (diff.length and audit.length both still 0 at that point) --
+        // not just cancelled/failed, contrary to what the comment on the
+        // branch below used to assume. Without this guard, a job actively
+        // ticking through Analyze/Score in the ProgressBanner above ALSO
+        // rendered "Cancelled before a diff was produced" underneath it at
+        // the exact same time -- a running job simultaneously showing
+        // cancelled-state UI. The live progress banner already fully covers
+        // this state; nothing else needs to render here while it's running.
+        null
+      ) : (
+        // No diff and no audit fetched yet -- Diff (0)/Audit (0) tabs, an
+        // empty filter bar, and an empty table were pure dead space here
+        // (the "all the bottom part is not relevant" complaint). Only
+        // reachable by cancelled (before diff_ready) and failed (diff never
+        // produced) -- every other status either has a real diff already
+        // or is still mid-run, handled by the isRunDetailStatus branch above.
+        <Card>
+          <EmptyState
+            icon={FileX2}
+            title={status === 'failed' ? 'No diff was produced' : 'Cancelled before a diff was produced'}
+            description={
+              status === 'failed'
+                ? jobFailedEvent
+                  ? // Structured detail from the durable event history --
+                    // phase/elapsed/error type/message, replacing the plain
+                    // "check the audit trail" string with the real context
+                    // /level's exception handler captured.
+                    (() => {
+                      const detail = (jobFailedEvent.detail ?? {}) as {
+                        errorType?: string | null;
+                        errorMessage?: string | null;
+                        elapsedSeconds?: number | null;
+                        lastPhase?: string | null;
+                      };
+                      return (
+                        <span className="flex flex-col gap-1 text-left">
+                          <span>{detail.errorMessage ?? jobFailedEvent.message}</span>
+                          <span className="text-ink-3">
+                            {[
+                              detail.errorType,
+                              detail.lastPhase ? `last phase: ${detail.lastPhase}` : null,
+                              detail.elapsedSeconds != null ? `after ${Math.round(detail.elapsedSeconds)}s` : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </span>
+                        </span>
+                      );
+                    })()
+                  : 'This job failed before completing analysis. Check the audit trail for details.'
+                : 'This run was cancelled before parsing/analysis finished, so there is nothing to review.'
+            }
+            action={
+              <Button variant="outline" size="sm" onClick={handleShowAudit}>
+                {audit.length > 0 ? 'Refresh audit' : 'View audit'}
+              </Button>
+            }
+          />
+          {/* Prefers the durable full event history (JobEventRecord's shape
+              is a structural superset of AuditEntry's -- id/message/
+              createdAt) over the coarse AuditEntry list once it's loaded;
+              falls back to `audit` for a job that predates this change or
+              while the event-history fetch is still in flight. */}
+          <AuditEntryList entries={eventHistory.length > 0 ? eventHistory : audit} className="border-t border-hairline p-4" />
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function AuditEntryList({ entries, className }: { entries: AuditEntry[]; className?: string }): React.ReactElement | null {
+  if (entries.length === 0) return null;
+  return (
+    <div className={className ?? 'flex flex-col gap-1'}>
+      {entries.map((entry) => (
+        <p key={entry.id} className="flex gap-2.5 text-xs">
+          <span className="flex-none font-mono text-ink-3">{new Date(entry.createdAt).toLocaleString()}</span>
+          <span className="font-mono text-ink-2">{entry.message}</span>
+        </p>
+      ))}
     </div>
   );
 }

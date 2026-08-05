@@ -48,7 +48,10 @@ describe('KnowledgeBase', () => {
 
     await waitFor(() => expect(kbApi.browseSharedFolder).toHaveBeenCalledWith('https://share.example/folder', 'user-descriptor-1'));
     await waitFor(() => expect(screen.getByText('spec.docx')).toBeInTheDocument());
-    expect(screen.getByText('Subfolder')).toBeInTheDocument();
+    // "Subfolder" now legitimately appears twice -- once as a left-pane
+    // navigation row, once as a center-pane row inside its parent folder
+    // (the three-pane explorer, DESIGN.md Track B phase B10).
+    expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0);
   });
 
   it('restores and re-browses the last folder URL on mount, instead of showing an empty tree', async () => {
@@ -138,7 +141,9 @@ describe('KnowledgeBase', () => {
     await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
 
     await waitFor(() =>
-      expect(kbApi.ingestFolderItem).toHaveBeenCalledWith('spec.docx', 'f1', 'https://graph.example/download/f1', 'spec.docx', 'user-descriptor-1'),
+      expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
+        'spec.docx', 'f1', 'https://graph.example/download/f1', 'spec.docx', 'user-descriptor-1', undefined,
+      ),
     );
     await waitFor(() => expect(screen.getByText(/added "spec\.docx" to the knowledge base/i)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /remove spec\.docx from the knowledge base/i })).toBeInTheDocument();
@@ -205,5 +210,119 @@ describe('KnowledgeBase', () => {
     await userEvent.click(screen.getAllByRole('button', { name: /^reconnect$/i }).at(-1)!);
 
     await waitFor(() => expect(screen.getByText(/sharepoint rejected that token/i)).toBeInTheDocument());
+  });
+
+  describe('three-pane explorer (DESIGN.md Track B, phase B10)', () => {
+    it('navigates into a subfolder from the center pane and shows its own children there', async () => {
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+      ]);
+      vi.spyOn(kbApi, 'browseSubfolder').mockResolvedValue([
+        { id: 'f2', name: 'nested.pdf', mimeType: null, sizeBytes: 4096, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f2' },
+      ]);
+      renderPage();
+
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0));
+
+      // Click the CENTER-pane row (not the left-tree nav row) -- both render
+      // "Subfolder" text. The left tree's row is a <div role="button">, so
+      // only the center pane's match resolves a real ancestor <tr>.
+      const centerRow = screen.getAllByText('Subfolder').map((el) => el.closest('tr')).find(Boolean);
+      await userEvent.click(centerRow!);
+
+      await waitFor(() => expect(kbApi.browseSubfolder).toHaveBeenCalledWith('drive-1', 'd1', 'user-descriptor-1', 'Subfolder'));
+      await waitFor(() => expect(screen.getByText('nested.pdf')).toBeInTheDocument());
+    });
+
+    it('selects a file and shows its metadata in the right-hand detail pane', async () => {
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+      ]);
+      renderPage();
+
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getByText('spec.docx')).toBeInTheDocument());
+
+      expect(screen.getByText(/no file selected/i)).toBeInTheDocument();
+
+      await userEvent.click(screen.getByText('spec.docx').closest('tr')!);
+
+      await waitFor(() => expect(screen.queryByText(/no file selected/i)).not.toBeInTheDocument());
+      // "2 KB" now appears twice -- the center-pane row's own Size column,
+      // plus the detail pane's own Size field.
+      expect(screen.getAllByText('2 KB').length).toBeGreaterThan(1);
+      expect(screen.getByRole('button', { name: /add to knowledge base/i })).toBeInTheDocument();
+    });
+
+    it('keeps the detail pane in sync after ingesting a file from the center-pane row action', async () => {
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+      ]);
+      vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
+        documentName: 'spec.docx', driveitemId: 'f1', mimeType: null, sizeBytes: 2048, chunksStored: 3, skippedUnchanged: false, ingestedDocumentId: 'doc-1',
+      });
+      renderPage();
+
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getByText('spec.docx')).toBeInTheDocument());
+
+      await userEvent.click(screen.getByText('spec.docx').closest('tr')!);
+      await waitFor(() => expect(screen.getByRole('button', { name: /add to knowledge base/i })).toBeInTheDocument());
+
+      // The row action (not the detail pane's own button) is what ingests here.
+      await userEvent.click(screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i }));
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /remove from knowledge base/i })).toBeInTheDocument());
+    });
+
+    it('ingests with retrievalMode="always_include" when the detail pane checkbox is checked', async () => {
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'f1', name: 'standards.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+      ]);
+      vi.spyOn(kbApi, 'ingestFolderItem').mockResolvedValue({
+        documentName: 'standards.docx', driveitemId: 'f1', mimeType: null, sizeBytes: 2048, chunksStored: 3, skippedUnchanged: false, ingestedDocumentId: 'doc-1',
+      });
+      renderPage();
+
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getByText('standards.docx')).toBeInTheDocument());
+
+      await userEvent.click(screen.getByText('standards.docx').closest('tr')!);
+      await userEvent.click(screen.getByRole('checkbox', { name: /always include \(full context\)/i }));
+      await userEvent.click(screen.getByRole('button', { name: /^add to knowledge base$/i }));
+
+      await waitFor(() =>
+        expect(kbApi.ingestFolderItem).toHaveBeenCalledWith(
+          'standards.docx', 'f1', 'https://graph.example/download/f1', 'standards.docx', 'user-descriptor-1', 'always_include',
+        ),
+      );
+    });
+
+    it('returns to the root folder via the center pane\'s "Root" breadcrumb', async () => {
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+      ]);
+      vi.spyOn(kbApi, 'browseSubfolder').mockResolvedValue([
+        { id: 'f2', name: 'nested.pdf', mimeType: null, sizeBytes: 4096, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+      ]);
+      renderPage();
+
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0));
+      const centerRow = screen.getAllByText('Subfolder').map((el) => el.closest('tr')).find(Boolean);
+      await userEvent.click(centerRow!);
+      await waitFor(() => expect(screen.getByText('nested.pdf')).toBeInTheDocument());
+
+      await userEvent.click(screen.getByRole('button', { name: /^root$/i }));
+
+      await waitFor(() => expect(screen.queryByText('nested.pdf')).not.toBeInTheDocument());
+      expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0);
+    });
   });
 });

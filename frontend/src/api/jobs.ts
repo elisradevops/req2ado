@@ -87,6 +87,27 @@ export async function getAudit(id: string): Promise<AuditEntry[]> {
   return response.data;
 }
 
+// Durable counterpart to the live SSE narration stream (JobEventPersistenceService
+// writes every stage/narration event to Postgres as it's published) --
+// unlike the SSE stream's 50-entry replay buffer, this survives past the
+// job's own completion/failure and past Redis's 1-hour narration-log TTL.
+// `detail` is the exact narration/stage payload as received (phase-specific
+// fields like sampleTitles/subtreeIndex/errorType, not just `message`).
+export interface JobEventRecord {
+  id: string;
+  jobId: string;
+  phase: string;
+  message: string;
+  detail: Record<string, unknown> | null;
+  severity: 'info' | 'warning' | 'error';
+  createdAt: string;
+}
+
+export async function getEventHistory(id: string): Promise<JobEventRecord[]> {
+  const response = await httpClient.get<JobEventRecord[]>(`/jobs/${id}/event-history`);
+  return response.data;
+}
+
 export async function editDiffEntry(
   jobId: string,
   localId: string,

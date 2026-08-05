@@ -1,4 +1,5 @@
 import { Controller, Get, Inject, NotFoundException, Param, Res } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
 import type { Response } from 'express';
 import type Redis from 'ioredis';
 import { JobsService } from './jobs.service';
@@ -19,7 +20,24 @@ export class JobEventsController {
   constructor(
     @Inject(REDIS_SUBSCRIBER_FACTORY) private readonly redisSubscriberFactory: () => Redis,
     private readonly jobsService: JobsService,
+    private readonly prisma: PrismaClient,
   ) {}
+
+  // Durable counterpart to the live SSE stream above: JobEventPersistenceService
+  // writes every stage/narration event to JobEvent as it's published, so a
+  // job's full processing trail survives past its own completion/failure and
+  // past Redis's 1-hour narration-log TTL. A distinct path from `:id/events`
+  // (the SSE route) rather than a query flag on it -- one is a long-lived
+  // stream, the other a plain JSON fetch, different enough response
+  // lifecycles to warrant separate routes.
+  @Get(':id/event-history')
+  async getEventHistory(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<unknown[]> {
+    const job = await this.jobsService.getById(id);
+    if (!job || job.userId !== user.userId) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    return this.prisma.jobEvent.findMany({ where: { jobId: id }, orderBy: { createdAt: 'asc' } });
+  }
 
   @Get(':id/events')
   async streamEvents(

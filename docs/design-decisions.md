@@ -1,5 +1,11 @@
 # req2ado — Design Decisions (Phase 1)
 
+> **Superseded for visual language only — see `/DESIGN.md`.** The visual
+> language is no longer MUI-based; `frontend/src/theme/tokens.ts` no longer
+> exists; the interactive accent is indigo `#4f46e5`, not cyan `#06B6D4`
+> (cyan survives only as `--color-live`, meaning "streaming right now").
+> Everything below this line is still current.
+
 **Purpose of this doc:** every locked design decision for the frontend rebuild, with rationale,
 so future sessions don't need to re-derive or re-litigate them. Decisions were made with the user
 via a visual brainstorm companion (mockups shown in-browser, user picked). See `req2ado-roadmap.md`

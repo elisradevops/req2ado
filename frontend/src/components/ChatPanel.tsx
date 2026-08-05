@@ -237,7 +237,7 @@ export function ChatPanel({
           a tiny ghost-styled text link below the composer, easy to miss
           for what's actually a commonly-used, high-value action. */}
       <div className="flex flex-none items-center justify-between gap-2">
-        <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">Chat</p>
+        <p className="text-micro font-semibold uppercase tracking-wide text-ink-3">Chat</p>
         <Button size="sm" variant="outline" onClick={suggestTitle} disabled={isStreaming}>
           <Sparkles className="h-3.5 w-3.5" />
           Suggest a title
@@ -268,7 +268,7 @@ export function ChatPanel({
                 </div>
               ) : (
                 <div key={m.id} className="mb-3 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
-                  <p className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+                  <p className="text-micro font-semibold uppercase tracking-wide text-ink-3">
                     Assistant{m.model ? ` · ${m.model}` : ''}
                   </p>
                   <Markdown>{m.content}</Markdown>
@@ -291,7 +291,7 @@ export function ChatPanel({
                       type="button"
                       onClick={() => setReasoningExpanded((prev) => !prev)}
                       aria-expanded={reasoningExpanded}
-                      className="flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-3 hover:text-ink-2"
+                      className="flex items-center gap-1 text-micro font-semibold uppercase tracking-wide text-ink-3 hover:text-ink-2"
                     >
                       <ChevronRight className={`h-3 w-3 transition-transform ${reasoningExpanded ? 'rotate-90' : ''}`} />
                       Thinking
@@ -310,7 +310,7 @@ export function ChatPanel({
                   </div>
                 )}
                 <div className="mb-3 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
-                  <p className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-live">
+                  <p className="flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wide text-live">
                     Assistant
                     {!streaming && !reasoning && (
                       <span className="inline-flex items-center gap-0.5" aria-label="typing">

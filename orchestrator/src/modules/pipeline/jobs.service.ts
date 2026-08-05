@@ -321,6 +321,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     dryRunDiff: unknown;
     warnings: string[];
     kbCitations: unknown;
+    // {figureIndex, caption}[] -- see Job.figureDescriptions' schema.prisma
+    // doc comment. Defaults to [] for a historical job (null column), same
+    // convention as warnings above.
+    figureDescriptions: { figureIndex: number; caption: string }[];
     createdAt: Date;
     areaPath: string;
     originalFilename: string;
@@ -335,6 +339,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       dryRunDiff: job.dryRunDiff,
       warnings: (job.warnings as string[] | null) ?? [],
       kbCitations: job.kbCitations,
+      figureDescriptions: (job.figureDescriptions as { figureIndex: number; caption: string }[] | null) ?? [],
       createdAt: job.createdAt,
       areaPath: job.areaPath,
       originalFilename: job.originalFilename,
@@ -589,7 +594,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
    * (not mid-call) if it has -- an honest limitation, not silently pretended
    * to be instant in every case.
    */
-  async cancel(id: string): Promise<{ status: string }> {
+  // `reason` defaults to the pre-existing message -- every caller before
+  // StaleJobWatchdogService existed omits it and gets byte-identical
+  // behavior. The watchdog passes its own distinguishing message so an
+  // automatic stall-cancellation never falsely reads as "by user".
+  async cancel(id: string, reason: string = 'Job cancelled by user'): Promise<{ status: string }> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) {
       throw new NotFoundException(`Job ${id} not found`);
@@ -605,7 +614,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       }
     }
     await this.prisma.job.update({ where: { id }, data: { status: 'cancelled' } });
-    await this.prisma.auditEntry.create({ data: { jobId: id, message: 'Job cancelled by user' } });
+    await this.prisma.auditEntry.create({ data: { jobId: id, message: reason } });
     return { status: 'cancelled' };
   }
 
@@ -847,7 +856,19 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // bounded concurrency instead of the previous one-ADO-round-trip-at-
       // a-time sequential loop. mapWithConcurrency preserves array order in
       // its results regardless of completion order.
+      // Unconditional kick-off, even when toCreate is empty -- without this,
+      // the frontend ticker sat frozen on 'discover_types' (or a stale
+      // "creating -- N of N" from a PRIOR confirm() attempt on a resumed
+      // job) for however long this phase actually took, since the first
+      // 'create' narration below only fires once item #1 finishes.
       let createProgress = 0;
+      await this.jobEventsPublisher?.publishNarration(id, {
+        phase: 'writing',
+        writeSubPhase: 'create',
+        blocksDone: 0,
+        blocksTotal: toCreate.length,
+        message: `Creating work items in ADO -- 0 of ${toCreate.length}`,
+      });
       const createResults = await mapWithConcurrency(toCreate, this.writeConcurrency, async (entry) => {
         const fields: Record<string, string> = {
           'System.Title': entry.title,
@@ -976,7 +997,18 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         if (alreadyLinkedLocalIds.has(entry.localId)) return false;
         return adoIdByLocalId.has(entry.localId) && adoIdByLocalId.has(entry.parentLocalId as string);
       });
+      // Unconditional kick-off, even when toLink is empty -- previously
+      // nothing published at all for an empty toLink, leaving the ticker
+      // frozen on the last 'create' narration for the rest of this phase
+      // even though linking (trivially) already finished.
       let linkProgress = 0;
+      await this.jobEventsPublisher?.publishNarration(id, {
+        phase: 'writing',
+        writeSubPhase: 'link_parents',
+        blocksDone: 0,
+        blocksTotal: toLink.length,
+        message: `Linking parent/child relations -- 0 of ${toLink.length}`,
+      });
       const linkResults = await mapWithConcurrency(toLink, this.writeConcurrency, async (entry) => {
         await this.mcpClient.linkParentChild(
           adoIdByLocalId.get(entry.localId) as number,
@@ -1030,7 +1062,19 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           toTraceLink.push({ sourceAdoId, targetAdoId, referenceName: link.referenceName });
         }
       }
+      // Unconditional kick-off, even when toTraceLink is empty -- same
+      // rationale as the create/link_parents kick-offs above: previously
+      // nothing published at all for an empty toTraceLink, leaving the
+      // ticker frozen on 'link_parents' even though this job has no trace
+      // links to write and confirm() is about to finish.
       let traceLinkProgress = 0;
+      await this.jobEventsPublisher?.publishNarration(id, {
+        phase: 'writing',
+        writeSubPhase: 'trace_links',
+        blocksDone: 0,
+        blocksTotal: toTraceLink.length,
+        message: `Writing trace links -- 0 of ${toTraceLink.length}`,
+      });
       await mapWithConcurrency(toTraceLink, this.writeConcurrency, async (link) => {
         // Best-effort: a trace-link write failure (rejected rel, deleted
         // crossJob target, transient network error) must not abort confirm()

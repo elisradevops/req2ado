@@ -3,13 +3,17 @@ import { isAxiosError } from 'axios';
 import { FolderTree } from 'lucide-react';
 import {
   browseSharedFolder,
+  browseSubfolder,
   deleteIngestedDocument,
   getSharePointStatus,
+  ingestFolderItem,
   reconnectSharePoint,
   type FolderTreeEntry,
   type SharePointStatus,
 } from '../api/kb';
 import { SharePointFolderTree } from '../components/SharePointFolderTree';
+import { KbFileList } from '../components/KbFileList';
+import { KbFileDetailPane } from '../components/KbFileDetailPane';
 import { useToast } from '../components/ToastProvider';
 import { useUserId } from '../store/authStore';
 import { PageHeader } from '../ui/PageHeader';
@@ -112,7 +116,20 @@ function describeIngestError(error: unknown): string {
 interface PendingRemoval {
   documentId: string;
   name: string;
+  entryId: string;
 }
+
+// The currently selected folder for the center/right panes -- `id: null`
+// is the sentinel for "Root" (the pasted sharing URL's own top level,
+// which has no id/driveId of its own to browse-children against).
+interface CurrentFolder {
+  id: string | null;
+  driveId: string | null;
+  path: string;
+  name: string;
+}
+
+const ROOT_FOLDER: CurrentFolder = { id: null, driveId: null, path: '', name: 'Root' };
 
 // Not a secret -- the user's own pasted SharePoint/OneDrive sharing URL, so
 // localStorage (survives across tabs/restarts, unlike authStore's session-
@@ -127,9 +144,32 @@ export function KnowledgeBase(): React.ReactElement {
   const { showToast } = useToast();
   const userId = useUserId();
   const [browseUrl, setBrowseUrl] = useState('');
-  const [browseEntries, setBrowseEntries] = useState<FolderTreeEntry[] | null>(null);
+  // The root folder's own children -- also what the left-pane tree walks
+  // recursively (foldersOnly) and what the center pane shows by default.
+  const [rootEntries, setRootEntries] = useState<FolderTreeEntry[] | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
+
+  // Three-pane navigation state (DESIGN.md Track B, phase B10) -- which
+  // folder the center/right panes are currently showing, independent of
+  // the left tree's own internal expand/collapse state.
+  const [currentFolder, setCurrentFolder] = useState<CurrentFolder>(ROOT_FOLDER);
+  const [centerEntries, setCenterEntries] = useState<FolderTreeEntry[] | null>(null);
+  const [centerLoading, setCenterLoading] = useState(false);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+
+  // Ingest/remove state lifted up here (rather than duplicated per-row
+  // inside KbFileList AND KbFileDetailPane) so both panes always agree on
+  // whether a given file is in the knowledge base -- a file ingested via
+  // the center-pane row action must show as ingested in the right-hand
+  // detail pane too, without a re-browse round trip.
+  const [ingestOverrides, setIngestOverrides] = useState<Record<string, { ingested: boolean; docId: string | null }>>({});
+  const [ingestingId, setIngestingId] = useState<string | null>(null);
+  // Per-file "always include" (Full Context mode) choice, made in the
+  // detail pane before ingest -- keyed by entry.id so switching the
+  // selected file never leaks one file's choice onto another's checkbox.
+  const [alwaysIncludeSelection, setAlwaysIncludeSelection] = useState<Record<string, boolean>>({});
+
   const [documentPendingRemoval, setDocumentPendingRemoval] = useState<PendingRemoval | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
   const [reconnectOpen, setReconnectOpen] = useState(false);
@@ -137,6 +177,14 @@ export function KnowledgeBase(): React.ReactElement {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [reconnectError, setReconnectError] = useState<string | null>(null);
   const [statusRefreshKey, setStatusRefreshKey] = useState(0);
+
+  function isIngested(entry: FolderTreeEntry): boolean {
+    return ingestOverrides[entry.id]?.ingested ?? entry.alreadyIngested;
+  }
+
+  function ingestedDocIdOf(entry: FolderTreeEntry): string | null {
+    return ingestOverrides[entry.id]?.docId ?? entry.ingestedDocumentId;
+  }
 
   // Optional urlOverride: the mount-restore effect below calls this with the
   // just-read localStorage value directly, since setBrowseUrl's own update
@@ -146,9 +194,17 @@ export function KnowledgeBase(): React.ReactElement {
     if (!url || !userId) return;
     setBrowsing(true);
     setBrowseError(null);
-    setBrowseEntries(null);
+    setRootEntries(null);
     try {
-      setBrowseEntries(await browseSharedFolder(url, userId));
+      const entries = await browseSharedFolder(url, userId);
+      setRootEntries(entries);
+      // A fresh browse is a new tree -- reset all navigation/selection back
+      // to root rather than pointing at a folder/file that may no longer
+      // exist under the newly-browsed link.
+      setCurrentFolder(ROOT_FOLDER);
+      setCenterEntries(entries);
+      setSelectedFileId(null);
+      setIngestOverrides({});
       localStorage.setItem(KB_BROWSE_URL_STORAGE_KEY, url);
     } catch (error) {
       setBrowseError(describeIngestError(error));
@@ -169,18 +225,72 @@ export function KnowledgeBase(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- restore-on-mount only, not on every browseUrl/handleBrowse change
   }, [userId]);
 
+  async function navigateToFolder(id: string, driveId: string | null, path: string, name: string): Promise<void> {
+    if (!userId || !driveId) return;
+    setCurrentFolder({ id, driveId, path, name });
+    setSelectedFileId(null);
+    setCenterLoading(true);
+    try {
+      setCenterEntries(await browseSubfolder(driveId, id, userId, path));
+    } catch {
+      showToast(`Failed to open "${name}" — please try again.`, 'error');
+      setCenterEntries([]);
+    } finally {
+      setCenterLoading(false);
+    }
+  }
+
+  // Left-pane tree selection -- the tree already computes each node's own
+  // full relative path as it recurses, so that path is reused as-is rather
+  // than recomputed here.
+  function handleSelectFolderFromTree(entry: FolderTreeEntry, path: string): void {
+    void navigateToFolder(entry.id, entry.driveId, path, entry.name);
+  }
+
+  // Center-pane folder row navigation -- same destination as the tree
+  // above, but the path has to be built from the CURRENT folder's own path
+  // (the tree has no notion of "center pane" to compute it from).
+  function handleNavigateFolder(entry: FolderTreeEntry): void {
+    const path = currentFolder.path ? `${currentFolder.path}/${entry.name}` : entry.name;
+    void navigateToFolder(entry.id, entry.driveId, path, entry.name);
+  }
+
+  function handleNavigateRoot(): void {
+    setCurrentFolder(ROOT_FOLDER);
+    setCenterEntries(rootEntries);
+    setSelectedFileId(null);
+  }
+
+  async function handleIngestFile(entry: FolderTreeEntry): Promise<void> {
+    if (!userId || !entry.downloadUrl || ingestingId) return;
+    setIngestingId(entry.id);
+    try {
+      const relativePath = currentFolder.path ? `${currentFolder.path}/${entry.name}` : entry.name;
+      const retrievalMode = alwaysIncludeSelection[entry.id] ? 'always_include' : undefined;
+      const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, retrievalMode);
+      setIngestOverrides((prev) => ({ ...prev, [entry.id]: { ingested: true, docId: result.ingestedDocumentId } }));
+      showToast(`Added "${entry.name}" to the knowledge base.`, 'success');
+    } catch {
+      showToast(`Failed to add "${entry.name}" — please try again.`, 'error');
+    } finally {
+      setIngestingId(null);
+    }
+  }
+
+  function handleRequestRemove(entry: FolderTreeEntry): void {
+    const docId = ingestedDocIdOf(entry);
+    if (!docId) return;
+    setDocumentPendingRemoval({ documentId: docId, name: entry.name, entryId: entry.id });
+  }
+
   async function handleRemoveDocument(): Promise<void> {
     if (!documentPendingRemoval || !userId) return;
     setIsRemoving(true);
     try {
       await deleteIngestedDocument(documentPendingRemoval.documentId, userId);
       showToast(`Removed "${documentPendingRemoval.name}" from the knowledge base.`, 'success');
+      setIngestOverrides((prev) => ({ ...prev, [documentPendingRemoval.entryId]: { ingested: false, docId: null } }));
       setDocumentPendingRemoval(null);
-      // The tree's own rows track their ingested state locally (see
-      // SharePointFolderTree) and won't reflect this removal on their own --
-      // re-browsing from the root is the simplest correct refresh, even
-      // though it collapses any expanded subfolders.
-      if (browseUrl) await handleBrowse();
     } catch {
       showToast('Failed to remove the document. Please try again.', 'error');
     } finally {
@@ -213,6 +323,9 @@ export function KnowledgeBase(): React.ReactElement {
     }
   }
 
+  const selectedFile = centerEntries?.find((entry) => entry.id === selectedFileId) ?? null;
+  const breadcrumbSegments = currentFolder.path ? currentFolder.path.split('/') : [];
+
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="Knowledge Base" description="Documents your SURVEY jobs are judged against. Only visible to your own jobs." />
@@ -242,14 +355,52 @@ export function KnowledgeBase(): React.ReactElement {
         </Card>
       ) : browseError ? (
         <Alert severity="error">{browseError}</Alert>
-      ) : browseEntries ? (
-        <Card>
-          <div className="p-3.5">
-            {browseEntries.length === 0 ? (
-              <p className="py-1 text-sm text-ink-3">This folder is empty.</p>
-            ) : (
-              userId && <SharePointFolderTree entries={browseEntries} userId={userId} onRequestRemove={(documentId, name) => setDocumentPendingRemoval({ documentId, name })} />
-            )}
+      ) : rootEntries && userId ? (
+        // Three-pane explorer: folder hierarchy (left) / selected folder's
+        // files (center) / selected file's details (right) -- replaces the
+        // single scrolling tree-with-inline-actions layout.
+        <Card className="overflow-hidden">
+          <div className="grid h-[560px] grid-cols-[220px_minmax(0,1fr)_280px] divide-x divide-hairline">
+            <div className="min-h-0 overflow-y-auto p-2">
+              {rootEntries.filter((e) => e.isFolder).length === 0 ? (
+                <p className="p-2 text-xs text-ink-3">No subfolders here.</p>
+              ) : (
+                <SharePointFolderTree
+                  entries={rootEntries}
+                  userId={userId}
+                  onRequestRemove={() => {}}
+                  foldersOnly
+                  selectedFolderId={currentFolder.id}
+                  onSelectFolder={handleSelectFolderFromTree}
+                />
+              )}
+            </div>
+            <KbFileList
+              entries={centerEntries}
+              loading={centerLoading}
+              breadcrumb={breadcrumbSegments}
+              onNavigateRoot={handleNavigateRoot}
+              onNavigateFolder={handleNavigateFolder}
+              selectedFileId={selectedFileId}
+              onSelectFile={(entry) => setSelectedFileId(entry.id)}
+              isIngested={isIngested}
+              ingestingId={ingestingId}
+              onIngest={handleIngestFile}
+              onRequestRemove={handleRequestRemove}
+            />
+            <div className="min-h-0 overflow-y-auto">
+              <KbFileDetailPane
+                entry={selectedFile}
+                ingested={selectedFile ? isIngested(selectedFile) : false}
+                isIngesting={selectedFile ? ingestingId === selectedFile.id : false}
+                alwaysInclude={selectedFile ? (alwaysIncludeSelection[selectedFile.id] ?? false) : false}
+                onToggleAlwaysInclude={(value) =>
+                  selectedFile && setAlwaysIncludeSelection((prev) => ({ ...prev, [selectedFile.id]: value }))
+                }
+                onIngest={() => selectedFile && handleIngestFile(selectedFile)}
+                onRequestRemove={() => selectedFile && handleRequestRemove(selectedFile)}
+              />
+            </div>
           </div>
         </Card>
       ) : (
@@ -299,7 +450,7 @@ export function KnowledgeBase(): React.ReactElement {
         confirmLabel="Remove document"
         onConfirm={handleRemoveDocument}
         isConfirming={isRemoving}
-        destructive
+        variant="destructive"
       />
     </div>
   );

@@ -486,6 +486,73 @@ def test_build_survey_tree_builds_a_qualifying_table_deterministically() -> None
     assert {n.title for n in children} == {"The system shall detect X.", "The system shall detect Y."}
 
 
+def test_build_survey_tree_fires_deterministic_subtree_progress_for_a_qualifying_table() -> None:
+    # Real gap this closes: _detect_deterministic_subtrees ran immediately
+    # after preparing_analysis with zero narration of its own -- confirmed
+    # live as a genuine 20+ minute silent window on a document with many
+    # ID-hierarchy table rows.
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "External Source Detection"],
+                    ["1.1.1", "The system shall detect X."],
+                    ["1.1.2", "The system shall detect Y."],
+                ])
+            ]
+        }
+    )
+    events: list = []
+    build_survey_tree(doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
+
+    subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
+    assert len(subtree_events) == 1
+    assert subtree_events[0].subtree_index == 0
+    assert subtree_events[0].subtree_count == 1
+    assert subtree_events[0].subtree_label == "Table t0"
+
+
+def test_build_survey_tree_fires_deterministic_subtree_progress_for_a_structural_heading_document() -> None:
+    events: list = []
+    build_survey_tree(
+        _structural_heading_doc(), FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p)
+    )
+
+    subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
+    assert len(subtree_events) == 1
+    assert subtree_events[0].subtree_index == 0
+    assert subtree_events[0].subtree_count == 1
+    assert subtree_events[0].subtree_label == "Heading hierarchy"
+
+
+def test_build_survey_tree_reports_the_real_subtree_count_across_multiple_qualifying_subtrees() -> None:
+    # One qualifying table AND a structural-heading residual -- both
+    # subtrees must be counted in subtree_count from the very first event,
+    # not just however many have been seen so far.
+    doc = _structural_heading_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "External Source Detection"],
+                    ["1.1.1", "The system shall detect X."],
+                    ["1.1.2", "The system shall detect Y."],
+                ])
+            ]
+        }
+    )
+    events: list = []
+    build_survey_tree(doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
+
+    subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
+    assert len(subtree_events) == 2
+    assert [e.subtree_count for e in subtree_events] == [2, 2]
+    assert [e.subtree_index for e in subtree_events] == [0, 1]
+    assert subtree_events[0].subtree_label == "Table t0"
+    assert subtree_events[1].subtree_label == "Heading hierarchy"
+
+
 def test_build_survey_tree_does_not_count_a_one_child_group_toward_topic_count() -> None:
     doc = _small_doc().model_copy(
         update={
@@ -1949,6 +2016,98 @@ def test_resolve_caps_frontier_prefix_gets_large_cap_and_tools() -> None:
     assert caps.branch_cap == 100_000
 
 
+# --- live per-model capability lookup (ModelCapsClient) ----------------------
+#
+# Real gap closed: an unknown model previously got the same blanket
+# conservative guess (context=28_000, coverage=_COVERAGE_BUDGET_TOKENS,
+# supports_tools=False) regardless of what it actually is. caps_client is
+# optional (default None, byte-identical to every test above) -- only
+# applies to a model NOT already in _MODEL_CAPS and not frontier-prefixed.
+
+
+class _FakeCapsClient:
+    def __init__(self, response: dict | None = None, raises: bool = False) -> None:
+        self._response = response or {"context_length": 64_000, "capabilities": ["completion", "tools"]}
+        self._raises = raises
+        self.call_count = 0
+
+    def show_model(self, model: str) -> dict:
+        self.call_count += 1
+        if self._raises:
+            raise RuntimeError("orchestrator unreachable")
+        return self._response
+
+
+def test_resolve_caps_unknown_model_uses_live_lookup_when_caps_client_supplied() -> None:
+    from app.leveling.llm_leveling import _resolve_caps
+
+    fake_client = _FakeCapsClient({"context_length": 64_000, "capabilities": ["completion", "tools"]})
+    caps = _resolve_caps("some-fresh-model-v9", caps_client=fake_client)
+
+    assert caps.context_budget_tokens == 64_000
+    assert caps.supports_tools is True
+    assert fake_client.call_count == 1
+
+
+def test_resolve_caps_live_lookup_result_is_cached_for_the_process_lifetime() -> None:
+    from app.leveling.llm_leveling import _resolve_caps
+
+    fake_client = _FakeCapsClient({"context_length": 40_000, "capabilities": ["completion"]})
+    first = _resolve_caps("some-cached-model-v9", caps_client=fake_client)
+    second = _resolve_caps("some-cached-model-v9", caps_client=fake_client)
+
+    assert first == second
+    assert fake_client.call_count == 1  # second call hit the cache, not a second live lookup
+
+
+def test_resolve_caps_live_lookup_at_frontier_threshold_gets_frontier_shaped_caps() -> None:
+    from app.leveling.llm_leveling import _resolve_caps
+
+    fake_client = _FakeCapsClient({"context_length": 200_000, "capabilities": ["completion", "tools"]})
+    caps = _resolve_caps("some-huge-model-v9", caps_client=fake_client)
+
+    assert caps.context_budget_tokens == 200_000
+    assert caps.coverage_budget_tokens == caps.context_budget_tokens  # no lost-in-the-middle guard at this scale
+    assert caps.branch_cap == 100_000
+
+
+def test_resolve_caps_live_lookup_below_frontier_threshold_keeps_conservative_local_defaults() -> None:
+    from app.leveling.llm_leveling import _resolve_caps, _COVERAGE_BUDGET_TOKENS, _MAX_SURVEY_BRANCH_BLOCK_COUNT
+
+    fake_client = _FakeCapsClient({"context_length": 32_000, "capabilities": ["completion", "tools"]})
+    caps = _resolve_caps("some-modest-model-v9", caps_client=fake_client)
+
+    assert caps.context_budget_tokens == 32_000
+    assert caps.coverage_budget_tokens == _COVERAGE_BUDGET_TOKENS  # the lost-in-the-middle guard stays on
+    assert caps.branch_cap == _MAX_SURVEY_BRANCH_BLOCK_COUNT
+    assert caps.supports_tools is True
+
+
+def test_resolve_caps_live_lookup_failure_falls_back_to_exactly_the_static_default() -> None:
+    from app.leveling.llm_leveling import _resolve_caps
+
+    without_client = _resolve_caps("some-raising-model-v9")
+    fake_client = _FakeCapsClient(raises=True)
+    with_raising_client = _resolve_caps("some-raising-model-v9", caps_client=fake_client)
+
+    assert with_raising_client == without_client
+    assert fake_client.call_count == 1
+
+
+def test_resolve_caps_never_calls_the_live_client_for_a_model_already_in_the_static_table() -> None:
+    # This is the guarantee that protects every empirically-tuned model
+    # (qwen3.6:35b, qwen2.5:32b-instruct, ...) from being second-guessed
+    # by a generic derivation -- the static table always wins when it has
+    # an entry, no matter what caps_client would have returned.
+    from app.leveling.llm_leveling import _resolve_caps
+
+    fake_client = _FakeCapsClient({"context_length": 1, "capabilities": []})  # would produce very different caps
+    caps = _resolve_caps("qwen3.6:35b", caps_client=fake_client)
+
+    assert caps.coverage_budget_tokens == 20_000  # the real static-table value, untouched
+    assert fake_client.call_count == 0
+
+
 def test_merge_branches_by_budget_merges_adjacent_small_branches_that_fit_together() -> None:
     # §4: many small branches (one per heading, as _split_into_branches
     # produces for a document with no depth-1 headings -- the AirPro
@@ -2935,6 +3094,62 @@ def _structural_heading_doc() -> CanonicalDoc:
             h("b5", 2, "The system shall do E."),
         ],
     )
+
+
+def test_build_survey_tree_uses_a_live_derived_token_budget_for_the_parent_summary_pass() -> None:
+    # End-to-end wiring check: the SAME client passed as parent_summary_client
+    # also backs the live per-model caps lookup (ModelCapsClient) when the
+    # model isn't in _MODEL_CAPS -- _apply_det_parent_summary must resolve a
+    # REAL derived budget from it, not the flat _PARENT_SUMMARY_TOKEN_BUDGET
+    # default, and use it to decide how many summarize_parent_nodes calls
+    # this document's Epic/Feature nodes need.
+    doc = _structural_heading_doc()  # Epic "System Domain" -> 5 Requirement leaves, deterministic end to end
+
+    class FakeParentSummaryAndCapsClient:
+        def __init__(self, context_length: int) -> None:
+            self.context_length = context_length
+            self.summarize_calls: list[dict] = []
+            self.show_model_calls: list[str] = []
+
+        def show_model(self, model: str) -> dict:
+            self.show_model_calls.append(model)
+            return {"context_length": self.context_length, "capabilities": ["completion"]}
+
+        def summarize_parent_nodes(self, nodes_by_id: dict) -> dict:
+            self.summarize_calls.append(nodes_by_id)
+            return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
+
+    fake_client = FakeParentSummaryAndCapsClient(context_length=32_000)
+    tree = build_survey_tree(
+        doc, FakeSectionAnalysisClient(), parent_summary_client=fake_client, model="some-fresh-model-v9-parent-summary",
+    )
+
+    assert fake_client.show_model_calls == ["some-fresh-model-v9-parent-summary"]  # live lookup actually happened
+    epic = next(n for n in tree.nodes if n.title == "Synthesized Epic")
+    assert epic.description == "Covers A-E."
+
+
+def test_build_survey_tree_never_does_a_live_caps_lookup_for_an_already_tuned_model() -> None:
+    # Companion to the above: a model already in _MODEL_CAPS must never
+    # trigger show_model at all, protecting every empirically-tuned model's
+    # static coverage_budget_tokens from being second-guessed.
+    doc = _structural_heading_doc()
+
+    class FakeParentSummaryAndCapsClient:
+        def __init__(self) -> None:
+            self.show_model_calls: list[str] = []
+
+        def show_model(self, model: str) -> dict:
+            self.show_model_calls.append(model)
+            return {"context_length": 1, "capabilities": []}
+
+        def summarize_parent_nodes(self, nodes_by_id: dict) -> dict:
+            return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
+
+    fake_client = FakeParentSummaryAndCapsClient()
+    build_survey_tree(doc, FakeSectionAnalysisClient(), parent_summary_client=fake_client, model="qwen3.6:35b")
+
+    assert fake_client.show_model_calls == []
 
 
 def test_build_survey_tree_folds_a_real_figure_caption_deterministically() -> None:

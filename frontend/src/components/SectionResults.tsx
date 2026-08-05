@@ -97,7 +97,7 @@ function SectionResultRow({ item }: { item: SectionResultEntry }): React.ReactEl
                   key={citation.sourceFile}
                   bg="var(--color-surface-alt)"
                   color="var(--color-ink-2)"
-                  className="border border-hairline-strong font-mono text-[11px] font-normal"
+                  className="border border-hairline-strong font-mono text-meta font-normal"
                   title={`similarity ${Math.round(citation.similarity * 100)}%`}
                 >
                   {citation.sourceFile}

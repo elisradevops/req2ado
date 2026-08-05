@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import tempfile
+import time
 from pathlib import Path
 
 import redis
@@ -25,8 +26,9 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
+from app.leveling.id_hierarchy import rows_from_table
 from app.leveling.llm_leveling import _resolve_caps, build_survey_tree
-from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher
+from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.tree_builder import build_baseline_tree
 from app.logging_context import JobIdLogFilter, job_id_scope
 from app.quality.criteria_retrieval import CriteriaRetriever
@@ -57,6 +59,17 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="req2ado-ingestion")
 
 
+# Stamps each request's start time so the exception handler below can report
+# how long a job had actually been running when it failed (elapsed_seconds
+# on the job_failed narration event) -- request.state is the standard
+# per-request scratch space for exactly this kind of cross-cutting timing,
+# not persisted or used anywhere else.
+@app.middleware("http")
+async def _stamp_request_start_time(request: Request, call_next):
+    request.state.start_time = time.monotonic()
+    return await call_next(request)
+
+
 # Confirmed real UX gap (user-reported): with no handler registered here,
 # Starlette's own default (debug=False, uvicorn's default) swallows any
 # unhandled exception into a bare '{"detail": "Internal Server Error"}' --
@@ -75,17 +88,49 @@ app = FastAPI(title="req2ado-ingestion")
 # codebase (see orchestrator_llm_client.py's _parse_json_object) -- a
 # genuine upstream-failure signal, so 502 Bad Gateway is the semantically
 # correct status; anything else is a real internal bug, reported as 500.
+# Real gap this closes (confirmed live: a real job's httpx.ReadTimeout
+# during quality scoring): the response body above already carries the
+# real exception message, but that only ever reaches a flattened one-line
+# AuditEntry ("Pipeline failed: Ingestion /level request failed: timed
+# out") -- no phase, no elapsed time, no real exception TYPE. Publishing a
+# job_failed narration event here (same publish()/Redis/JobEvent-
+# persistence path every other phase already uses) durably captures that
+# structured context for free, keyed off whatever job_id this request
+# carries (both /level and /ingest take it as a query param -- any other
+# route simply has no job_id to report against, a no-op).
+def _publish_job_failed(request: Request, exc: Exception) -> None:
+    job_id = request.query_params.get("job_id")
+    if not job_id:
+        return
+    start_time = getattr(request.state, "start_time", None)
+    elapsed_seconds = time.monotonic() - start_time if start_time is not None else None
+    try:
+        NarrationPublisher(_narration_redis, job_id).publish(
+            LevelingProgress(
+                phase="job_failed",
+                branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                kb_grounded=False, kb_citations=[],
+                error_type=type(exc).__name__, error_message=str(exc),
+                elapsed_seconds=elapsed_seconds, last_phase=last_known_phase(job_id),
+            )
+        )
+    except Exception:  # noqa: BLE001 - this enrichment must never mask the real error response
+        logger.exception("Failed to publish job_failed narration for job %s", job_id)
+
+
 @app.exception_handler(ValueError)
 async def _value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
     # request.url (not request.url.path) -- /level's job_id arrives as a
     # query param, which .path silently drops from this log line.
     logger.exception("Unhandled ValueError in %s", request.url)
+    _publish_job_failed(request, exc)
     return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled exception in %s", request.url)
+    _publish_job_failed(request, exc)
     return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 # settings.chroma_mode="embedded" (default, unset = same behavior as
@@ -108,6 +153,12 @@ _kb_vector_store = KbVectorStore(
     host=settings.chroma_host,
     port=settings.chroma_port,
 )
+# Module-level singleton, same convention as _embed_client/_vector_store
+# above -- no per-job model override needed, /dedup/check has no model
+# context of its own (it's called once per diff-tree node, independent of
+# any job's own SURVEY model choice). Backs check_for_duplicates.py's
+# optional LLM verification pass (DuplicateJudgeClient).
+_dedup_judge_client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
 # None (default: llm_vision_model unset) means figure extraction stays a
 # placeholder -- identical behavior to before vision support existed.
 _vision_client = (
@@ -202,7 +253,17 @@ def _describe_figure(image_bytes: bytes) -> str:
     cache_key = _figure_caption_cache_key(image_bytes)
     try:
         cached = _narration_redis.get(cache_key)
-        if cached is not None:
+        # A blank cached value is treated as a MISS, not a hit -- confirmed
+        # live (AirPro document, all 39 figures): a vision call that once
+        # returned an empty string got cached unconditionally and then
+        # replayed that same empty caption on every subsequent resubmit for
+        # a full week (_FIGURE_CAPTION_CACHE_TTL_SECONDS), masking whatever
+        # caused the original empty response and making it look like every
+        # single figure in the document genuinely had no useful caption.
+        # The real NO_TECHNICAL_CONTENT_SENTINEL is a meaningful, non-blank
+        # answer and is NOT covered by this check -- only a truly empty/
+        # whitespace-only response is excluded.
+        if cached is not None and cached.decode("utf-8").strip():
             return cached.decode("utf-8")
     except Exception:
         logger.warning("Figure-caption cache read failed -- falling through to a live vision call", exc_info=True)
@@ -232,10 +293,15 @@ def _describe_figure(image_bytes: bytes) -> str:
                 describe_bytes = converted
                 mime_type = "image/png"
     caption = _vision_client.describe_figure(describe_bytes, mime_type)
-    try:
-        _narration_redis.set(cache_key, caption, ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS)
-    except Exception:
-        logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
+    # Never cache a blank result -- see the read-side comment above for why.
+    # A blank caption is never useful to replay, and skipping the write lets
+    # a transient failure self-heal on the next call/run instead of being
+    # locked in for a full week.
+    if caption.strip():
+        try:
+            _narration_redis.set(cache_key, caption, ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS)
+        except Exception:
+            logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
     return caption
 
 
@@ -343,6 +409,12 @@ def _build_survey_tree_with_scoring(
             # spec-table cell gets rewritten into a real requirement
             # statement instead of being emitted verbatim.
             synthesis_client=client,
+            # Same client, implements ParentSummaryClient directly -- an
+            # Epic/Feature's title AND description were both a verbatim
+            # copy of the source heading text (confirmed real gap, live:
+            # "Controls:", "Over 28V VDC input" read as literal section
+            # titles, not ADO's own strategic-goal/capability framing).
+            parent_summary_client=client,
             # Same client, implements ConflictJudgeClient directly -- real
             # capability gap closed here: this codebase previously had no
             # conflict/contradiction detection anywhere (see
@@ -376,6 +448,13 @@ class KbIngestUrlRequest(BaseModel):
     user_id: str
     doc_type: str | None = None
     recursive: bool = False  # ignored by /kb/ingest-url (single doc); folder route only
+    # "retrieve" (default, None also means this) or "always_include" -- see
+    # KbVectorStore.upsert_chunk's own docstring. Ignored by
+    # /kb/ingest-folder-url (single-doc routes only) -- a whole folder of
+    # files being unconditionally injected into every prompt is a much
+    # larger blast radius than one deliberately-chosen standards doc, so
+    # this stays scoped to the single-document upload path for now.
+    retrieval_mode: str | None = None
     # Optional per-request override for the shared SharePoint token -- set
     # by the orchestrator when a user has rotated the token via
     # POST /kb/sharepoint/reconnect (stored in its credential vault, not
@@ -390,6 +469,7 @@ class KbIngestItemRequest(BaseModel):
     download_url: str
     user_id: str
     doc_type: str | None = None
+    retrieval_mode: str | None = None
     graph_token: str | None = None
 
 
@@ -599,6 +679,27 @@ async def ingest(
                 block_count=len(doc.blocks), table_count=len(doc.tables), figure_count=len(doc.figures),
             )
         )
+        # One event per Table, right after parse_done -- answers "did my
+        # tables ingest correctly" (row count + deterministic-detection
+        # qualifying status) up front, rather than the user having to wait
+        # for analysis/scoring to find out a table was mis-parsed.
+        for table in doc.tables:
+            # Real bug (confirmed live): rows_from_table returns only the
+            # ID-hierarchy-QUALIFYING rows (legitimately [] for a table
+            # whose content just isn't ID-shaped) -- using that as the
+            # reported row count made every non-qualifying table read as
+            # "0 row(s)", indistinguishable from a genuinely empty/mis-
+            # parsed table. table.rows is the real raw row count; qualifying
+            # status is reported separately, never conflated with size.
+            qualifying_rows = rows_from_table(table)
+            narration_publisher.publish(
+                LevelingProgress(
+                    phase="table_detected",
+                    branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                    kb_grounded=False, kb_citations=[],
+                    table_id=table.id, table_row_count=len(table.rows), table_qualifies=bool(qualifying_rows),
+                )
+            )
 
     if redact:
         doc = redact_canonical_doc(doc)
@@ -655,7 +756,21 @@ async def level(
         # for the gate decision, so num_ctx and the gate never disagree. A
         # genuine OpenAI-compat backend (the production frontier-model
         # proxy) ignores this unrecognized field -- harmless to always send.
-        num_ctx = _resolve_caps(model).context_budget_tokens
+        # caps_client=probe_client: _resolve_caps's optional live /api/show
+        # lookup (for a model NOT already in _MODEL_CAPS) is a real,
+        # synchronous httpx.Client HTTP call (same convention as every
+        # other OrchestratorLlmClient method) -- run in its OWN threadpool
+        # dispatch, never inline in this async route, for the exact reason
+        # build_survey_tree's own call below is already threadpool-
+        # dispatched. probe_client needs no num_ctx of its own (show_model's
+        # request doesn't use it); construction itself is cheap/sync
+        # (no I/O), so building a second instance below with the now-known
+        # num_ctx is simpler than mutating this one after the fact.
+        probe_client = OrchestratorLlmClient(
+            settings.orchestrator_url, settings.llm_proxy_bearer, model=model,
+            top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+        )
+        num_ctx = (await run_in_threadpool(_resolve_caps, model, probe_client)).context_budget_tokens
         client = OrchestratorLlmClient(
             settings.orchestrator_url, settings.llm_proxy_bearer, model=model, num_ctx=num_ctx,
             top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
@@ -670,7 +785,12 @@ async def level(
 @app.post("/dedup/check", response_model=DuplicateCheckResult)
 async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
     return check_for_duplicates(
-        body.text, item_id="", area_path=body.area_path, embed_client=_embed_client, vector_store=_vector_store
+        body.text,
+        item_id="",
+        area_path=body.area_path,
+        embed_client=_embed_client,
+        vector_store=_vector_store,
+        judge_client=_dedup_judge_client,
     )
 
 
@@ -730,6 +850,7 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
             _kb_vector_store,
             describe_figure=_describe_figure if _vision_client is not None else None,
             checklist_client=_checklist_client,
+            retrieval_mode=body.retrieval_mode,
         )
     except ValueError as exc:
         # SSRF/scheme/host/size/content-type violation, or missing token.
@@ -793,6 +914,7 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
             _kb_vector_store,
             describe_figure=_describe_figure if _vision_client is not None else None,
             checklist_client=_checklist_client,
+            retrieval_mode=body.retrieval_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

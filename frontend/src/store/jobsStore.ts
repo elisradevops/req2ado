@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { KbCitation } from '../components/KbCitationChips';
+import type { FigureDescriptionEntry } from '../components/FigureDescriptions';
 
 export interface JobSummary {
   id: string;
@@ -22,6 +23,12 @@ export interface JobDetail {
   // (SURVEY-only, e.g. generated node count diverging from source block
   // count) -- distinct from per-node quality/grounding signals.
   warnings?: string[];
+  // Persisted vision-model figure captions (see Job.figureDescriptions'
+  // schema.prisma doc comment) -- lets JobDetail's FigureDescriptions panel
+  // survive a reload or reopening a completed job, seeding the same
+  // figureCaptionsByIndex state live SSE narration otherwise fills in
+  // during a run.
+  figureDescriptions?: FigureDescriptionEntry[];
   createdAt: string;
   areaPath: string;
   originalFilename: string;

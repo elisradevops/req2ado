@@ -5,6 +5,8 @@ import Redis from 'ioredis';
 import { JobsController } from './jobs.controller';
 import { AdoController } from './ado.controller';
 import { JobEventsController, REDIS_SUBSCRIBER_FACTORY } from './job-events.controller';
+import { JobEventPersistenceService } from './job-event-persistence.service';
+import { StaleJobWatchdogService } from './stale-job-watchdog.service';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { WorkItemTypeCatalogService } from './work-item-type-catalog.service';
@@ -118,6 +120,37 @@ import { AuthModule } from '../auth/auth.module';
       provide: REDIS_SUBSCRIBER_FACTORY,
       inject: [ConfigService],
       useFactory: (config: ConfigService) => () => new Redis(config.get<string>('REDIS_URL')!),
+    },
+    {
+      // TWO dedicated connections, not one -- the first is psubscribe'd for
+      // the lifetime of the process (same "subscribed connections can't
+      // issue other commands" constraint as REDIS_SUBSCRIBER_FACTORY above)
+      // and can never run KEYS/LRANGE/GET again once that happens; the
+      // second stays a plain command connection for
+      // backfillMissedEvents()'s own reads (see that service's own doc
+      // comment for why the backfill pass exists at all).
+      provide: JobEventPersistenceService,
+      inject: [ConfigService, PrismaClient],
+      useFactory: (config: ConfigService, prisma: PrismaClient) =>
+        new JobEventPersistenceService(
+          new Redis(config.get<string>('REDIS_URL')!) as any,
+          new Redis(config.get<string>('REDIS_URL')!) as any,
+          prisma,
+        ),
+    },
+    {
+      // checkIntervalMs/staleThresholdMs are plain numbers with no
+      // injectable token of their own -- needs the same explicit-factory
+      // treatment as every other numeric-config-carrying provider here.
+      provide: StaleJobWatchdogService,
+      inject: [PrismaClient, JobsService, ConfigService],
+      useFactory: (prisma: PrismaClient, jobsService: JobsService, config: ConfigService) =>
+        new StaleJobWatchdogService(
+          prisma,
+          jobsService,
+          config.get<number>('STALE_JOB_CHECK_INTERVAL_MS')!,
+          config.get<number>('STALE_JOB_THRESHOLD_MS')!,
+        ),
     },
     {
       // BackfillService's constructor params are declared via `import type`

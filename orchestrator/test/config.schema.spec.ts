@@ -89,6 +89,16 @@ describe('configSchema embed fields', () => {
     const result = configSchema.parse({ ...BASE_ENV_WITH_LLM, EMBED_PATH: '/ollama/api/embed' });
     expect(result.EMBED_PATH).toBe('/ollama/api/embed');
   });
+
+  it('defaults SHOW_PATH to /api/show when unset', () => {
+    const result = configSchema.parse(BASE_ENV_WITH_LLM);
+    expect(result.SHOW_PATH).toBe('/api/show');
+  });
+
+  it('respects an explicit SHOW_PATH override -- Open WebUI needs /ollama/api/show, not the bare /api/show default', () => {
+    const result = configSchema.parse({ ...BASE_ENV_WITH_LLM, SHOW_PATH: '/ollama/api/show' });
+    expect(result.SHOW_PATH).toBe('/ollama/api/show');
+  });
 });
 
 describe('configSchema PIPELINE_WORKER_CONCURRENCY', () => {

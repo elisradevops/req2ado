@@ -221,6 +221,28 @@ def title_tags_schema() -> dict:
     }
 
 
+def parent_summary_schema() -> dict:
+    """summarize_parent_nodes (OrchestratorLlmClient, backing
+    ParentSummaryClient/id_tree_builder._apply_parent_summary_pass): a
+    dynamic node-id-keyed object, same additionalProperties shape family
+    as title_tags_schema -- but 'title' and 'description' here, not
+    'title'/'tags', since an Epic/Feature has no requirement-tag concept."""
+    return {
+        "name": "parent_summary_by_node",
+        "schema": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["title", "description"],
+            },
+        },
+    }
+
+
 def synthesis_schema() -> dict:
     """synthesize_leaf_requirements (OrchestratorLlmClient, backing
     SynthesisClient/id_tree_builder._apply_synthesis_pass): a dynamic
@@ -258,6 +280,26 @@ def duplicate_cluster_verdict_schema() -> dict:
                 "conflicting_values": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["verdict", "conflicting_values"],
+        },
+    }
+
+
+def duplicate_pair_verdict_schema() -> dict:
+    """judge_duplicate_pair (OrchestratorLlmClient, backing
+    DuplicateJudgeClient/check_for_duplicates.py's dedup-accuracy pass): a
+    fixed-shape object like duplicate_cluster_verdict_schema, but no
+    'conflicting_values' -- this call only ever needs the verdict itself
+    (is the candidate the SAME real-world requirement as the matched ADO
+    item, or just topically similar), never the numeric-conflict detail
+    that's specific to the within-job cluster judge."""
+    return {
+        "name": "duplicate_pair_verdict",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["redundant", "contradictory", "distinct"]},
+            },
+            "required": ["verdict"],
         },
     }
 

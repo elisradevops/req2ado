@@ -53,6 +53,51 @@ def test_ingests_a_new_document_end_to_end(mock_dispatch, tmp_path) -> None:
     assert vector_store.existing_file_hash("Project\\Area1", "doc.docx", "item-1") is not None
 
 
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_document_forwards_retrieval_mode_to_the_vector_store(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="standards.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        retrieval_mode="always_include",
+    )
+
+    assert vector_store.list_always_include_documents("Project\\Area1") == ["standards.docx"]
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_document_omits_retrieval_mode_by_default(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type=None,
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+    )
+
+    assert vector_store.list_always_include_documents("Project\\Area1") == []
+
+
 class FakeChecklistClient:
     def __init__(self, checklist: list[str]) -> None:
         self.checklist = checklist

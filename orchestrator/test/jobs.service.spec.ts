@@ -85,6 +85,136 @@ describe('JobsService.confirm', () => {
     );
   });
 
+  it('publishes an unconditional "create" kick-off narration with blocksDone: 0 before the first item resolves', async () => {
+    // Regression coverage: previously the first 'create' narration only
+    // fired from INSIDE the mapWithConcurrency callback, once item #1
+    // actually finished -- so the ticker sat frozen on 'discover_types' for
+    // however long the first ADO create round-trip took, however long that
+    // was. This kick-off must exist and must come before the blocksDone:1
+    // event, not just exist somewhere in the call history.
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 100 });
+    const record = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready', state: 'Proposed',
+          areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const publishNarration = jest.fn().mockResolvedValue(undefined);
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { publish: jest.fn(), publishNarration } as any,
+    );
+
+    await service.confirm('job-1');
+
+    const createCalls = publishNarration.mock.calls.filter(([, event]) => event.writeSubPhase === 'create');
+    expect(createCalls[0][1]).toMatchObject({ blocksDone: 0, blocksTotal: 1 });
+    expect(createCalls[createCalls.length - 1][1]).toMatchObject({ blocksDone: 1, blocksTotal: 1 });
+    expect(createCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('publishes a "link_parents" narration even when there is nothing to link (toLink is empty)', async () => {
+    // Regression coverage: a single-root diff with no parent/child relations
+    // previously published nothing at all for this sub-phase -- the ticker
+    // stayed frozen on the last 'create' narration for the rest of confirm(),
+    // even though linking had (trivially) already finished.
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 100 });
+    const record = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready', state: 'Proposed',
+          areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Only node', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const publishNarration = jest.fn().mockResolvedValue(undefined);
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { publish: jest.fn(), publishNarration } as any,
+    );
+
+    await service.confirm('job-1');
+
+    expect(publishNarration).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({ phase: 'writing', writeSubPhase: 'link_parents', blocksDone: 0, blocksTotal: 0 }),
+    );
+  });
+
+  it('publishes a "trace_links" narration even when there are no trace links to write (toTraceLink is empty)', async () => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 100 });
+    const record = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready', state: 'Proposed',
+          areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Only node', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const publishNarration = jest.fn().mockResolvedValue(undefined);
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { publish: jest.fn(), publishNarration } as any,
+    );
+
+    await service.confirm('job-1');
+
+    expect(publishNarration).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({ phase: 'writing', writeSubPhase: 'trace_links', blocksDone: 0, blocksTotal: 0 }),
+    );
+  });
+
   it('creates work items using the project\'s REAL work-item type name, not req2ado\'s internal Epic/Feature/Requirement label', async () => {
     // Confirmed real bug: entry.type ("Requirement") was previously sent
     // straight to ADO as the literal type name -- 404s on any non-CMMI
@@ -1844,6 +1974,23 @@ describe('JobsService.cancel', () => {
     expect(prisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'cancelled' } });
     expect(result).toEqual({ status: 'cancelled' });
   });
+
+  it('writes a caller-supplied reason instead of the default "cancelled by user" message', async () => {
+    // StaleJobWatchdogService's own use of this method -- an automatic
+    // stall-cancellation must never falsely read as "by user".
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'running' }), update: jest.fn().mockResolvedValue(undefined) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    jest.spyOn(Queue.prototype, 'getJob').mockResolvedValue(undefined);
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.cancel('job-1', 'Automatically cancelled -- no activity detected for over 60 minutes.');
+
+    expect(prisma.auditEntry.create).toHaveBeenCalledWith({
+      data: { jobId: 'job-1', message: 'Automatically cancelled -- no activity detected for over 60 minutes.' },
+    });
+  });
 });
 
 describe('JobsService.delete', () => {
@@ -2080,6 +2227,7 @@ describe('JobsService.getById', () => {
           dryRunDiff: [{ localId: 'n0' }],
           warnings: null,
           kbCitations: ['doc-a.docx'],
+          figureDescriptions: null,
         }),
       },
     };
@@ -2094,7 +2242,31 @@ describe('JobsService.getById', () => {
       dryRunDiff: [{ localId: 'n0' }],
       warnings: [],
       kbCitations: ['doc-a.docx'],
+      // A historical job predates the figureDescriptions column -- a null
+      // column defaults to [], same convention as warnings above.
+      figureDescriptions: [],
     });
+  });
+
+  it('returns persisted figureDescriptions when the column has real data', async () => {
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready',
+          mode: 'survey',
+          dryRunDiff: [],
+          warnings: null,
+          kbCitations: [],
+          figureDescriptions: [{ figureIndex: 1, caption: 'A block diagram.' }],
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result?.figureDescriptions).toEqual([{ figureIndex: 1, caption: 'A block diagram.' }]);
   });
 
   it('returns null for an unknown job', async () => {

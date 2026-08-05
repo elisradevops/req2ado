@@ -1,7 +1,7 @@
 import logging
 
 from app.kb.kb_vector_store import KbVectorStore
-from app.kb.retrieval import retrieve_context
+from app.kb.retrieval import fetch_always_include_context, retrieve_context
 
 
 class FakeEmbedClient:
@@ -112,6 +112,83 @@ def test_retrieve_context_returns_none_and_logs_warning_when_embed_raises(tmp_pa
 def test_retrieve_context_returns_none_and_logs_warning_when_query_raises(caplog) -> None:
     with caplog.at_level(logging.WARNING):
         context, citations = retrieve_context("Project\\Area1", "some outline", FakeEmbedClient(), RaisingVectorStore())
+    assert context is None
+    assert citations == []
+    assert "chroma unavailable" in caplog.text
+
+
+def test_fetch_always_include_context_returns_none_when_no_file_is_tagged(tmp_path) -> None:
+    store = KbVectorStore(persist_path=str(tmp_path))
+    store.upsert_chunk(
+        chunk_id="s1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text",
+        user_id="Project\\Area1", source_file="doc.txt", source_id="s1", chunk_index=0, file_hash="h1",
+    )
+    context, citations = fetch_always_include_context("Project\\Area1", store)
+    assert context is None
+    assert citations == []
+
+
+def test_fetch_always_include_context_returns_full_text_unconditionally_regardless_of_similarity(tmp_path) -> None:
+    # Real gap this closes: an "always_include" file's text must be
+    # returned even though this function never computes/compares any
+    # similarity score at all -- there is no query_text param, unlike
+    # retrieve_context.
+    store = KbVectorStore(persist_path=str(tmp_path))
+    store.upsert_chunk(
+        chunk_id="s1:standards.docx:0", embedding=[1.0, 0.0, 0.0], text="first part",
+        user_id="Project\\Area1", source_file="standards.docx", source_id="s1", chunk_index=0,
+        file_hash="h1", retrieval_mode="always_include",
+    )
+    store.upsert_chunk(
+        chunk_id="s1:standards.docx:1", embedding=[1.0, 0.0, 0.0], text="second part",
+        user_id="Project\\Area1", source_file="standards.docx", source_id="s1", chunk_index=1,
+        file_hash="h1", retrieval_mode="always_include",
+    )
+    context, citations = fetch_always_include_context("Project\\Area1", store)
+    assert context == "first part\n\nsecond part"
+    assert citations == [{"source_file": "standards.docx", "similarity": 1.0, "text": context, "truncated": False}]
+
+
+def test_fetch_always_include_context_concatenates_multiple_tagged_files(tmp_path) -> None:
+    store = KbVectorStore(persist_path=str(tmp_path))
+    store.upsert_chunk(
+        chunk_id="s1:cmmi.docx:0", embedding=[1.0, 0.0, 0.0], text="cmmi text",
+        user_id="Project\\Area1", source_file="cmmi.docx", source_id="s1", chunk_index=0,
+        file_hash="h1", retrieval_mode="always_include",
+    )
+    store.upsert_chunk(
+        chunk_id="s2:incose.docx:0", embedding=[0.0, 1.0, 0.0], text="incose text",
+        user_id="Project\\Area1", source_file="incose.docx", source_id="s2", chunk_index=0,
+        file_hash="h2", retrieval_mode="always_include",
+    )
+    context, citations = fetch_always_include_context("Project\\Area1", store)
+    assert context is not None and "cmmi text" in context and "incose text" in context
+    assert sorted(c["source_file"] for c in citations) == ["cmmi.docx", "incose.docx"]
+
+
+def test_fetch_always_include_context_ignores_retrieve_mode_files(tmp_path) -> None:
+    store = KbVectorStore(persist_path=str(tmp_path))
+    store.upsert_chunk(
+        chunk_id="s1:standards.docx:0", embedding=[1.0, 0.0, 0.0], text="always text",
+        user_id="Project\\Area1", source_file="standards.docx", source_id="s1", chunk_index=0,
+        file_hash="h1", retrieval_mode="always_include",
+    )
+    store.upsert_chunk(
+        chunk_id="s2:spec.docx:0", embedding=[0.0, 1.0, 0.0], text="retrieve text",
+        user_id="Project\\Area1", source_file="spec.docx", source_id="s2", chunk_index=0, file_hash="h2",
+    )
+    context, citations = fetch_always_include_context("Project\\Area1", store)
+    assert context == "always text"
+    assert [c["source_file"] for c in citations] == ["standards.docx"]
+
+
+def test_fetch_always_include_context_returns_none_and_logs_warning_when_the_store_raises(caplog) -> None:
+    class RaisingListVectorStore:
+        def list_always_include_documents(self, user_id: str) -> list[str]:
+            raise RuntimeError("chroma unavailable")
+
+    with caplog.at_level(logging.WARNING):
+        context, citations = fetch_always_include_context("Project\\Area1", RaisingListVectorStore())
     assert context is None
     assert citations == []
     assert "chroma unavailable" in caplog.text

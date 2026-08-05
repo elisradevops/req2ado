@@ -40,23 +40,26 @@ export function ModeCards({
             aria-checked={selected}
             onClick={() => onChange(mode)}
             className={cn(
-              'flex flex-col gap-1.5 rounded-md border bg-surface px-3.5 py-3 text-left transition-colors',
-              selected ? 'border-navy-600 shadow-[inset_0_0_0_1px_var(--color-navy-600)]' : 'border-hairline-strong hover:border-navy-300',
+              // DESIGN.md §7 Surface category, Selected row: border-accent
+              // bg-accent-soft shadow-raised + a 3px accent left rail.
+              'relative flex flex-col gap-1.5 rounded-md border bg-surface px-3.5 py-3 text-left transition-colors duration-instant ease-out',
+              selected ? 'border-accent bg-accent-soft shadow-raised' : 'border-hairline-strong hover:border-accent-soft-border',
             )}
           >
+            {selected && <span className="absolute inset-y-0 left-0 w-[3px] rounded-l-md bg-accent" />}
             <div className="flex items-center gap-2">
               <span
                 className={cn(
                   'grid h-3.5 w-3.5 flex-none place-items-center rounded-full border',
-                  selected ? 'border-navy-600' : 'border-hairline-strong',
+                  selected ? 'border-accent' : 'border-hairline-strong',
                 )}
               >
-                {selected && <span className="h-1.5 w-1.5 rounded-full bg-navy-600" />}
+                {selected && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
               </span>
               <span className="text-sm font-bold">{MODE_COPY[mode].title}</span>
             </div>
             <span className="text-xs text-ink-3">{MODE_COPY[mode].description}</span>
-            <span className="font-mono text-[11px] text-ink-3">{MODE_COPY[mode].estimate}</span>
+            <span className="font-mono text-meta text-ink-3">{MODE_COPY[mode].estimate}</span>
           </button>
         );
       })}

@@ -5,8 +5,10 @@ import { Settings } from './Settings';
 import { ToastProvider } from '../components/ToastProvider';
 import { useAuthStore } from '../store/authStore';
 import { httpClient } from '../api/httpClient';
+import * as kbApi from '../api/kb';
 
 vi.mock('../api/httpClient', () => ({ httpClient: { post: vi.fn() } }));
+vi.mock('../api/kb');
 
 function renderPage(): void {
   useAuthStore.getState().login('https://ado.example', 'Jane Doe', 'user-descriptor-1');
@@ -20,18 +22,13 @@ function renderPage(): void {
 describe('Settings', () => {
   beforeEach(() => {
     vi.mocked(httpClient.post).mockReset();
+    vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
   });
 
   it('shows the signed-in identity and current org URL', () => {
     renderPage();
     expect(screen.getByText('Jane Doe')).toBeInTheDocument();
     expect(screen.getByText('https://ado.example')).toBeInTheDocument();
-  });
-
-  it('does not render a SharePoint or LLM connection row -- neither exists server-side yet', () => {
-    renderPage();
-    expect(screen.queryByText(/sharepoint/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/open webui|llm/i)).not.toBeInTheDocument();
   });
 
   it('reconnect calls /auth/ado-credential (not /auth/login -- no new session) and updates the stored org URL', async () => {
@@ -60,5 +57,51 @@ describe('Settings', () => {
     await userEvent.click(reconnectButtons[reconnectButtons.length - 1]);
 
     await waitFor(() => expect(screen.getByText(/invalid ado organization url or personal access token/i)).toBeInTheDocument());
+  });
+
+  describe('SharePoint integration row + Display Preferences (DESIGN.md Track B, phase B11)', () => {
+    it('shows the real SharePoint connection status once it resolves', async () => {
+      vi.mocked(kbApi.getSharePointStatus).mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+      renderPage();
+
+      await waitFor(() => expect(screen.getByText(/token invalid/i)).toBeInTheDocument());
+      expect(screen.getByText(/reauthentication required/i)).toBeInTheDocument();
+    });
+
+    it('reconnects SharePoint via the same reconnectSharePoint call KnowledgeBase.tsx uses', async () => {
+      vi.mocked(kbApi.getSharePointStatus).mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+      vi.spyOn(kbApi, 'reconnectSharePoint').mockResolvedValue({ status: 'valid', expiresInSeconds: 3600 });
+      renderPage();
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeInTheDocument());
+      const reconnectButtons = screen.getAllByRole('button', { name: /^reconnect$/i });
+      await userEvent.click(reconnectButtons[reconnectButtons.length - 1]);
+      await userEvent.type(screen.getByLabelText(/sharepoint access token/i), 'new-token');
+      await userEvent.click(screen.getAllByRole('button', { name: /^reconnect$/i }).at(-1)!);
+
+      await waitFor(() => expect(kbApi.reconnectSharePoint).toHaveBeenCalledWith('new-token'));
+      await waitFor(() => expect(screen.getByText(/sharepoint reconnected/i)).toBeInTheDocument());
+    });
+
+    it('toggles Dense View and persists it to localStorage', async () => {
+      renderPage();
+      const toggle = screen.getByRole('switch', { name: /dense view/i });
+      expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+      await userEvent.click(toggle);
+
+      expect(toggle).toHaveAttribute('aria-checked', 'true');
+      expect(JSON.parse(localStorage.getItem('req2ado-ui-preferences')!)).toMatchObject({ denseView: true });
+    });
+
+    it('toggles Auto-Sync Ledgers, defaulting to on', async () => {
+      renderPage();
+      const toggle = screen.getByRole('switch', { name: /auto-sync ledgers/i });
+      expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+      await userEvent.click(toggle);
+
+      expect(toggle).toHaveAttribute('aria-checked', 'false');
+    });
   });
 });

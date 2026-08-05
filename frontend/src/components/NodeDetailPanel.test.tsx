@@ -101,6 +101,28 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText(/Vague term/i)).toBeInTheDocument();
   });
 
+  it('renders Classification and Active Flags side by side, and Add Child last (DESIGN.md Track B, phase B13)', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{
+          localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+          action: 'create', customerId: null, tags: ['functional'], qualityScore: 72, qualityIssues: ['vague_term'],
+        }}
+        addChildSlot={<div data-testid="add-child-slot">Add child</div>}
+      />,
+    );
+    const classification = screen.getByText('Classification');
+    const activeFlags = screen.getByText('Active Flags');
+    // Same grid row -- siblings under the same parent, not stacked blocks.
+    expect(classification.parentElement?.parentElement).toBe(activeFlags.parentElement?.parentElement);
+
+    // Add Child renders after everything else in document order, not near
+    // the title (where it used to sit, disconnected from what it acts on).
+    const panel = screen.getByText('Req Title').closest('div.flex.flex-col.gap-3');
+    const addChildSlot = screen.getByTestId('add-child-slot');
+    expect(panel?.lastElementChild).toBe(addChildSlot);
+  });
+
   it('renders no score line when qualityScore is absent', () => {
     renderPanel(
       <NodeDetailPanel

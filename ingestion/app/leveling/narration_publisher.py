@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Callable, Literal
 
 import redis
@@ -26,18 +27,35 @@ _NARRATION_LOG_MAX_ENTRIES = 50
 Phase = Literal[
     "describe_figure",
     "parse_done",
+    # Fired once per Table found during parsing, right after parse_done --
+    # answers "did my tables ingest correctly" (row count + whether this
+    # table's rows are ID-shaped enough to qualify for deterministic
+    # hierarchy detection) before the user has to wait for analysis to find
+    # out the hard way.
+    "table_detected",
     # Real gap this closes (user-reported, live): a multi-minute SILENT
     # window between parse_done and the first analyze_section event, during
-    # which build_survey_tree does real, sometimes-slow setup work (KB
-    # grounding retrieval, branch splitting/merging, deterministic-subtree
-    # detection) with zero narration -- the UI had nothing to show but the
-    # LAST real event (parse_done), which made the "Reading document" step
-    # indicator look permanently stuck even though the pipeline had already
-    # moved on to analysis. Fired exactly once, before that setup work
-    # begins, in both build_survey_tree's main path and its
-    # pure-deterministic guard (both do KB retrieval before their own first
-    # progress_callback call).
+    # which build_survey_tree does real, sometimes-slow setup work
+    # (deterministic-subtree detection, branch splitting/merging, KB
+    # grounding retrieval) with zero narration -- the UI had nothing to show
+    # but the LAST real event (parse_done), which made the "Reading
+    # document" step indicator look permanently stuck even though the
+    # pipeline had already moved on to analysis. Fired exactly once, at the
+    # very top of build_survey_tree -- BEFORE deterministic-subtree
+    # detection even runs, not just before KB retrieval (confirmed live on
+    # a 682-block document: that detection pass alone is real synchronous
+    # CPU work with no narration of its own).
     "preparing_analysis",
+    # Real gap this closes (confirmed live, AirPro 682-block document):
+    # _detect_deterministic_subtrees runs immediately after preparing_analysis
+    # and, for a document with many ID-hierarchy table/heading rows, makes a
+    # real, unbounded number of sequential per-subtree LLM calls (title/tag
+    # synthesis, leaf-requirement synthesis) with ZERO narration of its own --
+    # confirmed live as a genuine 20+ minute silent window, not the
+    # intentional "no fixed step count" tail-phase design (ProgressBanner.tsx's
+    # own isTailPhase) elsewhere in this app. One event per subtree (table or
+    # heading-group), as each one's title/tag/synthesis calls run.
+    "deterministic_subtree",
     "analyze_section",
     "score_requirements",
     "score_requirements_done",
@@ -45,6 +63,15 @@ Phase = Literal[
     "detect_conflicts",
     "regroup_roots",
     "infer_trace_links",
+    # Real gap this closes (confirmed live): a job that fails deep inside
+    # build_survey_tree (e.g. an httpx.ReadTimeout waiting on a scoring LLM
+    # call) previously surfaced nothing more than a flattened one-line
+    # AuditEntry ("Pipeline failed: Ingestion /level request failed: timed
+    # out") -- no phase, no elapsed time, no real exception type. Fired once,
+    # from /level's top-level exception handler, carrying whatever phase was
+    # last known for this job (see _LAST_PHASE_BY_JOB below) plus the real
+    # exception's type/message/elapsed time.
+    "job_failed",
 ]
 
 
@@ -125,6 +152,76 @@ class LevelingProgress:
     # app.workitem.model -- the caller (llm_leveling.py) does the mapping.
     # None for every other phase.
     section_nodes: list[dict] | None = None
+    # deterministic_subtree only: which subtree (0-based) out of how many
+    # total this event describes, and a human label (the source Table's id,
+    # or the claimed heading-group's own label) -- the same "N of M plus a
+    # real name" pattern analyze_section's branch_index/branch_count/
+    # section_label already uses, applied to the deterministic-detection
+    # pass that previously had no narration at all.
+    subtree_index: int | None = None
+    subtree_count: int | None = None
+    subtree_label: str | None = None
+    # table_detected only: this table's own id (subtree_label carries the
+    # human display; kept separate here since a table's id and a
+    # deterministic-subtree's label serve different call sites and reusing
+    # one field for both would make each phase's payload harder to read),
+    # its row count, and whether it qualifies for deterministic hierarchy
+    # detection (see qualifying_groups's own docstring for the heuristic) --
+    # answers "did my tables ingest correctly" before the user has to wait
+    # for analysis to find out the hard way.
+    table_id: str | None = None
+    table_row_count: int | None = None
+    table_qualifies: bool | None = None
+    # score_requirements/score_requirements_done only: real titles for (a
+    # prefix of) the chunk being scored -- previously only a bare count
+    # ("150 drafted requirement(s)") with no way to tell which actual items
+    # were involved. Capped at a handful (see _MAX_SAMPLE_TITLES) to keep the
+    # wire payload small on a large chunk; the count itself still reflects
+    # the FULL chunk via draft_count/issues_found, unaffected by the cap.
+    sample_titles: list[str] | None = None
+    # score_requirements/score_requirements_done only: which chunk (0-based)
+    # out of how many total -- the WHOLE document's requirement count is
+    # known upfront (unlike figures/tables, whose totals aren't known until
+    # parsing finishes walking the document), so this is real progress, not
+    # a fabricated guess. Same "N of M" pattern deterministic_subtree's
+    # subtree_index/subtree_count already use. None on every other phase.
+    chunk_index: int | None = None
+    chunk_count: int | None = None
+    # job_failed only: the real exception's class name, message, and how
+    # long the job had been running when it failed -- replaces the flattened
+    # "Pipeline failed: <message>" AuditEntry line with actual structured
+    # context. `last_phase` is whatever phase this SAME publish() path last
+    # recorded for this job_id (see _LAST_PHASE_BY_JOB) -- best-effort, since
+    # a failure during the very first phase has no prior phase to report.
+    error_type: str | None = None
+    error_message: str | None = None
+    elapsed_seconds: float | None = None
+    last_phase: str | None = None
+
+
+# Caps sample_titles's payload size on a large scoring chunk -- draft_count/
+# issues_found already carry the real total, this is purely "which ones,
+# for a human to recognize" and doesn't need every single title.
+_MAX_SAMPLE_TITLES = 5
+
+
+def _sample_titles(titles: list[str]) -> list[str]:
+    if len(titles) <= _MAX_SAMPLE_TITLES:
+        return titles
+    return [*titles[:_MAX_SAMPLE_TITLES], f"...and {len(titles) - _MAX_SAMPLE_TITLES} more"]
+
+
+# Last-known phase per job_id, updated on every publish() call -- purely
+# best-effort in-memory state (this ingestion process's own lifetime is the
+# job's lifetime for any single /level call, so no cross-process/restart
+# concern) letting /level's top-level exception handler report which phase
+# was actually running when an unhandled exception occurred, without
+# threading a "current phase" parameter through every call in the stack.
+_LAST_PHASE_BY_JOB: dict[str, str] = {}
+
+
+def last_known_phase(job_id: str) -> str | None:
+    return _LAST_PHASE_BY_JOB.get(job_id)
 
 
 ProgressCallback = Callable[[LevelingProgress], None]
@@ -145,7 +242,9 @@ def _truncate_caption(caption: str) -> str:
 _PHASE_MESSAGES: dict[Phase, str] = {
     "describe_figure": "Describing an embedded figure via the vision model",
     "parse_done": "Finished parsing the document",
+    "table_detected": "Detected a table",
     "preparing_analysis": "Preparing analysis -- splitting sections, retrieving context",
+    "deterministic_subtree": "Extracting a deterministic hierarchy subtree",
     "analyze_section": "Analyzing and synthesizing requirements",
     "score_requirements": "Scoring requirement quality",
     "score_requirements_done": "Scoring complete",
@@ -153,6 +252,7 @@ _PHASE_MESSAGES: dict[Phase, str] = {
     "detect_conflicts": "Checking near-duplicate requirements for conflicting values",
     "regroup_roots": "Grouping disconnected sections by topic",
     "infer_trace_links": "Resolving trace/coverage links",
+    "job_failed": "Job failed",
 }
 
 
@@ -185,7 +285,32 @@ def _format_message(progress: LevelingProgress) -> str:
         if progress.figure_index is not None:
             base += f" (figure {progress.figure_index} so far)"
         return base
+    if progress.phase == "table_detected":
+        if progress.table_id:
+            base += f" {progress.table_id}"
+        if progress.table_row_count is not None:
+            base += f" -- {progress.table_row_count} row(s)"
+        base += " (qualifies for deterministic hierarchy detection)" if progress.table_qualifies else " (not ID-shaped, will go through LLM analysis)"
+        return base
     if progress.phase == "preparing_analysis":
+        return base
+    if progress.phase == "deterministic_subtree":
+        if progress.subtree_index is not None and progress.subtree_count is not None:
+            base += f" ({progress.subtree_index + 1} of {progress.subtree_count}"
+            if progress.subtree_label:
+                base += f" -- {progress.subtree_label}"
+            base += ")"
+        elif progress.subtree_label:
+            base += f" -- {progress.subtree_label}"
+        return base
+    if progress.phase == "job_failed":
+        base = f"Job failed: {progress.error_message or 'unknown error'}"
+        if progress.error_type:
+            base += f" ({progress.error_type})"
+        if progress.last_phase:
+            base += f" -- last known phase: {progress.last_phase}"
+        if progress.elapsed_seconds is not None:
+            base += f", after {round(progress.elapsed_seconds)}s"
         return base
     if progress.phase == "parse_done":
         parts = []
@@ -204,13 +329,27 @@ def _format_message(progress: LevelingProgress) -> str:
             base += f" -- {progress.section_label}"
         base += ")"
     if progress.phase == "score_requirements_done":
+        if progress.chunk_index is not None and progress.chunk_count is not None:
+            base += f" (batch {progress.chunk_index + 1} of {progress.chunk_count})"
         if progress.issues_found is not None:
             base += f" -- {progress.issues_found} quality issue(s) flagged"
+        if progress.sample_titles:
+            base += f" ({', '.join(progress.sample_titles)})"
     elif progress.phase == "score_requirements" and progress.draft_count is not None:
+        if progress.chunk_index is not None and progress.chunk_count is not None:
+            base += f" (batch {progress.chunk_index + 1} of {progress.chunk_count})"
         base += f" -- scoring {progress.draft_count} drafted requirement(s)"
+        if progress.sample_titles:
+            base += f": {', '.join(progress.sample_titles)}"
     elif progress.phase == "section_complete":
         if progress.section_nodes is not None:
             base += f" -- {len(progress.section_nodes)} item(s) drafted"
+    elif progress.phase == "infer_trace_links" and progress.sample_titles:
+        # Completion fire (real endpoint titles) vs. the earlier kickoff fire
+        # (no sample_titles yet, just the plain phase message) for this same
+        # phase -- distinguished purely by whether sample_titles is present,
+        # no separate phase name needed.
+        base += f" -- {', '.join(progress.sample_titles)}"
     else:
         base += f" -- {progress.blocks_done} of {progress.blocks_total} blocks"
     if progress.model:
@@ -248,9 +387,26 @@ class NarrationPublisher:
         self._job_id = job_id
 
     def publish(self, progress: LevelingProgress) -> None:
+        # Recorded regardless of whether the Redis publish below succeeds --
+        # this is what /level's exception handler reads (see
+        # last_known_phase) to report which phase was actually running when
+        # an unhandled exception occurs; it must stay accurate even during a
+        # Redis outage, which is exactly when a failure is most likely to
+        # need this context.
+        _LAST_PHASE_BY_JOB[self._job_id] = progress.phase
         payload = json.dumps(
             {
                 "type": "narration",
+                # Real gap this closes: JobEventPersistenceService's own
+                # backfillMissedEvents() (orchestrator-side) has no way to
+                # know when an event ACTUALLY happened versus when it got
+                # persisted -- a backfill sweep run long after the fact was
+                # inserting rows stamped with the insertion time, making a
+                # long-dead job look recently active to the stale-job
+                # watchdog. This is the one place a narration event's real
+                # origin time can be captured, at the moment it's actually
+                # emitted.
+                "emittedAt": datetime.now(UTC).isoformat(),
                 "phase": progress.phase,
                 "branchIndex": progress.branch_index,
                 "branchCount": progress.branch_count,
@@ -282,6 +438,19 @@ class NarrationPublisher:
                     if progress.section_nodes is not None
                     else None
                 ),
+                "subtreeIndex": progress.subtree_index,
+                "subtreeCount": progress.subtree_count,
+                "subtreeLabel": progress.subtree_label,
+                "tableId": progress.table_id,
+                "tableRowCount": progress.table_row_count,
+                "tableQualifies": progress.table_qualifies,
+                "sampleTitles": progress.sample_titles,
+                "chunkIndex": progress.chunk_index,
+                "chunkCount": progress.chunk_count,
+                "errorType": progress.error_type,
+                "errorMessage": progress.error_message,
+                "elapsedSeconds": progress.elapsed_seconds,
+                "lastPhase": progress.last_phase,
                 "message": _format_message(progress),
             }
         )

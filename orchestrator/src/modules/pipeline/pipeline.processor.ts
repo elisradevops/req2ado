@@ -5,6 +5,7 @@ import { configSchema } from '../../config/config.schema';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { DryRunService } from '../writeback/dry-run.service';
 import { IdempotencyService } from '../writeback/idempotency.service';
+import { BackfillService } from '../writeback/backfill.service';
 import { JobEventsPublisher } from './job-events.publisher';
 import { McpClient } from './mcp.client';
 import { runPipelineJob, type PipelineJobInput } from './pipeline.worker';
@@ -49,6 +50,7 @@ jobEventsPublisherRedis.on('error', (err) => {
 });
 const jobEventsPublisher = new JobEventsPublisher(jobEventsPublisherRedis as any);
 const mcpClient = new McpClient(`${config.MCP_URL}/mcp`, config.MCP_BEARER, config.MCP_REQUEST_TIMEOUT_MS);
+const backfillService = new BackfillService(mcpClient, ingestionClient, idempotencyService);
 const credentialVault = new CredentialVaultService(prisma, config.CREDENTIAL_ENC_KEY, config.CREDENTIAL_ENC_KEY_PREVIOUS);
 const adoCredentialResolver = new AdoCredentialResolver(credentialVault);
 
@@ -64,6 +66,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     prisma,
     jobEventsPublisher,
     mcpClient,
+    backfillService,
     adoCredentialResolver,
     defaultLlmModel: config.LLM_CHAT_MODEL,
   });

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import html
+import re
 from pathlib import Path
 
-from app.canonical.model import Block, CanonicalDoc, SourceRef, Table
+from app.canonical.model import Block, BlockKind, CanonicalDoc, SourceRef, Table
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
@@ -136,6 +137,28 @@ def _derive_doc_title(doc: CanonicalDoc) -> str:
     source-span extraction. See _build_headingless_tree."""
     stem = Path(doc.document.path).stem.replace("_", " ").replace("-", " ").strip()
     return extract_baseline_title(stem or "Untitled Document")
+
+
+_FIGURE_TEXT_PATTERN = re.compile(r"^\[FIGURE:\s*(.*?)\s*\]$")
+
+
+def _figure_line(block: Block) -> str | None:
+    """FIGURE-kind blocks carry their caption embedded in block.text as
+    "[FIGURE: {caption or 'none'}]" (see docx_loader.py/pdf_loader.py) --
+    parse it back out. A 'none' placeholder (no real caption -- vision
+    disabled, or the vision call failed for this image) is omitted from the
+    rendered section entirely: the literal placeholder string must never
+    reach the model and be mistaken for real content (the root cause of the
+    "[FIGURE: none]" fake-requirement bug this redesign fixes). A real
+    caption is rendered as a clearly-labeled blockquote line. Shared by both
+    BASELINE (this module) and SURVEY (llm_leveling.py, imported from here)
+    folding paths so a placeholder-only figure never leaks into a work item
+    description in either mode."""
+    match = _FIGURE_TEXT_PATTERN.match(block.text)
+    caption = match.group(1) if match else block.text
+    if not caption or caption.lower() == "none":
+        return None
+    return f"> Figure: {caption}"
 
 
 def _table_to_html(table: Table) -> str:
@@ -434,6 +457,22 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     # still dropped, a human reviewer now has a chance to notice.
     warnings: list[str] = []
 
+    # Front-matter buffer: an orphan entry (table or block with no node yet
+    # open to fold into) is typically the document's own preamble -- a cover
+    # table, revision history, scope/intro prose preceding the first real
+    # heading/numbering. Rather than dropping it, every orphan across the
+    # whole document is buffered here and flushed ONCE, as a single
+    # synthetic front-matter Requirement, as soon as the first real node is
+    # created (see the flush right after that node's stack.append below).
+    # Parented to that first real node -- almost always correct, since
+    # _split_into_branches guarantees only the leading branch can produce an
+    # orphan (every later branch's own first entry is what defines its
+    # split boundary, so its node is already open by the time any sibling
+    # entry is walked).
+    orphan_entries: list[str] = []
+    orphan_source_ref: SourceRef | None = None
+    front_matter_flushed = False
+
     for branch_blocks, branch_tables in zip(branches, table_buckets):
         heading_branch = is_heading_style_branch(branch_blocks)
         # Numbering-label branches: bottom-up tree-shape classification (see
@@ -469,10 +508,13 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     open_node.fidelity_hash = _hash_description(open_node.description)
                     open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
                 else:
+                    if orphan_source_ref is None:
+                        orphan_source_ref = table.source_ref
+                    orphan_entries.append(description)
                     title_preview = table.caption or table.id
                     warnings.append(
-                        f"Table {table.id} ({title_preview}) was dropped: no heading/numbering "
-                        f"precedes it in its branch, so there was no node open to fold it into."
+                        f"Table {table.id} ({title_preview}) precedes any heading/numbering in its "
+                        f"branch -- folded into a synthetic front-matter node instead of being dropped."
                     )
                 continue
 
@@ -480,16 +522,25 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
             depth, display_text = resolve_block_depth(block)
 
             if depth is None:
+                if block.kind == BlockKind.FIGURE:
+                    figure_line = _figure_line(block)
+                    if figure_line is None:
+                        continue
+                    display_text = figure_line
+
                 if stack:
                     open_node = nodes_by_id[stack[-1][1]]
                     open_node.description = assemble_description(open_node.description, display_text)
                     open_node.fidelity_hash = _hash_description(open_node.description)
                     open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
                 else:
+                    if orphan_source_ref is None:
+                        orphan_source_ref = block.source_ref
+                    orphan_entries.append(display_text)
                     preview = display_text[:80].replace("\n", " ")
                     warnings.append(
-                        f"Block {block.id} was dropped: no heading/numbering precedes it in its "
-                        f'branch, so there was no node open to fold it into. Text: "{preview}"'
+                        f"Block {block.id} precedes any heading/numbering in its branch -- folded "
+                        f'into a synthetic front-matter node instead of being dropped. Text: "{preview}"'
                     )
                 continue
 
@@ -543,5 +594,30 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
             nodes.append(node)
             nodes_by_id[local_id] = node
             stack.append((depth, local_id))
+
+            if orphan_entries and not front_matter_flushed:
+                front_matter_flushed = True
+                front_matter_text = orphan_entries[0]
+                for extra in orphan_entries[1:]:
+                    front_matter_text = assemble_description(front_matter_text, extra)
+                front_matter_local_id = f"n{node_counter}"
+                node_counter += 1
+                front_matter_source_ref = orphan_source_ref if orphan_source_ref is not None else node.source_ref
+                front_matter_node = WorkItemNode(
+                    local_id=front_matter_local_id,
+                    type=WorkItemType.REQUIREMENT,
+                    parent_local_id=local_id,
+                    title=f"Front Matter: {_derive_doc_title(doc)}",
+                    description=front_matter_text,
+                    customer_id=customer_id,
+                    source_ref=front_matter_source_ref,
+                    fidelity_hash=_hash_description(front_matter_text),
+                    identity_hash=_hash_identity(front_matter_text, front_matter_source_ref),
+                    tags=[],
+                    mode=WorkItemMode.BASELINE,
+                    child_type=WorkItemType.REQUIREMENT,
+                )
+                nodes.append(front_matter_node)
+                nodes_by_id[front_matter_local_id] = front_matter_node
 
     return WorkItemTree(nodes=nodes, warnings=warnings)

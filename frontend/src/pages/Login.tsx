@@ -40,8 +40,12 @@ export function Login(): JSX.Element {
     setStatus('checking');
     setErrorMessage(null);
     try {
-      const response = await httpClient.post('/auth/login', { adoOrgUrl, pat });
-      useAuthStore.getState().login(adoOrgUrl, response.data.displayName, response.data.userId);
+      // Stripped here, once, so every downstream consumer (work-item links in
+      // ActionBadge.tsx/CollapsibleWarnings.tsx build `${orgUrl}/_workitems/edit/{id}`)
+      // never has to guard against a trailing slash producing a broken `//`.
+      const normalizedOrgUrl = adoOrgUrl.trim().replace(/\/+$/, '');
+      const response = await httpClient.post('/auth/login', { adoOrgUrl: normalizedOrgUrl, pat });
+      useAuthStore.getState().login(normalizedOrgUrl, response.data.displayName, response.data.userId);
       navigate('/jobs');
     } catch (err) {
       setStatus('error');

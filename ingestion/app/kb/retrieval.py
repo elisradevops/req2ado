@@ -70,3 +70,49 @@ def retrieve_context(
         for source_file in order
     ]
     return context, citations
+
+
+def fetch_always_include_context(user_id: str, vector_store: KbVectorStore) -> tuple[str | None, list[dict]]:
+    """Full, unconditional text of every KB file tagged retrieval_mode=
+    "always_include" at upload time -- the Full-Context-mode counterpart to
+    retrieve_context's similarity-gated Focused-Retrieval path, modeled
+    directly on Open WebUI's own Knowledge feature (which offers exactly
+    these two per-file modes). Right for small, static reference material
+    (a CMMI/requirements-writing-standards doc) whose relevance is
+    definitional, not topical -- a similarity score can never legitimately
+    gate it, and starving it out because it happens to share little
+    vocabulary with the document being processed is the exact bug this
+    closes (confirmed live: a standards doc scored a weak 39% similarity
+    and nearly missed grounding scoring entirely).
+
+    Returns (None, []) when no file is tagged this way -- same empty
+    convention as retrieve_context, never a hard dependency. Any exception
+    (Chroma error) is caught and logged here, same "KB grounding must never
+    fail a SURVEY job" convention as retrieve_context's own try/except."""
+    try:
+        names = vector_store.list_always_include_documents(user_id)
+    except Exception as exc:  # noqa: BLE001 - KB retrieval must never fail a SURVEY job
+        logger.warning("Always-include KB lookup failed for user_id=%s: %s", user_id, exc)
+        return None, []
+    if not names:
+        return None, []
+
+    texts: list[str] = []
+    citations: list[dict] = []
+    for name in names:
+        try:
+            text, truncated = vector_store.get_document(user_id, name)
+        except Exception as exc:  # noqa: BLE001 - one file's failure must not block the others
+            logger.warning("Failed to fetch always-include document %r for user_id=%s: %s", name, user_id, exc)
+            continue
+        if not text:
+            continue
+        texts.append(text)
+        # similarity=1.0: this file was never scored against a query --
+        # it's included unconditionally, so there is no similarity to
+        # report. Fixed at the ceiling rather than omitted so downstream
+        # display code (which expects a float) doesn't need a special case.
+        citations.append({"source_file": name, "similarity": 1.0, "text": text, "truncated": truncated})
+    if not texts:
+        return None, []
+    return "\n\n".join(texts), citations

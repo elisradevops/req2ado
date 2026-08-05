@@ -8,8 +8,27 @@ import { marked } from 'marked';
 // that off while leaving every markdown construct we actually want
 // (**bold**, ~~strike~~, - lists, 1. lists) untouched, since none of them
 // use `<`.
+//
+// EXCEPT `<table>...</table>` blocks: ingestion (tree_builder.py's
+// _table_to_html) already renders these as trusted, pre-escaped HTML
+// (cell text run through html.escape) specifically so ADO's rich-text
+// field shows a real table, not a flattened row of text. Escaping the `<`
+// here too would turn that HTML into a literal, unreadable line of `&lt;`
+// noise in the final ADO work item -- these blocks must reach `marked`
+// untouched so CommonMark's raw-HTML-block rule (which recognizes `table`
+// as a block-level tag) passes them through as-is.
+const TABLE_BLOCK_PATTERN = /<table>[\s\S]*?<\/table>/g;
+
 function escapeAngleBrackets(text: string): string {
-  return text.replace(/</g, '&lt;');
+  let result = '';
+  let lastIndex = 0;
+  for (const match of text.matchAll(TABLE_BLOCK_PATTERN)) {
+    result += text.slice(lastIndex, match.index).replace(/</g, '&lt;');
+    result += match[0];
+    lastIndex = match.index! + match[0].length;
+  }
+  result += text.slice(lastIndex).replace(/</g, '&lt;');
+  return result;
 }
 
 /**

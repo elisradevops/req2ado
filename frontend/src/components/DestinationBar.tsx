@@ -20,8 +20,8 @@ export function DestinationBar({
   if (!teamProject && !areaPath) return null;
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-sm border border-hairline-strong bg-surface-alt px-3 py-2 text-sm">
-      <Briefcase className="h-4 w-4 flex-none text-navy-600" />
-      <span className="text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">{label}</span>
+      <Briefcase className="h-4 w-4 flex-none text-accent" />
+      <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">{label}</span>
       {teamProject && <span className="font-medium text-ink-1">{teamProject}</span>}
       {areaPath && areaPath !== teamProject && (
         <>

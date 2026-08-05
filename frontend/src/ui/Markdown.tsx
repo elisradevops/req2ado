@@ -16,11 +16,11 @@ const CHAT_MARKDOWN_COMPONENTS: Components = {
   ol: ({ children }) => <ol className="mb-1.5 flex list-decimal flex-col gap-0.5 pl-4 text-sm text-ink-1 last:mb-0">{children}</ol>,
   li: ({ children }) => <li>{children}</li>,
   a: ({ children, href }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="text-navy-600 underline underline-offset-2 hover:text-navy-700">
+    <a href={href} target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2 hover:text-accent-hover">
       {children}
     </a>
   ),
-  code: ({ children }) => <code className="rounded-[3px] bg-surface-alt px-1 py-0.5 font-mono text-[12.5px] text-ink-1">{children}</code>,
+  code: ({ children }) => <code className="rounded-sm bg-surface-alt px-1 py-0.5 font-mono text-xs text-ink-1">{children}</code>,
   del: ({ children }) => <del className="text-ink-2">{children}</del>,
 };
 

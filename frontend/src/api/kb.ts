@@ -17,6 +17,7 @@ export interface IngestedDocument {
   sizeBytes: number;
   mimeType: string | null;
   docType: string | null;
+  retrievalMode: string | null;
   ingestedAt: string;
 }
 
@@ -92,6 +93,13 @@ export async function ingestFolderItem(
   downloadUrl: string,
   relativePath: string,
   userId: string,
+  // "retrieve" (default, omitted also means this) similarity-gates this
+  // file exactly as before; "always_include" injects its full text into
+  // every SURVEY prompt unconditionally, no similarity gate -- modeled on
+  // Open WebUI's own Knowledge feature (Focused Retrieval vs Full Context).
+  // Right for small, static reference material (a CMMI/requirements-
+  // writing-standards doc) whose relevance is definitional, not topical.
+  retrievalMode?: 'retrieve' | 'always_include',
 ): Promise<IngestResult & { ingestedDocumentId: string }> {
   const response = await httpClient.post<IngestResult & { ingestedDocumentId: string }>('/kb/ingest-item', {
     name,
@@ -99,6 +107,7 @@ export async function ingestFolderItem(
     downloadUrl,
     relativePath,
     userId,
+    retrievalMode,
   });
   return response.data;
 }

@@ -34,24 +34,15 @@ const ALLOWLISTED_FILES = new Set([
 // file's count here in the SAME change -- never lower it without actually
 // removing the literals, and never raise it to make a new violation pass.
 const BASELINE_HEX_COUNTS: Record<string, number> = {
-  'ui/Alert.tsx': 11,
-  'ui/Tooltip.tsx': 1,
-  'ui/Dialog.tsx': 1,
-  'ui/Button.tsx': 4,
-  'ui/Skeleton.tsx': 1,
   'components/SharePointFolderTree.tsx': 2,
   'components/DiffTree.tsx': 2,
   'components/TraceLinkChips.tsx': 1,
-  'components/AppShell.tsx': 3,
-  'components/ProgressBanner.tsx': 6,
-  'components/ToastProvider.tsx': 4,
   'components/StatusChip.tsx': 1,
   'components/ActionBadge.tsx': 4,
   'components/TagChips.tsx': 1,
   'components/CollapsibleWarnings.tsx': 22,
-  'components/FileDropzone.tsx': 2,
+  'components/FileDropzone.tsx': 1,
   'components/IssueChips.tsx': 2,
-  'pages/Settings.tsx': 1,
   'pages/KnowledgeBase.tsx': 3,
 };
 

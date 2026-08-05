@@ -102,7 +102,7 @@ export function Combobox({
       {(label || labelExtra) && (
         <div className="flex items-center justify-between gap-1.5">
           {label && (
-            <label htmlFor={fieldId} className="text-[11.5px] font-semibold uppercase tracking-wide text-ink-2">
+            <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
               {label}
             </label>
           )}
@@ -133,7 +133,7 @@ export function Combobox({
               className={cn(
                 // Same border/padding/focus-ring as Select's trigger, plus
                 // right padding to clear the chevron.
-                'w-full cursor-pointer rounded-sm border border-hairline-strong bg-surface py-1.5 pl-2.5 pr-8 text-sm text-ink-1 placeholder:text-ink-3 focus:border-navy-600 focus:outline-none focus:ring-[3px] focus:ring-signal/40 disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
+                'w-full cursor-pointer rounded-sm border border-field-border bg-surface py-1.5 pl-2.5 pr-8 text-sm text-ink-1 placeholder:text-ink-3 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-danger disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
                 className,
               )}
             />
@@ -167,7 +167,7 @@ export function Combobox({
                 }}
                 className={cn(
                   'cursor-pointer select-none rounded-sm px-2.5 py-1.5 text-sm text-ink-1',
-                  index === highlighted && 'bg-navy-600 text-white',
+                  index === highlighted && 'bg-accent-soft text-accent-ink',
                 )}
               >
                 {option}

@@ -161,4 +161,30 @@ describe('JobsList', () => {
     await waitFor(() => expect(screen.getByText(/failed to delete job/i)).toBeInTheDocument());
     expect(screen.getByText('a.docx')).toBeInTheDocument();
   });
+
+  it('gives every stat tile the hover-lift treatment (a "breathing" dashboard, not a static one)', async () => {
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+      { id: 'j1', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 5, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
+    ]);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+    for (const label of ['Running', 'Items written', 'Rejected']) {
+      // "Running"/"Rejected" also match the segmented status filter's own
+      // buttons -- at least one match (the StatTile label) must sit inside
+      // a `.lift` ancestor.
+      const matches = screen.getAllByText(label);
+      expect(matches.some((el) => el.closest('.lift') !== null)).toBe(true);
+    }
+  });
+
+  it('reveals row actions only via the hover/focus opacity class, keeping them in the DOM (never removed from the tab order)', async () => {
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+      { id: 'j1', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 5, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
+    ]);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+    const deleteButton = screen.getByRole('button', { name: /delete job j1/i });
+    expect(deleteButton.parentElement?.className).toContain('opacity-0');
+    expect(deleteButton.parentElement?.className).toContain('group-hover:opacity-100');
+  });
 });

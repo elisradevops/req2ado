@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, TriangleAlert, FileSearch, Info } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { buildWorkItemUrl } from '../utils/adoLinks';
 
 type WarningGroupKind = 'dropped-block' | 'external-reference' | 'conflict' | 'other';
 
@@ -84,6 +85,7 @@ export function CollapsibleWarnings({
   onJumpToNode,
   adoIdByLocalId,
   orgUrl,
+  project,
 }: {
   warnings: string[];
   onJumpToNode?: (localId: string) => void;
@@ -101,6 +103,9 @@ export function CollapsibleWarnings({
   // credential connected yet) just omits the link, same as every other
   // ADO-dependent affordance in this app.
   orgUrl?: string | null;
+  // The job's team project (areaPath's first `\`-delimited segment) --
+  // see buildWorkItemUrl's own docstring for why this matters.
+  project?: string | null;
 }): React.ReactElement | null {
   const [expandedGroups, setExpandedGroups] = useState<Set<WarningGroupKind>>(new Set());
   const [summaryExpanded, setSummaryExpanded] = useState(false);
@@ -198,7 +203,7 @@ export function CollapsibleWarnings({
                                           work item yet, so there's nothing to link to. */}
                                       {adoId != null && orgUrl && (
                                         <a
-                                          href={`${orgUrl}/_workitems/edit/${adoId}`}
+                                          href={buildWorkItemUrl(orgUrl, project, adoId)}
                                           target="_blank"
                                           rel="noreferrer"
                                           className="rounded-sm border border-[#EED8B4] bg-white px-2 py-0.5 text-xs font-medium text-[#7A4F0B] hover:border-[#9A6B1F]"

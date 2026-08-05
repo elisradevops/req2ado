@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FileTypeIcon } from '../components/FileTypeIcon';
-import { FileDropzone } from '../components/FileDropzone';
+import { FileDropzone, type FileDropzoneStatus } from '../components/FileDropzone';
 import { ModeCards } from '../components/ModeCards';
 import { AreaPathPicker } from '../components/AreaPathPicker';
 import { IterationPathPicker } from '../components/IterationPathPicker';
@@ -55,6 +55,14 @@ export function NewJobWizard(): React.ReactElement {
   const [step, setStep] = useState<1 | 2>(1);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
+  // Dropzone status now lives on step 1 alongside the stat tiles (DESIGN.md
+  // Track B, phase B14) -- previously step 1 was JUST the dropzone, and a
+  // successful parse immediately navigated to step 2, so the tiles could
+  // never actually show a "not parsed yet" state (by the time they render,
+  // preview is always already resolved). Real placeholder-to-real-value
+  // fill-in requires the tiles to exist on the SAME screen as the dropzone.
+  const [parseStatus, setParseStatus] = useState<FileDropzoneStatus>('idle');
+  const [parseError, setParseError] = useState<string | null>(null);
   const [mode, setMode] = useState<'baseline' | 'survey'>('baseline');
   const [project, setProject] = useState('');
   const [areaPath, setAreaPath] = useState('');
@@ -93,19 +101,33 @@ export function NewJobWizard(): React.ReactElement {
 
   async function handleFileSelected(selected: File): Promise<void> {
     setFile(selected);
+    setPreview(null);
+    setParseStatus('parsing');
+    setParseError(null);
     try {
       const result = await previewJob(selected);
       setPreview(result);
-      setStep(2);
+      setParseStatus('parsed');
     } catch {
       // Regression: an upload failure here previously had NO feedback at
       // all -- the promise just rejected silently (no try/catch, no
       // console-visible UI signal), leaving the user stuck on step 1 with
       // no indication anything went wrong. Any transient backend hiccup
       // (a redeploy mid-request, a network blip) looked identical to the
-      // app refusing to accept the file.
-      showToast('Failed to parse the uploaded file. Please try again.', 'error');
+      // app refusing to accept the file. Now also a real dropzone state
+      // (FileDropzone's own `error` variant), not just an easy-to-miss toast.
+      const message = 'Failed to parse the uploaded file. Please try again.';
+      setParseStatus('error');
+      setParseError(message);
+      showToast(message, 'error');
     }
+  }
+
+  function handleReplace(): void {
+    setFile(null);
+    setPreview(null);
+    setParseStatus('idle');
+    setParseError(null);
   }
 
   async function handleSubmit(): Promise<void> {
@@ -129,9 +151,12 @@ export function NewJobWizard(): React.ReactElement {
     }
   }
 
+  // Deliberately does NOT clear file/preview -- unlike handleReplace, going
+  // Back to review/re-upload is not "start over": the already-parsed file
+  // and its stat tiles should still be sitting there on step 1 exactly as
+  // left, not force a re-upload just to tweak something and step back.
   function handleBack(): void {
     setStep(1);
-    setPreview(null);
   }
 
   if (step === 1) {
@@ -139,7 +164,43 @@ export function NewJobWizard(): React.ReactElement {
       <div className="flex flex-col gap-4">
         <PageHeader title="New Job" description="Upload a requirements document to get started" />
         <Stepper steps={WIZARD_STEPS} activeIndex={0} />
-        <FileDropzone onFileSelected={handleFileSelected} />
+        <FileDropzone onFileSelected={handleFileSelected} status={parseStatus} fileName={file?.name} errorMessage={parseError} />
+        {file && (
+          <SectionCard
+            title="Document"
+            action={
+              <Button size="sm" variant="outline" onClick={handleReplace}>
+                Replace
+              </Button>
+            }
+          >
+            <div className="flex items-center gap-3">
+              <FileTypeIcon extension={preview?.fileType ?? file.name.split('.').pop() ?? ''} className="h-9 w-9" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{file.name}</p>
+                <p className="text-xs text-ink-3">{formatFileSize(file.size)}</p>
+              </div>
+            </div>
+          </SectionCard>
+        )}
+        {file && (
+          // '--' placeholders (not 0) while parsing/erroring -- 0 would
+          // read as a real, confirmed answer ("zero figures found") rather
+          // than "not known yet".
+          <div className="grid grid-cols-4 gap-2.5">
+            <StatTile value={preview?.blockCount ?? '--'} label="Blocks" />
+            <StatTile value={preview?.sectionCount ?? '--'} label="Sections" />
+            <StatTile value={preview?.figureCount ?? '--'} label="Figures" />
+            <StatTile value={preview?.depth ?? '--'} label="Depth" />
+          </div>
+        )}
+        {file && (
+          <div className="flex justify-end">
+            <Button onClick={() => setStep(2)} disabled={!preview}>
+              Next Step
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
@@ -157,28 +218,6 @@ export function NewJobWizard(): React.ReactElement {
           approved prototype. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
         <div className="flex min-w-0 flex-col gap-4">
-          <SectionCard
-            title="Document"
-            action={
-              <Button size="sm" variant="outline" onClick={handleBack}>
-                Replace
-              </Button>
-            }
-          >
-            <div className="flex items-center gap-3">
-              <FileTypeIcon extension={preview?.fileType ?? file?.name.split('.').pop() ?? ''} className="h-9 w-9" />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{file?.name}</p>
-                {file && <p className="text-xs text-ink-3">{formatFileSize(file.size)}</p>}
-              </div>
-            </div>
-          </SectionCard>
-          <div className="grid grid-cols-4 gap-2.5">
-            <StatTile value={preview?.blockCount ?? 0} label="Blocks" />
-            <StatTile value={preview?.sectionCount ?? 0} label="Sections" />
-            <StatTile value={preview?.figureCount ?? 0} label="Figures" />
-            <StatTile value={preview?.depth ?? 0} label="Depth" />
-          </div>
           <SectionCard title="Destination in Azure DevOps">
             <div className="flex flex-col gap-3">
               {hasAdoSession ? (

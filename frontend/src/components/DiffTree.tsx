@@ -199,6 +199,8 @@ export function DiffTree({
   filterText,
   onToggleExclude,
   typeCatalog,
+  orgUrl,
+  project,
 }: {
   entries: DryRunDiffEntry[];
   selectedId: string | null;
@@ -217,6 +219,14 @@ export function DiffTree({
   // useWorkItemTypeCatalog) -- undefined falls back to WorkItemTypeBadge's
   // own hardcoded color map.
   typeCatalog?: Record<string, WorkItemTypeCatalogEntry>;
+  // Turns a "Links to WI-####"/"Near-duplicate of WI-####" ActionBadge
+  // into a real link to that item in Azure DevOps -- see ActionBadge's own
+  // doc comment. Undefined/null (e.g. logged out) falls back to the
+  // plain, non-linked chip.
+  orgUrl?: string | null;
+  // The job's team project (areaPath's first `\`-delimited segment) --
+  // see buildWorkItemUrl's own docstring for why this matters.
+  project?: string | null;
 }): React.ReactElement {
   // Collapsed parent nodes -- purely a display concern (not lifted to
   // JobDetail), so toggling one never touches the diff data itself.
@@ -284,7 +294,7 @@ export function DiffTree({
       {/* Sticky header row -- shares GRID_TEMPLATE with every data row below
           so columns always line up exactly. */}
       <div
-        className="grid items-center gap-2.5 border-b border-hairline bg-surface-alt px-3.5 py-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-ink-3"
+        className="grid items-center gap-2.5 border-b border-hairline bg-surface-alt px-3.5 py-1.5 text-micro font-semibold uppercase tracking-wide text-ink-3"
         style={{ gridTemplateColumns: GRID_TEMPLATE_COLUMNS }}
       >
         <span />
@@ -325,8 +335,8 @@ export function DiffTree({
                   // tint plus a left accent rule makes hover/selection
                   // both unmistakable without competing with the signal
                   // ("decision needed") color.
-                  'grid cursor-pointer items-center gap-2.5 border-l-2 border-l-transparent border-b border-b-hairline/60 px-3.5 transition-colors hover:border-l-navy-300 hover:bg-[#EEF3FC]',
-                  entry.localId === selectedId && 'border-l-navy-600 bg-[#E7EFFC]',
+                  'grid cursor-pointer items-center gap-2.5 border-l-2 border-l-transparent border-b border-b-hairline/60 px-3.5 transition-colors hover:border-l-accent-soft-border hover:bg-[#EEF3FC]',
+                  entry.localId === selectedId && 'border-l-accent bg-[#E7EFFC]',
                   entry.excluded && 'opacity-50',
                 )}
                 onClick={() => {
@@ -385,7 +395,7 @@ export function DiffTree({
                     app, so not changed here) painted past the column
                     boundary into the Signals column next to it. */}
                 <span className="flex-none overflow-hidden">
-                  <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} />
+                  <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} />
                 </span>
 
                 {/* Signals: compact count-only chips, not the full chip

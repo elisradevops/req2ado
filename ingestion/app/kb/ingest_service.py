@@ -61,6 +61,7 @@ def _store_document(
     vector_store: KbVectorStore,
     describe_figure: Callable[[bytes], str] | None = None,
     checklist_client: object | None = None,
+    retrieval_mode: str | None = None,
 ) -> IngestResult:
     """Shared core once a document's bytes are in hand, regardless of
     whether they came from a single-document share link or a folder
@@ -86,7 +87,12 @@ def _store_document(
     doesn't need to re-run it. A failure here is an enhancement failing,
     never a reason to fail the whole ingest -- caught and logged, falling
     back to `None` (extraction never happened), same tolerant philosophy as
-    every other best-effort KB enhancement in this codebase."""
+    every other best-effort KB enhancement in this codebase.
+
+    `retrieval_mode`: "retrieve" (default, None also means this) similarity-
+    gates this file exactly as before; "always_include" tags it for
+    app.kb.retrieval.fetch_always_include_context's unconditional-injection
+    path instead -- see KbVectorStore.upsert_chunk's own docstring."""
     verify_supported_content(name, content)
 
     file_hash = hashlib.sha256(content).hexdigest()
@@ -147,6 +153,7 @@ def _store_document(
             file_hash=file_hash,
             doc_type=doc_type,
             quality_checklist=quality_checklist,
+            retrieval_mode=retrieval_mode,
         )
 
     return IngestResult(
@@ -168,14 +175,15 @@ def ingest_document_from_url(
     vector_store: KbVectorStore,
     describe_figure: Callable[[bytes], str] | None = None,
     checklist_client: object | None = None,
+    retrieval_mode: str | None = None,
 ) -> IngestResult:
     """Ingests a single document from a SharePoint/OneDrive sharing URL via
     the Microsoft Graph client: validate -> fetch metadata + bytes -> verify
     size/content-type -> skip if unchanged -> parse -> chunk -> embed ->
     store. This handles exactly one document, so any failure (ValueError,
     GraphApiError) propagates to the caller instead of being collected into
-    a failures list. `describe_figure`/`checklist_client` -- see
-    _store_document's docstring."""
+    a failures list. `describe_figure`/`checklist_client`/`retrieval_mode`
+    -- see _store_document's docstring."""
     validate_share_url(url)
 
     item = graph_client.get_drive_item(url)
@@ -188,7 +196,7 @@ def ingest_document_from_url(
 
     result = _store_document(
         item.name, item.id, content, user_id, doc_type, embed_client, vector_store,
-        describe_figure=describe_figure, checklist_client=checklist_client,
+        describe_figure=describe_figure, checklist_client=checklist_client, retrieval_mode=retrieval_mode,
     )
     return result.model_copy(update={"mime_type": item.mime_type})
 
@@ -204,6 +212,7 @@ def ingest_folder_child(
     vector_store: KbVectorStore,
     describe_figure: Callable[[bytes], str] | None = None,
     checklist_client: object | None = None,
+    retrieval_mode: str | None = None,
 ) -> IngestResult:
     """Ingests exactly one file the caller already saw via
     browse_shared_folder/browse_subfolder, addressed by its pre-signed Graph
@@ -217,7 +226,7 @@ def ingest_folder_child(
         raise ValueError(f"file exceeds {MAX_FILE_SIZE_BYTES}-byte limit: {len(content)}")
     return _store_document(
         name, item_id, content, user_id, doc_type, embed_client, vector_store,
-        describe_figure=describe_figure, checklist_client=checklist_client,
+        describe_figure=describe_figure, checklist_client=checklist_client, retrieval_mode=retrieval_mode,
     )
 
 

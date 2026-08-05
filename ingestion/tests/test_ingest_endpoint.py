@@ -270,6 +270,91 @@ def test_describe_figure_degrades_to_a_live_call_when_the_cache_read_or_write_fa
     assert main_module._describe_figure(b"some-image-bytes") == "live caption"
 
 
+def test_describe_figure_never_caches_a_blank_result(monkeypatch) -> None:
+    # Real bug this guards against (confirmed live, AirPro document, all 39
+    # figures): a vision call that once returned an empty string got cached
+    # unconditionally and then replayed that same empty caption on every
+    # subsequent resubmit for a full week (_FIGURE_CAPTION_CACHE_TTL_SECONDS)
+    # -- every figure in the activity log read "no useful caption returned",
+    # indistinguishable from a genuinely content-free document.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+            self.calls += 1
+            return "" if self.calls == 1 else "a real caption on retry"
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self._store: dict[str, bytes] = {}
+
+        def get(self, key):
+            return self._store.get(key)
+
+        def set(self, key, value, ex=None):
+            self._store[key] = value.encode("utf-8") if isinstance(value, str) else value
+
+        def publish(self, channel, payload):
+            pass
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+    monkeypatch.setattr(main_module, "_narration_redis", _FakeRedis())
+
+    first = main_module._describe_figure(b"same-image-bytes")
+    second = main_module._describe_figure(b"same-image-bytes")
+
+    assert first == ""
+    # NOT served from a poisoned cache -- the blank result was never
+    # written, so the second call goes live again and self-heals.
+    assert second == "a real caption on retry"
+    assert fake_client.calls == 2
+
+
+def test_describe_figure_still_caches_the_real_no_technical_content_sentinel(monkeypatch) -> None:
+    # The blank-caption guard must NOT treat NO_TECHNICAL_CONTENT as blank --
+    # it's a real, meaningful, deterministic answer (this figure genuinely
+    # has no technical content) and should be memoized exactly like any
+    # other real caption.
+    import app.main as main_module
+    from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+            self.calls += 1
+            return NO_TECHNICAL_CONTENT_SENTINEL
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self._store: dict[str, bytes] = {}
+
+        def get(self, key):
+            return self._store.get(key)
+
+        def set(self, key, value, ex=None):
+            self._store[key] = value.encode("utf-8") if isinstance(value, str) else value
+
+        def publish(self, channel, payload):
+            pass
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+    monkeypatch.setattr(main_module, "_narration_redis", _FakeRedis())
+
+    first = main_module._describe_figure(b"blank-figure-bytes")
+    second = main_module._describe_figure(b"blank-figure-bytes")
+
+    assert first == NO_TECHNICAL_CONTENT_SENTINEL
+    assert second == NO_TECHNICAL_CONTENT_SENTINEL
+    assert fake_client.calls == 1  # cache hit -- the sentinel WAS cached
+
+
 def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_is_given(monkeypatch) -> None:
     # job_id is optional (absent for /jobs/preview's own call, which has no
     # job yet to narrate for) -- when a real job submission supplies it,
@@ -331,6 +416,22 @@ def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_i
     parse_done_event = next(p for p in payloads if p["phase"] == "parse_done")
     assert parse_done_event["tableCount"] == 1  # sample.docx has 1 table
     assert parse_done_event["figureCount"] == 1
+
+    # Real bug this guards against (confirmed live): tableRowCount was
+    # previously derived from rows_from_table (the ID-hierarchy-QUALIFYING
+    # rows only, legitimately [] for a table whose content isn't ID-shaped)
+    # instead of the table's own real raw row count -- every non-qualifying
+    # table read as "0 row(s)", indistinguishable from a genuinely empty or
+    # mis-parsed one. Ground truth comes from parsing the SAME fixture
+    # directly, not a hardcoded number, so this stays correct if the fixture
+    # ever changes.
+    from app.dispatch import dispatch_by_extension
+
+    real_doc = dispatch_by_extension("sample.docx", str(FIXTURES / "sample.docx"))
+    table_events = [p for p in payloads if p["phase"] == "table_detected"]
+    assert len(table_events) == 1
+    assert table_events[0]["tableRowCount"] == len(real_doc.tables[0].rows)
+    assert table_events[0]["tableRowCount"] > 0
 
 
 def test_ingest_publishes_no_narration_when_job_id_is_omitted(monkeypatch) -> None:

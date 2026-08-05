@@ -30,6 +30,7 @@ export interface OpenWebUiClientConfig {
   EMBED_BASE_URL?: string;
   EMBED_MODEL: string;
   EMBED_PATH: string;
+  SHOW_PATH: string;
 }
 
 @Injectable()
@@ -107,6 +108,22 @@ export class OpenWebUiClient implements LlmClient {
     return page.data.map((m) => m.id);
   }
 
+  // Cheap reachability probe for the sidebar's connection-status LED --
+  // deliberately a SHORT per-call timeout (unlike every other call in this
+  // client, which relies on the SDK's own much longer default) so an
+  // unreachable backend fails fast instead of leaving the UI's status dot
+  // spinning for minutes. Reuses the lightest real call already available
+  // (models.list) rather than adding a dedicated ping endpoint upstream.
+  async checkHealth(): Promise<{ status: 'reachable' | 'unreachable'; latencyMs: number }> {
+    const start = Date.now();
+    try {
+      await this.openai.models.list({ timeout: 5000 });
+      return { status: 'reachable', latencyMs: Date.now() - start };
+    } catch {
+      return { status: 'unreachable', latencyMs: Date.now() - start };
+    }
+  }
+
   async *streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<LlmStreamChunk> {
     const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
     const buildParams = (includeSchema: boolean) => ({
@@ -150,7 +167,7 @@ export class OpenWebUiClient implements LlmClient {
     const baseUrl = (this.config.EMBED_BASE_URL ?? this.config.LLM_BASE_URL).replace(/\/v1\/?$/, '');
     const response = await fetch(`${baseUrl}${this.config.EMBED_PATH}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.nativeOllamaHeaders(),
       body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: outboundTexts }),
     });
     if (!response.ok) {
@@ -158,6 +175,57 @@ export class OpenWebUiClient implements LlmClient {
     }
     const body = (await response.json()) as { embeddings: number[][] };
     return body.embeddings;
+  }
+
+  // Shared by embed()/showModel() -- both bypass the OpenAI SDK client
+  // (this.openai, used by chat()/vision()/listModels(), already
+  // constructed with apiKey: LLM_API_KEY) since they hit Ollama's/Open
+  // WebUI's NATIVE API shape, not its OpenAI-compat surface. Confirmed
+  // live: a real Open WebUI instance (unlike raw Ollama, which needs no
+  // auth at all) 401s on either endpoint with no Authorization header --
+  // a real gap, silently invisible until this codebase's dev target
+  // actually became Open WebUI instead of bare Ollama.
+  private nativeOllamaHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      ...(this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {}),
+    };
+  }
+
+  // Real gap this closes: ingestion's _resolve_caps (llm_leveling.py) is a
+  // hand-maintained table of per-model context length/coverage-budget/
+  // tool-support, populated by a human manually running Ollama's real
+  // /api/show endpoint once per model and hardcoding the result -- any
+  // model NOT in that table gets the same blanket conservative guess
+  // regardless of what it actually is. /api/show is Ollama's NATIVE API
+  // (not its OpenAI-compat surface), same reason embed() above needs the
+  // same base-URL stripping. contextLength is read from
+  // model_info[f"{architecture}.context_length"] -- the architecture-
+  // prefixed key name Ollama actually uses (confirmed against real /api/show
+  // output; there is no unprefixed "context_length" field). null when
+  // either key is missing (an unrecognized architecture, or a backend that
+  // returns a shape this doesn't expect) -- never throws on a merely-absent
+  // field, only on a genuinely unreachable/non-Ollama backend (a real
+  // OpenAI-compat frontier proxy has no /api/show at all).
+  async showModel(model: string): Promise<{ contextLength: number | null; capabilities: string[] }> {
+    const baseUrl = (this.config.EMBED_BASE_URL ?? this.config.LLM_BASE_URL).replace(/\/v1\/?$/, '');
+    const response = await fetch(`${baseUrl}${this.config.SHOW_PATH}`, {
+      method: 'POST',
+      headers: this.nativeOllamaHeaders(),
+      body: JSON.stringify({ model }),
+    });
+    if (!response.ok) {
+      throw new Error(`Ollama /api/show request failed: ${response.status}`);
+    }
+    const body = (await response.json()) as {
+      capabilities?: string[];
+      model_info?: Record<string, unknown>;
+    };
+    const modelInfo = body.model_info ?? {};
+    const architecture = modelInfo['general.architecture'];
+    const contextLengthRaw = typeof architecture === 'string' ? modelInfo[`${architecture}.context_length`] : undefined;
+    const contextLength = typeof contextLengthRaw === 'number' ? contextLengthRaw : null;
+    return { contextLength, capabilities: body.capabilities ?? [] };
   }
 
   async vision(prompt: string, images: Buffer[], opts?: { model?: string; mimeType?: string }): Promise<string> {
@@ -206,6 +274,23 @@ export class OpenWebUiClient implements LlmClient {
       // the byte-hash cache (main.py's figure-caption memoization) already
       // removes the repeat cost of a slow caption on re-runs.
       max_tokens: 200,
+      // Real, 100%-reproducible root cause (confirmed live: every single
+      // figure in a real document came back "no useful caption returned"
+      // on a genuinely fresh, uncached run): unlike chat()'s own
+      // `opts?.think === false` handling above, this call never disabled
+      // reasoning at all. gemma4:e4b (this deployment's configured vision
+      // model) reports a real "thinking" capability -- its chain-of-thought
+      // tokens consumed the entire max_tokens budget before any real answer
+      // token was ever produced, leaving message.content genuinely empty
+      // (the reasoning itself lands in the separate message.reasoning
+      // field, never read here). A one-line image caption has no
+      // legitimate use for a reasoning trace -- same "structured
+      // extraction, not creative writing" reasoning the temperature=0
+      // comment above already states, applied to the token-budget problem
+      // reasoning caused. Same `reasoning_effort: 'none'` knob chat() uses,
+      // just unconditional here since no caller ever wants a captioned
+      // reasoning trace.
+      reasoning_effort: 'none' as OpenAI.ReasoningEffort,
     });
     return response.choices[0]?.message?.content ?? '';
   }

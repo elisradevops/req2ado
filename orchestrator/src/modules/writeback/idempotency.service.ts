@@ -53,4 +53,16 @@ export class IdempotencyService {
   async record(sourceHash: string, customerId: string | null, areaPath: string, adoWorkItemId: number): Promise<void> {
     await this.prisma.idempotencyMapping.create({ data: { sourceHash, customerId, areaPath, adoWorkItemId } });
   }
+
+  // Called when DryRunService.verifyExistingAdoIdsStillExist proves a
+  // 'reuse' match's ADO item was deleted after this row was recorded --
+  // without this, the SAME stale row would keep matching every future job
+  // against that area path forever (the row itself never expires or
+  // re-validates on its own). deleteMany (not delete-by-unique-id) since
+  // there is no unique constraint on adoWorkItemId alone -- matches
+  // whatever row(s) reference it, correct either way since a deleted ADO
+  // item can have at most the one row that originally recorded it.
+  async deleteByAdoWorkItemId(adoWorkItemId: number): Promise<void> {
+    await this.prisma.idempotencyMapping.deleteMany({ where: { adoWorkItemId } });
+  }
 }

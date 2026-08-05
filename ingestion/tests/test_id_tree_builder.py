@@ -1,7 +1,13 @@
 from app.canonical.model import SourceRef
 from app.leveling.id_hierarchy import HierarchyRow
-from app.leveling.id_tree_builder import build_hierarchy_subtree, recompute_child_types
+from app.leveling.id_tree_builder import (
+    _PARENT_SUMMARY_TOKEN_BUDGET,
+    _apply_parent_summary_pass,
+    build_hierarchy_subtree,
+    recompute_child_types,
+)
 from app.leveling.llm_leveling import _repair_requirement_hierarchy
+from app.leveling.narration_publisher import LevelingProgress
 from app.workitem.model import WorkItemType
 
 
@@ -197,6 +203,205 @@ def test_build_hierarchy_subtree_child_type_reflects_real_children() -> None:
     assert leaf_node.child_type == WorkItemType.REQUIREMENT
 
 
+def _epic_feature_requirement_nodes():
+    rows = [
+        _row("Controls:", "Epic", None, "1"),
+        _row("Over 28V VDC input", "Feature", 0, "1.1"),
+        _row("The system shall clamp input over 28V.", "Requirement", 1, "1.1.1", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    recompute_child_types(nodes)
+    return nodes
+
+
+def test_apply_parent_summary_pass_replaces_verbatim_title_and_gives_a_distinct_description() -> None:
+    class FakeParentSummaryClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            return {
+                node_id: {"title": f"Synthesized: {entry['title']}", "description": "A synthesized capability summary."}
+                for node_id, entry in nodes_by_id.items()
+            }
+
+    nodes = _epic_feature_requirement_nodes()
+    warnings: list[str] = []
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+    epic = next(n for n in nodes if n.type == WorkItemType.EPIC)
+
+    _apply_parent_summary_pass(nodes, [feature.local_id], FakeParentSummaryClient(), warnings)
+    _apply_parent_summary_pass(nodes, [epic.local_id], FakeParentSummaryClient(), warnings)
+
+    assert warnings == []
+    assert feature.title == "Synthesized: Over 28V VDC input"
+    assert feature.description == "A synthesized capability summary."
+    assert feature.title != feature.description
+    assert epic.title == "Synthesized: Controls:"
+    assert epic.description == "A synthesized capability summary."
+    assert epic.title != epic.description
+
+
+def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_direct_child() -> None:
+    # Real hierarchy rule (id_hierarchy.classify_by_nesting's own
+    # docstring): "a Requirement MAY be a child of a Requirement
+    # (sub-Req)". An Epic whose direct child is a Requirement that ITSELF
+    # has a nested sub-Requirement must see BOTH -- not just the direct
+    # child's own text, which is what a direct-children-only payload
+    # would have missed.
+    rows = [
+        _row("Controls:", "Epic", None, "1"),
+        _row("The system shall support mode A.", "Requirement", 0, "1.1", has_shall=True),
+        _row("The system shall also support mode A fallback.", "Requirement", 1, "1.1.a", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    recompute_child_types(nodes)
+    epic = next(n for n in nodes if n.type == WorkItemType.EPIC)
+    requirements = [n for n in nodes if n.type == WorkItemType.REQUIREMENT]
+    assert len(requirements) == 2  # confirms the fixture actually nests one Requirement under another
+
+    seen_payloads: list[dict] = []
+
+    class RecordingClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            seen_payloads.append(nodes_by_id[epic.local_id])
+            return {node_id: {"title": "Synthesized Epic", "description": "Covers mode A."} for node_id in nodes_by_id}
+
+    _apply_parent_summary_pass(nodes, [epic.local_id], RecordingClient(), [])
+
+    seen_titles = seen_payloads[0]["requirement_titles"]
+    assert len(seen_titles) == 2
+    assert all(r.title in seen_titles for r in requirements)
+
+
+def test_apply_parent_summary_pass_gives_each_nested_epic_its_own_full_rollup_in_one_unordered_call() -> None:
+    # Real hierarchy rule: "an Epic child of an Epic (sub-Epic)". A single
+    # combined call over BOTH epics (any order -- this is exactly how
+    # _apply_det_parent_summary now invokes this function, no more
+    # Feature-before-Epic rounds) must give the grandparent Epic its own
+    # full descendant rollup independently -- it must not depend on the
+    # child Epic having already been summarized first.
+    rows = [
+        _row("Grandparent Domain", "Epic", None, "1"),
+        _row("Child Domain", "Epic", 0, "1.1"),
+        _row("The system shall do X.", "Requirement", 1, "1.1.1", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    recompute_child_types(nodes)
+    epics = [n for n in nodes if n.type == WorkItemType.EPIC]
+    assert len(epics) == 2  # confirms the fixture actually nests one Epic under another
+    grandparent = next(n for n in epics if n.parent_local_id is None)
+    child_epic = next(n for n in epics if n.parent_local_id == grandparent.local_id)
+
+    seen_payloads: dict[str, dict] = {}
+
+    class RecordingClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            seen_payloads.update(nodes_by_id)
+            return {node_id: {"title": f"Synthesized {node_id}", "description": "A rollup summary."} for node_id in nodes_by_id}
+
+    # Both epics in ONE call, together -- proves no ordering is required.
+    _apply_parent_summary_pass(nodes, [grandparent.local_id, child_epic.local_id], RecordingClient(), [])
+
+    # The grandparent's own payload already contains the requirement text
+    # nested two levels down (through the child Epic), independent of
+    # whether the child Epic's own entry in the SAME call was processed
+    # first, last, or not requested at all.
+    assert seen_payloads[grandparent.local_id]["requirement_titles"] == ["The system shall do X."]
+    assert grandparent.title == f"Synthesized {grandparent.local_id}"
+    assert child_epic.title == f"Synthesized {child_epic.local_id}"
+
+
+def test_apply_parent_summary_pass_splits_by_token_budget_without_dropping_any_parent() -> None:
+    # Real gap this closes (confirmed on a real 554-node AirPro job): a
+    # parent's rollup payload grows with its subtree size, not a fixed
+    # per-item size -- a plain node-count chunk size does nothing to bound
+    # that. Each of these 20 Features has a long enough description that
+    # they collectively blow past _PARENT_SUMMARY_TOKEN_BUDGET well before
+    # 150 items (the node-count ceiling) -- must still all go out, just
+    # split across more than one call.
+    long_text = "shall support mode A " * 400  # ~2200 chars, comfortably over budget/20
+    rows = []
+    for i in range(20):
+        rows.append(_row(f"Feature {i}", "Feature", None, str(i + 1)))
+        rows.append(_row(long_text, "Requirement", len(rows) - 1, f"{i + 1}.1", has_shall=True))
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    recompute_child_types(nodes)
+    features = [n for n in nodes if n.type == WorkItemType.FEATURE]
+    assert len(features) == 20
+
+    call_count = 0
+
+    class RecordingClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            nonlocal call_count
+            call_count += 1
+            return {node_id: {"title": f"Synthesized {node_id}", "description": "A rollup summary."} for node_id in nodes_by_id}
+
+    warnings: list[str] = []
+    _apply_parent_summary_pass(nodes, [f.local_id for f in features], RecordingClient(), warnings)
+
+    assert call_count > 1  # proves the budget actually forced a split
+    assert warnings == []
+    # Completeness: every single Feature was still summarized, none
+    # dropped or left at its verbatim heading because it landed in a
+    # "later" chunk.
+    assert all(f.title == f"Synthesized {f.local_id}" for f in features)
+
+
+def test_apply_parent_summary_pass_never_splits_a_single_oversized_parent_it_just_sends_it_alone() -> None:
+    # Completeness over cost: even a parent whose OWN rollup alone exceeds
+    # the token budget must still go out whole in one call (alone), never
+    # truncated and never dropped.
+    huge_text = "shall support mode A " * 2000  # comfortably over the whole budget by itself
+    rows = [
+        _row("Huge Feature", "Feature", None, "1"),
+        _row(huge_text, "Requirement", 0, "1.1", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    recompute_child_types(nodes)
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+
+    seen: list[dict] = []
+
+    class RecordingClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            seen.append(nodes_by_id)
+            return {node_id: {"title": "Synthesized", "description": "A rollup summary."} for node_id in nodes_by_id}
+
+    _apply_parent_summary_pass(nodes, [feature.local_id], RecordingClient(), [])
+
+    assert len(seen) == 1
+    assert feature.title == "Synthesized"
+    assert len("".join(seen[0][feature.local_id]["requirement_descriptions"])) // 4 > _PARENT_SUMMARY_TOKEN_BUDGET
+
+
+def test_apply_parent_summary_pass_is_fail_open() -> None:
+    class RaisingClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            raise RuntimeError("boom")
+
+    nodes = _epic_feature_requirement_nodes()
+    warnings: list[str] = []
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+    original_title = feature.title
+    original_description = feature.description
+
+    _apply_parent_summary_pass(nodes, [feature.local_id], RaisingClient(), warnings)
+
+    assert feature.title == original_title
+    assert feature.description == original_description
+    assert any("failed" in w for w in warnings)
+
+
+def test_apply_parent_summary_pass_no_op_when_no_parent_ids() -> None:
+    class RaisingIfCalledClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            raise AssertionError("must not be called when parent_node_ids is empty")
+
+    nodes = _epic_feature_requirement_nodes()
+    warnings: list[str] = []
+    _apply_parent_summary_pass(nodes, [], RaisingIfCalledClient(), warnings)
+    assert warnings == []
+
+
 def test_build_hierarchy_subtree_title_tag_client_is_fail_open() -> None:
     class RaisingClient:
         def title_and_tags_for_rows(self, texts_by_row_id):
@@ -267,3 +472,76 @@ def test_build_hierarchy_subtree_never_synthesizes_a_non_flagged_leaf() -> None:
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
     build_hierarchy_subtree(rows, "det0_", None, synthesis_client=client)
     assert client.called is False
+
+
+def test_build_hierarchy_subtree_fires_progress_before_the_title_tag_chunk() -> None:
+    # Real gap this closes (confirmed live, AirPro document): the caller's
+    # own deterministic_subtree kickoff event fires once per SUBTREE, before
+    # this function is even called, and previously stayed frozen for
+    # however long the title-tag/synthesis LLM calls inside took -- a real
+    # job sat on "Extracting a deterministic hierarchy subtree (1 of 1 --
+    # Heading hierarchy)" for 5+ minutes with zero further signal. Firing
+    # per CHUNK here, using the subtree label as a prefix, closes that.
+    class FakeTitleTagClient:
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            return {}
+
+    rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
+    events: list[LevelingProgress] = []
+    build_hierarchy_subtree(
+        rows, "det0_", None, title_tag_client=FakeTitleTagClient(),
+        progress_callback=lambda p: events.append(p),
+        subtree_index=0, subtree_count=2, subtree_label="Table t0",
+    )
+
+    subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
+    assert len(subtree_events) == 1
+    assert subtree_events[0].subtree_index == 0
+    assert subtree_events[0].subtree_count == 2
+    assert subtree_events[0].subtree_label == "Table t0 -- enhancing titles/tags for 1 node(s) (chunk 1 of 1)"
+
+
+def test_build_hierarchy_subtree_fires_progress_before_the_synthesis_chunk() -> None:
+    class FakeSynthesisClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            return {}
+
+    rows = [_row('Size: 3U 1"', "Requirement", None, "1", needs_synthesis=True)]
+    events: list[LevelingProgress] = []
+    build_hierarchy_subtree(
+        rows, "det0_", None, synthesis_client=FakeSynthesisClient(),
+        progress_callback=lambda p: events.append(p),
+        subtree_index=1, subtree_count=2, subtree_label="Heading hierarchy",
+    )
+
+    subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
+    assert len(subtree_events) == 1
+    assert subtree_events[0].subtree_index == 1
+    assert subtree_events[0].subtree_count == 2
+    assert subtree_events[0].subtree_label == "Heading hierarchy -- synthesizing requirement text for 1 node(s) (chunk 1 of 1)"
+
+
+def test_build_hierarchy_subtree_fires_one_progress_event_per_chunk_not_per_subtree() -> None:
+    # The real fix: more than _TITLE_TAG_CHUNK_SIZE (150) leaves must fire
+    # more than one event, proving progress is reported per LLM call, not
+    # just once for the whole subtree regardless of how many chunks it
+    # actually takes.
+    class FakeTitleTagClient:
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            return {}
+
+    rows = [
+        _row(f"The system shall do {i}.", "Requirement", None, str(i), has_shall=True)
+        for i in range(151)
+    ]
+    events: list[LevelingProgress] = []
+    build_hierarchy_subtree(
+        rows, "det0_", None, title_tag_client=FakeTitleTagClient(),
+        progress_callback=lambda p: events.append(p),
+        subtree_index=0, subtree_count=1, subtree_label="Heading hierarchy",
+    )
+
+    subtree_events = [e for e in events if e.phase == "deterministic_subtree"]
+    assert len(subtree_events) == 2
+    assert "chunk 1 of 2" in subtree_events[0].subtree_label
+    assert "chunk 2 of 2" in subtree_events[1].subtree_label

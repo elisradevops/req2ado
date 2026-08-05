@@ -19,10 +19,10 @@ export function Tooltip({ content, children }: { content: ReactNode; children: R
           <RadixTooltip.Content
             sideOffset={8}
             collisionPadding={8}
-            className="z-50 max-w-[280px] rounded-sm bg-navy-900 px-2.5 py-2 text-xs leading-relaxed text-[#E6EAF5] shadow-popover"
+            className="z-50 max-w-[280px] rounded-sm bg-ink-1 px-2.5 py-2 text-xs leading-relaxed text-ink-on-dark shadow-popover"
           >
             {content}
-            <RadixTooltip.Arrow className="fill-navy-900" />
+            <RadixTooltip.Arrow className="fill-ink-1" />
           </RadixTooltip.Content>
         </RadixTooltip.Portal>
       </RadixTooltip.Root>
@@ -37,7 +37,10 @@ export function InfoTip({ content, label = 'More information' }: { content: Reac
       <button
         type="button"
         aria-label={label}
-        className="inline-grid h-[15px] w-[15px] flex-none place-items-center rounded-full border border-hairline-strong bg-surface text-[10px] font-bold text-ink-3 transition-colors duration-150 hover:border-navy-600 hover:bg-navy-600 hover:text-white focus-visible:outline-none"
+        // relative + the absolutely-positioned ::before expander give this a
+        // 24x24 CSS-px hit target (DESIGN.md §13) without inflating the
+        // visible 15px glyph circle itself.
+        className="relative inline-grid h-[15px] w-[15px] flex-none place-items-center rounded-full border border-hairline-strong bg-surface text-micro font-bold text-ink-3 transition-colors duration-fast ease-out hover:border-accent hover:bg-accent hover:text-white before:absolute before:-inset-[4.5px] before:content-['']"
       >
         i
       </button>

@@ -1,4 +1,10 @@
-import { DryRunService, resolveCrossJobTraceLinks, type TraceLink } from '../src/modules/writeback/dry-run.service';
+import {
+  DryRunService,
+  resolveCrossJobTraceLinks,
+  verifyExistingAdoIdsStillExist,
+  type DryRunDiffEntry,
+  type TraceLink,
+} from '../src/modules/writeback/dry-run.service';
 import type { IdempotencyService } from '../src/modules/writeback/idempotency.service';
 
 describe('DryRunService', () => {
@@ -743,5 +749,101 @@ describe('resolveCrossJobTraceLinks', () => {
     const result = await resolveCrossJobTraceLinks(links, queryByCustomerId);
 
     expect(result[0].resolutionStatus).toBe('unresolved');
+  });
+});
+
+function _entry(overrides: Partial<DryRunDiffEntry>): DryRunDiffEntry {
+  return {
+    localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+    action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h', customerId: null,
+    tags: [], groundingScore: null, qualityScore: null, qualityIssues: [], sourceRef: null,
+    ...overrides,
+  };
+}
+
+describe('verifyExistingAdoIdsStillExist', () => {
+  it('downgrades a reuse match to create when its ADO item no longer exists', async () => {
+    const diff = [_entry({ localId: 'n0', action: 'reuse', existingAdoId: 533 })];
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([]); // 533 not returned -> deleted
+
+    const result = await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch);
+
+    expect(getWorkItemsBatch).toHaveBeenCalledWith([533]);
+    expect(result[0]).toEqual(_entry({ localId: 'n0', action: 'create', existingAdoId: null, similarity: null }));
+  });
+
+  it('downgrades a dedup_skip match to create when its ADO item no longer exists', async () => {
+    const diff = [_entry({ localId: 'n0', action: 'dedup_skip', existingAdoId: 531, similarity: 0.92 })];
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([]);
+
+    const result = await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch);
+
+    expect(result[0].action).toBe('create');
+    expect(result[0].similarity).toBeNull();
+  });
+
+  it('leaves a match untouched when its ADO item still exists', async () => {
+    const diff = [_entry({ localId: 'n0', action: 'reuse', existingAdoId: 42 })];
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([{ id: 42 }]);
+
+    const result = await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch);
+
+    expect(result).toEqual(diff);
+  });
+
+  it('verifies only the DISTINCT existing ids across the whole diff in one batched call, not one call per node', async () => {
+    const diff = [
+      _entry({ localId: 'n0', action: 'reuse', existingAdoId: 42 }),
+      _entry({ localId: 'n1', action: 'dedup_skip', existingAdoId: 42, similarity: 0.9 }), // same id as n0
+      _entry({ localId: 'n2', action: 'reuse', existingAdoId: 7 }),
+      _entry({ localId: 'n3', action: 'create', existingAdoId: null }),
+    ];
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([{ id: 42 }, { id: 7 }]);
+
+    await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch);
+
+    expect(getWorkItemsBatch).toHaveBeenCalledTimes(1);
+    expect(getWorkItemsBatch.mock.calls[0][0].sort((a: number, b: number) => a - b)).toEqual([7, 42]);
+  });
+
+  it('is a no-op (never calls getWorkItemsBatch) when the diff has no reuse/dedup_skip entries at all', async () => {
+    const diff = [_entry({ localId: 'n0', action: 'create', existingAdoId: null })];
+    const getWorkItemsBatch = jest.fn();
+
+    const result = await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch);
+
+    expect(getWorkItemsBatch).not.toHaveBeenCalled();
+    expect(result).toEqual(diff);
+  });
+
+  it('fails open (returns the diff completely untouched) when the batch call itself throws', async () => {
+    const diff = [_entry({ localId: 'n0', action: 'reuse', existingAdoId: 533 })];
+    const getWorkItemsBatch = jest.fn().mockRejectedValue(new Error('ADO unreachable'));
+
+    const result = await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch);
+
+    expect(result).toEqual(diff);
+  });
+
+  it('calls onError with a descriptive message when the batch call throws -- previously this failure was completely silent', async () => {
+    const diff = [_entry({ localId: 'n0', action: 'reuse', existingAdoId: 533 })];
+    const getWorkItemsBatch = jest.fn().mockRejectedValue(new Error('ADO unreachable'));
+    const onError = jest.fn();
+
+    const result = await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch, onError);
+
+    expect(result).toEqual(diff); // fail-open behavior itself is unchanged
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toContain('ADO unreachable');
+  });
+
+  it('never calls onError when verification succeeds', async () => {
+    const diff = [_entry({ localId: 'n0', action: 'reuse', existingAdoId: 42 })];
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([{ id: 42 }]);
+    const onError = jest.fn();
+
+    await verifyExistingAdoIdsStillExist(diff, getWorkItemsBatch, onError);
+
+    expect(onError).not.toHaveBeenCalled();
   });
 });

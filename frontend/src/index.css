@@ -1,12 +1,10 @@
 @import 'tailwindcss';
 
 /**
- * Design tokens — navy (#0F1B3D rail) + yellow (#FDE134) accent, reserved
- * strictly for "this needs your decision" surfaces (confirm gate,
- * awaiting-review status, focus ring), never decorative. Values match the
- * approved glow-up mockup (tuning B: navy rail only, tinted canvas, white
- * cards). Tailwind v4 CSS-first config — these become both CSS custom
- * properties and Tailwind utility classes (e.g. bg-navy-900, text-ink-2,
+ * Design tokens — normative source: /DESIGN.md (repo root). This block is
+ * that document's machine-readable projection and must never diverge from
+ * it. Tailwind v4 CSS-first config — these become both CSS custom
+ * properties and Tailwind utility classes (e.g. bg-action, text-ink-2,
  * font-mono, rounded-md, shadow-card).
  *
  * Identifiers (clause numbers, ADO ids, job ids, source hashes, timers)
@@ -14,39 +12,124 @@
  * real artifact is a traceability ledger (clause 3.2.1 -> WI-1234).
  */
 @theme {
-  --color-navy-900: #0f1b3d;
-  --color-navy-700: #17306b;
-  --color-navy-600: #1b458f;
-  --color-navy-300: #3b60c0;
+  /* ------------------------------------------------------------------
+   * 0. DELETIONS — make the system enforceable, not aspirational.
+   *    Verified safe: grep for Tailwind default-palette utilities
+   *    across frontend/src TSX files returns ZERO hits.
+   * ------------------------------------------------------------------ */
+  --color-*: initial;
 
-  --color-signal: #fde134;
-  --color-signal-deep: #7a5c00;
+  /* ------------------------------------------------------------------
+   * 1. PRIMITIVES (restored after --color-*: initial)
+   * ------------------------------------------------------------------ */
+  --color-white: #ffffff;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-inherit: inherit;
 
+  /* ------------------------------------------------------------------
+   * 2. SURFACES — three levels, no more.
+   * ------------------------------------------------------------------ */
   --color-canvas: #f1f4fa;
   --color-surface: #ffffff;
-  --color-surface-alt: #f1f4fa;
+  --color-surface-alt: #f6f8fc;
+  --color-surface-sunken: #eaeff7;
+  --color-scrim: rgba(11, 18, 32, 0.45);
 
+  /* ------------------------------------------------------------------
+   * 3. HAIRLINES & CONTROL BOUNDARIES
+   * ------------------------------------------------------------------ */
   --color-hairline: #dde4ee;
   --color-hairline-strong: #c9d2e2;
+  --color-field-border: #8494ab;
 
+  /* ------------------------------------------------------------------
+   * 4. INK
+   * ------------------------------------------------------------------ */
   --color-ink-1: #0b1220;
   --color-ink-2: #334155;
-  --color-ink-3: #64748b;
+  --color-ink-3: #5b6a80;
+  --color-ink-on-dark: #e6eaf5;
+  --color-ink-on-dark-dim: #c6d0e8;
 
+  /* ------------------------------------------------------------------
+   * 5. ACTION — primary affirmative action.
+   * ------------------------------------------------------------------ */
+  --color-action: #0b1220;
+  --color-action-hover: #1b2438;
+  --color-action-active: #05090f;
+  --color-action-ink: #ffffff;
+
+  /* ------------------------------------------------------------------
+   * 6. ACCENT — the ONE interactive/selected colour.
+   * ------------------------------------------------------------------ */
+  --color-accent: #4f46e5;
+  --color-accent-hover: #4338ca;
+  --color-accent-active: #3730a3;
+  --color-accent-soft: #eef2ff;
+  --color-accent-soft-border: #c7d2fe;
+  --color-accent-ink: #3730a3;
+  --color-accent-on-dark: #a5b4fc;
+
+  /* ------------------------------------------------------------------
+   * 7. FOCUS
+   * ------------------------------------------------------------------ */
+  --color-focus: #4f46e5;
+  --color-focus-on-dark: #a5b4fc;
+
+  /* ------------------------------------------------------------------
+   * 8. RAIL — the app shell's nav rail ONLY (DESIGN.md §3, §15.8).
+   * ------------------------------------------------------------------ */
+  --color-rail-900: #0f1b3d;
+  --color-rail-hover: #17306b;
+  --color-rail-active: #1b458f;
+  --color-rail-indicator: #3b60c0;
+
+  /* ------------------------------------------------------------------
+   * 9. SIGNAL — irreversible / confirm-to-ADO ONLY (DESIGN.md §15.7).
+   * ------------------------------------------------------------------ */
+  --color-signal: #fde134;
+  --color-signal-hover: #ffe95c;
+  --color-signal-border: #e3c821;
+  --color-signal-deep: #7a5c00;
+  --color-signal-ink: #0b1220;
+
+  /* ------------------------------------------------------------------
+   * 10. SEMANTIC STATUS
+   * ------------------------------------------------------------------ */
   --color-ok: #15803d;
-  --color-danger: #d1434b;
-  --color-warning: #b45309;
-  --color-info: #2563eb;
-  --color-live: #06b6d4;
+  --color-ok-soft: #ecf7f0;
+  --color-ok-border: #b7e0c3;
+  --color-ok-ink: #15603a;
 
-  /* Real Azure DevOps work-item-type colors (Agile/CMMI defaults) — never
-     hardcode these in components beyond this token; the real app fetches
-     them live per-project from ADO and these are only the fallback. */
+  --color-danger: #d1434b;
+  --color-danger-hover: #b8323a;
+  --color-danger-soft: #fbe9ea;
+  --color-danger-border: #efc4c7;
+  --color-danger-ink: #8a2229;
+
+  --color-warning: #b45309;
+  --color-warning-soft: #fdf6ec;
+  --color-warning-border: #eed8b4;
+  --color-warning-ink: #7a4f0b;
+
+  --color-info: #2563eb;
+  --color-info-soft: #eef3fd;
+  --color-info-border: #c6d6f3;
+  --color-info-ink: #1d4ed8;
+
+  --color-live: #06b6d4;
+  --color-live-soft: #ecfeff;
+
+  --color-shimmer-highlight: #e6ebf4;
+
+  /* ------------------------------------------------------------------
+   * 11. DATA PALETTES — real ADO values, fallback only. Never hardcode
+   *     these beyond this token; the app fetches them live per-project.
+   * ------------------------------------------------------------------ */
   --color-wt-epic: #ff7b00;
   --color-wt-feature: #773b93;
   --color-wt-requirement: #009ccc;
-
-  /* Real Azure DevOps state-dot colors (Agile process defaults). */
   --color-state-new: #b2b2b2;
   --color-state-proposed: #b2b2b2;
   --color-state-active: #007acc;
@@ -54,21 +137,93 @@
   --color-state-closed: #339933;
   --color-state-removed: #7f7f7f;
 
+  /* ------------------------------------------------------------------
+   * 12. TYPE FAMILIES
+   * ------------------------------------------------------------------ */
   --font-display: 'Inter Tight Variable', 'Inter Tight', -apple-system, sans-serif;
   --font-sans: 'Inter Variable', 'Inter', -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 
+  /* ------------------------------------------------------------------
+   * 13. TYPE SCALE — 8 rungs, numeric, closed set (DESIGN.md §2.2).
+   * ------------------------------------------------------------------ */
+  --text-micro: 10px;
+  --text-micro--line-height: 14px;
+  --text-micro--letter-spacing: 0.06em;
+  --text-micro--font-weight: 600;
+
+  --text-meta: 11px;
+  --text-meta--line-height: 15px;
+  --text-meta--letter-spacing: 0.04em;
+
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+
+  --text-title: 17px;
+  --text-title--line-height: 24px;
+  --text-title--letter-spacing: -0.01em;
+  --text-title--font-weight: 600;
+
+  --text-display: 22px;
+  --text-display--line-height: 28px;
+  --text-display--letter-spacing: -0.022em;
+  --text-display--font-weight: 700;
+
+  --text-metric: 24px;
+  --text-metric--line-height: 28px;
+  --text-metric--letter-spacing: -0.02em;
+  --text-metric--font-weight: 600;
+
+  /* ------------------------------------------------------------------
+   * 14. SPACING — Tailwind's dynamic scale, no named tokens
+   *     (DESIGN.md §2.3: permitted rungs 0-4.5 step .5, then 5/6/8/10/12/16).
+   * ------------------------------------------------------------------ */
+  --spacing: 0.25rem;
+
+  /* ------------------------------------------------------------------
+   * 15. RADIUS — exactly four (DESIGN.md §2.4, §15.5).
+   * ------------------------------------------------------------------ */
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
 
+  /* ------------------------------------------------------------------
+   * 16. ELEVATION — six tiers, each with exactly one meaning (DESIGN.md §10).
+   * ------------------------------------------------------------------ */
   --shadow-sm: 0px 1px 2px rgba(15, 27, 61, 0.05);
   --shadow-card: 0px 1px 2px rgba(15, 27, 61, 0.05), 0px 8px 20px rgba(15, 27, 61, 0.055);
+  --shadow-raised: 0px 2px 4px rgba(15, 27, 61, 0.07), 0px 12px 26px rgba(15, 27, 61, 0.09);
   --shadow-popover: 0px 2px 4px rgba(15, 27, 61, 0.07), 0px 16px 34px rgba(15, 27, 61, 0.1);
   --shadow-dialog: 0px 24px 64px rgba(11, 18, 32, 0.32);
+  --shadow-cta: 0px 1px 0px rgba(122, 92, 0, 0.22);
+  --shadow-cta-attention:
+    0px 2px 8px rgba(200, 164, 0, 0.34), 0px 0px 0px 4px rgba(253, 225, 52, 0.28);
 
+  /* ------------------------------------------------------------------
+   * 17. DURATION — 8 rungs (DESIGN.md §2.6).
+   * ------------------------------------------------------------------ */
+  --duration-instant: 90ms;
+  --duration-fast: 140ms;
+  --duration-base: 190ms;
+  --duration-exit: 120ms;
+  --duration-slow: 320ms;
+  --duration-progress: 900ms;
+  --duration-ambient: 1500ms;
+  --duration-breathe: 2600ms;
+
+  /* ------------------------------------------------------------------
+   * 18. EASING — 4, never inline a cubic-bezier (DESIGN.md §2.7).
+   * ------------------------------------------------------------------ */
   --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-linear: linear;
 }
 
 @keyframes shimmer {
@@ -95,14 +250,32 @@
   }
 }
 
+/* Scale-only (native `scale` property, never `transform`) -- Tailwind v4's
+   -translate-x-1/2/-translate-y-1/2 utilities compile to the native
+   `translate` CSS property, which stays in effect independently for the
+   dialog's entire lifetime (open, animating, and at rest). The old version
+   of this keyframe animated `transform: translate(-50%,-50%) scale(...)`
+   directly -- correct DURING the animation, but the instant it ended the
+   animated `transform` went away and the element's resting `transform`
+   (never set by Tailwind v4's utilities) resolved to `none`, snapping the
+   dialog from its correctly-centered animated position to its raw,
+   uncentered `left:50%;top:50%` anchor point (confirmed live via
+   frame-by-frame getComputedStyle sampling: a real +220px/+120px position
+   jump on the exact frame `transform` flipped to `none`). Animating only
+   `scale` here never touches `translate`/`transform` at all, so centering
+   is continuous with zero end-of-animation discontinuity.
+   `transform-origin` is set per-instance by Dialog.tsx (`--dialog-origin-x/
+   y`, falling back to 50% 50% i.e. the box's own center) to the triggering
+   button's on-screen position, so the scale visibly grows from/shrinks
+   into wherever the user actually clicked, not just a generic center-zoom. */
 @keyframes dialogIn {
   from {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.97);
+    scale: 0.05;
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
+    scale: 1;
   }
 }
 
@@ -122,11 +295,38 @@
 @keyframes dialogOut {
   from {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
+    scale: 1;
   }
   to {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.97);
+    scale: 0.05;
+  }
+}
+
+/* Scale-only counterparts to dialogIn/dialogOut for Radix-anchored popovers
+   (DropdownMenu, Select, Combobox) -- those already carry their own
+   translate() from Radix's popper positioning, so reusing dialogIn/dialogOut's
+   translate(-50%,-50%) (meant for a page-centered dialog) would fight that
+   positioning transform and render the popover in the wrong place. */
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes popOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.97);
   }
 }
 
@@ -163,6 +363,37 @@
   }
 }
 
+/* Attention motion role (DESIGN.md §8) -- the confirm-to-ADO CTA's only
+   animated state, and the only element allowed to breathe at all. */
+@keyframes ctaBreathe {
+  0%,
+  100% {
+    box-shadow: var(--shadow-cta);
+  }
+  50% {
+    box-shadow: var(--shadow-cta-attention);
+  }
+}
+
+/* Applies the Attention motion role above. DESIGN.md §15.7: this class may
+   only ever land on the confirm-to-ADO CTA, once its acknowledgement
+   checkbox is ticked (see ui/ConfirmDialog.tsx). */
+.cta-attention {
+  animation: ctaBreathe var(--duration-breathe) var(--ease-in-out) infinite;
+}
+
+/* Stepper "current step" ring -- pairs with the existing spin keyframe on
+   the rotating-arrows icon (DESIGN.md §7, Navigation category). */
+@keyframes pulse-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--color-accent-soft-border);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--color-accent-soft-border);
+  }
+}
+
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
@@ -173,9 +404,16 @@
     @apply bg-canvas text-ink-1 font-sans;
   }
 
+  /* DESIGN.md §7, §13: signal-yellow measures 1.31:1 on white and fails
+     WCAG 2.2 SC 1.4.11's 3:1 focus-indicator floor -- indigo is 6.31:1.
+     .on-dark scopes the dark-surface variant (rail, tooltips, toasts). */
   *:focus-visible {
-    outline: 2px solid var(--color-signal);
-    outline-offset: 1px;
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  .on-dark:focus-visible {
+    outline-color: var(--color-focus-on-dark);
   }
 
   ::-webkit-scrollbar {
@@ -199,6 +437,25 @@
       animation-duration: 0.001ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.001ms !important;
+    }
+
+    /* transition-duration is clamped above, but transition-property is not
+       -- a -translate-y-px hover would still apply instantly. Route hover
+       lift through this class so "no motion" means no displacement, not
+       instant displacement (DESIGN.md §8, reduced-motion clause 1). */
+    .lift {
+      transform: none !important;
+    }
+
+    /* Attention's non-motion fallback (DESIGN.md §8, reduced-motion clause
+       2) -- freezing the ctaBreathe animation at an arbitrary point in its
+       cycle would leave the confirm-to-ADO CTA looking like its rest state
+       exactly as often as its attention state. Force the attention shadow
+       statically instead, so the one element the whole product hinges on
+       never silently degrades to nothing. */
+    .cta-attention {
+      animation: none !important;
+      box-shadow: var(--shadow-cta-attention);
     }
   }
 }

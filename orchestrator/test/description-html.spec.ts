@@ -47,4 +47,22 @@ describe('toAdoDescriptionHtml', () => {
     const html = toAdoDescriptionHtml('Line one.\nLine two.');
     expect(html).toContain('<br>');
   });
+
+  it('passes a pre-rendered <table> block through as real HTML instead of escaping it to garbled text', () => {
+    // Regression: ingestion's _table_to_html already produces trusted,
+    // pre-escaped table HTML for ADO's rich-text field. Escaping its `<`
+    // like ordinary text turned every table in every ADO work item into
+    // an unreadable "&lt;table&gt;&lt;tr&gt;..." line.
+    const description = 'Intro text.\n<table><tr><td>Cell A</td><td>Cell B</td></tr></table>';
+    const html = toAdoDescriptionHtml(description);
+    expect(html).toContain('<table><tr><td>Cell A</td><td>Cell B</td></tr></table>');
+    expect(html).not.toContain('&lt;table&gt;');
+  });
+
+  it('still escapes a literal angle-bracket placeholder sitting next to a real <table> block', () => {
+    const description = 'Value: <TBD>\n<table><tr><td>Cell A</td></tr></table>';
+    const html = toAdoDescriptionHtml(description);
+    expect(html).toContain('&lt;TBD&gt;');
+    expect(html).toContain('<table><tr><td>Cell A</td></tr></table>');
+  });
 });

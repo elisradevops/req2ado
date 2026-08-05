@@ -13,8 +13,10 @@ from json_repair import repair_json
 from app.survey._response_schemas import (
     checklist_extraction_schema,
     duplicate_cluster_verdict_schema,
+    duplicate_pair_verdict_schema,
     epic_feature_scores_schema,
     kb_relevance_schema,
+    parent_summary_schema,
     root_grouping_schema,
     scores_schema,
     section_analysis_schema,
@@ -1305,6 +1307,86 @@ class OrchestratorLlmClient:
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
 
+    def summarize_parent_nodes(self, nodes_by_id: dict[str, dict]) -> dict[str, dict]:
+        """Backs the ParentSummaryClient protocol (id_tree_builder.py) --
+        the deterministic-hierarchy path's Epic/Feature title+description
+        enhancement pass. Confirmed real gap, live: an Epic/Feature's
+        title AND description were both `extract_baseline_title(heading_text)`
+        -- a verbatim copy of the source document's own section heading,
+        identical to each other (e.g. both "Over 28V VDC input"), never
+        touched by any LLM call -- TitleTagClient only ever reaches
+        Requirement leaves.
+
+        `nodes_by_id` maps each Epic/Feature node's own id to
+        {'title': str (its current, possibly-verbatim title),
+        'requirement_titles': list[str], 'requirement_descriptions':
+        list[str]} -- EVERY descendant Requirement leaf's text, however
+        deeply nested underneath this node (NOT just direct children --
+        see _collect_descendant_requirement_texts's own docstring for
+        why: the spec allows a Requirement nested under another
+        Requirement, or an Epic nested under another Epic, and this
+        node's real scope is everything underneath it, not just its
+        immediate children). Returns node_id -> {'title': str,
+        'description': str} -- title framed as
+        ADO's own Epic ("large portfolio-level strategic goal") or Feature
+        ("capability delivering direct user value") definition, description
+        a DISTINCT 1-2 sentence summary of what the children collectively
+        deliver, never identical to title. Purely an enhancement:
+        `_apply_parent_summary_pass` already fails open on any exception or
+        malformed/partial response, keeping the verbatim heading title and
+        description exactly as constructed."""
+        system_prompt = (
+            "You are given a JSON object mapping node ids to an Epic or "
+            "Feature work item (Azure DevOps definitions): an Epic is a "
+            "large, portfolio-level strategic goal that breaks down into "
+            "multiple Features -- it answers 'what is the big strategic "
+            "direction', not individual task execution. A Feature is a "
+            "significant piece of functionality delivering direct value to "
+            "the user, broken down further into Requirements/stories. Each "
+            "entry gives the node's current title (often just the source "
+            "document's own section heading, not a real strategic/capability "
+            "statement) plus EVERY requirement statement nested underneath "
+            "it, however deep (requirement_titles/requirement_descriptions) "
+            "-- treat these as this node's real scope, not just its "
+            "immediate children. For EACH node, return a SHORT title "
+            "reframed to match its real role (Epic = strategic goal, "
+            "Feature = capability delivering user value) -- not a copy of "
+            "the input title unless it already reads that way -- and a "
+            "description: 1-2 sentences summarizing what those requirements "
+            "collectively deliver. The description MUST be worded "
+            "differently from the title, never identical or a "
+            "trivial restatement. Return ONLY a JSON object with the SAME "
+            "node id keys, each mapped to an object with 'title' (string) "
+            "and 'description' (string). Never invent a node id not present "
+            "in the input. "
+            f"The input contains exactly {len(nodes_by_id)} node(s). Return "
+            f"exactly {len(nodes_by_id)} entries in your response -- one for "
+            "EVERY node id in the input, none omitted, none invented. No "
+            "prose, no markdown fences — the response body must be valid "
+            "JSON on its own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(nodes_by_id)},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": parent_summary_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
     def synthesize_leaf_requirements(self, items_by_id: dict[str, dict]) -> dict[str, dict]:
         """Backs the SynthesisClient protocol (id_tree_builder.py) -- the
         actual quality fix for the deterministic-hierarchy path's
@@ -1361,6 +1443,65 @@ class OrchestratorLlmClient:
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
             "responseSchema": synthesis_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/chat",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
+    def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
+        """Backs the DuplicateJudgeClient protocol
+        (check_for_duplicates.py) -- verifies a >=threshold embedding
+        match against ADO's own vector store before trusting it as a real
+        duplicate. Real gap closed here: `all-minilm` (this codebase's
+        configured EMBED_MODEL) is a small, general-purpose sentence
+        embedding -- confirmed real false-positive risk for two
+        topically-adjacent but SCOPALLY DISTINCT short phrases (e.g. "UART
+        and USB Ports" vs "USB Communication", both about "USB" but
+        different requirement scope). Same 'redundant'/'contradictory'/
+        'distinct' vocabulary as judge_duplicate_cluster's own within-job
+        cluster judgment -- 'distinct' is the one that matters here (the
+        candidate is genuinely a different requirement, only topically
+        similar); 'redundant'/'contradictory' both mean the ADO item IS a
+        real match for check_for_duplicates.py's purposes (it only answers
+        "does this already exist," not conflict semantics)."""
+        system_prompt = (
+            "You are given two requirement statements: 'candidate' (newly "
+            "extracted from a specification document) and 'existing' (already "
+            "in Azure DevOps, flagged as a near-duplicate by embedding "
+            "similarity alone). Similarity alone cannot tell whether they "
+            "actually describe the SAME real-world requirement, or only the "
+            "same general topic/subject area. Judge their relationship: "
+            "'redundant' if they state the same fact (harmless restatement); "
+            "'contradictory' if they state DIFFERENT values for what looks "
+            "like the SAME specific parameter/capability (e.g. one says 'at "
+            "least 85%' and another says 'at least 93%' for the same "
+            "efficiency spec); 'distinct' if they are about the same general "
+            "topic/component but cover a genuinely DIFFERENT specific "
+            "requirement or scope (e.g. one covers a connector's physical "
+            "port count/pinout and the other covers a communication "
+            "protocol over that SAME connector -- same subject area, "
+            "different requirement). Return ONLY a JSON object with "
+            "'verdict' (one of 'redundant', 'contradictory', 'distinct'). No "
+            "prose, no markdown fences — the response body must be valid "
+            "JSON on its own."
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps({"candidate": candidate_text, "existing": matched_text})},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": duplicate_pair_verdict_schema(),
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
@@ -1498,6 +1639,36 @@ class OrchestratorLlmClient:
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
+
+    def show_model(self, model: str) -> dict:
+        """Backs the ModelCapsClient protocol (llm_leveling.py) -- a live
+        Ollama /api/show lookup, proxied through the orchestrator's own
+        /llm/show route (OpenWebUiClient.showModel), for a model NOT
+        already in llm_leveling.py's hand-maintained `_MODEL_CAPS` table.
+        Real gap closed here: every entry in that table was populated by a
+        human manually running /api/show ONCE per model and hardcoding
+        the result -- an unrecognized model previously got the exact same
+        blanket conservative guess regardless of what it actually is.
+
+        Returns {'context_length': int | None, 'capabilities': list[str]}
+        -- `context_length` is None when the orchestrator's own lookup
+        couldn't find the model's architecture-prefixed context-length
+        key (an unrecognized architecture, or a non-Ollama backend that
+        still answered but with no real model_info). This is a narrow
+        read-only capability probe, NOT a /llm/chat call -- no
+        system_prompt, no responseSchema, no model-generation cost at
+        all; `_resolve_caps` (the sole caller) already fails open on any
+        exception this raises, so this method itself stays a thin,
+        undecorated passthrough."""
+        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{self._base_url}/llm/show",
+                json={"model": model},
+                headers={"Authorization": f"Bearer {self._bearer_token}"},
+            )
+        response.raise_for_status()
+        body = response.json()
+        return {"context_length": body.get("contextLength"), "capabilities": body.get("capabilities") or []}
 
     def judge_kb_relevance(self, branch_content: str, snippets: list[dict]) -> dict[str, str]:
         """Verifies whether each KB snippet OFFERED to a branch's grounded

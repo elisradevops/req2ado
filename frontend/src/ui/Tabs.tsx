@@ -22,7 +22,7 @@ export function Tabs({
             value={tab.value}
             className={cn(
               'border-b-2 border-transparent px-3 py-2 text-sm font-semibold text-ink-3 transition-colors',
-              'data-[state=active]:border-navy-600 data-[state=active]:text-ink-1',
+              'data-[state=active]:border-accent data-[state=active]:text-ink-1',
               'hover:text-ink-1',
             )}
           >
@@ -30,7 +30,7 @@ export function Tabs({
           </RadixTabs.Trigger>
         ))}
       </RadixTabs.List>
-      <div key={value} className="animate-[fadeIn_150ms_ease-out]">
+      <div key={value} className="animate-[fadeIn_var(--duration-base)_var(--ease-out)]">
         {children}
       </div>
     </RadixTabs.Root>

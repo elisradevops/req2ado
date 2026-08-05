@@ -196,6 +196,7 @@ export class JobsController {
     dryRunDiff: unknown;
     warnings: string[];
     kbCitations: unknown;
+    figureDescriptions: { figureIndex: number; caption: string }[];
     createdAt: Date;
     areaPath: string;
     originalFilename: string;
