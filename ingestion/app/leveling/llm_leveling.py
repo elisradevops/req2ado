@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 
 if TYPE_CHECKING:
@@ -32,6 +34,7 @@ from app.leveling.id_tree_builder import (
     build_hierarchy_subtree,
     recompute_child_types,
 )
+from app.leveling.model_caps import ModelCapsClient, _ModelCaps, _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
 from app.leveling.root_regrouping import (
     RootGroupingClient,
@@ -51,6 +54,7 @@ from app.leveling.tree_builder import (
     _figure_line,
     _hash_description,
     _hash_identity,
+    _hash_identity_for_synthesized_node,
     _order_key,
     _partition_tables_by_branch,
     _split_into_branches,
@@ -87,202 +91,6 @@ _BLOCK_COVERAGE_OVERLAP_THRESHOLD = 0.3
 # "shall"/"the system"). This is a coarse hallucination SIGNAL for a human
 # reviewer, not a hard quality gate -- it does not fail or drop anything.
 _LOW_GROUNDING_THRESHOLD = 0.2
-# Ceiling on how many blocks a single SURVEY branch's infer_hierarchy/
-# generate_requirements_for_document calls are ever handed at once. Real
-# documents can have very few, wildly unbalanced top-level sections
-# (observed live: an ICD with only 4 top-level sections, one 372 blocks) --
-# _split_into_branches's document-structure-driven split alone cannot
-# guarantee a small branch; _bound_branch_size enforces this ceiling
-# directly regardless of the document's actual heading structure. Not a
-# precisely-tuned token budget -- a conservative block-count proxy for "this
-# branch is small enough that one more level of recursive splitting isn't
-# needed".
-#
-# Originally 60, chosen deliberately small to avoid the per-call timeout
-# that motivated this whole mechanism. Live testing against the same 679
-# block ICD showed the real bottleneck is the OPPOSITE problem: at 60, the
-# document's own fine-grained numbering recursively split down to 152
-# branches (avg ~4.5 blocks each), and 2-4 sequential LLM calls per branch
-# (~300-600 total, strictly one-at-a-time) made total /level wall time
-# dominated by fixed per-call overhead, not model inference time -- pasting
-# the WHOLE document into a chat UI in one shot was fast precisely because
-# it's one call, not many. Raised to 200: modern local models here run with
-# 32k+ context, comfortably fitting a 200-block branch's prompt+response, so
-# this still guards against genuine context overflow on an unbounded branch
-# while cutting round-trip count roughly in proportion (this same document
-# now produces a handful of branches instead of 152).
-_MAX_SURVEY_BRANCH_BLOCK_COUNT = 200
-
-# Coverage-safe chunk budget for local models (see _ModelCaps.coverage_budget_tokens's
-# own docstring for why this is much smaller than a model's real context window). The
-# lost-in-the-middle recall trough sets in well before a context window fills; ~8-12k
-# tokens is large enough that a chunk still spans several adjacent headings (preserving
-# local cross-section reasoning) while staying off the trough. This is the PRIMARY
-# TUNABLE for coverage quality -- too high under-chunks (the under-synthesis bug
-# persists), too low over-fragments (node inflation, more sequential calls). 10k is a
-# defensible starting midpoint; settle empirically against a real long document's
-# node-count/coverage-warning delta.
-_COVERAGE_BUDGET_TOKENS = 10_000
-
-
-class _ModelCaps(NamedTuple):
-    branch_cap: int              # _bound_branch_size's oversized-branch safety net (unchanged role)
-    context_budget_tokens: int   # true context-window ceiling -- documented for future overflow-guarding/
-                                  # num_ctx alignment, but NOT what drives chunking control flow (see
-                                  # coverage_budget_tokens)
-    coverage_budget_tokens: int  # drives the whole-doc single-call gate + budget-merge splitter. Deliberately
-                                  # much smaller than context_budget_tokens for local models: confirmed live
-                                  # that a document comfortably fitting the context window still under-
-                                  # synthesizes when analyzed in one holistic call (lost-in-the-middle
-                                  # positional bias, arXiv 2410.23609 -- an attention-architecture property
-                                  # that degrades middle-of-input recall well before the context window
-                                  # fills, so "fits in context" must NOT be treated as "safe to analyze in
-                                  # one pass"). Equal to context_budget_tokens for frontier models -- the
-                                  # reported under-synthesis is local-model-only so far; revisit if frontier
-                                  # models show the same symptom.
-    supports_tools: bool
-
-
-# Per-model branch-size cap, context-token budget, and tool-calling capability
-# (§5c's gate). Local Ollama models confirmed live via /api/show's own
-# "capabilities" field this session -- both are tools-capable so far; the
-# conservative supports_tools=False default below is for any UNKNOWN model, so
-# it safely falls back to the pre-computed once-per-document KB path rather
-# than sending a `tools` payload a model may not understand.
-#
-# context_budget_tokens: gemma4:e4b/qwen3:4b support 128k/32k context
-# ARCHITECTURALLY, but Ollama's actual runtime window only reaches that far
-# once num_ctx is explicitly raised for the request (see the numCtx threading
-# in orchestrator/src/modules/llm/) -- these budgets assume that's done;
-# otherwise Ollama truncates regardless of what this module sends.
-_MODEL_CAPS: dict[str, _ModelCaps] = {
-    "qwen3:4b": _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 28_000, _COVERAGE_BUDGET_TOKENS, True),
-    "gemma4:e4b": _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 90_000, _COVERAGE_BUDGET_TOKENS, True),
-    # gemma4:12b -- the orchestrator's own configured LLM_CHAT_MODEL default
-    # (same family/capability set as gemma4:e4b above, confirmed live via
-    # Ollama's own `/api/show` -- capabilities: completion, vision, audio,
-    # tools, thinking). This entry was missing entirely, so a job that left
-    # the wizard's model field on "Default" (the common case) always fell
-    # through to the conservative unknown-model default below
-    # (supports_tools=False, the 28k budget) even though this model
-    # genuinely supports tool-calling -- silently forcing every SURVEY run
-    # onto the non-agentic once-per-document KB fallback path.
-    "gemma4:12b": _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 90_000, _COVERAGE_BUDGET_TOKENS, True),
-    # qwen2.5:32b-instruct -- empirically tested live against the same real
-    # 682-block AirPro ICD at coverage_budget_tokens=10_000 (the shared local-
-    # model default) vs 20_000: the larger budget roughly HALVED the dropped-
-    # block rate (45% -> 23% of blocks unreferenced by any generated node),
-    # produced MORE nodes (50 -> 56, not fewer -- ruling out the over-
-    # consolidation concern a bigger budget usually risks), and ran FASTER
-    # overall (33min -> 17min, fewer round-trips outweighing each call's
-    # larger prompt). Confirms a bigger/more-capable model genuinely tolerates
-    # a higher coverage budget before the lost-in-the-middle under-synthesis
-    # this constant guards against kicks in -- NOT a blanket assumption from
-    # parameter count or context-window size alone. context_budget_tokens=
-    # 32_000 is this model's real native window (confirmed via /api/show).
-    "qwen2.5:32b-instruct": _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 32_000, 20_000, True),
-    # qwen3.6:35b -- MoE architecture (qwen35moe family, 36B total weights,
-    # only a fraction active per token), confirmed live via /api/show:
-    # tools + vision + thinking, 256K real context. Empirically tested
-    # against the same 682-block AirPro ICD at coverage_budget_tokens=10_000
-    # vs 20_000 (both with the mandatory `think: False` -- see
-    # orchestrator_llm_client.py's analyze_section/analyze_section_agentic
-    # doc comments -- since this model's hidden reasoning otherwise costs
-    # 3-10x wall time for zero observed accuracy gain on this task): 20_000
-    # was marginally better on every metric (270.8s vs 280.1s, same 75
-    # nodes, 11% vs 12% dropped-block rate) and dominates qwen2.5:32b-
-    # instruct outright at either budget (~4x faster, more nodes, roughly a
-    # quarter the drop rate) -- the new shipped default.
-    "qwen3.6:35b": _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 32_000, 20_000, True),
-    "gpt-5.5": _ModelCaps(100_000, 150_000, 150_000, True),
-}
-
-
-class ModelCapsClient(Protocol):
-    """Optional, narrow LLM capability: a live per-model capability lookup
-    (Ollama's real /api/show endpoint, proxied through the orchestrator's
-    /llm/show route) for any model NOT in `_MODEL_CAPS` below. Every entry
-    in that table was populated by a human manually running /api/show ONCE
-    per model and hardcoding the result -- an unknown model previously got
-    the same blanket conservative guess regardless of what it actually is.
-    This closes that gap for the fallback case only; a model already in
-    `_MODEL_CAPS` is never second-guessed by a live lookup (see
-    _resolve_caps's own docstring for why the static table stays
-    authoritative where it exists: those numbers reflect real empirical
-    coverage-quality tuning a generic derivation can't replicate)."""
-
-    def show_model(self, model: str) -> dict: ...
-
-
-# Process-lifetime cache -- a live show_model() call is a real HTTP round
-# trip; the same unknown model name resolving repeatedly within one
-# ingestion process (e.g. many jobs against the same non-cataloged model)
-# should only ever pay that cost once.
-_LIVE_MODEL_CAPS_CACHE: dict[str, _ModelCaps] = {}
-
-# Same order of magnitude as this module's own hardcoded frontier entries
-# (gpt-5.5, and the claude-opus/gpt-5 prefix fallback below) -- replaces
-# NAME-PREFIX matching with a REAL measured threshold for an unrecognized
-# model: at or above this, treat it as frontier-shaped (coverage budget ==
-# full context, no lost-in-the-middle guard); below it, keep today's
-# conservative local-model defaults, since no empirical A/B data exists
-# for an arbitrary unknown local model the way it does for every entry
-# already in _MODEL_CAPS.
-_FRONTIER_SCALE_CONTEXT_THRESHOLD = 100_000
-
-
-def _derive_caps_from_live_lookup(model: str, caps_client: ModelCapsClient) -> _ModelCaps:
-    """Real gap closed here: an unknown model previously got the same
-    blanket `context=28_000, coverage=_COVERAGE_BUDGET_TOKENS,
-    supports_tools=False` guess regardless of what it actually is. Derives
-    real caps from a live Ollama /api/show lookup instead -- context
-    length from the model's own reported architecture context length,
-    tool support from its own reported capabilities array. Any exception
-    (network error, non-Ollama backend with no /api/show at all,
-    malformed response) is caught by the CALLER (_resolve_caps), never
-    here -- this function's job is only the derivation, not the fail-open
-    fallback."""
-    info = caps_client.show_model(model)
-    context_length = info.get("context_length")
-    context_budget_tokens = context_length if isinstance(context_length, int) and context_length > 0 else 28_000
-    capabilities = info.get("capabilities") or []
-    supports_tools = "tools" in capabilities
-    if context_budget_tokens >= _FRONTIER_SCALE_CONTEXT_THRESHOLD:
-        return _ModelCaps(100_000, context_budget_tokens, context_budget_tokens, supports_tools)
-    return _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, context_budget_tokens, _COVERAGE_BUDGET_TOKENS, supports_tools)
-
-
-def _resolve_caps(model: str | None, caps_client: ModelCapsClient | None = None) -> _ModelCaps:
-    """Resolves a model name to its branch-size cap, context-token budget, and
-    tool-calling support. Frontier models (production target, see
-    build_survey_tree's docstring) get much larger caps/budgets since they run
-    huge context windows.
-
-    `caps_client` (optional, default None -- byte-identical to before this
-    param existed, zero I/O) only ever applies to a model NOT already in
-    `_MODEL_CAPS` and not matching the frontier name-prefix check: when
-    supplied, a genuinely unknown model gets a REAL live-derived measurement
-    (see _derive_caps_from_live_lookup) instead of the old blanket
-    conservative guess, cached for the rest of this process's lifetime.
-    Any failure from the live lookup (unreachable orchestrator, non-Ollama
-    backend, malformed response) falls straight through to exactly today's
-    static default -- this must never raise, never block a job."""
-    if model and model in _MODEL_CAPS:
-        return _MODEL_CAPS[model]
-    if model and model.startswith(("claude-opus", "gpt-5")):
-        return _ModelCaps(100_000, 150_000, 150_000, True)
-    static_default = _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 28_000, _COVERAGE_BUDGET_TOKENS, False)
-    if not model or caps_client is None:
-        return static_default
-    if model in _LIVE_MODEL_CAPS_CACHE:
-        return _LIVE_MODEL_CAPS_CACHE[model]
-    try:
-        derived = _derive_caps_from_live_lookup(model, caps_client)
-    except Exception:
-        return static_default
-    _LIVE_MODEL_CAPS_CACHE[model] = derived
-    return derived
-
 
 # Reserved out of coverage_budget_tokens for the KB context, system prompt,
 # and the model's own output -- the whole-document gate (§3) and budget-merge
@@ -1262,6 +1070,12 @@ def build_survey_tree(
     # is byte-identical to before this capability existed: disconnected
     # root nodes are left exactly as-is.
     grouping_client: RootGroupingClient | None = None,
+    # How many of this document's independent top-level branches to
+    # analyze concurrently (see app.config.Settings.survey_branch_concurrency's
+    # own doc comment for the full reasoning). 1 (the default) is
+    # byte-identical to before this capability existed: branches are
+    # processed one at a time, in document order, exactly as before.
+    branch_concurrency: int = 1,
 ) -> WorkItemTree:
     """SURVEY-mode leveling entry point. Splits the document into top-level
     branches (_split_into_branches, the same depth-1-heading split
@@ -1711,7 +1525,37 @@ def build_survey_tree(
         if branch_result.scoring_kb_context:
             branch_scoring_kb_contexts.append(branch_result.scoring_kb_context)
     else:
-        for branch_index, branch_blocks in enumerate(branches):
+        # blocks_done_before is precomputed per branch (each branch's own
+        # fixed offset into the document, from branch sizes known upfront)
+        # rather than a running counter incremented after each branch
+        # finishes -- required for concurrent execution below (branches can
+        # finish out of order), but computed unconditionally here so the
+        # sequential path (branch_concurrency<=1) and concurrent path share
+        # the exact same values instead of two divergent implementations.
+        blocks_done_before_by_branch = [0] * len(branches)
+        running_total = 0
+        for i, b in enumerate(branches):
+            blocks_done_before_by_branch[i] = running_total
+            running_total += len(b)
+
+        # progress_callback is invoked from multiple branches concurrently
+        # once branch_concurrency > 1 -- narration events themselves don't
+        # need to be strictly ordered (they're informational), but each
+        # individual call must complete without interleaving with another
+        # (the underlying Redis publish is a single command, but a future
+        # multi-step narration write must not tear). A plain
+        # threading.Lock has negligible cost here: narration fires far less
+        # often than the LLM calls that dominate wall time. No-op (the
+        # exact same callable, uncontended) when running sequentially.
+        callback_lock = threading.Lock()
+
+        def _fire_progress(progress: LevelingProgress) -> None:
+            if progress_callback is None:
+                return
+            with callback_lock:
+                progress_callback(progress)
+
+        def _run_branch(branch_index: int, branch_blocks: list[Block]) -> _BranchAnalysisResult:
             # Per-BRANCH heading count (not the whole-document heading_count
             # above, which only applies on the single-branch/whole-doc path)
             # -- generalizes the confirmed-live "concrete, countable floor
@@ -1728,7 +1572,7 @@ def build_survey_tree(
             branch_table_groups = qualifying_table_groups(
                 branch_tables[branch_index] if branch_tables is not None else None
             )
-            branch_result = _build_survey_tree_for_branch(
+            return _build_survey_tree_for_branch(
                 branch_blocks, analysis_client,
                 node_id_prefix=f"br{branch_index}_", customer_id=customer_id,
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
@@ -1737,16 +1581,37 @@ def build_survey_tree(
                 global_context=global_context, read_other_section_fn=read_other_section_fn,
                 topic_count=branch_heading_count + len(branch_table_groups),
                 table_groups=branch_table_groups,
-                branch_index=branch_index, branch_count=len(branches), blocks_done_before=blocks_done,
-                blocks_total=blocks_total, progress_callback=progress_callback,
+                branch_index=branch_index, branch_count=len(branches),
+                blocks_done_before=blocks_done_before_by_branch[branch_index],
+                blocks_total=blocks_total, progress_callback=_fire_progress,
             )
+
+        if branch_concurrency <= 1:
+            # Byte-identical to this loop's pre-concurrency form: one
+            # branch at a time, in document order. No ThreadPoolExecutor
+            # involved at all -- zero new risk for every deployment that
+            # hasn't opted into concurrency.
+            branch_results: list[_BranchAnalysisResult] = [
+                _run_branch(i, branch_blocks) for i, branch_blocks in enumerate(branches)
+            ]
+        else:
+            # Submission order doesn't determine completion order -- results
+            # are collected by INDEX below, not by whichever finishes first,
+            # so the final node list is assembled in the same document order
+            # a sequential run would produce regardless of which branch's
+            # LLM call happens to come back first.
+            with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
+                futures = [executor.submit(_run_branch, i, branch_blocks) for i, branch_blocks in enumerate(branches)]
+                branch_results = [future.result() for future in futures]
+
+        for branch_result in branch_results:
             branch_tree = branch_result.tree
             all_nodes.extend(branch_tree.nodes)
             all_warnings.extend(branch_tree.warnings)
             all_kb_citations.extend(branch_tree.kb_citations)
             if branch_result.scoring_kb_context:
                 branch_scoring_kb_contexts.append(branch_result.scoring_kb_context)
-            blocks_done += len(branch_blocks)
+        blocks_done = running_total
 
     # kb_citations deduped across branches by source_file, keeping the
     # highest-similarity hit -- on the fallback path every branch shares the
@@ -2128,9 +1993,10 @@ def _build_survey_tree_for_branch(
             logger.warning(message)
             warnings.append(message)
 
+        local_id = f"{node_id_prefix}{temp_id}"
         nodes.append(
             WorkItemNode(
-                local_id=f"{node_id_prefix}{temp_id}",
+                local_id=local_id,
                 type=node_type,
                 parent_local_id=f"{node_id_prefix}{parent_temp_id}" if parent_temp_id is not None else None,
                 title=title,
@@ -2138,7 +2004,23 @@ def _build_survey_tree_for_branch(
                 customer_id=customer_id,
                 source_ref=representative_source_ref,
                 fidelity_hash=hashlib.sha256(text.encode()).hexdigest(),
-                identity_hash=_hash_identity(text, representative_source_ref),
+                # Confirmed real bug (live, via golden-e2e's BASELINE re-run
+                # assertion, which surfaced the same class of issue this
+                # SURVEY path has too): plain _hash_identity(text, ...) hashed
+                # the LLM-GENERATED `text` -- unstable run-to-run wording for
+                # the SAME semantic content -- combined with
+                # representative_source_ref, which every node in THIS
+                # section shares (analyze_section has no per-node source
+                # attribution, only a whole-section one). Re-keyed on
+                # local_id instead: still deterministic given the SAME
+                # section producing the SAME node count/order, and no longer
+                # poisoned by wording drift. Residual, known limitation: if
+                # the model's OWN node count/ordering for a section varies
+                # between runs (not just wording), local_id-based identity
+                # can't fully paper over that -- fixing it for real needs
+                # per-node source offsets from the model, a bigger schema/
+                # prompt change tracked separately, not this hash function.
+                identity_hash=_hash_identity_for_synthesized_node(local_id, representative_source_ref),
                 tags=tags,
                 mode=WorkItemMode.SURVEY,
                 grounding_score=grounding_score,

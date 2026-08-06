@@ -17,78 +17,12 @@ const testConfig: AdoMcpConfig = {
   mockDbPath: ':memory:',
 };
 
-describe('MCP server HTTP transport', () => {
-  it('rejects requests without a bearer token', async () => {
-    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
-    const res = await request(app).post('/mcp').send({});
-    expect(res.status).toBe(401);
-  });
-
-  it('rejects requests with the wrong bearer token', async () => {
-    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
-    const res = await request(app).post('/mcp').set('Authorization', 'Bearer wrong').send({});
-    expect(res.status).toBe(401);
-  });
-
+describe('HTTP app', () => {
   it('exposes a plain health endpoint with no auth required', async () => {
     const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true, backend: 'mock' });
-  });
-
-  it('accepts an initialize request with the correct bearer token, and allows a second request afterwards', async () => {
-    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
-
-    const initializeRequest = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2025-06-18',
-        capabilities: {},
-        clientInfo: { name: 'test-client', version: '0.0.1' },
-      },
-    };
-
-    // First request: proves a correctly-authenticated call to /mcp succeeds (not 401).
-    const first = await request(app)
-      .post('/mcp')
-      .set('Authorization', `Bearer ${testConfig.mcpBearer}`)
-      .set('Accept', 'application/json, text/event-stream')
-      .send(initializeRequest);
-    expect(first.status).not.toBe(401);
-    expect(first.status).toBeLessThan(500);
-
-    // Second request on the SAME app instance: regression test for the
-    // "connect() called per-request on a shared transport" bug. Before the
-    // fix this either threw "Already connected to a transport..." (when a
-    // single transport/server pair was reused and connect() was called again)
-    // or produced a bare 500 (a stateless transport is single-use per the
-    // MCP SDK, so reusing one across requests also fails). Asserting a
-    // second, independent, non-401/non-500 response proves the app can
-    // serve more than one /mcp request.
-    const toolsListRequest = {
-      jsonrpc: '2.0',
-      id: 2,
-      method: 'tools/list',
-      params: {},
-    };
-    const second = await request(app)
-      .post('/mcp')
-      .set('Authorization', `Bearer ${testConfig.mcpBearer}`)
-      .set('Accept', 'application/json, text/event-stream')
-      .send(toolsListRequest);
-    expect(second.status).not.toBe(401);
-    expect(second.status).toBeLessThan(500);
-  });
-
-  it('rejects a /mcp request with no ADO credential headers when backend=real', async () => {
-    const app = createMcpApp(() => {
-      throw new Error('should not be called');
-    }, { ...testConfig, backend: 'real' });
-    const res = await request(app).post('/mcp').set('Authorization', `Bearer ${testConfig.mcpBearer}`).send({});
-    expect(res.status).toBe(401);
   });
 
   it('GET /health never constructs a credentialed backend when backend=real', async () => {
@@ -125,6 +59,38 @@ describe('MCP server HTTP transport', () => {
       backend: 'real',
       note: 'real-ADO reachability requires a per-request credential, not checkable here',
     });
+  });
+});
+
+describe('REST ADO transport auth (/api/ado)', () => {
+  it('rejects requests without a bearer token', async () => {
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
+    const res = await request(app).post('/api/ado/ado_ping').send({});
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects requests with the wrong bearer token', async () => {
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
+    const res = await request(app).post('/api/ado/ado_ping').set('Authorization', 'Bearer wrong').send({});
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts an authenticated request and reaches the operation handler', async () => {
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
+    const res = await request(app)
+      .post('/api/ado/ado_ping')
+      .set('Authorization', `Bearer ${testConfig.mcpBearer}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, backend: 'mock' });
+  });
+
+  it('rejects a request with no ADO credential headers when backend=real', async () => {
+    const app = createMcpApp(() => {
+      throw new Error('should not be called');
+    }, { ...testConfig, backend: 'real' });
+    const res = await request(app).post('/api/ado/ado_ping').set('Authorization', `Bearer ${testConfig.mcpBearer}`).send({});
+    expect(res.status).toBe(401);
   });
 });
 

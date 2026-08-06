@@ -44,10 +44,38 @@ class Settings(BaseSettings):
     )
     graph_base_url: str = "https://graph.microsoft.com/v1.0"
     redis_url: str = "redis://localhost:6379"
+    # Middle rung of the SURVEY call ladder (orchestrator -> ingestion ->
+    # this -> the LLM backend) -- see orchestrator_llm_client.py's own doc
+    # comment. Deliberately narrower than the orchestrator's own
+    # INGESTION_REQUEST_TIMEOUT_MS (1h) so this layer reports a stuck LLM
+    # call first, with real margin to the outer layer's own ceiling. Same
+    # numeric default as before this was configurable (no behavior change).
+    llm_request_timeout_seconds: float = 1800.0
     # No logging config existed anywhere in this service before -- whatever
     # uvicorn's own defaults produced. Named so it's configurable without a
     # code change per deployment (e.g. DEBUG locally, INFO/WARNING in prod).
     log_level: str = "INFO"
+    # SURVEY's per-branch analysis loop (build_survey_tree) was fully
+    # sequential -- one branch's analyze_section/title-tag/synthesis calls
+    # complete before the next branch starts, even though branches are
+    # independent (no branch reads another's output). Default of 1
+    # preserves that exact behavior (zero risk, zero deployment
+    # coordination needed) -- this is a real dial, not a free lunch: it
+    # only helps if the configured LLM backend can actually SERVE more than
+    # one generation concurrently. A local single-GPU Ollama instance
+    # started with default settings (llama-server's own default is
+    # `-np 1`, one parallel slot) gains NOTHING from raising this past 1 --
+    # requests just queue backend-side instead of in this loop, and the
+    # added complexity is pure waste. In a real multi-tenant deployment
+    # (e.g. a shared Open WebUI/Ollama cluster already serving 100+ human
+    # users' own chats), raise this ONLY in coordination with whoever
+    # operates that backend's own concurrency limit (OLLAMA_NUM_PARALLEL or
+    # equivalent) -- this is req2ado's own client-side fan-out, not a
+    # request for more backend capacity than already exists; setting it
+    # higher than the backend can truly serve concurrently adds queueing
+    # delay and connection overhead for every one of those other users
+    # without buying this job anything back.
+    survey_branch_concurrency: int = 1
 
     class Config:
         env_prefix = ""

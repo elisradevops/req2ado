@@ -41,3 +41,45 @@ jobs:
           python-version: '3.13'
       - run: pip install -e ".[dev]"
       - run: pytest
+
+  # Advisory (continue-on-error) for now: this is the FIRST real-model-output
+  # regression signal in this repo -- every jest/pytest suite above mocks the
+  # LLM client. Only the BASELINE subset (jobs #1/#2 of
+  # scripts/run-golden-e2e.sh) is wired here -- it needs no Ollama/LLM
+  # backend at all (see the script's --baseline-only comment), so it's
+  # viable on a stock hosted runner. The SURVEY/dedup subset (jobs #3/#4)
+  # runs on .github/workflows/nightly-survey-e2e.yml instead (needs a real
+  # local Ollama with real models pulled -- not viable on a stock hosted
+  # runner). Flip this job to blocking (remove continue-on-error) only after
+  # two CONSECUTIVE green runs of that nightly workflow have been observed
+  # (see req2ado's reliability roadmap, S8) -- that is a real-world
+  # observation over time, not something to infer from the code.
+  #
+  # The duplicate-Prisma-migration blocker that used to be flagged here
+  # (20260709093128_add_job_state_iteration vs.
+  # 20260720130000_add_job_state_iteration, both from the same reconcile
+  # merge commit) is fixed -- the later-timestamped duplicates were deleted
+  # from orchestrator/prisma/migrations.
+  golden-e2e-baseline:
+    name: Golden E2E (BASELINE subset, mock ADO)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Set up ingestion venv
+        working-directory: ingestion
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e ".[dev]"
+      - run: bash scripts/run-golden-e2e.sh --baseline-only

@@ -165,7 +165,17 @@ interface LeveledNode {
   type: string;
   title: string;
   description: string;
-  fidelity_hash: string;
+  // Nullable, not just optional: ingestion's WorkItemNode.fidelity_hash is
+  // "Required in BASELINE mode, null in SURVEY" (see
+  // shared/schemas/work-item-tree.schema.json) -- this field was previously
+  // typed as a required non-null `string` here, which was never actually
+  // true for a SURVEY node. Found while wiring S10's generated WorkItemNode
+  // type in (real type-honesty gap, not just a stale comment) -- harmless in
+  // practice only because every read of this field below already falls back
+  // via `??` (identity_hash ?? fidelity_hash at diffInputs, legacySourceHash
+  // handled by dry-run.service.ts's own `?? undefined`), so this fixes the
+  // type to match what the code already defensively assumed at runtime.
+  fidelity_hash: string | null;
   // Distinct from fidelity_hash (drift detection only, see ingestion's
   // WorkItemNode.identity_hash doc comment) -- this is what the idempotency
   // lookup below actually keys on, so two nodes with byte-identical
@@ -342,43 +352,58 @@ export async function runPipelineJob(
       traceLinksByLocalId.set(link.source_local_id, existing);
     }
 
-    const diffInputs: DryRunTreeNode[] = tree.nodes.map((node) => ({
-      localId: node.local_id,
-      parentLocalId: node.parent_local_id,
-      type: node.type,
-      title: node.title,
-      description: node.description,
+    const diffInputs: DryRunTreeNode[] = tree.nodes.map((node) => {
       // identity_hash is what actually distinguishes two nodes with
       // byte-identical description text (see LeveledNode's own doc
       // comment) -- fidelity_hash alone would silently collapse them via
       // the idempotency lookup below. Falls back to fidelity_hash for an
       // older/mocked response predating identity_hash, matching the exact
       // pre-identity_hash behavior for that case.
-      sourceHash: node.identity_hash ?? node.fidelity_hash,
-      // Migration-safety fallback for IdempotencyService.lookup -- see
-      // DryRunTreeNode.legacySourceHash's own doc comment. Only meaningful
-      // when identity_hash is actually present and differs from
-      // fidelity_hash; dry-run.service.ts's `?? undefined` handles the
-      // null case for an older/mocked node shape.
-      legacySourceHash: node.fidelity_hash,
-      customerId: node.customer_id,
-      areaPath: job.areaPath,
-      groundingScore: node.grounding_score ?? null,
-      qualityScore: node.quality_score,
-      qualityIssues: node.quality_issues,
-      qualityCategoryScores: node.quality_category_scores,
-      sourceRef: node.source_ref
-        ? {
-            documentPath: node.source_ref.document_path,
-            startOffset: node.source_ref.start_offset,
-            endOffset: node.source_ref.end_offset,
-            page: node.source_ref.page,
-          }
-        : null,
-      tags: node.tags ?? [],
-      childType: node.child_type,
-      traceLinks: traceLinksByLocalId.get(node.local_id) ?? [],
-    }));
+      //
+      // fidelity_hash is genuinely null for every current SURVEY node (see
+      // shared/schemas/work-item-tree.schema.json's own doc comment) -- this
+      // fallback is only ever meant to catch a legacy/pre-identity_hash
+      // BASELINE response, where fidelity_hash was always required. Both
+      // being absent means ingestion sent a node this pipeline cannot
+      // idempotency-key at all -- fail loudly rather than let `undefined`
+      // silently reach DryRunTreeNode.sourceHash (required, non-null) and
+      // corrupt the idempotency lookup below.
+      const sourceHash = node.identity_hash ?? node.fidelity_hash;
+      if (sourceHash == null) {
+        throw new Error(`Node ${node.local_id} has neither identity_hash nor fidelity_hash -- cannot compute a stable sourceHash`);
+      }
+      return {
+        localId: node.local_id,
+        parentLocalId: node.parent_local_id,
+        type: node.type,
+        title: node.title,
+        description: node.description,
+        sourceHash,
+        // Migration-safety fallback for IdempotencyService.lookup -- see
+        // DryRunTreeNode.legacySourceHash's own doc comment. Only meaningful
+        // when identity_hash is actually present and differs from
+        // fidelity_hash; dry-run.service.ts's `?? undefined` handles the
+        // null case for an older/mocked node shape.
+        legacySourceHash: node.fidelity_hash,
+        customerId: node.customer_id,
+        areaPath: job.areaPath,
+        groundingScore: node.grounding_score ?? null,
+        qualityScore: node.quality_score,
+        qualityIssues: node.quality_issues,
+        qualityCategoryScores: node.quality_category_scores,
+        sourceRef: node.source_ref
+          ? {
+              documentPath: node.source_ref.document_path,
+              startOffset: node.source_ref.start_offset,
+              endOffset: node.source_ref.end_offset,
+              page: node.source_ref.page,
+            }
+          : null,
+        tags: node.tags ?? [],
+        childType: node.child_type,
+        traceLinks: traceLinksByLocalId.get(node.local_id) ?? [],
+      };
+    });
 
     const customerIdFieldCandidates = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES;
     // Cross-job trace-link targets are always Requirement-CATEGORY items in
@@ -453,11 +478,9 @@ export async function runPipelineJob(
     // Best-effort cleanup: a 'reuse' (exact-hash IdempotencyMapping) match
     // that just got downgraded means that row now points at a dead ADO
     // id -- delete it so this SAME node doesn't match the same stale id
-    // again on every future job against this area path. dedup_skip's
-    // Chroma-side match has no equivalent per-id delete path today (a
-    // known, separately-tracked gap, not fixed here) -- only 'reuse' is
-    // cleaned up. Failure here must never fail the job itself; the
-    // downgrade to 'create' has already happened either way.
+    // again on every future job against this area path. Failure here must
+    // never fail the job itself; the downgrade to 'create' has already
+    // happened either way.
     const staleReuseIds = diff
       .filter((entry, i) => entry.action === 'reuse' && verifiedDiff[i].action === 'create')
       .map((entry) => entry.existingAdoId as number);
@@ -467,6 +490,23 @@ export async function runPipelineJob(
       } catch (error) {
         // eslint-disable-next-line no-console -- operational visibility for a best-effort cleanup path, not app logging
         console.error(`Failed to delete stale IdempotencyMapping row for ADO id ${staleId}:`, error);
+      }
+    }
+
+    // Same cleanup for a 'dedup_skip' (Chroma similarity) match that just
+    // got downgraded -- previously had no equivalent per-id delete path
+    // (confirmed live: a deleted-in-ADO item kept surfacing as a dedup
+    // match on every subsequent job against the same area path, because
+    // its Chroma entry outlived the ADO item it pointed at).
+    const staleDedupSkipIds = diff
+      .filter((entry, i) => entry.action === 'dedup_skip' && verifiedDiff[i].action === 'create')
+      .map((entry) => entry.existingAdoId as number);
+    for (const staleId of staleDedupSkipIds) {
+      try {
+        await deps.ingestionClient.deleteDedupEntry(String(staleId), job.areaPath);
+      } catch (error) {
+        // eslint-disable-next-line no-console -- operational visibility for a best-effort cleanup path, not app logging
+        console.error(`Failed to delete stale dedup vector entry for ADO id ${staleId}:`, error);
       }
     }
 

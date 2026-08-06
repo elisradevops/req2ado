@@ -1,0 +1,46 @@
+name: Nightly SURVEY E2E
+
+# S8: the full golden E2E (jobs #1-#4, including SURVEY and the embedding-
+# dedup check) needs a real local Ollama with real models pulled -- not
+# viable on a stock hosted GitHub runner (see ci.yml's golden-e2e-baseline
+# job, which covers the BASELINE-only subset that needs no LLM backend at
+# all). Requires a self-hosted runner labeled "ollama" with Ollama running
+# and gemma4:12b + all-minilm already pulled -- see scripts/run-golden-e2e.sh
+# for exactly which models/ports it expects.
+#
+# Deliberately NOT wired to block merges (this workflow has no effect on
+# ci.yml's required checks) -- it exists to build the SURVEY/dedup
+# regression signal that finding #1/#2 (the reliability roadmap) calls for.
+# The plan's own gate for flipping ci.yml's golden-e2e-baseline job from
+# advisory to blocking is two CONSECUTIVE green runs of this workflow --
+# that is a real-world observation over time, not something to fake or
+# skip; check this workflow's run history before flipping continue-on-error
+# off in ci.yml.
+on:
+  schedule:
+    - cron: '0 3 * * *' # 03:00 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  survey-e2e:
+    name: Golden E2E (full -- SURVEY + dedup)
+    runs-on: [self-hosted, ollama]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Set up ingestion venv
+        working-directory: ingestion
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e ".[dev]"
+      - run: bash scripts/run-golden-e2e.sh

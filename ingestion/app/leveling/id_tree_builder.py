@@ -70,15 +70,25 @@ def _hash_identity_for_row(description: str, source_ref: SourceRef, id_text: str
     tree_builder._hash_identity itself, which BASELINE's golden fidelity
     tests pin. Only used when HierarchyRow.id_disambiguator_needed is True
     (table rows) -- heading-sourced rows already get a real, unique
-    per-block source_ref and use the existing _hash_identity unchanged."""
+    per-block source_ref and use the existing _hash_identity unchanged.
+
+    `description` is accepted for call-site-shape symmetry but NOT hashed
+    (see tree_builder._hash_identity's own docstring for why) -- id_text is
+    already the real, stable, document-derived disambiguator this needs;
+    description here is `row.label`, verbatim source text, so dropping it
+    changes nothing about stability, only removes a redundant input."""
     return hashlib.sha256(
-        f"{description}\x00{source_ref.document_path}\x00{source_ref.start_offset}\x00{id_text}".encode()
+        f"{source_ref.document_path}\x00{source_ref.start_offset}\x00{source_ref.end_offset}\x00{id_text}".encode()
     ).hexdigest()
 
 
 def _hash_identity(description: str, source_ref: SourceRef) -> str:
+    """`description` is accepted for call-site-shape symmetry with
+    _hash_identity_for_row but NOT hashed -- see
+    tree_builder._hash_identity's own docstring. Every call site in this
+    module already gives each node its own distinct source_ref."""
     return hashlib.sha256(
-        f"{description}\x00{source_ref.document_path}\x00{source_ref.start_offset}".encode()
+        f"{source_ref.document_path}\x00{source_ref.start_offset}\x00{source_ref.end_offset}".encode()
     ).hexdigest()
 
 
@@ -134,7 +144,16 @@ def _apply_title_tag_pass(
             progress_callback(
                 LevelingProgress(
                     phase="deterministic_subtree", branch_index=None, branch_count=0,
-                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    # blocks_done/blocks_total (not 0/0) -- chunk_num/total_chunks
+                    # were already being computed for the narration TEXT below;
+                    # feeding the same real fraction into these fields lets
+                    # ProgressBanner.tsx's existing blocksTotal>0 percentage
+                    # calculation render a real "~N% of this section" instead
+                    # of always falling through to "no progress estimate for
+                    # this step yet" for the whole duration of a multi-chunk
+                    # pass (confirmed live: 2+ minutes with zero numeric signal
+                    # on a real 682-block document).
+                    blocks_done=start, blocks_total=len(leaf_node_ids), kb_grounded=False, kb_citations=[],
                     subtree_index=subtree_index, subtree_count=subtree_count,
                     subtree_label=(
                         f"{label_prefix}enhancing titles/tags for {len(chunk_ids)} node(s) "
@@ -437,7 +456,9 @@ def _apply_synthesis_pass(
             progress_callback(
                 LevelingProgress(
                     phase="deterministic_subtree", branch_index=None, branch_count=0,
-                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    # See _apply_title_tag_pass's identical comment above --
+                    # same fix, same reasoning.
+                    blocks_done=start, blocks_total=len(leaf_node_ids), kb_grounded=False, kb_citations=[],
                     subtree_index=subtree_index, subtree_count=subtree_count,
                     subtree_label=(
                         f"{label_prefix}synthesizing requirement text for {len(chunk_ids)} node(s) "

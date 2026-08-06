@@ -519,6 +519,9 @@ def test_build_hierarchy_subtree_fires_progress_before_the_synthesis_chunk() -> 
     assert subtree_events[0].subtree_index == 1
     assert subtree_events[0].subtree_count == 2
     assert subtree_events[0].subtree_label == "Heading hierarchy -- synthesizing requirement text for 1 node(s) (chunk 1 of 1)"
+    # Same blocks_done/blocks_total fix as the title-tag pass above.
+    assert subtree_events[0].blocks_done == 0
+    assert subtree_events[0].blocks_total == 1
 
 
 def test_build_hierarchy_subtree_fires_one_progress_event_per_chunk_not_per_subtree() -> None:
@@ -545,3 +548,12 @@ def test_build_hierarchy_subtree_fires_one_progress_event_per_chunk_not_per_subt
     assert len(subtree_events) == 2
     assert "chunk 1 of 2" in subtree_events[0].subtree_label
     assert "chunk 2 of 2" in subtree_events[1].subtree_label
+    # Regression (UI progress review, 2026-08-05): these two fields were
+    # hardcoded to 0/0 despite chunk_num/total_chunks already being known
+    # here -- the frontend's percentage calc requires blocks_total > 0, so
+    # "no progress estimate for this step yet" showed for the ENTIRE
+    # multi-chunk pass regardless of how far through it actually was.
+    assert subtree_events[0].blocks_done == 0
+    assert subtree_events[0].blocks_total == 151
+    assert subtree_events[1].blocks_done == 150
+    assert subtree_events[1].blocks_total == 151

@@ -31,6 +31,18 @@ export const configSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   LLM_PROXY_BEARER: z.string().min(1),
+  // Explicit timeout (ms) for the OpenAI SDK client used by chat()/streamChat()/
+  // vision() -- previously relied on the SDK's own undocumented 600000ms
+  // default AND its default maxRetries:2, which together silently re-ran a
+  // whole >10min inference up to 3 times on timeout before giving up (the
+  // actual root cause of job a830aa30's ~66min failure, not a missing retry
+  // -- see OpenWebUiClient's own maxRetries:0 comment). Same numeric default
+  // as before (no behavior change to the timeout itself), now explicit and
+  // configurable so it can be tuned without a code change. Sits below
+  // ingestion's own _LLM_REQUEST_TIMEOUT_SECONDS (30 min) and this
+  // orchestrator's IngestionHttpClient LONG_RUNNING_AGENT (1h), so the
+  // innermost hop always fails first with real margin to spare.
+  LLM_REQUEST_TIMEOUT_MS: z.coerce.number().default(600_000),
   EMBED_TRANSPORT: z.enum(['ollama', 'openai']).default('ollama'),
   EMBED_BASE_URL: z.string().optional(),
   EMBED_MODEL: z.string().min(1),
@@ -75,6 +87,12 @@ export const configSchema = z.object({
   // jobs queued at once.
   PIPELINE_WORKER_CONCURRENCY: z.coerce.number().default(4),
   INGESTION_BASE_URL: z.string().min(1).default('http://localhost:8000'),
+  // Outermost timeout (ms) in the SURVEY call ladder (orchestrator ->
+  // ingestion -> ingestion's own /llm/chat proxy -> the LLM backend) --
+  // see IngestionHttpClient's own doc comment. Deliberately the widest of
+  // the three, so an inner layer's timeout always fires first. Same
+  // numeric default as before this was configurable (no behavior change).
+  INGESTION_REQUEST_TIMEOUT_MS: z.coerce.number().default(3_600_000),
   // Unset in production topology (frontend served same-origin behind nginx,
   // per docs/architecture.md — never actually built, see docker-compose.yml's
   // commented-out frontend service). Set for local dev, where Vite serves the

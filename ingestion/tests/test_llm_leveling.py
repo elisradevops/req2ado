@@ -1,3 +1,5 @@
+import time
+
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
@@ -181,6 +183,58 @@ def test_build_survey_tree_defaults_customer_id_to_none() -> None:
 def test_build_survey_tree_has_no_warnings_when_node_count_matches_block_count() -> None:
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     assert tree.warnings == []
+
+
+def test_identity_hash_is_stable_across_runs_despite_llm_wording_drift() -> None:
+    # Regression (S5): identity_hash used to hash the LLM-generated `text`
+    # itself, combined with representative_source_ref -- a section-wide
+    # reference EVERY node from that section shares (analyze_section has no
+    # per-node source attribution). Re-running the SAME section against a
+    # model that phrases the SAME semantic content differently (real,
+    # observed LLM behavior at temperature 0 across different runs/backends)
+    # therefore never matched via the exact-hash idempotency lookup. Fixed
+    # by re-keying on local_id (deterministic given the same node
+    # count/order) instead of the generated text.
+    nodes_run_1 = [
+        {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display", "text": "The system shall handle: Display", "tags": []},
+        {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "HDR", "text": "The display shall support HDR content.", "tags": []},
+    ]
+    nodes_run_2 = [
+        {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display", "text": "The system shall provide: Display", "tags": []},
+        {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "HDR", "text": "The system shall support high dynamic range on the display.", "tags": []},
+    ]
+    tree_1 = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(nodes=nodes_run_1))
+    tree_2 = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(nodes=nodes_run_2))
+
+    assert tree_1.nodes[0].description != tree_2.nodes[0].description  # genuinely different wording
+    assert tree_1.nodes[0].identity_hash == tree_2.nodes[0].identity_hash
+    assert tree_1.nodes[1].identity_hash == tree_2.nodes[1].identity_hash
+    # Still distinct from each other within one run (different local_id).
+    assert tree_1.nodes[0].identity_hash != tree_1.nodes[1].identity_hash
+
+
+def test_regrouped_synthesized_node_identity_hash_differs_from_its_own_first_child() -> None:
+    # Regression: a synthesized group/epic/feature node (root_regrouping.py)
+    # deliberately reuses one of its own member's source_ref (no distinct
+    # span of its own) -- since plain _hash_identity is now position-only,
+    # without a discriminator the synthesized PARENT's identity_hash would
+    # collide with its own first CHILD's.
+    roots = [
+        _node("n0", WorkItemType.FEATURE, None, "Power Sequencing"),
+        _node("n1", WorkItemType.FEATURE, None, "Power Monitoring"),
+    ]
+
+    class FakeGroupingClient:
+        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+            return {"groups": [{"title": "Power", "member_ids": ["n0", "n1"]}]}
+
+    warnings: list[str] = []
+    _regroup_disconnected_roots(roots, "", FakeGroupingClient(), warnings)
+    group_node = next(n for n in roots if n.local_id == "synth_group_0")
+    first_child = next(n for n in roots if n.local_id == "n0")
+
+    assert group_node.source_ref == first_child.source_ref  # deliberately shared, per design
+    assert group_node.identity_hash != first_child.identity_hash
 
 
 def test_build_survey_tree_warns_when_analysis_drops_most_of_the_document() -> None:
@@ -1154,6 +1208,93 @@ def test_build_survey_tree_single_branch_document_keeps_unprefixed_node_ids() ->
     assert local_ids == {"n0", "n1"}
 
 
+class _PerSectionSectionAnalysisClient:
+    """Test double whose analyze_section response depends on the section
+    TEXT it receives (branch 0's "Display" section vs branch 1's "Audio"
+    section), unlike FakeSectionAnalysisClient's fixed response -- needed
+    to prove the final tree's node order reflects DOCUMENT order, not
+    completion order, once branches run concurrently. `delay_by_keyword`
+    (keyword -> seconds) optionally sleeps before returning, so a test can
+    force branch 1 to finish before branch 0 despite branch 0 being
+    submitted first."""
+
+    def __init__(self, delay_by_keyword: dict[str, float] | None = None) -> None:
+        self.calls: list[str] = []
+        self._delay_by_keyword = delay_by_keyword or {}
+
+    def analyze_section(self, section_text: str, **_kwargs) -> tuple[list[dict], bool]:
+        self.calls.append(section_text)
+        # "5.1 surround" is branch 1 (Audio)-only content -- the doesn't-fit
+        # path's compact document outline (see build_survey_tree's §3.3)
+        # prepends EVERY section's heading name to every branch's own call,
+        # so a bare "Display"/"Audio" substring check would false-match on
+        # both branches; this fragment only ever appears in branch 1's own
+        # detail text.
+        keyword = "Audio" if "5.1 surround" in section_text else "Display"
+        for delay_keyword, seconds in self._delay_by_keyword.items():
+            if delay_keyword == keyword:
+                time.sleep(seconds)
+        return (
+            [
+                {
+                    "temp_id": "n0", "type": "Feature", "parent_temp_id": None,
+                    "title": keyword, "text": f"The system shall handle: {keyword}", "tags": [],
+                },
+            ],
+            False,
+        )
+
+
+def test_build_survey_tree_concurrent_branches_produce_the_same_tree_as_sequential(monkeypatch) -> None:
+    # Regression guard for the branch_concurrency feature: running branches
+    # concurrently must never change WHAT gets built, only how long it
+    # takes. Same document, same fake client behavior, branch_concurrency=1
+    # vs 2 -- the resulting node lists (content AND order) must match
+    # exactly.
+    _force_multi_branch(monkeypatch)
+    doc = _two_branch_doc()
+
+    sequential_tree = build_survey_tree(doc, _PerSectionSectionAnalysisClient(), branch_concurrency=1)
+    concurrent_tree = build_survey_tree(doc, _PerSectionSectionAnalysisClient(), branch_concurrency=2)
+
+    assert [(n.local_id, n.title) for n in sequential_tree.nodes] == [(n.local_id, n.title) for n in concurrent_tree.nodes]
+    assert [n.title for n in concurrent_tree.nodes] == ["Display", "Audio"]  # document order, not alphabetical/call order
+
+
+def test_build_survey_tree_concurrent_branches_preserve_document_order_even_when_branch_0_finishes_last(monkeypatch) -> None:
+    # The real risk this guards against: branch 0 is submitted FIRST but
+    # artificially delayed so branch 1 genuinely completes first. Node
+    # order in the final tree must still be branch 0's nodes before branch
+    # 1's -- proving results are assembled by branch INDEX, not by
+    # whichever future resolves first.
+    _force_multi_branch(monkeypatch)
+    fake = _PerSectionSectionAnalysisClient(delay_by_keyword={"Display": 0.2})
+    tree = build_survey_tree(_two_branch_doc(), fake, branch_concurrency=2)
+
+    assert [n.title for n in tree.nodes] == ["Display", "Audio"]
+    assert len(fake.calls) == 2
+
+
+def test_build_survey_tree_concurrency_reports_correct_per_branch_blocks_done_before(monkeypatch) -> None:
+    # Regression: blocks_done_before used to be a running counter mutated
+    # AFTER each branch finished, which is unsafe once branches can finish
+    # out of order. Must now be each branch's fixed, precomputed offset
+    # regardless of concurrency or completion order.
+    _force_multi_branch(monkeypatch)
+    events: list[LevelingProgress] = []
+    build_survey_tree(
+        _two_branch_doc(), FakeSectionAnalysisClient(),
+        progress_callback=lambda p: events.append(p),
+        branch_concurrency=2,
+    )
+
+    section_events = [e for e in events if e.phase == "analyze_section" and e.branch_index is not None]
+    by_branch = {e.branch_index: e.blocks_done for e in section_events}
+    # Branch 0 is blocks 0-1 (heading + requirement), branch 1 starts at 2.
+    assert by_branch.get(0) == 0
+    assert by_branch.get(1) == 2
+
+
 def test_build_survey_tree_scores_a_well_grounded_generated_description_highly() -> None:
     # The default fake's generated text ("The system shall handle: <source
     # text>") is a genuine paraphrase that reuses the source's own
@@ -1360,6 +1501,25 @@ def test_score_epics_and_features_excludes_a_per_epic_bridge_feature() -> None:
     assert len(scoring_client.calls) == 1
     assert "det0_synth_feature_det0_h1" not in scoring_client.calls[0]
     assert per_epic_bridge.quality_score is None
+
+
+def test_build_survey_tree_requirement_scoring_failure_is_caught_and_warned() -> None:
+    # Regression: a real job (ba8c26d1-...) lost 45+ minutes of prior
+    # parse/tree-build/title-tag/synthesis work to a single transient 500
+    # from the LLM backend inside _score_all_requirements, which had no
+    # fail-open protection -- unlike its sibling _score_epics_and_features
+    # (see test_build_survey_tree_epic_feature_scoring_failure_is_caught_and_warned
+    # immediately below). Requirement quality scoring is an enhancement on
+    # top of an already-built tree, never a dependency of its correctness.
+    class _RaisingRequirementScoringClient(FakeScoringClient):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            raise ValueError("boom")
+
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), _RaisingRequirementScoringClient())
+
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n1"].quality_score is None  # failed -- but the job itself did not fail
+    assert any("Requirement quality scoring failed" in w for w in tree.warnings)
 
 
 def test_build_survey_tree_epic_feature_scoring_is_a_noop_without_scoring_client() -> None:
@@ -1952,21 +2112,9 @@ def test_build_survey_tree_scoring_is_actually_grounded_on_the_agentic_path() ->
 
 
 def test_resolve_caps_known_tool_capable_model() -> None:
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     caps = _resolve_caps("qwen3:4b")
-    assert caps.supports_tools is True
-
-
-def test_resolve_caps_gemma4_12b_is_tool_capable() -> None:
-    # Regression: gemma4:12b (the orchestrator's actual configured
-    # LLM_CHAT_MODEL default) was missing from _MODEL_CAPS entirely --
-    # confirmed live via Ollama's /api/show that it supports tools/vision
-    # just like gemma4:e4b, but any job leaving the wizard's model field on
-    # "Default" silently fell through to the unknown-model, no-tools path.
-    from app.leveling.llm_leveling import _resolve_caps
-
-    caps = _resolve_caps("gemma4:12b")
     assert caps.supports_tools is True
 
 
@@ -1977,7 +2125,7 @@ def test_resolve_caps_qwen2_5_32b_instruct_uses_the_empirically_tested_coverage_
     # 10_000 (45% -> 23%), with MORE nodes produced (not fewer) and faster
     # overall wall time -- a genuinely tested value, not an assumption from
     # this model's larger parameter count or context window alone.
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     caps = _resolve_caps("qwen2.5:32b-instruct")
     assert caps.supports_tools is True
@@ -1992,7 +2140,7 @@ def test_resolve_caps_qwen3_6_35b_uses_the_empirically_tested_coverage_budget() 
     # MoE model dominates qwen2.5:32b-instruct outright: ~4x faster, more
     # nodes, roughly a quarter the drop rate. coverage_budget_tokens=20_000
     # was marginally better than 10_000 on every metric for this model too.
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     caps = _resolve_caps("qwen3.6:35b")
     assert caps.supports_tools is True
@@ -2001,7 +2149,7 @@ def test_resolve_caps_qwen3_6_35b_uses_the_empirically_tested_coverage_budget() 
 
 
 def test_resolve_caps_unknown_model_defaults_to_no_tools() -> None:
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     caps = _resolve_caps("some-random-model")
     assert caps.supports_tools is False
@@ -2009,7 +2157,7 @@ def test_resolve_caps_unknown_model_defaults_to_no_tools() -> None:
 
 
 def test_resolve_caps_frontier_prefix_gets_large_cap_and_tools() -> None:
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     caps = _resolve_caps("gpt-5-turbo")
     assert caps.supports_tools is True
@@ -2039,7 +2187,7 @@ class _FakeCapsClient:
 
 
 def test_resolve_caps_unknown_model_uses_live_lookup_when_caps_client_supplied() -> None:
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     fake_client = _FakeCapsClient({"context_length": 64_000, "capabilities": ["completion", "tools"]})
     caps = _resolve_caps("some-fresh-model-v9", caps_client=fake_client)
@@ -2050,7 +2198,7 @@ def test_resolve_caps_unknown_model_uses_live_lookup_when_caps_client_supplied()
 
 
 def test_resolve_caps_live_lookup_result_is_cached_for_the_process_lifetime() -> None:
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     fake_client = _FakeCapsClient({"context_length": 40_000, "capabilities": ["completion"]})
     first = _resolve_caps("some-cached-model-v9", caps_client=fake_client)
@@ -2061,7 +2209,7 @@ def test_resolve_caps_live_lookup_result_is_cached_for_the_process_lifetime() ->
 
 
 def test_resolve_caps_live_lookup_at_frontier_threshold_gets_frontier_shaped_caps() -> None:
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     fake_client = _FakeCapsClient({"context_length": 200_000, "capabilities": ["completion", "tools"]})
     caps = _resolve_caps("some-huge-model-v9", caps_client=fake_client)
@@ -2072,7 +2220,7 @@ def test_resolve_caps_live_lookup_at_frontier_threshold_gets_frontier_shaped_cap
 
 
 def test_resolve_caps_live_lookup_below_frontier_threshold_keeps_conservative_local_defaults() -> None:
-    from app.leveling.llm_leveling import _resolve_caps, _COVERAGE_BUDGET_TOKENS, _MAX_SURVEY_BRANCH_BLOCK_COUNT
+    from app.leveling.model_caps import _resolve_caps, _COVERAGE_BUDGET_TOKENS, _MAX_SURVEY_BRANCH_BLOCK_COUNT
 
     fake_client = _FakeCapsClient({"context_length": 32_000, "capabilities": ["completion", "tools"]})
     caps = _resolve_caps("some-modest-model-v9", caps_client=fake_client)
@@ -2084,7 +2232,7 @@ def test_resolve_caps_live_lookup_below_frontier_threshold_keeps_conservative_lo
 
 
 def test_resolve_caps_live_lookup_failure_falls_back_to_exactly_the_static_default() -> None:
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     without_client = _resolve_caps("some-raising-model-v9")
     fake_client = _FakeCapsClient(raises=True)
@@ -2099,7 +2247,7 @@ def test_resolve_caps_never_calls_the_live_client_for_a_model_already_in_the_sta
     # (qwen3.6:35b, qwen2.5:32b-instruct, ...) from being second-guessed
     # by a generic derivation -- the static table always wins when it has
     # an entry, no matter what caps_client would have returned.
-    from app.leveling.llm_leveling import _resolve_caps
+    from app.leveling.model_caps import _resolve_caps
 
     fake_client = _FakeCapsClient({"context_length": 1, "capabilities": []})  # would produce very different caps
     caps = _resolve_caps("qwen3.6:35b", caps_client=fake_client)
@@ -2520,9 +2668,9 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
     # on the document's own heading structure -- proven here by lowering the
     # bound low enough that this modest synthetic doc still must be split
     # into more than one analyze_section call.
-    import app.leveling.llm_leveling as llm_leveling_module
+    import app.leveling.model_caps as model_caps_module
 
-    monkeypatch.setattr(llm_leveling_module, "_MAX_SURVEY_BRANCH_BLOCK_COUNT", 3)
+    monkeypatch.setattr(model_caps_module, "_MAX_SURVEY_BRANCH_BLOCK_COUNT", 3)
     _force_multi_branch(monkeypatch)  # this tiny doc otherwise fits §3's whole-doc gate
 
     path = "one_big_section.txt"

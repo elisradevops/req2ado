@@ -116,6 +116,19 @@ class ChromaVectorStore:
         collection.upsert(ids=ids, embeddings=embeddings, documents=documents if all(documents) else None)
         self._count_cache.pop(area_path, None)
 
+    def delete(self, item_id: str, area_path: str) -> None:
+        """Removes one item from an area path's dedup corpus. Real gap
+        this closes: a 'reuse' (exact-hash) stale match already got
+        cleaned up on downgrade via IdempotencyMapping deletion, but a
+        'dedup_skip' (similarity) match had no equivalent -- the stale
+        Chroma entry stayed forever, so a since-deleted-in-ADO item kept
+        surfacing as a dedup match on every future job against the same
+        area path. Idempotent: deleting an id Chroma doesn't have is a
+        no-op, not an error."""
+        collection = self._get_collection(area_path)
+        collection.delete(ids=[item_id])
+        self._count_cache.pop(area_path, None)
+
     def query_nearest(self, embedding: list[float], area_path: str) -> tuple[str, float, str | None] | None:
         collection = self._get_collection(area_path)
         count = self._count_cache.get(area_path)

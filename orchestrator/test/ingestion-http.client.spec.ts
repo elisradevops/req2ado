@@ -1,4 +1,12 @@
 import { IngestionHttpClient, IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
+import type { CanonicalDoc } from '@req2ado/shared-ts';
+
+// level()'s doc param is now typed CanonicalDoc (S10) -- these tests only
+// care about pass-through serialization to /level's body, not real document
+// content, so a minimal-but-complete fixture (every required field present)
+// replaces the previous `{ blocks: [] }` shorthand that no longer satisfies
+// the stricter, generated type.
+const MINIMAL_DOC: CanonicalDoc = { document: { path: 'x.txt', format: 'txt', sha256: 'h' }, blocks: [], tables: [], figures: [] };
 
 describe('IngestionHttpClient', () => {
   beforeEach(() => {
@@ -92,17 +100,17 @@ describe('IngestionHttpClient', () => {
   it('POSTs the doc to /level with customer_id as a query param when provided', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, 'CUST-1');
+    await client.level(MINIMAL_DOC, 'CUST-1');
 
     const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/level?mode=baseline&customer_id=CUST-1');
-    expect(JSON.parse(options.body)).toEqual({ blocks: [] });
+    expect(JSON.parse(options.body)).toEqual(MINIMAL_DOC);
   });
 
   it('omits the customer_id query param when null, but always includes mode', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, null);
+    await client.level(MINIMAL_DOC, null);
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/level?mode=baseline');
@@ -111,7 +119,7 @@ describe('IngestionHttpClient', () => {
   it('defaults mode to baseline when not provided', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, null);
+    await client.level(MINIMAL_DOC, null);
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toContain('mode=baseline');
@@ -120,7 +128,7 @@ describe('IngestionHttpClient', () => {
   it('passes mode=survey through as a query param when specified', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, 'CUST-1', 'survey');
+    await client.level(MINIMAL_DOC, 'CUST-1', 'survey');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1');
@@ -129,13 +137,13 @@ describe('IngestionHttpClient', () => {
   it('throws on a non-ok /level response', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await expect(client.level({ blocks: [] }, null)).rejects.toThrow(/level.*500/i);
+    await expect(client.level(MINIMAL_DOC, null)).rejects.toThrow(/level.*500/i);
   });
 
   it('forwards user_id (KB scope) as a query param when provided', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, 'CUST-1', 'survey', 'user-descriptor-1');
+    await client.level(MINIMAL_DOC, 'CUST-1', 'survey', 'user-descriptor-1');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1&user_id=user-descriptor-1');
@@ -144,7 +152,7 @@ describe('IngestionHttpClient', () => {
   it('omits user_id when not provided, matching pre-existing behavior', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, 'CUST-1', 'survey');
+    await client.level(MINIMAL_DOC, 'CUST-1', 'survey');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/level?mode=survey&customer_id=CUST-1');
@@ -153,7 +161,7 @@ describe('IngestionHttpClient', () => {
   it('forwards model as a query param when provided (per-job LLM model override)', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, null, 'survey', undefined, undefined, 'qwen2.5:1.5b');
+    await client.level(MINIMAL_DOC, null, 'survey', undefined, undefined, 'qwen2.5:1.5b');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(new URL(url).searchParams.get('model')).toBe('qwen2.5:1.5b');
@@ -162,7 +170,7 @@ describe('IngestionHttpClient', () => {
   it('omits model when not provided, matching pre-model-selection behavior', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, null, 'survey');
+    await client.level(MINIMAL_DOC, null, 'survey');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(new URL(url).searchParams.has('model')).toBe(false);
@@ -171,7 +179,7 @@ describe('IngestionHttpClient', () => {
   it('forwards job_id as a query param when provided (SURVEY narration threading)', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, null, 'survey', undefined, undefined, undefined, 'job-123');
+    await client.level(MINIMAL_DOC, null, 'survey', undefined, undefined, undefined, 'job-123');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(new URL(url).searchParams.get('job_id')).toBe('job-123');
@@ -180,7 +188,7 @@ describe('IngestionHttpClient', () => {
   it('omits job_id when not provided', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, null, 'survey');
+    await client.level(MINIMAL_DOC, null, 'survey');
 
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(new URL(url).searchParams.has('job_id')).toBe(false);
@@ -189,7 +197,7 @@ describe('IngestionHttpClient', () => {
   it('serializes link_type_catalog with snake_case keys (ingestion/Python is the wire contract, not this side\'s camelCase AdoLinkType)', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');
-    await client.level({ blocks: [] }, null, 'survey', 'Project\\Area1', [
+    await client.level(MINIMAL_DOC, null, 'survey', 'Project\\Area1', [
       { referenceName: 'Elisra.CoveredBy-Forward', name: 'Covers', semanticHint: 'source covers target' },
       { referenceName: 'System.LinkTypes.Related', name: 'Related' },
     ]);

@@ -25,6 +25,7 @@ import { OpenWebUiClient } from './openwebui.client';
           EMBED_MODEL: config.get<string>('EMBED_MODEL')!,
           EMBED_PATH: config.get<string>('EMBED_PATH')!,
           SHOW_PATH: config.get<string>('SHOW_PATH')!,
+          LLM_REQUEST_TIMEOUT_MS: config.get<number>('LLM_REQUEST_TIMEOUT_MS')!,
         }),
     },
   ],

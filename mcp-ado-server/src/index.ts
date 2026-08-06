@@ -1,3 +1,4 @@
+import './tracing.js';
 import { createMcpApp } from './server.js';
 import { loadConfig } from './config/env.js';
 import { MockAdoBackend } from './backends/mockAdo.js';
@@ -8,8 +9,8 @@ const cfg = loadConfig();
 const backendFactory =
   cfg.backend === 'real'
     ? (credential: import('./auth/patAuth.js').AdoCredential | undefined) => {
-        // credential is guaranteed defined here — server.ts's /mcp middleware
-        // already rejected the request with 401 if it were missing.
+        // credential is guaranteed defined here — server.ts's /api/ado auth
+        // middleware already rejected the request with 401 if it were missing.
         return new RealAdoBackend(cfg, credential!);
       }
     : (() => {

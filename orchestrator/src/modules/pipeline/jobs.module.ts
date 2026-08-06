@@ -29,7 +29,7 @@ import { AuthModule } from '../auth/auth.module';
       inject: [ConfigService],
       useFactory: (config: ConfigService) =>
         new McpClient(
-          `${config.get<string>('MCP_URL')}/mcp`,
+          `${config.get<string>('MCP_URL')}/api/ado`,
           config.get<string>('MCP_BEARER')!,
           config.get<number>('MCP_REQUEST_TIMEOUT_MS'),
         ),
@@ -53,7 +53,8 @@ import { AuthModule } from '../auth/auth.module';
     {
       provide: IngestionHttpClient,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => new IngestionHttpClient(config.get<string>('INGESTION_BASE_URL')!),
+      useFactory: (config: ConfigService) =>
+        new IngestionHttpClient(config.get<string>('INGESTION_BASE_URL')!, config.get<number>('INGESTION_REQUEST_TIMEOUT_MS')!),
     },
     {
       provide: JobsService,

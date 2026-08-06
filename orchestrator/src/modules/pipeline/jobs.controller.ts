@@ -167,19 +167,15 @@ export class JobsController {
     // depth (max heading_level), NOT the eventual work-item tree depth --
     // that only exists after /level's (expensive, LLM-driven for SURVEY)
     // hierarchy inference, which preview deliberately never calls.
-    const doc = (await this.ingestionClient.ingest(file.buffer, file.originalname, true)) as {
-      blocks?: { kind?: string; heading_level?: number | null }[];
-      figures?: unknown[];
-    };
-    const blocks = doc.blocks ?? [];
-    const headingLevels = blocks
+    const doc = await this.ingestionClient.ingest(file.buffer, file.originalname, true);
+    const headingLevels = doc.blocks
       .filter((b) => b.kind === 'heading' && typeof b.heading_level === 'number')
       .map((b) => b.heading_level as number);
     const fileType = ext.slice(1).toLowerCase();
     return {
-      blockCount: blocks.length,
-      sectionCount: blocks.filter((b) => b.kind === 'heading').length,
-      figureCount: doc.figures?.length ?? 0,
+      blockCount: doc.blocks.length,
+      sectionCount: doc.blocks.filter((b) => b.kind === 'heading').length,
+      figureCount: doc.figures.length,
       depth: headingLevels.length > 0 ? Math.max(...headingLevels) : 0,
       fileType,
     };

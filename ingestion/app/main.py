@@ -27,12 +27,14 @@ from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_se
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
 from app.leveling.id_hierarchy import rows_from_table
-from app.leveling.llm_leveling import _resolve_caps, build_survey_tree
+from app.leveling.llm_leveling import build_survey_tree
+from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.tree_builder import build_baseline_tree
 from app.logging_context import JobIdLogFilter, job_id_scope
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.redaction.redactor import redact_canonical_doc
+from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
 from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL, OrchestratorVisionClient
@@ -57,6 +59,10 @@ for _handler in logging.getLogger().handlers:
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="req2ado-ingestion")
+
+from app.otel import setup_otel  # noqa: E402 -- must instrument after `app` exists, before it serves
+
+setup_otel(app)
 
 
 # Stamps each request's start time so the exception handler below can report
@@ -190,6 +196,11 @@ _narration_redis = redis.Redis.from_url(settings.redis_url)
 # DebugCapture.capture() is called from inside soft-failure warning paths
 # that run on the same worker thread build_survey_tree itself runs on.
 _debug_capture = DebugCapture(_narration_redis)
+# S11: caches OrchestratorLlmClient's analyze_section/score_requirements_for_
+# document/score_epics_and_features_for_document calls -- same shared sync
+# client as above (fail-open on any Redis error, see LlmResponseCache's own
+# docstring), not a separate connection.
+_llm_response_cache = LlmResponseCache(_narration_redis)
 
 
 def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
@@ -425,6 +436,7 @@ def _build_survey_tree_with_scoring(
             # disconnected root nodes, see _regroup_disconnected_roots's
             # own docstring) into a coherent hierarchy, structure-only.
             grouping_client=client,
+            branch_concurrency=settings.survey_branch_concurrency,
         )
 
 
@@ -441,6 +453,11 @@ class DedupUpsertRequest(BaseModel):
 
 class DedupUpsertBatchRequest(BaseModel):
     items: list[DedupUpsertRequest]
+
+
+class DedupDeleteRequest(BaseModel):
+    item_id: str
+    area_path: str
 
 
 class KbIngestUrlRequest(BaseModel):
@@ -773,7 +790,7 @@ async def level(
         num_ctx = (await run_in_threadpool(_resolve_caps, model, probe_client)).context_budget_tokens
         client = OrchestratorLlmClient(
             settings.orchestrator_url, settings.llm_proxy_bearer, model=model, num_ctx=num_ctx,
-            top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+            top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
         )
         catalog = json.loads(link_type_catalog) if link_type_catalog else None
         return await run_in_threadpool(
@@ -801,6 +818,16 @@ async def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
     # embedding, so a future check_for_duplicates call can run its
     # numeric-literal guard (X7) against the actual matched text.
     _vector_store.upsert(body.item_id, embedding, body.area_path, document=body.text)
+    return {"ok": True}
+
+
+@app.post("/dedup/delete")
+async def dedup_delete(body: DedupDeleteRequest) -> dict[str, bool]:
+    # Counterpart to /dedup/upsert -- a dedup_skip match downgraded to
+    # 'create' because its ADO work item no longer exists (see
+    # verifyExistingAdoIdsStillExist) must have its stale Chroma entry
+    # removed too, or it keeps matching future jobs against a dead id.
+    _vector_store.delete(body.item_id, body.area_path)
     return {"ok": True}
 
 

@@ -3,3 +3,14 @@ packages:
   - "orchestrator"
   - "mcp-ado-server"
   - "shared/ts"
+
+# pnpm blocks native postinstall/build scripts by default (a security
+# default, not a bug) -- without this, better-sqlite3's native binding
+# never gets compiled on a fresh `pnpm install`, and mcp-ado-server's
+# MockAdoBackend (used by every test and by the golden-e2e script) fails
+# at import time with "could not locate the bindings file". Discovered
+# live: adding unrelated OTel packages via `pnpm add` was enough to
+# re-trigger this (better-sqlite3 wasn't touched directly, but the
+# lockfile change was enough for pnpm to treat it as needing re-approval).
+onlyBuiltDependencies:
+  - better-sqlite3

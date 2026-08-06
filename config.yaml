@@ -11,6 +11,7 @@ llm:
   embed_base_url: ${EMBED_BASE_URL} # optional override; defaults to llm.base_url (Open WebUI) if unset
   vision_model: ${LLM_VISION_MODEL}
   temperature: 0
+  request_timeout_ms: ${LLM_REQUEST_TIMEOUT_MS} # default 600000; paired with maxRetries:0, never blindly re-runs a timed-out inference
   trusted_local: false # true => relax pre-egress redaction guard
   enabled_in_baseline: false # LLM stays off in baseline unless explicitly enabled (extraction only)
 

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Agent } from 'undici';
+import type { CanonicalDoc, WorkItemTree } from '@req2ado/shared-ts';
 
 // undici's default headersTimeout (300s) is shorter than a real local LLM
 // can take for SURVEY mode's two sequential calls (infer_hierarchy +
@@ -16,7 +17,14 @@ import { Agent } from 'undici';
 // count, not model speed, dominates total /level wall time. A real fix
 // (parallelizing or streaming per-branch progress) is tracked separately;
 // this is the immediate unblock.
-const LONG_RUNNING_AGENT = new Agent({ headersTimeout: 3_600_000, bodyTimeout: 3_600_000 });
+//
+// This is the OUTERMOST timeout in the SURVEY call ladder (orchestrator ->
+// ingestion -> ingestion's own /llm/chat proxy -> the LLM backend) --
+// deliberately the widest, so an inner layer's own timeout always fires
+// first and this one only ever catches a genuinely wedged /level call, not
+// a merely-slow one. Now constructor-configurable (default unchanged) so
+// the ladder's ordering can be verified/tuned without a code change.
+const DEFAULT_INGESTION_REQUEST_TIMEOUT_MS = 3_600_000;
 
 export class IngestionHttpError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -58,7 +66,14 @@ async function _readErrorDetail(response: Response): Promise<string> {
  */
 @Injectable()
 export class IngestionHttpClient {
-  constructor(private readonly baseUrl: string) {}
+  private readonly longRunningAgent: Agent;
+
+  constructor(
+    private readonly baseUrl: string,
+    requestTimeoutMs: number = DEFAULT_INGESTION_REQUEST_TIMEOUT_MS,
+  ) {
+    this.longRunningAgent = new Agent({ headersTimeout: requestTimeoutMs, bodyTimeout: requestTimeoutMs });
+  }
 
   // skipVision: /jobs/preview's caller (jobs.controller.ts) only needs
   // blockCount/sectionCount/fileType -- never figure captions -- passes
@@ -70,7 +85,7 @@ export class IngestionHttpClient {
   // same cold-start-latency profile as /level's calls) can comfortably
   // exceed undici's default 300s headersTimeout -- confirmed live: a real
   // 36-figure docx failed with HeadersTimeoutError at exactly 5:04 after
-  // submit. Needs the SAME LONG_RUNNING_AGENT dispatcher /level already
+  // submit. Needs the SAME longRunningAgent dispatcher /level already
   // uses below, not the plain default-timeout fetch.
   // mode: threaded straight through to ingestion's /ingest so BASELINE jobs
   // never open the vision-LLM gate there (see main.py's ingest() docstring)
@@ -90,7 +105,7 @@ export class IngestionHttpClient {
     // narration already uses, instead of the parse stage being a total
     // black box for however long figure captioning takes.
     jobId?: string,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<CanonicalDoc> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
     const params = new URLSearchParams({ mode });
@@ -101,15 +116,15 @@ export class IngestionHttpClient {
       params.set('job_id', jobId);
     }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
-    const response = await fetch(url, { method: 'POST', body: form, dispatcher: LONG_RUNNING_AGENT });
+    const response = await fetch(url, { method: 'POST', body: form, dispatcher: this.longRunningAgent });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /ingest request failed: ${await _readErrorDetail(response)}`);
     }
-    return (await response.json()) as Record<string, unknown>;
+    return (await response.json()) as CanonicalDoc;
   }
 
   async level(
-    doc: Record<string, unknown>,
+    doc: CanonicalDoc,
     customerId: string | null,
     mode: 'baseline' | 'survey' = 'baseline',
     // Knowledge Base scope key -- the submitting user's stable ADO identity
@@ -120,7 +135,7 @@ export class IngestionHttpClient {
     linkTypeCatalog?: { referenceName: string; name: string; semanticHint?: string }[],
     model?: string,
     jobId?: string,
-  ): Promise<Record<string, unknown>> {
+  ): Promise<WorkItemTree> {
     const params = new URLSearchParams({ mode });
     if (customerId) params.set('customer_id', customerId);
     if (userId) params.set('user_id', userId);
@@ -145,12 +160,12 @@ export class IngestionHttpClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(doc),
-      dispatcher: LONG_RUNNING_AGENT,
+      dispatcher: this.longRunningAgent,
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /level request failed: ${await _readErrorDetail(response)}`);
     }
-    return (await response.json()) as Record<string, unknown>;
+    return (await response.json()) as WorkItemTree;
   }
 
   async checkDuplicate(text: string, areaPath: string): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
@@ -197,6 +212,23 @@ export class IngestionHttpClient {
     }
   }
 
+  /**
+   * Counterpart to upsertDedupEntry -- removes a stale dedup_skip match's
+   * Chroma entry once verifyExistingAdoIdsStillExist has downgraded it to
+   * 'create' (its ADO work item no longer exists), so the same dead id
+   * doesn't keep matching future jobs against this area path.
+   */
+  async deleteDedupEntry(itemId: string, areaPath: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/dedup/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, area_path: areaPath }),
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /dedup/delete request failed: ${await _readErrorDetail(response)}`);
+    }
+  }
+
   async ingestUrl(
     url: string,
     userId: string,
@@ -221,7 +253,7 @@ export class IngestionHttpClient {
         graph_token: graphToken ?? null,
         retrieval_mode: retrievalMode ?? null,
       }),
-      dispatcher: LONG_RUNNING_AGENT,
+      dispatcher: this.longRunningAgent,
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-url request failed: ${await _readErrorDetail(response)}`);
@@ -266,7 +298,7 @@ export class IngestionHttpClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, user_id: userId, doc_type: docType, recursive, graph_token: graphToken ?? null }),
-      dispatcher: LONG_RUNNING_AGENT,
+      dispatcher: this.longRunningAgent,
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-folder-url request failed: ${await _readErrorDetail(response)}`);
@@ -328,7 +360,7 @@ export class IngestionHttpClient {
         graph_token: graphToken ?? null,
         retrieval_mode: retrievalMode ?? null,
       }),
-      dispatcher: LONG_RUNNING_AGENT,
+      dispatcher: this.longRunningAgent,
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-item request failed: ${await _readErrorDetail(response)}`);

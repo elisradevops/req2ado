@@ -22,6 +22,13 @@ dependencies = [
     "chromadb>=0.5.0",
     "redis>=5.0.0",
     "json-repair>=0.30.0",
+    # Pinned to the 1.43.0/0.64b0 line -- chromadb pins
+    # opentelemetry-exporter-otlp-proto-grpc==1.43.0 transitively; a newer
+    # line (1.44.0/0.65b0) conflicts with that pin.
+    "opentelemetry-distro==0.64b0",
+    "opentelemetry-instrumentation-fastapi==0.64b0",
+    "opentelemetry-instrumentation-httpx==0.64b0",
+    "opentelemetry-exporter-otlp-proto-http==1.43.0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +48,17 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+# Without this, setuptools only packages .py files by default -- app/prompts/
+# *.txt (S7's extracted prompt templates) would silently be EXCLUDED from
+# the wheel `pip install .` builds (Dockerfile:14), even though `COPY app
+# ./app` (Dockerfile:13) puts them in the build context. load_prompt()
+# resolves paths relative to the INSTALLED package location at runtime, not
+# the build context, so a container built without this would crash on the
+# first SURVEY job with FileNotFoundError -- confirmed by reading the
+# Dockerfile, not yet reproduced in a real container build.
+[tool.setuptools.package-data]
+app = ["prompts/*.txt"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

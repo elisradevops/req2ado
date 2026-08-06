@@ -4,16 +4,31 @@
   "title": "WorkItemTree",
   "description": "Canonical hierarchy produced by the leveling engine, ready for distillation and MCP write-back. Single source of truth — generate TS types (shared/ts) and pydantic models (shared/py) from this file.",
   "type": "object",
+  "additionalProperties": false,
   "required": ["nodes"],
   "properties": {
     "nodes": {
       "type": "array",
       "items": { "$ref": "#/definitions/WorkItemNode" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Non-fatal integrity signals surfaced to a human reviewer. Always [] for BASELINE."
+    },
+    "kb_citations": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/KbCitation" }
+    },
+    "trace_links": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/TraceLink" }
     }
   },
   "definitions": {
     "WorkItemNode": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["local_id", "type", "parent_local_id", "title", "description", "source_ref", "mode"],
       "properties": {
         "local_id": { "type": "string" },
@@ -24,6 +39,7 @@
         "customer_id": { "type": ["string", "null"] },
         "source_ref": {
           "type": "object",
+          "additionalProperties": false,
           "required": ["document_path", "start_offset", "end_offset"],
           "properties": {
             "document_path": { "type": "string" },
@@ -36,6 +52,10 @@
           "type": ["string", "null"],
           "description": "sha256 over the normalized verbatim source span. Required in BASELINE mode, null in SURVEY."
         },
+        "identity_hash": {
+          "type": ["string", "null"],
+          "description": "Idempotency key input (orchestrator's sourceHash): description + this node's own fixed source position. Distinct from fidelity_hash (drift detection). Null for a node shape predating this field."
+        },
         "tags": {
           "type": "array",
           "items": {
@@ -47,7 +67,61 @@
             ]
           }
         },
-        "mode": { "type": "string", "enum": ["BASELINE", "SURVEY"] }
+        "mode": { "type": "string", "enum": ["BASELINE", "SURVEY"] },
+        "child_type": {
+          "type": ["string", "null"],
+          "enum": ["Epic", "Feature", "Requirement", null],
+          "description": "Default work-item type for a new manual child added under this node. Null when ineligible or unresolvable."
+        },
+        "grounding_score": {
+          "type": ["number", "null"],
+          "description": "SURVEY-only: how much of the generated description's vocabulary appears in its source block. Null for BASELINE (trivially fully grounded) or when scoring wasn't enabled."
+        },
+        "quality_score": {
+          "type": ["integer", "null"],
+          "description": "SURVEY-only: 0-100 quality judgment of the final description. Null for BASELINE or when no scoring_client was supplied."
+        },
+        "quality_issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "ambiguous", "not_testable", "compound", "missing_acceptance_criteria",
+              "vague_term", "passive_voice", "missing_rationale", "not_a_requirement",
+              "fragment", "placeholder", "open_item_tbd", "rationale_as_requirement",
+              "conflicting_value"
+            ]
+          }
+        },
+        "quality_category_scores": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "description": "Per-dimension 0-100 breakdown backing quality_score. Dynamic keys (KB-checklist-derived) or the 5-dimension fallback (clarity/testability/atomicity/style/rationale). Null whenever quality_score is null."
+        }
+      }
+    },
+    "KbCitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_file", "similarity"],
+      "properties": {
+        "source_file": { "type": "string" },
+        "similarity": { "type": "number" },
+        "relevance": { "type": "string", "enum": ["relevant", "not_relevant", "unknown"] }
+      }
+    },
+    "TraceLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_local_id", "reference_name", "display_name", "target_kind", "resolution_status"],
+      "properties": {
+        "source_local_id": { "type": "string" },
+        "reference_name": { "type": "string" },
+        "display_name": { "type": "string" },
+        "target_kind": { "type": "string", "enum": ["intraJob", "crossJob"] },
+        "target_local_id": { "type": ["string", "null"] },
+        "target_customer_id": { "type": ["string", "null"] },
+        "resolution_status": { "type": "string", "enum": ["resolved", "unresolved", "pending"] }
       }
     }
   }

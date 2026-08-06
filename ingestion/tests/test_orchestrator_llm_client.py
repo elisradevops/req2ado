@@ -3,7 +3,11 @@ import json
 
 import httpx
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+import app.survey.orchestrator_llm_client as orchestrator_llm_client_module
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.workitem.model import RequirementQualityIssue
 
@@ -1070,6 +1074,189 @@ def test_analyze_section_parses_the_nodes_object_and_sends_response_schema() -> 
     assert "maxItems" not in schema["properties"]["nodes"]
 
 
+class _CountingFakeRedis:
+    """Hand-written fake, same convention as test_narration_publisher.py's
+    _FakeRedis -- backs LlmResponseCache directly (no fakeredis dependency),
+    tracking call counts so these tests can assert the LLM HTTP call itself
+    was skipped on a cache hit, not just that the returned value matched."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, bytes] = {}
+
+    def get(self, key: str):
+        return self._store.get(key)
+
+    def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self._store[key] = value.encode()
+
+
+def test_analyze_section_cache_miss_then_hit_skips_the_second_llm_call() -> None:
+    from app.survey.llm_cache import LlmResponseCache
+
+    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Cached node.", "tags": []}]
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+
+    cache = LlmResponseCache(_CountingFakeRedis())
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client._transport = httpx.MockTransport(handler)
+
+    first_result, first_truncated = client.analyze_section("Some section text.")
+    second_result, second_truncated = client.analyze_section("Some section text.")
+
+    assert call_count == 1  # second call hit the cache, never reached the transport
+    assert first_result == nodes
+    assert second_result == nodes
+    assert first_truncated is False
+    assert second_truncated is False
+
+
+def test_analyze_section_cache_never_stores_a_truncated_result() -> None:
+    from app.survey.llm_cache import LlmResponseCache
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []}), "finishReason": "length"})
+
+    cache = LlmResponseCache(_CountingFakeRedis())
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+    client.analyze_section("Some section text.")
+
+    # A truncated result must never be cached -- both calls should reach the
+    # real transport rather than the second one silently reusing a
+    # known-incomplete answer.
+    assert call_count == 2
+
+
+def test_analyze_section_cache_key_differs_by_section_text_no_false_positive_hit() -> None:
+    from app.survey.llm_cache import LlmResponseCache
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        text = body["messages"][1]["content"]
+        return httpx.Response(200, json={"content": json.dumps({"nodes": [{"temp_id": text}]})})
+
+    cache = LlmResponseCache(_CountingFakeRedis())
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client._transport = httpx.MockTransport(handler)
+
+    result_a, _ = client.analyze_section("Section A text.")
+    result_b, _ = client.analyze_section("Section B text.")
+
+    assert result_a == [{"temp_id": "Section A text."}]
+    assert result_b == [{"temp_id": "Section B text."}]  # not a stale cache hit from section A
+
+
+def test_score_requirements_for_document_cache_miss_then_hit_skips_the_second_llm_call() -> None:
+    from app.survey.llm_cache import LlmResponseCache
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 80}})})
+
+    cache = LlmResponseCache(_CountingFakeRedis())
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client._transport = httpx.MockTransport(handler)
+
+    first = client.score_requirements_for_document({"n0": "The unit shall survive a drop."})
+    second = client.score_requirements_for_document({"n0": "The unit shall survive a drop."})
+
+    assert call_count == 1
+    assert first == {"n0": {"score": 80}}
+    assert second == {"n0": {"score": 80}}
+
+
+def test_score_epics_and_features_for_document_cache_miss_then_hit_skips_the_second_llm_call() -> None:
+    from app.survey.llm_cache import LlmResponseCache
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 90, "categoryScores": {}}})})
+
+    cache = LlmResponseCache(_CountingFakeRedis())
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    client._transport = httpx.MockTransport(handler)
+
+    first = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "Perimeter security"}})
+    second = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "Perimeter security"}})
+
+    assert call_count == 1
+    assert first == {"n0": {"score": 90, "categoryScores": {}}}
+    assert second == {"n0": {"score": 90, "categoryScores": {}}}
+
+
+def test_analyze_section_without_a_cache_configured_always_calls_the_llm() -> None:
+    # Default (cache=None) must behave exactly as before caching existed --
+    # every existing OrchestratorLlmClient construction site that never
+    # passes cache= is unaffected.
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+    client.analyze_section("Some section text.")
+
+    assert call_count == 2
+
+
+def test_analyze_section_records_a_real_otel_span_with_gen_ai_attributes(monkeypatch) -> None:
+    # Real verification (S6), not a mock: a genuinely separate SDK
+    # TracerProvider + InMemorySpanExporter, independent of the process-wide
+    # provider conftest.py disables for every other test (OTEL_SDK_DISABLED
+    # only gates the global API's trace.get_tracer(), not a directly
+    # instantiated SDK TracerProvider like this one) -- proves the span is
+    # actually recorded with real attributes, not just that the call doesn't
+    # crash.
+    # TracerProvider itself (not just trace.get_tracer()) checks
+    # OTEL_SDK_DISABLED at construction time -- conftest.py sets it for
+    # every other test, so it must be overridden here before instantiating
+    # a real provider, or this test's own provider would ALSO no-op.
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "false")
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(orchestrator_llm_client_module, "_tracer", provider.get_tracer("test"))
+
+    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The unit shall survive a 1m drop.", "tags": []}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", model="qwen3.6:35b")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section("Some section text.")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "analyze_section"
+    assert spans[0].attributes["gen_ai.request.model"] == "qwen3.6:35b"
+    assert spans[0].attributes["gen_ai.operation.name"] == "chat"
+    assert spans[0].attributes["gen_ai.response.node_count"] == 1
+
+
 def test_analyze_section_caps_max_tokens_to_avoid_silent_truncation() -> None:
     # Regression, confirmed live: a real 679-block, 6-section document's
     # section 1 response truncated mid-array ('Expecting , delimiter') at
@@ -2062,3 +2249,63 @@ def test_analyze_section_agentic_read_other_section_handles_a_missing_section_gr
         "Some section text.", lambda query: (None, []), read_other_section_fn=lambda section_id: None
     )
     assert nodes == []
+
+
+def test_post_chat_retries_a_500_then_succeeds(monkeypatch) -> None:
+    # Regression: a real job lost 45+ minutes of prior work to a single
+    # transient 500 from the LLM backend with zero retry anywhere in the
+    # /llm/chat call chain. _post_chat now retries 429/5xx up to
+    # _MAX_CHAT_RETRY_ATTEMPTS times before giving up.
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda _seconds: None)
+    call_count = {"n": 0}
+    nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "x", "tags": []}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] < 2:
+            return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result, _ = client.analyze_section("Some section text.")
+    assert result == nodes
+    assert call_count["n"] == 2
+
+
+def test_post_chat_gives_up_after_max_attempts_on_a_persistent_500(monkeypatch) -> None:
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda _seconds: None)
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(500, json={"error": "boom"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.analyze_section("Some section text.")
+    assert call_count["n"] == orchestrator_llm_client_module._MAX_CHAT_RETRY_ATTEMPTS
+
+
+def test_post_chat_does_not_retry_a_4xx(monkeypatch) -> None:
+    # A 401 (bad bearer, non-transient) must fail fast -- retrying it just
+    # burns the full backoff window (10s) for a request that will never
+    # succeed.
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.analyze_section("Some section text.")
+    assert call_count["n"] == 1
+    assert sleep_calls == []

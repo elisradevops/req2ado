@@ -1,0 +1,19 @@
+{
+  "name": "@req2ado/shared-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TS types generated from shared/schemas/*.schema.json (S10) — never hand-edit src/generated/*.ts; edit the schema and re-run `pnpm generate`.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

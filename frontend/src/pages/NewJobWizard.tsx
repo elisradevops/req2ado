@@ -8,7 +8,7 @@ import { IterationPathPicker } from '../components/IterationPathPicker';
 import { StatePicker } from '../components/StatePicker';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { previewJob, submitJob, listModels } from '../api/jobs';
-import { computeEtaMinutes } from '../utils/eta';
+import { computeEtaMinutes, formatEtaMinutes } from '../utils/eta';
 import { useOrgUrl } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
@@ -343,7 +343,7 @@ export function NewJobWizard(): React.ReactElement {
               Back
             </Button>
             <span className="ml-auto flex items-center gap-1.5 text-sm text-ink-2">
-              Estimated: ~{eta} min
+              Estimated: ~{formatEtaMinutes(eta)}
               <InfoTip content="BASELINE parses structure only, minutes. SURVEY additionally runs an LLM quality/dedup pass per clause, which scales with document size -- typically 15-40+ minutes." />
             </span>
             <Button onClick={handleSubmit} disabled={!areaPath || (hasAdoSession && !project) || isSubmitting}>

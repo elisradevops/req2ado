@@ -1,5 +1,21 @@
 # Requirements-to-ADO Ingestion Platform — Planning Deliverable
 
+> **Post-Phase-7 update:** this document's Phase 0-7 planning content (below)
+> describes `mcp-ado-server` speaking the MCP protocol over an HTTP
+> Streamable transport, as originally designed and built. That transport was
+> later replaced with a plain REST API (`POST /api/ado/:operation`,
+> `mcp-ado-server/src/rest/router.ts`) once it became clear no LLM ever
+> tool-calls it — every caller is deterministic orchestrator code
+> (`orchestrator/src/modules/pipeline/mcp.client.ts`), so the MCP protocol
+> was pure overhead with no corresponding benefit. The service name
+> (`mcp-ado-server`), the `McpClient` class name, and every ADO operation's
+> name/shape (`ado_create_work_item`, etc.) were kept as-is through that
+> change to avoid a large, purely-cosmetic rename across both services — the
+> "MCP" in these names is now historical, not a live protocol claim. The
+> operation catalog itself lives in `mcp-ado-server/src/operations/registry.ts`,
+> not in the individual "MCP tool" descriptions this document goes on to
+> reference below.
+
 ## Context
 
 **Why.** Customer requirements arrive as heterogeneous documents (signed contracts, informal surveys, deeply-nested engineering ICDs) in mixed formats (txt/md/docx/pdf/scanned-pdf/xlsx, with tables and figures). Today they are hand-entered into on-prem Azure DevOps / TFS as work items — slow, error-prone, non-traceable. This platform automates conversion into a hierarchical work-item tree (Epic → Feature → Requirement, with sub-levels) with full traceability (Customer ID + source ref + fidelity hash), in two operating modes:

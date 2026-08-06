@@ -16,6 +16,17 @@ WORKDIR /app
 # without this Prisma silently defaults to the wrong (openssl-1.1.x) engine
 # binary and fails at runtime with "Error loading shared library libssl.so.1.1".
 RUN apk add --no-cache openssl
+# @req2ado/shared-ts (S10's codegen'd TS types, orchestrator/package.json's
+# only cross-package dependency) is referenced as `file:../shared/ts` --
+# pnpm's `workspace:*` protocol (the idiomatic monorepo spec) is NOT
+# understood by plain `npm ci`, which is what this Dockerfile uses (a
+# per-service package-lock.json, not the root pnpm-lock.yaml). `file:` is
+# the one protocol both pnpm (local dev) and npm (this build) resolve the
+# same way, so package.json only needs ONE dependency spec for both. Must
+# land at /shared/ts so `../shared/ts` (relative to package.json's own
+# /app location) resolves correctly -- same relative layout as the real
+# repo (orchestrator/ and shared/ts/ are siblings).
+COPY shared/ts /shared/ts
 COPY orchestrator/package.json orchestrator/package-lock.json ./
 RUN npm ci
 COPY orchestrator/tsconfig.json orchestrator/tsconfig.build.json orchestrator/nest-cli.json* ./

@@ -83,3 +83,22 @@ def test_baseline_tree_matches_work_item_tree_schema(schema) -> None:
 def test_survey_tree_matches_work_item_tree_schema(schema) -> None:
     tree = build_survey_tree(_survey_doc(), FakeSectionAnalysisClient())
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_schema_rejects_a_stray_field_on_a_node(schema) -> None:
+    # Regression: before additionalProperties:false, this schema was nearly
+    # vacuous -- it validated any node shape, stray fields included, so a
+    # silent shape drift between the Python and TypeScript sides of this
+    # contract would never be caught here. This is the actual point of S4:
+    # prove the schema now REJECTS something it used to silently accept.
+    instance = build_baseline_tree(_baseline_doc()).model_dump(mode="json")
+    instance["nodes"][0]["unexpected_field"] = "should not validate"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=instance, schema=schema)
+
+
+def test_schema_rejects_a_stray_top_level_field(schema) -> None:
+    instance = build_baseline_tree(_baseline_doc()).model_dump(mode="json")
+    instance["unexpected_top_level_field"] = "should not validate"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=instance, schema=schema)

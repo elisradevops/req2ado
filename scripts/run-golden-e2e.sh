@@ -24,6 +24,23 @@
 
 set -euo pipefail
 
+# --baseline-only: runs steps 1-9 (jobs #1/#2, BASELINE mode) and skips job
+# #3 (SURVEY, needs a real chat-capable Ollama model) and job #4 (dedup
+# near-duplicate, needs a real embedding model) entirely. Jobs #1/#2's own
+# dedup check still runs the SAME code path as always, but with LLM_BASE_URL
+# pointed at a deliberately-unreachable placeholder -- the existing fail-open
+# dedup design (see dry-run.service.ts's diff()) means a failed embed lookup
+# degrades to 'create', which job #1's own assertion already tolerates, and
+# job #2's 100%-reuse assertion is satisfied by the exact-hash idempotency
+# lookup alone (Postgres, no embed call needed for an identical re-run) --
+# so this subset genuinely needs no LLM/Ollama backend at all, making it the
+# one part of this script that's viable on a hosted CI runner with no GPU/
+# model-pulling step. See docs/architecture.md's CI section.
+BASELINE_ONLY=0
+if [ "${1:-}" = "--baseline-only" ]; then
+  BASELINE_ONLY=1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURE="$ROOT_DIR/docs/golden-e2e-fixture.txt"
 
@@ -41,6 +58,8 @@ STARTED_REDIS=0
 INGESTION_PORT=8010
 MCP_PORT=4100
 ORCH_PORT=3001
+# Fake ADO identity endpoint, see step 4b below.
+FAKE_ADO_PORT=4102
 
 MOCK_DB_DIR="$(mktemp -d /tmp/req2ado-mock-ado.XXXXXX)"
 LOG_DIR="$(mktemp -d /tmp/req2ado-e2e-logs.XXXXXX)"
@@ -125,6 +144,15 @@ done
 
 export DATABASE_URL="postgresql://req2ado:req2ado@localhost:${PG_PORT}/req2ado"
 export REDIS_URL="redis://localhost:${REDIS_PORT}"
+# Required by config.schema.ts (encrypts ExternalCredential rows -- ADO PAT/
+# SharePoint token/LLM key) for BOTH the orchestrator app and pipeline-worker
+# process below; the latter validates the whole schema eagerly at startup
+# (configSchema.parse(process.env) in pipeline.processor.ts) and crashes
+# immediately without this. Any non-empty string works -- scrypt derives a
+# real key from it (see credential-crypto.ts's deriveKey), no length
+# requirement. Shared across both processes like DATABASE_URL/REDIS_URL
+# above, so exported once here rather than duplicated per subshell.
+export CREDENTIAL_ENC_KEY=dev-only-credential-enc-key
 
 # ---------------------------------------------------------------------------
 # 2. Orchestrator: build, migrate
@@ -177,6 +205,31 @@ log "Starting mcp-ado-server on :$MCP_PORT (ADO_BACKEND=mock)"
 PIDS+=($!)
 
 # ---------------------------------------------------------------------------
+# 4b. Fake ADO identity endpoint -- POST /auth/login (see AuthGuard, the
+#     global session guard every non-@Public() route now requires) validates
+#     a PAT by calling the REAL ADO connectionData REST endpoint directly
+#     (AdoPatProvider.validateAndIdentify), NOT through mcp-ado-server's mock
+#     backend -- mcp-ado-server only speaks its own MCP tool protocol, it
+#     doesn't serve a raw ADO REST API shape. This tiny stub exists purely so
+#     login has something real to validate against; it accepts any PAT
+#     (Basic auth header is read by AdoPatProvider but never checked here --
+#     matching mcp-ado-server's own mock-backend "accept anything" spirit)
+#     and always answers with the same fake identity.
+# ---------------------------------------------------------------------------
+log "Starting fake ADO identity endpoint on :$FAKE_ADO_PORT (for /auth/login only)"
+cat >"$MOCK_DB_DIR/fake-ado-identity.js" <<JS
+const http = require('http');
+http
+  .createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ authenticatedUser: { descriptor: 'mock-user-descriptor', providerDisplayName: 'Golden E2E Mock User' } }));
+  })
+  .listen(${FAKE_ADO_PORT});
+JS
+(exec node "$MOCK_DB_DIR/fake-ado-identity.js") >"$LOG_DIR/fake-ado-identity.log" 2>&1 &
+PIDS+=($!)
+
+# ---------------------------------------------------------------------------
 # 5. Orchestrator main HTTP app
 # ---------------------------------------------------------------------------
 log "Starting orchestrator HTTP app on :$ORCH_PORT"
@@ -187,24 +240,35 @@ log "Starting orchestrator HTTP app on :$ORCH_PORT"
   export REDIS_URL
   export MCP_URL="http://localhost:${MCP_PORT}"
   export MCP_BEARER=dev-local-only
-  # LLM_BASE_URL/LLM_CHAT_MODEL: point at a real local Ollama so the SURVEY
-  # scenario (job #3) below can genuinely generate hierarchy + requirement
-  # text, not a fake/unreachable placeholder. BASELINE jobs #1/#2 never call
-  # the LLM proxy, so this has no effect on them. llama3.2:1b was tried first
-  # and is NOT reliable enough for infer_hierarchy on real (non-trivial)
-  # text — observed wrapping the JSON array in a {"nodes": [...]} object and
-  # hallucinating node types/ids outside the real outline. gemma4:12b follows
-  # the prompt correctly (clean array, valid enum types, no invented ids) —
-  # confirmed by direct testing against this exact fixture's outline before
-  # wiring it in here. Slower (~7 min cold-start on this CPU-only box; see
-  # poll_job_status's tries below), but correct.
-  export LLM_BASE_URL="http://localhost:11434/v1"
-  export LLM_CHAT_MODEL=gemma4:12b
+  if [ "$BASELINE_ONLY" -eq 1 ]; then
+    # No job in this subset needs a real chat or embedding model to reach
+    # its assertions (see the --baseline-only comment above) -- point at a
+    # deliberately-unreachable placeholder so this script never depends on
+    # a local Ollama being installed/running, the one thing that would make
+    # it unusable on a hosted CI runner.
+    export LLM_BASE_URL="http://localhost:19999/v1"
+    export LLM_CHAT_MODEL=unreachable-in-baseline-only-mode
+    export EMBED_MODEL=unreachable-in-baseline-only-mode
+  else
+    # LLM_BASE_URL/LLM_CHAT_MODEL: point at a real local Ollama so the SURVEY
+    # scenario (job #3) below can genuinely generate hierarchy + requirement
+    # text, not a fake/unreachable placeholder. BASELINE jobs #1/#2 never call
+    # the LLM proxy, so this has no effect on them. llama3.2:1b was tried first
+    # and is NOT reliable enough for infer_hierarchy on real (non-trivial)
+    # text — observed wrapping the JSON array in a {"nodes": [...]} object and
+    # hallucinating node types/ids outside the real outline. gemma4:12b follows
+    # the prompt correctly (clean array, valid enum types, no invented ids) —
+    # confirmed by direct testing against this exact fixture's outline before
+    # wiring it in here. Slower (~7 min cold-start on this CPU-only box; see
+    # poll_job_status's tries below), but correct.
+    export LLM_BASE_URL="http://localhost:11434/v1"
+    export LLM_CHAT_MODEL=gemma4:12b
+    # EMBED_MODEL: real, locally-pulled Ollama embedding model — the dedup
+    # scenario (job #4, Task 9) calls this via the /llm/embed proxy. A
+    # placeholder name here 404s against a real Ollama instance.
+    export EMBED_MODEL=all-minilm
+  fi
   export LLM_PROXY_BEARER=dev-only-llm-proxy-bearer
-  # EMBED_MODEL: real, locally-pulled Ollama embedding model — the dedup
-  # scenario (job #4, Task 9) calls this via the /llm/embed proxy. A
-  # placeholder name here 404s against a real Ollama instance.
-  export EMBED_MODEL=all-minilm
   export EMBED_TRANSPORT=ollama
   export EMBED_PATH=/api/embed
   export INGESTION_BASE_URL="http://localhost:${INGESTION_PORT}"
@@ -238,6 +302,7 @@ PIDS+=($!)
 # ---------------------------------------------------------------------------
 wait_for_http "http://localhost:${INGESTION_PORT}/health" "ingestion"
 wait_for_http "http://localhost:${MCP_PORT}/health" "mcp-ado-server"
+wait_for_http "http://localhost:${FAKE_ADO_PORT}/_apis/connectionData" "fake ADO identity endpoint"
 wait_for_http "http://localhost:${ORCH_PORT}/health" "orchestrator"
 
 # The pipeline worker has no HTTP health endpoint (it's a BullMQ consumer,
@@ -252,6 +317,18 @@ fi
 AREA_PATH="Project\\GoldenE2E"
 
 # ---------------------------------------------------------------------------
+# 7b. Log in -- every route below is behind the global session AuthGuard.
+#     adoOrgUrl points at the fake identity stub from step 4b; any non-empty
+#     PAT is accepted (the stub never checks the Authorization header).
+# ---------------------------------------------------------------------------
+log "Logging in (session cookie for all subsequent requests)"
+COOKIE_JAR="$MOCK_DB_DIR/cookies.txt"
+LOGIN_RESPONSE="$(curl -sf -c "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"adoOrgUrl\":\"http://localhost:${FAKE_ADO_PORT}\",\"pat\":\"dev-only-golden-e2e-pat\"}")"
+log "Logged in as: $LOGIN_RESPONSE"
+
+# ---------------------------------------------------------------------------
 # 8. First job: submit -> poll diff_ready -> confirm -> assert createdCount
 # ---------------------------------------------------------------------------
 poll_job_status() {
@@ -260,11 +337,16 @@ poll_job_status() {
   # this; the SURVEY job (#3) needs the headroom — gemma4:12b's two
   # sequential LLM calls (infer_hierarchy + generate_requirements_for_document)
   # took anywhere from ~7 min to 10+ min per call cold-start during
-  # verification on GPU/CPU-contended local hardware.
+  # verification on GPU/CPU-contended local hardware. --baseline-only never
+  # runs job #3, so a much shorter ceiling gives faster CI feedback on a
+  # genuine hang instead of waiting out the full 65 minutes.
   local tries=3900
+  if [ "$BASELINE_ONLY" -eq 1 ]; then
+    tries=120
+  fi
   for ((i = 0; i < tries; i++)); do
     local body
-    body="$(curl -sf "http://localhost:${ORCH_PORT}/jobs/${job_id}")"
+    body="$(curl -sf -b "$COOKIE_JAR" "http://localhost:${ORCH_PORT}/jobs/${job_id}")"
     local status
     status="$(echo "$body" | jq -r '.status')"
     if [ "$status" = "diff_ready" ] || [ "$status" = "failed" ]; then
@@ -278,7 +360,7 @@ poll_job_status() {
 }
 
 log "Submitting job #1 (baseline fixture)"
-JOB1_RESPONSE="$(curl -sf -X POST "http://localhost:${ORCH_PORT}/jobs" \
+JOB1_RESPONSE="$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
   -F "file=@${FIXTURE}" \
   -F "areaPath=${AREA_PATH}")"
 JOB1_ID="$(echo "$JOB1_RESPONSE" | jq -r '.jobId')"
@@ -303,7 +385,7 @@ if ! echo "$JOB1_DIFF_ACTIONS" | grep -q "create"; then
 fi
 
 log "Confirming job #1"
-CONFIRM1_RESPONSE="$(curl -sf -X POST "http://localhost:${ORCH_PORT}/jobs/${JOB1_ID}/confirm")"
+CONFIRM1_RESPONSE="$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs/${JOB1_ID}/confirm")"
 CONFIRM1_CREATED_COUNT="$(echo "$CONFIRM1_RESPONSE" | jq -r '.createdCount')"
 log "Job #1 confirm response: $CONFIRM1_RESPONSE"
 if [ "$CONFIRM1_CREATED_COUNT" -lt 1 ]; then
@@ -315,7 +397,7 @@ fi
 # 9. Second job: identical fixture -> expect ALL entries to be 'reuse'
 # ---------------------------------------------------------------------------
 log "Submitting job #2 (identical fixture, same areaPath, no customerId — idempotency re-run check)"
-JOB2_RESPONSE="$(curl -sf -X POST "http://localhost:${ORCH_PORT}/jobs" \
+JOB2_RESPONSE="$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
   -F "file=@${FIXTURE}" \
   -F "areaPath=${AREA_PATH}")"
 JOB2_ID="$(echo "$JOB2_RESPONSE" | jq -r '.jobId')"
@@ -345,6 +427,11 @@ fi
 
 log "GOLDEN E2E PASSED: job #1 created $CONFIRM1_CREATED_COUNT work item(s); job #2's re-run diff was 100% reuse ($JOB2_ENTRY_COUNT/$JOB2_ENTRY_COUNT entries)."
 
+if [ "$BASELINE_ONLY" -eq 1 ]; then
+  log "GOLDEN E2E (BASELINE-ONLY) PASSED: skipping job #3 (SURVEY) and job #4 (dedup near-duplicate) -- both need a real Ollama backend, see --baseline-only's own comment."
+  exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # 10. Third job: SURVEY mode against an informal, unstructured fixture —
 #     proves Tasks 1-4 (LLM hierarchy inference + batched requirement
@@ -352,7 +439,7 @@ log "GOLDEN E2E PASSED: job #1 created $CONFIRM1_CREATED_COUNT work item(s); job
 #     mock ADO backend and a real local LLM.
 # ---------------------------------------------------------------------------
 log "Submitting job #3 (SURVEY mode, informal fixture)"
-JOB3_RESPONSE=$(curl -sf -X POST "http://localhost:${ORCH_PORT}/jobs" \
+JOB3_RESPONSE=$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
   -F "file=@${ROOT_DIR}/docs/golden-e2e-survey-fixture.txt" \
   -F "areaPath=${AREA_PATH}" \
   -F "mode=survey")
@@ -382,7 +469,7 @@ fi
 #     job #1's already-upserted embedding above the 0.90 similarity threshold.
 # ---------------------------------------------------------------------------
 log "Submitting job #4 (BASELINE mode, near-duplicate of job #1's fixture — dedup check)"
-JOB4_RESPONSE="$(curl -sf -X POST "http://localhost:${ORCH_PORT}/jobs" \
+JOB4_RESPONSE="$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
   -F "file=@${ROOT_DIR}/docs/golden-e2e-near-duplicate-fixture.txt" \
   -F "areaPath=${AREA_PATH}")"
 JOB4_ID="$(echo "$JOB4_RESPONSE" | jq -r '.jobId')"

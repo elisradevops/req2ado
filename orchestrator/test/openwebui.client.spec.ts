@@ -15,7 +15,17 @@ describe('OpenWebUiClient', () => {
     EMBED_MODEL: 'nomic-embed-text',
     EMBED_PATH: '/api/embed',
     SHOW_PATH: '/api/show',
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
   };
+
+  it('constructs the OpenAI client with an explicit timeout and maxRetries: 0 (never blindly retries a non-idempotent, multi-minute inference call)', () => {
+    // Regression: the SDK's own default (maxRetries: 2) previously re-ran a
+    // whole >10min inference up to 3 times on timeout before ever surfacing
+    // an error -- the real root cause of job a830aa30's ~66min failure.
+    const client = new OpenWebUiClient({ ...config, LLM_REQUEST_TIMEOUT_MS: 123456 });
+    expect((client as any).openai.maxRetries).toBe(0);
+    expect((client as any).openai.timeout).toBe(123456);
+  });
 
   it('redacts messages before sending, by default', async () => {
     const client = new OpenWebUiClient(config);
@@ -511,6 +521,7 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     EMBED_MODEL: 'nomic-embed-text',
     EMBED_PATH: '/api/embed',
     SHOW_PATH: '/api/show',
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
   };
 
   beforeEach(() => {
@@ -579,11 +590,21 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     expect(result).toEqual([[0.1, 0.2], [0.3, 0.4]]);
   });
 
-  it('throws on a non-ok response', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+  it('throws on a non-ok, non-retryable response', async () => {
+    // 400 is not in fetchWithRetry's retryable set -- fails fast, isolating
+    // this assertion from the retry-then-give-up behavior tested below.
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 400 });
     const client = new OpenWebUiClient(config);
-    await expect(client.embed(['text'])).rejects.toThrow(/embed.*500/i);
+    await expect(client.embed(['text'])).rejects.toThrow(/embed.*400/i);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
+
+  it('retries a transient 503 before giving up, then throws with the final status', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 503, headers: { get: () => null } });
+    const client = new OpenWebUiClient(config);
+    await expect(client.embed(['text'])).rejects.toThrow(/embed.*503/i);
+    expect(global.fetch).toHaveBeenCalledTimes(4); // 1 initial + 3 retries (embed()'s maxRetries:3)
+  }, 10000);
 
   it('throws not-implemented for EMBED_TRANSPORT=openai', async () => {
     const client = new OpenWebUiClient({ ...config, EMBED_TRANSPORT: 'openai' as const });
@@ -610,6 +631,7 @@ describe('OpenWebUiClient.showModel', () => {
     EMBED_MODEL: 'nomic-embed-text',
     EMBED_PATH: '/api/embed',
     SHOW_PATH: '/api/show',
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
   };
 
   beforeEach(() => {
@@ -680,5 +702,11 @@ describe('OpenWebUiClient.showModel', () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404 });
     const client = new OpenWebUiClient(config);
     await expect(client.showModel('nonexistent')).rejects.toThrow(/show.*404/i);
+  });
+
+  it('throws a clear, specific error for "Arena Model" instead of an opaque HTTP failure -- no /api/show entry exists for an Open WebUI virtual construct', async () => {
+    const client = new OpenWebUiClient(config);
+    await expect(client.showModel('Arena Model')).rejects.toThrow(/virtual multi-model construct/i);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

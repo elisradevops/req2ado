@@ -325,6 +325,31 @@ describe('RealAdoBackend.getWorkItemsBatch', () => {
 
     expect(results.map((r) => r.id)).toEqual([1]);
   });
+
+  it('tolerates a null placeholder for a dead id instead of true omission -- confirmed live crash', async () => {
+    // Real gap this closes: errorPolicy=Omit does not always drop a
+    // dead/deleted id from the response array -- ADO can instead return a
+    // `null` entry in its place. Confirmed live: this crashed the whole
+    // batch with "Cannot read properties of null (reading 'id')",
+    // silently defeating DryRunService.verifyExistingAdoIdsStillExist's
+    // stale-match check for every id in the batch, not just the dead one
+    // -- a deleted-in-ADO dedup match then stayed in a job's diff
+    // unverified and un-downgraded.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { value: [{ id: 1, fields: { 'System.WorkItemType': 'Requirement' } }, null] },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const results = await backend.getWorkItemsBatch([1, 532]);
+
+    expect(results.map((r) => r.id)).toEqual([1]);
+  });
 });
 
 describe('RealAdoBackend.linkParentChild', () => {

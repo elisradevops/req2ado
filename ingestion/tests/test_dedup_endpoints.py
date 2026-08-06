@@ -49,6 +49,29 @@ def test_dedup_upsert_then_check_with_the_same_text_returns_a_duplicate(tmp_path
     assert body["similarity"] == pytest.approx(1.0, abs=1e-6)
 
 
+def test_dedup_delete_removes_a_stale_match_so_it_no_longer_matches(tmp_path, monkeypatch) -> None:
+    # Counterpart to /dedup/upsert -- closes the gap where a dedup_skip
+    # match downgraded by verifyExistingAdoIdsStillExist (its ADO item was
+    # deleted) kept its stale Chroma entry forever, resurfacing as a match
+    # on every future job against the same area path.
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+
+    client.post(
+        "/dedup/upsert",
+        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+    )
+
+    delete_response = client.post("/dedup/delete", json={"item_id": "item-1", "area_path": "Project\\Area1"})
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"ok": True}
+
+    check_response = client.post(
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+    )
+    assert check_response.json()["is_duplicate"] is False
+
+
 def test_dedup_upsert_batch_upserts_all_items_in_one_embed_call(tmp_path, monkeypatch) -> None:
     # Regression: /dedup/upsert previously required one HTTP call (and one
     # embed() round-trip) per item. /dedup/upsert-batch embeds every item's

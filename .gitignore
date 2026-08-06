@@ -16,3 +16,4 @@ coverage/
 .certs/
 .worktrees/
 .superpowers/
+.playwright-mcp-upload-tmp.docx

@@ -230,12 +230,21 @@ export class RealAdoBackend implements AdoBackend {
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
     );
-    return response.data.value.map((data: { id: number; fields: Record<string, string>; relations?: unknown }) => ({
-      id: data.id,
-      type: data.fields['System.WorkItemType'] as string,
-      fields: data.fields,
-      parentId: parentIdFromRelations(data.relations as { rel: string; url: string }[] | undefined),
-    }));
+    // errorPolicy=Omit does not always drop a dead/deleted id from the
+    // array -- ADO can instead return a `null` entry in its place
+    // (confirmed live: a work item deleted directly in ADO produced a
+    // null here, not an omission, crashing this whole batch with
+    // "Cannot read properties of null (reading 'id')" and silently
+    // defeating verifyExistingAdoIdsStillExist's stale-match check for
+    // every id in the batch, not just the deleted one).
+    return response.data.value
+      .filter((data: unknown): data is { id: number; fields: Record<string, string>; relations?: unknown } => data != null)
+      .map((data: { id: number; fields: Record<string, string>; relations?: unknown }) => ({
+        id: data.id,
+        type: data.fields['System.WorkItemType'] as string,
+        fields: data.fields,
+        parentId: parentIdFromRelations(data.relations as { rel: string; url: string }[] | undefined),
+      }));
   }
 
   async linkParentChild(childId: number, parentId: number): Promise<void> {

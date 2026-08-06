@@ -15,6 +15,7 @@ async function main(): Promise<void> {
     LLM_BASE_URL: process.env.LLM_BASE_URL ?? 'http://localhost:11434/v1',
     LLM_CHAT_MODEL: process.env.LLM_CHAT_MODEL ?? 'llama3.1',
     LLM_TRUSTED_LOCAL: true, // local dev smoke test — no redaction needed for a hello-world prompt
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
   });
 
   const result = await client.chat([{ role: 'user', content: 'Reply with exactly: OK' }], { temperature: 0 });

@@ -10,6 +10,9 @@ from typing import Callable
 import httpx
 from json_repair import repair_json
 
+from app.otel import get_tracer
+from app.prompts import load_prompt
+
 from app.survey._response_schemas import (
     checklist_extraction_schema,
     duplicate_cluster_verdict_schema,
@@ -23,9 +26,12 @@ from app.survey._response_schemas import (
     synthesis_schema,
     title_tags_schema,
 )
+from app.config import settings
+from app.survey.llm_cache import LlmResponseCache, cache_key
 from app.workitem.model import RequirementTag
 
 logger = logging.getLogger(__name__)
+_tracer = get_tracer()
 
 _JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 # Same fence shape, NOT anchored to the whole string -- confirmed live (real
@@ -45,7 +51,12 @@ _JSON_FENCE_ANYWHERE_PATTERN = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.D
 # contention on this box (subsequent warm calls are much faster, but the
 # first call in a job's lifetime is not guaranteed warm, and Ollama evicts
 # an idle model from memory after a few minutes by default).
-_LLM_REQUEST_TIMEOUT_SECONDS = 1800.0
+#
+# Sourced from settings (config.py) rather than a bare literal so it can be
+# tuned per-deployment without a code change -- same numeric default as
+# before this was configurable. See config.py's own doc comment for this
+# rung's place in the wider SURVEY call ladder.
+_LLM_REQUEST_TIMEOUT_SECONDS = settings.llm_request_timeout_seconds
 
 # Caps output length (forwarded as maxTokens -> OpenAI-compat max_tokens ->
 # Ollama's num_predict) on the three call sites that lost response_format
@@ -87,6 +98,21 @@ _CHECKLIST_MIN_ITEMS = 2
 _CHECKLIST_MAX_ITEMS = 30
 _CHECKLIST_MIN_ITEM_CHARS = 2
 _CHECKLIST_MAX_ITEM_CHARS = 60
+
+# Retry policy for a TRANSIENT /llm/chat failure only (429/5xx) -- confirmed
+# real gap: a single 500 from the LLM backend (observed live, host under
+# memory pressure) previously killed an entire multi-hour SURVEY job
+# outright, with zero retry anywhere in the whole chain (orchestrator's own
+# OpenAI client has maxRetries:0 by deliberate design -- see
+# openwebui.client.ts's own comment on why a non-idempotent, multi-minute
+# call must never be blindly retried at that layer). This is NOT that same
+# mistake: retries are bounded (2 extra attempts, not a storm), scoped to
+# 429/5xx/network errors only (never a successful-but-slow response), and
+# sit ABOVE the per-chunk fail-open safety nets in scoring.py/id_tree_builder.py
+# -- most transient blips should never even reach those nets now.
+_RETRYABLE_CHAT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_MAX_CHAT_RETRY_ATTEMPTS = 3
+_CHAT_RETRY_BACKOFF_SECONDS = (2.0, 8.0)
 
 
 def _strip_json_fence(content: str) -> str:
@@ -277,112 +303,8 @@ READ_OTHER_SECTION_TOOL = {
     },
 }
 
-_SECTION_ANALYSIS_SYSTEM_PROMPT = (
-    "You are analyzing one section of a customer requirements document. First "
-    "understand the section as a whole -- its headings, prose, bullet/spec lists, "
-    "tables, and figure descriptions together form coherent requirements, NOT one "
-    "requirement per line. Synthesize them. Return a work-item tree for THIS "
-    "section as a JSON object {\"nodes\": [...]}. Each node has: 'temp_id' (a "
-    "unique short id you assign, e.g. 'n1'), 'type' (one of: Epic, Feature, "
-    "Requirement), 'parent_temp_id' (the temp_id of its parent in this same "
-    "array, or null for a section root), 'title' (a short, human-scannable "
-    "label for this node, roughly 80 characters or less -- NOT a repeat of "
-    "the full formal statement in 'text', a distinct at-a-glance summary of "
-    "it), 'text' (a single formal shall-style requirement statement that "
-    "folds in every related value/bullet/cell -- do NOT emit one node per "
-    "bullet), and 'tags' (zero or more of: functional, "
-    "non_functional, interface, performance, regulatory, safety, security, "
-    "operation, maintenance, feature, behavior). Emit as many or as few nodes as "
-    "the section genuinely contains. No prose, no markdown fences -- the body "
-    "must be valid JSON on its own.\n\n"
-    "Every figure in this section (each rendered as '[FIGURE: <description>]') "
-    "that describes real technical content (dimensions, pin-outs, connections, "
-    "architecture, values) must have that content reflected in at least one "
-    "node's 'text' -- do not silently omit a figure's technical content just "
-    "because it wasn't already phrased as a requirement.\n\n"
-    "IMPORTANT on parent_temp_id: null means 'this node has no parent at all "
-    "-- it is a root of the tree', NOT a placeholder or default. "
-    "__ROOT_COUNT_CLAUSE__ EVERY other "
-    "node -- including the LAST ones you emit, however many nodes there are -- "
-    "must set parent_temp_id to an already-emitted temp_id from earlier in "
-    "this same array. Do not let parent_temp_id drift to null for later nodes "
-    "just because the response is long -- re-check this field for every "
-    "single node before finishing.\n\n"
-    "What each type actually MEANS (not just how they nest) -- use this to "
-    "judge scope, not only the structural rules below: an Epic is a large "
-    "body of work representing a major initiative or goal, broken down into "
-    "multiple Features, that might span several sprints or even releases. A "
-    "Feature is a significant piece of functionality that delivers real "
-    "value to the user on its own, typically covering several distinct "
-    "Requirements, and might take one or more sprints to complete. A "
-    "Requirement is a single, sprint-sized, individually testable "
-    "obligation. When the section's own structure doesn't make the right "
-    "boundary obvious, fall back to this scope test: could this genuinely "
-    "take multiple sprints and cover several distinct Features on its own? "
-    "-> Epic. Does it deliver one coherent piece of user-facing value made "
-    "of several testable Requirements? -> Feature. Is it one testable "
-    "obligation? -> Requirement.\n\n"
-    "IMPORTANT on the type hierarchy: Epic groups Features (and MAY group "
-    "other Epics, see below), Feature groups Requirements. A Requirement's "
-    "parent must ALWAYS be a Feature or another Requirement (a child "
-    "Requirement, see below) -- never an Epic directly, and never null "
-    "unless this Requirement is genuinely the section's only node. An "
-    "Epic's children must ALWAYS be Features or other Epics -- never a "
-    "Requirement directly. If a section's content only warrants one level "
-    "below its root (e.g. a root Feature with only atomic requirements "
-    "under it, no separate Epic), that is fine -- the point is never to "
-    "skip a level in the chain that IS present: once you emit an Epic, "
-    "every Requirement under it must go through an intermediate Feature, "
-    "even a single one grouping all of that Epic's Requirements.\n\n"
-    "The hierarchy is not always exactly 3 levels deep -- use these three "
-    "additional structural tools whenever the section's content genuinely "
-    "calls for them, not by default:\n"
-    "- Nested Epic: when a section spans multiple large, clearly distinct "
-    "functional domains, emit an intermediate Epic per domain under the "
-    "section's own root Epic, rather than putting every Feature directly "
-    "under one flat root (e.g. a 'Television Receiver' root Epic split "
-    "into 'Broadcast Reception', 'System Settings', 'System Information' "
-    "child Epics, each then grouping its own Features). An Epic grouping "
-    "other Epics is NOT capped at one level -- if one of those child Epics "
-    "is ITSELF large enough to represent multiple distinct sub-initiatives "
-    "(by the same scope test above, applied again one level down), split it "
-    "into its own further child Epics before reaching Features. How many "
-    "levels of Epic-under-Epic are warranted depends entirely on the "
-    "section's actual scope, not a fixed depth -- most sections need zero "
-    "or one level of Epic nesting, but do not artificially flatten a "
-    "genuinely multi-tier domain just to stop at one level.\n"
-    "- Nested Feature: when a sub-topic under a Feature is itself a "
-    "coherent capability with several Requirements of its own, emit it as "
-    "a Feature nested under that Feature, not flattened into a sibling "
-    "Requirement list (e.g. 'Picture Modes' as a Feature nested under a "
-    "'Display' Feature, itself grouping 'Movie Mode'/'Game Mode' "
-    "Requirements, instead of six flat Requirements directly under "
-    "'Display').\n"
-    "- Child Requirement: when a Requirement's exceptions, conditions, "
-    "alternative flows, or specific follow-up behavior are themselves "
-    "separately testable, emit them as Requirements parented under that "
-    "general Requirement, not as siblings under the same Feature (e.g. a "
-    "general 'Automatic Switching to an Active Source' Requirement with "
-    "child Requirements 'Multiple Active Sources' and 'User Dismisses the "
-    "Suggestion' for its two specific sub-cases).\n"
-    "Do not force any of these three when the section's content is "
-    "genuinely flat -- a Feature with only atomic, unrelated Requirements "
-    "and no real sub-capability or exception case should stay exactly that "
-    "flat, not be padded with an invented nested level.\n\n"
-    "Confirmed real gap: when the source content itself already provides an "
-    "intermediate group label -- a numbered sub-heading, or a table row that "
-    "is purely a group title with no 'shall' statement of its own -- and "
-    "that group has TWO OR MORE child items under it, that group's own "
-    "label is a strong, deliberate signal from the source document's own "
-    "author about where a node boundary belongs. Use that label as a node "
-    "(a nested Feature for a sub-capability grouping several distinct "
-    "Requirements, or a parent Requirement for a general statement grouping "
-    "its own exception/condition sub-cases) instead of skipping past it "
-    "straight to a broader ancestor and flattening its children in as that "
-    "ancestor's own direct children. A source group label with only ONE "
-    "child, or no child items of its own (pure prose), does not need this -- "
-    "only groups with two or more children are the real signal."
-)
+_SECTION_ANALYSIS_SYSTEM_PROMPT = load_prompt("section_analysis")
+
 
 def _root_count_clause(expected_root_count: int | None) -> str:
     """Fills the __ROOT_COUNT_CLAUSE__ marker in
@@ -733,6 +655,13 @@ class OrchestratorLlmClient:
         num_ctx: int | None = None,
         top_k: int | None = None,
         min_p: float | None = None,
+        # S11: caches analyze_section/score_requirements_for_document/
+        # score_epics_and_features_for_document -- see LlmResponseCache's own
+        # docstring. None (the default) disables caching entirely, matching
+        # pre-cache behavior exactly -- every existing construction site
+        # (module-level singletons in main.py that never touch these three
+        # methods, and any test not exercising caching) is unaffected.
+        cache: LlmResponseCache | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._bearer_token = bearer_token
@@ -766,6 +695,7 @@ class OrchestratorLlmClient:
         # behavior exactly.
         self._top_k = top_k
         self._min_p = min_p
+        self._cache = cache
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
     @property
@@ -776,15 +706,37 @@ class OrchestratorLlmClient:
         running page, without this class needing to know narration exists."""
         return self._model
 
+    def _post_chat(self, payload: dict) -> httpx.Response:
+        """POSTs to /llm/chat with a short, bounded retry for a transient
+        backend error (429/5xx) only -- see _RETRYABLE_CHAT_STATUS_CODES'
+        own module-level doc comment for why this exists and why it's safe
+        (bounded, status-gated, layered above the existing per-chunk
+        fail-open nets rather than replacing them). Every one of this
+        class's /llm/chat call sites should route through this instead of
+        constructing its own httpx.Client + raw post -- callers still call
+        `.raise_for_status()` themselves afterward, unchanged."""
+        response: httpx.Response | None = None
+        for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
+            with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
+                response = client.post(
+                    f"{self._base_url}/llm/chat",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self._bearer_token}"},
+                )
+            if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
+                return response
+            if attempt < _MAX_CHAT_RETRY_ATTEMPTS - 1:
+                logger.warning(
+                    "/llm/chat returned %d (attempt %d/%d) -- retrying after %.0fs",
+                    response.status_code, attempt + 1, _MAX_CHAT_RETRY_ATTEMPTS,
+                    _CHAT_RETRY_BACKOFF_SECONDS[attempt],
+                )
+                time.sleep(_CHAT_RETRY_BACKOFF_SECONDS[attempt])
+        assert response is not None  # loop always runs >=1 iteration
+        return response
+
     def generate_requirements(self, block_text: str) -> list[dict]:
-        system_prompt = (
-            "You convert informal requirement text into formal 'shall' statements. "
-            "Return ONLY a JSON array of objects, each with 'text' (a single formal "
-            "shall-style requirement sentence) and 'tags' (a list of zero or more of: "
-            "functional, non_functional, interface, performance, regulatory, safety, "
-            "security, operation, maintenance, feature, behavior). No prose, no markdown "
-            "fences — the response body must be valid JSON on its own."
-        )
+        system_prompt = load_prompt("generate_requirements")
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -798,12 +750,7 @@ class OrchestratorLlmClient:
             # see _response_schemas.py's module docstring.
             "maxTokens": _MAX_OUTPUT_TOKENS,
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         parsed = _parse_json_object(content)
@@ -821,24 +768,7 @@ class OrchestratorLlmClient:
             for entry in link_type_catalog
         )
         nodes_json = json.dumps(nodes)
-        system_prompt = (
-            "You infer trace/coverage links between work items in a requirements tree — "
-            "the most common case is a System Requirement covering/tracing a Customer "
-            "Requirement, but use your judgment on the actual relationship implied by the "
-            "text. You are given a JSON array of nodes, each with 'node_id', 'type', "
-            "and 'text'. You may propose zero or more links. For each link, "
-            "choose EXACTLY ONE reference_name from this list — never invent one, and "
-            "omit the link entirely if none genuinely fits:\n\n"
-            f"{catalog_lines}\n\n"
-            "Return ONLY a JSON array of objects, each with 'source_node_id' (the node_id "
-            "the link is on), 'target_ref' (the node_id of the OTHER node in this array, "
-            "if the target is one of them), and 'reference_name' (one of the reference "
-            "names listed above). If the covered/traced item is NOT one of the nodes "
-            "supplied above but the text cites an external requirement identifier (e.g. a "
-            "customer requirement ID like 'REQ-SYS-012'), use that cited identifier as "
-            "target_ref instead. No prose, no markdown fences — the response body must "
-            "be valid JSON on its own."
-        )
+        system_prompt = load_prompt("infer_trace_links", catalog_lines=catalog_lines)
         system_prompt = _with_kb_context(system_prompt, kb_context)
         payload = {
             "messages": [
@@ -867,12 +797,7 @@ class OrchestratorLlmClient:
             # score_requirements_for_document.
             "think": False,
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -908,6 +833,16 @@ class OrchestratorLlmClient:
         `kb_context`'s own (live, best-effort) derive-from-material
         fallback, which only applies when no stored checklist exists yet
         for the grounding document (e.g. ingested before this existed)."""
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "score_requirements_for_document", self._model, self._num_ctx, self._top_k, self._min_p,
+                descriptions_by_node_id, criteria_context, kb_context, category_checklist,
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                logger.info("score_requirements_for_document: cache hit, skipping LLM call")
+                return cached
         # categoryScores' key vocabulary, in priority order:
         # 1. `category_checklist` -- a FIXED, pre-extracted list (genuinely
         #    deterministic across runs, see this method's own docstring).
@@ -975,40 +910,18 @@ class OrchestratorLlmClient:
             "regardless of how clear or short it is. Always include this key "
             "in categoryScores, in addition to the categories above.\n"
         )
-        system_prompt = (
-            "You judge the quality of candidate requirement items extracted from a "
-            "specification document. Some candidates are already formal 'shall'-"
-            "style requirement statements; others are NOT requirements at all -- "
-            "bare labels, table cells, headings, rationale/justification text, or "
-            "open questions/TBD items left in the source. Judge whether each "
-            "candidate IS a real requirement FIRST (see completeness_as_requirement "
-            "below), then judge its quality against EARS, INCOSE, and ISO/IEC/IEEE "
-            "29148 criteria (unambiguous, testable, atomic/not compound, has clear "
-            "acceptance criteria, no vague terms like 'user-friendly' or 'fast', "
-            "active voice, states its rationale when non-obvious). You are given a "
-            "JSON object mapping each candidate's node_id to its final text. Return "
-            "ONLY a JSON object with the SAME node_id keys, each mapped to an "
-            "object with 'score' (an integer 0-100, where 100 is a fully compliant "
-            "requirement -- a non-requirement fragment should score low here too), "
-            "'issues' (a list of zero or more of: ambiguous, not_testable, "
-            "compound, missing_acceptance_criteria, vague_term, passive_voice, "
-            "missing_rationale, not_a_requirement, fragment, placeholder, "
-            "open_item_tbd, rationale_as_requirement, conflicting_value), and " +
-            category_instruction +
-            "Never invent a node_id not present in the input. "
-            # Concrete, countable completeness instruction -- same
-            # confirmed-live pattern as _whole_document_hint/
-            # _branch_topic_hint ("a concrete, countable floor beats a
-            # qualitative reminder"). Addresses a real, already-observed
-            # failure mode (llm_leveling.py's "Quality scoring returned no
-            # valid score for N node(s)" warning): nothing previously told
-            # the model it must cover EVERY input key, only that it must
-            # not invent new ones.
-            f"The input contains exactly {len(descriptions_by_node_id)} node_id(s). "
-            f"Return exactly {len(descriptions_by_node_id)} entries in your response "
-            "-- one for EVERY node_id in the input, none omitted, none invented. "
-            "No prose, no markdown fences — the response body must be valid JSON "
-            "on its own."
+        # Concrete, countable completeness instruction -- same confirmed-live
+        # pattern as _whole_document_hint/_branch_topic_hint ("a concrete,
+        # countable floor beats a qualitative reminder"). Addresses a real,
+        # already-observed failure mode (llm_leveling.py's "Quality scoring
+        # returned no valid score for N node(s)" warning): nothing previously
+        # told the model it must cover EVERY input key, only that it must not
+        # invent new ones. node_count fills BOTH occurrences of the
+        # __NODE_COUNT__ marker in the template.
+        system_prompt = load_prompt(
+            "score_requirements_for_document",
+            category_instruction=category_instruction,
+            node_count=str(len(descriptions_by_node_id)),
         )
         if criteria_context:
             system_prompt += (
@@ -1057,20 +970,24 @@ class OrchestratorLlmClient:
         # _SCORING_CHUNK_NODE_COUNT).
         request_chars = len(json.dumps(payload))
         started_at = time.monotonic()
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
+        # Token counts not set -- see analyze_section's own comment on why
+        # (LlmChatResult doesn't forward `usage` yet).
+        with _tracer.start_as_current_span("score_requirements_for_document") as span:
+            span.set_attribute("gen_ai.request.model", self._model or "default")
+            span.set_attribute("gen_ai.operation.name", "chat")
+            span.set_attribute("req2ado.node_count", len(descriptions_by_node_id))
+            response = self._post_chat(payload)
+            elapsed_seconds = time.monotonic() - started_at
+            logger.info(
+                "score_requirements_for_document: %d node(s), %d request char(s), %.1fs wall time",
+                len(descriptions_by_node_id), request_chars, elapsed_seconds,
             )
-        elapsed_seconds = time.monotonic() - started_at
-        logger.info(
-            "score_requirements_for_document: %d node(s), %d request char(s), %.1fs wall time",
-            len(descriptions_by_node_id), request_chars, elapsed_seconds,
-        )
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+            response.raise_for_status()
+            content = _strip_json_fence(response.json()["content"])
+            result = _parse_json_object(content)
+        if key is not None:
+            self._cache.set(key, result)
+        return result
 
     def extract_quality_checklist(self, document_text: str) -> list[str]:
         """Runs ONCE per document, at KB ingestion time (see
@@ -1091,21 +1008,7 @@ class OrchestratorLlmClient:
         distinction matters). Capped input length: a checklist definition
         is a small, self-contained part of a document; this is structured
         extraction, not whole-document comprehension."""
-        system_prompt = (
-            "You are given the full text of one document ingested into a company's "
-            "requirements-engineering Knowledge Base. Determine whether this "
-            "document defines a QUALITY CHECKLIST for evaluating individual "
-            "requirements -- a named list of criteria, questions, or attributes "
-            "used to judge whether a requirement is well-written (e.g. a table of "
-            "'Question'/'Pass condition' rows, or a list like 'Necessary, "
-            "Unambiguous, Verifiable, ...'). If it does, return a JSON array of "
-            "the checklist's own category/question names, exactly as they appear "
-            "in the document (short, 1-4 words each), in the SAME order the "
-            "document presents them. If this document does NOT define such a "
-            "checklist (e.g. it's general reference material, a template, or "
-            "unrelated content), return an empty array []. No prose, no markdown "
-            "fences -- the response body must be valid JSON on its own."
-        )
+        system_prompt = load_prompt("extract_quality_checklist")
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1118,12 +1021,7 @@ class OrchestratorLlmClient:
             "maxTokens": 2000,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         parsed = _parse_json_object(content)
@@ -1184,40 +1082,17 @@ class OrchestratorLlmClient:
         stays cheap as one batched call rather than two). Returns node_id ->
         {'score': int, 'categoryScores': dict[str, int]} -- no 'issues' key,
         see epic_feature_scores_schema's own docstring for why."""
-        system_prompt = (
-            "You judge the quality of Epic and Feature work items in a CMMI-style "
-            "requirements hierarchy (Epic groups Features, Feature groups "
-            "Requirements -- see the CMMI guidance on what makes each level "
-            "well-scoped). You are given a JSON object mapping each node's "
-            "node_id to an object with 'type' ('Epic' or 'Feature') and 'text' "
-            "(its description). Return ONLY a JSON object with the SAME "
-            "node_id keys, each mapped to an object with 'score' (an integer "
-            "0-100, where 100 is fully compliant) and 'categoryScores', judged "
-            "against the criteria for THAT node's own type:\n"
-            "For an EPIC, judge:\n"
-            "  - scopeCoherence: could multiple independently valuable "
-            "Features genuinely be delivered under this outcome -- not one "
-            "narrow task, and not several unrelated outcomes bundled "
-            "together?\n"
-            "  - outcomeClarity: does it state a clear business/system "
-            "outcome and why it matters, staying at that level rather than "
-            "describing implementation detail?\n"
-            "For a FEATURE, judge:\n"
-            "  - capabilityClarity: does it describe ONE coherent, "
-            "demonstrable capability -- not several unrelated capabilities "
-            "bundled together, and not a single atomic requirement dressed "
-            "up as a Feature?\n"
-            "  - decomposability: can it genuinely be decomposed into "
-            "several distinct, testable Requirements?\n"
-            "Each category is an independent integer 0-100 judgment (100 = "
-            "fully compliant on that dimension alone). Never invent a "
-            "node_id not present in the input. "
-            f"The input contains exactly {len(nodes_by_id)} node_id(s). Return "
-            f"exactly {len(nodes_by_id)} entries in your response -- one for "
-            "EVERY node_id in the input, none omitted, none invented. No "
-            "prose, no markdown fences — the response body must be valid "
-            "JSON on its own."
-        )
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "score_epics_and_features_for_document", self._model, self._num_ctx, self._top_k, self._min_p,
+                nodes_by_id,
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                logger.info("score_epics_and_features_for_document: cache hit, skipping LLM call")
+                return cached
+        system_prompt = load_prompt("score_epics_and_features_for_document", node_count=str(len(nodes_by_id)))
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1234,12 +1109,7 @@ class OrchestratorLlmClient:
         # score_requirements_for_document -- see its own comment.
         request_chars = len(json.dumps(payload))
         started_at = time.monotonic()
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         elapsed_seconds = time.monotonic() - started_at
         logger.info(
             "score_epics_and_features_for_document: %d node(s), %d request char(s), "
@@ -1248,7 +1118,10 @@ class OrchestratorLlmClient:
         )
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        result = _parse_json_object(content)
+        if key is not None:
+            self._cache.set(key, result)
+        return result
 
     def title_and_tags_for_rows(self, texts_by_row_id: dict[str, str]) -> dict[str, dict]:
         """Backs the TitleTagClient protocol (id_tree_builder.py) -- the
@@ -1267,23 +1140,10 @@ class OrchestratorLlmClient:
         `_apply_title_tag_pass` already fails open on any exception or
         malformed/partial response, keeping the deterministic title/empty
         tags exactly as constructed."""
-        system_prompt = (
-            "You are given a JSON object mapping row ids to short text extracted "
-            "verbatim from a specification document (a heading, a table-cell "
-            "value, or a short requirement statement -- some rows may be sentence "
-            "fragments, not full requirements). For EACH row, return a SHORT, "
-            "scannable title (a few words, not the full text -- omit only if the "
-            "text is already short and clear, in which case return it unchanged) "
-            "and zero or more tags from the closed set: "
-            f"{', '.join(t.value for t in RequirementTag)}. Return ONLY a JSON "
-            "object with the SAME row id keys, each mapped to an object with "
-            "'title' (string) and 'tags' (array of zero or more of the tags "
-            "above). Never invent a row id not present in the input. "
-            f"The input contains exactly {len(texts_by_row_id)} row(s). Return "
-            f"exactly {len(texts_by_row_id)} entries in your response -- one for "
-            "EVERY row id in the input, none omitted, none invented. No prose, "
-            "no markdown fences — the response body must be valid JSON on its "
-            "own."
+        system_prompt = load_prompt(
+            "title_and_tags_for_rows",
+            tag_vocabulary=", ".join(t.value for t in RequirementTag),
+            row_count=str(len(texts_by_row_id)),
         )
         payload = {
             "messages": [
@@ -1297,12 +1157,7 @@ class OrchestratorLlmClient:
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -1335,36 +1190,7 @@ class OrchestratorLlmClient:
         `_apply_parent_summary_pass` already fails open on any exception or
         malformed/partial response, keeping the verbatim heading title and
         description exactly as constructed."""
-        system_prompt = (
-            "You are given a JSON object mapping node ids to an Epic or "
-            "Feature work item (Azure DevOps definitions): an Epic is a "
-            "large, portfolio-level strategic goal that breaks down into "
-            "multiple Features -- it answers 'what is the big strategic "
-            "direction', not individual task execution. A Feature is a "
-            "significant piece of functionality delivering direct value to "
-            "the user, broken down further into Requirements/stories. Each "
-            "entry gives the node's current title (often just the source "
-            "document's own section heading, not a real strategic/capability "
-            "statement) plus EVERY requirement statement nested underneath "
-            "it, however deep (requirement_titles/requirement_descriptions) "
-            "-- treat these as this node's real scope, not just its "
-            "immediate children. For EACH node, return a SHORT title "
-            "reframed to match its real role (Epic = strategic goal, "
-            "Feature = capability delivering user value) -- not a copy of "
-            "the input title unless it already reads that way -- and a "
-            "description: 1-2 sentences summarizing what those requirements "
-            "collectively deliver. The description MUST be worded "
-            "differently from the title, never identical or a "
-            "trivial restatement. Return ONLY a JSON object with the SAME "
-            "node id keys, each mapped to an object with 'title' (string) "
-            "and 'description' (string). Never invent a node id not present "
-            "in the input. "
-            f"The input contains exactly {len(nodes_by_id)} node(s). Return "
-            f"exactly {len(nodes_by_id)} entries in your response -- one for "
-            "EVERY node id in the input, none omitted, none invented. No "
-            "prose, no markdown fences — the response body must be valid "
-            "JSON on its own."
-        )
+        system_prompt = load_prompt("summarize_parent_nodes", node_count=str(len(nodes_by_id)))
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1377,12 +1203,7 @@ class OrchestratorLlmClient:
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -1409,31 +1230,10 @@ class OrchestratorLlmClient:
         `_apply_synthesis_pass` already fails open on any exception or
         malformed/partial response, keeping the flagged leaf's verbatim
         source text exactly as constructed."""
-        system_prompt = (
-            "You are given a JSON object mapping row ids to source material "
-            "extracted from a specification document. Each row has 'text' (the "
-            "verbatim source text -- often a short table-cell value, a bare "
-            "label, or a sentence fragment, NOT yet a complete requirement "
-            "statement) and 'context' (that row's parent section titles, most "
-            "general first, e.g. 'Power Supply > Electrical Characteristics' -- "
-            "use this ONLY to understand what the row is about, never invent "
-            "facts beyond what 'text' actually states). For EACH row, "
-            "synthesize a complete, well-formed 'shall'-style requirement "
-            "statement that expresses EXACTLY the same fact as 'text' (using "
-            "'context' to supply the missing subject when 'text' alone doesn't "
-            "name one -- e.g. text 'Size: 3U 1\"' under context 'Power Supply' "
-            "becomes 'The power supply shall have a 3U, 1-inch form factor.') "
-            "-- never add a value, threshold, or condition that isn't already "
-            "present in 'text' itself. Return ONLY a JSON object with the SAME "
-            "row id keys, each mapped to an object with 'title' (a short, "
-            "scannable title), 'text' (the synthesized requirement statement), "
-            "and 'tags' (an array of zero or more of the closed set: "
-            f"{', '.join(t.value for t in RequirementTag)}). Never invent a row "
-            f"id not present in the input. The input contains exactly "
-            f"{len(items_by_id)} row(s). Return exactly {len(items_by_id)} "
-            "entries in your response -- one for EVERY row id in the input, "
-            "none omitted, none invented. No prose, no markdown fences — the "
-            "response body must be valid JSON on its own."
+        system_prompt = load_prompt(
+            "synthesize_leaf_requirements",
+            tag_vocabulary=", ".join(t.value for t in RequirementTag),
+            row_count=str(len(items_by_id)),
         )
         payload = {
             "messages": [
@@ -1447,12 +1247,7 @@ class OrchestratorLlmClient:
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -1473,27 +1268,7 @@ class OrchestratorLlmClient:
         similar); 'redundant'/'contradictory' both mean the ADO item IS a
         real match for check_for_duplicates.py's purposes (it only answers
         "does this already exist," not conflict semantics)."""
-        system_prompt = (
-            "You are given two requirement statements: 'candidate' (newly "
-            "extracted from a specification document) and 'existing' (already "
-            "in Azure DevOps, flagged as a near-duplicate by embedding "
-            "similarity alone). Similarity alone cannot tell whether they "
-            "actually describe the SAME real-world requirement, or only the "
-            "same general topic/subject area. Judge their relationship: "
-            "'redundant' if they state the same fact (harmless restatement); "
-            "'contradictory' if they state DIFFERENT values for what looks "
-            "like the SAME specific parameter/capability (e.g. one says 'at "
-            "least 85%' and another says 'at least 93%' for the same "
-            "efficiency spec); 'distinct' if they are about the same general "
-            "topic/component but cover a genuinely DIFFERENT specific "
-            "requirement or scope (e.g. one covers a connector's physical "
-            "port count/pinout and the other covers a communication "
-            "protocol over that SAME connector -- same subject area, "
-            "different requirement). Return ONLY a JSON object with "
-            "'verdict' (one of 'redundant', 'contradictory', 'distinct'). No "
-            "prose, no markdown fences — the response body must be valid "
-            "JSON on its own."
-        )
+        system_prompt = load_prompt("judge_duplicate_pair")
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1506,12 +1281,7 @@ class OrchestratorLlmClient:
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -1537,25 +1307,7 @@ class OrchestratorLlmClient:
         different values for what looks like the same parameter (the real
         case this exists to catch), 'distinct' means the similarity match
         was a false positive (genuinely different requirements)."""
-        system_prompt = (
-            "You are given a JSON object mapping node ids to near-duplicate "
-            "requirement statements from the same specification document -- "
-            "they were flagged as near-duplicates by embedding similarity, but "
-            "similarity alone cannot tell whether they actually agree. Judge "
-            "their relationship: 'redundant' if they restate the same fact "
-            "(harmless duplication, e.g. the same requirement appearing in a "
-            "body section and again in an appendix); 'contradictory' if they "
-            "state DIFFERENT values for what looks like the SAME parameter "
-            "(e.g. one says 'at least 85%' and another says 'at least 93%' for "
-            "the same efficiency spec, or 'input 28VAC' vs 'input 28VDC' for "
-            "the same input); 'distinct' if they are genuinely different "
-            "requirements that only happened to embed as similar. Return ONLY "
-            "a JSON object with 'verdict' (one of the three values above) and "
-            "'conflicting_values' (a list of the specific conflicting values "
-            "quoted from the text, e.g. ['85%', '93%'] -- empty list unless "
-            "verdict is 'contradictory'). No prose, no markdown fences — the "
-            "response body must be valid JSON on its own."
-        )
+        system_prompt = load_prompt("judge_duplicate_cluster")
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1568,12 +1320,7 @@ class OrchestratorLlmClient:
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -1599,25 +1346,7 @@ class OrchestratorLlmClient:
         every root into one bucket, or leaving every root ungrouped, are
         both valid answers when that's genuinely what the topics call
         for."""
-        system_prompt = (
-            "You are given a JSON object mapping node ids to the SHORT TITLES "
-            "of a specification document's disconnected top-level sections -- "
-            "sections that ended up as separate roots because the document's "
-            "own heading outline has no single top-level heading tying them "
-            "together. Propose a topical grouping: cluster titles that belong "
-            "to the same broader subject into named groups (e.g. several "
-            "signal-name sections like 'PS_SYSRESET', 'PS_SYNC', 'PS_SM' might "
-            "all belong under a group titled something like 'VPX Utility & "
-            "Management Signals'). A section that doesn't clearly belong with "
-            "any other should simply not appear in any group -- do not force "
-            "every section into a group. Return ONLY a JSON object with a "
-            "'groups' array, each entry an object with 'title' (a short, "
-            "descriptive name for the group) and 'member_ids' (the node ids, "
-            "from the input, that belong in this group -- at least 2 per "
-            "group; never invent an id not present in the input). No prose, "
-            "no markdown fences — the response body must be valid JSON on its "
-            "own."
-        )
+        system_prompt = load_prompt("group_root_topics")
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1630,12 +1359,7 @@ class OrchestratorLlmClient:
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -1686,17 +1410,7 @@ class OrchestratorLlmClient:
         snippets_by_index = {
             str(i): {"source_file": s["source_file"], "text": s["text"]} for i, s in enumerate(snippets)
         }
-        system_prompt = (
-            "You are given the content of one section of a requirements document, "
-            "and a JSON object mapping snippet indices (as strings) to knowledge-base "
-            "snippets that were retrieved as POSSIBLY relevant reference material for "
-            "this section -- retrieval is similarity-based and may include snippets "
-            "that are not actually relevant. For each index, judge whether that "
-            "snippet's content is genuinely relevant to and would help formalize this "
-            "section's requirements. Return ONLY a JSON object with the SAME index "
-            "keys, each mapped to 'relevant' or 'not_relevant'. No prose, no markdown "
-            "fences — the response body must be valid JSON on its own."
-        )
+        system_prompt = load_prompt("judge_kb_relevance")
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1722,12 +1436,7 @@ class OrchestratorLlmClient:
             # finding as every other non-conversational call in this module.
             "think": False,
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
+        response = self._post_chat(payload)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -1782,6 +1491,16 @@ class OrchestratorLlmClient:
         truncated response was NOT silently caught by _parse_json_object's
         limited (missing-final-brace-only) tolerance; the caller surfaces
         this as a branch warning rather than staying silent."""
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "analyze_section", self._model, self._num_ctx, self._top_k, self._min_p,
+                section_text, kb_context, whole_document, topic_count, table_group_hints, expected_root_count,
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                logger.info("analyze_section: cache hit, skipping LLM call")
+                return cached["nodes"], cached["truncated"]
         system_prompt = _with_kb_context(
             _section_analysis_system_prompt(expected_root_count), kb_context
         )
@@ -1812,21 +1531,32 @@ class OrchestratorLlmClient:
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
         }
-        with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/chat",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
-            )
-        response.raise_for_status()
-        body = response.json()
-        content = _strip_json_fence(body["content"])
-        nodes = _nodes_from_parsed(_parse_json_object(content))
+        # gen_ai.* attributes follow OTel's GenAI semantic conventions.
+        # Token counts are NOT set here -- the orchestrator's /llm/chat proxy
+        # (LlmChatResult) doesn't forward `usage` from the underlying
+        # OpenAI-compat response today, a real gap tracked separately (S6
+        # only adds the tracing scaffolding; extending LlmChatResult with a
+        # usage passthrough is its own small follow-up, not fabricated here).
+        with _tracer.start_as_current_span("analyze_section") as span:
+            span.set_attribute("gen_ai.request.model", self._model or "default")
+            span.set_attribute("gen_ai.operation.name", "chat")
+            response = self._post_chat(payload)
+            response.raise_for_status()
+            body = response.json()
+            content = _strip_json_fence(body["content"])
+            nodes = _nodes_from_parsed(_parse_json_object(content))
+            span.set_attribute("gen_ai.response.node_count", len(nodes))
         truncated = body.get("finishReason") == "length"
         logger.warning(
             "analyze_section result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
             len(nodes), body.get("finishReason"), truncated, topic_count,
         )
+        # Never cache a truncated result -- it's a degraded/incomplete
+        # response (the LLM backend hit its own output-token cap), and
+        # caching it would durably perpetuate that instead of letting a
+        # later re-run get a real, complete answer.
+        if key is not None and not truncated:
+            self._cache.set(key, {"nodes": nodes, "truncated": truncated})
         return nodes, truncated
 
     def analyze_section_agentic(
@@ -1940,12 +1670,7 @@ class OrchestratorLlmClient:
                 **({"topK": self._top_k} if self._top_k else {}),
                 **({"minP": self._min_p} if self._min_p else {}),
             }
-            with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
-                response = client.post(
-                    f"{self._base_url}/llm/chat",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {self._bearer_token}"},
-                )
+            response = self._post_chat(payload)
             response.raise_for_status()
             body = response.json()
             tool_calls = body.get("toolCalls")

@@ -1,7 +1,7 @@
 import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
 
 describe('runPipelineJob', () => {
-  const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn(), checkDuplicate: jest.fn() };
+  const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn(), checkDuplicate: jest.fn(), deleteDedupEntry: jest.fn() };
   const fakeDryRunService = { diff: jest.fn() };
   const fakeIdempotencyService = { lookup: jest.fn(), record: jest.fn(), deleteByAdoWorkItemId: jest.fn() };
   const fakePrisma = {
@@ -60,6 +60,39 @@ describe('runPipelineJob', () => {
     expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1');
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline', undefined, [], 'gemma4:12b', 'job-1');
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
+  });
+
+  it('throws when a node has neither identity_hash nor fidelity_hash (cannot compute a stable sourceHash)', async () => {
+    // Regression guard for a type-honesty bug found while wiring S10's
+    // generated WorkItemTree type in: this code previously assumed
+    // fidelity_hash was always a non-null string (the local LeveledNode
+    // type said so), when the real contract (shared/schemas/work-item-tree.
+    // schema.json) says it's null for every SURVEY node. In practice
+    // identity_hash always backs SURVEY nodes, so this case shouldn't be
+    // reachable today -- but if ingestion ever regresses and sends neither,
+    // this must fail loudly rather than let `undefined` silently reach
+    // DryRunTreeNode.sourceHash and corrupt the idempotency lookup.
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [{ local_id: 'n0', fidelity_hash: null, customer_id: null }],
+    });
+
+    await expect(
+      runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      ),
+    ).rejects.toThrow(/n0.*neither identity_hash nor fidelity_hash/);
   });
 
   it('passes job.mode through to ingestionClient.level', async () => {
@@ -895,19 +928,26 @@ describe('runPipelineJob', () => {
       { localId: 'n1', action: 'create', existingAdoId: null, similarity: null },
       { localId: 'n2', action: 'reuse', existingAdoId: 42, similarity: null },
     ]);
-    // Only the downgraded REUSE entry (n0/533) gets its stale IdempotencyMapping
-    // row cleaned up -- dedup_skip (n1/999) has no equivalent per-id delete
-    // path (Chroma), and the still-real entry (n2/42) was never touched.
+    // Both downgraded entries get their stale match cleaned up: the reuse
+    // entry (n0/533) via IdempotencyMapping deletion, the dedup_skip entry
+    // (n1/999) via its Chroma vector entry -- the still-real entry (n2/42)
+    // was never touched.
     expect(fakeIdempotencyService.deleteByAdoWorkItemId).toHaveBeenCalledTimes(1);
     expect(fakeIdempotencyService.deleteByAdoWorkItemId).toHaveBeenCalledWith(533);
+    expect(fakeIngestionClient.deleteDedupEntry).toHaveBeenCalledTimes(1);
+    expect(fakeIngestionClient.deleteDedupEntry).toHaveBeenCalledWith('999', 'Project\\Area1');
   });
 
   it('never fails the job when the stale-mapping cleanup call itself throws', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
-    fakeDryRunService.diff.mockResolvedValue([{ localId: 'n0', action: 'reuse', existingAdoId: 533, similarity: null }]);
+    fakeDryRunService.diff.mockResolvedValue([
+      { localId: 'n0', action: 'reuse', existingAdoId: 533, similarity: null },
+      { localId: 'n1', action: 'dedup_skip', existingAdoId: 999, similarity: 0.93 },
+    ]);
     fakeMcpClient.getWorkItemsBatch.mockResolvedValueOnce([]);
     fakeIdempotencyService.deleteByAdoWorkItemId.mockRejectedValueOnce(new Error('DB unreachable'));
+    fakeIngestionClient.deleteDedupEntry.mockRejectedValueOnce(new Error('Ingestion unreachable'));
 
     const result = await runPipelineJob(
       { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
@@ -924,7 +964,10 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null, similarity: null }]);
+    expect(result).toEqual([
+      { localId: 'n0', action: 'create', existingAdoId: null, similarity: null },
+      { localId: 'n1', action: 'create', existingAdoId: null, similarity: null },
+    ]);
     expect(fakePrisma.job.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }),
     );

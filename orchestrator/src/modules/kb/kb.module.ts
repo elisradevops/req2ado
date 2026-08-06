@@ -15,7 +15,8 @@ import { CredentialVaultService } from '../auth/credential-vault.service';
     {
       provide: IngestionHttpClient,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => new IngestionHttpClient(config.get<string>('INGESTION_BASE_URL')!),
+      useFactory: (config: ConfigService) =>
+        new IngestionHttpClient(config.get<string>('INGESTION_BASE_URL')!, config.get<number>('INGESTION_REQUEST_TIMEOUT_MS')!),
     },
     {
       provide: KbService,

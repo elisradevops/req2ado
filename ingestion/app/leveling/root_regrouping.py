@@ -5,7 +5,7 @@ import logging
 from typing import Protocol
 
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
-from app.leveling.tree_builder import _hash_identity
+from app.leveling.tree_builder import _hash_identity_for_synthesized_node
 from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemType
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,7 @@ def _regroup_disconnected_roots(
             ),
             source_ref=members[0].source_ref,
             fidelity_hash=hashlib.sha256(synth_id.encode()).hexdigest(),
-            identity_hash=_hash_identity(synth_id, members[0].source_ref),
+            identity_hash=_hash_identity_for_synthesized_node(synth_id, members[0].source_ref),
             tags=[],
             mode=WorkItemMode.SURVEY,
             grounding_score=1.0,
@@ -192,7 +192,7 @@ def _ensure_root_features_have_epic_parent(
         ),
         source_ref=orphan_features[0].source_ref,
         fidelity_hash=hashlib.sha256(synth_id.encode()).hexdigest(),
-        identity_hash=_hash_identity(synth_id, orphan_features[0].source_ref),
+        identity_hash=_hash_identity_for_synthesized_node(synth_id, orphan_features[0].source_ref),
         tags=[],
         mode=WorkItemMode.SURVEY,
         grounding_score=1.0,
@@ -318,7 +318,7 @@ def _repair_requirement_hierarchy(nodes: list[WorkItemNode], node_id_prefix: str
             customer_id=requirement.customer_id,
             source_ref=requirement.source_ref,
             fidelity_hash=hashlib.sha256(synth_id.encode()).hexdigest(),
-            identity_hash=_hash_identity(synth_id, requirement.source_ref),
+            identity_hash=_hash_identity_for_synthesized_node(synth_id, requirement.source_ref),
             tags=[],
             mode=WorkItemMode.SURVEY,
             grounding_score=1.0,

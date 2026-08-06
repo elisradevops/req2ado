@@ -1,3 +1,4 @@
+import '../../tracing';
 import path from 'path';
 import { Worker } from 'bullmq';
 import { configSchema } from '../../config/config.schema';

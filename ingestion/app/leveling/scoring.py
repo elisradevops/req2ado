@@ -174,7 +174,21 @@ def _score_all_requirements(
         chunk = representative_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
         chunk_index = start // _SCORING_CHUNK_NODE_COUNT
         _fire("score_requirements", chunk, nodes_done=start, chunk_index=chunk_index)
-        _apply_quality_scores(chunk, scoring_client, warnings, "", criteria_context, kb_context, category_checklist)
+        try:
+            _apply_quality_scores(chunk, scoring_client, warnings, "", criteria_context, kb_context, category_checklist)
+        except Exception as exc:  # noqa: BLE001 - one chunk's transient failure (confirmed live:
+            # a real job lost 45+ minutes of prior parse/tree-build/title-tag/
+            # synthesis work to a single 500 from the LLM backend here) must
+            # never discard the rest of an already-mostly-complete SURVEY job.
+            # Requirement quality scoring is an enhancement on top of the
+            # already-built tree, never a dependency of its correctness --
+            # same "must never fail a SURVEY job" philosophy
+            # _score_epics_and_features (below) already uses for the
+            # identical kind of call.
+            message = f"Requirement quality scoring failed for {len(chunk)} node(s): {exc}"
+            logger.warning(message)
+            warnings.append(message)
+            continue
         # Fan each representative's real result out to every OTHER node
         # sharing that same description text -- see this function's own
         # docstring for why deduplication happens before chunking at all.

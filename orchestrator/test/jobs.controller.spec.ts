@@ -34,7 +34,11 @@ describe('JobsController.preview', () => {
 
   it('returns figureCount 0 and depth 0 when the document has no figures or headings', async () => {
     const ingestionClient = {
-      ingest: jest.fn().mockResolvedValue({ blocks: [{ kind: 'paragraph' }] }),
+      // figures/tables always present on a real CanonicalDoc (Field(default_factory=list)
+      // on the pydantic side) -- this fixture previously omitted figures entirely,
+      // which JobsController.preview's simplified (no longer defensive) field
+      // access no longer tolerates, matching the real, always-populated contract.
+      ingest: jest.fn().mockResolvedValue({ blocks: [{ kind: 'paragraph' }], figures: [], tables: [] }),
     };
     const jobsService = { submit: jest.fn() };
     const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);

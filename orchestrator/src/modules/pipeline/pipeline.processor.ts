@@ -40,7 +40,7 @@ import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
  */
 const config = configSchema.parse(process.env);
 const prisma = new PrismaClient();
-const ingestionClient = new IngestionHttpClient(process.env.INGESTION_BASE_URL ?? 'http://localhost:8000');
+const ingestionClient = new IngestionHttpClient(process.env.INGESTION_BASE_URL ?? 'http://localhost:8000', config.INGESTION_REQUEST_TIMEOUT_MS);
 const dryRunService = new DryRunService();
 const idempotencyService = new IdempotencyService(prisma);
 const jobEventsPublisherRedis = new Redis(config.REDIS_URL);
@@ -49,7 +49,7 @@ jobEventsPublisherRedis.on('error', (err) => {
   console.error('JobEventsPublisher Redis error:', err);
 });
 const jobEventsPublisher = new JobEventsPublisher(jobEventsPublisherRedis as any);
-const mcpClient = new McpClient(`${config.MCP_URL}/mcp`, config.MCP_BEARER, config.MCP_REQUEST_TIMEOUT_MS);
+const mcpClient = new McpClient(`${config.MCP_URL}/api/ado`, config.MCP_BEARER, config.MCP_REQUEST_TIMEOUT_MS);
 const backfillService = new BackfillService(mcpClient, ingestionClient, idempotencyService);
 const credentialVault = new CredentialVaultService(prisma, config.CREDENTIAL_ENC_KEY, config.CREDENTIAL_ENC_KEY_PREVIOUS);
 const adoCredentialResolver = new AdoCredentialResolver(credentialVault);

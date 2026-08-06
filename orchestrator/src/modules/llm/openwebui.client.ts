@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
 import type { LlmChatOptions, LlmChatResult, LlmClient, LlmStreamChunk } from './llm-client.interface';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
+import { fetchWithRetry } from './retryWithBackoff';
 
 function buildResponseFormat(opts: LlmChatOptions | undefined, includeSchema: boolean): OpenAI.ResponseFormatJSONSchema | undefined {
   if (!includeSchema || !opts?.responseSchema) return undefined;
@@ -31,6 +32,7 @@ export interface OpenWebUiClientConfig {
   EMBED_MODEL: string;
   EMBED_PATH: string;
   SHOW_PATH: string;
+  LLM_REQUEST_TIMEOUT_MS: number;
 }
 
 @Injectable()
@@ -41,6 +43,17 @@ export class OpenWebUiClient implements LlmClient {
     this.openai = new OpenAI({
       baseURL: config.LLM_BASE_URL,
       apiKey: config.LLM_API_KEY ?? 'unused',
+      timeout: config.LLM_REQUEST_TIMEOUT_MS,
+      // Root cause of job a830aa30's ~66min failure (confirmed): the SDK's
+      // own default (maxRetries: 2) silently re-ran a whole >10min inference
+      // up to 3 times on timeout before ever surfacing an error -- not a
+      // missing retry, an actively harmful one. chat()/streamChat()/vision()
+      // calls are non-idempotent, multi-minute, and NOT safe to blindly
+      // re-run; a real failure should surface immediately so the caller's
+      // own timeout ladder (ingestion's 30min, this orchestrator's 1h) can
+      // report it while there's still margin left, instead of the SDK
+      // silently eating that margin on retries of its own.
+      maxRetries: 0,
     });
   }
 
@@ -165,11 +178,23 @@ export class OpenWebUiClient implements LlmClient {
     }
     const outboundTexts = this.config.LLM_TRUSTED_LOCAL ? texts : texts.map(redactText);
     const baseUrl = (this.config.EMBED_BASE_URL ?? this.config.LLM_BASE_URL).replace(/\/v1\/?$/, '');
-    const response = await fetch(`${baseUrl}${this.config.EMBED_PATH}`, {
-      method: 'POST',
-      headers: this.nativeOllamaHeaders(),
-      body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: outboundTexts }),
-    });
+    // Retried (unlike chat()/vision()) -- a pure read with no side effects,
+    // safe to re-run on a transient 429/5xx/network failure. See
+    // retryWithBackoff.ts's own doc comment for why this is the opposite
+    // call of the OpenAI client's maxRetries:0 above. maxRetries:3 (not the
+    // helper's own default of 5) -- this call sits synchronously in an
+    // already-slow SURVEY pipeline path; 3 attempts with exponential
+    // backoff is enough margin for a transient blip without piling on
+    // multiple extra seconds of dead time on a persistent failure.
+    const response = await fetchWithRetry(
+      () =>
+        fetch(`${baseUrl}${this.config.EMBED_PATH}`, {
+          method: 'POST',
+          headers: this.nativeOllamaHeaders(),
+          body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: outboundTexts }),
+        }),
+      { maxRetries: 3 },
+    );
     if (!response.ok) {
       throw new Error(`Ollama embed request failed: ${response.status}`);
     }
@@ -207,13 +232,32 @@ export class OpenWebUiClient implements LlmClient {
   // returns a shape this doesn't expect) -- never throws on a merely-absent
   // field, only on a genuinely unreachable/non-Ollama backend (a real
   // OpenAI-compat frontier proxy has no /api/show at all).
+  // Open WebUI virtual multi-model constructs (e.g. "Arena Model") have no
+  // corresponding real Ollama model and no /api/show entry at all -- a bare
+  // showModel() call against one would fail with an opaque, easy-to-misread
+  // HTTP error (looks identical to "backend unreachable"). Named + growable
+  // if Open WebUI adds more virtual model kinds later; not a general
+  // capability check, just this one confirmed real gap.
+  private static readonly VIRTUAL_MODEL_NAMES = new Set(['Arena Model']);
+
   async showModel(model: string): Promise<{ contextLength: number | null; capabilities: string[] }> {
+    if (OpenWebUiClient.VIRTUAL_MODEL_NAMES.has(model)) {
+      throw new Error(
+        `showModel() called with "${model}" -- an Open WebUI virtual multi-model construct, not a real Ollama model with its own /api/show entry. Caller should fall back to conservative capability defaults, same as any unreachable/unrecognized model.`,
+      );
+    }
     const baseUrl = (this.config.EMBED_BASE_URL ?? this.config.LLM_BASE_URL).replace(/\/v1\/?$/, '');
-    const response = await fetch(`${baseUrl}${this.config.SHOW_PATH}`, {
-      method: 'POST',
-      headers: this.nativeOllamaHeaders(),
-      body: JSON.stringify({ model }),
-    });
+    // Retried -- same reasoning as embed() above (pure read, safe to re-run,
+    // maxRetries:3 to bound worst-case dead time on a persistent failure).
+    const response = await fetchWithRetry(
+      () =>
+        fetch(`${baseUrl}${this.config.SHOW_PATH}`, {
+          method: 'POST',
+          headers: this.nativeOllamaHeaders(),
+          body: JSON.stringify({ model }),
+        }),
+      { maxRetries: 3 },
+    );
     if (!response.ok) {
       throw new Error(`Ollama /api/show request failed: ${response.status}`);
     }

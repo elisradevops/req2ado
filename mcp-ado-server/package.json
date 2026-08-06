@@ -2,7 +2,7 @@
   "name": "@req2ado/mcp-ado-server",
   "version": "0.1.0",
   "private": true,
-  "description": "Custom MCP server exposing ADO/TFS work-item read+write tools over Streamable HTTP, with a swappable real/mock backend",
+  "description": "REST service exposing ADO/TFS work-item read+write operations, with a swappable real/mock backend",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
@@ -10,7 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.79.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "axios": "^1.7.7",
     "better-sqlite3": "^11.3.0",
     "express": "^4.21.0",

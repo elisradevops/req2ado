@@ -117,7 +117,7 @@ def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch) -> 
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -151,7 +151,7 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -217,7 +217,7 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -260,7 +260,7 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -310,7 +310,7 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -348,7 +348,7 @@ def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 
@@ -377,7 +377,7 @@ def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(mon
 
     original_init = OrchestratorLlmClient.__init__
 
-    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None):
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
         original_init(self, base_url, bearer_token, model=model)
         self._transport = httpx.MockTransport(handler)
 

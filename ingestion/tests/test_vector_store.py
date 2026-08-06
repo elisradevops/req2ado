@@ -65,6 +65,31 @@ def test_query_nearest_reflects_cosine_similarity_for_a_near_but_not_exact_match
         assert similarity == pytest.approx(0.7071, abs=1e-3)
 
 
+def test_delete_removes_the_item_so_it_no_longer_matches() -> None:
+    # Counterpart to upsert: closes the gap where a dedup_skip match's
+    # stale Chroma entry outlived the ADO work item it pointed at,
+    # resurfacing on every future job against the same area path.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("item-1", [1.0, 0.0, 0.0], area_path="Project\\Area1")
+        store.delete("item-1", area_path="Project\\Area1")
+        assert store.query_nearest([1.0, 0.0, 0.0], area_path="Project\\Area1") is None
+
+
+def test_delete_of_an_unknown_id_is_a_no_op_not_an_error() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("item-1", [1.0, 0.0, 0.0], area_path="Project\\Area1")
+        store.delete("item-does-not-exist", area_path="Project\\Area1")
+        result = store.query_nearest([1.0, 0.0, 0.0], area_path="Project\\Area1")
+        assert result is not None
+        assert result[0] == "item-1"  # untouched
+
+
 def test_area_paths_are_isolated_from_each_other() -> None:
     import tempfile
 

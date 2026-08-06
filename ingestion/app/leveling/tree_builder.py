@@ -124,10 +124,38 @@ def _hash_identity(description: str, source_ref: SourceRef) -> str:
     SEPARATE hash from fidelity_hash. `source_ref` here is always the node's
     OWN, never-changing source position (the block/table that originally
     created it) -- not the position of whatever most recently folded into
-    it -- so this hash tracks the node's evolving description while staying
-    anchored to a stable position, distinguishing two nodes whose
-    description happens to become byte-identical."""
-    return hashlib.sha256(f"{description}\x00{source_ref.document_path}\x00{source_ref.start_offset}".encode()).hexdigest()
+    it -- distinguishing two nodes whose description happens to become
+    byte-identical (see test_two_byte_identical_requirement_lines_get_distinct_identity_hashes).
+
+    `description` is deliberately NOT hashed (confirmed real bug, live: two
+    uploads of the byte-identical BASELINE document never matched via this
+    hash, even though document_path/start_offset/end_offset are already
+    fully determined by the point this function is called and description
+    itself is verbatim/deterministic in every one of this file's call
+    sites -- the extra input bought nothing and, in the one genuinely
+    LLM-generated call site elsewhere (llm_leveling.py's branch-analysis
+    node creation), made the hash actively unstable run-to-run). Position
+    alone is both necessary and sufficient here: every call site in this
+    module gives each node its own distinct source_ref already."""
+    return hashlib.sha256(
+        f"{source_ref.document_path}\x00{source_ref.start_offset}\x00{source_ref.end_offset}".encode()
+    ).hexdigest()
+
+
+def _hash_identity_for_synthesized_node(discriminator: str, source_ref: SourceRef) -> str:
+    """Variant for auto-inserted structural nodes (root_regrouping.py's
+    synthesized group/root-epic/feature nodes) that deliberately REUSE one
+    of their own member's source_ref rather than owning a distinct source
+    span of their own -- e.g. a synthesized group node and its own first
+    child currently share source_ref. Without a discriminator, plain
+    _hash_identity (position-only) would collide the two. `discriminator`
+    must be a stable, deterministic string (root_regrouping.py's synth_id,
+    e.g. "synth_group_3" -- never LLM-generated free text, which would
+    reintroduce the exact instability _hash_identity's own docstring
+    explains dropping)."""
+    return hashlib.sha256(
+        f"{discriminator}\x00{source_ref.document_path}\x00{source_ref.start_offset}\x00{source_ref.end_offset}".encode()
+    ).hexdigest()
 
 
 def _derive_doc_title(doc: CanonicalDoc) -> str:

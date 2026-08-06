@@ -137,12 +137,12 @@ Original notes below, kept for context on what was unverified before either roun
    (see `docs/architecture.md`'s "Customer ID Field Resolution"):
 
    ```bash
-   curl -s -X POST http://localhost:4100/mcp \
+   curl -s -X POST http://localhost:4100/api/ado/ado_discover_fields \
      -H "Authorization: Bearer <a-bearer-you-choose>" \
      -H "Content-Type: application/json" \
      -H "X-Ado-Org-Url: https://<your-tfs-host>/tfs/<Collection>" \
      -H "X-Ado-Pat: <your-real-PAT>" \
-     -d '{"tool": "ado_discover_fields", "args": {"workItemType": "Epic"}}'
+     -d '{"workItemType": "Epic"}'
    ```
 
    Inspect the response for `Custom.CustomerId` / `Custom.CustomerRequirementId` /
