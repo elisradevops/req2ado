@@ -992,6 +992,17 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // dedup_skip parent is fine (parentAdoId lookup still resolves); only
         // the skip-node-as-a-CHILD case is suppressed here.
         if (entry.action === 'dedup_skip') return false;
+        // A 'reuse' match (exact-hash, certain) is an item that already
+        // exists in ADO from whenever it was originally created -- it
+        // already has its own Parent (Hierarchy-Reverse) relation from that
+        // original write. Confirmed live: re-adding that same relation on a
+        // later job (e.g. a resubmit of the same document) 400s with
+        // TF401349 -- ADO enforces at most one Parent relation per work
+        // item and gives this generic error for a second `add`, not a
+        // friendly "already linked" one. Same suppression as dedup_skip
+        // above, for the same reason: a reuse-matched item's existing
+        // position in the hierarchy is not this job's to re-assert.
+        if (entry.action === 'reuse') return false;
         // Resume: this localId's link already succeeded in a prior attempt
         // at this same job -- do not PATCH the relation again.
         if (alreadyLinkedLocalIds.has(entry.localId)) return false;

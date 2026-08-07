@@ -739,6 +739,46 @@ describe('JobsService.confirm', () => {
     expect(linkParentChild).not.toHaveBeenCalled();
   });
 
+  it('does not re-link a reuse-matched item that IS the child -- it already has a Parent relation from its original creation', async () => {
+    // Regression: confirmed live (TF401349 from real ADO) -- a 'reuse'
+    // (exact-hash, certain) match is an item that already exists in ADO
+    // from a prior job, with its own already-established Parent relation.
+    // Re-adding that same relation on a later confirm (e.g. resubmitting
+    // the same document) violates ADO's one-Parent-per-item rule and 400s
+    // with a generic, non-obvious error. Same suppression as dedup_skip's
+    // child case, for a different (certain, not probabilistic) reason.
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 }); // only the new parent gets created
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+            // An exact-hash match to an item already created (and already
+            // parented) in a prior job -- must NOT be re-linked here.
+            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'reuse', existingAdoId: 42, similarity: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(linkParentChild).not.toHaveBeenCalled();
+  });
+
   it('batches a dedup upsert for every newly-created item, but not for reused/dedup_skip ones', async () => {
     // Regression: confirm() previously called upsertDedupEntry once per
     // newly-created node inline in the loop (one embed() round-trip each);
