@@ -103,6 +103,7 @@ model Job {
   createdItemMappings CreatedItemMapping[]
   sourceFile       JobSourceFile?
   events           JobEvent[]
+  figureFiles      JobFigureFile[]
 }
 
 // Retains the original uploaded file's bytes so a job can be re-submitted
@@ -197,6 +198,32 @@ model CreatedItemMapping {
   createdAt     DateTime @default(now())
 
   @@unique([jobId, localId])
+}
+
+// Ingestion-captured, already-compressed bytes for an embedded figure (see
+// ingestion/app/main.py's _describe_figure_with_progress) -- written for
+// EVERY figure at ingest time (relevance isn't known yet), then pruned down
+// to only the figures a node's figure_ids actually reference once /level
+// returns (pipeline.worker.ts), and deleted immediately on a successful ADO
+// attachment upload in confirm() -- unlike JobSourceFile (kept for
+// resubmit), a copy here serves no purpose once the bytes are safely in ADO.
+// Own table, same reasoning as JobSourceFile: ordinary Job queries must
+// never drag image bytes along. Keyed (jobId, figureId) only, NEVER by
+// filename/document identity -- a revised document is a new job with fresh
+// Figure ids, so there is no path by which an old job's stored figure could
+// be confused with a new job's regardless of filename reuse. Same
+// ON DELETE RESTRICT + explicit-transaction-delete convention as every
+// other Job-child table (see JobsService.delete, JobRetentionService.sweep).
+model JobFigureFile {
+  id        String   @id @default(uuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id])
+  figureId  String // matches Figure.id ("f0".."f38") -- same id figure_ids references
+  bytes     Bytes
+  mimeType  String
+  createdAt DateTime @default(now())
+
+  @@unique([jobId, figureId])
 }
 
 // Idempotency map: prevents duplicate ADO writes on job re-run.

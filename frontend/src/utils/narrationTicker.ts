@@ -44,6 +44,11 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   dedup_check: 'Checking for existing/duplicate work items.',
   writing: 'Writing to Azure DevOps.',
   job_failed: 'Job failed.',
+  // Never actually looked up -- JobDetail.tsx deliberately excludes
+  // chunk_warning from the `narrations` array tickerFor reads (see its own
+  // comment), so it can never become `latest` here. Present only so this
+  // Record stays exhaustive over NarrationEvent['phase'].
+  chunk_warning: 'A chunk of work failed.',
 };
 
 // Used only when no narration has arrived yet for the job's current stage

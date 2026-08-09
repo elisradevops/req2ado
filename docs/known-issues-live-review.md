@@ -128,7 +128,7 @@ regardless of which step is actually running.
 
 ## 4. "Finishing up..." chip is a lie -- shown for the entire tail, not near completion
 
-**Status:** root-caused, fix not applied. Found while watching item 3's live confirmation.
+**Status:** FIXED and deployed. Found while watching item 3's live confirmation.
 
 The moment the job entered `Score`, the status chip switched to "Finishing up..." -- but `Score`
 is followed by epic/feature scoring, conflict detection, root regrouping, and trace-link
@@ -153,10 +153,21 @@ fallback copy overstates confidence it doesn't have. Honest-but-vague ("Finishin
 be one thing; the actual failure mode is that it reads as "any second now" regardless of whether
 1 or 5 more tail phases remain.
 
-**Proposed fix:** replace the blanket "Finishing up…" with per-phase wording (e.g. "Scoring
-quality...", "Checking for conflicts...", "Grouping by topic...", "Resolving trace links...")
-using the same `latest.phase` the rest of the banner already reads, reserving "Finishing up…" (if
-kept at all) for only the LAST tail phase (`infer_trace_links`) rather than all five.
+**Implemented fix:** two changes, together closing the real gap (distinguishing the phases),
+not just the literal `etaText` string:
+1. `isTailPhase` (`ProgressBanner.tsx`) was narrowed to drop `score_requirements`/
+   `score_requirements_done` -- scoring now gets real `blocksDone`/`blocksTotal` progress
+   (see item 11's "Also flagged" chip fix) instead of the generic tail label, cutting the
+   affected phase count from five to three (`detect_conflicts`, `regroup_roots`,
+   `infer_trace_links`).
+2. A dedicated per-phase step list was added to the tail-phase view (`ProgressBanner.tsx`,
+   the block rendering "Scoring requirement quality" / "Checking for conflicting
+   near-duplicates" / "Grouping disconnected sections by topic" / "Resolving trace links",
+   each with its own Check/Spinner/Circle state) -- so the engineer sees exactly which of
+   the four tail steps is active/done/pending, not just one undifferentiated "Finishing
+   up..." line. The top-level `etaText` still shows "Finishing up…" as a summary for the
+   three remaining tail phases, but it's no longer the ONLY signal -- the step list beneath
+   it removes the "1 or 5 remaining phases look identical" failure mode this item reported.
 
 ## 5. Confirmation dialog animation snaps position at the end (Tailwind v4 `translate`/`transform` split)
 
@@ -405,7 +416,7 @@ temperature=0 comment already states).
 **New test:** `openwebui.client.spec.ts` -- asserts `reasoning_effort: 'none'` is always sent
 on a `vision()` call.
 
-## 11. KB retrieval treats standards/methodology docs the same as customer-content docs (BACKLOG, not yet implemented)
+## 11. KB retrieval treats standards/methodology docs the same as customer-content docs
 
 **Status:** IMPLEMENTED and deployed (876 ingestion, 563 orchestrator, 369 frontend tests pass). Surfaced live: user uploaded 3 KB files that are
 CMMI + requirements-writing-standards documentation, intended as an always-on grounding
@@ -443,19 +454,15 @@ modes per knowledge file, not one --
   the exact shape of a CMMI/requirements-writing-standards doc: small, static, and its
   relevance is definitional, not topical, so a similarity score can never legitimately gate it.
 
-**Proposed fix (not yet implemented):** add a per-KB-file mode toggle, mirroring Open WebUI's
-own UI exactly -- "Always include" (Full Context) vs "Retrieve" (Focused/RAG, today's only
-mode) -- set at upload time, stored alongside the file's existing KB metadata. `retrieve_context`
-(`ingestion/app/kb/retrieval.py`) stays unchanged for "Retrieve" files. A new, small
-always-fetch path reads every "Always include" file's full stored text unconditionally (no
-embed call, no similarity gate) and concatenates it into `kb_context` ahead of/alongside
-whatever `retrieve_context` returns -- so a scoring/analysis call sees BOTH the always-on
-standards text AND whatever customer-content chunks cleared similarity, same as Open WebUI
-blends Full Context files and RAG-retrieved chunks into one combined context for a single
-prompt. Wire into the same points already threaded (`_score_all_requirements`/
-`_apply_quality_scores` in `scoring.py`) and, longer-term, `trace_links.py` (currently
-hardcodes `kb_grounded=False, kb_citations=[]` -- no KB grounding wired into trace-link
-detection at all yet).
+**Implemented fix:** the per-KB-file mode toggle shipped exactly as proposed -- a
+`retrieval_mode` field ("retrieve" (default) vs "always_include") set at upload time
+(`ingestion/app/kb/ingest_service.py`, `kb_vector_store.py`), stored alongside the file's
+existing KB metadata. `retrieve_context` (`ingestion/app/kb/retrieval.py`) is unchanged for
+"retrieve" files. `fetch_always_include_context` (`retrieval.py`) reads every
+"always_include" file's full stored text unconditionally (no embed call, no similarity
+gate) and concatenates it into `kb_context` alongside whatever `retrieve_context` returns.
+Wired into `scoring.py`'s call sites as planned; `trace_links.py`'s KB grounding remains the
+noted longer-term follow-up, not yet done.
 
 Practical bound worth calling out up front (Open WebUI's own docs imply this too --
 "short reference documents"): Full Context mode has no size ceiling by design, so an
@@ -470,13 +477,10 @@ matches `req2ado-roadmap.md`'s own Phase 2 framing of "uploaded standards/glossa
 docs" as a distinct knowledge source, which today's implementation doesn't yet distinguish
 from customer-content docs.
 
-**Also flagged (UX, same session):** the `score_requirements` phase's `blocks_done`/
-`blocks_total` chip is hardcoded to always read as 100% complete (`scoring.py`:
-`blocks_done=blocks_total, blocks_total=blocks_total`) -- misleading during a phase that has
-no real block-level progress to report. Recommend dropping that chip for this phase (or
-replacing with a real `chunk N of M` indicator, since chunking is deterministic ahead of the
-scoring loop) rather than showing a fabricated 100%-done metric next to the phase's own
-"no fixed step count to measure against" disclaimer.
+**Also flagged (UX, same session) -- FIXED:** the `score_requirements` phase's `blocks_done`/
+`blocks_total` chip was hardcoded to always read as 100% complete. `scoring.py`'s `_fire`
+closures now report real `nodes_done`/`total_nodes` plus `chunk_index`/`chunk_count` (the
+"real `chunk N of M` indicator" this note recommended), not a fabricated 100%-done metric.
 
 ## 12. "Score" step's tooltip stays static during detect_conflicts/regroup_roots
 
@@ -498,13 +502,11 @@ requirement's quality...") never changes for the whole time "Score" is the reach
 even though two functionally distinct sub-phases (scoring itself, then conflict
 detection, then root regrouping) all render under it.
 
-**Proposed fix (not yet implemented):** make the tooltip phase-aware -- when
-`latestNarrationPhase` is `detect_conflicts` or `regroup_roots`, show a tip describing
-that sub-phase instead of Score's fixed scoring text. One conditional near line 160 in
-`JobLifecycleSteps.tsx`, no change to `reachedKeyFor`/`statesFor`/the stepper API.
-Cosmetic/non-blocking -- the narration bar underneath already states the real activity
-correctly, so nothing is factually wrong for the user, just inconsistent between the two
-lines.
+**Implemented fix:** the tooltip is now phase-aware exactly as proposed -- conditionals
+near `JobLifecycleSteps.tsx`'s tip assignment (`if (reached === 'score' &&
+latestNarrationPhase === 'detect_conflicts') ... else if (... === 'regroup_roots') ...`)
+override Score's static tip with sub-phase-specific text, with no change to
+`reachedKeyFor`/`statesFor`/the stepper API.
 
 ## 13. Stepper regresses from "Score" back to "Analyze" during infer_trace_links
 
@@ -522,20 +524,29 @@ through to the `else` branch (`key = 'analyze'`) -- exactly the backward-jump th
 existing comment on that function says this logic exists to prevent, just missing this
 one phase.
 
-**Proposed fix (not yet implemented):** add `latestNarrationPhase === 'infer_trace_links'`
-to the same condition (line 67-72) as `detect_conflicts`/`regroup_roots` -- it's another
-whole-tree pass that runs after scoring, before `dedup_check`. One-line change, same
-pattern as the existing guard, no new step/API change.
+**Implemented fix:** `latestNarrationPhase === 'infer_trace_links'` was added to the same
+condition in `reachedKeyFor` as `detect_conflicts`/`regroup_roots` -- one-line change, same
+pattern as the existing guard, no new step/API change. The tooltip for this phase also got
+the same phase-aware treatment as item 12's fix.
 
 ## 14. Existing-item verification is silently fail-open, and the ADO link's routing ambiguity can misreport "doesn't exist"
 
-**Status:** IMPLEMENTED and deployed (part 1, the logging fix, and part 2, the project-scoped link). Surfaced live: a `dedup_skip` match on job
+**Status:** IMPLEMENTED and deployed (part 1, the logging fix, and part 2, the project-scoped link) -- **and Root cause #1 below was later found to be WORSE than "unobservable," and independently fixed for real** (see item 21). Surfaced live: a `dedup_skip` match on job
 `058f7298` pointed at ADO work item `532`. Clicking through gave `TF401232: Work item 532
 does not exist, or you do not have permissions to read it.` Investigation confirmed the
 matched text is a byte-for-byte exact match to the drafted requirement (pulled directly
 from the Chroma dedup collection) -- the match itself is not a false positive at the text
 level. What's unresolved is whether ADO-side existing-item verification actually ran and
 confirmed `532` before showing it, or silently no-opped.
+
+**Update (2026-08-06):** the same job `532` symptom recurred on a fresh job (`ba8c26d1`),
+and this time was root-caused precisely rather than left as an open question -- see item 21.
+It was not merely "unobservable either way" as guessed below: `verifyExistingAdoIdsStillExist`
+was actively **crashing** on a `null` placeholder ADO returns in place of a genuinely-deleted
+id, which silently defeated the existence check for the ENTIRE batch (confirmed: 37 matches
+went unverified in that one job, not just 532). Item 21 fixes the crash itself, which is a
+strictly more complete fix than this item's part-1 proposal (logging the fail-open catch) --
+the catch is no longer reached for this failure mode at all.
 
 **Root cause #1 -- silent fail-open, unobservable either way:**
 `verifyExistingAdoIdsStillExist` (`orchestrator/src/modules/writeback/dry-run.service.ts:
@@ -593,17 +604,18 @@ segment is missing" (it never had one by design -- this link pattern is delibera
 org-only, relying on ADO's own global id-to-project redirect) but can also just break or
 misroute the request.
 
-**Proposed fix (not yet implemented):** strip trailing slash(es) at the point of storage
--- `adoOrgUrl.trim().replace(/\/+$/, '')` before calling `login()` in `Login.tsx:44`.
-One line, no schema change, no effect on already-correct URLs. Pairs with item 14's part 2
-(adding an explicit project segment) as the more complete fix for that item's link-routing
-ambiguity.
+**Implemented fix:** `Login.tsx` now normalizes at the point of storage --
+`adoOrgUrl.trim().replace(/\/+$/, '')` before calling `login()`. One line, no schema
+change, no effect on already-correct URLs. Pairs with item 14's part 2 (the explicit
+project segment) as the complete fix for that item's link-routing ambiguity.
 
-## 16. describe_figure/table_detected narration has no real total to show progress against (BACKLOG, not yet implemented)
+## 16. describe_figure/table_detected narration has no real total to show progress against
 
-**Status:** SPEC ONLY. No code changed. User asked live: since figure/table counts are
-known, can the progress bar show "figure 3 of 39" during parsing instead of the current
-open-ended "figure 3 so far"?
+**Status:** FIXED and deployed for .docx (936 ingestion tests pass, including 2 new
+dedicated tests plus extended assertions on an existing end-to-end `/ingest` test); other
+formats deferred, see below. User asked live: since figure/table counts are known, can the
+progress bar show "figure 3 of 39" during parsing instead of the current open-ended
+"figure 3 so far"?
 
 **Root cause:** the docx/pptx/pdf loaders (`ingestion/app/loaders/docx_loader.py` etc.)
 walk the document linearly and call `describe_figure` SYNCHRONOUSLY as each image is
@@ -612,23 +624,35 @@ encountered mid-walk -- there is no upfront count available before that walk sta
 but it only fires AFTER the whole walk (and every vision call) finishes -- too late to
 help the progress bar during the very phase it would matter for.
 
-**Proposed fix (not yet implemented):** add a lightweight "count-only" pre-pass per loader
-type (docx/pptx/pdf) that scans for the same blip/drawing and table elements the real walk
-already looks for, but does nothing with them -- no vision calls, no image bytes read, just
-XML/structure iteration. Run once at the top of `/ingest`, before the real parse, to get
-real totals up front, then thread `figure_count`/`table_count` into the `describe_figure`/
-`table_detected` narration payloads so the UI can show a real "N of TOTAL" instead of an
-open-ended counter.
+**Correction found while implementing:** `table_detected` didn't actually need a pre-count
+at all -- it already fires from a `for table in doc.tables:` loop in `main.py`, AFTER the
+real parse completes (`doc` is the fully-parsed document by then), so `len(doc.tables)` was
+already trivially available. Only `describe_figure` genuinely needed a pre-pass, since it
+fires DURING the walk, before the full figure list (and its count) exists.
 
-**Scope note:** three near-duplicate walks to maintain (count-only, the real walk, and
-whatever loader-specific logic already exists) -- one pre-count function per loader type,
-plus wiring the resulting totals through `main.py`'s narration calls. Cost is negligible
-(structural XML iteration, not the slow part -- vision calls are), but it's a real
-multi-file change, not a one-liner.
+**Implemented fix:**
+1. `table_detected`: the existing loop switched to `enumerate(doc.tables, start=1)`,
+   passing a new `table_index` field alongside the already-existing `table_count` -- zero
+   new parsing cost, the data was already sitting right there.
+2. `describe_figure`: `main.py`'s `/ingest` now runs one cheap, structural-only pre-pass
+   (`dispatch_by_extension(..., describe_figure=None)` -- `_describe_one_figure` short-circuits
+   before ever reading image bytes, so no vision calls happen) ahead of the real walk,
+   **scoped to `.docx` for now** (the reproducing case, and the only format with no OCR
+   step to double the cost of). `figure_count` (already an existing field, previously
+   `parse_done`-only) is now also populated on `describe_figure` events with this
+   pre-counted total. `_format_message` (`narration_publisher.py`) shows "figure N of
+   TOTAL" when `figure_count` is present, falling back to the old "figure N so far" when
+   it isn't (unsupported format, or vision/narration inactive).
+
+**Deferred, not silently dropped:** pptx/pdf still show the open-ended "figure N so far"
+wording -- pdf's OCR path does real work regardless of `describe_figure`, so blindly
+doubling the walk there isn't the same negligible-cost trade docx gets. Extend per-format
+only if that format shows the same live gap docx did.
 
 ## 17. Job `a830aa30` failed after ~66-74 min -- two cascading client-side timeouts, real culprit (LLM backend slowness) unconfirmed
 
-**Status:** ROOT-CAUSED partially, NOT fixed. No code changed yet. Live incident, same
+**Status:** Timeout mismatch FIXED; underlying slowness now explained (see update below).
+Live incident, same
 document as job `bb97b9a0` (which completed fine minutes earlier). `Job.status` shows
 `failed`; `AuditEntry` shows `"Pipeline failed: fetch failed"`.
 
@@ -673,14 +697,29 @@ the Ollama/Open WebUI host process next time this reproduces** -- the timeout-ra
 above prevents PREMATURE failure, but does not explain or fix the underlying slowness
 if it's a real, recurring backend problem rather than one-off contention.
 
-**Proposed fix (not yet implemented):** raise `LONG_RUNNING_AGENT`'s timeouts in
-`ingestion-http.client.ts:19` (small, safe, immediate mitigation), AND separately
-investigate Ollama/Open WebUI's own state/logs the next time a scoring call runs
-unusually long, before assuming the raised timeout alone is a complete fix.
+**Implemented fix (timeout mismatch):** `IngestionHttpClient`'s `Agent` now takes a
+`requestTimeoutMs` constructor param (`ingestion-http.client.ts`, wired from the new
+`INGESTION_REQUEST_TIMEOUT_MS` env var in `jobs.module.ts`) instead of a hardcoded
+constant -- deployments can raise it above the default (`DEFAULT_INGESTION_REQUEST_TIMEOUT_MS`,
+still 1 hour) for realistically long SURVEY runs without a code change. The default itself
+was deliberately left unchanged rather than blanket-raised, since the stale-job watchdog
+(item 8) already covers the genuinely-hung case and a much longer default would only delay
+detecting a real cascading failure like this one.
 
-## 18. NodeDetailPanel's description preview doesn't match what actually gets written to ADO (BACKLOG, not yet implemented)
+**Underlying slowness -- explained, not left open:** a later investigation
+(`docs/survey-performance.md`) found the actual dev-environment Ollama backend runs with
+exactly one concurrent generation slot (`-np 1`, `llama-server`'s default when
+`OLLAMA_NUM_PARALLEL` is unset) -- this job's LLM calls were never concurrent, so any
+resource contention or model-reload stall serializes directly into wall-clock time with no
+isolation between jobs. `SURVEY_BRANCH_CONCURRENCY` shipped as the scalable answer (bounded
+concurrent branch analysis, opt-in, defaults to sequential/unchanged) -- see that doc for
+the production rollout recommendation (coordinate with the backend's real concurrent
+capacity before raising it).
 
-**Status:** SPEC ONLY. No code changed. User asked about `System.Description`'s ADO field
+## 18. NodeDetailPanel's description preview doesn't match what actually gets written to ADO
+
+**Status:** FIXED and deployed (380 frontend tests pass, including 5 new dedicated
+tests). User asked about `System.Description`'s ADO field
 type (`"type": "html"`) and wanting "nicely formatted text" consistently in both the
 review UI and the real ADO work item.
 
@@ -702,43 +741,59 @@ literal escaped text in the review UI, not as a table. A reviewer sees something
 different from what will actually be written -- a "preview lies" bug, not a formatting
 gap.
 
-**Proposed fix (not yet implemented):** make the frontend preview render the exact same
-HTML the write-back path will send, so review matches reality. Options: run the same
-markdown+table-passthrough conversion client-side (port or share `toAdoDescriptionHtml`'s
-logic) and render the result through a sanitized HTML renderer, OR add `rehype-raw` to
-`NodeDetailPanel`'s `<Markdown>` config scoped ONLY to the already-trusted, already-escaped
-table fragments ingestion produces (never arbitrary raw HTML from elsewhere). Small,
-well-scoped once the approach is picked.
+**Implemented fix:** a new `DescriptionMarkdown` component (`frontend/src/ui/Markdown.tsx`)
+splits a description on the same `TABLE_BLOCK_PATTERN` regex `description-html.ts` uses,
+renders non-table segments through the existing (raw-HTML-blind) `Markdown`, and renders
+each trusted table segment as real `<table>/<tr>/<td>` React elements via a small
+regex-based cell extractor (mirroring `_table_to_html`'s known, fixed output shape) plus
+an `html.escape` un-escaper for cell text -- no `dangerouslySetInnerHTML`, no `rehype-raw`
+dependency added, so the shared chat `Markdown` (untrusted LLM text) stays exactly as
+raw-HTML-blind as before. Wired into `NodeDetailPanel.tsx` only, in place of the plain
+`Markdown` call.
 
-## 19. SURVEY-drafted descriptions never use markdown formatting (BACKLOG, not yet implemented)
+## 19. SURVEY-drafted descriptions never use markdown formatting
 
-**Status:** SPEC ONLY. No code changed. Distinct from item 18 (that's a render-consistency
-bug; this is a content-generation gap) -- user wants "nicely formatted text," and today's
-SURVEY output is flat, unformatted prose.
+**Status:** IMPLEMENTED, needs live validation. Distinct from item 18 (that's a
+render-consistency bug; this is a content-generation gap) -- user wants "nicely formatted
+text," and SURVEY output was flat, unformatted prose.
 
-**Root cause:** `OrchestratorLlmClient`'s section-analysis prompt
-(`ingestion/app/survey/orchestrator_llm_client.py:280-296`) asks the model for "a single
-formal shall-style requirement statement" with no instruction to use markdown structure
-at all (bold key terms, bullet lists for multi-part conditions, etc.). The write-back and
-frontend render paths already fully support markdown (see item 18) -- the model simply
-never produces any.
+**Root cause:** the live section-analysis prompt (`ingestion/app/prompts/
+section_analysis.v1.txt` -- the doc's originally-cited `orchestrator_llm_client.py:280-296`
+location predates the holistic-analysis redesign and no longer describes the current
+prompt) asked the model for "a single formal shall-style requirement statement" with no
+instruction to use markdown structure at all. The fallback, non-agentic
+`generate_requirements.v1.txt` prompt has the same gap, but its caller
+(`build_survey_requirements.py`) is dead code -- confirmed via repo-wide grep, referenced
+only by its own tests, never invoked from `main.py`/`llm_leveling.py` -- so it was left
+unchanged rather than edited for no live effect. The write-back and frontend render paths
+already fully support markdown (see item 18) -- the model simply never produced any.
 
-**Proposed fix (not yet implemented):** extend the section-analysis prompt to
-instruct/permit markdown formatting for genuinely multi-part or emphasis-worthy content
-(e.g. a compound condition as a bullet list, a key parameter name in bold) -- a prompt
-change, not a plumbing change. Needs care: SURVEY's contract is a single formal
-requirement statement per node, so formatting should enhance readability of that one
-statement, not fragment it into something that no longer reads as one requirement.
-Should be validated against real documents (does the model actually produce useful
-structure, or just decorative noise) before considering it done.
+**Implemented fix:** extended `section_analysis.v1.txt`'s `'text'` field instruction to
+permit (not require) markdown formatting for genuinely multi-part or emphasis-worthy
+content -- bold for a key parameter/value, a bullet list for a compound multi-part
+condition -- while explicitly keeping the existing one-statement-per-node contract intact
+("never as a way to fragment it into multiple separate obligations").
 
-## 20. No way to attach relevant figures/tables to a work item, LLM-judged (BACKLOG, not yet implemented)
+**Still needed before calling this fully done:** validate against 2-3 real documents with
+genuinely compound conditions to confirm the model produces useful structure, not
+decorative noise -- a prompt change's real effect can't be asserted by a unit test alone.
 
-**Status:** SPEC ONLY. No code changed. User asked whether a work item can get relevant
+## 20. No way to attach relevant figures/tables to a work item, LLM-judged
+
+**Status:** Pieces (a)/(b)/(c) IMPLEMENTED and unit-tested (945 ingestion tests including
+9 new dedicated tests, 576 orchestrator tests, 382 frontend tests all pass). Verified live
+end-to-end, including real per-node relevance judgment and real table embedding, on a
+synthetic document; two further real-document runs of the same large real AirPro doc
+confirmed no regressions/crashes but never actually exercised the new code path at all,
+since that document is fully deterministically classified (see below for all three runs).
+Piece (d) -- real ADO figure attachment upload -- remains deferred, needs a storage-layer
+decision (see its own section below). User asked whether a work item can get relevant
 figures/tables appended to its description, with the LLM deciding relevance.
 
-**Root cause / current state (confirmed via investigation, nothing exists today):**
-- `WorkItemNode`/`SourceRef` (`ingestion/app/workitem/model.py`) never links to a
+**Root cause / original state (confirmed via investigation; figure_ids/table_ids below
+close the "no back-reference" gap for (a)/(b)/(c) -- the attachment-upload gap for
+figures, piece (d), is still real and unchanged):**
+- `WorkItemNode`/`SourceRef` (`ingestion/app/workitem/model.py`) never linked to a
   specific `Figure`/`Table` id -- `SourceRef` only carries `document_path`/
   `start_offset`/`end_offset`/`page`. Figure captions and table content DO reach the
   synthesis LLM as context (folded into node text via `[FIGURE: ...]` markers and
@@ -754,19 +809,197 @@ figures/tables appended to its description, with the LLM deciding relevance.
   verbatim-fidelity contract). Figures/tables are a narrower case but hit the exact same
   missing infrastructure (no attachment mechanism exists at all, for anything).
 
-**Proposed fix (not yet implemented), three real pieces:**
-1. Give the synthesis LLM call the candidate figures/tables (id + caption/content) for
-   the section it's working on, and have it name which one(s) (if any) are relevant to
-   the requirement it's drafting -- a real relevance JUDGMENT, not "attach everything
-   nearby."
-2. Tables are the easy half -- content can be embedded directly in the description as
-   HTML (`_table_to_html` already exists) once a node names which table it wants.
-3. Figures need REAL ADO attachment upload -- a genuinely new mcp-ado-server tool
-   (`POST .../_apis/wit/attachmentsuploads` + linking the uploaded attachment into the
-   work item, then referencing it via an `<img>` tag pointing at the attachment URL in
-   the description HTML). Nothing today uploads anything to ADO; this is new surface
-   area on the write-back path, not a small extension of existing tools.
+**Blocker found while scoping the implementation, solved:** `render_section`
+(`ingestion/app/leveling/llm_leveling.py`) -- what the LLM actually reads for SURVEY
+analysis -- rendered a figure via `_render_block_line` -> `_figure_line` as bare
+`[FIGURE: <caption>]`, and a table via `_table_to_markdown`, neither ever including the
+underlying `Figure.id`/`Table.id` -- the model had no identifier to name back in a
+"relevant to figure X" judgment. Solved WITHOUT touching `_figure_line`/`block.text`
+(shared verbatim with BASELINE's `_FIGURE_TEXT_PATTERN`-anchored parsing and
+`llm_leveling.py`'s own coverage-check string-matching, both of which must stay
+byte-identical): `render_section` now takes an optional `figure_id_by_block_id` map
+(`block.id -> Figure.id`, built once per document in `build_survey_tree` by pairing
+`doc.blocks`' FIGURE-kind blocks with `doc.figures` in loader-append order -- every
+loader, docx/pptx/pdf, appends a Figure and its paired inline Block in lockstep, confirmed
+directly in each loader's source) and post-processes `_figure_line`'s own output string
+(`"> Figure: caption"` -> `"> Figure f3: caption"`) rather than mutating the shared
+function. Tables needed no such trick -- `table.id` was already directly in hand from the
+`tables` list itself; each table now gets a `[TABLE <id>]` marker line immediately above
+its rendered rows.
 
-**Scope note:** this is the largest of the three items logged today -- new LLM-judgment
-step, new data linking (figure/table id -> node), and genuinely new ADO write capability
-(file upload) that doesn't exist anywhere in this codebase yet.
+**Implemented fix, all three pieces:**
+1. **Data linking + LLM judgment (a+b):** `WorkItemNode` gained `figure_ids`/`table_ids`
+   (`ingestion/app/workitem/model.py`, and the shared `work-item-tree.schema.json` +
+   regenerated `shared/ts/src/generated/WorkItemTree.ts`). `section_analysis_schema()`
+   (`ingestion/app/survey/_response_schemas.py`) gained matching optional array-of-string
+   properties on each node (unbounded, no `maxItems` -- confirmed this doesn't reintroduce
+   the bounded-repetition GBNF grammar-cost cliff the module's own header docstring warns
+   about, since it's the same shape as the already-safe `tags` field). `section_analysis.v1.txt`
+   instructs the model to copy a figure/table's real id verbatim when (and only when) a
+   node is genuinely about it. The node-building loop in `_build_survey_tree_for_branch`
+   validates every returned id against this branch's own real candidate ids (derived from
+   its own `blocks`/`tables`, not the whole document) -- a hallucinated id is dropped with
+   a warning, never trusted verbatim, matching the same fail-safe convention every other
+   LLM-output field here already uses.
+2. **Table embed (c):** once a node names a real `table_id`, that table's HTML
+   (`_table_to_html`, already existed) is embedded into `description` via
+   `assemble_description` -- no new ADO write capability needed. `fidelity_hash` was
+   switched to hash the FINAL `description` (text + embedded table), not just the LLM's
+   raw `text`, so drift detection actually tracks the persisted field.
+3. **Figures (d): still deferred.** `figure_ids` is link-only today -- recorded on the
+   node, but nothing uploads the actual image anywhere (see below, unchanged from the
+   original scoping).
+
+**Verified live end-to-end** (not just unit tests): real SURVEY run against `qwen3.6:35b`
+on a synthetic docx with one 3-row rail-voltage table and three per-rail requirements
+(job `cc124254-3650-4531-b5e7-57ba690fc5ba`) -- the model correctly named the table's real
+id (`t0`) on all three rail-specific requirements (3.3V/5V/12V), each showing the table's
+real HTML embedded in its description, while a fourth, thermal-unrelated requirement
+(Fan Speed Control Logic) correctly got no table at all -- a genuine per-node relevance
+judgment, not blanket attachment. Confirmed via `docker compose ps`/`logs`: this exposed
+that the `frontend`/`ingestion` containers hadn't been rebuilt since today's earlier fixes
+landed -- item 18's table-rendering fix (and every other fix from today) only took effect
+in the live app after `docker compose build ingestion frontend && docker compose up -d
+ingestion frontend`. No errors in ingestion/orchestrator logs across the full run.
+
+**Second attempt, real 39-figure/5-table document -- did not reach diff_ready, root cause
+confirmed environmental, not a code defect:** also uploaded the real `AirPro_BP_ICD_
+Revision_0.3.docx` (job `40a926d2-ec55-4dd9-825b-d38889dc355a`) to additionally validate
+`figure_ids` against real figures. Parsing and item 16's narration confirmed correct on
+this real document ("figure 20 of 39", "table 1 of 5", etc.), and analysis progressed
+genuinely (deterministic-subtree extraction, then `score_requirements` batch 1 of 3) for
+~80 real minutes. The job was then auto-cancelled by the stale-job watchdog (item 8) after
+`/llm/chat` returned a 500 at 22:49:50, and the SAME retry call (per
+`orchestrator_llm_client.py`'s `_post_chat` backoff loop) didn't get its next response
+until 23:31:51 -- a ~42-minute single HTTP call, confirmed via `sysctl vm.swapusage`
+(6.2GB/7.2GB swap in use at the time) to be host memory-pressure thrashing, the EXACT
+confound `docs/survey-performance.md` already root-caused and documented (this session ran
+two concurrent SURVEY jobs plus two `docker compose build` runs on the same single-slot-
+Ollama dev machine). The watchdog itself worked correctly, per its own design, once its
+full worst-case window elapsed. Not re-attempted -- re-running against an already-swapping
+host would likely reproduce the same environmental confound rather than yield new signal.
+**Conclusion: this failure is unrelated to item 20's own changes** -- everything item 20
+touches (figure/table id rendering, narration, table embedding) behaved correctly on this
+document up to the point analysis stalled on backend slowness; the actual figure_ids-on-
+real-figures path remains unverified live (only unit-tested), pending a retry on an
+otherwise-idle machine.
+
+**Third attempt, same real document, resubmitted on a quieter host -- reached diff_ready
+cleanly, but a genuine negative result for figure_ids/table_ids specifically:** re-uploaded
+the identical `AirPro_BP_ICD_Revision_0.3.docx` (job `dfda991d-b652-40a0-91ab-7c5c5b4de0bf`)
+with lower starting swap (3.9GB/5GB vs the failed run's 6.2GB/7.2GB). Completed end to end
+in ~55 minutes, 553 diff entries, zero errors in ingestion/orchestrator/pipeline-worker
+logs. Confirmed via Playwright: a real table (from the document's own FAN/GPU configuration
+data) renders as a genuine HTML `<table>` in "GPU Zodiac Module"'s description -- item 18's
+render fix and the deterministic-path table embedding it's built on remain solid on real
+content.
+
+**However:** `SELECT count(*) FROM "JobEvent" WHERE "jobId" = '...' AND phase =
+'analyze_section'` returned **0** for this run -- the holistic LLM-analysis call that
+item 20's `figure_ids`/`table_ids` logic lives inside never fired at all. This document is
+(as already noted elsewhere in this doc, item 3) heavily/fully deterministically
+classified -- `_detect_deterministic_subtrees` claims essentially the whole document via
+its "Heading hierarchy" subtree, so `llm_doc.blocks`/`figures`/`tables` is empty and
+`build_survey_tree`'s pure-deterministic guard returns before `_build_survey_tree_for_branch`
+(and therefore `render_section`'s figure/table id injection, and the relevance-judgment
+prompt) ever runs. The 5 `<table>`-bearing nodes confirmed in this run's `dryRunDiff`
+(`det0_h11_3`, `det0_h11_4`, `det0_h11_5`, `det0_h13`, `det0_h70_2` -- all `det0_`-prefixed,
+i.e. deterministic-path node ids, never `br0_`/unprefixed LLM-path ids) come from
+`tree_builder.py`'s own pre-existing, unrelated `_table_to_html` usage in the deterministic
+heading-walk, not from item 20's new `table_ids` mechanism. No `figure_ids`/`table_ids`
+hallucination warnings appear in the ingestion logs either, consistent with the LLM path
+simply never running rather than running and succeeding silently.
+
+**Net effect:** item 20's own code is now confirmed stable through two full real-document
+runs (no crashes, no regressions) and its logic is fully verified on the ONE synthetic
+document that actually exercises `analyze_section` (job `cc124254-...`, see above). But
+`figure_ids`/`table_ids` acting on genuinely LLM-analyzed real figures/tables is still
+**not** demonstrated live -- this specific real document's own content structure (a fully
+deterministic ID/heading hierarchy) makes it structurally unable to reach that code path
+at all, regardless of host performance. A live demonstration on real figures would need a
+document (or a document section) that ISN'T fully ID/heading-hierarchy-shaped, so some real
+content actually reaches `analyze_section`.
+
+**Scope note, still accurate:** figures (piece d) remain the largest deferred piece --
+genuinely new ADO write capability (file upload) that doesn't exist anywhere in this
+codebase yet.
+
+**Also noted (not a blocker):** orchestrator's `dryRunDiff` mapping is a deliberately
+curated projection of `WorkItemNode` (confirmed live via direct DB query: it already omits
+several other ingestion-only fields, e.g. `fidelityHash`/`identityHash`) and does not
+currently carry `figureIds`/`tableIds` through to the persisted diff -- the feature works
+end-to-end regardless, since table embedding happens entirely on the ingestion side before
+`description` is finalized, but the judgment metadata itself isn't separately queryable
+from the orchestrator/frontend today. Surfacing it (e.g. for a future "linked to Figure 3"
+chip, mirroring `KbCitationChips`/`TraceLinkChips`) is a real but separate follow-up, not
+required for this item's own acceptance criteria.
+
+## 21. Stale-ADO-item verification silently crashed on a `null` placeholder, defeating the whole batch (item 14's root cause, found precisely)
+
+**Status:** FIXED and deployed (88 mcp-ado-server, 934 ingestion, 576 orchestrator tests
+pass). User hit this live trying to confirm a job: `existingAdoId: 532` (deleted in ADO
+9 days earlier by req2ado itself, per `CreatedItemMapping`) survived into the diff
+completely unverified -- the exact symptom item 14 first spotted, this time root-caused.
+
+**Root cause:** `RealAdoBackend.getWorkItemsChunk` (`mcp-ado-server/src/backends/realAdo.ts`)
+assumed `errorPolicy=Omit` always drops a dead/deleted id from ADO's response array. It
+doesn't always -- ADO can return a `null` entry in its place instead. `data.id` on that
+`null` threw `Cannot read properties of null (reading 'id')`, which crashed
+`getWorkItemsBatch` for the WHOLE batch, not just the one dead id. `dry-run.service.ts`'s
+`verifyExistingAdoIdsStillExist` fail-opens on any thrown error (by design, for a genuine
+ADO-outage case) -- so all 37 matched ids in this job went unverified, including 532,
+identical in effect to item 14's "unresolved: did verification even run?" question, except
+now with a confirmed, reproducible cause: it ran, and crashed, silently, every time.
+
+**Implemented fix:** filter `null` entries out of the response array before mapping.
+Idempotent, minimal -- the rest of the batch still verifies correctly; only the
+dead-id slot is now correctly treated as "gone," matching what `errorPolicy=Omit`'s own
+contract was supposed to guarantee. **New test**
+(`mcp-ado-server/test/realAdo.test.ts`): a `null` array entry no longer crashes the batch,
+the real (non-null) result still returns correctly.
+
+## 22. `dedup_skip` stale matches had no cleanup path -- a deleted ADO item kept resurfacing forever
+
+**Status:** FIXED and deployed (same test run as item 21). Direct consequence of fixing
+item 21: once verification could actually run and downgrade item 532's match to `create`,
+a SEPARATE gap surfaced -- the existing stale-match cleanup (`pipeline.worker.ts`, added
+for the `reuse`/IdempotencyMapping case) only ever handled `reuse`, never `dedup_skip`.
+Its own comment said so explicitly ("a known, separately-tracked gap, not fixed here").
+
+**Root cause:** a `dedup_skip` match's Chroma vector entry has no delete path anywhere in
+the codebase -- `ChromaVectorStore` supported `upsert`/`upsert_many`/`query_nearest` but no
+`delete`. So even after verification correctly downgrades a stale match to `create` for
+THIS job's diff, the dead id's embedding stays in the dedup corpus forever, and resurfaces
+as a "match" on every future job against the same area path -- the exact behavior a live
+resubmit test would have hit again immediately after item 21's fix alone.
+
+**Implemented fix:** `ChromaVectorStore.delete(item_id, area_path)` (new,
+`ingestion/app/dedup/vector_store.py`), a new `POST /dedup/delete` route (`main.py`), a new
+`IngestionHttpClient.deleteDedupEntry()` (orchestrator), wired into `pipeline.worker.ts`'s
+existing downgrade-cleanup block alongside the `reuse` case -- same best-effort,
+never-fails-the-job semantics. **Verified live** on a real resubmit (job `b4ade6a6`): zero
+`dedup_skip`/`reuse` entries remained pointing at 532 in the resulting diff, and ingestion
+logs showed real `POST /dedup/delete -> 200 OK` calls firing for all downgraded matches.
+
+## 23. Confirming a resubmitted document 400s ADO (`TF401349`) -- `reuse` matches were re-linked to a parent they already have
+
+**Status:** FIXED and deployed (576 orchestrator tests pass). User hit this live clicking
+Confirm on a resubmit of a document already confirmed once before (job `57b4f5cc`,
+2026-07-28). Real ADO write partially succeeded then crashed: most items created and
+linked, two (`det0_h3`->641, `det0_h6`->663) left unlinked when the batch aborted.
+
+**Root cause:** ADO allows at most one Parent (`Hierarchy-Reverse`) relation per work item.
+`JobsService.confirm`'s `toLink` filter (`jobs.service.ts`) already excludes `dedup_skip`
+children (item 14/21's probabilistic-match case) but never excluded `reuse` -- an exact-
+hash match to an item that already exists in ADO **with its own already-established Parent
+relation from whenever it was originally created**. Re-adding that same relation on a
+later job (any resubmit of unchanged content) 400s with ADO's generic `TF401349`, not a
+friendly "already linked" error -- and `mapWithConcurrency` propagates that single failure
+to abort the whole link phase, stranding whatever links hadn't started yet.
+
+**Implemented fix:** exclude `entry.action === 'reuse'` from `toLink`, mirroring the
+existing `dedup_skip` exclusion. **New test**
+(`orchestrator/test/jobs.service.spec.ts`): a `reuse`-matched child is never passed to
+`linkParentChild`. The existing per-job resume mechanism (`alreadyLinkedLocalIds`, P4b)
+already skips items already marked `linked=true`, so a stranded job from before this fix
+can simply be re-confirmed -- it picks up exactly where the crash left off.

@@ -1522,6 +1522,24 @@ def test_build_survey_tree_requirement_scoring_failure_is_caught_and_warned() ->
     assert any("Requirement quality scoring failed" in w for w in tree.warnings)
 
 
+def test_build_survey_tree_requirement_scoring_failure_fires_chunk_warning() -> None:
+    # docs/ui-progress-review.md item #3: this failure must be visible LIVE
+    # (via progress_callback), not just in the final tree.warnings list.
+    class _RaisingRequirementScoringClient(FakeScoringClient):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            raise ValueError("boom")
+
+    fired: list[LevelingProgress] = []
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), _RaisingRequirementScoringClient(),
+        progress_callback=fired.append,
+    )
+
+    chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
+    assert len(chunk_warnings) == 1
+    assert chunk_warnings[0].warning_message in tree.warnings
+
+
 def test_build_survey_tree_epic_feature_scoring_is_a_noop_without_scoring_client() -> None:
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     by_id = {node.local_id: node for node in tree.nodes}
@@ -1541,6 +1559,63 @@ def test_build_survey_tree_epic_feature_scoring_failure_is_caught_and_warned() -
     assert by_id["n0"].quality_score is None  # failed -- but the job itself did not fail
     assert by_id["n1"].quality_score == 90  # Requirement scoring, a separate call, is unaffected
     assert any("Epic/Feature quality scoring failed" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_epic_feature_scoring_failure_fires_chunk_warning() -> None:
+    class _RaisingEpicFeatureClient(FakeScoringClient):
+        def score_epics_and_features_for_document(self, nodes_by_id):
+            raise ValueError("boom")
+
+    fired: list[LevelingProgress] = []
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(), _RaisingEpicFeatureClient(),
+        progress_callback=fired.append,
+    )
+
+    chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
+    assert len(chunk_warnings) == 1
+    assert chunk_warnings[0].warning_message in tree.warnings
+
+
+def test_apply_quality_scores_missing_score_fires_chunk_warning() -> None:
+    from app.leveling.scoring import _apply_quality_scores
+
+    class _EmptyScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            return {}  # every node comes back with no valid score
+
+    nodes = [_req_node("n1", "The system shall do x.")]
+    warnings: list[str] = []
+    fired: list[LevelingProgress] = []
+
+    _apply_quality_scores(nodes, _EmptyScoringClient(), warnings, "", progress_callback=fired.append)
+
+    assert "returned no valid score" in warnings[0]
+    chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
+    assert len(chunk_warnings) == 1
+    assert chunk_warnings[0].warning_message == warnings[0]
+
+
+def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> None:
+    from app.leveling.scoring import _apply_quality_scores
+
+    class _InconsistentCategoriesClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            return {
+                "n1": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}},
+                "n2": {"score": 70, "issues": [], "categoryScores": {"rationale": 70}},
+            }
+
+    nodes = [_req_node("n1", "The system shall do x."), _req_node("n2", "The system shall do y.")]
+    warnings: list[str] = []
+    fired: list[LevelingProgress] = []
+
+    _apply_quality_scores(nodes, _InconsistentCategoriesClient(), warnings, "", progress_callback=fired.append)
+
+    assert any("inconsistent categoryScores" in w for w in warnings)
+    chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
+    assert len(chunk_warnings) == 1
+    assert "inconsistent categoryScores" in chunk_warnings[0].warning_message
 
 
 def test_build_survey_tree_captures_the_raw_response_when_epic_feature_scoring_fails() -> None:
@@ -2908,6 +2983,186 @@ def test_render_section_interleaves_a_pdf_table_at_its_real_position_and_dedupes
     # The paragraph text must not ALSO contain the table's own cell values.
     paragraph_lines = [line for line in section_text.split("\n") if not line.startswith("|")]
     assert not any("3.3V" in line for line in paragraph_lines)
+
+
+def test_render_section_injects_the_real_figure_id_into_the_rendered_line() -> None:
+    # known-issues item 20: the model has no id to name in figure_ids
+    # unless render_section actually puts one in the text it reads.
+    path = "x.docx"
+    block = Block(id="b5", kind=BlockKind.FIGURE, text="[FIGURE: A power schematic]", source_ref=_sr(path))
+    text = render_section([block], figure_id_by_block_id={"b5": "f3"})
+    assert "> Figure f3: A power schematic" in text
+
+
+def test_render_section_omits_the_figure_id_when_no_map_is_supplied() -> None:
+    # None is byte-identical to before figure_id_by_block_id existed --
+    # _figure_line/block.text (shared with BASELINE) are never touched.
+    path = "x.docx"
+    block = Block(id="b5", kind=BlockKind.FIGURE, text="[FIGURE: A power schematic]", source_ref=_sr(path))
+    text = render_section([block])
+    assert "> Figure: A power schematic" in text
+    assert "f3" not in text
+
+
+def test_render_section_prefixes_each_table_with_its_own_id_marker() -> None:
+    # Unlike figures, no id map is needed here -- table.id is already
+    # directly available from the `tables` list itself.
+    path = "x.docx"
+    table = Table(id="t2", rows=[["h1", "h2"], ["a", "b"]], source_ref=_sr(path))
+    text = render_section([], tables=[table])
+    assert "[TABLE t2]" in text
+    assert text.index("[TABLE t2]") < text.index("| h1 | h2 |")
+
+
+def test_build_survey_tree_embeds_a_named_tables_html_and_records_table_ids() -> None:
+    # known-issues item 20, piece (c): once a node names a real table_id,
+    # that table's HTML is embedded into its description -- no new ADO
+    # write capability needed, unlike figures (see WorkItemNode.table_ids'
+    # own docstring).
+    path = "table_only.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        tables=[Table(id="t0", rows=[["a", "b"]], source_ref=_sr(path))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{
+            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+            "title": "t", "text": "The system shall do x.", "tags": [],
+            "table_ids": ["t0"],
+        }]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert len(tree.nodes) == 1
+    node = tree.nodes[0]
+    assert node.table_ids == ["t0"]
+    assert node.description.startswith("The system shall do x.")
+    assert "<table>" in node.description
+    assert "<td>a</td>" in node.description
+
+
+def test_build_survey_tree_drops_a_hallucinated_table_id_and_warns() -> None:
+    # A model-returned id that doesn't match any real table this section
+    # actually offered must never be trusted verbatim -- dropped, with a
+    # warning surfaced for review, not silently accepted.
+    path = "table_only.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        tables=[Table(id="t0", rows=[["a", "b"]], source_ref=_sr(path))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{
+            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+            "title": "t", "text": "The system shall do x.", "tags": [],
+            "table_ids": ["t99"],
+        }]
+    )
+    tree = build_survey_tree(doc, fake)
+    node = tree.nodes[0]
+    assert node.table_ids == []
+    assert "<table>" not in node.description
+    assert any("t99" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_records_figure_ids_named_by_the_model() -> None:
+    path = "figure_only.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+        figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{
+            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+            "title": "t", "text": "The system shall do x.", "tags": [],
+            "figure_ids": ["f0"],
+        }]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert tree.nodes[0].figure_ids == ["f0"]
+
+
+def test_build_survey_tree_drops_a_hallucinated_figure_id_and_warns() -> None:
+    path = "figure_only.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+        figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{
+            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+            "title": "t", "text": "The system shall do x.", "tags": [],
+            "figure_ids": ["f99"],
+        }]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert tree.nodes[0].figure_ids == []
+    assert any("f99" in w for w in tree.warnings)
+
+
+def test_build_survey_tree_scopes_table_ids_validation_per_branch(monkeypatch) -> None:
+    # The multi-branch path never passes `figures=`/a per-branch table list
+    # to _build_survey_tree_for_branch the same simple way the single-branch
+    # path does (see _run_branch) -- this proves table_ids validation still
+    # correctly scopes to EACH branch's own real tables (via
+    # _partition_tables_by_branch), not the whole document's. Both branches
+    # get the identical FakeSectionAnalysisClient node claiming "t0", but
+    # only branch 2 ("Audio") actually has that table in its own section.
+    _force_multi_branch(monkeypatch)
+    doc = _two_branch_doc()
+    doc = doc.model_copy(
+        update={
+            "tables": [
+                Table(
+                    id="t0", rows=[["a", "b"]],
+                    source_ref=SourceRef(document_path=doc.document.path, start_offset=20, end_offset=30),
+                )
+            ]
+        }
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{
+            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+            "title": "t", "text": "The system shall do x.", "tags": [], "table_ids": ["t0"],
+        }]
+    )
+    tree = build_survey_tree(doc, fake)
+    display_node = next(n for n in tree.nodes if n.local_id == "br0_n0")
+    audio_node = next(n for n in tree.nodes if n.local_id == "br1_n0")
+    assert display_node.table_ids == []
+    assert "<table>" not in display_node.description
+    assert audio_node.table_ids == ["t0"]
+    assert "<table>" in audio_node.description
+
+
+def test_build_survey_tree_scopes_figure_ids_validation_per_branch(monkeypatch) -> None:
+    # Same guarantee as the table test above, for figures -- the global
+    # figure_id_by_block_id map is whole-document, but valid_figure_ids is
+    # derived from each branch's OWN `blocks`, so a figure belonging to a
+    # DIFFERENT branch is correctly rejected here too.
+    _force_multi_branch(monkeypatch)
+    path = "two_branch_survey_input.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: A display wiring diagram]", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+        ],
+        figures=[Figure(id="f0", caption="A display wiring diagram", source_ref=_sr(path))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{
+            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+            "title": "t", "text": "The system shall do x.", "tags": [], "figure_ids": ["f0"],
+        }]
+    )
+    tree = build_survey_tree(doc, fake)
+    display_node = next(n for n in tree.nodes if n.local_id == "br0_n0")
+    audio_node = next(n for n in tree.nodes if n.local_id == "br1_n0")
+    assert display_node.figure_ids == ["f0"]
+    assert audio_node.figure_ids == []
 
 
 def test_build_survey_tree_warns_on_a_referenced_attachment_it_did_not_ingest() -> None:

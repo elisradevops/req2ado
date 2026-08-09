@@ -168,6 +168,17 @@ export const adoOperations: AdoOperation[] = [
     inputSchema: { iconId: z.string(), color: z.string() },
     handler: (backend, { iconId, color }: { iconId: string; color: string }) => callBackend(() => backend.getWorkItemIcon(iconId, color)),
   },
+  {
+    name: 'ado_upload_attachment',
+    title: 'Upload and attach a file to an ADO work item',
+    description:
+      'Uploads the given bytes (base64) as an ADO attachment and links it to the work item, e.g. a figure a requirement cites (JobFigureFile). Two real ADO calls under one operation: attachmentsuploads, then a relations/- patch with rel=AttachedFile.',
+    inputSchema: { workItemId: z.number(), fileName: z.string(), dataBase64: z.string(), mimeType: z.string() },
+    handler: (
+      backend,
+      { workItemId, fileName, dataBase64, mimeType }: { workItemId: number; fileName: string; dataBase64: string; mimeType: string },
+    ) => callBackend(() => backend.uploadAttachment(workItemId, fileName, dataBase64, mimeType)).then(() => ({ ok: true })),
+  },
 ];
 
 export function getOperation(name: string): AdoOperation | undefined {

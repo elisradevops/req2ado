@@ -50,6 +50,14 @@ export interface WorkItemNode {
     | 'feature'
     | 'behavior'
   )[];
+  /**
+   * SURVEY-only: ids of this section's own candidate figures the LLM judged relevant to this node (see llm_leveling.render_section's figure id injection). Link-only today -- does not drive an ADO attachment (no upload capability exists yet).
+   */
+  figure_ids?: string[];
+  /**
+   * SURVEY-only: ids of this section's own candidate tables the LLM judged relevant to this node. A non-empty list means that table's HTML is already embedded into `description` (see _table_to_html).
+   */
+  table_ids?: string[];
   mode: 'BASELINE' | 'SURVEY';
   /**
    * Default work-item type for a new manual child added under this node. Null when ineligible or unresolvable.

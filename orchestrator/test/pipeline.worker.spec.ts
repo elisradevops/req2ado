@@ -12,6 +12,7 @@ describe('runPipelineJob', () => {
     job: { update: jest.fn(), findUnique: jest.fn().mockResolvedValue({ status: 'running' }) },
     auditEntry: { create: jest.fn() },
     dedupSkipAudit: { createMany: jest.fn() },
+    jobFigureFile: { deleteMany: jest.fn() },
     // Defaults to "recently backfilled" (findUnique resolves a fresh
     // lastBackfilledAt) so maybeBackfillAreaPath is a no-op for every
     // existing test's happy/failure path -- the dedicated area-path
@@ -268,11 +269,11 @@ describe('runPipelineJob', () => {
       [
         {
           localId: 'n0', sourceHash: 'hashA', legacySourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1',
-          groundingScore: null, sourceRef: null, tags: [], traceLinks: [],
+          groundingScore: null, sourceRef: null, tags: [], traceLinks: [], figureIds: [],
         },
         {
           localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
-          groundingScore: null, sourceRef: null, tags: [], traceLinks: [],
+          groundingScore: null, sourceRef: null, tags: [], traceLinks: [], figureIds: [],
         },
       ],
       fakeIdempotencyService,
@@ -338,6 +339,7 @@ describe('runPipelineJob', () => {
           sourceRef: null,
           tags: [],
           traceLinks: [],
+          figureIds: [],
         },
         {
           localId: 'n1',
@@ -353,6 +355,7 @@ describe('runPipelineJob', () => {
           sourceRef: null,
           tags: [],
           traceLinks: [],
+          figureIds: [],
         },
       ],
       fakeIdempotencyService,
@@ -405,19 +408,112 @@ describe('runPipelineJob', () => {
           groundingScore: null, sourceRef: null, tags: [],
           qualityScore: 72, qualityIssues: ['vague_term'],
           qualityCategoryScores: { clarity: 40, testability: 80, atomicity: 90, style: 60, rationale: 20 },
-          childType: 'Requirement', traceLinks: [],
+          childType: 'Requirement', traceLinks: [], figureIds: [],
         },
         {
           localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [],
           qualityScore: undefined, qualityIssues: undefined, qualityCategoryScores: undefined,
-          childType: undefined, traceLinks: [],
+          childType: undefined, traceLinks: [], figureIds: [],
         },
       ],
       fakeIdempotencyService,
       expect.any(Function),
       expect.any(Function),
     );
+  });
+
+  it('carries figure_ids from ingestion through to the dry-run diff input', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        { local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1', figure_ids: ['f0', 'f2'] },
+        { local_id: 'n1', fidelity_hash: 'hashB', customer_id: 'CUST-1' },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakeDryRunService.diff).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ localId: 'n0', figureIds: ['f0', 'f2'] }),
+        expect.objectContaining({ localId: 'n1', figureIds: [] }),
+      ],
+      fakeIdempotencyService,
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it('prunes JobFigureFile rows for figures no node references, once the real tree is known', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        { local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1', figure_ids: ['f0'] },
+        { local_id: 'n1', fidelity_hash: 'hashB', customer_id: 'CUST-1', figure_ids: ['f2'] },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.jobFigureFile.deleteMany).toHaveBeenCalledWith({
+      where: { jobId: 'job-1', figureId: { notIn: ['f0', 'f2'] } },
+    });
+  });
+
+  it('a JobFigureFile prune failure never fails the job -- best-effort cleanup only', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [{ local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1', figure_ids: ['f0'] }],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+    fakePrisma.jobFigureFile.deleteMany.mockRejectedValueOnce(new Error('connection lost'));
+
+    await expect(
+      runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      ),
+    ).resolves.not.toThrow();
+    expect(fakePrisma.job.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }));
   });
 
   it('carries grounding_score from ingestion through when present', async () => {

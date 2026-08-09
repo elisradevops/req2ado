@@ -171,3 +171,41 @@ describe('JobsController.listModels', () => {
     expect(result).toEqual({ models: ['qwen2.5:1.5b', 'gemma4:e4b'] });
   });
 });
+
+describe('JobsController.uploadFigureFile', () => {
+  it('stores compressed figure bytes via jobsService.storeFigureFile', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn().mockResolvedValue(undefined) };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    const bytes = Buffer.from('png bytes');
+    const result = await controller.uploadFigureFile('job-1', 'f3', { bytes: bytes.toString('base64'), mimeType: 'image/png' });
+
+    expect(jobsService.storeFigureFile).toHaveBeenCalledWith('job-1', 'f3', bytes, 'image/png');
+    expect(result).toEqual({ stored: true });
+  });
+
+  it('404s for an unknown job -- never even parses the body', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(null), storeFigureFile: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.uploadFigureFile('missing', 'f3', { bytes: 'YQ==', mimeType: 'image/png' })).rejects.toThrow('not found');
+    expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects a body missing bytes/mimeType', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.uploadFigureFile('job-1', 'f3', { bytes: '' } as any)).rejects.toThrow('Invalid request body');
+    expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects a figure over the 8MB per-figure cap', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    const oversized = Buffer.alloc(9 * 1024 * 1024, 1).toString('base64');
+    await expect(controller.uploadFigureFile('job-1', 'f3', { bytes: oversized, mimeType: 'image/png' })).rejects.toThrow('exceeds');
+    expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
+  });
+});

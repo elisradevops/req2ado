@@ -19,7 +19,7 @@ import {
   type JobEventRecord,
   type JobSummaryReport,
 } from '../api/jobs';
-import { subscribeToJobEvents, type JobStage, type NarrationEvent } from '../api/events';
+import { subscribeToJobEvents, isValidNarrationEvent, type JobStage, type NarrationEvent } from '../api/events';
 import { loadRuntimeConfig } from '../api/config';
 import { useOrgUrl } from '../store/authStore';
 import { StatusChip } from '../components/StatusChip';
@@ -61,6 +61,14 @@ export function JobDetail(): React.ReactElement {
   const [mode, setMode] = useState<string | null>(null);
   const [kbCitations, setKbCitations] = useState<KbCitation[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
+  // Populated directly from the SSE callback on 'chunk_warning' events --
+  // docs/ui-progress-review.md item #3: previously a mid-run chunk failure
+  // was invisible until the whole job finished and `warnings` (above) got
+  // its one-time post-completion value. Merged with `warnings` wherever
+  // rendered (see the mergedWarnings useMemo below), not shown separately,
+  // so a live warning doesn't disappear then reappear once the job
+  // actually completes and the persisted list supersedes it.
+  const [liveWarnings, setLiveWarnings] = useState<string[]>([]);
   const [diff, setDiff] = useState<DryRunDiffEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -186,14 +194,16 @@ export function JobDetail(): React.ReactElement {
     };
   }, [id, status]);
 
-  // Fetched once a job reaches a terminal status -- exactly when the SSE
-  // connection closes (see JobEventsController.streamEvents's
-  // terminalStages set) and the live narration array stops growing. Not
-  // gated on isLive alone (a job that fails DURING the pending-to-running
-  // switch still needs this) -- checks every non-live status directly,
-  // same set every other terminal-status branch in this file already uses.
+  // Fetched on every mount, regardless of status -- previously gated to
+  // terminal statuses only, which meant reconnecting to (or refreshing) a
+  // STILL-RUNNING job's page showed only the live SSE tail's bounded recent
+  // window, nothing from before the reconnect. Confirmed live: this made a
+  // multi-hour job's activity/figure counts look like they'd REGRESSED on
+  // reload (e.g. 39 figures down to 20) even though nothing was actually
+  // lost -- the durable history this fetches has always had everything,
+  // the frontend just never asked for it while the job was still running.
   useEffect(() => {
-    if (!id || status === null || status === 'pending' || status === 'running' || status === 'writing') return;
+    if (!id) return;
     let cancelled = false;
     getEventHistory(id)
       .then((events) => {
@@ -250,10 +260,19 @@ export function JobDetail(): React.ReactElement {
           }
         },
         (narration) => {
-          // Cap accumulated narrations -- a long-running SURVEY job with
-          // many branches could otherwise grow this list unboundedly for
-          // the duration of the whole job.
-          setNarrations((current) => [...current, narration].slice(-50));
+          // chunk_warning is deliberately EXCLUDED from `narrations` --
+          // that array's `.at(-1)` drives the stepper's current-phase and
+          // the ticker's status sentence (JobLifecycleSteps/tickerFor), and
+          // a chunk_warning becoming "latest" would misleadingly replace a
+          // real "Scoring quality..."-style status with a one-off soft
+          // failure notice. It's captured below into liveWarnings instead,
+          // which CollapsibleWarnings already renders independently.
+          if (narration.phase !== 'chunk_warning') {
+            // Cap accumulated narrations -- a long-running SURVEY job with
+            // many branches could otherwise grow this list unboundedly for
+            // the duration of the whole job.
+            setNarrations((current) => [...current, narration].slice(-50));
+          }
           if (narration.phase === 'describe_figure' && narration.figureIndex != null && narration.figureCaption) {
             const { figureIndex, figureCaption } = narration;
             setFigureCaptionsByIndex((current) => ({ ...current, [figureIndex]: figureCaption }));
@@ -271,6 +290,10 @@ export function JobDetail(): React.ReactElement {
               },
             }));
           }
+          if (narration.phase === 'chunk_warning' && narration.warningMessage) {
+            const { warningMessage } = narration;
+            setLiveWarnings((current) => (current.includes(warningMessage) ? current : [...current, warningMessage]));
+          }
         },
       );
     });
@@ -279,6 +302,48 @@ export function JobDetail(): React.ReactElement {
       unsubscribe?.();
     };
   }, [id, isLive]);
+
+  // Merges the durable event-history fetch above with the live SSE tail --
+  // JobEventPersistenceService (orchestrator) stores each event's raw
+  // payload verbatim in `detail`, the exact same shape delivered over SSE,
+  // so isValidNarrationEvent recovers real NarrationEvent objects from it
+  // (plain stage-transition rows fail this check and are correctly
+  // dropped -- they're a different concept, handled via onStage). Dedup
+  // key mirrors JobEventPersistenceService's own backfill key (phase +
+  // message) -- a historical entry already represented in the live tail
+  // (the common case: the history fetch and an in-flight SSE connection
+  // both cover the same recent window) is dropped rather than shown twice.
+  const mergedNarrations = useMemo<NarrationEvent[]>(() => {
+    const seen = new Set(narrations.map((n) => `${n.phase}|${n.message}`));
+    const historical: NarrationEvent[] = [];
+    for (const event of eventHistory) {
+      if (isValidNarrationEvent(event.detail) && !seen.has(`${event.detail.phase}|${event.detail.message}`)) {
+        historical.push(event.detail);
+      }
+    }
+    return [...historical, ...narrations];
+  }, [eventHistory, narrations]);
+
+  // Backfills figureCaptionsByIndex from durable history too -- the live
+  // SSE callback above only ever sees events published AFTER this page
+  // connects, so a figure described before a reconnect/refresh mid-run
+  // (this was the concrete live-confirmed regression: a 39-figure panel
+  // came back showing only 20 after navigating away and back) would
+  // otherwise never appear here. Functional update, seeded values only --
+  // an already-known caption (from job.figureDescriptions or a live event)
+  // always wins over a historical one racing it.
+  useEffect(() => {
+    const seeded: Record<number, string> = {};
+    for (const event of eventHistory) {
+      const detail = event.detail;
+      if (isValidNarrationEvent(detail) && detail.phase === 'describe_figure' && detail.figureIndex != null && detail.figureCaption) {
+        seeded[detail.figureIndex] = detail.figureCaption;
+      }
+    }
+    if (Object.keys(seeded).length > 0) {
+      setFigureCaptionsByIndex((current) => ({ ...seeded, ...current }));
+    }
+  }, [eventHistory]);
 
   const figureDescriptions = useMemo<FigureDescriptionEntry[]>(
     () =>
@@ -291,6 +356,15 @@ export function JobDetail(): React.ReactElement {
   const sectionResults = useMemo<SectionResultEntry[]>(
     () => Object.values(sectionResultsByIndex).sort((a, b) => a.branchIndex - b.branchIndex),
     [sectionResultsByIndex],
+  );
+
+  // While running: only liveWarnings has content (warnings is still []
+  // from the one-time getJob fetch). Once terminal, warnings becomes the
+  // real, authoritative post-completion list -- deduped against
+  // liveWarnings by exact text so nothing shows twice.
+  const mergedWarnings = useMemo(
+    () => [...warnings, ...liveWarnings.filter((w) => !warnings.includes(w))],
+    [warnings, liveWarnings],
   );
 
   async function handleConfirm(): Promise<void> {
@@ -734,10 +808,10 @@ export function JobDetail(): React.ReactElement {
             mode={mode as 'baseline' | 'survey'}
             status={status}
             stage={stage}
-            latestNarrationPhase={narrations.at(-1)?.phase ?? null}
+            latestNarrationPhase={mergedNarrations.at(-1)?.phase ?? null}
           />
           <NarrationTicker
-            sentence={tickerFor({ status, stage, latest: narrations.at(-1) ?? null }).sentence}
+            sentence={tickerFor({ status, stage, latest: mergedNarrations.at(-1) ?? null }).sentence}
             isLive={(status === 'pending' || status === 'running' || status === 'writing') && !!startedAt}
             startedAt={startedAt ?? ''}
           />
@@ -751,7 +825,7 @@ export function JobDetail(): React.ReactElement {
         </Alert>
       )}
       {isRunDetailStatus(status) && stage && mode && startedAt && (
-        <ProgressBanner stage={stage} startedAt={startedAt} mode={mode as 'baseline' | 'survey'} narrations={narrations} />
+        <ProgressBanner stage={stage} startedAt={startedAt} mode={mode as 'baseline' | 'survey'} narrations={mergedNarrations} />
       )}
       <FigureDescriptions items={figureDescriptions} />
       <SectionResults items={sectionResults} />
@@ -763,7 +837,7 @@ export function JobDetail(): React.ReactElement {
         </div>
       )}
       <CollapsibleWarnings
-        warnings={warnings}
+        warnings={mergedWarnings}
         onJumpToNode={(localId) => {
           setTab('tree');
           setSelectedId(localId);

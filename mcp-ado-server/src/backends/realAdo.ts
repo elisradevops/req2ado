@@ -429,6 +429,36 @@ export class RealAdoBackend implements AdoBackend {
     return { contentType, dataBase64: Buffer.from(response.data as ArrayBuffer).toString('base64') };
   }
 
+  /**
+   * Two real ADO calls: (1) POST the raw bytes to attachmentsuploads --
+   * ADO's own two-step attachment flow, distinct from every other call in
+   * this file since the body is raw binary, not JSON -- getting back a
+   * GUID/URL reference; (2) the SAME JSON-Patch relations/- add pattern
+   * linkParentChild/linkWorkItems already use, with rel: 'AttachedFile'
+   * instead of a hierarchy/generic reference. `attributes.comment` uses
+   * fileName so the attachment is identifiable in ADO's UI without opening
+   * it.
+   */
+  async uploadAttachment(workItemId: number, fileName: string, dataBase64: string, mimeType: string): Promise<void> {
+    const version = await this.getApiVersion();
+    const uploadBase = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/attachmentsuploads?fileName=${encodeURIComponent(fileName)}`;
+    const uploadUrl = version === 'none' ? uploadBase : `${uploadBase}&api-version=${version}`;
+    const uploadResponse = await retryWithBackoff(() =>
+      this.httpClient.post(uploadUrl, Buffer.from(dataBase64, 'base64'), {
+        headers: { Authorization: this.authHeader(), 'Content-Type': mimeType || 'application/octet-stream' },
+      }),
+    );
+    const attachmentUrl = uploadResponse.data.url as string;
+    const workItemUrl = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems/${workItemId}${versionQueryParam(version)}`;
+    await retryWithBackoff(() =>
+      this.httpClient.patch(
+        workItemUrl,
+        [{ op: 'add', path: '/relations/-', value: { rel: 'AttachedFile', url: attachmentUrl, attributes: { comment: fileName } } }],
+        { headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' } },
+      ),
+    );
+  }
+
   private toAreaPathNode(raw: { name: string; children?: unknown[] }, pathPrefix: string): AreaPathNode {
     const path = pathPrefix;
     const children = (raw.children ?? []).map((child: any) => this.toAreaPathNode(child, `${path}\\${child.name}`));

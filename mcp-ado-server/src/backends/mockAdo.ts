@@ -67,6 +67,11 @@ export class MockAdoBackend implements AdoBackend {
     // real backend is what actually needs to write the relation.
   }
 
+  async uploadAttachment(_workItemId: number, _fileName: string, _dataBase64: string, _mimeType: string): Promise<void> {
+    // No-op, same reasoning as linkWorkItems above -- the mock's flat schema
+    // has nowhere to record an attachment relation.
+  }
+
   async queryIds(fieldMatch: Record<string, string>): Promise<number[]> {
     const rows = this.db.prepare('SELECT id, fields FROM work_items').all() as { id: number; fields: string }[];
     return rows

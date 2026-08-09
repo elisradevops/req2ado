@@ -168,4 +168,14 @@ export interface AdoBackend {
    * response.
    */
   getWorkItemIcon(iconId: string, color: string): Promise<WorkItemIcon>;
+  /**
+   * Uploads a figure's bytes as an ADO attachment and links it to the given
+   * work item -- the item 20d "attach the figure this requirement cites"
+   * feature (JobFigureFile, orchestrator-side). Two real ADO calls under
+   * one operation, same reasoning as linkParentChild wrapping a single
+   * relations/- patch: the caller (confirm()) only cares that the figure
+   * ends up attached, not the two-step REST mechanics. `dataBase64` mirrors
+   * getWorkItemIcon's convention (MCP tool results are text-only).
+   */
+  uploadAttachment(workItemId: number, fileName: string, dataBase64: string, mimeType: string): Promise<void>;
 }

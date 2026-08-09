@@ -20,7 +20,7 @@ describe('REST ADO router', () => {
     const names = res.body.map((op: { name: string }) => op.name);
     expect(names).toContain('ado_create_work_item');
     expect(names).toContain('ado_link_parent_child');
-    expect(names.length).toBe(16);
+    expect(names.length).toBe(17);
   });
 
   it('POST /:operation 404s for an unknown operation', async () => {
@@ -48,6 +48,15 @@ describe('REST ADO router', () => {
   it('POST /:operation returns ok:true for a void-returning backend method (parity with the MCP tool)', async () => {
     const app = appWithRouter(() => new MockAdoBackend(':memory:'));
     const res = await request(app).post('/api/ado/ado_link_parent_child').send({ childId: 1, parentId: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+  });
+
+  it('POST /ado_upload_attachment calls through to the backend and returns ok:true', async () => {
+    const app = appWithRouter(() => new MockAdoBackend(':memory:'));
+    const res = await request(app)
+      .post('/api/ado/ado_upload_attachment')
+      .send({ workItemId: 1, fileName: 'fig.png', dataBase64: Buffer.from('x').toString('base64'), mimeType: 'image/png' });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
   });

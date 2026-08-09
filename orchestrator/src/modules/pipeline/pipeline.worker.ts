@@ -206,6 +206,11 @@ interface LeveledNode {
   source_ref?: LeveledSourceRef | null;
   tags?: string[];
   child_type?: string | null;
+  // SURVEY-only, LLM-judged relevance (see ingestion's WorkItemNode) --
+  // optional for the same backward-compat reason as the scoring fields
+  // above. tableIds has no equivalent here; table embedding already
+  // happens fully inside `description` before this point.
+  figure_ids?: string[];
 }
 
 interface LeveledTraceLink {
@@ -402,8 +407,27 @@ export async function runPipelineJob(
         tags: node.tags ?? [],
         childType: node.child_type,
         traceLinks: traceLinksByLocalId.get(node.local_id) ?? [],
+        figureIds: node.figure_ids ?? [],
       };
     });
+
+    // Ingestion stored a JobFigureFile row for EVERY figure at ingest time
+    // (relevance wasn't known yet then) -- now that the real tree exists,
+    // prune down to only the figures some node's figure_ids actually
+    // references (see JobFigureFile's own Prisma model comment for the full
+    // lifecycle). Best-effort: a failure here must never fail the whole
+    // job over what's purely a storage-cost cleanup step -- a leftover row
+    // just means one extra figure sticks around until confirm() deletes it
+    // on successful attachment upload, or the retention sweep's safety net
+    // eventually reclaims it.
+    try {
+      const referencedFigureIds = [...new Set(diffInputs.flatMap((node) => node.figureIds ?? []))];
+      await deps.prisma.jobFigureFile.deleteMany({
+        where: { jobId: job.id, figureId: { notIn: referencedFigureIds } },
+      });
+    } catch (error) {
+      console.error(`JobFigureFile prune failed for job ${job.id}:`, error);
+    }
 
     const customerIdFieldCandidates = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES;
     // Cross-job trace-link targets are always Requirement-CATEGORY items in

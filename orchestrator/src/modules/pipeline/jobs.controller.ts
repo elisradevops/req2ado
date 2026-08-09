@@ -10,6 +10,7 @@ import {
   PayloadTooLargeException,
   Post,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -17,11 +18,14 @@ import { Body } from '@nestjs/common';
 import { JobsService, JobSummary } from './jobs.service';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
+import { jobFigureFileUploadSchema } from './job-figure-file.dto';
 import { createHash } from 'crypto';
 import { OpenWebUiClient } from '../llm/openwebui.client';
+import { LlmProxyBearerGuard } from '../llm/llm-proxy-bearer.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
+import { Public } from '../auth/public.decorator';
 
 // Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
 // md, docx, pdf (incl. scanned/OCR, same extension), xlsx. Not a security
@@ -38,6 +42,14 @@ const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
 // gap, raising MAX_UPLOAD_SIZE_MB above this literal would silently have no
 // effect, since Multer would already have rejected the upload first.
 const MULTER_SAFETY_CEILING_BYTES = 500 * 1024 * 1024;
+
+// Per-figure cap, same reasoning as JobSourceFile's MAX_STORED_SOURCE_BYTES
+// (jobs.service.ts) but sized for a single already-compressed line-diagram
+// PNG (ingestion resizes to ~1600-2000px long edge + optimize=True before
+// ever posting here) rather than a whole source document -- an oversized
+// figure just doesn't get attachment capability, it never fails the job
+// (see docs on _describe_figure_with_progress's caller).
+const MAX_FIGURE_FILE_BYTES = 8 * 1024 * 1024;
 
 @Controller('jobs')
 export class JobsController {
@@ -309,6 +321,39 @@ export class JobsController {
   async resubmit(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<{ jobId: string }> {
     await this.ownedJob(id, user);
     return this.jobsService.resubmit(id);
+  }
+
+  // Internal service-to-service route: ingestion posts each embedded
+  // figure's already-compressed bytes here as soon as it captions it (see
+  // _describe_figure_with_progress), before /level has even run -- relevance
+  // (figure_ids) isn't known yet at ingest time, so every figure is stored
+  // and pruned down later (pipeline.worker.ts, once the real WorkItemTree
+  // is known). @Public() + LlmProxyBearerGuard: same bearer-guarded,
+  // no-browser-session convention as LlmController's routes, not the
+  // session-cookie CurrentUser() flow every other route on this controller
+  // uses -- ownedJob() doesn't apply here, there is no session user.
+  @Post(':id/figures/:figureId')
+  @Public()
+  @UseGuards(LlmProxyBearerGuard)
+  async uploadFigureFile(
+    @Param('id') id: string,
+    @Param('figureId') figureId: string,
+    @Body() rawBody: unknown,
+  ): Promise<{ stored: true }> {
+    const job = await this.jobsService.getById(id);
+    if (!job) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    const parseResult = jobFigureFileUploadSchema.safeParse(rawBody);
+    if (!parseResult.success) {
+      throw new BadRequestException('Invalid request body: bytes (base64) and mimeType are required');
+    }
+    const bytes = Buffer.from(parseResult.data.bytes, 'base64');
+    if (bytes.length > MAX_FIGURE_FILE_BYTES) {
+      throw new PayloadTooLargeException(`figure exceeds the ${Math.round(MAX_FIGURE_FILE_BYTES / 1024 / 1024)}MB per-figure limit`);
+    }
+    await this.jobsService.storeFigureFile(id, figureId, bytes, parseResult.data.mimeType);
+    return { stored: true };
   }
 
   @Get(':id/audit')

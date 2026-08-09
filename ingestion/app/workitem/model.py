@@ -160,6 +160,19 @@ class WorkItemNode(BaseModel):
     # fixture) -- optional so this is purely additive.
     identity_hash: str | None = None
     tags: list[RequirementTag] = Field(default_factory=list)
+    # SURVEY-only: which of this section's candidate figures/tables the LLM
+    # judged relevant to this specific node (see llm_leveling.render_section's
+    # figure/table id injection and _build_survey_tree_for_branch's
+    # figure_ids/table_ids validation against the section's real candidate
+    # ids -- a model-hallucinated id that doesn't match any real Figure/Table
+    # in scope is dropped, never trusted verbatim). []/[] for BASELINE and
+    # for any SURVEY node the model didn't judge relevant to anything.
+    # table_ids additionally drives embedding that table's HTML into
+    # description (see _table_to_html) -- figure_ids does not yet drive an
+    # attachment (no ADO upload capability exists; see known-issues item 20
+    # piece (d)), it is currently link-only.
+    figure_ids: list[str] = Field(default_factory=list)
+    table_ids: list[str] = Field(default_factory=list)
     mode: WorkItemMode
     # The work-item type a NEW manual child entry added under this node
     # should default to (see orchestrator's JobsService.addDiffEntry) —

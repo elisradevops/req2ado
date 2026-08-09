@@ -69,6 +69,12 @@ export interface DryRunTreeNode {
   sourceRef?: DryRunSourceRef | null;
   childType?: string | null;
   traceLinks?: TraceLink[];
+  // Carried from ingestion's WorkItemNode.figure_ids (SURVEY-only,
+  // LLM-judged relevance) so confirm() knows which JobFigureFile rows to
+  // attach to this created work item. tableIds has no equivalent field
+  // here -- table embedding already happens fully inside `description`
+  // before this point, there's nothing left to attach separately.
+  figureIds?: string[];
 }
 
 export interface DryRunDiffEntry {

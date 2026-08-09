@@ -186,4 +186,14 @@ export class McpClient {
   async queryIds(fieldMatch: Record<string, string>, credential?: AdoRequestCredential): Promise<number[]> {
     return this.call('ado_query_ids', { fieldMatch }, credential);
   }
+
+  async uploadAttachment(
+    workItemId: number,
+    fileName: string,
+    dataBase64: string,
+    mimeType: string,
+    credential?: AdoRequestCredential,
+  ): Promise<void> {
+    await this.call('ado_upload_attachment', { workItemId, fileName, dataBase64, mimeType }, credential);
+  }
 }

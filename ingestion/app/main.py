@@ -38,6 +38,7 @@ from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
 from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL, OrchestratorVisionClient
+from app.vision.figure_storage_client import OrchestratorFigureFileClient, compress_figure_for_storage
 from app.workitem.model import WorkItemTree
 
 logging.basicConfig(
@@ -169,6 +170,15 @@ _dedup_judge_client = OrchestratorLlmClient(settings.orchestrator_url, settings.
 # placeholder -- identical behavior to before vision support existed.
 _vision_client = (
     OrchestratorVisionClient(settings.orchestrator_url, settings.llm_proxy_bearer)
+    if settings.llm_vision_model
+    else None
+)
+# Same bearer/base_url, same "None means feature off" convention as
+# _vision_client -- storing figure bytes for later ADO attachment only ever
+# makes sense alongside real vision-based figure description in the first
+# place (see _describe_figure_with_progress).
+_figure_file_client = (
+    OrchestratorFigureFileClient(settings.orchestrator_url, settings.llm_proxy_bearer)
     if settings.llm_vision_model
     else None
 )
@@ -620,6 +630,26 @@ async def ingest(
     narration_publisher = NarrationPublisher(_narration_redis, job_id) if job_id else None
     vision_active = _vision_client is not None and not skip_vision and mode == "survey"
 
+    # Real gap this closes (user-reported live): describe_figure narration
+    # fires DURING the document walk, before the full figure list -- and so
+    # its total -- is known, so every figure showed an open-ended "figure N
+    # so far" with no denominator. A cheap structural-only pre-pass
+    # (describe_figure=None below, so _describe_one_figure short-circuits
+    # before ever reading image bytes -- no vision calls) learns the real
+    # count first. Scoped to .docx for now, the reproducing case: docx
+    # parsing has no OCR step, so a second structural pass is negligible
+    # cost; pdf's OCR path does real work regardless of describe_figure, so
+    # doubling the walk there isn't free the same way -- extend per-format
+    # only if that format shows the same gap live. Only worth doing at all
+    # when a real vision walk is about to happen AND something will read the
+    # narration.
+    figure_total: int | None = None
+    if vision_active and narration_publisher is not None and Path(file.filename or "").suffix.lower() == ".docx":
+        precount_doc = await run_in_threadpool(
+            dispatch_by_extension, file.filename or "", tmp_path, languages=languages, describe_figure=None,
+        )
+        figure_total = len(precount_doc.figures)
+
     describe_figure_fn = None
     if vision_active:
         # Closed over per-request (not module-level) -- figure_counter must
@@ -640,7 +670,7 @@ async def ingest(
                         phase="describe_figure",
                         branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
                         kb_grounded=False, kb_citations=[],
-                        figure_index=index,
+                        figure_index=index, figure_count=figure_total,
                     )
                 )
             caption = _describe_figure(image_bytes)
@@ -664,9 +694,33 @@ async def ingest(
                         phase="describe_figure",
                         branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
                         kb_grounded=False, kb_citations=[],
-                        figure_index=index, figure_caption=display_caption,
+                        figure_index=index, figure_caption=display_caption, figure_count=figure_total,
                     )
                 )
+            # Captured for every figure regardless of relevance -- figure_ids
+            # relevance isn't known until /level runs (see llm_leveling.py's
+            # analyze_section), so everything is stored now and pruned down
+            # later (pipeline.worker.ts, once the real WorkItemTree exists).
+            # index-1 matches the loader's own f"f{figure_index}" id scheme
+            # exactly: every loader (docx/pptx/pdf) calls describe_figure
+            # exactly once per figure, immediately before appending that
+            # figure with a 0-based sequential id, in the same order -- the
+            # same lockstep-append invariant llm_leveling.py's
+            # figure_id_by_block_id mapping already relies on. Best-effort:
+            # any failure here (network, oversized, non-raster/EMF-WMF bytes
+            # compress_figure_for_storage can't open) must never fail the
+            # describe_figure call it's piggybacking on -- a figure that
+            # doesn't get stored simply won't be attachable in ADO later.
+            if job_id is not None and _figure_file_client is not None:
+                figure_id = f"f{index - 1}"
+                try:
+                    compressed = compress_figure_for_storage(image_bytes)
+                    if compressed is not None:
+                        _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
+                except Exception:
+                    logger.warning(
+                        "Figure-file storage failed for %s -- it will not be attachable in ADO", figure_id, exc_info=True
+                    )
             return caption
 
         describe_figure_fn = _describe_figure_with_progress
@@ -700,7 +754,7 @@ async def ingest(
         # tables ingest correctly" (row count + deterministic-detection
         # qualifying status) up front, rather than the user having to wait
         # for analysis/scoring to find out a table was mis-parsed.
-        for table in doc.tables:
+        for table_index, table in enumerate(doc.tables, start=1):
             # Real bug (confirmed live): rows_from_table returns only the
             # ID-hierarchy-QUALIFYING rows (legitimately [] for a table
             # whose content just isn't ID-shaped) -- using that as the
@@ -715,6 +769,7 @@ async def ingest(
                     branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
                     kb_grounded=False, kb_citations=[],
                     table_id=table.id, table_row_count=len(table.rows), table_qualifies=bool(qualifying_rows),
+                    table_index=table_index, table_count=len(doc.tables),
                 )
             )
 

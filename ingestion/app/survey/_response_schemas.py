@@ -106,7 +106,18 @@ def section_analysis_schema() -> dict:
     the server for 10+ minutes; an unbounded array avoids that cliff the same
     way the additionalProperties objects above do. 'parent_temp_id' is a
     plain nullable string referencing another node's temp_id in the SAME
-    array (or null for a section root) -- no recursive $ref needed."""
+    array (or null for a section root) -- no recursive $ref needed.
+
+    'figure_ids'/'table_ids' (added for known-issues item 20): which of the
+    section's own candidate figure/table ids (rendered inline in the section
+    text -- see llm_leveling.render_section) this node judges relevant.
+    Deliberately NOT in `required` -- most nodes have no relevant
+    figure/table at all, and requiring an always-empty array on every node
+    would just be prompt-compliance noise for the common case. Plain
+    unbounded string arrays, same shape as `tags` above -- no maxItems, no
+    enum (ids are per-document, not a closed vocabulary) -- so this doesn't
+    reintroduce the bounded-repetition grammar cliff this module's header
+    docstring warns about."""
     return {
         "name": "section_analysis",
         "schema": {
@@ -123,6 +134,8 @@ def section_analysis_schema() -> dict:
                             "title": {"type": "string"},
                             "text": {"type": "string"},
                             "tags": {"type": "array", "items": {"type": "string", "enum": _TAGS}},
+                            "figure_ids": {"type": "array", "items": {"type": "string"}},
+                            "table_ids": {"type": "array", "items": {"type": "string"}},
                         },
                         "required": ["temp_id", "type", "parent_temp_id", "title", "text", "tags"],
                     },

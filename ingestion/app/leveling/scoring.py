@@ -175,7 +175,10 @@ def _score_all_requirements(
         chunk_index = start // _SCORING_CHUNK_NODE_COUNT
         _fire("score_requirements", chunk, nodes_done=start, chunk_index=chunk_index)
         try:
-            _apply_quality_scores(chunk, scoring_client, warnings, "", criteria_context, kb_context, category_checklist)
+            _apply_quality_scores(
+                chunk, scoring_client, warnings, "", criteria_context, kb_context, category_checklist,
+                progress_callback=progress_callback,
+            )
         except Exception as exc:  # noqa: BLE001 - one chunk's transient failure (confirmed live:
             # a real job lost 45+ minutes of prior parse/tree-build/title-tag/
             # synthesis work to a single 500 from the LLM backend here) must
@@ -188,6 +191,14 @@ def _score_all_requirements(
             message = f"Requirement quality scoring failed for {len(chunk)} node(s): {exc}"
             logger.warning(message)
             warnings.append(message)
+            if progress_callback is not None:
+                progress_callback(
+                    LevelingProgress(
+                        phase="chunk_warning", branch_index=None, branch_count=branch_count,
+                        blocks_done=0, blocks_total=blocks_total, kb_grounded=False, kb_citations=[],
+                        warning_message=message,
+                    )
+                )
             continue
         # Fan each representative's real result out to every OTHER node
         # sharing that same description text -- see this function's own
@@ -291,6 +302,14 @@ def _score_epics_and_features(
             if debug_capture is not None:
                 debug_capture.capture("score_epics_and_features", f"chunk_{start}", str(exc))
             warnings.append(message)
+            if progress_callback is not None:
+                progress_callback(
+                    LevelingProgress(
+                        phase="chunk_warning", branch_index=None, branch_count=branch_count,
+                        blocks_done=0, blocks_total=total_epic_feature_nodes, kb_grounded=False, kb_citations=[],
+                        warning_message=message,
+                    )
+                )
             continue
         for node in chunk:
             entry = scores_by_id.get(node.local_id)
@@ -338,6 +357,7 @@ def _apply_quality_scores(
     criteria_context: str | None = None,
     kb_context: str | None = None,
     category_checklist: list[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Judges every node's FINAL formalized description in ONE batched call
     (mutates `nodes` in place -- WorkItemNode is a plain, mutable pydantic
@@ -391,6 +411,14 @@ def _apply_quality_scores(
         )
         logger.warning(message)
         warnings.append(message)
+        if progress_callback is not None:
+            progress_callback(
+                LevelingProgress(
+                    phase="chunk_warning", branch_index=None, branch_count=0,
+                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    warning_message=message,
+                )
+            )
 
     # Determinism guard (user-reported concern): categoryScores keys are now
     # dynamic (see QualityCategoryScores' own docstring) -- the model is
@@ -414,3 +442,11 @@ def _apply_quality_scores(
         )
         logger.warning(message)
         warnings.append(message)
+        if progress_callback is not None:
+            progress_callback(
+                LevelingProgress(
+                    phase="chunk_warning", branch_index=None, branch_count=0,
+                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    warning_message=message,
+                )
+            )

@@ -713,6 +713,69 @@ describe('RealAdoBackend.getWorkItemIcon', () => {
   });
 });
 
+describe('RealAdoBackend.uploadAttachment', () => {
+  it('POSTs raw bytes to attachmentsuploads, then PATCHes an AttachedFile relation onto the work item', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} }); // api-version probe
+    const postSpy = vi
+      .spyOn(httpClient, 'post')
+      .mockResolvedValueOnce({ status: 200, data: { id: 'attachment-guid', url: 'https://tfs.internal/tfs/Collection/_apis/wit/attachments/attachment-guid' } });
+    const patchSpy = vi.spyOn(httpClient, 'patch').mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.uploadAttachment(42, 'figure-f0.png', Buffer.from('fake-png-bytes').toString('base64'), 'image/png');
+
+    expect(postSpy.mock.calls[0][0]).toContain('/_apis/wit/attachmentsuploads?fileName=figure-f0.png');
+    expect(postSpy.mock.calls[0][1]).toEqual(Buffer.from('fake-png-bytes'));
+    expect(postSpy.mock.calls[0][2]?.headers?.['Content-Type']).toBe('image/png');
+
+    expect(patchSpy.mock.calls[0][0]).toContain('/wit/workitems/42');
+    expect(patchSpy.mock.calls[0][1]).toEqual([
+      {
+        op: 'add',
+        path: '/relations/-',
+        value: {
+          rel: 'AttachedFile',
+          url: 'https://tfs.internal/tfs/Collection/_apis/wit/attachments/attachment-guid',
+          attributes: { comment: 'figure-f0.png' },
+        },
+      },
+    ]);
+  });
+
+  it('url-encodes a fileName containing special characters', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { url: 'https://tfs.internal/attachments/x' } });
+    vi.spyOn(httpClient, 'patch').mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.uploadAttachment(1, 'figure f0 (rev 2).png', Buffer.from('x').toString('base64'), 'image/png');
+
+    expect(postSpy.mock.calls[0][0]).toContain(`fileName=${encodeURIComponent('figure f0 (rev 2).png')}`);
+  });
+
+  it('retries the upload on a 429 before succeeding', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi
+      .spyOn(httpClient, 'post')
+      .mockRejectedValueOnce({ response: { status: 429 } })
+      .mockResolvedValueOnce({ status: 200, data: { url: 'https://tfs.internal/attachments/x' } });
+    vi.spyOn(httpClient, 'patch').mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.uploadAttachment(1, 'fig.png', Buffer.from('x').toString('base64'), 'image/png');
+    expect(postSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('RealAdoBackend CA-trust TLS construction', () => {
   it('constructs an https.Agent with the CA bundle when caCertPath is configured', () => {
     vi.mocked(readFileSync).mockReturnValue(Buffer.from('fake-ca-cert-content'));

@@ -170,14 +170,31 @@ def _apply_title_tag_pass(
                 f"leaf node(s) -- kept their deterministic titles and empty tags: {exc}"
             )
             warnings.append(message)
+            if progress_callback is not None:
+                progress_callback(
+                    LevelingProgress(
+                        phase="chunk_warning", branch_index=None, branch_count=0,
+                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        warning_message=message,
+                    )
+                )
             continue
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:
-            warnings.append(
+            message = (
                 f"Title/tag enhancement response omitted {len(missing)} of {len(chunk_ids)} "
                 "requested node(s) -- those kept their deterministic titles and empty tags."
             )
+            warnings.append(message)
+            if progress_callback is not None:
+                progress_callback(
+                    LevelingProgress(
+                        phase="chunk_warning", branch_index=None, branch_count=0,
+                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        warning_message=message,
+                    )
+                )
         for node_id in chunk_ids:
             entry = result.get(node_id)
             if not entry:
@@ -287,6 +304,7 @@ def _apply_parent_summary_pass(
     client: ParentSummaryClient,
     warnings: list[str],
     token_budget: int = _PARENT_SUMMARY_TOKEN_BUDGET,
+    progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Fail-open, same convention as `_apply_title_tag_pass`/
     `_apply_synthesis_pass`: any exception or missing/malformed response
@@ -362,15 +380,32 @@ def _apply_parent_summary_pass(
                 f"and description: {exc}"
             )
             warnings.append(message)
+            if progress_callback is not None:
+                progress_callback(
+                    LevelingProgress(
+                        phase="chunk_warning", branch_index=None, branch_count=0,
+                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        warning_message=message,
+                    )
+                )
             continue
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:
-            warnings.append(
+            message = (
                 f"Parent title/description enhancement response omitted {len(missing)} of "
                 f"{len(chunk_ids)} requested node(s) -- those kept their verbatim heading "
                 "title and description."
             )
+            warnings.append(message)
+            if progress_callback is not None:
+                progress_callback(
+                    LevelingProgress(
+                        phase="chunk_warning", branch_index=None, branch_count=0,
+                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        warning_message=message,
+                    )
+                )
         for node_id in chunk_ids:
             entry = result.get(node_id)
             if not entry:
@@ -481,14 +516,31 @@ def _apply_synthesis_pass(
                 f"leaf node(s) -- kept their verbatim source text exactly as extracted: {exc}"
             )
             warnings.append(message)
+            if progress_callback is not None:
+                progress_callback(
+                    LevelingProgress(
+                        phase="chunk_warning", branch_index=None, branch_count=0,
+                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        warning_message=message,
+                    )
+                )
             continue
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:
-            warnings.append(
+            message = (
                 f"Requirement-text synthesis response omitted {len(missing)} of {len(chunk_ids)} "
                 "requested node(s) -- those kept their verbatim source text exactly as extracted."
             )
+            warnings.append(message)
+            if progress_callback is not None:
+                progress_callback(
+                    LevelingProgress(
+                        phase="chunk_warning", branch_index=None, branch_count=0,
+                        blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                        warning_message=message,
+                    )
+                )
         for node_id in chunk_ids:
             entry = result.get(node_id)
             if not entry:

@@ -219,10 +219,11 @@ def test_publish_score_requirements_message_omits_batch_progress_when_chunk_fiel
     assert "batch" not in payload["message"]
 
 
-def test_publish_describe_figure_reports_a_running_count_not_a_fraction() -> None:
-    # The parse-stage figure loop doesn't know the document's total figure
-    # count until it finishes walking the whole document, so this is
-    # deliberately a running count ("figure 5 so far"), not "5 of N".
+def test_publish_describe_figure_reports_a_running_count_not_a_fraction_when_no_total_known() -> None:
+    # Without a figure_count (no pre-count ran ahead of this walk -- see
+    # main.py's /ingest), this stays a running count ("figure 5 so far"),
+    # not "5 of N" -- see the sibling test below for the case where a
+    # pre-count DID run.
     redis_client = _FakeRedis()
     publisher = NarrationPublisher(redis_client, "job-1")
 
@@ -241,6 +242,28 @@ def test_publish_describe_figure_reports_a_running_count_not_a_fraction() -> Non
     # there is no section context at all during parse.
     assert "section" not in payload["message"]
     assert "blocks" not in payload["message"]
+
+
+def test_publish_describe_figure_reports_a_real_total_when_a_precount_ran() -> None:
+    # Real gap this closes (user-reported live): when main.py's /ingest ran a
+    # structural pre-count ahead of the real walk, figure_count is known
+    # up front -- the message should show "figure 5 of 39", not the
+    # open-ended "figure 5 so far" the sibling test above covers.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        LevelingProgress(
+            phase="describe_figure",
+            branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+            kb_grounded=False, kb_citations=[], figure_index=5, figure_count=39,
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["figureCount"] == 39
+    assert "figure 5 of 39" in payload["message"]
+    assert "so far" not in payload["message"]
 
 
 def test_publish_describe_figure_with_a_caption_shows_the_real_result_not_the_generic_counter() -> None:
@@ -443,6 +466,27 @@ def test_publish_table_detected_reports_row_count_and_qualifying_status() -> Non
     assert "t1" in payload["message"]
     assert "42 row" in payload["message"]
     assert "qualifies" in payload["message"].lower()
+
+
+def test_publish_table_detected_reports_position_and_total() -> None:
+    # table_detected fires from a post-parse loop over the full table list,
+    # so index/total are always known -- unlike figures, no pre-count is
+    # needed for this one.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(
+        _progress(
+            phase="table_detected", branch_index=None, branch_count=0,
+            table_id="t1", table_row_count=42, table_qualifies=True,
+            table_index=2, table_count=5,
+        )
+    )
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["tableIndex"] == 2
+    assert payload["tableCount"] == 5
+    assert "table 2 of 5" in payload["message"]
 
 
 def test_publish_table_detected_reports_non_qualifying_tables_honestly() -> None:

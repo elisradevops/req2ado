@@ -7,6 +7,7 @@ import { AdoController } from './ado.controller';
 import { JobEventsController, REDIS_SUBSCRIBER_FACTORY } from './job-events.controller';
 import { JobEventPersistenceService } from './job-event-persistence.service';
 import { StaleJobWatchdogService } from './stale-job-watchdog.service';
+import { JobRetentionService } from './job-retention.service';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { WorkItemTypeCatalogService } from './work-item-type-catalog.service';
@@ -151,6 +152,19 @@ import { AuthModule } from '../auth/auth.module';
           jobsService,
           config.get<number>('STALE_JOB_CHECK_INTERVAL_MS')!,
           config.get<number>('STALE_JOB_THRESHOLD_MS')!,
+        ),
+    },
+    {
+      // checkIntervalMs/maxAgeMs are plain numbers with no injectable token
+      // of their own -- same explicit-factory treatment as
+      // StaleJobWatchdogService above.
+      provide: JobRetentionService,
+      inject: [PrismaClient, ConfigService],
+      useFactory: (prisma: PrismaClient, config: ConfigService) =>
+        new JobRetentionService(
+          prisma,
+          config.get<number>('JOB_RETENTION_CHECK_INTERVAL_MS')!,
+          config.get<number>('JOB_RETENTION_MAX_AGE_MS')!,
         ),
     },
     {

@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -34,5 +35,80 @@ export function Markdown({ children }: { children: string }): React.ReactElement
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={CHAT_MARKDOWN_COMPONENTS}>
       {children}
     </ReactMarkdown>
+  );
+}
+
+// Matches orchestrator's description-html.ts TABLE_BLOCK_PATTERN exactly --
+// the only raw HTML a description ever legitimately contains: BASELINE's
+// _table_to_html fold-in (ingestion/app/leveling/tree_builder.py), always
+// exactly this shape (<table><tr><td>...</td></tr>...</table>, no
+// thead/th). Treating this specific pattern as trusted mirrors the
+// orchestrator's own write-back carve-out instead of enabling rehype-raw
+// (which would treat ALL raw HTML in a description as trusted).
+const TABLE_BLOCK_PATTERN = /<table>[\s\S]*?<\/table>/g;
+
+// Reverses Python's html.escape(quote=True), which is what put these
+// entities into the cell text in the first place -- &amp; last, so an
+// already-escaped "&amp;lt;" doesn't get double-unescaped into "<".
+function unescapeHtmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function parseTrustedTableRows(tableHtml: string): string[][] {
+  const rowMatches = tableHtml.match(/<tr>[\s\S]*?<\/tr>/g) ?? [];
+  return rowMatches.map((row) => {
+    const cellMatches = row.match(/<td>[\s\S]*?<\/td>/g) ?? [];
+    return cellMatches.map((cell) => unescapeHtmlEntities(cell.slice('<td>'.length, -'</td>'.length)));
+  });
+}
+
+// Renders as real <table>/<tr>/<td> elements (never dangerouslySetInnerHTML)
+// -- text content goes through React's normal child rendering, so this is
+// exactly as safe against injection as any other React output.
+function TrustedTable({ tableHtml }: { tableHtml: string }): React.ReactElement {
+  const rows = parseTrustedTableRows(tableHtml);
+  return (
+    <div className="mb-1.5 overflow-x-auto">
+      <table className="w-full text-sm">
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => (
+                <td key={cellIndex} className="border-b border-hairline px-2.5 py-1.5">
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// NodeDetailPanel-only variant: a BASELINE description can mix ordinary
+// markdown prose with an embedded trusted <table> fold-in (assemble_description
+// joins them with a newline) -- the shared chat `Markdown` above must stay
+// raw-HTML-blind for untrusted text, so this splits out only the
+// TABLE_BLOCK_PATTERN segments for trusted rendering and leaves everything
+// else on the same markdown path as before, matching what
+// toAdoDescriptionHtml's TABLE_BLOCK_PATTERN carve-out actually writes to ADO.
+export function DescriptionMarkdown({ children }: { children: string }): React.ReactElement {
+  const segments = children.split(TABLE_BLOCK_PATTERN);
+  const tables = children.match(TABLE_BLOCK_PATTERN) ?? [];
+  return (
+    <>
+      {segments.map((segment, index) => (
+        <Fragment key={index}>
+          {segment && <Markdown>{segment}</Markdown>}
+          {tables[index] && <TrustedTable tableHtml={tables[index]} />}
+        </Fragment>
+      ))}
+    </>
   );
 }

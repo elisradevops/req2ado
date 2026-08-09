@@ -1947,6 +1947,219 @@ describe('JobsService.confirm — trace links', () => {
   });
 });
 
+describe('JobsService.confirm — figure attachments', () => {
+  it('uploads a figure_ids-cited JobFigureFile as an ADO attachment and deletes the row on success', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const figureFileDelete = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }]),
+        delete: figureFileDelete,
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(uploadAttachment).toHaveBeenCalledWith(100, 'f0.png', Buffer.from('png bytes').toString('base64'), 'image/png', undefined);
+    expect(figureFileDelete).toHaveBeenCalledWith({ where: { id: 'jff-1' } });
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+  });
+
+  it('skips a JobFigureFile row no node references and never uploads or deletes it', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const figureFileDelete = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'jff-1', jobId: 'job-1', figureId: 'f9', bytes: Buffer.from('unreferenced'), mimeType: 'image/png' }]),
+        delete: figureFileDelete,
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(uploadAttachment).not.toHaveBeenCalled();
+    expect(figureFileDelete).not.toHaveBeenCalled();
+  });
+
+  it('never queries JobFigureFile when no entry has figure_ids and no rows exist', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const figureFileFindMany = jest.fn().mockResolvedValue([]);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: { findMany: figureFileFindMany, delete: jest.fn() },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(figureFileFindMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+  });
+
+  it('does not abort or revert confirm when uploadAttachment rejects — best-effort, logged and swallowed', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const uploadAttachment = jest.fn().mockRejectedValue(new Error('ADO attachment upload failed'));
+    const figureFileDelete = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }]),
+        delete: figureFileDelete,
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(figureFileDelete).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+  });
+
+  it('does not abort or revert confirm when the whole figure-attachment phase throws (e.g. JobFigureFile query fails)', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: { findMany: jest.fn().mockRejectedValue(new Error('connection lost')) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    expect(prisma.job.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }));
+  });
+
+  it('excludes a deselected/excluded entry from figure attachment even if it carries figure_ids', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 }); // only n1 is created
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Excluded', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'], excluded: true },
+            { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'Included', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, figureIds: ['f1'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'jff-0', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('excluded'), mimeType: 'image/png' },
+          { id: 'jff-1', jobId: 'job-1', figureId: 'f1', bytes: Buffer.from('included'), mimeType: 'image/png' },
+        ]),
+        delete: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(uploadAttachment).toHaveBeenCalledWith(100, 'f1.png', Buffer.from('included').toString('base64'), 'image/png', undefined);
+  });
+});
+
 describe('JobsService.cancel', () => {
   afterEach(() => {
     jest.restoreAllMocks();
@@ -2060,6 +2273,7 @@ describe('JobsService.delete', () => {
       const dedupSkipAuditDeleteMany = jest.fn().mockResolvedValue(undefined);
       const auditEntryDeleteMany = jest.fn().mockResolvedValue(undefined);
       const jobSourceFileDeleteMany = jest.fn().mockResolvedValue(undefined);
+      const jobFigureFileDeleteMany = jest.fn().mockResolvedValue(undefined);
       const jobDelete = jest.fn().mockResolvedValue(undefined);
       const prisma = {
         job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status }), delete: jobDelete },
@@ -2068,6 +2282,7 @@ describe('JobsService.delete', () => {
         dedupSkipAudit: { deleteMany: dedupSkipAuditDeleteMany },
         auditEntry: { deleteMany: auditEntryDeleteMany },
         jobSourceFile: { deleteMany: jobSourceFileDeleteMany },
+        jobFigureFile: { deleteMany: jobFigureFileDeleteMany },
         idempotencyMapping: { deleteMany: jest.fn() },
         $transaction: jest.fn(async (ops: unknown[]) => Promise.all(ops)),
       };
@@ -2080,11 +2295,33 @@ describe('JobsService.delete', () => {
       expect(dedupSkipAuditDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
       expect(auditEntryDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
       expect(jobSourceFileDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+      expect(jobFigureFileDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
       expect(jobDelete).toHaveBeenCalledWith({ where: { id: 'job-1' } });
       expect(prisma.idempotencyMapping.deleteMany).not.toHaveBeenCalled();
       expect(result).toEqual({ deleted: true });
     },
   );
+});
+
+describe('JobsService.storeFigureFile', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('upserts a JobFigureFile row keyed by (jobId, figureId)', async () => {
+    const jobFigureFileUpsert = jest.fn().mockResolvedValue(undefined);
+    const prisma = { jobFigureFile: { upsert: jobFigureFileUpsert } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const bytes = Buffer.from('png bytes');
+    await service.storeFigureFile('job-1', 'f3', bytes, 'image/png');
+
+    expect(jobFigureFileUpsert).toHaveBeenCalledWith({
+      where: { jobId_figureId: { jobId: 'job-1', figureId: 'f3' } },
+      create: { jobId: 'job-1', figureId: 'f3', bytes, mimeType: 'image/png' },
+      update: { bytes, mimeType: 'image/png' },
+    });
+  });
 });
 
 describe('JobsService.submit', () => {

@@ -29,6 +29,10 @@ import { OpenWebUiClient } from './openwebui.client';
         }),
     },
   ],
-  exports: [OpenWebUiClient],
+  // LlmProxyBearerGuard exported too -- JobsModule reuses this same
+  // ingestion-service-to-service bearer guard for its new figure-file
+  // upload endpoint (see JobsController) rather than inventing a second
+  // bearer-token convention for the same "caller is ingestion" need.
+  exports: [OpenWebUiClient, LlmProxyBearerGuard],
 })
 export class LlmModule {}

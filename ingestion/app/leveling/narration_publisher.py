@@ -72,6 +72,18 @@ Phase = Literal[
     # last known for this job (see _LAST_PHASE_BY_JOB below) plus the real
     # exception's type/message/elapsed time.
     "job_failed",
+    # Real gap this closes (docs/ui-progress-review.md item #3): every
+    # chunked LLM pass (title/tag enhancement, leaf synthesis, parent
+    # summarization, scoring) already appends a message to a local
+    # `warnings` list when one chunk's call fails -- but that list was only
+    # ever surfaced once, in Job.warnings, after the WHOLE tree build
+    # finishes. A chunk that silently degrades early in a multi-hour SURVEY
+    # run gave zero live signal; the engineer only found out at the very
+    # end, by which point re-running to fix it costs another multi-hour
+    # cycle. Fired ALONGSIDE (never instead of) the existing
+    # `warnings.append(message)` call at each site -- same message, both
+    # places -- so the final warnings list is byte-identical to before.
+    "chunk_warning",
 ]
 
 
@@ -119,18 +131,21 @@ class LevelingProgress:
     # user sees, previously nothing ever told them scoring had concluded.
     issues_found: int | None = None
     # describe_figure only: 1-based count of figures described so far in
-    # THIS document (not a total -- the loader doesn't know how many figures
-    # remain until it finishes walking the whole document, so this is a
-    # running count, not a fraction). Before this field existed, a
-    # figure-heavy document (confirmed live: one real document had 39
-    # embedded figures, each a sequential vision-LLM call during parse) gave
-    # zero visible signal for however many minutes that took -- the parse
-    # stage was a total black box.
+    # THIS document. Before this field existed, a figure-heavy document
+    # (confirmed live: one real document had 39 embedded figures, each a
+    # sequential vision-LLM call during parse) gave zero visible signal for
+    # however many minutes that took -- the parse stage was a total black
+    # box.
     figure_index: int | None = None
-    # parse_done only: final counts from the parsed CanonicalDoc, letting
-    # the user see exactly what was found in their document (and cross-check
-    # it against what they expected) the moment parsing finishes, not only
-    # after the whole SURVEY run completes and the diff/warnings appear.
+    # parse_done: final counts from the parsed CanonicalDoc, letting the
+    # user see exactly what was found in their document the moment parsing
+    # finishes. table_count/figure_count are ALSO set on table_detected/
+    # describe_figure respectively WHEN a structural pre-count ran ahead of
+    # the real walk (see main.py's /ingest -- currently .docx only) --
+    # letting "figure N so far" show a real denominator ("figure N of
+    # TOTAL") instead of an open-ended counter. None on those two phases
+    # when no pre-count was done (unsupported format, or vision/narration
+    # inactive), same open-ended wording as before.
     block_count: int | None = None
     table_count: int | None = None
     figure_count: int | None = None
@@ -172,6 +187,13 @@ class LevelingProgress:
     table_id: str | None = None
     table_row_count: int | None = None
     table_qualifies: bool | None = None
+    # table_detected only: 1-based position of this table among the
+    # document's tables (table_count above carries the total) -- same "N of
+    # TOTAL" pattern figure_index/figure_count uses, trivially available
+    # here since this fires from a post-parse `for table in doc.tables`
+    # loop where the full list already exists (unlike figures, no pre-count
+    # needed for this one).
+    table_index: int | None = None
     # score_requirements/score_requirements_done only: real titles for (a
     # prefix of) the chunk being scored -- previously only a bare count
     # ("150 drafted requirement(s)") with no way to tell which actual items
@@ -197,6 +219,13 @@ class LevelingProgress:
     error_message: str | None = None
     elapsed_seconds: float | None = None
     last_phase: str | None = None
+    # chunk_warning only: the SAME fully-formed message string the caller
+    # already built for warnings.append(...) at this exact call site --
+    # this phase has no fixed template of its own (unlike every other
+    # phase's _PHASE_MESSAGES entry) because the message is inherently
+    # free-form per failure (which chunk, which pass, how many items
+    # affected). _format_message returns this verbatim for chunk_warning.
+    warning_message: str | None = None
 
 
 # Caps sample_titles's payload size on a large scoring chunk -- draft_count/
@@ -257,6 +286,12 @@ _PHASE_MESSAGES: dict[Phase, str] = {
 
 
 def _format_message(progress: LevelingProgress) -> str:
+    # chunk_warning has no fixed _PHASE_MESSAGES template (unlike every
+    # other phase) -- the caller already built a complete, specific message
+    # for warnings.append(...) at its own call site; this returns that
+    # SAME string verbatim rather than prefixing/templating it.
+    if progress.phase == "chunk_warning":
+        return progress.warning_message or "A chunk of work failed"
     base = _PHASE_MESSAGES[progress.phase]
     # Parse-stage phases run before build_survey_tree even starts (no
     # section/branch exists yet) -- handled as their own early-return rather
@@ -283,11 +318,17 @@ def _format_message(progress: LevelingProgress) -> str:
         if progress.figure_caption is not None:
             return index_prefix + "no useful caption returned"
         if progress.figure_index is not None:
-            base += f" (figure {progress.figure_index} so far)"
+            base += (
+                f" (figure {progress.figure_index} of {progress.figure_count})"
+                if progress.figure_count is not None
+                else f" (figure {progress.figure_index} so far)"
+            )
         return base
     if progress.phase == "table_detected":
         if progress.table_id:
             base += f" {progress.table_id}"
+        if progress.table_index is not None and progress.table_count is not None:
+            base += f" (table {progress.table_index} of {progress.table_count})"
         if progress.table_row_count is not None:
             base += f" -- {progress.table_row_count} row(s)"
         base += " (qualifies for deterministic hierarchy detection)" if progress.table_qualifies else " (not ID-shaped, will go through LLM analysis)"
@@ -444,6 +485,7 @@ class NarrationPublisher:
                 "tableId": progress.table_id,
                 "tableRowCount": progress.table_row_count,
                 "tableQualifies": progress.table_qualifies,
+                "tableIndex": progress.table_index,
                 "sampleTitles": progress.sample_titles,
                 "chunkIndex": progress.chunk_index,
                 "chunkCount": progress.chunk_count,
@@ -451,6 +493,7 @@ class NarrationPublisher:
                 "errorMessage": progress.error_message,
                 "elapsedSeconds": progress.elapsed_seconds,
                 "lastPhase": progress.last_phase,
+                "warningMessage": progress.warning_message,
                 "message": _format_message(progress),
             }
         )

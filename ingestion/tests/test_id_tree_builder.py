@@ -391,6 +391,26 @@ def test_apply_parent_summary_pass_is_fail_open() -> None:
     assert any("failed" in w for w in warnings)
 
 
+def test_apply_parent_summary_pass_fires_chunk_warning_alongside_the_appended_warning() -> None:
+    # docs/ui-progress-review.md item #3: a chunk failure must be visible
+    # LIVE (via progress_callback), not just in the final post-completion
+    # warnings list -- both must carry the SAME message.
+    class RaisingClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            raise RuntimeError("boom")
+
+    nodes = _epic_feature_requirement_nodes()
+    warnings: list[str] = []
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+    fired: list[LevelingProgress] = []
+
+    _apply_parent_summary_pass(nodes, [feature.local_id], RaisingClient(), warnings, progress_callback=fired.append)
+
+    assert len(fired) == 1
+    assert fired[0].phase == "chunk_warning"
+    assert fired[0].warning_message == warnings[0]
+
+
 def test_apply_parent_summary_pass_no_op_when_no_parent_ids() -> None:
     class RaisingIfCalledClient:
         def summarize_parent_nodes(self, nodes_by_id):
@@ -412,6 +432,20 @@ def test_build_hierarchy_subtree_title_tag_client_is_fail_open() -> None:
     assert len(nodes) == 1
     assert nodes[0].tags == []
     assert any("failed" in w for w in warnings)
+
+
+def test_build_hierarchy_subtree_title_tag_failure_fires_chunk_warning() -> None:
+    class RaisingClient:
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            raise RuntimeError("boom")
+
+    rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
+    fired: list[LevelingProgress] = []
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None, RaisingClient(), progress_callback=fired.append)
+
+    chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
+    assert len(chunk_warnings) == 1
+    assert chunk_warnings[0].warning_message == warnings[0]
 
 
 def test_build_hierarchy_subtree_synthesizes_a_flagged_fragment_leaf() -> None:
@@ -454,6 +488,22 @@ def test_build_hierarchy_subtree_synthesis_is_fail_open() -> None:
     assert len(nodes) == 1
     assert nodes[0].description == 'Size: 3U 1"'  # kept verbatim, exactly as constructed
     assert any("synthesis" in w.lower() and "failed" in w.lower() for w in warnings)
+
+
+def test_build_hierarchy_subtree_synthesis_failure_fires_chunk_warning() -> None:
+    class RaisingSynthesisClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            raise RuntimeError("boom")
+
+    rows = [_row('Size: 3U 1"', "Requirement", None, "1", needs_synthesis=True)]
+    fired: list[LevelingProgress] = []
+    nodes, warnings = build_hierarchy_subtree(
+        rows, "det0_", None, synthesis_client=RaisingSynthesisClient(), progress_callback=fired.append,
+    )
+
+    chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
+    assert len(chunk_warnings) == 1
+    assert chunk_warnings[0].warning_message == warnings[0]
 
 
 def test_build_hierarchy_subtree_never_synthesizes_a_non_flagged_leaf() -> None:

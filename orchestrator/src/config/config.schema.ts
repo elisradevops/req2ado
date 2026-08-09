@@ -78,6 +78,18 @@ export const configSchema = z.object({
   // never fires on a legitimately slow-but-alive call.
   STALE_JOB_CHECK_INTERVAL_MS: z.coerce.number().default(5 * 60_000),
   STALE_JOB_THRESHOLD_MS: z.coerce.number().default(60 * 60_000),
+  // JobRetentionService's poll interval and age threshold -- a job in a
+  // TERMINAL, no-longer-actionable state (succeeded/failed/rejected/
+  // cancelled) older than the threshold (by createdAt -- the only
+  // timestamp every job row reliably has; completedAt is succeeded-only)
+  // gets permanently deleted along with its cascade children. Never
+  // touches pending/running (always active) or diff_ready (still awaiting
+  // a real confirm/reject decision) regardless of age. Deliberately
+  // excludes IdempotencyMapping/the dedup vector store -- those exist to
+  // prevent duplicate ADO writes indefinitely; age-pruning them would let
+  // the same content get recreated as a duplicate later.
+  JOB_RETENTION_CHECK_INTERVAL_MS: z.coerce.number().default(6 * 60 * 60_000),
+  JOB_RETENTION_MAX_AGE_MS: z.coerce.number().default(2 * 24 * 60 * 60_000),
   // How many BullMQ pipeline jobs pipeline-worker.main.ts processes
   // concurrently -- previously unset (bullmq's own implicit default is 1),
   // a real horizontal-scaling throughput blocker even before considering

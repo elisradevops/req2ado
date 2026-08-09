@@ -40,6 +40,10 @@ const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   dedup_check: 'Checking for existing/duplicate work items',
   writing: 'Writing to Azure DevOps',
   job_failed: 'Job failed',
+  // Never actually looked up (a chunk_warning never becomes `latest` in a
+  // way that reads this map -- it's surfaced via CollapsibleWarnings, not
+  // the section step sublabel), present only so this Record stays exhaustive.
+  chunk_warning: 'A chunk of work failed',
 };
 
 // Fraction of ONE section's own work considered done once a given phase
@@ -73,6 +77,7 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   dedup_check: 0,
   writing: 0,
   job_failed: 0,
+  chunk_warning: 0,
 };
 
 function formatDuration(ms: number): string {

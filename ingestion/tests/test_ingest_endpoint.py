@@ -413,6 +413,14 @@ def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_i
     assert figure_events[1]["figureCaption"] == "a real caption"
     assert "a real caption" in figure_events[1]["message"]
 
+    # Real gap this guards against (item 16): a .docx upload should now run
+    # a cheap structural pre-count ahead of the real walk, so the in-flight
+    # describe_figure event's message carries a real "figure 1 of 1"
+    # denominator instead of the old open-ended "figure 1 so far" -- sample.docx
+    # has exactly one figure, so index and total are both 1.
+    assert figure_events[0]["figureCount"] == 1
+    assert "figure 1 of 1" in figure_events[0]["message"]
+
     parse_done_event = next(p for p in payloads if p["phase"] == "parse_done")
     assert parse_done_event["tableCount"] == 1  # sample.docx has 1 table
     assert parse_done_event["figureCount"] == 1
@@ -432,6 +440,11 @@ def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_i
     assert len(table_events) == 1
     assert table_events[0]["tableRowCount"] == len(real_doc.tables[0].rows)
     assert table_events[0]["tableRowCount"] > 0
+    # table_detected doesn't need a pre-count -- it fires from a post-parse
+    # loop over the full table list, so position/total are always known.
+    assert table_events[0]["tableIndex"] == 1
+    assert table_events[0]["tableCount"] == 1
+    assert "table 1 of 1" in table_events[0]["message"]
 
 
 def test_ingest_publishes_no_narration_when_job_id_is_omitted(monkeypatch) -> None:

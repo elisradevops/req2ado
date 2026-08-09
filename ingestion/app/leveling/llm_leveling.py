@@ -659,24 +659,43 @@ def _table_to_markdown(table: Table) -> str | None:
     return "\n".join(lines)
 
 
-def _render_block_line(block: Block) -> str | None:
+def _render_block_line(block: Block, figure_id_by_block_id: dict[str, str] | None = None) -> str | None:
     """One block rendered as a markdown-ish line for render_section, or None
     to omit it entirely (a 'none'-caption figure placeholder, or a
     never-actually-emitted TABLE-kind block -- tables live in the separate
-    `tables` list render_section merges in by document order)."""
+    `tables` list render_section merges in by document order).
+
+    `figure_id_by_block_id` (known-issues item 20): when this FIGURE-kind
+    block has a known Figure.id (see render_section's own docstring for how
+    this map is built), the id is inserted into the rendered line -- e.g.
+    "> Figure f3: <caption>" instead of "> Figure: <caption>" -- so
+    analyze_section/analyze_section_agentic can name it back in a node's
+    figure_ids. Never mutates `_figure_line`/block.text itself -- that
+    format is shared verbatim with BASELINE (tree_builder.py) and with
+    llm_leveling's own det0_*/br0_* coverage-check string-matching
+    elsewhere, both of which must stay byte-identical."""
     if block.kind == BlockKind.HEADING:
         level = block.heading_level or 1
         return f"{'#' * min(level, 6)} {block.text}"
     if block.kind == BlockKind.LIST_ITEM:
         return f"- {block.text}"
     if block.kind == BlockKind.FIGURE:
-        return _figure_line(block)
+        line = _figure_line(block)
+        figure_id = (figure_id_by_block_id or {}).get(block.id)
+        if line is not None and figure_id is not None:
+            return line.replace("> Figure:", f"> Figure {figure_id}:", 1)
+        return line
     if block.kind == BlockKind.TABLE:
         return None  # never actually emitted by any loader today
     return block.text  # PARAGRAPH, NOTE, OPEN_TBD -- plain content lines
 
 
-def render_section(blocks: list[Block], tables: list[Table] | None = None, figures: list[Figure] | None = None) -> str:
+def render_section(
+    blocks: list[Block],
+    tables: list[Table] | None = None,
+    figures: list[Figure] | None = None,
+    figure_id_by_block_id: dict[str, str] | None = None,
+) -> str:
     """Replaces _build_outline for the holistic SURVEY redesign: renders a
     whole section as ONE coherent, structure-preserving markdown passage
     instead of one outline line per block, so the model can synthesize a
@@ -688,6 +707,16 @@ def render_section(blocks: list[Block], tables: list[Table] | None = None, figur
     directly in its corresponding FIGURE-kind Block.text (see
     _figure_line), which is what's actually rendered.
 
+    `figure_id_by_block_id` (known-issues item 20, optional): a
+    block.id -> Figure.id map (see build_survey_tree, which builds it once
+    for the whole document by pairing doc.blocks' FIGURE-kind blocks with
+    doc.figures in loader-append order -- every loader appends a Figure and
+    its corresponding Block in lockstep, confirmed for docx/pptx/pdf) --
+    threaded down so each rendered figure line can carry its own real id
+    (see _render_block_line), letting the model reference it in
+    figure_ids. None (the default) renders the old id-less line, same as
+    before this param existed.
+
     Tables are interleaved at their REAL document-order position (§12) --
     each loader (docx_loader.py's body-walk, pdf_loader.py's bbox-based
     per-page merge) now shares ONE monotonically increasing offset counter
@@ -696,17 +725,21 @@ def render_section(blocks: list[Block], tables: list[Table] | None = None, figur
     the SAME _order_key tree_builder.py's BASELINE path now uses (§F) --
     `start_offset` alone is not globally comparable across pdf_loader.py
     pages (its running counter resets to 0 per page), so a multi-page PDF's
-    tables/blocks need the `(page, start_offset)` pair, not offset alone."""
+    tables/blocks need the `(page, start_offset)` pair, not offset alone.
+
+    Each table is preceded by its own '[TABLE <id>]' marker (item 20) --
+    unlike figures, this needs no separate id map: `table.id` is already
+    directly in hand from the `tables` list itself."""
     del figures  # see docstring -- not yet consulted, kept for signature symmetry
     entries: list[tuple[tuple[int, int], str]] = []
     for block in blocks:
-        line = _render_block_line(block)
+        line = _render_block_line(block, figure_id_by_block_id)
         if line is not None:
             entries.append((_order_key(block.source_ref), line))
     for table in tables or []:
         markdown = _table_to_markdown(table)
         if markdown is not None:
-            entries.append((_order_key(table.source_ref), markdown))
+            entries.append((_order_key(table.source_ref), f"[TABLE {table.id}]\n{markdown}"))
     entries.sort(key=lambda entry: entry[0])
     return "\n".join(line for _, line in entries)
 
@@ -716,6 +749,7 @@ def _apply_det_parent_summary(
     det_warnings: list[str],
     parent_summary_client: ParentSummaryClient | None,
     model: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Runs the Epic/Feature title+description enhancement pass over EVERY
     deterministic subtree at once, only after all of them (and every
@@ -747,7 +781,10 @@ def _apply_det_parent_summary(
     # _MODEL_CAPS. _resolve_caps itself fails open to that same flat
     # default on any lookup failure, so this can never raise.
     token_budget = _resolve_caps(model, caps_client=parent_summary_client).coverage_budget_tokens
-    _apply_parent_summary_pass(det_nodes, parent_ids, parent_summary_client, det_warnings, token_budget=token_budget)
+    _apply_parent_summary_pass(
+        det_nodes, parent_ids, parent_summary_client, det_warnings,
+        token_budget=token_budget, progress_callback=progress_callback,
+    )
 
 
 def _detect_deterministic_subtrees(
@@ -971,7 +1008,7 @@ def _detect_deterministic_subtrees(
         # uses the plain _hash_identity, never the table-row disambiguated variant.
 
     if not claimed_heading_block_ids and not claimed_table_ids:
-        _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model)
+        _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model, progress_callback)
         return det_nodes, det_warnings, doc
 
     residual_blocks = [b for b in doc.blocks if b.id not in claimed_heading_block_ids]
@@ -1016,7 +1053,7 @@ def _detect_deterministic_subtrees(
             "language-model analysis was needed for this document."
         )
 
-    _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model)
+    _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model, progress_callback)
     return det_nodes, det_warnings, llm_doc
 
 
@@ -1296,6 +1333,24 @@ def build_survey_tree(
 
     doc = llm_doc  # every remaining read below sees only the residual, non-claimed content
 
+    # known-issues item 20: a block.id -> Figure.id map, built once here
+    # (not per-branch) over the RESIDUAL doc.blocks/doc.figures (post
+    # deterministic-claiming, via the `doc = llm_doc` reassignment just
+    # above) -- these are the exact same lists every branch's own figures
+    # get sliced from below, so a positional pairing built here stays valid
+    # per branch too. Every loader (docx/pptx/pdf) appends a Figure and its
+    # paired inline FIGURE-kind Block in lockstep (confirmed via each
+    # loader's own source), and `_detect_deterministic_subtrees`'s residual
+    # filtering above preserves both lists' relative order (plain predicate
+    # filters, never resorted) -- so the i-th FIGURE-kind block here really
+    # is doc.figures[i] for the SAME i, without needing a source_ref-based
+    # lookup (source_ref alone is ambiguous for docx's own floating-image
+    # fallback path, which can give several figures the identical (0, 0)
+    # placeholder ref).
+    figure_id_by_block_id: dict[str, str] = dict(
+        zip((b.id for b in doc.blocks if b.kind == BlockKind.FIGURE), (f.id for f in doc.figures))
+    )
+
     # preparing_analysis already fired at function entry, before
     # _detect_deterministic_subtrees ran -- covers the branch splitting/
     # merging and KB retrieval below too, so no second kickoff needed here.
@@ -1517,6 +1572,7 @@ def build_survey_tree(
             table_groups=doc_table_groups,
             branch_index=0, branch_count=1, blocks_done_before=0, blocks_total=blocks_total,
             progress_callback=progress_callback,
+            figure_id_by_block_id=figure_id_by_block_id,
         )
         branch_tree = branch_result.tree
         all_nodes.extend(branch_tree.nodes)
@@ -1584,6 +1640,7 @@ def build_survey_tree(
                 branch_index=branch_index, branch_count=len(branches),
                 blocks_done_before=blocks_done_before_by_branch[branch_index],
                 blocks_total=blocks_total, progress_callback=_fire_progress,
+                figure_id_by_block_id=figure_id_by_block_id,
             )
 
         if branch_concurrency <= 1:
@@ -1736,6 +1793,12 @@ def _build_survey_tree_for_branch(
     blocks_done_before: int = 0,
     blocks_total: int = 0,
     progress_callback: ProgressCallback | None = None,
+    # known-issues item 20: whole-document block.id -> Figure.id map (see
+    # build_survey_tree, built once over the residual doc.blocks/doc.figures)
+    # -- threaded into render_section so this branch's own figure lines
+    # carry real ids the model can name in a node's figure_ids. None is
+    # byte-identical to before this param existed (id-less figure lines).
+    figure_id_by_block_id: dict[str, str] | None = None,
 ) -> WorkItemTree:
     """Does the actual per-branch (or, for a single-branch document, whole-
     document) SURVEY leveling via ONE holistic analyze_section /
@@ -1803,7 +1866,7 @@ def _build_survey_tree_for_branch(
     qualitative-only hint does not change model behavior (node count stayed
     floored at 12-16 with no coverage improvement); see
     orchestrator_llm_client._whole_document_hint's own docstring."""
-    section_text = render_section(blocks, tables, figures)
+    section_text = render_section(blocks, tables, figures, figure_id_by_block_id)
     if global_context:
         section_text = f"{global_context}\n\n---\n\n{section_text}"
     section_label = _derive_section_label(blocks, tables, figures)
@@ -1936,6 +1999,24 @@ def _build_survey_tree_for_branch(
         blocks[0].source_ref if blocks else (tables[0].source_ref if tables else (figures[0].source_ref if figures else None))
     )
 
+    # known-issues item 20: the real candidate ids THIS branch's own
+    # rendered section_text actually offered the model (see render_section's
+    # figure/table id injection) -- a model-returned figure_ids/table_ids
+    # entry outside this set is a hallucination (an id that doesn't exist,
+    # or belongs to a DIFFERENT branch/section the model never saw) and is
+    # dropped, never trusted verbatim. valid_table_ids comes straight from
+    # this branch's own `tables` param; valid_figure_ids is derived from
+    # this branch's own `blocks` via the whole-document figure_id_by_block_id
+    # map (branch-scoped implicitly, since only this branch's own FIGURE-kind
+    # blocks are in `blocks`).
+    valid_table_ids = {t.id for t in (tables or [])}
+    valid_figure_ids = {
+        figure_id_by_block_id[b.id]
+        for b in blocks
+        if figure_id_by_block_id is not None and b.kind == BlockKind.FIGURE and b.id in figure_id_by_block_id
+    }
+    tables_by_id = {t.id: t for t in (tables or [])}
+
     for temp_id, entry in by_temp_id.items():
         text = entry.get("text")
         if not text:
@@ -1956,6 +2037,41 @@ def _build_survey_tree_for_branch(
             {RequirementTag(tag) for tag in entry.get("tags", []) if tag in valid_tag_values},
             key=lambda t: t.value,
         )
+        raw_figure_ids = entry.get("figure_ids") or []
+        figure_ids = sorted({fid for fid in raw_figure_ids if isinstance(fid, str) and fid in valid_figure_ids})
+        if len(figure_ids) < len(raw_figure_ids):
+            message = (
+                f"Node {node_id_prefix}{temp_id} named figure_ids {raw_figure_ids!r}, but not all "
+                f"match a real figure offered in this section -- kept only {figure_ids!r}."
+            )
+            logger.warning(message)
+            warnings.append(message)
+        raw_table_ids = entry.get("table_ids") or []
+        table_ids = sorted({tid for tid in raw_table_ids if isinstance(tid, str) and tid in valid_table_ids})
+        if len(table_ids) < len(raw_table_ids):
+            message = (
+                f"Node {node_id_prefix}{temp_id} named table_ids {raw_table_ids!r}, but not all "
+                f"match a real table offered in this section -- kept only {table_ids!r}."
+            )
+            logger.warning(message)
+            warnings.append(message)
+
+        # Embeds each named table's real HTML into the description (§ known
+        # issues item 20, "the easy half" -- tables need no new ADO write
+        # capability, unlike figures, see WorkItemNode.table_ids' own
+        # docstring). Same assemble_description join-with-newline convention
+        # BASELINE's own table fold-in uses (tree_builder.py) -- the
+        # orchestrator's toAdoDescriptionHtml already has a TABLE_BLOCK_PATTERN
+        # carve-out that passes this exact `<table>...</table>` shape through
+        # untouched to ADO.
+        description = text
+        for table_id in table_ids:
+            table = tables_by_id.get(table_id)
+            if table is None:
+                continue
+            table_html = _table_to_html(table)
+            if table_html:
+                description = assemble_description(description, table_html)
         try:
             node_type = WorkItemType(entry.get("type"))
         except ValueError:
@@ -2000,10 +2116,14 @@ def _build_survey_tree_for_branch(
                 type=node_type,
                 parent_local_id=f"{node_id_prefix}{parent_temp_id}" if parent_temp_id is not None else None,
                 title=title,
-                description=text,
+                description=description,
                 customer_id=customer_id,
                 source_ref=representative_source_ref,
-                fidelity_hash=hashlib.sha256(text.encode()).hexdigest(),
+                # Hashes the FINAL description (text plus any embedded table
+                # HTML), not just `text` -- fidelity_hash exists to detect
+                # drift in the actual persisted field; hashing `text` alone
+                # would never notice a change to the embedded table half.
+                fidelity_hash=hashlib.sha256(description.encode()).hexdigest(),
                 # Confirmed real bug (live, via golden-e2e's BASELINE re-run
                 # assertion, which surfaced the same class of issue this
                 # SURVEY path has too): plain _hash_identity(text, ...) hashed
@@ -2022,6 +2142,8 @@ def _build_survey_tree_for_branch(
                 # prompt change tracked separately, not this hash function.
                 identity_hash=_hash_identity_for_synthesized_node(local_id, representative_source_ref),
                 tags=tags,
+                figure_ids=figure_ids,
+                table_ids=table_ids,
                 mode=WorkItemMode.SURVEY,
                 grounding_score=grounding_score,
             )

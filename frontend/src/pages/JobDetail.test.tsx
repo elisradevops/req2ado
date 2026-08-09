@@ -8,7 +8,15 @@ import { useAuthStore } from '../store/authStore';
 
 vi.mock('../api/jobs');
 vi.mock('../api/chat');
-vi.mock('../api/events', () => ({ subscribeToJobEvents: vi.fn(() => () => {}) }));
+vi.mock('../api/events', async () => {
+  // Real isValidNarrationEvent must survive the mock -- JobDetail.tsx's
+  // event-history merge (mergedNarrations) calls it directly, and a
+  // previous version of this mock (subscribeToJobEvents only) silently
+  // left it undefined, working only by accident because every test here
+  // defaulted getEventHistory to [] and so never actually invoked it.
+  const actual = await vi.importActual<typeof import('../api/events')>('../api/events');
+  return { ...actual, subscribeToJobEvents: vi.fn(() => () => {}) };
+});
 vi.mock('../hooks/useChatSocket', async () => {
   const actual = await vi.importActual<typeof import('../hooks/useChatSocket')>('../hooks/useChatSocket');
   return { ...actual, useChatSocket: vi.fn() };
@@ -233,6 +241,89 @@ describe('JobDetail', () => {
     const userEvent = (await import('@testing-library/user-event')).default;
     await userEvent.click(screen.getByText(/1 figure description/i));
     expect(screen.getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
+  });
+
+  it('hydrates a still-running job\'s activity log from durable event-history, not just the live SSE tail', async () => {
+    // Regression this guards against (ui-progress-review.md #4): the
+    // event-history fetch used to be gated to terminal statuses only, so
+    // reconnecting to (or refreshing) a STILL-RUNNING job's page showed
+    // only whatever the live SSE tail happened to replay -- everything from
+    // before the reconnect looked lost, even though it was always durably
+    // stored server-side.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-30', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
+    } as any);
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([
+      {
+        id: 'evt-1', jobId: 'job-30', phase: 'table_detected', severity: 'info', createdAt: new Date().toISOString(),
+        message: 'Detected a table t0 -- a historical entry from before this reconnect',
+        detail: {
+          phase: 'table_detected', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+          kbGrounded: false, kbCitations: [],
+          message: 'Detected a table t0 -- a historical entry from before this reconnect',
+        },
+      },
+    ] as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+      onStage('infer_hierarchy_start');
+      return () => {};
+    });
+
+    renderAt('job-30');
+
+    await waitFor(() => expect(jobsApi.getEventHistory).toHaveBeenCalledWith('job-30'));
+    const userEvent = (await import('@testing-library/user-event')).default;
+    await userEvent.click(await screen.findByText(/Activity log/i));
+    // The same latest-narration text can also legitimately appear in the
+    // NarrationTicker sentence above the activity log -- scoped to <li>
+    // (the activity-log list's own row markup) to assert specifically
+    // against that list, not the page as a whole.
+    const logRows = screen.getAllByText(/a historical entry from before this reconnect/i).filter((el) => el.tagName === 'LI');
+    expect(logRows.length).toBeGreaterThan(0);
+  });
+
+  it('does not duplicate an activity-log entry that arrives both in history and live', async () => {
+    // A historical entry already represented in the live tail (the common
+    // case: the history fetch and an in-flight SSE connection cover
+    // overlapping recent time) must be shown once, not twice.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-31', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
+    } as any);
+    const sharedMessage = 'Preparing analysis -- splitting sections, retrieving context';
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([
+      {
+        id: 'evt-1', jobId: 'job-31', phase: 'preparing_analysis', severity: 'info', createdAt: new Date().toISOString(),
+        message: sharedMessage,
+        detail: {
+          phase: 'preparing_analysis', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+          kbGrounded: false, kbCitations: [], message: sharedMessage,
+        },
+      },
+    ] as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage, onNarration) => {
+      onStage('infer_hierarchy_start');
+      onNarration?.({
+        phase: 'preparing_analysis', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+        kbGrounded: false, kbCitations: [], message: sharedMessage,
+      } as any);
+      return () => {};
+    });
+
+    renderAt('job-31');
+
+    await waitFor(() => expect(jobsApi.getEventHistory).toHaveBeenCalledWith('job-31'));
+    const userEvent = (await import('@testing-library/user-event')).default;
+    await userEvent.click(await screen.findByText(/Activity log/i));
+    // Scoped to <li> (the activity-log list's own row markup) -- the
+    // NarrationTicker sentence above it legitimately renders the same
+    // latest-narration text too, which isn't the duplicate this test guards
+    // against.
+    const logRows = screen.getAllByText(sharedMessage).filter((el) => el.tagName === 'LI');
+    expect(logRows).toHaveLength(1);
   });
 
   it('omits the FigureDescriptions panel entirely when the job has no persisted figure captions', async () => {

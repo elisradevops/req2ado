@@ -77,7 +77,13 @@ export interface NarrationEvent {
     // unhandled exception (e.g. an LLM-call timeout) aborts the job --
     // replaces a flattened one-line AuditEntry with real structured context
     // (errorType/errorMessage/elapsedSeconds/lastPhase below).
-    | 'job_failed';
+    | 'job_failed'
+    // Real gap this closes (docs/ui-progress-review.md item #3): every
+    // chunked LLM pass already recorded a warning in Job.warnings when one
+    // chunk's call failed, but that list was only ever surfaced once the
+    // WHOLE job finished. Fired ALONGSIDE (never instead of) that same
+    // warnings.append(...) -- see warningMessage below for the real text.
+    | 'chunk_warning';
   // 'writing' only -- confirm() is several sequential sub-phases
   // (discover_types/create/link_parents/trace_links), not one flat burst;
   // null/undefined on every other phase.
@@ -104,10 +110,14 @@ export interface NarrationEvent {
   // only set on score_requirements_done.
   issuesFound?: number | null;
   // describe_figure only: 1-based running count of figures described so
-  // far in this document (not a fraction -- the total isn't known until
-  // parsing finishes walking the whole document).
+  // far in this document.
   figureIndex?: number | null;
-  // parse_done only: final counts from the parsed document.
+  // parse_done: final counts from the parsed document. figureCount is ALSO
+  // set on describe_figure, and tableCount on table_detected, WHEN a
+  // structural pre-count ran ahead of the real walk (ingestion's /ingest --
+  // currently .docx only) -- letting `message` read "figure N of TOTAL"
+  // instead of an open-ended "figure N so far". Null on those two phases
+  // when no pre-count was done.
   blockCount?: number | null;
   tableCount?: number | null;
   figureCount?: number | null;
@@ -131,6 +141,11 @@ export interface NarrationEvent {
   tableId?: string | null;
   tableRowCount?: number | null;
   tableQualifies?: boolean | null;
+  // table_detected only: 1-based position of this table among the
+  // document's tables (tableCount above carries the total) -- always known
+  // (this fires from a post-parse loop over the full table list, no
+  // pre-count needed).
+  tableIndex?: number | null;
   // score_requirements/score_requirements_done/infer_trace_links only: real
   // item titles (or, for infer_trace_links's completion fire, "A -> B
   // (type)" endpoint labels) for a prefix of the items involved --
@@ -154,6 +169,12 @@ export interface NarrationEvent {
   errorMessage?: string | null;
   elapsedSeconds?: number | null;
   lastPhase?: string | null;
+  // chunk_warning only: the same fully-formed message the backend also put
+  // in this job's persisted warnings list -- already folded into `message`
+  // (this phase has no separate template), kept here too so a caller can
+  // dedupe a live warning against the final list without string-parsing
+  // `message`.
+  warningMessage?: string | null;
   message: string;
 }
 
@@ -179,6 +200,7 @@ export const INGESTION_NARRATION_PHASES = [
   'regroup_roots',
   'infer_trace_links',
   'job_failed',
+  'chunk_warning',
 ] as const;
 
 // Never emitted by ingestion -- 'infer_hierarchy'/'generate_requirements'
@@ -213,7 +235,12 @@ const KNOWN_JOB_STAGES: readonly JobStage[] = [
 // signal. These two guards fail loud (console.error + skip the event)
 // instead, without adding a new schema-validation dependency for what is,
 // today, a small and stable set of required fields.
-function isValidNarrationEvent(payload: unknown): payload is NarrationEvent {
+// Exported so JobDetail.tsx can reuse it to recover real NarrationEvent
+// objects out of JobEventRecord.detail -- JobEventPersistenceService
+// (orchestrator) stores the exact same raw payload there as what arrives
+// over SSE (`detail: payload as object`), so this same validator applies
+// unchanged to either source.
+export function isValidNarrationEvent(payload: unknown): payload is NarrationEvent {
   if (typeof payload !== 'object' || payload === null) return false;
   const p = payload as Record<string, unknown>;
   return (

@@ -75,38 +75,42 @@ honest "no fixed step count" message instead of fabricating one.
 
 ## 3. Mid-run chunk failures are invisible until the job completes
 
-**Status: DEFERRED — needs a design decision, not a safe surgical fix**
+**Status: FIXED**
 
 Every chunked pass (title/tag enhancement, leaf synthesis, parent
-summarization, scoring) does `warnings.append(message)` on a **local
-Python list** when an individual chunk's LLM call fails — this list is
-only ever persisted to the `Job.warnings` column when the whole tree
-build finishes. It is never pushed through `progress_callback`/the
-narration WebSocket. For a short document this is invisible for seconds;
-for a 500+ page, multi-hour SURVEY run, a chunk that silently degrades at
-hour 1 gives the engineer zero live signal — they find out only when the
-job finishes hours later, at which point re-running to fix it costs
-another multi-hour cycle.
+summarization, scoring) does `warnings.append(message)` on a local Python
+list when an individual chunk's LLM call fails. That list is still only
+persisted to `Job.warnings` when the whole tree build finishes, but each
+of the 6 call sites (`id_tree_builder.py`'s `_apply_title_tag_pass`,
+`_apply_parent_summary_pass`, `_apply_synthesis_pass`; `scoring.py`'s
+`_score_all_requirements`, `_score_epics_and_features`,
+`_apply_quality_scores`) now ALSO fires a new `chunk_warning` narration
+phase (`narration_publisher.py`) alongside the `warnings.append(...)` call,
+carrying the same message verbatim via a new `warning_message` field —
+`progress_callback` was threaded into `_apply_parent_summary_pass` and
+`_apply_quality_scores`, the two functions that didn't already have it.
 
-**Why deferred, not fixed now:** this needs an actual design decision
-(a new narration phase/severity level? a distinct "Warnings (N)" live
-counter next to Activity log? do we want a toast, or just a badge?), not
-just wiring two existing fields — the "surgical, minimal fix" bar this
-review otherwise held to doesn't apply cleanly here. Flagging with a
-concrete recommendation: fire a `progress_callback` alongside every
-`warnings.append(...)` in the chunked loops, with a `severity: "warning"`
-narration phase, and give `ProgressBanner.tsx` a live "N warning(s) so
-far" counter (not just the final post-completion `job.warnings` list).
+Frontend: `JobDetail.tsx`'s SSE handler captures `chunk_warning` events
+into a `liveWarnings` state (deliberately excluded from the main
+`narrations` array so it can never become the ticker/stepper's "latest
+phase" and corrupt that display), and feeds a merged, deduped
+`liveWarnings` ∪ `job.warnings` array into the existing
+`CollapsibleWarnings` "N integrity warning(s)" component — reusing the
+existing visual pattern rather than inventing a new counter widget, per
+the original recommendation below.
 
-**Files (for the eventual fix):** `ingestion/app/leveling/id_tree_builder.py`,
+**Files:** `ingestion/app/leveling/id_tree_builder.py`,
 `ingestion/app/leveling/scoring.py`, `ingestion/app/leveling/narration_publisher.py`,
-`frontend/src/components/ProgressBanner.tsx`
+`frontend/src/api/events.ts`, `frontend/src/pages/JobDetail.tsx`,
+`frontend/src/components/ProgressBanner.tsx`, `frontend/src/utils/narrationTicker.ts`
 
 ---
 
 ## 4. Activity log keeps only the last 50 events, both server- and client-side
 
-**Status: DEFERRED — needs a retention/UX decision**
+**Status: FIXED for the reconnect-looks-like-data-loss case (382 frontend tests pass,
+including 2 new dedicated tests); the raise-the-cap/retention tradeoff below is still an
+open, separate question.**
 
 `JobDetail.tsx`'s `setNarrations` does `.slice(-50)`, matching
 `narration_publisher.py`'s own `_NARRATION_LOG_MAX_ENTRIES = 50` Redis-side
@@ -152,17 +156,28 @@ the still-`running` job and back. The "N figure descriptions" panel
   usage pattern (leave it running, come back later) the page's own copy
   invites ("You can close this page and come back").
 
-**Recommendation (unchanged in spirit, sharper now):** let a **running**
-job's reconnect hydrate from the same durable `/event-history` source a
-terminal job already uses, instead of relying solely on the bounded live
-replay. Keep the 50-event **live tail** for "what's happening right now";
-add a real "View full history" (or just widen the mid-run hydration path)
-backed by the Postgres store that already, correctly, has everything.
+**Implemented fix:** exactly the recommendation above. `JobDetail.tsx`'s event-history
+effect now fetches on every mount regardless of status (the `pending`/`running`/`writing`
+early-return was removed) -- the durable `/event-history` source a terminal job already
+used is now used for a running job too. A new `mergedNarrations` (`useMemo`) combines it
+with the bounded live SSE tail: `JobEventPersistenceService` (orchestrator) already stores
+each event's raw payload verbatim in its `detail` column -- the exact same shape delivered
+over SSE -- so `isValidNarrationEvent` (exported from `frontend/src/api/events.ts`)
+recovers real `NarrationEvent` objects straight out of history, deduped against the live
+tail by `phase`+`message` (the same composite key `JobEventPersistenceService`'s own
+backfill sweep already uses). `mergedNarrations` replaces the raw `narrations` array
+everywhere it fed the UI (`JobLifecycleSteps`, `NarrationTicker`, `ProgressBanner`'s
+activity log) -- fixing not just the activity-log list but also "what phase is currently
+active" showing stale/null immediately after a reconnect, before the first live event
+arrives. The `FigureDescriptions` panel got the same treatment via a dedicated effect
+backfilling `figureCaptionsByIndex` from historical `describe_figure` entries -- directly
+closing the concretely-observed 39→20 regression, not just the general activity-log gap.
+`/event-history`'s query itself stays unbounded, as recommended -- no pagination added
+preemptively.
 
-**Files (for the eventual fix):** `frontend/src/pages/JobDetail.tsx`
-(the `status === 'running'` early-return on the event-history effect),
-`orchestrator/src/modules/pipeline/job-events.controller.ts` (already
-correct/unbounded — the gap is purely in when the frontend calls it)
+**Files:** `frontend/src/pages/JobDetail.tsx` (event-history effect, `mergedNarrations`,
+figure-caption backfill effect), `frontend/src/api/events.ts` (`isValidNarrationEvent`
+exported).
 
 ---
 

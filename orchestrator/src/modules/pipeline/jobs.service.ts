@@ -644,9 +644,23 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       this.prisma.dedupSkipAudit.deleteMany({ where: { jobId: id } }),
       this.prisma.auditEntry.deleteMany({ where: { jobId: id } }),
       this.prisma.jobSourceFile.deleteMany({ where: { jobId: id } }),
+      this.prisma.jobFigureFile.deleteMany({ where: { jobId: id } }),
       this.prisma.job.delete({ where: { id } }),
     ]);
     return { deleted: true };
+  }
+
+  // Upsert, not create: ingestion's caption call is a normal HTTP POST with
+  // the usual retry-on-timeout risk, and figureId (not filename) is the only
+  // identity that matters here (see JobFigureFile's own model comment) --
+  // a retried POST for the same figure must overwrite, never duplicate or
+  // 500 on the @@unique([jobId, figureId]) constraint.
+  async storeFigureFile(jobId: string, figureId: string, bytes: Buffer, mimeType: string): Promise<void> {
+    await this.prisma.jobFigureFile.upsert({
+      where: { jobId_figureId: { jobId, figureId } },
+      create: { jobId, figureId, bytes, mimeType },
+      update: { bytes, mimeType },
+    });
   }
 
   // Rejecting is only meaningful from 'diff_ready' -- once writing/succeeded,
@@ -719,6 +733,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         resolvedAdoId?: number;
         resolutionStatus: 'resolved' | 'unresolved' | 'pending';
       }[];
+      // Carried through from ingestion (see DryRunTreeNode.figureIds) --
+      // JobFigureFile rows this entry's created/resolved work item should
+      // get as ADO attachments, see the attach phase near the end of this
+      // method. Optional/nullable: older/mocked diff shapes predate this.
+      figureIds?: string[];
     }[];
 
     // Excluding an entry excludes its whole subtree too, even if a descendant
@@ -1110,6 +1129,60 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           });
         }
       });
+
+      // Attach each entry's cited figures (item 20d) last, once every entry
+      // in this confirm() call has a real ADO id -- same ordering guarantee
+      // the trace-link phase above relies on. Deliberately silent (no
+      // narration sub-phase, no frontend indicator): this is a nice-to-have
+      // enrichment the attachment itself already surfaces natively in ADO's
+      // own work-item view, not a step the user needs live progress for.
+      // Resumability comes for free from JobFigureFile's own delete-on-
+      // success below -- a row still present after a partial failure is
+      // exactly what the next confirm() retry needs to pick up where it
+      // left off, with no separate "attached" flag anywhere. Wrapped in its
+      // OWN try/catch (unlike the create/link phases above) -- a failure
+      // here must never revert an otherwise-successful confirm() back to
+      // 'diff_ready' and force the user to re-review a diff whose real ADO
+      // writes already fully succeeded.
+      try {
+        const figureFiles = await this.prisma.jobFigureFile.findMany({ where: { jobId: id } });
+        if (figureFiles.length > 0) {
+          const figureFileByFigureId = new Map(figureFiles.map((f) => [f.figureId, f]));
+          const toAttach: { adoId: number; figureId: string }[] = [];
+          for (const entry of diff) {
+            if (isExcluded(entry)) continue;
+            const adoId = adoIdByLocalId.get(entry.localId);
+            if (adoId === undefined) continue;
+            for (const figureId of entry.figureIds ?? []) {
+              if (figureFileByFigureId.has(figureId)) {
+                toAttach.push({ adoId, figureId });
+              }
+            }
+          }
+          await mapWithConcurrency(toAttach, this.writeConcurrency, async ({ adoId, figureId }) => {
+            const figureFile = figureFileByFigureId.get(figureId);
+            if (!figureFile) return;
+            // Best-effort per figure too: one failed attachment must not
+            // stop the rest of this job's figures from attaching.
+            try {
+              await this.mcpClient.uploadAttachment(
+                adoId,
+                `${figureId}.png`,
+                Buffer.from(figureFile.bytes).toString('base64'),
+                figureFile.mimeType,
+                credential,
+              );
+              await this.prisma.jobFigureFile.delete({ where: { id: figureFile.id } });
+            } catch (error) {
+              // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+              console.error(`Figure attachment failed for ADO work item ${adoId}, figure ${figureId}:`, error);
+            }
+          });
+        }
+      } catch (error) {
+        // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+        console.error(`Figure-attachment phase failed for job ${id}:`, error);
+      }
     } catch (error) {
       // Always safe to retry now: CreatedItemMapping durably recorded every
       // create/link that succeeded before this failure, so the next

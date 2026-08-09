@@ -8,7 +8,7 @@ import { KbCitationChips, type KbCitation } from './KbCitationChips';
 import type { DryRunDiffEntry } from './DiffTree';
 import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
-import { Markdown } from '../ui/Markdown';
+import { DescriptionMarkdown } from '../ui/Markdown';
 import { InfoTip } from '../ui/Tooltip';
 import { formatSourceRef } from '../utils/sourceRef';
 
@@ -216,7 +216,7 @@ export function NodeDetailPanel({
           ADO, not the raw ** and - characters. Max-width measure preserved
           for readability on a dense multi-sentence requirement. */}
       <div className="max-w-[68ch] text-sm leading-relaxed text-ink-2">
-        <Markdown>{entry.description}</Markdown>
+        <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
       </div>
       {/* Classification (tags) and active flags (quality issues) side by
           side -- both are short chip lists, matching the reference detail
