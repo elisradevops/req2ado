@@ -1,6 +1,8 @@
+import { BadGatewayException } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { JobsService } from '../src/modules/pipeline/jobs.service';
 import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
+import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 
 describe('JobsService.confirm', () => {
   it('creates items in tree order and links each child to its already-created parent', async () => {
@@ -1632,6 +1634,223 @@ describe('JobsService.editDiffEntry', () => {
 
     expect(result[0].title).toBe('New Title');
     expect(result[0].description).toBe('Old desc');
+  });
+
+  // CR-7d rescore: a description edit invalidates the PREVIOUS score's
+  // grounding text -- the gauge must go Stale, not keep looking fresh.
+  it('marks qualityStale when the description changes on an already-scored entry', async () => {
+    const scoredEntry = { ...baseEntry, qualityScore: 60, qualityCategoryScores: { clarity: 60 } };
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }), update },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { description: 'New desc' });
+
+    expect(result[0].qualityStale).toBe(true);
+    expect(result[0].qualityScore).toBe(60); // last-known number is KEPT, never zeroed
+  });
+
+  it('does not mark qualityStale when only title changes -- scoring judges description text only', async () => {
+    const scoredEntry = { ...baseEntry, qualityScore: 60, qualityCategoryScores: { clarity: 60 } };
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }), update },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { title: 'New Title' });
+
+    expect(result[0].qualityStale).toBeUndefined();
+  });
+
+  it('does not mark qualityStale on a description change when the entry was never scored', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }), update },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { description: 'New desc' });
+
+    expect(result[0].qualityStale).toBeUndefined();
+  });
+
+  it('does not mark qualityStale when the new description is identical to the old one', async () => {
+    const scoredEntry = { ...baseEntry, qualityScore: 60 };
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }), update },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { description: 'Old desc' });
+
+    expect(result[0].qualityStale).toBeUndefined();
+  });
+});
+
+describe('JobsService.rescoreDiffEntry', () => {
+  const staleEntry = {
+    localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Old', description: 'The system shall be fast.',
+    action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null,
+    qualityScore: 40, qualityIssues: ['vague_term'], qualityCategoryScores: { clarity: 20 }, qualityStale: true,
+  };
+
+  it('rescores against the entry\'s OWN existing category keys, forcing the same rubric', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: 'qwen3.6:35b', dryRunDiff: [staleEntry] }),
+        update,
+      },
+    };
+    const scoreItem = jest.fn().mockResolvedValue({ qualityScore: 80, qualityIssues: [], qualityCategoryScores: { clarity: 80 } });
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    const result = await service.rescoreDiffEntry('job-1', 'n0');
+
+    expect(scoreItem).toHaveBeenCalledWith('The system shall be fast.', ['clarity'], 'user-1', 'qwen3.6:35b');
+    expect(result[0].qualityScore).toBe(80);
+    expect(result[0].qualityCategoryScores).toEqual({ clarity: 80 });
+    expect(result[0].qualityStale).toBe(false);
+  });
+
+  it('passes null as the category checklist when the entry has no existing category breakdown and no scored sibling exists', async () => {
+    const neverScored = { ...staleEntry, qualityScore: null, qualityCategoryScores: null, qualityStale: undefined };
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: null, model: null, dryRunDiff: [neverScored] }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const scoreItem = jest.fn().mockResolvedValue({ qualityScore: 50, qualityIssues: [], qualityCategoryScores: null });
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    await service.rescoreDiffEntry('job-1', 'n0');
+
+    expect(scoreItem).toHaveBeenCalledWith('The system shall be fast.', null, undefined, undefined);
+  });
+
+  // DESIGN.md §11.4.4 flags persisting the document-wide category_checklist
+  // as a prerequisite so a rescore never compares two different rubrics --
+  // a same-job sibling's own already-persisted qualityCategoryScores keys
+  // achieve the identical guarantee without a new DB column, since one
+  // whole-document scoring pass applies the SAME checklist to every
+  // Requirement node in it (scoring.py's _score_all_requirements).
+  it('falls back to a scored SIBLING Requirement\'s category keys when this entry has none of its own', async () => {
+    const ownNeverScored = { ...staleEntry, localId: 'n0', qualityScore: null, qualityCategoryScores: null, qualityStale: undefined };
+    const scoredSibling = { ...staleEntry, localId: 'n1', qualityCategoryScores: { Necessary: 90, Verifiable: 70 } };
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [ownNeverScored, scoredSibling] }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const scoreItem = jest.fn().mockResolvedValue({ qualityScore: 50, qualityIssues: [], qualityCategoryScores: { Necessary: 60, Verifiable: 55 } });
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    await service.rescoreDiffEntry('job-1', 'n0');
+
+    expect(scoreItem).toHaveBeenCalledWith('The system shall be fast.', ['Necessary', 'Verifiable'], 'user-1', undefined);
+  });
+
+  it('rejects rescoring a non-create entry', async () => {
+    const reuseEntry = { ...staleEntry, action: 'reuse', existingAdoId: 42 };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [reuseEntry] }) },
+    };
+    const scoreItem = jest.fn();
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow('only create entries can be rescored');
+    expect(scoreItem).not.toHaveBeenCalled();
+  });
+
+  it('rejects rescoring a non-Requirement entry -- Epic/Feature use a separate rubric with no single-item endpoint', async () => {
+    const epicEntry = { ...staleEntry, type: 'Epic' };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [epicEntry] }) },
+    };
+    const scoreItem = jest.fn();
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow('only Requirement entries can be rescored');
+    expect(scoreItem).not.toHaveBeenCalled();
+  });
+
+  it('propagates an ingestion failure and never writes a fabricated fresh score', async () => {
+    const update = jest.fn();
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
+        update,
+      },
+    };
+    const scoreItem = jest.fn().mockRejectedValue(new Error('ingestion unreachable'));
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow('ingestion unreachable');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // Confirmed real bug found+fixed during the review-fix pass: a bare
+  // IngestionHttpError (not a NestJS HttpException) reaching the default
+  // exception filter surfaced as a generic, undiagnosable 500 -- this route
+  // is the first diff-mutation route with an inline external HTTP
+  // dependency in its own request/response cycle, unlike editDiffEntry/
+  // addDiffEntry (pure DB/array operations, nothing to fail this way).
+  it('maps a real IngestionHttpError to a BadGatewayException, preserving the real reason', async () => {
+    const update = jest.fn();
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
+        update,
+      },
+    };
+    const scoreItem = jest.fn().mockRejectedValue(new IngestionHttpError(503, 'Ingestion /score-item request failed: LLM backend unreachable'));
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow(BadGatewayException);
+    await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow('LLM backend unreachable');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // Confirmed real bug found+fixed during the review-fix pass: ingestion's
+  // /score-item can return a real HTTP 200 with quality_score: null (the
+  // LLM response was missing/malformed for this one item -- the same
+  // tolerant-parse path the batch scorer already warns on, see
+  // scoring.py's score_single_requirement_text). That is NOT a network
+  // failure, but it IS a failed rescore from this entry's point of view --
+  // writing it through unconditionally would silently destroy the entry's
+  // last real score and clear qualityStale, violating DESIGN.md §11.4.4's
+  // "a failed rescore must never launder a stale number into a
+  // fresh-looking one." Untested before this fix.
+  it('treats a 200-OK-but-null rescore result as a failure -- never overwrites the last real score', async () => {
+    const update = jest.fn();
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
+        update,
+      },
+    };
+    const scoreItem = jest.fn().mockResolvedValue({ qualityScore: null, qualityIssues: [], qualityCategoryScores: null });
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow(BadGatewayException);
+    // The entry (and its qualityStale flag) is never written -- the old
+    // score of 40 stays exactly as it was, not overwritten with null.
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the job is not in a diff-editable state', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'confirmed', dryRunDiff: [staleEntry] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow('not in a diff-editable state');
   });
 });
 

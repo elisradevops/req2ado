@@ -197,9 +197,14 @@ interface LeveledNode {
   quality_score?: number | null;
   quality_issues?: string[];
   // Per-dimension 0-100 breakdown backing quality_score -- see ingestion's
-  // QualityCategoryScores docstring (app.workitem.model). Optional for the
-  // same backward-compat reason as the other scoring fields.
-  quality_category_scores?: { clarity: number; testability: number; atomicity: number; style: number; rationale: number } | null;
+  // QualityCategoryScores docstring (app.workitem.model). A dynamic
+  // key->score map, NOT a fixed 5-field shape -- an org's own ingested KB
+  // checklist can define its own category names (see dry-run.service.ts's
+  // QualityCategoryScores, DiffTree.tsx, QualityGauge.tsx, all of which
+  // already use Record<string, number>; this was the one stale holdout).
+  // Optional for the same backward-compat reason as the other scoring
+  // fields.
+  quality_category_scores?: Record<string, number> | null;
   // Previously computed by ingestion (WorkItemNode.source_ref/tags) but
   // dropped here -- neither reached DryRunTreeNode nor any ADO field.
   // Optional for the same backward-compat reason as the scoring fields above.
@@ -242,12 +247,29 @@ export async function runPipelineJob(
     // 'cancelled' instead. Without this check the line below would
     // immediately clobber that back to 'running'.
     await assertNotCancelled(deps.prisma, job.id);
+    // job.model ?? deps.defaultLlmModel (see PipelineWorkerDeps.defaultLlmModel's
+    // doc comment) -- always a concrete model name, never undefined. Hoisted
+    // here (was resolved later, just before the /level call) so the SAME
+    // binding can be persisted as Job.model below -- DESIGN.md §11.2.3.b:
+    // written at pending->running, not diff_ready, so a job that fails
+    // mid-/level (the longest, most failure-prone stage) still records what
+    // it ran under, and a later resubmit() has something real to read.
+    const model = job.model ?? deps.defaultLlmModel;
     // Real lifecycle: 'pending' (set on submit) -> 'running' (here) ->
     // 'diff_ready'/'failed'. Without this write the Job row sits at
     // 'pending' for the entire worker run, so the frontend's
     // status === 'running' gate (JobDetail.tsx's SSE subscription and
     // ProgressBanner) never activates.
-    await deps.prisma.job.update({ where: { id: job.id }, data: { status: 'running' } });
+    //
+    // startedAt/model here are the ETA telemetry's write path (DESIGN.md
+    // §11.2.3.b) -- model is null for BASELINE, which never calls an LLM at
+    // all; deps.defaultLlmModel is always a non-empty string regardless of
+    // mode, so without this guard every BASELINE row would falsely record
+    // a model it never used.
+    await deps.prisma.job.update({
+      where: { id: job.id },
+      data: { status: 'running', startedAt: new Date(), model: job.mode === 'survey' ? model : null },
+    });
     await deps.jobEventsPublisher.publish(job.id, 'parse');
     // Resolved BEFORE ingest (rather than after, as before) so it's ready
     // for maybeBackfillAreaPath below without a second, redundant vault
@@ -324,12 +346,11 @@ export async function runPipelineJob(
     // job.userId (KB scope), NOT job.areaPath (ADO write-back destination --
     // see diffInputs[].areaPath and checkDuplicate below, both correctly
     // still using job.areaPath).
-    // job.model ?? deps.defaultLlmModel (see PipelineWorkerDeps.defaultLlmModel's
-    // doc comment) -- always send a concrete model name, never undefined,
-    // so ingestion's _resolve_caps can resolve real caps/tool-support
-    // instead of silently falling back to the conservative unknown-model
-    // default for the (common) "Default" wizard selection.
-    const model = job.model ?? deps.defaultLlmModel;
+    // model resolved above (hoisted to the running-transition update) --
+    // always a concrete model name, never undefined, so ingestion's
+    // _resolve_caps can resolve real caps/tool-support instead of silently
+    // falling back to the conservative unknown-model default for the
+    // (common) "Default" wizard selection.
     const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id)) as {
       nodes: LeveledNode[];
       warnings?: string[];
@@ -564,6 +585,17 @@ export async function runPipelineJob(
           relevance: c.relevance,
         })) as any,
         figureDescriptions: figureDescriptions as any,
+        // ETA telemetry write path, part 2 (DESIGN.md §11.2.3.b). Real
+        // pipeline completion, independent of whether/how a human later
+        // reviews it -- diffReadyAt is deliberately NOT set in confirm()
+        // or reject(). doc.figures.length (every figure), not
+        // figureDescriptions.length (already filtered to captioned-only
+        // figures above) -- must match the same quantity
+        // jobs.controller.ts's preview() counts, or the ETA fit trains on
+        // a different quantity than it predicts against.
+        blockCount: (doc.blocks ?? []).length,
+        figureCount: (doc.figures ?? []).length,
+        diffReadyAt: new Date(),
       },
     });
     await deps.prisma.auditEntry.create({

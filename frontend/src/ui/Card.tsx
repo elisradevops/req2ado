@@ -15,8 +15,7 @@ export function Card({
     <div
       className={cn(
         'bg-surface border border-hairline rounded-md shadow-card overflow-hidden',
-        interactive &&
-          'lift transition-[transform,box-shadow,border-color] duration-base ease-out hover:shadow-raised hover:-translate-y-px hover:border-hairline-strong',
+        interactive && 'liftable',
         className,
       )}
       {...props}
@@ -27,7 +26,12 @@ export function Card({
 export function CardHeader({ title, action, className }: { title: ReactNode; action?: ReactNode; className?: string }): React.ReactElement {
   return (
     <div className={cn('flex items-center gap-2.5 border-b border-hairline px-4 py-2.5', className)}>
-      <span className="text-sm font-semibold">{title}</span>
+      {/* DESIGN.md §1.3/§4: text-title is the only size for dialog titles,
+          card section headers, and the running-job phase headline -- was
+          text-sm (matching body copy), making every SectionCard title
+          (5 of them on the wizard) visually indistinguishable from the
+          content below it. */}
+      <span className="text-title">{title}</span>
       {action && <span className="ml-auto flex items-center gap-2">{action}</span>}
     </div>
   );

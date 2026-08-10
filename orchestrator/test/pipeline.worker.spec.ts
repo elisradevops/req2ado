@@ -189,7 +189,20 @@ describe('runPipelineJob', () => {
 
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
       where: { id: 'job-1' },
-      data: { status: 'diff_ready', dryRunDiff: [], warnings: [], kbCitations: [], figureDescriptions: [] },
+      data: {
+        status: 'diff_ready',
+        dryRunDiff: [],
+        warnings: [],
+        kbCitations: [],
+        figureDescriptions: [],
+        // ETA telemetry write path (DESIGN.md §11.2.3.b) -- blockCount/
+        // figureCount default to 0 here since the mocked ingest() response
+        // has neither `blocks` nor `figures` populated (both fall through
+        // the `?? []` guard).
+        blockCount: 0,
+        figureCount: 0,
+        diffReadyAt: expect.any(Date),
+      },
     });
   });
 
@@ -213,7 +226,13 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakePrisma.job.update).toHaveBeenNthCalledWith(1, { where: { id: 'job-1' }, data: { status: 'running' } });
+    // ETA telemetry write path (DESIGN.md §11.2.3.b) -- model is null here
+    // because this job's mode is 'baseline', which never calls an LLM at
+    // all; a SURVEY job would record the effective model instead.
+    expect(fakePrisma.job.update).toHaveBeenNthCalledWith(1, {
+      where: { id: 'job-1' },
+      data: { status: 'running', startedAt: expect.any(Date), model: null },
+    });
     expect(fakeJobEventsPublisher.publish).toHaveBeenNthCalledWith(1, 'job-1', 'parse');
   });
 
@@ -423,6 +442,53 @@ describe('runPipelineJob', () => {
     );
   });
 
+  // Regression guard for a stale type: quality_category_scores was once
+  // declared as a fixed {clarity,testability,atomicity,style,rationale}
+  // object here even though every other layer (dry-run.service.ts,
+  // DiffTree.tsx, QualityGauge.tsx) already treats it as a dynamic
+  // Record<string, number> -- an org's own ingested KB checklist can define
+  // entirely different category names (e.g. "Necessary"/"Verifiable").
+  // Compiled fine before the fix only because the fixed shape happened to
+  // be structurally assignable; this proves a KB-derived key set survives
+  // the mapping unchanged, not just the fixed 5-dimension fallback.
+  it('carries a KB-derived (non-fixed-5-dimension) quality_category_scores key set through unchanged', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        {
+          local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1',
+          quality_score: 85, quality_issues: [],
+          quality_category_scores: { Necessary: 90, Verifiable: 80 },
+        },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt', followUp: true },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakeDryRunService.diff).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ qualityCategoryScores: { Necessary: 90, Verifiable: 80 } }),
+      ],
+      fakeIdempotencyService,
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
   it('carries figure_ids from ingestion through to the dry-run diff input', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({
@@ -613,6 +679,9 @@ describe('runPipelineJob', () => {
         warnings: ['SURVEY node count (1) diverges from source block count (5) by more than 50%'],
         kbCitations: [],
         figureDescriptions: [],
+        blockCount: 0,
+        figureCount: 0,
+        diffReadyAt: expect.any(Date),
       },
     });
   });
@@ -889,6 +958,9 @@ describe('runPipelineJob', () => {
           { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
         ],
         figureDescriptions: [],
+        blockCount: 0,
+        figureCount: 0,
+        diffReadyAt: expect.any(Date),
       },
     });
   });

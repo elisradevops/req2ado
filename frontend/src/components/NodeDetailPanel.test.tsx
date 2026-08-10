@@ -93,15 +93,24 @@ describe('NodeDetailPanel', () => {
       <NodeDetailPanel
         entry={{
           localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
-          action: 'create', customerId: null, tags: [], qualityScore: 72, qualityIssues: ['vague_term'],
+          action: 'create', customerId: null, tags: [],
+          qualityScore: 72, qualityIssues: ['vague_term'], qualityCategoryScores: { clarity: 40, testability: 80, atomicity: 90, style: 85, rationale: 70 },
         }}
       />,
     );
     expect(screen.getByText('72')).toBeInTheDocument();
-    expect(screen.getByText(/Vague term/i)).toBeInTheDocument();
+    // Real bug fixed here (confirmed against the agreed mockup, which has no
+    // "Active Flags" chip-cloud block at all): "Vague term" used to appear
+    // TWICE -- once in a standalone Active Flags chip row (IssueChips,
+    // showing only the bare label), once as the fix-oriented remedy text
+    // under Clarity's own row (QualityGauge's per-category breakdown). The
+    // chip row was pure duplication of what the category row already says,
+    // with less information (no remedy text) -- removed, so this now
+    // appears exactly once, under Clarity, where the real remedy text lives.
+    expect(screen.getAllByText(/Vague term\.?$/i).length).toBe(1);
   });
 
-  it('renders Classification and Active Flags side by side, and Add Child last (DESIGN.md Track B, phase B13)', () => {
+  it('renders Classification as its own block (no paired Active Flags block -- removed as pure duplication of QualityGauge), and Add Child last (DESIGN.md Track B, phase B13)', () => {
     renderPanel(
       <NodeDetailPanel
         entry={{
@@ -111,10 +120,8 @@ describe('NodeDetailPanel', () => {
         addChildSlot={<div data-testid="add-child-slot">Add child</div>}
       />,
     );
-    const classification = screen.getByText('Classification');
-    const activeFlags = screen.getByText('Active Flags');
-    // Same grid row -- siblings under the same parent, not stacked blocks.
-    expect(classification.parentElement?.parentElement).toBe(activeFlags.parentElement?.parentElement);
+    expect(screen.getByText('Classification')).toBeInTheDocument();
+    expect(screen.queryByText('Active Flags')).not.toBeInTheDocument();
 
     // Add Child renders after everything else in document order, not near
     // the title (where it used to sit, disconnected from what it acts on).
@@ -130,6 +137,258 @@ describe('NodeDetailPanel', () => {
       />,
     );
     expect(screen.queryByText(/\/\s*100/)).not.toBeInTheDocument();
+    // DESIGN.md §11.4.1 -- the gate distinguishes "no rubric for this type"
+    // from "this Requirement hasn't been scored yet"; the latter gets its
+    // own visible empty state, not silence indistinguishable from an Epic.
+    expect(screen.getByText('Not scored yet.')).toBeInTheDocument();
+  });
+
+  it('shows a Score this item button next to "Not scored yet." for an editable, never-scored Requirement, when onRescore is supplied', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        onRescore={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /score this item/i })).toBeInTheDocument();
+  });
+
+  it('never shows Score this item without an onRescore handler, or for a read-only (reuse/dedup_skip) never-scored entry', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /score this item/i })).not.toBeInTheDocument();
+
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e2', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
+        onRescore={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /score this item/i })).not.toBeInTheDocument();
+  });
+
+  it('clicking Score this item calls onRescore with the entry localId -- reuses the exact same rescore action a stale item\'s Re-check quality button uses', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    const onRescore = vi.fn().mockResolvedValue(undefined);
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        onRescore={onRescore}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /score this item/i }));
+    expect(onRescore).toHaveBeenCalledWith('e1');
+    // A first-ever score has no "previous" value to render a delta
+    // against -- must never show a fabricated "Rescored." confirmation.
+    expect(screen.queryByText('Rescored.')).not.toBeInTheDocument();
+  });
+
+  it('shows no gauge for an Epic even when it carries a non-null qualityScore (stale/leftover data) -- the gate is the real ADO type, never score presence', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body', action: 'create', customerId: null, tags: [], qualityScore: 55 }}
+      />,
+    );
+    expect(screen.queryByText('55')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not scored yet.')).not.toBeInTheDocument();
+  });
+
+  // DESIGN.md §11.4.1 -- in place of the absent gauge, an Epic/Feature
+  // shows a Scope group: real descendant counts + why there's no score.
+  describe('Epic/Feature Scope group', () => {
+    it('shows real descendant counts and states plainly why there is no score', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body', action: 'create', customerId: null, tags: [] }}
+          descendantCounts={{ features: 6, requirements: 41 }}
+        />,
+      );
+      expect(screen.getByText('Covers 6 features, 41 requirements.')).toBeInTheDocument();
+      expect(screen.getByText(/aren't scored/i)).toBeInTheDocument();
+    });
+
+    it('uses singular wording for exactly one descendant of a kind', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={{ localId: 'e1', parentLocalId: null, type: 'Feature', title: 'F', description: 'D', action: 'create', customerId: null, tags: [] }}
+          descendantCounts={{ features: 0, requirements: 1 }}
+        />,
+      );
+      expect(screen.getByText('Covers 0 features, 1 requirement.')).toBeInTheDocument();
+    });
+
+    it('shows a real empty state, not a fabricated count, when there are no descendants yet', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'D', action: 'create', customerId: null, tags: [] }}
+        />,
+      );
+      expect(screen.getByText('No child items under this Epic yet.')).toBeInTheDocument();
+    });
+
+    it('never shows a Scope group for a Requirement, or a gauge for an Epic/Feature', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'R', description: 'D', action: 'create', customerId: null, tags: [], qualityScore: 80 }}
+        />,
+      );
+      expect(screen.queryByText('Scope')).not.toBeInTheDocument();
+    });
+  });
+
+  // CR-7d rescore: Scored / Stale / Re-checking / Rescored.
+  describe('rescore', () => {
+    const staleEntry: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: null, tags: [],
+      qualityScore: 40, qualityIssues: ['vague_term'], qualityCategoryScores: { clarity: 20 }, qualityStale: true,
+    };
+
+    it('shows no Stale message or Rescore button on a freshly-scored (non-stale) entry', () => {
+      renderPanel(
+        <NodeDetailPanel entry={{ ...staleEntry, qualityStale: false }} onRescore={vi.fn()} />,
+      );
+      expect(screen.queryByText(/edited since this was scored/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /re-check/i })).not.toBeInTheDocument();
+    });
+
+    it('dims the gauge and shows a Rescore button when the entry is stale', () => {
+      renderPanel(<NodeDetailPanel entry={staleEntry} onRescore={vi.fn()} />);
+      expect(screen.getByText(/edited since this was scored/i)).toBeInTheDocument();
+      // The last-known score is KEPT on screen, never zeroed -- only its
+      // freshness is in question.
+      expect(screen.getByText('40')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /re-check/i })).toBeInTheDocument();
+    });
+
+    it('never shows a Rescore button when the caller supplies no onRescore handler', () => {
+      renderPanel(<NodeDetailPanel entry={staleEntry} />);
+      expect(screen.getByText(/edited since this was scored/i)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /re-check/i })).not.toBeInTheDocument();
+    });
+
+    it('shows a loading state while rescoring, calls onRescore with the entry localId', async () => {
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const { waitFor } = await import('@testing-library/react');
+      const user = userEvent.setup();
+      let resolveRescore: () => void = () => {};
+      const onRescore = vi.fn().mockImplementation(
+        () => new Promise<void>((resolve) => { resolveRescore = resolve; }),
+      );
+      renderPanel(<NodeDetailPanel entry={staleEntry} onRescore={onRescore} />);
+
+      await user.click(screen.getByRole('button', { name: /re-check/i }));
+
+      expect(onRescore).toHaveBeenCalledWith('e1');
+      expect(screen.getByRole('button', { name: /re-check/i })).toBeDisabled();
+
+      resolveRescore();
+      await waitFor(() => expect(screen.getByRole('button', { name: /re-check/i })).not.toBeDisabled());
+    });
+
+    it('never touches the gauge locally on a rejected rescore -- reflects only what the server actually persisted', async () => {
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const user = userEvent.setup();
+      const onRescore = vi.fn().mockRejectedValue(new Error('ingestion unreachable'));
+      renderPanel(<NodeDetailPanel entry={staleEntry} onRescore={onRescore} />);
+
+      await user.click(screen.getByRole('button', { name: /re-check/i }));
+
+      // The entry prop itself never changes (this component doesn't own
+      // persistence) -- it's still stale, the button is usable again, and
+      // no fabricated "Rescored" confirmation appears.
+      expect(screen.getByText(/edited since this was scored/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /re-check/i })).not.toBeDisabled();
+      expect(screen.queryByText('Rescored.')).not.toBeInTheDocument();
+    });
+
+    it('resets rescoring state when a different node is selected mid-flight', async () => {
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const user = userEvent.setup();
+      const onRescore = vi.fn().mockImplementation(() => new Promise<void>(() => {})); // never resolves
+      const { rerender } = renderPanel(<NodeDetailPanel entry={staleEntry} onRescore={onRescore} />);
+
+      await user.click(screen.getByRole('button', { name: /re-check/i }));
+      expect(screen.getByRole('button', { name: /re-check/i })).toBeDisabled();
+
+      rerender(
+        <ToastProvider>
+          <NodeDetailPanel entry={{ ...staleEntry, localId: 'e2' }} onRescore={onRescore} />
+        </ToastProvider>,
+      );
+
+      expect(screen.getByRole('button', { name: /re-check/i })).not.toBeDisabled();
+    });
+
+    // Confirmed real bug found+fixed during the review-fix pass: the
+    // "resets rescoring state" test above only exercises a promise that
+    // NEVER resolves, so it never proved what happens when node A's
+    // rescore actually completes after the user has already switched to
+    // node B -- this test resolves it and checks B's own gauge/toast area
+    // never shows A's leftover data.
+    it('never applies a rescore response to the wrong node when the selection changed while the request was in flight', async () => {
+      const { default: userEvent } = await import('@testing-library/user-event');
+      const { waitFor } = await import('@testing-library/react');
+      const user = userEvent.setup();
+      let resolveRescore: () => void = () => {};
+      const onRescore = vi.fn().mockImplementation(
+        () => new Promise<void>((resolve) => { resolveRescore = resolve; }),
+      );
+      const entryB: DryRunDiffEntry = { ...staleEntry, localId: 'e2', qualityStale: false };
+      const { rerender } = renderPanel(<NodeDetailPanel entry={staleEntry} onRescore={onRescore} />);
+
+      await user.click(screen.getByRole('button', { name: /re-check/i }));
+
+      rerender(
+        <ToastProvider>
+          <NodeDetailPanel entry={entryB} onRescore={onRescore} />
+        </ToastProvider>,
+      );
+      // entryB is not stale, so it shows no Re-check button at all -- confirms we're
+      // really looking at B's own render, not a leftover A-shaped one.
+      expect(screen.queryByRole('button', { name: /re-check/i })).not.toBeInTheDocument();
+
+      // NOW resolve node A's original (now-stale-relative-to-selection) request.
+      resolveRescore();
+      await waitFor(() => expect(onRescore).toHaveBeenCalledTimes(1));
+
+      // B's pane must never show a delta or a "Rescored." confirmation built
+      // from A's numbers -- there is nothing for B to have a delta against.
+      expect(screen.queryByText('Rescored.')).not.toBeInTheDocument();
+      expect(screen.queryByText(/^was /)).not.toBeInTheDocument();
+    });
+  });
+
+  it('does not leak an expanded category disclosure from one node onto a different node with an identically-named category (QualityGauge must remount, not reuse state, on node switch)', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    const entryA: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'A', description: 'A body',
+      action: 'create', customerId: null, tags: [], qualityScore: 40,
+      qualityCategoryScores: { clarity: 20 }, qualityIssues: ['vague_term'],
+    };
+    const entryB: DryRunDiffEntry = { ...entryA, localId: 'e2', title: 'B', qualityScore: 90, qualityCategoryScores: { clarity: 90 } };
+    const { rerender } = renderPanel(<NodeDetailPanel entry={entryA} />);
+
+    await user.click(screen.getByRole('button', { name: /clarity/i }));
+    expect(screen.getByRole('button', { name: /clarity/i })).toHaveAttribute('aria-expanded', 'true');
+
+    rerender(
+      <ToastProvider>
+        <NodeDetailPanel entry={entryB} />
+      </ToastProvider>,
+    );
+
+    // entryB's clarity row still has vague_term mapped to it (inherited via
+    // the fixture's spread), so it still HAS an expand affordance -- the
+    // real assertion is that switching nodes reset it to collapsed, not
+    // that the affordance vanished.
+    const clarityRow = screen.getByText('Clarity').closest('button')!;
+    expect(clarityRow).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('shows an Edit button for a create entry and switches to editable fields on click', async () => {
@@ -296,14 +555,17 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], qualityScore: 80 }}
       />,
     );
-    // Mentions the knowledge base by name when it actually contributed --
-    // "Judged against EARS/INCOSE/ISO" alone would be misleading here.
-    expect(screen.getByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148, and your knowledge base/)).toBeInTheDocument();
+    // Mentions the knowledge base by a real count when it actually
+    // contributed. DESIGN.md §11.4.3 -- no standard's name (EARS/INCOSE/
+    // ISO/IEC/IEEE 29148) appears anywhere in this copy, glossed or not;
+    // an earlier version of this test asserted the opposite and was wrong.
+    expect(screen.getByText(/Scored on how the requirement is written/)).toBeInTheDocument();
+    expect(screen.getByText(/Your knowledge base contributed 2 documents\./)).toBeInTheDocument();
     expect(screen.getByText('doc-a.docx')).toBeInTheDocument();
     expect(screen.getByText('doc-b.pdf')).toBeInTheDocument();
   });
 
-  it('shows the standards line but no KB references line when kbCitations is empty', () => {
+  it('shows the standards line but no KB-count sentence when kbCitations is empty', () => {
     renderPanel(
       <NodeDetailPanel
         jobMode="survey"
@@ -311,19 +573,19 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], qualityScore: 80 }}
       />,
     );
-    expect(screen.getByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).toBeInTheDocument();
-    expect(screen.queryByText(/, and your knowledge base/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Scored on how the requirement is written/)).toBeInTheDocument();
+    expect(screen.queryByText(/Your knowledge base contributed/)).not.toBeInTheDocument();
     expect(screen.queryByText(/KB references/i)).not.toBeInTheDocument();
   });
 
-  it('does not claim a judgment happened for a node that was never scored (e.g. an Epic with no qualityScore set)', () => {
+  it('does not claim a judgment happened for a node whose type has no scoring rubric (e.g. an Epic), regardless of qualityScore', () => {
     renderPanel(
       <NodeDetailPanel
         jobMode="survey"
         entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body', action: 'create', customerId: null, tags: [] }}
       />,
     );
-    expect(screen.queryByText(/Judged against/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Scored on how the requirement is written/)).not.toBeInTheDocument();
     expect(screen.queryByText('Sources')).not.toBeInTheDocument();
   });
 
@@ -335,7 +597,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
       />,
     );
-    expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Scored on how the requirement is written/)).not.toBeInTheDocument();
   });
 
   it('does not show the Sources section for a reuse entry, even in a SURVEY job', () => {
@@ -346,7 +608,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
       />,
     );
-    expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Scored on how the requirement is written/)).not.toBeInTheDocument();
   });
 
   it('does not show the Sources section when jobMode is omitted (backward compatible with pre-existing callers)', () => {
@@ -355,7 +617,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
       />,
     );
-    expect(screen.queryByText(/EARS, INCOSE, ISO\/IEC\/IEEE 29148/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Scored on how the requirement is written/)).not.toBeInTheDocument();
   });
 
   it('shows the full trace link list for the selected node', () => {

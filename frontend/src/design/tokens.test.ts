@@ -25,6 +25,15 @@ const BANNED_PATTERNS: RegExp[] = [
   /animate-\[[A-Za-z-]+_\d+ms/g, // §15.4 -- durations must reference var(--duration-*)
   /duration-\[\d+ms\]/g, // §15.4
   /cubic-bezier\(/g, // §15.4 -- easing must reference var(--ease-*)
+  // DESIGN.md §11.2.3.e/§16.21 -- the mechanical guard against the removed
+  // 40-minute cap (or any other hardcoded time range) creeping back into
+  // product copy. The ETA is computed server-side from real completed-job
+  // history; a literal "15-40 min"-shaped string in source is definitionally
+  // not that. All known offenders (ModeCards.tsx, NewJobWizard.tsx,
+  // ProgressBanner.tsx, labels.ts) were fixed in the same change that added
+  // this pattern, so the baseline below has no entries -- it starts at zero,
+  // not at a temporary non-zero count to migrate down later.
+  /\d+\s*[–-]\s*\d+\+?\s*min/g,
 ];
 
 function listSourceFiles(dir: string): string[] {

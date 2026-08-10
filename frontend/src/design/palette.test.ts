@@ -35,15 +35,10 @@ const ALLOWLISTED_FILES = new Set([
 // removing the literals, and never raise it to make a new violation pass.
 const BASELINE_HEX_COUNTS: Record<string, number> = {
   'components/SharePointFolderTree.tsx': 2,
-  'components/DiffTree.tsx': 2,
   'components/TraceLinkChips.tsx': 1,
-  'components/StatusChip.tsx': 1,
   'components/ActionBadge.tsx': 4,
   'components/TagChips.tsx': 1,
-  'components/CollapsibleWarnings.tsx': 22,
-  'components/FileDropzone.tsx': 1,
   'components/IssueChips.tsx': 2,
-  'pages/KnowledgeBase.tsx': 3,
 };
 
 function listSourceFiles(dir: string): string[] {

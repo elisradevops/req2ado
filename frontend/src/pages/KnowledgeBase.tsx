@@ -28,12 +28,17 @@ import { Alert } from '../ui/Alert';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Dialog } from '../ui/Dialog';
 import { formatSharePointExpiry } from '../utils/sharePointStatus';
+import { cn } from '../lib/cn';
 
-const STATUS_COPY: Record<SharePointStatus['status'], { label: string; bg: string; color: string }> = {
-  valid: { label: 'Connected', bg: 'var(--color-ok)', color: '#fff' },
-  invalid: { label: 'Token invalid', bg: 'var(--color-danger)', color: '#fff' },
-  unreachable: { label: "Can't reach Microsoft Graph", bg: 'var(--color-warning)', color: '#fff' },
-  not_configured: { label: 'Not configured', bg: 'var(--color-surface-alt)', color: 'var(--color-ink-2)' },
+// Same semantic-token approach Settings.tsx's own SharePoint status chip
+// already uses (TONE_CHIP_CLASSES) -- was raw bg/color CSS-var strings
+// (including a bare hex white) here, a second, independent color system for
+// the identical concept.
+const STATUS_COPY: Record<SharePointStatus['status'], { label: string; chipClassName: string }> = {
+  valid: { label: 'Connected', chipClassName: 'bg-ok-soft text-ok-ink border-ok-border' },
+  invalid: { label: 'Token invalid', chipClassName: 'bg-danger-soft text-danger-ink border-danger-border' },
+  unreachable: { label: "Can't reach Microsoft Graph", chipClassName: 'bg-warning-soft text-warning-ink border-warning-border' },
+  not_configured: { label: 'Not configured', chipClassName: 'bg-surface-alt text-ink-3 border-hairline-strong' },
 };
 
 function SharePointStatusStrip({ onReconnect }: { onReconnect: () => void }): React.ReactElement {
@@ -61,9 +66,7 @@ function SharePointStatusStrip({ onReconnect }: { onReconnect: () => void }): Re
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2.5 p-2.5">
-        <Chip bg={copy.bg} color={copy.color}>
-          SharePoint
-        </Chip>
+        <Chip className={cn('border text-xs font-normal', copy.chipClassName)}>SharePoint</Chip>
         <span className="text-sm text-ink-2">
           {copy.label}
           {expiry && <span className="text-ink-3"> · {expiry}</span>}

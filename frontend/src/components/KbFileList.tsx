@@ -4,6 +4,7 @@ import { formatSize, extensionOf } from './SharePointFolderTree';
 import type { FolderTreeEntry } from '../api/kb';
 import { FileTypeIcon } from './FileTypeIcon';
 import { Spinner } from '../ui/Spinner';
+import { Skeleton } from '../ui/Skeleton';
 import { Tooltip } from '../ui/Tooltip';
 import { TextField } from '../ui/TextField';
 import { Chip } from '../ui/Chip';
@@ -78,7 +79,15 @@ export function KbFileList({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? (
-          <p className="p-4 text-sm text-ink-3">Loading…</p>
+          // DESIGN.md §7 Row category: loading is a Skeleton row of
+          // identical height, not spinner/text prose -- matches
+          // JobsList.tsx's own already-correct treatment for the same
+          // "list is fetching" event.
+          <div className="flex flex-col gap-2 p-3.5">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
         ) : visible.length === 0 ? (
           <div className="p-4">
             <EmptyState
@@ -110,7 +119,12 @@ export function KbFileList({
                     key={entry.id}
                     onClick={() => (entry.isFolder ? onNavigateFolder(entry) : onSelectFile(entry))}
                     className={cn(
-                      'cursor-pointer border-t border-hairline transition-colors duration-instant hover:bg-accent-soft',
+                      // DESIGN.md §3: accent-soft is reserved for "selected,"
+                      // never "hovered" -- was hover:bg-accent-soft, making a
+                      // merely-hovered row pixel-identical to the actually
+                      // selected one below. Same fix JobsList.tsx already
+                      // has (§18 ledger).
+                      'cursor-pointer border-t border-hairline transition-colors duration-instant hover:bg-surface-alt',
                       selected && 'bg-accent-soft',
                     )}
                   >

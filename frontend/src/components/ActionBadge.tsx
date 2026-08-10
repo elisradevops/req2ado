@@ -36,12 +36,22 @@ export function ActionBadge({
     );
   }
   if (action === 'reuse') {
-    const chip = (
+    // DESIGN.md §3's role table reserves the accent family for what's
+    // "currently interactive-or-chosen" (incl. links) -- this chip is only
+    // ever a real link when both an id and orgUrl are known; otherwise it's
+    // plain status text and gets the same neutral palette dedup_skip's own
+    // non-link chip below already uses.
+    const isLink = existingAdoId != null && !!orgUrl;
+    const chip = isLink ? (
       <Chip bg="#EAF0FB" color="var(--color-accent)" className="border border-[#C3D2ED]">
         {`Links to WI-${existingAdoId ?? '?'}`}
       </Chip>
+    ) : (
+      <Chip bg="var(--color-surface-alt)" color="var(--color-ink-3)" className="border border-hairline-strong">
+        {`Links to WI-${existingAdoId ?? '?'}`}
+      </Chip>
     );
-    if (existingAdoId == null || !orgUrl) return chip;
+    if (!isLink) return chip;
     return (
       <a href={buildWorkItemUrl(orgUrl, project, existingAdoId)} target="_blank" rel="noreferrer">
         {chip}

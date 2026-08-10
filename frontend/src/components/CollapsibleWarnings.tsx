@@ -131,57 +131,65 @@ export function CollapsibleWarnings({
   }
 
   return (
-    <div className="overflow-hidden rounded-sm border border-[#EED8B4] bg-[#FDF6EC]">
+    <div className="overflow-hidden rounded-sm border border-warning-border bg-warning-soft">
       <button
         type="button"
         onClick={() => setSummaryExpanded((prev) => !prev)}
         aria-expanded={summaryExpanded}
-        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-sm text-[#7A4F0B]"
+        // DESIGN.md §7 names "CollapsibleWarnings rows" as a .hoverable-row
+        // consumer directly -- was no hover feedback at all despite being a
+        // real toggle. border-t-0: this toggle is the sole target inside its
+        // own bordered card, not one of a divided sibling list, so
+        // .hoverable-row's row-separator border would just be a stray line
+        // under this card's own curved top edge.
+        className="hoverable-row border-t-0 flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-sm text-warning-ink"
       >
         {summaryExpanded ? <ChevronDown className="h-4 w-4 flex-none" /> : <ChevronRight className="h-4 w-4 flex-none" />}
         <TriangleAlert className="h-4 w-4 flex-none" />
         <span className="font-medium">
           {warnings.length} integrity warning{warnings.length === 1 ? '' : 's'}
         </span>
-        <span className="text-[#9A6B1F]">-- document content SURVEY may have dropped or couldn't place</span>
+        <span className="text-warning-ink-dim">-- document content SURVEY may have dropped or couldn't place</span>
       </button>
       {/* Always-mounted grid-row trick (not a conditional unmount) so the
           expand/collapse actually animates -- grid-template-rows is
           transitionable, height:auto is not. */}
       <div className={cn('grid min-h-0 transition-[grid-template-rows] duration-200 ease-out', summaryExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>
         <div className="min-h-0 overflow-hidden">
-          <div className="flex flex-col gap-2 border-t border-[#EED8B4] px-3.5 py-2.5">
+          <div className="flex flex-col gap-2 border-t border-warning-border px-3.5 py-2.5">
             {GROUP_ORDER.filter((kind) => grouped[kind].length > 0).map((kind) => {
               const { icon: Icon, title, tip } = GROUP_META[kind];
               const items = grouped[kind];
               const isOpen = expandedGroups.has(kind);
               return (
-                <div key={kind} className="overflow-hidden rounded-sm border border-[#EED8B4]/70 bg-white/40">
+                <div key={kind} className="overflow-hidden rounded-sm border border-warning-border/70 bg-white/40">
                   <button
                     type="button"
                     onClick={() => toggleGroup(kind)}
                     aria-expanded={isOpen}
-                    className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm text-[#7A4F0B]"
+                    // Same .hoverable-row fix and border-t-0 reasoning as the
+                    // summary toggle above.
+                    className="hoverable-row border-t-0 flex w-full items-center gap-2 px-2.5 py-2 text-left text-sm text-warning-ink"
                   >
                     {isOpen ? <ChevronDown className="h-3.5 w-3.5 flex-none" /> : <ChevronRight className="h-3.5 w-3.5 flex-none" />}
                     <Icon className="h-3.5 w-3.5 flex-none" />
                     <span className="font-medium">{title}</span>
-                    <span className="text-[#9A6B1F]">({items.length})</span>
+                    <span className="text-warning-ink-dim">({items.length})</span>
                   </button>
                   {isOpen && (
-                    <div className="flex flex-col gap-2 border-t border-[#EED8B4]/70 px-2.5 py-2.5">
-                      <p className="text-xs text-[#7A4F0B]">{tip}</p>
+                    <div className="flex flex-col gap-2 border-t border-warning-border/70 px-2.5 py-2.5">
+                      <p className="text-xs text-warning-ink">{tip}</p>
                       {kind === 'external-reference' && (
                         <Link
                           to="/knowledge-base"
-                          className="w-fit rounded-sm border border-[#EED8B4] bg-white px-2.5 py-1 text-xs font-medium text-[#7A4F0B] hover:border-[#9A6B1F]"
+                          className="w-fit rounded-sm border border-warning-border bg-white px-2.5 py-1 text-xs font-medium text-warning-ink hover:border-warning-ink-dim"
                         >
                           Add to knowledge base →
                         </Link>
                       )}
-                      <ul className="flex flex-col gap-2 border-t border-[#EED8B4]/60 pt-2">
+                      <ul className="flex flex-col gap-2 border-t border-warning-border/60 pt-2">
                         {items.map((warning, index) => (
-                          <li key={index} className={cn('text-sm text-[#7A4F0B]', index > 0 && 'border-t border-[#EED8B4]/40 pt-2')}>
+                          <li key={index} className={cn('text-sm text-warning-ink', index > 0 && 'border-t border-warning-border/40 pt-2')}>
                             <p>{warning}</p>
                             {kind === 'conflict' && (onJumpToNode || adoIdByLocalId) && (
                               <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -193,7 +201,7 @@ export function CollapsibleWarnings({
                                         <button
                                           type="button"
                                           onClick={() => onJumpToNode(localId)}
-                                          className="rounded-sm border border-[#EED8B4] bg-white px-2 py-0.5 text-xs font-medium text-[#7A4F0B] hover:border-[#9A6B1F]"
+                                          className="rounded-sm border border-warning-border bg-white px-2 py-0.5 text-xs font-medium text-warning-ink hover:border-warning-ink-dim"
                                         >
                                           Review item →
                                         </button>
@@ -206,7 +214,7 @@ export function CollapsibleWarnings({
                                           href={buildWorkItemUrl(orgUrl, project, adoId)}
                                           target="_blank"
                                           rel="noreferrer"
-                                          className="rounded-sm border border-[#EED8B4] bg-white px-2 py-0.5 text-xs font-medium text-[#7A4F0B] hover:border-[#9A6B1F]"
+                                          className="rounded-sm border border-warning-border bg-white px-2 py-0.5 text-xs font-medium text-warning-ink hover:border-warning-ink-dim"
                                         >
                                           View WI #{adoId} in Azure DevOps ↗
                                         </a>

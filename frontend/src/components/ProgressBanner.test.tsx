@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { ProgressBanner } from './ProgressBanner';
 
 describe('ProgressBanner', () => {
@@ -86,9 +85,6 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    // The activity log (added alongside the main message) also lists every
-    // narration seen so far, including this same text -- getAllByText
-    // tolerates that expected duplication.
     expect(screen.getAllByText('Generating formal requirements (section 1 of 3)').length).toBeGreaterThan(0);
     expect(screen.queryByText(/analyzing structure\.\.\./i)).not.toBeInTheDocument();
   });
@@ -198,7 +194,10 @@ describe('ProgressBanner', () => {
       />,
     );
     expect(screen.getAllByTestId('section-check-icon')).toHaveLength(2);
-    expect(screen.getByText('Resolving trace links')).toBeInTheDocument();
+    // Appears twice now, legitimately -- the header's own phase headline
+    // (PHASE_SUBLABEL) and SectionStepList's own trace-links row both say
+    // this for the same phase.
+    expect(screen.getAllByText('Resolving trace links').length).toBeGreaterThan(0);
   });
 
   it('marks every section done and shows an active scoring step once whole-document scoring starts', () => {
@@ -227,7 +226,13 @@ describe('ProgressBanner', () => {
     expect(screen.getByText(/you can close this page/i)).toBeInTheDocument();
   });
 
-  it('expands a collapsed activity log listing every narration seen so far, on click', async () => {
+  it('shows the phase headline and the latest narration as one sentence in the header, with no raw activity log', () => {
+    // DESIGN.md §11.3's own audit note: the raw scrolling activity log this
+    // used to render (every narration message in a collapsible list) is
+    // explicitly superseded -- "do not build it." The header now carries a
+    // plain-language phase headline (text-title) plus the latest
+    // narration as a single sentence; SectionStepList (asserted elsewhere)
+    // is what answers "what is left."
     render(
       <ProgressBanner
         stage="infer_hierarchy_start"
@@ -239,14 +244,10 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    const toggle = screen.getByRole('button', { name: /activity log \(2\)/i });
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-
-    await userEvent.click(toggle);
-
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByText('First message')).toBeInTheDocument();
-    expect(screen.getAllByText('Second message').length).toBeGreaterThan(0);
+    expect(screen.getByText('Scoring quality')).toBeInTheDocument();
+    expect(screen.getByText('Second message')).toBeInTheDocument();
+    expect(screen.queryByText('First message')).not.toBeInTheDocument();
+    expect(screen.queryByText(/activity log/i)).not.toBeInTheDocument();
   });
 
   it('renders a describe_figure narration (parse stage) without a section step list', () => {
@@ -265,8 +266,9 @@ describe('ProgressBanner', () => {
         ]}
       />,
     );
-    // The message also appears in the (collapsed but present) activity log
-    // -- getAllByText tolerates that expected duplication.
+    // The header's own one-sentence narration line and RunDetail's
+    // describe_figure branch both legitimately say this -- getAllByText
+    // tolerates that expected duplication.
     expect(screen.getAllByText(/figure 3 so far/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Section 1 of/)).not.toBeInTheDocument();
   });
@@ -369,11 +371,53 @@ describe('ProgressBanner', () => {
       />,
     );
     expect(screen.getByText(/checking 12 of 40 proposed items/i)).toBeInTheDocument();
-    // Two progressbars render (the metrics box's + this phase's own) --
-    // this determinate one (30%) must be among them, not just the metrics
-    // box's indeterminate one.
+    expect(screen.getAllByRole('progressbar')).toHaveLength(1);
+  });
+
+  it('renders exactly ONE progress bar for dedup_check, not two at the same percentage (CR-10, "Wizard UX Options" decision sheet)', () => {
+    // Real bug found on review, confirmed still live: the generic metrics
+    // panel above RunDetail computes a progress value for dedup_check too
+    // (branchCount is 0, so the section-share math falls through to
+    // blocksDone directly) and rendered its OWN chip+bar for it, mislabelled
+    // "12 / 40 blocks" (isScoringPhase is false, so the label never says
+    // "proposed items") -- stacked directly above RunDetail's own correctly
+    // labelled "Checking 12 of 40 proposed items" bar at the identical
+    // percentage. An earlier version of this exact test asserted the TWO-bar
+    // output as the expected, correct behavior; it was not -- see the sheet's
+    // own words: "not redundancy in the display, it is a claim the data does
+    // not support."
+    render(
+      <ProgressBanner
+        stage="dedup_check"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'dedup_check', branchIndex: null, branchCount: 0, blocksDone: 12, blocksTotal: 40, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/\d+ \/ \d+ blocks/)).not.toBeInTheDocument();
     const progressBars = screen.getAllByRole('progressbar');
-    expect(progressBars.some((bar) => bar.getAttribute('aria-valuenow') === '30')).toBe(true);
+    expect(progressBars).toHaveLength(1);
+    expect(progressBars[0]).toHaveAttribute('aria-valuenow', '30');
+  });
+
+  it('renders exactly ONE progress bar during writing too -- the identical structural bug, same branchCount-0 code path as dedup_check', () => {
+    render(
+      <ProgressBanner
+        stage="writing"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'writing', branchIndex: null, branchCount: 0, blocksDone: 5, blocksTotal: 20,
+            kbGrounded: false, kbCitations: [], message: 'x', writeSubPhase: 'create',
+          },
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/\d+ \/ \d+ blocks/)).not.toBeInTheDocument();
+    expect(screen.getAllByRole('progressbar')).toHaveLength(1);
   });
 
   it.each(['discover_types', 'create', 'link_parents', 'trace_links'] as const)(

@@ -132,8 +132,10 @@ export function Combobox({
               onKeyDown={handleKeyDown}
               className={cn(
                 // Same border/padding/focus-ring as Select's trigger, plus
-                // right padding to clear the chevron.
-                'w-full cursor-pointer rounded-sm border border-field-border bg-surface py-1.5 pl-2.5 pr-8 text-sm text-ink-1 placeholder:text-ink-3 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-danger disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
+                // right padding to clear the chevron. DESIGN.md §7 Input
+                // category: hover:border-ink-3, matching Checkbox.tsx's own
+                // already-correct treatment.
+                'w-full cursor-pointer rounded-sm border border-field-border bg-surface py-1.5 pl-2.5 pr-8 text-sm text-ink-1 placeholder:text-ink-3 transition-colors duration-fast ease-out hover:border-ink-3 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-danger disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
                 className,
               )}
             />

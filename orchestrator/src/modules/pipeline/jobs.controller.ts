@@ -9,6 +9,7 @@ import {
   Patch,
   PayloadTooLargeException,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -19,6 +20,9 @@ import { JobsService, JobSummary } from './jobs.service';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
+import { etaEstimateQuerySchema } from './eta-estimate.dto';
+import { EtaService, type EtaEstimate } from './eta.service';
+import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { createHash } from 'crypto';
 import { OpenWebUiClient } from '../llm/openwebui.client';
 import { LlmProxyBearerGuard } from '../llm/llm-proxy-bearer.guard';
@@ -59,6 +63,7 @@ export class JobsController {
     private readonly llmClient: OpenWebUiClient,
     private readonly adoCredentialResolver: AdoCredentialResolver,
     private readonly workItemTypeCatalogService: WorkItemTypeCatalogService,
+    private readonly etaService: EtaService,
     @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
   ) {}
 
@@ -156,7 +161,28 @@ export class JobsController {
   )
   async preview(
     @UploadedFile() file: Express.Multer.File | undefined,
-  ): Promise<{ blockCount: number; sectionCount: number; figureCount: number; depth: number; fileType: string }> {
+    // Optional -- DESIGN.md §11.2.3.d: NewJobWizard.tsx defaults `mode` to
+    // 'baseline' before the user has chosen anything, so preview must be
+    // told which mode's estimate to return rather than assuming one.
+    // Unset mode/model fall back to the same defaults estimate()/EtaService
+    // itself already applies (survey mode default handled by the caller;
+    // an unset model resolves to the configured default inside EtaService).
+    @Body('mode') mode: string | undefined,
+    @Body('model') model: string | undefined,
+  ): Promise<{
+    blockCount: number;
+    sectionCount: number;
+    figureCount: number;
+    depth: number;
+    fileType: string;
+    estimate: EtaEstimate;
+    // DESIGN.md §11.1 -- the wizard step-1 document map ("what did it
+    // read") and the "Worth knowing before you run it" card both need real,
+    // derivable-from-the-parse data beyond the 4 aggregate stat tiles.
+    tableCount: number;
+    openTbdCount: number;
+    documentMap: DocumentMapSection[];
+  }> {
     if (!file) {
       throw new BadRequestException('file is required');
     }
@@ -168,6 +194,9 @@ export class JobsController {
     const ext = file.originalname.slice(file.originalname.lastIndexOf('.')).toLowerCase();
     if (!ALLOWED_EXTENSIONS.has(ext)) {
       throw new BadRequestException(`unsupported file type: ${ext}`);
+    }
+    if (mode !== undefined && mode !== 'baseline' && mode !== 'survey') {
+      throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
     }
     // CanonicalDoc (ingestion/app/canonical/model.py) has no top-level
     // `sections` field — only `document`, `blocks`, `tables`, `figures`.
@@ -184,13 +213,44 @@ export class JobsController {
       .filter((b) => b.kind === 'heading' && typeof b.heading_level === 'number')
       .map((b) => b.heading_level as number);
     const fileType = ext.slice(1).toLowerCase();
+    const blockCount = doc.blocks.length;
+    const figureCount = doc.figures.length;
+    const estimate = await this.etaService.estimate({
+      mode: (mode as 'baseline' | 'survey' | undefined) ?? 'baseline',
+      blockCount,
+      figureCount,
+      model,
+    });
     return {
-      blockCount: doc.blocks.length,
+      blockCount,
       sectionCount: doc.blocks.filter((b) => b.kind === 'heading').length,
-      figureCount: doc.figures.length,
+      figureCount,
       depth: headingLevels.length > 0 ? Math.max(...headingLevels) : 0,
       fileType,
+      estimate,
+      tableCount: doc.tables.length,
+      // A bare "TBD"/open placeholder left in the source text -- a real,
+      // pre-existing content gap worth flagging before the reviewer commits
+      // to a mode, not something SURVEY/BASELINE processing introduces.
+      openTbdCount: doc.blocks.filter((b) => b.kind === 'open_tbd').length,
+      documentMap: buildDocumentMap(doc.blocks),
     };
+  }
+
+  // Re-pricing without re-uploading: the reviewer changing mode/model on
+  // step 2 needs a fresh estimate, and re-uploading a (potentially 40MB)
+  // file just to change which number is shown would be absurd. Declared
+  // BEFORE @Get(':id') below -- Nest matches routes in declaration order,
+  // and after :id this would 404 as a job-lookup miss on the literal
+  // string "estimate" instead of routing here at all (@Get('models')
+  // above is the existing precedent for a literal route sitting above :id).
+  @Get('estimate')
+  async getEstimate(@Query() rawQuery: unknown): Promise<EtaEstimate> {
+    const parseResult = etaEstimateQuerySchema.safeParse(rawQuery);
+    if (!parseResult.success) {
+      throw new BadRequestException('Invalid query: blockCount, figureCount (non-negative integers), and mode are required');
+    }
+    return this.etaService.estimate(parseResult.data);
   }
 
   @Get(':id')
@@ -207,6 +267,8 @@ export class JobsController {
     figureDescriptions: { figureIndex: number; caption: string }[];
     createdAt: Date;
     areaPath: string;
+    iterationPath: string | null;
+    state: string;
     originalFilename: string;
     workItemTypeCatalog: Record<string, WorkItemTypeCatalogEntry>;
   }> {
@@ -285,6 +347,17 @@ export class JobsController {
     }
     await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.addDiffEntry(id, { parentLocalId, type, title, description });
+    return { dryRunDiff };
+  }
+
+  @Post(':id/diff/:localId/rescore')
+  async rescoreDiffEntry(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<{ dryRunDiff: unknown }> {
+    await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.rescoreDiffEntry(id, localId);
     return { dryRunDiff };
   }
 

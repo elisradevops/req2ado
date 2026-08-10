@@ -119,10 +119,12 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
   },
   running: {
     label: 'Running',
-    description: 'Parsing and (in SURVEY mode) analyzing the document. BASELINE finishes in seconds; SURVEY can take 15-40+ minutes.',
+    description: 'Parsing and (in SURVEY mode) analyzing the document. BASELINE finishes in seconds; SURVEY scales with document size.',
   },
   diff_ready: {
-    label: 'Diff Ready',
+    // DESIGN.md §12: sentence case everywhere -- same fix as
+    // StatusChip.tsx's own STATUS_CONFIG map for this identical status.
+    label: 'Diff ready',
     description: 'Analysis is done -- review the proposed work items below, then Confirm to write them to Azure DevOps or Reject to discard.',
   },
   writing: {

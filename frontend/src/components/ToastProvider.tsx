@@ -31,6 +31,20 @@ const SEVERITY_ICON_CLASS: Record<Severity, string> = {
   error: 'text-danger',
 };
 
+// DESIGN.md §5's geometry table: "Feedback | Alert / Toast: radius md.
+// Left accent bar 4px in the severity's fill colour." Previously only the
+// icon recolored per severity -- info/success/warning/error toasts were
+// otherwise visually identical. Same base severity tokens the icon
+// already uses (not the *-soft light tint, which is for a light
+// background -- the toast itself stays a dark surface per §13's own rule
+// grouping toasts with the rail/NarrationTicker/tooltips).
+const SEVERITY_BORDER_CLASS: Record<Severity, string> = {
+  info: 'border-l-info',
+  success: 'border-l-ok',
+  warning: 'border-l-warning',
+  error: 'border-l-danger',
+};
+
 let nextToastId = 0;
 
 export function ToastProvider({ children }: { children: ReactNode }): React.ReactElement {
@@ -57,7 +71,10 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
               onOpenChange={(open) => {
                 if (!open) dismiss(toast.id);
               }}
-              className="flex min-w-[250px] max-w-[360px] items-start gap-2.5 rounded-md bg-ink-1 px-3.5 py-2.5 text-sm text-ink-on-dark shadow-dialog data-[state=open]:animate-[fadeIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[fadeOut_var(--duration-exit)_var(--ease-in)] data-[swipe=end]:animate-[fadeOut_var(--duration-exit)_var(--ease-in)]"
+              className={cn(
+                'flex min-w-[250px] max-w-[360px] items-start gap-2.5 rounded-md border-l-4 bg-ink-1 px-3.5 py-2.5 text-sm text-ink-on-dark shadow-dialog data-[state=open]:animate-[fadeIn_var(--duration-base)_var(--ease-out)] data-[state=closed]:animate-[fadeOut_var(--duration-exit)_var(--ease-in)] data-[swipe=end]:animate-[fadeOut_var(--duration-exit)_var(--ease-in)]',
+                SEVERITY_BORDER_CLASS[toast.severity],
+              )}
             >
               <Icon className={cn('mt-0.5 h-4 w-4 flex-none', SEVERITY_ICON_CLASS[toast.severity])} />
               <RadixToast.Description className="flex-1">{toast.message}</RadixToast.Description>

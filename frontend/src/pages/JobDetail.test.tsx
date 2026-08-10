@@ -243,13 +243,16 @@ describe('JobDetail', () => {
     expect(screen.getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
   });
 
-  it('hydrates a still-running job\'s activity log from durable event-history, not just the live SSE tail', async () => {
+  it('hydrates a still-running job\'s live surfaces from durable event-history, not just the live SSE tail', async () => {
     // Regression this guards against (ui-progress-review.md #4): the
     // event-history fetch used to be gated to terminal statuses only, so
     // reconnecting to (or refreshing) a STILL-RUNNING job's page showed
     // only whatever the live SSE tail happened to replay -- everything from
     // before the reconnect looked lost, even though it was always durably
-    // stored server-side.
+    // stored server-side. Asserted via the ticker/ProgressBanner headline
+    // (mergedNarrations.at(-1) drives both) now that the raw activity-log
+    // list DESIGN.md §11.3 says to remove is gone -- the underlying
+    // history+live merge this test protects is unchanged.
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-30', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
@@ -274,20 +277,19 @@ describe('JobDetail', () => {
     renderAt('job-30');
 
     await waitFor(() => expect(jobsApi.getEventHistory).toHaveBeenCalledWith('job-30'));
-    const userEvent = (await import('@testing-library/user-event')).default;
-    await userEvent.click(await screen.findByText(/Activity log/i));
-    // The same latest-narration text can also legitimately appear in the
-    // NarrationTicker sentence above the activity log -- scoped to <li>
-    // (the activity-log list's own row markup) to assert specifically
-    // against that list, not the page as a whole.
-    const logRows = screen.getAllByText(/a historical entry from before this reconnect/i).filter((el) => el.tagName === 'LI');
-    expect(logRows.length).toBeGreaterThan(0);
+    expect(await screen.findByText(/a historical entry from before this reconnect/i)).toBeInTheDocument();
   });
 
-  it('does not duplicate an activity-log entry that arrives both in history and live', async () => {
+  it('does not duplicate a narration entry that arrives both in history and live', async () => {
     // A historical entry already represented in the live tail (the common
     // case: the history fetch and an in-flight SSE connection cover
-    // overlapping recent time) must be shown once, not twice.
+    // overlapping recent time) must be merged once, not twice. No longer
+    // observable via a raw activity-log row count (DESIGN.md §11.3 removed
+    // that list) -- a real duplicate in mergedNarrations would still only
+    // ever surface via .at(-1) in the ticker/ProgressBanner headline, so
+    // this asserts the visible occurrence count stays small (ticker +
+    // ProgressBanner's own headline, never a growing count from a
+    // duplicated array entry).
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-31', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
@@ -316,14 +318,8 @@ describe('JobDetail', () => {
     renderAt('job-31');
 
     await waitFor(() => expect(jobsApi.getEventHistory).toHaveBeenCalledWith('job-31'));
-    const userEvent = (await import('@testing-library/user-event')).default;
-    await userEvent.click(await screen.findByText(/Activity log/i));
-    // Scoped to <li> (the activity-log list's own row markup) -- the
-    // NarrationTicker sentence above it legitimately renders the same
-    // latest-narration text too, which isn't the duplicate this test guards
-    // against.
-    const logRows = screen.getAllByText(sharedMessage).filter((el) => el.tagName === 'LI');
-    expect(logRows).toHaveLength(1);
+    await screen.findByText(sharedMessage);
+    expect(screen.getAllByText(sharedMessage).length).toBeLessThanOrEqual(2);
   });
 
   it('omits the FigureDescriptions panel entirely when the job has no persisted figure captions', async () => {

@@ -109,6 +109,14 @@ export interface DryRunDiffEntry {
   traceLinks?: TraceLink[];
   excluded?: boolean;
   isManual?: boolean;
+  // CR-7d rescore: set by JobsService.editDiffEntry whenever a patch
+  // changes `description` on an entry that already carries a qualityScore
+  // -- the score was judged against the PREVIOUS text and no longer
+  // reflects the current one. Cleared (false) by JobsService.rescoreDiffEntry
+  // once a fresh score for the CURRENT text is persisted. Never implies the
+  // score itself was zeroed -- the last-known numbers are kept, only their
+  // freshness is in question (see QualityGauge's Stale rendering).
+  qualityStale?: boolean;
 }
 
 /**

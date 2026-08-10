@@ -323,6 +323,49 @@ def _score_epics_and_features(
         _fire("score_requirements_done", chunk, nodes_done=start + len(chunk), chunk_index=chunk_index)
 
 
+def score_single_requirement_text(
+    description: str,
+    scoring_client: BatchedScoringClient,
+    criteria_retriever: CriteriaRetriever | None,
+    kb_context: str | None,
+    category_checklist: list[str] | None,
+) -> tuple[int | None, list[str], "QualityCategoryScores | None"]:
+    """CR-7d rescore: the single ad-hoc-string counterpart to
+    _apply_quality_scores below, for re-judging ONE already-formalized
+    requirement's current title+description after a manual/AI-chat edit --
+    reuses the exact same call/prompt/tolerant-parsing rules instead of a
+    second, drifting implementation, just with no WorkItemNode/tree to
+    mutate in place (returns the parsed result instead).
+
+    `category_checklist`, when supplied (the item's OWN previously-scored
+    categoryScores keys), forces the rescore to judge the SAME rubric as the
+    original scoring pass -- see score_requirements_for_document's own
+    docstring for why this is a genuine determinism guarantee, not just a
+    hint. Passing None (e.g. the item was never successfully scored before)
+    falls back to that method's own kb_context-derived/fixed-5-dimension
+    behavior, same as a first-time scoring pass would."""
+    criteria_context = None
+    if criteria_retriever is not None and description.strip():
+        criteria = criteria_retriever.retrieve(description)
+        criteria_context = "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
+    scores_by_id = scoring_client.score_requirements_for_document(
+        {"adhoc": description}, criteria_context, kb_context, category_checklist
+    )
+    entry = scores_by_id.get("adhoc")
+    if not isinstance(entry, dict):
+        return None, [], None
+    valid_issue_values = {i.value for i in RequirementQualityIssue}
+    raw_score = entry.get("score")
+    score = (
+        raw_score
+        if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100
+        else None
+    )
+    issues = sorted({issue for issue in entry.get("issues", []) if issue in valid_issue_values})
+    category_scores = _parse_category_scores(entry.get("categoryScores"))
+    return score, issues, category_scores
+
+
 def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
     """Tolerant of a missing/malformed/wrongly-shaped categoryScores entry --
     same all-or-nothing philosophy as quality_score itself: any single

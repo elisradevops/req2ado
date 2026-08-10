@@ -109,4 +109,20 @@ describe('JobLifecycleSteps', () => {
     expect(stateOf('Dedup check')).toBe('failed');
     expect(stateOf('Review')).toBe('pending');
   });
+
+  it.each(['failed', 'cancelled'] as const)(
+    'on a terminal %s job loaded fresh (stage never set -- SSE only connects for a still-live job), falls back to latestNarrationPhase instead of defaulting to Analyze',
+    (status) => {
+      // Confirmed live: a job that reached infer_trace_links (deep into
+      // Score/Dedup-check territory) before dying, then viewed as an
+      // already-terminal page load (stage stays null -- JobDetail.tsx's SSE
+      // effect never opens for a job that's already failed/cancelled),
+      // showed "failed at Analyze" -- the terminal branch checked only
+      // `stage`, never `latestNarrationPhase`, unlike the running branch
+      // just above it.
+      render(<JobLifecycleSteps mode="survey" status={status} stage={null} latestNarrationPhase="infer_trace_links" />);
+      expect(stateOf('Score')).toBe('failed');
+      expect(stateOf('Analyze')).toBe('done');
+    },
+  );
 });

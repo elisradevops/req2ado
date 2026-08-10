@@ -31,6 +31,13 @@ export interface JobDetail {
   figureDescriptions?: FigureDescriptionEntry[];
   createdAt: string;
   areaPath: string;
+  // Both real Job columns (schema.prisma), already present on every GET
+  // /jobs/:id response body -- were simply never declared here, so
+  // JobDetail.tsx had no typed way to read them and never wired them into
+  // DestinationBar, which rendered the hatched "not set" pattern and a bare
+  // "—" for every job regardless of what was actually configured.
+  iterationPath?: string | null;
+  state?: string;
   originalFilename: string;
   // Resolved entirely server-side (real ADO type discovery + icon bytes,
   // see WorkItemTypeCatalogService) and embedded directly in this response

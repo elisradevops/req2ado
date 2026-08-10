@@ -171,9 +171,10 @@ describe('JobsList', () => {
     for (const label of ['Running', 'Items written', 'Rejected']) {
       // "Running"/"Rejected" also match the segmented status filter's own
       // buttons -- at least one match (the StatTile label) must sit inside
-      // a `.lift` ancestor.
+      // a `.liftable` ancestor (DESIGN.md §6 -- the consolidated hover/lift
+      // class; StatTile no longer spells out `lift` plus six utilities).
       const matches = screen.getAllByText(label);
-      expect(matches.some((el) => el.closest('.lift') !== null)).toBe(true);
+      expect(matches.some((el) => el.closest('.liftable') !== null)).toBe(true);
     }
   });
 

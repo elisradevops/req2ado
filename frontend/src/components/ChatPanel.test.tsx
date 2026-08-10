@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AxiosError } from 'axios';
 import { toWsUrl } from '../hooks/useChatSocket';
@@ -50,13 +50,13 @@ describe('ChatPanel', () => {
     expect(chatApi.getChatHistory).not.toHaveBeenCalled();
   });
 
-  it('shows an inviting empty state before any history exists, not a blank scroll region', async () => {
+  it('shows an inviting empty state before any history exists, not a blank scroll region (CR-9 Take C: a fake opening Assistant turn, not a graphic)', async () => {
     render(
       <ToastProvider>
         <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
       </ToastProvider>,
     );
-    expect(await screen.findByText(/ask about this item/i)).toBeInTheDocument();
+    expect(await screen.findByText(/i have read this requirement/i)).toBeInTheDocument();
   });
 
   it('renders an assistant reply\'s markdown (e.g. **bold**) as real formatting, not literal asterisks', async () => {
@@ -76,16 +76,22 @@ describe('ChatPanel', () => {
     expect(screen.queryByText(/\*\*/)).not.toBeInTheDocument();
   });
 
-  it('shows Suggest a title prominently next to the Chat header, not as a small link below the composer', async () => {
+  it('shows "Ask for a change" + a "this item only" chip in the header, matching the agreed mockup -- no persistent Suggest-a-title control there', async () => {
+    // Real behavior change, not a relaxed test: the header used to carry a
+    // persistent "Suggest a title" button (promoted there from a separate,
+    // easy-to-miss link). Overridden to match the agreed mockup (§11.4.2)
+    // exactly, which has no such button in chat-h at all -- "Suggest a
+    // better title" is reachable only via the empty-state chip now (see the
+    // suggested-prompt-chips test below).
     render(
       <ToastProvider>
         <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
       </ToastProvider>,
     );
     await waitFor(() => expect(chatApi.getChatHistory).toHaveBeenCalled());
-    // Only ONE "Suggest a title" control -- the old ghost-styled duplicate
-    // below the composer is gone.
-    expect(screen.getAllByRole('button', { name: /suggest a title/i })).toHaveLength(1);
+    expect(screen.getByText('Ask for a change')).toBeInTheDocument();
+    expect(screen.getByText('this item only')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /suggest a title/i })).not.toBeInTheDocument();
   });
 
   it('loads history and models on mount', async () => {
@@ -242,6 +248,107 @@ describe('ChatPanel', () => {
     expect(chatApi.stopChatTurn).toHaveBeenCalledWith('job-1', 'n0');
   });
 
+  // CR-8/9 -- stop only sets a Redis flag polled once per streamed token, a
+  // real multi-second cooperative gap, not an immediate abort. The button
+  // must visibly change state for that whole gap, not look unresponsive.
+  it('keeps the Stop button in "Stopping…" state until the stream actually ends, not just for the POST round-trip (CR-8, "Wizard UX Options" Take B)', async () => {
+    let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    let resolveStop: () => void = () => {};
+    vi.mocked(chatApi.stopChatTurn).mockImplementation(() => new Promise((resolve) => { resolveStop = resolve; }));
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    const input = await screen.findByPlaceholderText(/ask the assistant/i);
+    await user.type(input, 'hi{Enter}');
+    capturedOnEvent?.({ type: 'chunk', delta: 'thinking' });
+
+    const stopButton = screen.getByRole('button', { name: /stop generating/i });
+    await user.click(stopButton);
+
+    expect(screen.getByRole('button', { name: /stopping/i })).toBeDisabled();
+    expect(screen.getByText(/waiting for the model to finish the chunk it is on/i)).toBeInTheDocument();
+
+    // The POST resolving only means the Redis flag was set -- the model
+    // hasn't actually stopped yet, so the button must NOT revert to "Stop
+    // generating" just because the round-trip finished (the exact bug this
+    // fix corrects: a spinner that vanishes here still leaves the real,
+    // longer cooperative wait unlabeled).
+    await act(async () => {
+      resolveStop();
+    });
+    expect(screen.getByRole('button', { name: /stopping/i })).toBeDisabled();
+
+    // Only the real end-of-stream signal clears it.
+    capturedOnEvent?.({ type: 'done', message: 'Stopped early', proposedTitle: null, proposedDescription: null, model: null });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument());
+  });
+
+  it('shows all 4 starter rows in the empty state, each with its label and effect, including Suggest a better title (CR-9 Take C)', async () => {
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    expect(screen.getByRole('button', { name: /^make it testable/i })).toBeInTheDocument();
+    expect(screen.getByText(/rewrite so it is independently verifiable/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^add the missing rationale/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^tighten the wording/i })).toBeInTheDocument();
+    // Exactly one control now (was a regression guard against a SECOND,
+    // duplicate control -- there both is, and can only ever be, one, since
+    // the persistent header button this used to also guard against is gone).
+    expect(screen.getAllByRole('button', { name: /^suggest a (better )?title/i })).toHaveLength(1);
+  });
+
+  it('clicking a starter row sends its real prompt text through the normal send() path', async () => {
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    await user.click(screen.getByRole('button', { name: /^make it testable/i }));
+    expect(chatApi.sendChatTurn).toHaveBeenCalledWith('job-1', 'n0', expect.stringMatching(/testable/i), undefined);
+  });
+
+  it('scopes the model-selector InfoTip to this conversation only', async () => {
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    await user.hover(screen.getByRole('button', { name: /more information/i }));
+    expect(await screen.findByText(/this conversation only/i)).toBeInTheDocument();
+  });
+
+  it('renders the assistant turn\'s model name in font-mono, distinct from the "Assistant ·" label', async () => {
+    let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+
+    capturedOnEvent?.({ type: 'done', message: 'Here you go', proposedTitle: null, proposedDescription: null, model: 'llama3.1' });
+
+    const modelSpan = await screen.findByText('llama3.1');
+    expect(modelSpan.tagName).toBe('SPAN');
+    expect(modelSpan.className).toContain('font-mono');
+  });
+
   it('clears a still-pending proposal when the selected node changes, so it can never be accepted onto the new node', async () => {
     let capturedOnEvent: ((event: import('../hooks/useChatSocket').StreamEvent) => void) | undefined;
     vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
@@ -304,10 +411,15 @@ describe('ChatPanel', () => {
     );
     await screen.findByPlaceholderText(/ask the assistant/i);
 
-    await user.click(screen.getByRole('button', { name: /suggest a title/i }));
+    // Now an empty-state starter row (no persistent header control) -- see
+    // the header/starter-row tests above for that behavior change.
+    await user.click(screen.getByRole('button', { name: /^suggest a better title/i }));
 
     expect(chatApi.sendChatTurn).toHaveBeenCalledWith('job-1', 'n0', expect.stringMatching(/title/i), undefined);
-    expect(screen.getByText(/replies can take a couple of minutes/i)).toBeInTheDocument();
+    // CR-8 replaced the old static "replies can take a couple of minutes"
+    // note with a live elapsed counter on the Stop button itself plus this
+    // hint -- real evidence of progress, not a vague time estimate.
+    expect(screen.getByText(/streaming — you can stop at any point/i)).toBeInTheDocument();
     // Send swaps to Stop generating while a turn is in flight -- there's no
     // disabled Send to check for anymore, the icon itself changes.
     expect(screen.getByRole('button', { name: /stop generating/i })).toBeInTheDocument();
@@ -315,7 +427,7 @@ describe('ChatPanel', () => {
     resolveTurn();
   });
 
-  it('does not fire a second turn while a suggest-title request is still in flight', async () => {
+  it('does not fire a second turn while one is still in flight (isStreamingRef guard, exercised via the composer this time -- the suggested-prompt chips vanish once isStreaming flips, which would make clicking one twice prove nothing about the guard itself)', async () => {
     const { fireEvent } = await import('@testing-library/react');
     let resolveTurn: () => void = () => {};
     vi.mocked(chatApi.sendChatTurn).mockImplementation(
@@ -326,11 +438,12 @@ describe('ChatPanel', () => {
         <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
       </ToastProvider>,
     );
-    await screen.findByPlaceholderText(/ask the assistant/i);
-    const button = screen.getByRole('button', { name: /suggest a title/i });
-    fireEvent.click(button);
-    fireEvent.click(button);
-    fireEvent.click(button);
+    const input = await screen.findByPlaceholderText(/ask the assistant/i);
+    await userEvent.type(input, 'hi');
+    const sendButton = screen.getByRole('button', { name: 'Send' });
+    fireEvent.click(sendButton);
+    fireEvent.click(sendButton);
+    fireEvent.click(sendButton);
 
     expect(chatApi.sendChatTurn).toHaveBeenCalledTimes(1);
     resolveTurn();

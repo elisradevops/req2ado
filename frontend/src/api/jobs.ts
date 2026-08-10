@@ -27,12 +27,71 @@ export async function listJobs(): Promise<JobSummary[]> {
   return response.data;
 }
 
+// DESIGN.md §11.2.3.d -- computed server-side (orchestrator's EtaService),
+// from this deployment's own real completed-job durations. basis is
+// deliberately a two-value union: the shrinkage weight w=n/(n+8) capped at
+// 50 samples tops out at ~0.86, so a "fitted" state can never actually be
+// returned by the backend.
+export interface EtaEstimate {
+  mode: 'baseline' | 'survey';
+  estimateMinutes: number;
+  lowerMinutes: number;
+  upperMinutes: number;
+  basis: 'bootstrap' | 'blended';
+  sampleCount: number;
+  modelSampleCount: number;
+  modelAdjustment: number;
+  windowDays: number;
+}
+
+// DESIGN.md §11.1 -- one row of the wizard step-1 document map, the "honest
+// answer to what did it read." number is Block.number_label (e.g. "1.1.1"),
+// null for a heading the parser couldn't assign a clause number to.
+export interface DocumentMapSection {
+  number: string | null;
+  title: string;
+  blockCount: number;
+  figureCount: number;
+}
+
+export interface PreviewResult {
+  blockCount: number;
+  sectionCount: number;
+  figureCount: number;
+  depth: number;
+  fileType: string;
+  estimate: EtaEstimate;
+  tableCount: number;
+  openTbdCount: number;
+  documentMap: DocumentMapSection[];
+}
+
 export async function previewJob(
   file: File,
-): Promise<{ blockCount: number; sectionCount: number; figureCount: number; depth: number; fileType: string }> {
+  // Optional -- NewJobWizard.tsx defaults `mode` to 'baseline' before the
+  // user has chosen anything, so the estimate this returns is for whatever
+  // mode/model the caller currently has selected, not assumed server-side.
+  mode?: 'baseline' | 'survey',
+  model?: string,
+): Promise<PreviewResult> {
   const form = new FormData();
   form.append('file', file);
+  if (mode) form.append('mode', mode);
+  if (model) form.append('model', model);
   const response = await httpClient.post('/jobs/preview', form);
+  return response.data;
+}
+
+// Re-prices without re-uploading -- the reviewer changing mode/model on
+// step 2 needs a fresh estimate, and re-uploading a (potentially 40MB)
+// file just to change which number is shown would be absurd.
+export async function getEstimate(params: {
+  blockCount: number;
+  figureCount: number;
+  mode: 'baseline' | 'survey';
+  model?: string;
+}): Promise<EtaEstimate> {
+  const response = await httpClient.get<EtaEstimate>('/jobs/estimate', { params });
   return response.data;
 }
 
@@ -119,6 +178,16 @@ export async function editDiffEntry(
 
 export async function setDiffEntryExcluded(jobId: string, localId: string, excluded: boolean): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/exclude`, { excluded });
+  return response.data;
+}
+
+// CR-7d rescore: re-judges ONE Requirement entry's CURRENT description
+// (post-edit), forced against its own existing category rubric server-side
+// -- see JobsService.rescoreDiffEntry's own docstring. Throws on failure;
+// the caller is responsible for reverting its own "Re-checking" UI state
+// back to Stale, never fabricating a fresh number locally.
+export async function rescoreDiffEntry(jobId: string, localId: string): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.post(`/jobs/${jobId}/diff/${localId}/rescore`);
   return response.data;
 }
 

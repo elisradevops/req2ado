@@ -26,10 +26,12 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
+from app.kb.retrieval import retrieve_context
 from app.leveling.id_hierarchy import rows_from_table
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
+from app.leveling.scoring import score_single_requirement_text
 from app.leveling.tree_builder import build_baseline_tree
 from app.logging_context import JobIdLogFilter, job_id_scope
 from app.quality.criteria_retrieval import CriteriaRetriever
@@ -852,6 +854,42 @@ async def level(
             _build_survey_tree_with_scoring, doc, client, customer_id, user_id, catalog, job_id, model
         )
     return build_baseline_tree(doc, customer_id=customer_id)
+
+
+class ScoreItemRequest(BaseModel):
+    """CR-7d rescore: re-judge ONE already-formalized requirement's current
+    title+description after a manual/AI-chat edit, without re-running the
+    whole SURVEY pipeline. `category_checklist`, when supplied (the item's
+    OWN previously-scored categoryScores keys), forces the rescore to judge
+    the SAME rubric as the original scoring pass -- see
+    score_single_requirement_text's own docstring."""
+
+    description: str
+    category_checklist: list[str] | None = None
+    user_id: str | None = None
+    model: str | None = None
+
+
+class ScoreItemResponse(BaseModel):
+    quality_score: int | None
+    quality_issues: list[str]
+    quality_category_scores: dict[str, int] | None
+
+
+@app.post("/score-item", response_model=ScoreItemResponse)
+async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
+    if not body.description.strip():
+        raise HTTPException(status_code=400, detail="description must not be blank")
+    kb_context = None
+    if body.user_id:
+        kb_context, _ = retrieve_context(body.user_id, body.description, _embed_client, _kb_vector_store)
+    client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model)
+    score, issues, category_scores = score_single_requirement_text(
+        body.description, client, _get_criteria_retriever(), kb_context, body.category_checklist,
+    )
+    return ScoreItemResponse(
+        quality_score=score, quality_issues=issues, quality_category_scores=category_scores,
+    )
 
 
 @app.post("/dedup/check", response_model=DuplicateCheckResult)

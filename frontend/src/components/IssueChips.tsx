@@ -1,3 +1,4 @@
+import { TriangleAlert } from 'lucide-react';
 import { Chip } from '../ui/Chip';
 import { Tooltip } from '../ui/Tooltip';
 import { qualityIssueLabel } from '../utils/labels';
@@ -15,8 +16,13 @@ export function IssueChips({ issues }: { issues: string[] | undefined }): React.
         const { label, description } = qualityIssueLabel(issue);
         return (
           <Tooltip key={issue} content={description || label}>
+            {/* DESIGN.md §10: lucide-react only -- was a bare Unicode "▲"
+                glyph, the one place in the app expressing "risk flag" with
+                text instead of the real icon DiffTree.tsx/
+                CollapsibleWarnings.tsx already use for the same concept. */}
             <Chip bg="#FDF3E6" color="var(--color-warning)" className="border border-[#EED8B4]">
-              ▲ {label}
+              <TriangleAlert className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
+              {label}
             </Chip>
           </Tooltip>
         );

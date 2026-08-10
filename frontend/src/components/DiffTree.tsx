@@ -69,6 +69,11 @@ export interface DryRunDiffEntry {
   // null whenever qualityScore itself is (BASELINE, no scoring_client, or
   // a malformed scoring entry).
   qualityCategoryScores?: Record<string, number> | null;
+  // CR-7d rescore: true from the moment a description edit invalidates the
+  // score above until a successful rescore clears it -- the last-known
+  // numbers are KEPT (never zeroed), only their freshness is in question.
+  // See QualityGauge's Stale rendering.
+  qualityStale?: boolean;
   childType?: string | null;
   excluded?: boolean;
   isManual?: boolean;
@@ -124,6 +129,44 @@ function buildFlatRows(entries: DryRunDiffEntry[]): FlatRow[] {
   return rows;
 }
 
+// Shared, lazily-created 1x1 canvas used purely for text-metrics
+// measurement -- CanvasRenderingContext2D.measureText() computes glyph
+// width from font metrics without ever touching layout, unlike the
+// DOM-append + getBoundingClientRect() approach this replaced (a forced
+// synchronous reflow PER measured string). One canvas, created once,
+// reused for every column-width recompute -- never appended to the DOM at
+// all.
+let measurerCanvasContext: CanvasRenderingContext2D | null | undefined;
+function getMeasurerContext(): CanvasRenderingContext2D | null {
+  if (measurerCanvasContext !== undefined) return measurerCanvasContext;
+  measurerCanvasContext = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
+  return measurerCanvasContext;
+}
+
+// letterSpacing is Canvas2D Level 2 (supported in every browser this app
+// targets -- Chromium/Firefox/Safari all shipped it years ago); omitting
+// it on an unsupported engine just measures very slightly narrower text,
+// never wider, so a stale/absent value can only ever make a column too
+// narrow by a sub-pixel amount, not clip real content.
+function measureTextWidth(text: string, font: string, letterSpacing?: string): number {
+  const ctx = getMeasurerContext();
+  if (!ctx) return 0;
+  ctx.font = font;
+  if (letterSpacing !== undefined && 'letterSpacing' in ctx) {
+    (ctx as CanvasRenderingContext2D & { letterSpacing: string }).letterSpacing = letterSpacing;
+  }
+  return ctx.measureText(text).width;
+}
+
+// Resolves a CSS custom property's real computed value ONCE (not once per
+// measured string) -- canvas's `font` property cannot resolve a raw
+// `var(--font-mono)` token itself, unlike a real DOM element's style.
+function resolveCssVar(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
 // Clause-id column width is measured from the real content, not guessed --
 // a fixed pixel value fits "3.2.1" but clips "3.2.1.a" the moment a
 // document numbers one level deeper. Since react-window renders each row
@@ -134,17 +177,12 @@ function buildFlatRows(entries: DryRunDiffEntry[]): FlatRow[] {
 // reads via `var(--clause-w)`.
 function useClauseColumnWidth(entries: DryRunDiffEntry[]): number {
   return useMemo(() => {
-    if (typeof document === 'undefined') return FALLBACK_CLAUSE_WIDTH;
-    const measurer = document.createElement('span');
-    measurer.style.cssText =
-      'position:absolute;visibility:hidden;white-space:nowrap;font-family:var(--font-mono);font-size:12px;letter-spacing:-0.02em;';
-    document.body.appendChild(measurer);
+    const fontFamily = resolveCssVar('--font-mono', 'monospace');
+    const font = `12px ${fontFamily}`;
     let widest = 0;
     for (const entry of entries) {
-      measurer.textContent = entry.customerId ?? '';
-      widest = Math.max(widest, measurer.getBoundingClientRect().width);
+      widest = Math.max(widest, measureTextWidth(entry.customerId ?? '', font, '-0.02em'));
     }
-    document.body.removeChild(measurer);
     return widest > 0 ? Math.ceil(widest) + 18 : FALLBACK_CLAUSE_WIDTH;
   }, [entries]);
 }
@@ -159,10 +197,12 @@ function useClauseColumnWidth(entries: DryRunDiffEntry[]): number {
 // property every row reads via `var(--status-w)`.
 function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
   return useMemo(() => {
-    if (typeof document === 'undefined') return FALLBACK_STATUS_WIDTH;
-    const measurer = document.createElement('span');
-    measurer.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font-size:12px;font-weight:600;';
-    document.body.appendChild(measurer);
+    // No font-family in the original measurer's own inline style --
+    // it inherited body's own font-sans (index.css's `body { @apply
+    // ... font-sans }`), which this now resolves explicitly since canvas
+    // has no ambient inheritance to fall back on.
+    const fontFamily = resolveCssVar('--font-sans', 'sans-serif');
+    const font = `600 12px ${fontFamily}`;
     let widest = 0;
     for (const entry of entries) {
       const label =
@@ -173,10 +213,8 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
             : entry.existingAdoId != null
               ? `Near-duplicate of WI-${entry.existingAdoId}`
               : 'Near-duplicate';
-      measurer.textContent = label;
-      widest = Math.max(widest, measurer.getBoundingClientRect().width);
+      widest = Math.max(widest, measureTextWidth(label, font));
     }
-    document.body.removeChild(measurer);
     // Chip's own horizontal padding+border (px-2 + 1px border each side =
     // 18px) plus a small buffer so text never sits flush against the
     // pill's edge.
@@ -329,14 +367,11 @@ export function DiffTree({
                 role="treeitem"
                 aria-selected={entry.localId === selectedId}
                 className={cn(
-                  // canvas (the app's default page tint) reads as almost
-                  // no feedback at all against the surface-white rows
-                  // around it -- a slightly stronger, slightly warmer
-                  // tint plus a left accent rule makes hover/selection
-                  // both unmistakable without competing with the signal
-                  // ("decision needed") color.
-                  'grid cursor-pointer items-center gap-2.5 border-l-2 border-l-transparent border-b border-b-hairline/60 px-3.5 transition-colors hover:border-l-accent-soft-border hover:bg-[#EEF3FC]',
-                  entry.localId === selectedId && 'border-l-accent bg-[#E7EFFC]',
+                  // DESIGN.md §6/§7 -- the shared row-hover system
+                  // (.hoverable-row) replaces this row's previous one-off
+                  // custom-hex tint + border-l edge; see palette.test.ts's
+                  // baseline for DiffTree.tsx, lowered in the same change.
+                  'hoverable-row grid cursor-pointer items-center gap-2.5 px-3.5',
                   entry.excluded && 'opacity-50',
                 )}
                 onClick={() => {

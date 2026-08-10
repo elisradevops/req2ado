@@ -63,9 +63,16 @@ export function FileDropzone({
       className={cn(
         'flex cursor-pointer flex-col items-center gap-1.5 rounded-md border-[1.5px] border-dashed bg-surface p-8 text-center transition-colors duration-fast ease-out',
         isDragging && 'border-accent bg-accent-soft',
-        !isDragging && status === 'idle' && 'border-hairline-strong hover:border-accent-soft-border hover:bg-[#FAFCFF]',
+        // `.liftable` (§6/§7, Surface category -- this component is named
+        // explicitly in its table) supplies the shared hover lift/shadow;
+        // the old hand-spelled raw-hex background tint is gone, not
+        // replaced -- `.liftable` communicates hover via elevation, not a
+        // background shift, same as every other migrated Surface element.
+        // Scoped to idle/parsed only, matching where hover already applied
+        // -- parsing/error deliberately stay non-interactive-looking.
+        !isDragging && status === 'idle' && 'liftable border-hairline-strong hover:border-accent-soft-border',
         !isDragging && status === 'parsing' && 'cursor-wait border-hairline-strong',
-        !isDragging && status === 'parsed' && 'border-ok-border bg-ok-soft/40 hover:border-accent-soft-border',
+        !isDragging && status === 'parsed' && 'liftable border-ok-border bg-ok-soft/40 hover:border-accent-soft-border',
         !isDragging && status === 'error' && 'border-danger-border bg-danger-soft/40',
       )}
     >

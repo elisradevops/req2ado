@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Circle } from 'lucide-react';
+import { Check, Circle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useNow } from '../hooks/useNow';
 import { useSecondsSinceLastUpdate } from '../hooks/useSecondsSinceLastUpdate';
@@ -18,6 +17,12 @@ import type { JobStage, NarrationEvent } from '../api/events';
 // SectionStepList render guard below, gated on branchCount > 0) so their
 // entries here are never actually looked up -- present only so this Record
 // stays exhaustive over NarrationEvent['phase'].
+//
+// DESIGN.md §11.3 -- also the source of ProgressBanner's own headline
+// (`text-title`, "the phase headline in plain language -- 'Checking for
+// duplicates,' never dedup_check"): reused directly rather than
+// duplicating a second near-identical Record for the same concept in the
+// same file.
 const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   describe_figure: 'Describing figures',
   parse_done: 'Parsing complete',
@@ -33,11 +38,11 @@ const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   detect_conflicts: 'Checking for conflicts',
   regroup_roots: 'Grouping by topic',
   infer_trace_links: 'Resolving trace links',
-  // Never actually looked up (both have branchCount 0 -- see the
-  // SectionStepList render guard, gated on branchCount > 0 -- so no
-  // per-section row ever reads these), present only so this Record stays
-  // exhaustive.
-  dedup_check: 'Checking for existing/duplicate work items',
+  // dedup_check is never looked up for the SectionStepList sub-label (it
+  // always carries branchCount 0, so no per-section row reads it), but IS
+  // now read for ProgressBanner's own headline -- spec's own quoted example
+  // text.
+  dedup_check: 'Checking for duplicates',
   writing: 'Writing to Azure DevOps',
   job_failed: 'Job failed',
   // Never actually looked up (a chunk_warning never becomes `latest` in a
@@ -101,7 +106,6 @@ export function ProgressBanner({
   // pre-narration behavior exactly (BASELINE never produces these at all).
   narrations?: NarrationEvent[];
 }): React.ReactElement {
-  const [logExpanded, setLogExpanded] = useState(false);
   const latest = narrations && narrations.length > 0 ? narrations[narrations.length - 1] : null;
 
   // score_requirements/score_requirements_done are no longer part of
@@ -190,59 +194,115 @@ export function ProgressBanner({
     latest.phase !== 'preparing_analysis' && // KB retrieval hasn't run yet AT this exact event -- nothing to report
     latest.phase !== 'dedup_check' &&
     latest.phase !== 'writing';
+  // CR-10 ("Wizard UX Options" decision sheet) -- both phases already get
+  // their own dedicated, correctly-labeled single bar from RunDetail below
+  // (the dedup_check branch's "Checking N of M proposed items" bar, and
+  // WriteSubStepper's own bar); the generic metrics panel has no case for
+  // either (its label falls through to the wrong word "blocks"), so
+  // rendering it too drew a second bar at the identical percentage.
+  const ownsPhaseReadout = latest?.phase === 'dedup_check' || latest?.phase === 'writing';
+
+  // DESIGN.md §11.3 -- "the phase headline in plain language... never
+  // dedup_check". stage==='writing' is checked ahead of PHASE_SUBLABEL
+  // because it's real backend state (JobStage), not narration-derived --
+  // it stays accurate through the brief window before the first
+  // writing-phase narration lands, the same gap the old stage-based chip
+  // label covered.
+  const headline = stage === 'writing' ? 'Writing to Azure DevOps' : latest ? PHASE_SUBLABEL[latest.phase] : 'Running';
 
   return (
     <div className='rounded-md border border-hairline bg-surface shadow-card'>
-      <div className='flex items-center gap-2 border-b border-hairline px-4 py-2.5'>
-        <Chip
-          bg='var(--color-live)'
-          color='var(--color-white)'
-          className='gap-1.5 py-1 pl-1.5 text-meta tracking-wide uppercase'
-        >
-          <span className='relative flex h-2 w-2 flex-none'>
-            <span className='absolute inline-flex h-full w-full animate-ping rounded-full bg-white/70' />
-            <span className='relative inline-flex h-2 w-2 rounded-full bg-white' />
-          </span>
-          {stage === 'writing' ? 'Writing to ADO' : 'Running'}
-        </Chip>
-        <InfoTip content='BASELINE finishes in seconds. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- typically 15-40+ minutes for a real document.' />
-        <span className='ml-auto flex items-center gap-1.5'>
-          {narrations && narrations.length > 0 && (
-            <Chip
-              bg='var(--color-surface-alt)'
-              color='var(--color-ink-3)'
-              className='border border-hairline-strong font-mono text-meta font-normal tabular-nums'
-              title='Time since the last progress update from the server'
-            >
-              {secondsSinceUpdate}s ago
-            </Chip>
-          )}
-          <Chip
-            bg='var(--color-accent)'
-            color='var(--color-white)'
-            className='font-mono text-meta font-normal tabular-nums'
-          >
-            <ElapsedTimer startedAt={startedAt} />
-          </Chip>
-          {etaText && (
-            <Chip
-              bg='var(--color-info)'
-              color='var(--color-white)'
-              className='font-mono text-meta font-normal tabular-nums'
+      {/* DESIGN.md §11.3 -- "the loud element": live pulse dot, the phase
+          headline in text-title, one sentence of what that phase is doing
+          (the same real, backend-generated narration text the old Activity
+          Log rendered -- reused here as a single truncated line, not
+          invented), and the percentage pinned right. Replaces the old
+          "Running"/"Writing to ADO" chip -- that label duplicated exactly
+          what this headline now says, at lower information content. */}
+      <div className='flex items-center gap-3 border-b border-hairline px-4 py-3'>
+        <span className='relative flex h-2.5 w-2.5 flex-none'>
+          <span className='absolute inline-flex h-full w-full animate-ping rounded-full bg-live/70' />
+          <span className='relative inline-flex h-2.5 w-2.5 rounded-full bg-live' />
+        </span>
+        <div className='min-w-0 flex-1'>
+          <p className='text-title'>{headline}</p>
+          {latest?.message && <p className='truncate text-xs text-ink-3' title={latest.message}>{latest.message}</p>}
+        </div>
+        {clampedProgress !== undefined && (
+          <span className='flex-none font-mono text-metric tabular-nums text-ink-1'>{Math.round(clampedProgress)}%</span>
+        )}
+        <InfoTip content='BASELINE finishes in seconds. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- time scales with document size, figures most of all.' />
+      </div>
+
+      {/* DESIGN.md §11.3 -- "one meta line replaces the pill row": elapsed,
+          model, and the freshness stamp used to each be their own
+          same-rank chip fighting the headline above for attention. The
+          freshness stamp stays load-bearing (how a reviewer tells "still
+          working" from "connection dropped"), just demoted to this quiet
+          row. */}
+      <div className='flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-hairline px-4 py-2 text-meta'>
+        <span className='text-ink-3'>elapsed</span>
+        <span className='font-mono text-ink-2 tabular-nums'>
+          <ElapsedTimer startedAt={startedAt} />
+        </span>
+        {latest?.model && (
+          <>
+            <span className='text-ink-3'>·</span>
+            <span className='text-ink-3'>model</span>
+            <span className='font-mono text-ink-2'>{latest.model}</span>
+          </>
+        )}
+        {narrations && narrations.length > 0 && (
+          <>
+            <span className='text-ink-3'>·</span>
+            <span className='text-ink-3' title='Time since the last progress update from the server'>
+              updated {secondsSinceUpdate}s ago
+            </span>
+          </>
+        )}
+        {etaText && (
+          <>
+            <span className='text-ink-3'>·</span>
+            {/* Real gap fixed here (found in the "Wizard UX Options" decision
+                sheet, CR-4/5 Option B -- "solid type is measured, outlined
+                type is projected"): elapsed/model/updated-Ns-ago are all
+                real, measured facts; this ETA is the one genuinely
+                projected number in the row, and rendering it in the exact
+                same plain text let it read as equally certain. A dashed
+                outline (this repo's existing ghost/hatched-when-unset
+                visual language for "not a settled fact") is the
+                typographic separation the sheet's own verdict argues for --
+                cheap, and it doesn't require fabricating a second data
+                point the way a projected progress-bar segment would. */}
+            <span
+              className='rounded-full border border-dashed border-hairline-strong px-1.5 py-0.5 font-mono text-ink-3'
               title="Calculated from this job's own elapsed time and progress so far -- not a fixed estimate."
             >
               {etaText}
-            </Chip>
-          )}
-        </span>
+            </span>
+          </>
+        )}
       </div>
 
       <div className='p-5'>
-        {/* One grouped "current status" panel -- previously these facts
+        {/* Real bug fixed here (found in the "Wizard UX Options" decision
+            sheet, CR-10 -- confirmed still live): dedup_check and writing
+            both reuse blocksDone/blocksTotal to mean something this panel
+            has no case for ("blocks" is wrong; it means proposed items
+            checked, or items written), AND RunDetail below already renders
+            its own dedicated, correctly-labeled single bar for both phases.
+            Rendering this generic panel too drew a SECOND bar at the
+            identical percentage right above the first -- "not redundancy in
+            the display, a claim the data does not support" (the sheet's own
+            words). Suppressed for exactly the two phases that already own
+            their own readout; every other phase (including the ones with no
+            RunDetail bar at all, e.g. describe_figure) is unaffected. */}
+        {!ownsPhaseReadout && (
+        /* One grouped "current status" panel -- previously these facts
             (stat chips, KB grounding, progress bar, its own label) were five
             separate loosely-stacked elements with only a couple pixels of
             margin between them, reading as sparse and unfinished on a wide
-            card. Bordered/tinted as one coherent unit instead. */}
+            card. Bordered/tinted as one coherent unit instead. */
         <div className='flex flex-col gap-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3.5'>
           {latest && (
             <div className='flex flex-wrap items-center gap-2'>
@@ -265,15 +325,6 @@ export function ProgressBanner({
                   className='border border-hairline-strong font-mono text-meta font-normal tabular-nums'
                 >
                   batch {latest.chunkIndex + 1} of {latest.chunkCount}
-                </Chip>
-              )}
-              {latest.model && (
-                <Chip
-                  bg='var(--color-accent-hover)'
-                  color='var(--color-white)'
-                  className='font-mono text-meta font-normal'
-                >
-                  {latest.model}
                 </Chip>
               )}
               {latest.draftCount != null && (
@@ -339,48 +390,17 @@ export function ProgressBanner({
             <ProgressBar value={clampedProgress} />
           </div>
         </div>
+        )}
 
         <p className='mt-3 text-xs text-ink-3'>
           You can close this page and come back — the run keeps going server-side.
         </p>
         <RunDetail latest={latest} narrations={narrations ?? []} activeSectionProgress={clampedProgress} />
-
-        {narrations && narrations.length > 0 && (
-          <div className='mt-3 border-t border-hairline pt-2'>
-            <button
-              type='button'
-              onClick={() => setLogExpanded((prev) => !prev)}
-              aria-expanded={logExpanded}
-              className='flex items-center gap-1.5 text-xs font-medium text-ink-3 hover:text-ink-1'
-            >
-              {logExpanded ? (
-                <ChevronDown className='h-3.5 w-3.5' />
-              ) : (
-                <ChevronRight className='h-3.5 w-3.5' />
-              )}
-              Activity log ({narrations.length})
-            </button>
-            <div
-              className={cn(
-                'grid transition-[grid-template-rows] duration-200 ease-out',
-                logExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
-              )}
-            >
-              <div className='min-h-0 overflow-hidden'>
-                <ul className='mt-2 flex max-h-48 flex-col gap-1 overflow-y-auto pr-1'>
-                  {narrations.map((event, index) => (
-                    <li
-                      key={index}
-                      className='font-mono text-meta text-ink-3'
-                    >
-                      {event.message}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* DESIGN.md §11.3's own audit note: the raw scrolling activity log
+            this used to render here is explicitly superseded -- "do not
+            build it." SectionStepList (rendered by RunDetail above) answers
+            "what is left to do," which the log never did; the header's own
+            one-sentence narration line above covers "what, right now." */}
       </div>
     </div>
   );
@@ -533,15 +553,22 @@ function SectionStepList({
     }
   }
 
-  // The active row gets a tinted background + a left accent rule -- the
-  // check/spinner/circle icon alone read as too quiet to find at a glance
-  // in a list of otherwise-identical gray rows (the "no visual hierarchy"
-  // complaint this redesign addresses).
-  const rowClass = (isActive: boolean) =>
-    cn(
-      'flex items-center gap-2 rounded-sm px-2 py-1.5 -mx-2',
-      isActive && 'border-l-2 border-accent bg-surface-alt',
-    );
+  // DESIGN.md §11.3.1 -- "This is exactly the paint
+  // .hoverable-row[aria-selected='true'] produces (§6), and when §6 lands
+  // this row must adopt the class rather than keep spelling it out." §6
+  // landed this session; migrated from the hand-rolled
+  // border-l-2 border-accent bg-surface-alt to the real shared paint
+  // (bg-accent-soft + the 2px rail), driven by a real aria-selected
+  // attribute at each call site below, not a class name alone.
+  // border-t-0: these rows sit in a plain flex-col gap-1 list with no
+  // dividers today; .hoverable-row's own row-separator border isn't part
+  // of this row's existing design and stays off. pointer-events-none:
+  // confirmed live -- without it, a mouse merely resting over one of these
+  // passively-updating rows (no click handler, ever) triggers
+  // .hoverable-row's real :hover fill+rail, exactly the false affordance
+  // §11.3.1's own note warns against ("these rows are not interactive and
+  // must not gain a hover response").
+  const rowClass = 'hoverable-row border-t-0 pointer-events-none flex items-center gap-2 rounded-sm px-2 py-1.5 -mx-2';
 
   // "What's left" -- a real countdown of remaining steps across the WHOLE
   // pipeline (sections + the two whole-document passes), not just this
@@ -587,7 +614,8 @@ function SectionStepList({
         return (
           <div
             key={i}
-            className={rowClass(isActive)}
+            className={rowClass}
+            aria-selected={isActive}
           >
             {isDone ? (
               <Check
@@ -615,7 +643,7 @@ function SectionStepList({
           </div>
         );
       })}
-      <div className={rowClass(scoringActive)}>
+      <div className={rowClass} aria-selected={scoringActive}>
         {conflictsActive || regroupActive || traceLinksActive ? (
           <Check
             data-testid='scoring-check-icon'
@@ -639,7 +667,7 @@ function SectionStepList({
           {scoringActive && <MiniProgress value={activeSectionProgress} />}
         </div>
       </div>
-      <div className={rowClass(conflictsActive)}>
+      <div className={rowClass} aria-selected={conflictsActive}>
         {regroupActive || traceLinksActive ? (
           <Check
             data-testid='conflicts-check-icon'
@@ -654,7 +682,7 @@ function SectionStepList({
           Checking for conflicting near-duplicates
         </p>
       </div>
-      <div className={rowClass(regroupActive)}>
+      <div className={rowClass} aria-selected={regroupActive}>
         {traceLinksActive ? (
           <Check
             data-testid='regroup-check-icon'
@@ -669,7 +697,7 @@ function SectionStepList({
           Grouping disconnected sections by topic
         </p>
       </div>
-      <div className={rowClass(traceLinksActive)}>
+      <div className={rowClass} aria-selected={traceLinksActive}>
         {traceLinksActive ? (
           <Spinner className='text-live' />
         ) : (

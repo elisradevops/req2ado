@@ -112,6 +112,10 @@
   --color-warning-soft: #fdf6ec;
   --color-warning-border: #eed8b4;
   --color-warning-ink: #7a4f0b;
+  /* Secondary/hover warning text -- dimmer than warning-ink, e.g. a count
+     suffix or a chip's hover border. CollapsibleWarnings.tsx's #9A6B1F was
+     the only real use of this shade before it had a token. */
+  --color-warning-ink-dim: #9a6b1f;
 
   --color-info: #2563eb;
   --color-info-soft: #eef3fd;
@@ -140,8 +144,16 @@
   /* ------------------------------------------------------------------
    * 12. TYPE FAMILIES
    * ------------------------------------------------------------------ */
-  --font-display: 'Inter Tight Variable', 'Inter Tight', -apple-system, sans-serif;
-  --font-sans: 'Inter Variable', 'Inter', -apple-system, 'Segoe UI', sans-serif;
+  /* DESIGN.md §1.2/§1.8 row A -- IBM Plex Sans closes the seam between a
+     mono identifier (§3.2.1, WI-8842) and its proportional label (Target
+     acquisition time): Plex Sans and Plex Mono share metrics and drawing,
+     so the two read as the same voice instead of three unrelated families.
+     'Inter Variable' stays as the declared fallback -- it is still
+     imported (main.tsx) and still resolves if Plex Sans ever fails to
+     load; 'Inter Tight' is dropped entirely, not demoted -- nothing below
+     references it any more. */
+  --font-display: 'IBM Plex Sans', 'Inter Variable', -apple-system, 'Segoe UI', sans-serif;
+  --font-sans: 'IBM Plex Sans', 'Inter Variable', -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 
   /* ------------------------------------------------------------------
@@ -394,6 +406,96 @@
   }
 }
 
+@layer components {
+  /* DESIGN.md §6/§7 -- the app-level hover/interaction system. Two shapes,
+     never a third: a card that lifts (.liftable) and a row that tints
+     (.hoverable-row). Both are opt-in classes a component applies itself;
+     neither is a default on any bare element. */
+
+  /* Surface category (§7): Card, StatTile, SectionCard, ModeCards.
+     Consolidates the six spelled-out utility classes every call site used
+     to repeat (`lift transition-[...] duration-base ease-out hover:...`)
+     into one class -- same values, one definition. `.lift` was previously
+     a bare marker class with no rest-state styling of its own (all its
+     visuals were the spelled-out utilities beside it); the reduced-motion
+     rule below is updated to target `.liftable` directly rather than
+     relying on `@apply lift`, which would silently no-op -- `.lift` isn't
+     a real Tailwind utility, it's a hand-written selector that only ever
+     existed inside that one media query. */
+  .liftable {
+    /* `@apply <name>` on a CUSTOM (non-numeric) --duration-* value fails
+       the production build outright ("Cannot apply unknown utility
+       class") in this Tailwind v4 version -- confirmed via an isolated
+       rename test, and confirmed it is NOT about whether that class name
+       is also used elsewhere as a literal className (duration-instant
+       below IS used that way in JobsList.tsx and STILL fails the same
+       way). `ease-out` is unaffected because it's one of Tailwind's own
+       CORE default utility names (this @theme block only overrides its
+       cubic-bezier value, the name itself always exists); "base"/
+       "instant"/etc. are not core names, only real --duration-* theme
+       vars. Setting the property directly from the var sidesteps needing
+       Tailwind to have generated a class for it at all -- exactly how
+       every other call site in this codebase already consumes these same
+       vars (`animate-[fadeIn_var(--duration-base)_var(--ease-out)]` etc). */
+    @apply transition-[transform,box-shadow,border-color] ease-out;
+    transition-duration: var(--duration-base);
+  }
+  .liftable:hover {
+    @apply shadow-raised -translate-y-px border-hairline-strong;
+  }
+
+  /* Row category (§7): DiffTree rows, CollapsibleWarnings rows, JobsList
+     rows, any Select/Combobox/DropdownMenu item. Deliberately NO lift, no
+     shadow, no scale -- a lifted row inside a virtualized scroll container
+     causes a repaint storm (§7's own stated reason). Selection is carried
+     by both color AND a 2px accent left edge (§13: color is never the sole
+     carrier of state) -- the left edge is a ::before pseudo-element so a
+     row doesn't need its own border-box recalculated on selection change.
+     §6.1's CSS is specified to be pasted verbatim (width/duration/the
+     hover+focus-visible rail rule below are its literal tuned values, not
+     re-derived) -- border-t/border-hairline is the one deliberate addition,
+     folding §7's separately-documented per-row "Rest" border into this
+     shared class so every call site gets it for free. */
+  .hoverable-row {
+    /* See .liftable's own comment above -- @apply cannot resolve a
+       custom-named --duration-* value in this Tailwind version. */
+    @apply relative border-t border-hairline transition-colors;
+    transition-duration: var(--duration-fast);
+  }
+  .hoverable-row::before {
+    @apply absolute inset-y-0 left-0 w-[2px] scale-y-0 rounded-[2px] bg-accent transition-transform ease-out;
+    transition-duration: var(--duration-fast);
+    content: '';
+  }
+  .hoverable-row:hover {
+    @apply bg-surface-alt;
+  }
+  /* The rail itself was previously wired ONLY to [aria-selected] -- DESIGN.md
+     §6.1 also pins it on :hover and :focus-visible ("this is one of many, and
+     it can also be selected" -- the fill-only hover this replaces was
+     reported as "the row hover effect we agreed upon is missing", confirmed
+     against §6.1's own CSS block). */
+  .hoverable-row:hover::before,
+  .hoverable-row:focus-visible::before {
+    @apply scale-y-100;
+  }
+  .hoverable-row[aria-selected='true'] {
+    @apply bg-accent-soft;
+  }
+  .hoverable-row[aria-selected='true']::before {
+    @apply scale-y-100;
+  }
+  /* Dark-surface variant (rail, tooltips) -- §7's Navigation table uses
+     bg-rail-hover instead of surface-alt, and the accent rail itself needs
+     the on-dark accent for contrast against rail-900. */
+  .hoverable-row.on-dark:hover {
+    @apply bg-rail-hover;
+  }
+  .hoverable-row.on-dark::before {
+    @apply bg-accent-on-dark;
+  }
+}
+
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
@@ -443,7 +545,7 @@
        -- a -translate-y-px hover would still apply instantly. Route hover
        lift through this class so "no motion" means no displacement, not
        instant displacement (DESIGN.md §8, reduced-motion clause 1). */
-    .lift {
+    .liftable {
       transform: none !important;
     }
 

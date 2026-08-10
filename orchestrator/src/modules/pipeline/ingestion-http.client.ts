@@ -168,6 +168,44 @@ export class IngestionHttpClient {
     return (await response.json()) as WorkItemTree;
   }
 
+  // CR-7d rescore: re-judges ONE already-formalized requirement's current
+  // description after a manual/AI-chat edit, without re-running /level's
+  // whole-document pipeline. `categoryChecklist`, when supplied (the
+  // item's OWN previously-scored qualityCategoryScores keys), forces the
+  // rescore to judge the SAME rubric as the original scoring pass -- see
+  // ingestion's score_single_requirement_text docstring for the
+  // determinism guarantee this provides.
+  async scoreItem(
+    description: string,
+    categoryChecklist?: string[] | null,
+    userId?: string | null,
+    model?: string | null,
+  ): Promise<{ qualityScore: number | null; qualityIssues: string[]; qualityCategoryScores: Record<string, number> | null }> {
+    const response = await fetch(`${this.baseUrl}/score-item`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        description,
+        category_checklist: categoryChecklist ?? null,
+        user_id: userId ?? null,
+        model: model ?? null,
+      }),
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /score-item request failed: ${await _readErrorDetail(response)}`);
+    }
+    const body = (await response.json()) as {
+      quality_score: number | null;
+      quality_issues: string[];
+      quality_category_scores: Record<string, number> | null;
+    };
+    return {
+      qualityScore: body.quality_score,
+      qualityIssues: body.quality_issues,
+      qualityCategoryScores: body.quality_category_scores,
+    };
+  }
+
   async checkDuplicate(text: string, areaPath: string): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
     const response = await fetch(`${this.baseUrl}/dedup/check`, {
       method: 'POST',

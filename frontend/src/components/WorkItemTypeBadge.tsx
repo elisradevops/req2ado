@@ -59,9 +59,9 @@ export function WorkItemTypeBadge({
     // previously-plain icon+bold-text rendering was inconsistent with.
     <Chip bg={hexToRgba(color, 0.1)} color={color} className="border" style={{ borderColor: hexToRgba(color, 0.3) }} title={type}>
       {catalogEntry ? (
-        <img src={catalogEntry.iconDataUrl} alt="" className="h-3 w-3 flex-none" aria-hidden="true" />
+        <img src={catalogEntry.iconDataUrl} alt="" className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
       ) : (
-        <Icon className="h-3 w-3 flex-none" aria-hidden="true" />
+        <Icon className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
       )}
       {type}
     </Chip>

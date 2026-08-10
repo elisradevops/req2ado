@@ -6,30 +6,53 @@ import { JobsController } from '../src/modules/pipeline/jobs.controller';
 // count is therefore derived as the number of blocks whose kind is
 // "heading", not a separate sections array.
 describe('JobsController.preview', () => {
-  it('returns block/section counts and file type from the ingestion client response', async () => {
+  it('returns block/section counts, file type, and the document map from the ingestion client response', async () => {
     const ingestionClient = {
       ingest: jest.fn().mockResolvedValue({
         blocks: [
-          { kind: 'heading', heading_level: 1 },
+          { kind: 'heading', heading_level: 1, number_label: '1', text: 'Introduction' },
           { kind: 'paragraph' },
-          { kind: 'heading', heading_level: 2 },
+          { kind: 'heading', heading_level: 2, number_label: '1.1', text: 'Scope' },
           { kind: 'paragraph' },
-          { kind: 'paragraph' },
+          { kind: 'figure' },
         ],
         figures: [{ id: 'fig-1' }, { id: 'fig-2' }],
+        tables: [{ id: 'tbl-1' }],
       }),
     };
     const jobsService = { submit: jest.fn() };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
-    const result = await controller.preview(file);
+    const result = await controller.preview(file, undefined, undefined);
 
     // skipVision=true: preview only needs blockCount/sectionCount/fileType,
     // never figure captions -- must not pay the per-image vision-LLM cost
     // (confirmed live: 28s instead of ~30ms for one small embedded image).
     expect(ingestionClient.ingest).toHaveBeenCalledWith(file.buffer, 'req.docx', true);
-    expect(result).toEqual({ blockCount: 5, sectionCount: 2, figureCount: 2, depth: 2, fileType: 'docx' });
+    // DESIGN.md §11.2.3.d -- estimate() is called with the real parsed
+    // counts and defaults mode to 'baseline' when the caller (here, and
+    // NewJobWizard.tsx before the user picks anything) hasn't specified one.
+    expect(etaService.estimate).toHaveBeenCalledWith({ mode: 'baseline', blockCount: 5, figureCount: 2, model: undefined });
+    expect(result).toEqual({
+      blockCount: 5,
+      sectionCount: 2,
+      figureCount: 2,
+      depth: 2,
+      fileType: 'docx',
+      estimate: { mode: 'baseline', estimateMinutes: 1 },
+      tableCount: 1,
+      openTbdCount: 0,
+      // Each section's heading block itself counts toward that section's
+      // own blockCount (it's a real content block, not just a divider) --
+      // "1" = its own heading + 1 paragraph = 2; "1.1" = its own heading + 1
+      // paragraph + 1 figure block = 3.
+      documentMap: [
+        { number: '1', title: 'Introduction', blockCount: 2, figureCount: 0 },
+        { number: '1.1', title: 'Scope', blockCount: 3, figureCount: 1 },
+      ],
+    });
   });
 
   it('returns figureCount 0 and depth 0 when the document has no figures or headings', async () => {
@@ -41,20 +64,31 @@ describe('JobsController.preview', () => {
       ingest: jest.fn().mockResolvedValue({ blocks: [{ kind: 'paragraph' }], figures: [], tables: [] }),
     };
     const jobsService = { submit: jest.fn() };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
-    const result = await controller.preview(file);
+    const result = await controller.preview(file, undefined, undefined);
 
-    expect(result).toEqual({ blockCount: 1, sectionCount: 0, figureCount: 0, depth: 0, fileType: 'docx' });
+    expect(result).toEqual({
+      blockCount: 1,
+      sectionCount: 0,
+      figureCount: 0,
+      depth: 0,
+      fileType: 'docx',
+      estimate: { mode: 'baseline', estimateMinutes: 1 },
+      tableCount: 0,
+      openTbdCount: 0,
+      documentMap: [],
+    });
   });
 
   it('throws BadRequestException when no file is provided', async () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
-    await expect(controller.preview(undefined)).rejects.toThrow('file is required');
+    await expect(controller.preview(undefined, undefined, undefined)).rejects.toThrow('file is required');
     expect(ingestionClient.ingest).not.toHaveBeenCalled();
   });
 
@@ -62,22 +96,22 @@ describe('JobsController.preview', () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
     const maxUploadSize = 10 * 1024 * 1024; // 10MB
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, maxUploadSize);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, maxUploadSize);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 20 * 1024 * 1024 } as Express.Multer.File;
 
-    await expect(controller.preview(file)).rejects.toThrow('file exceeds the 10MB upload limit');
+    await expect(controller.preview(file, undefined, undefined)).rejects.toThrow('file exceeds the 10MB upload limit');
     expect(ingestionClient.ingest).not.toHaveBeenCalled();
   });
 
   it('throws BadRequestException when file has unsupported extension', async () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.exe', size: 4 } as Express.Multer.File;
 
-    await expect(controller.preview(file)).rejects.toThrow('unsupported file type: .exe');
+    await expect(controller.preview(file, undefined, undefined)).rejects.toThrow('unsupported file type: .exe');
     expect(ingestionClient.ingest).not.toHaveBeenCalled();
   });
 });
@@ -103,7 +137,7 @@ describe('JobsController.getById', () => {
     const catalog = { Requirement: { color: '#009CCC', iconDataUrl: 'data:image/svg+xml;base64,AAA' } };
     const workItemTypeCatalogService = { resolve: jest.fn().mockResolvedValue(catalog) };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -120,7 +154,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn() };
     const workItemTypeCatalogService = { resolve: jest.fn() };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -135,7 +169,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue(undefined) };
     const workItemTypeCatalogService = { resolve: jest.fn() };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -149,7 +183,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
     const workItemTypeCatalogService = { resolve: jest.fn().mockRejectedValue(new Error('ADO unreachable')) };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -164,7 +198,7 @@ describe('JobsController.listModels', () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
     const llmClient = { listModels: jest.fn().mockResolvedValue(['qwen2.5:1.5b', 'gemma4:e4b']) };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, llmClient as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, llmClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const result = await controller.listModels();
 
@@ -175,7 +209,7 @@ describe('JobsController.listModels', () => {
 describe('JobsController.uploadFigureFile', () => {
   it('stores compressed figure bytes via jobsService.storeFigureFile', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn().mockResolvedValue(undefined) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const bytes = Buffer.from('png bytes');
     const result = await controller.uploadFigureFile('job-1', 'f3', { bytes: bytes.toString('base64'), mimeType: 'image/png' });
@@ -186,7 +220,7 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('404s for an unknown job -- never even parses the body', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue(null), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.uploadFigureFile('missing', 'f3', { bytes: 'YQ==', mimeType: 'image/png' })).rejects.toThrow('not found');
     expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
@@ -194,7 +228,7 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('rejects a body missing bytes/mimeType', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     await expect(controller.uploadFigureFile('job-1', 'f3', { bytes: '' } as any)).rejects.toThrow('Invalid request body');
     expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
@@ -202,10 +236,63 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('rejects a figure over the 8MB per-figure cap', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
 
     const oversized = Buffer.alloc(9 * 1024 * 1024, 1).toString('base64');
     await expect(controller.uploadFigureFile('job-1', 'f3', { bytes: oversized, mimeType: 'image/png' })).rejects.toThrow('exceeds');
     expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
+  });
+});
+
+// DESIGN.md §11.2.3.d -- re-pricing without re-uploading. Route ORDERING
+// (declared before @Get(':id') in jobs.controller.ts) is a source-level
+// concern verified by reading the decorator order, not something a unit
+// test on the bare method can exercise directly (that needs a real Nest
+// router, i.e. the e2e spec) -- these tests cover what a plain method call
+// CAN verify: validation and the BASELINE short-circuit reaching EtaService
+// correctly.
+describe('JobsController.getEstimate', () => {
+  it('validates the query and calls EtaService.estimate with coerced numbers', async () => {
+    const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'survey', estimateMinutes: 42 }) };
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+
+    const result = await controller.getEstimate({ blockCount: '682', figureCount: '39', mode: 'survey', model: 'qwen2.5:32b' });
+
+    // Query params arrive as strings -- must be coerced to real numbers
+    // before reaching the arithmetic, not passed through as-is (DESIGN.md
+    // §11.2.3.d: an uncoerced string would silently produce
+    // string-concatenation garbage rather than a validation error).
+    expect(etaService.estimate).toHaveBeenCalledWith({ blockCount: 682, figureCount: 39, mode: 'survey', model: 'qwen2.5:32b' });
+    expect(result).toEqual({ mode: 'survey', estimateMinutes: 42 });
+  });
+
+  it('rejects a missing/invalid mode with a 400, never a silent default', async () => {
+    const etaService = { estimate: jest.fn() };
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEstimate({ blockCount: '10', figureCount: '2', mode: 'not-a-real-mode' })).rejects.toThrow('Invalid query');
+    expect(etaService.estimate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a negative blockCount/figureCount', async () => {
+    const etaService = { estimate: jest.fn() };
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+
+    await expect(controller.getEstimate({ blockCount: '-1', figureCount: '2', mode: 'survey' })).rejects.toThrow('Invalid query');
+    expect(etaService.estimate).not.toHaveBeenCalled();
+  });
+
+  it('BASELINE mode reaches EtaService, which short-circuits with no DB query of its own', async () => {
+    // The short-circuit itself lives in EtaService.estimate (see
+    // eta.service.spec.ts's own "no DB query" assertion) -- this test only
+    // confirms the controller passes BASELINE through faithfully rather
+    // than defaulting it to survey or dropping it.
+    const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+
+    const result = await controller.getEstimate({ blockCount: '10', figureCount: '2', mode: 'baseline' });
+
+    expect(etaService.estimate).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline' }));
+    expect(result.mode).toBe('baseline');
   });
 });

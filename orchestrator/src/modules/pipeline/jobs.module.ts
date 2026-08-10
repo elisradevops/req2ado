@@ -8,6 +8,7 @@ import { JobEventsController, REDIS_SUBSCRIBER_FACTORY } from './job-events.cont
 import { JobEventPersistenceService } from './job-event-persistence.service';
 import { StaleJobWatchdogService } from './stale-job-watchdog.service';
 import { JobRetentionService } from './job-retention.service';
+import { EtaService } from './eta.service';
 import { JobsService } from './jobs.service';
 import { McpClient } from './mcp.client';
 import { WorkItemTypeCatalogService } from './work-item-type-catalog.service';
@@ -166,6 +167,19 @@ import { AuthModule } from '../auth/auth.module';
           config.get<number>('JOB_RETENTION_CHECK_INTERVAL_MS')!,
           config.get<number>('JOB_RETENTION_MAX_AGE_MS')!,
         ),
+    },
+    {
+      // EtaService's constructor params (`prisma: PrismaClient`,
+      // `defaultModel: string`) hit the same erased-runtime-type DI issue
+      // documented on IdempotencyService above for its `prisma` param --
+      // same explicit-factory treatment. defaultModel reuses LLM_CHAT_MODEL,
+      // the SAME config key pipeline.processor.ts resolves
+      // PipelineWorkerDeps.defaultLlmModel from, so an unspecified/"Default"
+      // model estimate resolves to the exact model a real SURVEY run would
+      // actually use (DESIGN.md §11.2.3.b/.c).
+      provide: EtaService,
+      inject: [PrismaClient, ConfigService],
+      useFactory: (prisma: PrismaClient, config: ConfigService) => new EtaService(prisma, config.get<string>('LLM_CHAT_MODEL')!),
     },
     {
       // BackfillService's constructor params are declared via `import type`

@@ -3,6 +3,7 @@ import { ChevronRight, ChevronDown, Folder, Plus, Trash2 } from 'lucide-react';
 import { browseSubfolder, ingestFolderItem, type FolderTreeEntry } from '../api/kb';
 import { FileTypeIcon } from './FileTypeIcon';
 import { Spinner } from '../ui/Spinner';
+import { Skeleton } from '../ui/Skeleton';
 import { Tooltip } from '../ui/Tooltip';
 import { useToast } from './ToastProvider';
 import { cn } from '../lib/cn';
@@ -114,7 +115,11 @@ function FolderTreeNode({
           }
         }}
         className={cn(
-          'flex w-full items-center gap-1.5 rounded-sm py-1 pr-2 text-left text-sm transition-colors duration-instant hover:bg-accent-soft',
+          // DESIGN.md §3: accent-soft is reserved for "selected," never
+          // "hovered" -- was hover:bg-accent-soft, making a merely-hovered
+          // row pixel-identical to the actually selected one below. Same
+          // fix JobsList.tsx already has (§18 ledger).
+          'flex w-full items-center gap-1.5 rounded-sm py-1 pr-2 text-left text-sm transition-colors duration-instant hover:bg-surface-alt',
           !entry.isFolder && 'cursor-default',
           entry.isFolder && selectedFolderId === entry.id && 'bg-accent-soft font-medium text-accent-ink',
         )}
@@ -164,8 +169,12 @@ function FolderTreeNode({
       {expanded && (
         <div>
           {loading && (
-            <div className="flex items-center gap-2 py-1 text-xs text-ink-3" style={{ paddingLeft: `${(depth + 1) * 18 + 4}px` }}>
-              <Spinner /> Loading…
+            // DESIGN.md §7 Row category: loading is a Skeleton row of
+            // identical height, not spinner/text prose -- matches this
+            // same tree's own row height (py-1 text-sm) at the child
+            // indent depth, same treatment JobsList.tsx already uses.
+            <div className="py-1" style={{ paddingLeft: `${(depth + 1) * 18 + 4}px` }}>
+              <Skeleton className="h-4 w-32" />
             </div>
           )}
           {error && (

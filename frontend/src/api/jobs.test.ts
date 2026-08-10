@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { httpClient } from './httpClient';
-import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry } from './jobs';
+import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry } from './jobs';
 
 vi.mock('./httpClient');
 
@@ -46,5 +46,11 @@ describe('jobs api', () => {
     (httpClient.post as any).mockResolvedValue({ data: { dryRunDiff: [] } });
     await addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'T', description: 'D' });
     expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff', { parentLocalId: 'n0', type: 'Requirement', title: 'T', description: 'D' });
+  });
+
+  it('rescoreDiffEntry POSTs to the rescore sub-route with no body', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await rescoreDiffEntry('job-1', 'n0');
+    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/rescore');
   });
 });

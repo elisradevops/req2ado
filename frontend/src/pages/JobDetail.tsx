@@ -9,6 +9,7 @@ import {
   editDiffEntry,
   setDiffEntryExcluded,
   addDiffEntry,
+  rescoreDiffEntry,
   rejectJob,
   cancelJob,
   deleteJob,
@@ -102,6 +103,12 @@ export function JobDetail(): React.ReactElement {
   // resetting to zero. null until the job fetch below resolves.
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [areaPath, setAreaPath] = useState<string | null>(null);
+  // Never wired into DestinationBar before -- iterationPath rendered as
+  // permanently "not set" (the hatched pattern) and state as a bare "—"
+  // regardless of what the job was actually configured with, since these
+  // simply weren't read out of the job response at all.
+  const [iterationPath, setIterationPath] = useState<string | null>(null);
+  const [workItemState, setWorkItemState] = useState<string | null>(null);
   const [sourceFilename, setSourceFilename] = useState<string | null>(null);
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
@@ -162,6 +169,8 @@ export function JobDetail(): React.ReactElement {
         setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
         setStartedAt(job.createdAt);
         setAreaPath(job.areaPath);
+        setIterationPath(job.iterationPath ?? null);
+        setWorkItemState(job.state ?? null);
         setSourceFilename(job.originalFilename);
         setTypeCatalog(job.workItemTypeCatalog ?? null);
         setLoaded(true);
@@ -552,6 +561,22 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // CR-7d rescore: re-throws on failure so NodeDetailPanel's own
+  // try/catch/finally (its loading-button guard) knows the call failed --
+  // this function's job is persisting a success and surfacing a toast
+  // either way, not owning the caller's local UI state.
+  async function handleRescore(localId: string): Promise<void> {
+    if (!id) return;
+    try {
+      const result = await rescoreDiffEntry(id, localId);
+      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      showToast('Rescored.', 'success');
+    } catch (err) {
+      showToast('Failed to rescore — please try again.', 'error');
+      throw err;
+    }
+  }
+
   async function handleAddChild(parentLocalId: string, input: { type: string; title: string; description: string }): Promise<void> {
     if (!id) return;
     try {
@@ -595,6 +620,40 @@ export function JobDetail(): React.ReactElement {
   // parent" instead of leaving that only implicit in the parent row's own
   // badge, several rows away in the tree.
   const diffByLocalId = useMemo(() => Object.fromEntries(diff.map((e) => [e.localId, e])), [diff]);
+
+  // DESIGN.md §11.4.1 -- an Epic/Feature has no quality rubric, so its
+  // Scope group (NodeDetailPanel.tsx) shows what it covers instead: real
+  // Feature/Requirement descendant counts from the diff tree. A
+  // children-by-parent index + a memoized per-node walk, not a `.filter`
+  // call inside recursion, so this stays O(n) even on a large document.
+  const descendantCountsByLocalId = useMemo(() => {
+    const childrenByParent = new Map<string, DryRunDiffEntry[]>();
+    for (const entry of diff) {
+      if (entry.parentLocalId) {
+        childrenByParent.set(entry.parentLocalId, [...(childrenByParent.get(entry.parentLocalId) ?? []), entry]);
+      }
+    }
+    const cache = new Map<string, { features: number; requirements: number }>();
+    function countFor(localId: string): { features: number; requirements: number } {
+      const cached = cache.get(localId);
+      if (cached) return cached;
+      let features = 0;
+      let requirements = 0;
+      for (const child of childrenByParent.get(localId) ?? []) {
+        if (child.type === 'Feature') features += 1;
+        if (child.type === 'Requirement') requirements += 1;
+        const sub = countFor(child.localId);
+        features += sub.features;
+        requirements += sub.requirements;
+      }
+      const result = { features, requirements };
+      cache.set(localId, result);
+      return result;
+    }
+    const result: Record<string, { features: number; requirements: number }> = {};
+    for (const entry of diff) result[entry.localId] = countFor(entry.localId);
+    return result;
+  }, [diff]);
 
   // Real gap this closes (user-reported): a conflict warning's
   // "[localId: ...]" is internal to THIS run and never a real ADO work
@@ -734,7 +793,7 @@ export function JobDetail(): React.ReactElement {
         </div>
         {(teamProject || areaPath) && (
           <div className="mt-1">
-            <DestinationBar teamProject={teamProject} areaPath={areaPath} />
+            <DestinationBar teamProject={teamProject} areaPath={areaPath} iterationPath={iterationPath} state={workItemState} />
           </div>
         )}
       </div>
@@ -808,7 +867,18 @@ export function JobDetail(): React.ReactElement {
             mode={mode as 'baseline' | 'survey'}
             status={status}
             stage={stage}
-            latestNarrationPhase={mergedNarrations.at(-1)?.phase ?? null}
+            // job_failed is itself the LAST narration on a job that died
+            // mid-pipeline -- its own .phase ('job_failed') isn't one of
+            // the real pipeline phases the stepper knows how to place, so
+            // on its own it always fell through to a hardcoded, often-wrong
+            // default. Ingestion already publishes exactly the phase the
+            // job was on when it died as this event's own lastPhase field
+            // (see api/events.ts) -- use that instead when it's present.
+            latestNarrationPhase={
+              mergedNarrations.at(-1)?.phase === 'job_failed'
+                ? (mergedNarrations.at(-1)?.lastPhase ?? null)
+                : (mergedNarrations.at(-1)?.phase ?? null)
+            }
           />
           <NarrationTicker
             sentence={tickerFor({ status, stage, latest: mergedNarrations.at(-1) ?? null }).sentence}
@@ -830,6 +900,17 @@ export function JobDetail(): React.ReactElement {
       <FigureDescriptions items={figureDescriptions} />
       <SectionResults items={sectionResults} />
       {showTiles && summary && (
+        // Plain tiles -- no icon/hint/interactive. Confirmed against the
+        // agreed mockup (§11.3): these three tiles render as bare
+        // value+label, unlike the wizard's Blocks/Sections/Figures/Depth
+        // tiles which DO carry icon+hint because those are unfamiliar
+        // parsing terms that genuinely need a one-line explanation. "New,"
+        // "Reused," and "Duplicates skipped" are already plain English --
+        // adding an icon and a hint restating the label in slightly longer
+        // words was over-explaining the obvious, not adding real
+        // information. (An earlier pass this session added icon/hint here
+        // without having seen the mockup; reverted once the mockup showed
+        // otherwise.)
         <div className="grid grid-cols-3 gap-2.5">
           <StatTile value={summary.created} label="New" tone="ok" />
           <StatTile value={summary.reused} label="Reused" />
@@ -910,7 +991,9 @@ export function JobDetail(): React.ReactElement {
                 kbCitations={kbCitations}
                 traceTargetTitles={traceTargetTitles}
                 diffByLocalId={diffByLocalId}
+                descendantCountsByLocalId={descendantCountsByLocalId}
                 onSave={handleSaveEdit}
+                onRescore={handleRescore}
                 onAddChild={handleAddChild}
                 onNavigate={handleNavigateDialog}
                 hasPrev={hasPrevEntry}
@@ -963,38 +1046,52 @@ export function JobDetail(): React.ReactElement {
         <Card>
           <EmptyState
             icon={FileX2}
-            title={status === 'failed' ? 'No diff was produced' : 'Cancelled before a diff was produced'}
+            // Real bug fixed here (confirmed live): a job that fails mid-run
+            // hard enough to kill the worker process before its own
+            // catch-and-mark-failed logic can run stays status='running'
+            // with no further activity, until the stale-job watchdog
+            // eventually auto-cancels it -- overwriting a REAL failure with
+            // a generic "cancelled" status. This card used to key its title/
+            // copy purely off `status`, so a job that had genuinely parsed,
+            // scored, and reached trace-link inference before dying showed
+            // "Cancelled before a diff was produced... before parsing/
+            // analysis finished" -- flatly false. jobFailedEvent (the
+            // durable job_failed record) is the honest signal here,
+            // independent of whatever `status` the job settled on.
+            title={jobFailedEvent || status === 'failed' ? 'No diff was produced' : 'Cancelled before a diff was produced'}
             description={
-              status === 'failed'
-                ? jobFailedEvent
-                  ? // Structured detail from the durable event history --
-                    // phase/elapsed/error type/message, replacing the plain
-                    // "check the audit trail" string with the real context
-                    // /level's exception handler captured.
-                    (() => {
-                      const detail = (jobFailedEvent.detail ?? {}) as {
-                        errorType?: string | null;
-                        errorMessage?: string | null;
-                        elapsedSeconds?: number | null;
-                        lastPhase?: string | null;
-                      };
-                      return (
-                        <span className="flex flex-col gap-1 text-left">
-                          <span>{detail.errorMessage ?? jobFailedEvent.message}</span>
-                          <span className="text-ink-3">
-                            {[
-                              detail.errorType,
-                              detail.lastPhase ? `last phase: ${detail.lastPhase}` : null,
-                              detail.elapsedSeconds != null ? `after ${Math.round(detail.elapsedSeconds)}s` : null,
-                            ]
-                              .filter(Boolean)
-                              .join(' · ')}
-                          </span>
-                        </span>
-                      );
-                    })()
-                  : 'This job failed before completing analysis. Check the audit trail for details.'
-                : 'This run was cancelled before parsing/analysis finished, so there is nothing to review.'
+              jobFailedEvent ? (
+                // Structured detail from the durable event history --
+                // phase/elapsed/error type/message, replacing the plain
+                // "check the audit trail" string with the real context
+                // /level's exception handler captured.
+                (() => {
+                  const detail = (jobFailedEvent.detail ?? {}) as {
+                    errorType?: string | null;
+                    errorMessage?: string | null;
+                    elapsedSeconds?: number | null;
+                    lastPhase?: string | null;
+                  };
+                  return (
+                    <span className="flex flex-col gap-1 text-left">
+                      <span>{detail.errorMessage ?? jobFailedEvent.message}</span>
+                      <span className="text-ink-3">
+                        {[
+                          detail.errorType,
+                          detail.lastPhase ? `last phase: ${detail.lastPhase}` : null,
+                          detail.elapsedSeconds != null ? `after ${Math.round(detail.elapsedSeconds)}s` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    </span>
+                  );
+                })()
+              ) : status === 'failed' ? (
+                'This job failed before completing analysis. Check the audit trail for details.'
+              ) : (
+                'This run was cancelled before parsing/analysis finished, so there is nothing to review.'
+              )
             }
             action={
               <Button variant="outline" size="sm" onClick={handleShowAudit}>

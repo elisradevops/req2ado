@@ -87,12 +87,24 @@ export const Select = forwardRef<
           ref={ref}
           id={fieldId}
           aria-label={ariaLabel}
+          // Recovers the full value on hover when the trigger is too narrow
+          // to show it -- see the truncate span below.
+          title={value}
           className={cn(
-            'flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm border border-field-border bg-surface px-2.5 py-1.5 text-sm text-ink-1 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-danger disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
+            // DESIGN.md §7 Input category: hover:border-ink-3, matching Checkbox.tsx's own already-correct treatment.
+            'flex w-full cursor-pointer items-center justify-between gap-2 rounded-sm border border-field-border bg-surface px-2.5 py-1.5 text-sm text-ink-1 transition-colors duration-fast ease-out hover:border-ink-3 focus:border-accent focus:outline-none focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-danger disabled:cursor-not-allowed disabled:bg-canvas disabled:text-ink-3',
             className,
           )}
         >
-          <RadixSelect.Value />
+          {/* Select.Value strips className/style itself (it hardcodes its
+              own pointer-events:none) -- wrapping it is the only way to
+              constrain its width. min-w-0 lets the wrapper shrink below its
+              content width inside the flex row above -- without it, a value
+              longer than the trigger (e.g. a long model name in a narrow
+              picker) overflows raw instead of ellipsizing. */}
+          <span className="min-w-0 flex-1 truncate text-left">
+            <RadixSelect.Value />
+          </span>
           <RadixSelect.Icon>
             <ChevronDown className="h-3.5 w-3.5 flex-none text-ink-3" />
           </RadixSelect.Icon>

@@ -249,14 +249,28 @@ export function JobsList(): React.ReactElement {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr>
-                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Document</th>
-                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Mode</th>
-                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Status</th>
-                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Items</th>
-                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Area Path</th>
-                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Created</th>
-                      <th className={cn('sticky top-0 z-10 whitespace-nowrap bg-surface-sunken px-3.5 text-right text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>
+                    {/* No tinted background on this row -- confirmed live:
+                        with the Actions column's only header content being
+                        a zero-width sr-only label (its body cells hold two
+                        icon buttons, real content only), this browser's
+                        table-layout:auto sizing leaves a real, uncovered
+                        gap at the table's right edge that a tinted
+                        background would expose as a hard color seam. A
+                        border under the row (matching how this app already
+                        separates header/body elsewhere) signals "header"
+                        just as clearly without depending on every column
+                        summing to exactly the table's width. bg-surface
+                        (opaque, matching the Card) is still needed despite
+                        matching the row below it -- sticky rows scroll over
+                        body content and must not show it through. */}
+                    <tr className="sticky top-0 z-10 border-b border-hairline-strong bg-surface">
+                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Document</th>
+                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Mode</th>
+                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Status</th>
+                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Items</th>
+                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Area Path</th>
+                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Created</th>
+                      <th className={cn('whitespace-nowrap px-3.5 text-right text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>
                         <span className="sr-only">Actions</span>
                       </th>
                     </tr>
@@ -275,10 +289,25 @@ export function JobsList(): React.ReactElement {
                         tabIndex={0}
                         role="link"
                         aria-label={`View job ${job.id}`}
-                        className="group cursor-pointer border-t border-hairline transition-colors duration-instant hover:bg-accent-soft focus-visible:bg-accent-soft animate-[listItemIn_var(--duration-base)_var(--ease-out)_backwards]"
+                        // DESIGN.md §7 names "JobsList rows" as a
+                        // .hoverable-row consumer -- but that class's
+                        // ::before rail is an absolutely-positioned pseudo-
+                        // element, and confirmed live (debug cell outlines):
+                        // a <tr> with a positioned pseudo-element child
+                        // makes this browser miscompute every real <td>'s
+                        // column position in this table, shifting the whole
+                        // row's cells one column to the right relative to
+                        // the header. Replicated the same tint+border+rail
+                        // outcome locally without a pseudo-element: the tint
+                        // and top hairline stay plain Tailwind on the <tr>;
+                        // the rail moves to a real border-left on the first
+                        // <td> below (toggled via `group`), which is a
+                        // normal box-model property, not a positioned box,
+                        // so it cannot confuse column layout the same way.
+                        className="group border-t border-hairline transition-colors duration-fast hover:bg-surface-alt cursor-pointer animate-[listItemIn_var(--duration-base)_var(--ease-out)_backwards]"
                         style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}
                       >
-                        <td className={cn('max-w-[200px] px-3.5', cellPaddingY)}>
+                        <td className={cn('border-l-2 border-transparent px-3.5 transition-colors duration-fast group-hover:border-accent', cellPaddingY)}>
                           <span className="block truncate text-sm font-medium">{job.originalFilename}</span>
                         </td>
                         <td className={cn('px-3.5', cellPaddingY)}>
@@ -288,7 +317,7 @@ export function JobsList(): React.ReactElement {
                           <StatusChip status={job.status} />
                         </td>
                         <td className={cn('px-3.5 font-mono tabular-nums', cellPaddingY)}>{job.itemCount}</td>
-                        <td className={cn('max-w-[220px] px-3.5 font-mono text-xs', cellPaddingY)}>
+                        <td className={cn('px-3.5 font-mono text-xs', cellPaddingY)}>
                           <Tooltip content={job.areaPath}>
                             <span className="block truncate">{job.areaPath}</span>
                           </Tooltip>

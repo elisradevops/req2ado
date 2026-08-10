@@ -66,7 +66,9 @@ export function NodeDetailDialog({
   kbCitations,
   traceTargetTitles,
   diffByLocalId,
+  descendantCountsByLocalId,
   onSave,
+  onRescore,
   onAddChild,
   onNavigate,
   hasPrev,
@@ -82,7 +84,12 @@ export function NodeDetailDialog({
   kbCitations?: KbCitation[];
   traceTargetTitles?: Record<string, string>;
   diffByLocalId?: Record<string, DryRunDiffEntry>;
+  // DESIGN.md §11.4.1 -- an Epic/Feature's Scope group needs real
+  // descendant counts from the WHOLE diff tree; computed once by the
+  // caller (JobDetail.tsx), resolved per-entry here same as diffByLocalId.
+  descendantCountsByLocalId?: Record<string, { features: number; requirements: number }>;
   onSave?: (localId: string, patch: { title: string; description: string }) => void;
+  onRescore?: (localId: string) => Promise<void>;
   onAddChild: (parentLocalId: string, input: { type: string; title: string; description: string }) => void;
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
@@ -122,6 +129,8 @@ export function NodeDetailDialog({
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
       onSave={onSave}
+      onRescore={onRescore}
+      descendantCounts={descendantCountsByLocalId?.[entry.localId]}
     />
   );
 

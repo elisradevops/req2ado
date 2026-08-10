@@ -14,6 +14,9 @@ describe('ErrorBoundary', () => {
         <Boom />
       </ErrorBoundary>,
     );
-    expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
+    // DESIGN.md §12 bans "Something went wrong" -- real copy states cause
+    // then remedy instead.
+    expect(screen.getByText(/hit an error while rendering/i)).toBeInTheDocument();
+    expect(screen.getByText(/reloading usually fixes it/i)).toBeInTheDocument();
   });
 });

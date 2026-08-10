@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   Injectable,
@@ -10,7 +11,7 @@ import type { PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
-import type { IngestionHttpClient } from './ingestion-http.client';
+import { IngestionHttpError, type IngestionHttpClient } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry } from '../writeback/dry-run.service';
 import { mapWithConcurrency } from './map-with-concurrency';
@@ -40,10 +41,14 @@ export interface SubmitJobInput {
   sourceHash: string;
   state?: string;
   iterationPath?: string | null;
-  // Per-job LLM model override (SURVEY only). Not persisted on the Job row
-  // -- passed straight through to the BullMQ payload like areaPath/mode,
-  // since the pipeline worker never needs to look it up again after the
-  // job finishes.
+  // Per-job LLM model OVERRIDE (SURVEY only) -- distinct from Job.model
+  // (schema.prisma), which the worker persists as the EFFECTIVE model
+  // (this override, or the orchestrator's configured default if unset).
+  // This field is passed straight through to the BullMQ payload, never
+  // read back off the Job row by submit() itself; resubmit() below reads
+  // the persisted Job.model (the effective model of the original run) and
+  // passes it back in here as a real override, so a resubmit pins to what
+  // actually ran, not to whatever today's config default happens to be.
   model?: string;
 }
 
@@ -236,6 +241,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       sourceHash: job.sourceHash,
       state: job.state,
       iterationPath: job.iterationPath,
+      // Real bug, found while wiring Job.model (DESIGN.md §11.2.3.b): this
+      // was previously omitted entirely, so a resubmit of a SURVEY job that
+      // had a per-job model override silently reverted to the orchestrator's
+      // default model. job.model here is the EFFECTIVE model the original
+      // run used (worker-persisted, null for BASELINE and for any job that
+      // predates this column) -- passing it forward as a real override
+      // pins the resubmit to what actually ran, not to whatever today's
+      // config default happens to be. "Resubmit" means "run this again,"
+      // not "run this again under today's config."
+      model: job.model ?? undefined,
     });
   }
 
@@ -327,6 +342,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     figureDescriptions: { figureIndex: number; caption: string }[];
     createdAt: Date;
     areaPath: string;
+    // Real Job columns (schema.prisma) that were fetched here all along
+    // (findUnique with no select clause) but silently dropped by this
+    // method's own narrow return object -- the frontend's DestinationBar
+    // never had a value to render, showing "not set" and "—" regardless of
+    // what a job was actually configured with.
+    iterationPath: string | null;
+    state: string;
     originalFilename: string;
     userId: string | null;
   } | null> {
@@ -342,6 +364,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       figureDescriptions: (job.figureDescriptions as { figureIndex: number; caption: string }[] | null) ?? [],
       createdAt: job.createdAt,
       areaPath: job.areaPath,
+      iterationPath: job.iterationPath,
+      state: job.state,
       originalFilename: job.originalFilename,
       userId: job.userId,
     };
@@ -410,9 +434,113 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const definedPatch: { title?: string; description?: string } = {};
     if (patch.title !== undefined) definedPatch.title = patch.title;
     if (patch.description !== undefined) definedPatch.description = patch.description;
-    diff[index] = { ...diff[index], ...definedPatch };
+    // CR-7d rescore: quality scoring judges `description` text only (see
+    // ingestion's _apply_quality_scores) -- a title-only edit changes
+    // nothing the score was judged against, so only a real description
+    // change marks the gauge stale. Only meaningful for an entry that was
+    // actually scored before (qualityScore != null) -- an Epic/Feature or
+    // never-scored Requirement has nothing to go stale.
+    const descriptionChanged =
+      definedPatch.description !== undefined && definedPatch.description !== diff[index].description;
+    const staleness = descriptionChanged && diff[index].qualityScore != null ? { qualityStale: true } : {};
+    diff[index] = { ...diff[index], ...definedPatch, ...staleness };
     await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
     return diff;
+  }
+
+  // CR-7d rescore: re-judges ONE Requirement entry's CURRENT description
+  // (post-edit) via ingestion's /score-item -- passes a forced rubric (see
+  // resolveCategoryChecklist below) so a category-by-category delta is a
+  // like-for-like comparison, not two different rubrics (see
+  // IngestionHttpClient.scoreItem's own docstring). Throws (never silently
+  // no-ops) on ingestion failure -- the caller (frontend) is responsible for
+  // reverting its own optimistic "Re-checking" UI state back to Stale; this
+  // method never writes a fabricated fresh score on failure.
+  async rescoreDiffEntry(id: string, localId: string): Promise<DryRunDiffEntry[]> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException(`Job ${id} not found`);
+    if (job.status !== 'diff_ready') {
+      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+    }
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const index = diff.findIndex((entry) => entry.localId === localId);
+    if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+    if (diff[index].action !== 'create') {
+      throw new BadRequestException('only create entries can be rescored');
+    }
+    if (diff[index].type !== 'Requirement') {
+      throw new BadRequestException('only Requirement entries can be rescored');
+    }
+    // DESIGN.md §11.4.4 flags persisting the document-wide category_checklist
+    // (resolved once at ingestion from the highest-similarity KB citation,
+    // llm_leveling.py:1708-1714) as a prerequisite -- without it, a rescore
+    // could come back with different categoryScores KEYS, comparing two
+    // different rubrics. A same-job sibling Requirement's own already-
+    // persisted qualityCategoryScores achieves the identical guarantee
+    // without a new column: _score_all_requirements resolves ONE checklist
+    // per whole-document scoring pass and applies it to every Requirement
+    // node in that pass, so any sibling that scored successfully carries the
+    // SAME key set this job actually used. Falls back to this entry's own
+    // keys first (the common case), then any scored sibling's (this entry's
+    // own scoring entry failed to parse but the document-wide pass still
+    // succeeded for others), then null (scoring failed for the whole
+    // document -- nothing to reuse either way, same failure mode a
+    // persisted-but-never-written column would also hit).
+    const categoryChecklist = this.resolveCategoryChecklist(diff, index);
+    let result: { qualityScore: number | null; qualityIssues: string[]; qualityCategoryScores: Record<string, number> | null };
+    try {
+      result = await this.ingestionClient.scoreItem(
+        diff[index].description,
+        categoryChecklist,
+        job.userId ?? undefined,
+        job.model ?? undefined,
+      );
+    } catch (err) {
+      // Preserve the real reason (a real ingestion 5xx/timeout/etc.) instead
+      // of letting a bare IngestionHttpError reach NestJS's default filter,
+      // which would mask it behind a generic, undiagnosable 500 -- this
+      // route is the first diff-mutation route with an inline external HTTP
+      // dependency in its request/response cycle, so this gap was never hit
+      // by editDiffEntry/addDiffEntry (pure DB/array operations, nothing to
+      // fail this way).
+      if (err instanceof IngestionHttpError) {
+        throw new BadGatewayException(err.message);
+      }
+      throw err;
+    }
+    // A 200 response with quality_score: null is a REAL, documented outcome
+    // (score_single_requirement_text returns it whenever the LLM response
+    // is missing/malformed for this one item -- the exact same tolerant-
+    // parse path the batch scorer already warns on) -- not a network
+    // failure, but still a failed rescore from this entry's point of view.
+    // Writing it through unconditionally would silently destroy the last
+    // real score and clear qualityStale, directly violating DESIGN.md
+    // §11.4.4: "a failed rescore must never launder a stale number into a
+    // fresh-looking one." Throw instead so the caller's existing
+    // catch-and-revert-to-Stale path (NodeDetailPanel.tsx's
+    // handleRescoreClick) handles this exactly like any other failure --
+    // the entry (and its qualityStale flag) stays untouched.
+    if (result.qualityScore == null) {
+      throw new BadGatewayException('Rescore did not return a usable score -- the item was left unchanged.');
+    }
+    diff[index] = {
+      ...diff[index],
+      qualityScore: result.qualityScore,
+      qualityIssues: result.qualityIssues,
+      qualityCategoryScores: result.qualityCategoryScores,
+      qualityStale: false,
+    };
+    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
+    return diff;
+  }
+
+  private resolveCategoryChecklist(diff: DryRunDiffEntry[], index: number): string[] | null {
+    const own = diff[index].qualityCategoryScores;
+    if (own) return Object.keys(own);
+    const sibling = diff.find(
+      (entry, i) => i !== index && entry.type === 'Requirement' && entry.qualityCategoryScores,
+    );
+    return sibling ? Object.keys(sibling.qualityCategoryScores as Record<string, number>) : null;
   }
 
   async addDiffEntry(

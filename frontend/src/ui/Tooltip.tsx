@@ -19,7 +19,8 @@ export function Tooltip({ content, children }: { content: ReactNode; children: R
           <RadixTooltip.Content
             sideOffset={8}
             collisionPadding={8}
-            className="z-50 max-w-[280px] rounded-sm bg-ink-1 px-2.5 py-2 text-xs leading-relaxed text-ink-on-dark shadow-popover"
+            // DESIGN.md §5: Overlay category (Dialog/Popover/DropdownMenu/Tooltip) is radius md.
+            className="z-50 max-w-[280px] rounded-md bg-ink-1 px-2.5 py-2 text-xs leading-relaxed text-ink-on-dark shadow-popover"
           >
             {content}
             <RadixTooltip.Arrow className="fill-ink-1" />

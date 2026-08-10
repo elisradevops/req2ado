@@ -95,6 +95,38 @@ model Job {
   // prisma.job.update as warnings/kbCitations above). Nullable: historical
   // jobs predate this column, same convention as warnings/userId.
   figureDescriptions Json?
+  // Telemetry for the SURVEY cost estimate (DESIGN.md §11.2.3) -- lets the
+  // ETA be computed from this deployment's own real completed-job
+  // durations instead of a hand-picked constant (two of which were tried
+  // and found wrong by ~4-5x against a real ~90-minute job). All five are
+  // nullable: historical jobs predate these columns, same convention as
+  // warnings/userId/figureDescriptions above. No backfill -- recovering
+  // them would mean re-parsing every retained source blob, and job history
+  // was already wiped to zero by an account reset before this shipped, so
+  // the value of backfilling is ~zero. Nullable-forever is the answer, not
+  // an oversight.
+  //
+  // blockCount/figureCount: doc.blocks.length/doc.figures.length at the
+  // SAME point jobs.controller.ts's preview() counts them, so the ETA
+  // fit trains on the identical quantity it predicts against.
+  blockCount       Int?
+  figureCount      Int?
+  // The EFFECTIVE model this job ran under (job.model ?? the orchestrator's
+  // configured default), not the raw per-job override alone -- an override
+  // is null for every job that used the default, which would make the
+  // largest, most common cohort invisible to the ETA's per-model
+  // adjustment. Always null for BASELINE, which never calls a model at all.
+  model            String?
+  // Real pipeline wall-clock boundaries for the ETA fit. Deliberately NOT
+  // createdAt -> completedAt: completedAt is set only inside confirm()
+  // (jobs.service.ts), i.e. when a human clicks approve -- that span
+  // includes unbounded reviewer idle time, and fitting a document-size
+  // regression on it would fit lunch breaks. startedAt is the
+  // pending->running transition; diffReadyAt is pipeline completion
+  // (running -> diff_ready), independent of whether a human ever reviews
+  // it and independent of whether they confirm or reject.
+  startedAt        DateTime?
+  diffReadyAt      DateTime?
   createdAt        DateTime  @default(now())
   confirmedAt      DateTime?
   completedAt      DateTime?

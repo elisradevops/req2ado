@@ -1,6 +1,6 @@
 import { Stepper, type StepState } from '../ui/Stepper';
 import { InfoTip } from '../ui/Tooltip';
-import type { JobStage, NarrationEvent } from '../api/events';
+import type { JobStage } from '../api/events';
 
 type LifecycleKey = 'parse' | 'analyze' | 'score' | 'dedupCheck' | 'review' | 'write';
 
@@ -53,7 +53,11 @@ function reachedKeyFor(
   mode: 'baseline' | 'survey',
   status: string,
   stage: JobStage | null,
-  latestNarrationPhase?: NarrationEvent['phase'] | null,
+  // Not NarrationEvent['phase'] alone -- JobDetail.tsx resolves a job_failed
+  // event's own lastPhase (a free-text field, not the strict phase union)
+  // through this same prop before calling in here, so the type has to
+  // admit that too.
+  latestNarrationPhase?: string | null,
 ): LifecycleKey {
   if (status === 'writing') return 'write';
   if (status === 'diff_ready' || status === 'rejected') return 'review';
@@ -84,10 +88,28 @@ function reachedKeyFor(
     // Terminal non-happy-path statuses (failed/cancelled) have no single
     // "current step" left to point at -- freeze on the furthest real
     // stage-derived position rather than guessing, same honesty standard
-    // as ProgressBanner's own ETA calc.
+    // as ProgressBanner's own ETA calc. Real bug fixed here (confirmed
+    // live): this branch used to check ONLY `stage`, never
+    // `latestNarrationPhase` -- but `stage` is set exclusively by the live
+    // SSE subscription (JobDetail.tsx), which never opens for a job that
+    // was already terminal on page load (the common case: navigating
+    // straight to an already-failed/cancelled job, not watching it fail).
+    // `stage` was therefore always null in that case, and every such job
+    // silently fell through to the hardcoded "Analyze" default below
+    // regardless of how far it actually got -- a real job that finished
+    // parsing, scoring, and dedup/grouping/trace-link inference before
+    // failing at the very last phase still showed "failed at Analyze".
     if (stage === 'dedup_check') key = 'dedupCheck';
     else if (stage === 'diff_ready') key = 'review';
-    else if (stage === 'parse') key = 'parse';
+    else if (
+      latestNarrationPhase === 'score_requirements' ||
+      latestNarrationPhase === 'score_requirements_done' ||
+      latestNarrationPhase === 'detect_conflicts' ||
+      latestNarrationPhase === 'regroup_roots' ||
+      latestNarrationPhase === 'infer_trace_links'
+    ) {
+      key = 'score';
+    } else if (stage === 'parse') key = 'parse';
     else key = 'analyze';
   }
 
@@ -152,8 +174,12 @@ export function JobLifecycleSteps({
   // JobStage alone can't distinguish "generation just finished, about to
   // score" from "mid-scoring, about to reach dedup_check": no dedicated
   // JobStage fires when scoring starts (see job-events.publisher.ts's own
-  // comment on which stages the worker actually emits).
-  latestNarrationPhase?: NarrationEvent['phase'] | null;
+  // comment on which stages the worker actually emits). Not
+  // NarrationEvent['phase'] alone -- JobDetail.tsx resolves a job_failed
+  // event's own lastPhase (free text, not the strict phase union) through
+  // this same prop, so the real last-reached phase survives even when the
+  // very last narration IS the failure marker itself.
+  latestNarrationPhase?: string | null;
 }): React.ReactElement {
   const stepDefs = stepsFor(mode);
   const keys = stepDefs.map((s) => s.key);
@@ -191,8 +217,22 @@ export function JobLifecycleSteps({
           The right-edge mask fade is a real "there's more, scroll right"
           affordance -- previously a narrow container just silently clipped
           the later steps with only a bare (easy-to-miss) scrollbar as the
-          only signal anything was cut off. */}
-      <div className="min-w-0 flex-1 overflow-x-auto [mask-image:linear-gradient(to_right,black_calc(100%-20px),transparent)]">
+          only signal anything was cut off.
+
+          py-0.5 (2px top+bottom, so 4px combined -- matches
+          `@keyframes pulse-ring`'s exact peak box-shadow spread in
+          index.css) is a deliberate fix, not stray spacing. Per the CSS
+          Overflow spec, a `visible` value paired with a non-`visible`
+          value on the other axis resolves to the SAME type as that other
+          axis -- setting `overflow-x-auto` alone therefore forces
+          `overflow-y` to compute as `auto` too, in every compliant
+          browser, not just some engines; an explicit `overflow-y-visible`
+          would still be overridden the same way, so it isn't used here.
+          The pulse's glow was being clipped flat by that forced auto
+          scrollport; this padding gives the scrollport itself enough room
+          that the glow fits within its own bounds instead of relying on
+          bleeding past them. */}
+      <div className="min-w-0 flex-1 overflow-x-auto py-0.5 [mask-image:linear-gradient(to_right,black_calc(100%-20px),transparent)]">
         <Stepper steps={stepDefs.map((s) => s.label)} states={states} />
       </div>
       <InfoTip content={tip} />

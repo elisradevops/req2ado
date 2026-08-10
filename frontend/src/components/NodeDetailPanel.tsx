@@ -1,16 +1,22 @@
-import { useEffect, useState } from 'react';
-import { Pencil, Link2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Pencil, Link2, RefreshCw } from 'lucide-react';
 import { TagChips } from './TagChips';
-import { IssueChips } from './IssueChips';
-import { QualityGauge } from './QualityGauge';
+import { QualityGauge, type QualityCategoryScores } from './QualityGauge';
 import { TraceLinkChips } from './TraceLinkChips';
 import { KbCitationChips, type KbCitation } from './KbCitationChips';
 import type { DryRunDiffEntry } from './DiffTree';
 import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { DescriptionMarkdown } from '../ui/Markdown';
-import { InfoTip } from '../ui/Tooltip';
+import { cn } from '../lib/cn';
 import { formatSourceRef } from '../utils/sourceRef';
+
+// CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
+// successful rescore -- held briefly so QualityGauge can render a real
+// before/after delta instead of only the new number with no context for
+// what changed. Cleared after RESCORE_DELTA_VISIBLE_MS or when the
+// selected node changes.
+const RESCORE_DELTA_VISIBLE_MS = 8000;
 
 // Item-details ONLY -- chat lives in NodeDetailDialog's own right pane
 // (ChatPanel, composed as a sibling, not a child, of this component) since
@@ -48,6 +54,8 @@ export function NodeDetailPanel({
   parentEntry,
   addChildSlot,
   onSave,
+  onRescore,
+  descendantCounts,
 }: {
   entry: DryRunDiffEntry | null;
   jobMode?: 'baseline' | 'survey' | null;
@@ -73,19 +81,54 @@ export function NodeDetailPanel({
   // easy to miss below a long description/quality/trace-link stack.
   addChildSlot?: React.ReactNode;
   onSave?: (localId: string, patch: { title: string; description: string }) => void;
+  // CR-7d rescore: owned by the caller (JobDetail.tsx), which persists the
+  // fresh score/issues/categoryScores and shows a toast, mirroring onSave's
+  // own contract. Rejecting leaves the stored entry (and its qualityStale
+  // flag) untouched -- this component never fabricates a fresh number on
+  // failure, it just reflects whatever the server actually persisted.
+  onRescore?: (localId: string) => Promise<void>;
+  // DESIGN.md §11.4.1 -- an Epic/Feature has no quality rubric (it's judged
+  // on scope coherence, a review note, not a number), so its Scope group
+  // shows what it covers instead: how many Feature/Requirement descendants
+  // sit under it in the diff tree. Computed by the caller (JobDetail.tsx)
+  // over the WHOLE diff array, not here -- this component only ever sees
+  // one entry at a time. Absent (not zeroed) for a Requirement, which
+  // never renders this group at all.
+  descendantCounts?: { features: number; requirements: number };
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
   const [draftDescription, setDraftDescription] = useState('');
+  const [rescoring, setRescoring] = useState(false);
+  const isRescoringRef = useRef(false);
+  const [preRescoreSnapshot, setPreRescoreSnapshot] = useState<{
+    score: number;
+    categoryScores: QualityCategoryScores | null;
+    issues: string[];
+  } | null>(null);
+  // Tracks whichever node is CURRENTLY selected, updated synchronously in
+  // the same effect that resets the rest of this component's state below
+  // -- lets handleRescoreClick's async continuation (after its own await)
+  // tell whether the user switched to a different node while a rescore
+  // request for the PREVIOUS node was still in flight, and skip applying
+  // that now-stale response. A plain `entry` read inside the closure
+  // wouldn't work here: the closure captures the entry reference from the
+  // render that created it, not the entry the component displays by the
+  // time the promise resolves.
+  const selectedLocalIdRef = useRef(entry?.localId);
 
   // Exit edit mode whenever the selected node changes so a stale draft from
   // the previously-edited node can never be saved onto a different node.
   // Depend on entry?.localId (not entry itself) — JobDetail.tsx passes a new
   // entry object reference on every parent re-render even for the same node.
   useEffect(() => {
+    selectedLocalIdRef.current = entry?.localId;
     setEditing(false);
     setDraftTitle('');
     setDraftDescription('');
+    setRescoring(false);
+    isRescoringRef.current = false;
+    setPreRescoreSnapshot(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entry?.localId]);
 
@@ -112,6 +155,40 @@ export function NodeDetailPanel({
   function save(): void {
     onSave?.(entry!.localId, { title: draftTitle, description: draftDescription });
     setEditing(false);
+  }
+
+  async function handleRescoreClick(): Promise<void> {
+    if (!entry || !onRescore || isRescoringRef.current) return;
+    isRescoringRef.current = true;
+    setRescoring(true);
+    // No snapshot (no delta shown) for a first-ever score -- "was null"
+    // has nothing meaningful to render a ▲/▼ delta against, unlike an
+    // actual rescore of a previously-scored item.
+    const snapshot =
+      entry.qualityScore != null
+        ? { score: entry.qualityScore, categoryScores: entry.qualityCategoryScores ?? null, issues: entry.qualityIssues ?? [] }
+        : null;
+    const localIdAtRequest = entry.localId;
+    try {
+      await onRescore(entry.localId);
+      // The selected node may have changed while this request was in
+      // flight -- applying a stale snapshot/confirmation now would show a
+      // delta and a "Rescored." message built from a DIFFERENT node's
+      // numbers under whichever node is displayed now.
+      if (!snapshot || selectedLocalIdRef.current !== localIdAtRequest) return;
+      setPreRescoreSnapshot(snapshot);
+      window.setTimeout(() => {
+        setPreRescoreSnapshot((current) => (current === snapshot ? null : current));
+      }, RESCORE_DELTA_VISIBLE_MS);
+    } catch {
+      // onRescore's caller (JobDetail.tsx) owns surfacing the failure (a
+      // toast) -- the stored entry (and its qualityStale flag) is
+      // untouched on a rejected promise, so the gauge simply stays Stale,
+      // never a fabricated fresh number.
+    } finally {
+      isRescoringRef.current = false;
+      setRescoring(false);
+    }
   }
 
   if (editing) {
@@ -218,25 +295,116 @@ export function NodeDetailPanel({
       <div className="max-w-[68ch] text-sm leading-relaxed text-ink-2">
         <DescriptionMarkdown>{entry.description}</DescriptionMarkdown>
       </div>
-      {/* Classification (tags) and active flags (quality issues) side by
-          side -- both are short chip lists, matching the reference detail
-          layout's two-column summary row, rather than each stacked as its
-          own full-width block with no label of its own. */}
-      {(entry.tags && entry.tags.length > 0) || (entry.qualityIssues && entry.qualityIssues.length > 0) ? (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1">
-            <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Classification</span>
-            <TagChips tags={entry.tags} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Active Flags</span>
-            <IssueChips issues={entry.qualityIssues} />
-          </div>
+      {/* Real bug fixed here (confirmed against the agreed mockup, which has
+          no "Active Flags" block at all): this used to pair Classification
+          with a second "Active Flags" chip cloud showing the SAME issue
+          codes QualityGauge's own per-category rows (and its "Other flags"
+          catch-all) already render below, in fuller form -- QualityGauge
+          includes the fix-oriented remedy text, this chip cloud showed only
+          the bare label. Every code shown here was already guaranteed to
+          reappear there (QualityGauge partitions 100% of qualityIssues into
+          either a mapped category or "Other flags", never dropping one), so
+          this whole block was pure duplication, not a second, independent
+          fact. Classification alone is real content the gauge doesn't
+          cover, so it stays -- as its own full-width block now that it no
+          longer needs to share a 2-column row with something else. */}
+      {entry.tags && entry.tags.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Classification</span>
+          <TagChips tags={entry.tags} />
         </div>
-      ) : null}
-      {entry.qualityScore != null && (
+      )}
+      {/* DESIGN.md §11.4.1 -- gated on the item's real ADO work-item type,
+          explicitly, not on qualityScore presence. The two are NOT the same
+          check: scoring is server-side-scoped to Requirement nodes today
+          (so they happen to agree), but qualityScore==null on a
+          Requirement is a DIFFERENT case (a scoring pass that failed) from
+          an Epic/Feature never having a rubric to begin with -- the former
+          must show the gauge's own empty/failed state, not silently
+          disappear like the latter. */}
+      {entry.type === 'Requirement' && (
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
-          <QualityGauge score={entry.qualityScore} categoryScores={entry.qualityCategoryScores} />
+          {entry.qualityScore != null ? (
+            <>
+              {/* Stale (edited since last scored): dimmed, never zeroed --
+                  the last-known numbers stay on screen, only their
+                  freshness is in question. See DryRunDiffEntry.qualityStale's
+                  own doc comment. */}
+              <div className={cn(entry.qualityStale && 'opacity-50')}>
+                {/* key forces a remount on node switch -- QualityGauge owns
+                    its own expandedCategories state internally (which
+                    category disclosures are open); without a key, React
+                    reuses the same instance across different selected
+                    nodes and a category left expanded on entry A bleeds
+                    into entry B's identical-looking row. */}
+                <QualityGauge
+                  key={entry.localId}
+                  score={entry.qualityScore}
+                  categoryScores={entry.qualityCategoryScores}
+                  qualityIssues={entry.qualityIssues}
+                  previousScore={preRescoreSnapshot?.score}
+                  previousCategoryScores={preRescoreSnapshot?.categoryScores}
+                  previousIssues={preRescoreSnapshot?.issues}
+                />
+              </div>
+              {entry.qualityStale ? (
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-ink-3">
+                    {rescoring
+                      ? 'Re-scoring against the current wording. This takes a few seconds.'
+                      : 'Edited since this was scored. The numbers above are from before your change.'}
+                  </p>
+                  {onRescore && (
+                    <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
+                      {!rescoring && <RefreshCw className="h-3 w-3" />}
+                      {rescoring ? 'Re-checking…' : 'Re-check quality'}
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                preRescoreSnapshot && <p className="text-xs font-medium text-ok">Rescored.</p>
+              )}
+            </>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm text-ink-3">Not scored yet.</p>
+              {/* Reuses the exact same rescore action/backend route as the
+                  Stale state -- addDiffEntry hardcodes qualityScore: null
+                  for a manually-added item (jobs.service.ts), and
+                  rescoreDiffEntry's own guards (diff_ready, action ===
+                  'create', type === 'Requirement') never required a PRIOR
+                  score to exist, so a first-time score is additive, not a
+                  new backend capability. */}
+              {onRescore && canEdit && (
+                <Button variant="outline" size="sm" onClick={handleRescoreClick} loading={rescoring} className="flex-none">
+                  {!rescoring && <RefreshCw className="h-3 w-3" />}
+                  {rescoring ? 'Scoring…' : 'Score this item'}
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {/* DESIGN.md §11.4.1 -- in place of the absent gauge, an Epic/Feature
+          shows what it covers (real descendant counts from the diff tree,
+          computed by the caller) and states plainly why there is no score,
+          rather than leaving this slot silently empty. */}
+      {(entry.type === 'Epic' || entry.type === 'Feature') && (
+        <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
+          <span className="text-xs font-semibold text-ink-2">Scope</span>
+          <p className="text-sm text-ink-2">
+            {descendantCounts && (descendantCounts.features > 0 || descendantCounts.requirements > 0) ? (
+              <>
+                Covers {descendantCounts.features} feature{descendantCounts.features === 1 ? '' : 's'}, {descendantCounts.requirements}{' '}
+                requirement{descendantCounts.requirements === 1 ? '' : 's'}.
+              </>
+            ) : (
+              `No child items under this ${entry.type} yet.`
+            )}
+          </p>
+          <p className="text-xs text-ink-3">
+            {entry.type === 'Epic' ? 'Epics' : 'Features'} aren't scored — quality scoring judges how a requirement is worded, not what it covers.
+          </p>
         </div>
       )}
       {entry.traceLinks && entry.traceLinks.length > 0 && (
@@ -246,39 +414,38 @@ export function NodeDetailPanel({
         </div>
       )}
       {(entry.sourceRef ||
-        (jobMode === 'survey' && entry.action === 'create' && (entry.qualityScore != null || (kbCitations && kbCitations.length > 0)))) && (
+        (jobMode === 'survey' && entry.action === 'create' && (entry.type === 'Requirement' || (kbCitations && kbCitations.length > 0)))) && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Sources</span>
           {/* Document provenance -- computed server-side and shipped on
               every entry, previously never rendered anywhere. Available
-              regardless of mode/action (unlike the judged-against line
-              below, which is SURVEY/create-scoped); null for manually-added
+              regardless of mode/action (unlike the judged-against lines
+              below, which are SURVEY/create-scoped); null for manually-added
               entries, which have no source document position. */}
           {entry.sourceRef && (
             <p className="font-mono text-xs text-ink-3">{formatSourceRef(entry.sourceRef)}</p>
           )}
-          {/* Only claims a judgment actually happened for THIS node --
-              quality scoring is scoped to Requirement-type nodes (see
-              llm_leveling.py's own comment on this), so an Epic/Feature
-              node has qualityScore == null and gets no gauge above; this
-              line used to render unconditionally and claimed a rubric was
-              applied even when it wasn't. Also names the knowledge base
-              when it actually contributed, instead of always citing only
-              the three fixed public standards regardless of whether KB
-              grounding was used. */}
-          {entry.qualityScore != null && (
-            <p className="flex items-center gap-1 text-sm text-ink-2">
-              <span>
-                Judged against EARS, INCOSE, ISO/IEC/IEEE 29148
-                {kbCitations && kbCitations.length > 0 ? ', and your knowledge base' : ''}
-              </span>
-              {/* These three acronyms were previously unexplained anywhere
-                  in the app -- a Systems Engineer reviewing this tool may
-                  know their own domain standards (SOSA/VITA/MIL-STD) without
-                  knowing THESE requirement-writing/quality standards, which
-                  are internal to how req2ado itself judges quality. */}
-              <InfoTip content="EARS: a standard sentence pattern for writing unambiguous requirements. INCOSE: the systems-engineering professional body that publishes requirement-writing best practices. ISO/IEC/IEEE 29148: the international standard for requirements engineering this rubric is based on." />
-            </p>
+          {/* DESIGN.md §11.4.3 -- gated on the item's real ADO work-item
+              type (matching the gauge above), not on qualityScore presence
+              (see that block's own comment for why they're not the same
+              check). Copy is a REVERSAL, not a tune-up: an earlier version
+              of this line named EARS/INCOSE/ISO/IEC/IEEE 29148 with a
+              glossed InfoTip explaining each acronym -- customer feedback
+              was that the acronyms themselves, independent of whether they
+              came with an explanation, were the problem. No standard's
+              name appears anywhere below, glossed or not; do not
+              reintroduce one. */}
+          {entry.type === 'Requirement' && (
+            <>
+              <p className="text-sm text-ink-2">Scored on how the requirement is written — its wording, not its engineering content.</p>
+              <p className="text-xs text-ink-3">
+                The checklist follows established requirements-writing practice — the same checks a systems engineer would run by
+                hand.
+                {kbCitations && kbCitations.length > 0
+                  ? ` Your knowledge base contributed ${kbCitations.length} document${kbCitations.length === 1 ? '' : 's'}.`
+                  : ''}
+              </p>
+            </>
           )}
           {kbCitations && kbCitations.length > 0 && (
             <div className="mt-1">
