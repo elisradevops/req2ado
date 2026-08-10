@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
-import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist } from '../writeback/dry-run.service';
+import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { BackfillService } from '../writeback/backfill.service';
@@ -228,6 +228,18 @@ interface LeveledTraceLink {
   resolution_status: 'resolved' | 'unresolved' | 'pending';
 }
 
+// Mirrors ingestion's IntegrityWarning (shared/schemas/work-item-tree.schema.json,
+// generated as @req2ado/shared-ts's IntegrityWarning) -- kept as a local,
+// hand-annotated interface rather than importing the generated type
+// directly, same convention LeveledNode/LeveledTraceLink above already use.
+interface LeveledWarning {
+  kind: string;
+  severity: 'auto_fixed' | 'needs_review' | 'pipeline_issue';
+  node_ids: string[];
+  detail: Record<string, unknown>;
+  raw: string;
+}
+
 /**
  * The actual pipeline glue that Phases 1-7 never built: chains the real
  * ingestion service (/ingest -> /level, Phase 1/4) into Phase 7's
@@ -353,7 +365,7 @@ export async function runPipelineJob(
     // (common) "Default" wizard selection.
     const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id)) as {
       nodes: LeveledNode[];
-      warnings?: string[];
+      warnings?: LeveledWarning[];
       kb_citations?: { source_file: string; similarity: number; relevance: string }[];
       trace_links?: LeveledTraceLink[];
     };
@@ -510,14 +522,14 @@ export async function runPipelineJob(
     // own doc comment. Runs BEFORE the crossJob trace-link resolution below
     // so a stale match is already downgraded to 'create' in what that step
     // (and the Prisma write after it) both operate on.
-    const verificationWarnings: string[] = [];
+    const verificationWarnings: WarningRecord[] = [];
     const verifiedDiff = await verifyExistingAdoIdsStillExist(
       diff,
       (ids) => deps.mcpClient.getWorkItemsBatch(ids, credential),
       (message) => {
         // eslint-disable-next-line no-console -- operational visibility for a best-effort verification pass, not app logging
         console.error(`verifyExistingAdoIdsStillExist failed for job ${job.id}:`, message);
-        verificationWarnings.push(message);
+        verificationWarnings.push({ kind: 'ado_verification_failed', severity: 'pipeline_issue', nodeIds: [], detail: {}, raw: message });
       },
     );
     // Best-effort cleanup: a 'reuse' (exact-hash IdempotencyMapping) match
@@ -578,7 +590,12 @@ export async function runPipelineJob(
       data: {
         status: 'diff_ready',
         dryRunDiff: resolvedDiff as any,
-        warnings: [...(tree.warnings ?? []), ...verificationWarnings] as any,
+        warnings: [
+          ...(tree.warnings ?? []).map(
+            (w): WarningRecord => ({ kind: w.kind, severity: w.severity, nodeIds: w.node_ids, detail: w.detail, raw: w.raw }),
+          ),
+          ...verificationWarnings,
+        ] as any,
         kbCitations: (tree.kb_citations ?? []).map((c) => ({
           sourceFile: c.source_file,
           similarity: c.similarity,

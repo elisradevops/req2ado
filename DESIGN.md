@@ -1835,68 +1835,104 @@ per the project's `react-virtuoso` convention. Both are fed from the merged
 reconnect never makes counts appear to regress — see `docs/ui-progress-review.md`
 §4 for why that merge exists; do not undo it.
 
-#### §11.3.3 — `CollapsibleWarnings`: two-level disclosure, four taxonomies
+#### §11.3.3 — `CollapsibleWarnings`: two-level disclosure, severity-tiered
 
-This component (232 lines) had no spec slot at all in earlier revisions of this
-document. It is the screen's only amber surface and the only place a reviewer
-learns what the model may have **dropped**, so it needs one.
+**Closed §17 change.** This component previously grouped by a fixed four-way
+*taxonomy* (`dropped-block`/`external-reference`/`conflict`/`other`), with a
+flat `warnings: string[]` behind it. Both the grouping axis and the data shape
+changed: warnings are now structured records (ingestion's `IntegrityWarning`,
+mirrored as `WarningRecord` in `utils/warnings.ts` and orchestrator's
+`dry-run.service.ts`) carrying a `severity` — `auto_fixed` / `needs_review` /
+`pipeline_issue` — alongside the old free-form `kind` string. Severity, not
+kind, is now the primary grouping axis: the single most useful question a
+reviewer has about any given warning is *do I need to act on this at all*,
+which severity answers directly; kind (with its own tip, same as the old
+taxonomy tip) is the specific reason, shown as a sub-header within the open
+severity group, not a second independently-collapsible level. This also
+retires the "four taxonomies are fixed, do not add a fifth without §17" rule
+from the previous revision — `kind` is intentionally an open, string-typed
+vocabulary now (ingestion owns the closed enum, `app.workitem.model.WarningKind`),
+since it can grow without a matching frontend release; `kindMeta`'s fallback
+(`CollapsibleWarnings.tsx`) humanizes an unrecognized kind's own string rather
+than requiring a hardcoded entry to render at all.
 
 **Structure: two nested levels of disclosure, never a flat list.**
 
 1. **The summary row** — always visible, always collapsed on first render.
-   `ChevronRight`/`ChevronDown`, then `TriangleAlert`, then
-   `{n} integrity warning(s)`, then a dimmer clause: *"— document content SURVEY
-   may have dropped or couldn't place."* The count is the headline because it is
-   the only thing a reviewer needs before deciding whether to open it.
-2. **Per-taxonomy groups** — inside, one nested disclosure per kind that has at
-   least one member, each with its own glyph, title, count, and a `text-xs`
-   explanation shown on open. Grouping is the whole point: a flat list of
-   near-identical amber rows tells a reviewer *that* something happened but not
-   *why*, and a large document produces dozens.
+   `ChevronRight`/`ChevronDown`, then `{n} integrity warning(s)`, then a
+   dimmer clause built from the real severity counts present (e.g. *"— 12
+   fixed automatically, 3 need your review"*) instead of the old fixed
+   "document content SURVEY may have dropped or couldn't place" text, which
+   was never accurate for the auto-fixed/pipeline-issue kinds this revision
+   adds. The count is the headline because it is the only thing a reviewer
+   needs before deciding whether to open it.
+2. **Per-severity groups** — inside, one nested disclosure per severity tier
+   that has at least one member. Within an open tier, warnings are grouped by
+   `kind` (a `text-xs font-semibold` sub-header + count, then the tip, then
+   the list) — not independently collapsible, since the severity tier is
+   already the collapse boundary.
 
-**The four taxonomies are fixed. Do not add a fifth without §17.** Classification
-is by stable message prefix from `llm_leveling.py`'s own template set, not by
-parsing free-form LLM text.
+| Severity | Glyph | Title | Token family | What it means |
+|---|---|---|---|---|
+| `auto_fixed` | `CircleCheck` | Automatically fixed | `ok` (`bg-ok-soft`/`border-ok-border`/`text-ok-ink`) | Deterministic code already resolved it — a hierarchy repair, a synthesized grouping node, a safe fallback. No action needed. |
+| `needs_review` | `TriangleAlert` | Needs your review | `warning` | An AI/heuristic judgment call — a conflict, low grounding, an invalid reference dropped. Worth a human read. |
+| `pipeline_issue` | `CircleX` | Pipeline issue | `danger` | Something broke or was incomplete for this run — a scoring call failed, a section produced zero items. Re-running (optionally with a different model) is the general fix. |
 
-| Kind | Glyph | Title | What it means |
-|---|---|---|---|
-| `dropped-block` | `FileSearch` | Content the model may have dropped | A source block no generated item referenced, even in paraphrase. Often benign — structural labels, standalone captions. |
-| `external-reference` | `FileSearch` | References to documents not in your knowledge base | The source points at an artifact that was never ingested. Resolves by adding it to the KB. |
-| `conflict` | `TriangleAlert` | Near-duplicate items with conflicting values | Two items state different values for the same parameter. |
-| `other` | `Info` | Everything else | Truncation, invalid node type, dangling parent, low grounding, scoring failure. Each is rare enough that a dedicated group is not yet worth it — but they are grouped, not silently lost. |
+Icon/token choice deliberately mirrors `ui/Alert.tsx`'s own
+info/warning/success/error vocabulary (`CircleCheck`/`TriangleAlert`/`CircleX`,
+`ok`/`warning`/`danger` token families) rather than inventing a parallel one.
 
-`Info` for `other` and `TriangleAlert` for `conflict` is a deliberate rank
-split, per §2: `TriangleAlert` asserts risk, `Info` does not. Do not paint all
-four with the warning glyph.
+**Each warning is an exit, not a dead end.** A `near_duplicate_conflict`
+warning's `[localId: …]` tag is an internal reference for **this run only**
+and is never an ADO work-item number — the copy says so explicitly, because a
+reviewer reading it as a WI number will search ADO for an ID that does not
+exist. Any kind carrying `nodeIds` (not just conflicts) now gets one *Review*
+button per affected item, plus *View WI #N in Azure DevOps* shown only when
+the item genuinely already exists. Two real, closed gaps from the previous
+revision:
 
-**Each warning is an exit, not a dead end.** A `conflict` warning's
-`[localId: …]` tag is an internal reference for **this run only** and is never
-an ADO work-item number — the copy says so explicitly, because a reviewer
-reading it as a WI number will search ADO for an ID that does not exist. Two
-real affordances replace that guesswork: *Review item*, which jumps to the node
-in the diff tree (`setTab('tree')` + `setSelectedId`), and *View WI #N in Azure
-DevOps*, shown only when the item genuinely already exists. An
-`external-reference` group links straight to the knowledge base.
+- **Duplicated-looking buttons.** Every button used to read literally "Review
+  item →", so two or three sitting side by side looked like duplicated UI
+  even though each targeted a different item. Each button is now
+  disambiguated with the item's own title (`Review "Power supply efficiency" →`,
+  truncated past 40 chars), via a `titleByLocalId` lookup `JobDetail.tsx`
+  builds the same way it already builds `adoIdByLocalId`. Falls back to
+  `Review item {n} →` only when no title is known for that id.
+- **"Review item" didn't actually go anywhere.** The previous revision's own
+  claim here — "jumps to the node in the diff tree (`setTab('tree')` +
+  `setSelectedId`)" — was never true in effect: neither call scrolled the
+  target into view, expanded a collapsed ancestor, or opened anything.
+  `JobDetail.tsx`'s `onJumpToNode` now also calls `setDialogOpen(true)`,
+  matching `onOpenDetails` exactly, and `DiffTree.tsx` gained two
+  `useEffect`s keyed on `selectedId`: one expands any collapsed ancestor
+  (found via a new unfiltered `allRows` memo, kept separate from the
+  filtered/collapsed `rows` the list actually renders), the other calls
+  `listRef.current.scrollToItem(index, 'center')` once `rows` reflects that
+  expansion. The `.hoverable-row[aria-selected='true']` highlight (`bg-accent-soft`
+  + the accent rail, index.css) already existed and needed no change — the
+  gap was purely that nothing ever scrolled to or expanded the row wearing it.
+
+An `external_reference` group still links straight to the knowledge base.
+
+**Legacy back-compat.** A job persisted before this migration still has a
+literal `string[]` in its `Job.warnings` `Json?` column — no DB migration was
+run. `utils/warnings.ts`'s `normalizeWarning` reclassifies a plain string via
+the OLD prefix-matching rules (`dropped_blocks`/`external_reference`/
+`near_duplicate_conflict`/`other`), always to `severity: 'needs_review'`
+(never `auto_fixed` — defaulting to "no action needed" would suppress
+attention on content nobody actually classified) and tags it `legacy: true`,
+rendered as a dim "(from an older run)" suffix. The exact same function also
+normalizes live in-flight `chunk_warning` narration strings (`JobDetail.tsx`'s
+`liveWarnings`) — `narration_publisher.py`'s wire schema was **not** upgraded
+to carry structured records in this pass (a live warning still arrives as
+plain text while a job is running); doing so is a real, separate follow-up
+that touches the SSE payload shape on both ends.
 
 **The expand animation is a grid-rows transition, not a conditional unmount.**
 The body stays mounted at `grid-rows-[0fr]` and animates to `grid-rows-[1fr]`,
 because `grid-template-rows` is transitionable and `height: auto` is not. Keep
 this; it is the reason the disclosure animates at all. It respects §8.1 through
 the global reduced-motion rule.
-
-**Colour note — a real §16.1 violation, and a trivial one to close.**
-`CollapsibleWarnings` hardcodes its amber palette as literal hex rather than
-using the `warning` family. Three of the four values are **byte-identical** to
-tokens that already exist, so this is a find-and-replace, not a redesign:
-
-| Literal in the file | Token | Match |
-|---|---|---|
-| `#FDF6EC` | `--color-warning-soft` | exact |
-| `#EED8B4` | `--color-warning-border` | exact |
-| `#7A4F0B` | `--color-warning-ink` | exact |
-| `#9A6B1F` | — | no token. Used for the dimmer secondary clause. Either add `--color-warning-ink-dim` or render that text at `warning-ink` with reduced weight; do not keep the literal. |
-
-Logged in §18.1.
 ### §11.4 — The work-item detail dialog
 
 **Files:** `components/NodeDetailDialog.tsx` (the container),
@@ -2751,6 +2787,10 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | Quality card copy: gate badge deleted; plain-language sub-line; two-line provenance replacing the "Judged against…" line and its tooltip | `components/NodeDetailPanel.tsx:358-370` | **Closed — this §18.1 row was stale,** same CR-7b bookkeeping gap as the row above. Re-verified: no gate badge, no "Judged against" text anywhere in the file; the two-line provenance block (wording-only scope statement + established-practice/KB-citation-count line) is live. |
 | **Stage 1** — flags regrouped under the category bar they belong to, remedy text visible not tooltip-only; unmapped and KB-derived cases fall to an "Other flags" group | `utils/qualityCategories.ts`; `components/QualityGauge.tsx` | **Closed — this §18.1 row was stale,** same CR-7c bookkeeping gap. Re-verified: `issuesByCategory` regroup logic and the "Other flags" fallback section are both live in `QualityGauge.tsx`. |
 | Category rows become `grid-template-rows` disclosures (`aria-expanded`, closed by default, multiple open allowed, reset on `entry.localId`) | `components/QualityGauge.tsx` | **Closed — this §18.1 row was stale,** same CR-7c bookkeeping gap, but the "reset on `entry.localId`" clause was NOT actually true and is a real bug found while re-verifying this row (not a documentation-only gap like its siblings above). `CategoryRow`'s toggle button carries `aria-expanded`, the disclosure uses `grid-template-rows: 0fr→1fr`, and `expandedCategories` is a `Set` allowing multiple open — all real. But `QualityGauge` owns `expandedCategories` as its OWN internal state with no prop tying it to the selected entry, and `NodeDetailPanel.tsx` rendered it with no `key` — React reused the same component instance across different selected nodes, so a category left expanded on one Requirement stayed expanded when switching to a different one. **Fixed:** `key={entry.localId}` on the `<QualityGauge>` call site, forcing a real remount (and state reset) on every node switch. New regression test in `NodeDetailPanel.test.tsx`. |
+| **[1/3 — ingestion]** Flat `warnings: list[str]` → structured `IntegrityWarning` (`kind`/`severity`/`node_ids`/`detail`/`raw`), plus a `_finalize_warnings` grouping pass collapsing still-per-node emission sites (re-parented-to-Feature, front-matter-folded, low-grounding, etc.) into one summary record per group | `ingestion/app/workitem/model.py` (`IntegrityWarning`, `WarningKind`, `WarningSeverity`, `WARNING_SEVERITY` map); every emission site across `root_regrouping.py`, `llm_leveling.py`, `id_tree_builder.py`, `id_hierarchy.py`, `tree_builder.py`, `trace_links.py`, `scoring.py`, `conflict_detection.py`; new `leveling/warnings_finalize.py`; `shared/schemas/work-item-tree.schema.json` (`IntegrityWarning` definition) + regenerated `shared/ts` | **Closed, wording since revised — see the row below.** §11.3.3. Every site still building a per-occurrence message keeps computing a sentence, just wraps it in a structured record instead of appending the bare string (the sentence text itself was reworded in a follow-up pass, below); `_finalize_warnings` runs once, in `build_survey_tree`/`build_baseline_tree`, right before `WorkItemTree` construction — a single-occurrence group is returned byte-identical (no format change for the common case), a multi-occurrence group collapses to one regenerated summary. The one deliberate removal (not reclassification): the "N of M block(s) built deterministically" informational split — never actionable, never a defect signal — is dropped from `warnings` entirely rather than migrated. Real gap found and closed while auditing every `warnings.append` site for this migration: `id_tree_builder.py`'s title-tag/parent-summary/synthesis enhancement passes and `tree_builder.py`'s front-matter-fold warnings were still plain strings even though `llm_leveling.py`'s own sites had already been the ones motivating this row — all converted in the same pass, none left half-migrated. 6 new tests (`test_warnings_finalize.py`) + a new schema-conformance case (`test_worktree_schema_conformance.py`) proving a REAL non-empty `warnings` list validates, not just the empty-array fixtures every existing conformance test happened to produce. Full ingestion suite: 979/979. |
+| **[2/3 — orchestrator]** `WarningRecord` (camelCase) mirrors ingestion's `IntegrityWarning`; `Job.warnings` threaded as `(WarningRecord \| string)[]` | `orchestrator/src/modules/writeback/dry-run.service.ts` (`WarningRecord`); `pipeline.worker.ts` (`LeveledWarning` raw-wire type, mapped to `WarningRecord` before the `Job.update` write; `verifyExistingAdoIdsStillExist`'s `onError` string wrapped into a `kind: 'ado_verification_failed'` record at this same call site, not inside `dry-run.service.ts` itself); `jobs.service.ts`/`jobs.controller.ts` (`getById`/`getSummary` return types) | **Closed.** `ado_verification_failed` is deliberately absent from ingestion's own `WarningKind`/schema enum — it's the orchestrator's own post-processing addition, never present in a real `/level` response. No Prisma migration: `warnings` was already `Json?`; old rows keep their literal `string[]`, new rows get `WarningRecord[]`, both are valid `Json`. 3 new tests (`pipeline.worker.spec.ts` ×2, `jobs.service.spec.ts` ×1) proving the mapping and the verification-failure path both produce a structured record, not a string. Full orchestrator suite: 641/641, clean `nest build`. |
+| **[3/3 — frontend]** Severity-tiered `CollapsibleWarnings` (see §11.3.3's own rewrite) + `normalizeWarning`/`titleByLocalId` + the `DiffTree` `selectedId` navigation fix | `utils/warnings.ts` (new: `WarningRecord`, `normalizeWarning`); `components/CollapsibleWarnings.tsx` (full rewrite); `pages/JobDetail.tsx` (`mergedWarnings` now normalizes both `warnings` and `liveWarnings`; `titleByLocalId`; `onJumpToNode` opens the dialog); `components/DiffTree.tsx` (`allRows` memo, two `selectedId` effects) | **Closed.** §11.3.3. 11 tests in `CollapsibleWarnings.test.tsx` (rewritten), 5 in `warnings.test.ts` (new), 3 new in `DiffTree.test.tsx` (mocks `react-window`'s `FixedSizeList` via `vi.hoisted` to spy on `scrollToItem`, since the real component's virtualization has no observable jsdom effect otherwise). Full frontend suite: 452/452, clean `tsc -b && vite build`. |
+| **Follow-up, same day** — `raw` sentence wording still leaked ingestion's own internal identifiers (`det0_h9_3`, `f14`, `[localId: det0_h6_1_2_1]`) into user-facing text, even after the [1/3]-[3/3] structural migration above -- confirmed real gap, user-reported: severity/grouping was the right shape, but the actual prose was still unreadable to anyone who's never seen ingestion's own node-numbering scheme | Every per-node/per-section `raw`-building site across `root_regrouping.py`, `llm_leveling.py` (incl. `_referenced_attachment_warnings`, re-keyed on `section_label` instead of `node_id_prefix`), `scoring.py`, `tree_builder.py`, `conflict_detection.py`; `warnings_finalize.py`'s `_reparented_to_feature`/`_group_reparented` summary builders (now read a `*Title` detail key, not the raw id) | **Closed.** §11.3.3. Systematic substitution: a node/target reference in prose is now always its real `title` (quoted), never `local_id`/`temp_id`; a section reference is `_derive_section_label`'s real heading text (already computed for narration, just not threaded into these messages before), never `node_id_prefix`; a dropped figure/table reference is a count ("referenced 1 figure(s) not offered"), never the raw id list; the near-duplicate-conflict `[localId: ...]` tag is dropped from `raw` entirely now that the structured `node_ids` field (not text-parsing) drives the frontend's Review buttons — `CollapsibleWarnings.tsx`'s tip copy updated to match (no longer explains a tag that no longer appears). Table-group/heading-ID-offset messages were audited and left untouched -- their "ids" (`row.id_text`, a table's own dotted numbering) are the SOURCE DOCUMENT's real numbering, not ingestion's synthetic scheme, and are meaningful to a reviewer holding the original doc. `detail` payloads are unaffected (ids still live there for the UI's own navigation, just never surfaced as prose). 10 existing tests updated for the new wording, 979/979 ingestion suite green; frontend: tip-copy fix + fixture cleanup, 452/452 green. |
 
 ### §18.1 — Open migrations
 

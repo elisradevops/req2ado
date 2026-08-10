@@ -366,6 +366,37 @@ describe('JobDetail', () => {
     await waitFor(() => expect(container.querySelector('img')).toBeInTheDocument());
   });
 
+  it('refetches warnings and kbCitations when the SSE stream reaches diff_ready, not just status/diff/typeCatalog', async () => {
+    // Real bug (user-reported): the mount-time fetch runs while the job is
+    // still running, when warnings/kbCitations are still empty on the Job
+    // row -- both are written by the SAME pipeline.worker.ts update that
+    // sets dryRunDiff/status/workItemTypeCatalog once the job reaches
+    // diff_ready. The diff_ready refetch above already re-applies
+    // dryRunDiff/typeCatalog but previously dropped warnings/kbCitations on
+    // the floor, so the integrity warnings panel stayed empty until the
+    // user manually reloaded the page.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce({ id: 'job-27', status: 'running', mode: 'survey', dryRunDiff: null, warnings: [] } as any)
+      .mockResolvedValueOnce({
+        id: 'job-27',
+        status: 'diff_ready',
+        dryRunDiff: [],
+        warnings: [
+          { kind: 'low_grounding', severity: 'needs_review', nodeIds: [], detail: {}, raw: 'Some node has low grounding.' },
+        ],
+      } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage) => {
+      onStage('diff_ready');
+      return () => {};
+    });
+
+    renderAt('job-27');
+
+    await waitFor(() => expect(screen.getByText(/1 integrity warning/i)).toBeInTheDocument());
+  });
+
   it('gates the Confirm button on diff_ready status', async () => {
     vi.stubGlobal(
       'fetch',

@@ -68,7 +68,7 @@ def test_build_hierarchy_subtree_warns_when_a_fold_row_has_no_producing_ancestor
     rows = [_row("Orphan Fold", None, None, "1")]
     nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
     assert nodes == []
-    assert any("no node-producing ancestor" in w for w in warnings)
+    assert any("no node-producing ancestor" in w.raw for w in warnings)
 
 
 def test_build_hierarchy_subtree_leaves_epic_requirement_violation_for_caller_to_repair() -> None:
@@ -102,7 +102,7 @@ def test_repair_requirement_hierarchy_fixes_the_epic_requirement_violation_after
     requirement_node = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
     assert epic_node.type == WorkItemType.EPIC  # unchanged
     assert requirement_node.parent_local_id != epic_node.local_id  # re-parented away
-    assert any("re-parented" in w for w in warnings)
+    assert any("re-parented" in w.raw for w in warnings)
 
 
 def test_repair_requirement_hierarchy_keeps_a_real_epic_child_intact_in_a_mixed_case() -> None:
@@ -388,7 +388,7 @@ def test_apply_parent_summary_pass_is_fail_open() -> None:
 
     assert feature.title == original_title
     assert feature.description == original_description
-    assert any("failed" in w for w in warnings)
+    assert any("failed" in w.raw for w in warnings)
 
 
 def test_apply_parent_summary_pass_fires_chunk_warning_alongside_the_appended_warning() -> None:
@@ -408,7 +408,7 @@ def test_apply_parent_summary_pass_fires_chunk_warning_alongside_the_appended_wa
 
     assert len(fired) == 1
     assert fired[0].phase == "chunk_warning"
-    assert fired[0].warning_message == warnings[0]
+    assert fired[0].warning_message == warnings[0].raw
 
 
 def test_apply_parent_summary_pass_no_op_when_no_parent_ids() -> None:
@@ -431,7 +431,7 @@ def test_build_hierarchy_subtree_title_tag_client_is_fail_open() -> None:
     nodes, warnings = build_hierarchy_subtree(rows, "det0_", None, RaisingClient())
     assert len(nodes) == 1
     assert nodes[0].tags == []
-    assert any("failed" in w for w in warnings)
+    assert any("failed" in w.raw for w in warnings)
 
 
 def test_build_hierarchy_subtree_title_tag_failure_fires_chunk_warning() -> None:
@@ -445,7 +445,7 @@ def test_build_hierarchy_subtree_title_tag_failure_fires_chunk_warning() -> None
 
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
-    assert chunk_warnings[0].warning_message == warnings[0]
+    assert chunk_warnings[0].warning_message == warnings[0].raw
 
 
 def test_build_hierarchy_subtree_synthesizes_a_flagged_fragment_leaf() -> None:
@@ -487,7 +487,7 @@ def test_build_hierarchy_subtree_synthesis_is_fail_open() -> None:
     )
     assert len(nodes) == 1
     assert nodes[0].description == 'Size: 3U 1"'  # kept verbatim, exactly as constructed
-    assert any("synthesis" in w.lower() and "failed" in w.lower() for w in warnings)
+    assert any("synthesis" in w.raw.lower() and "failed" in w.raw.lower() for w in warnings)
 
 
 def test_build_hierarchy_subtree_synthesis_failure_fires_chunk_warning() -> None:
@@ -503,7 +503,7 @@ def test_build_hierarchy_subtree_synthesis_failure_fires_chunk_warning() -> None
 
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
-    assert chunk_warnings[0].warning_message == warnings[0]
+    assert chunk_warnings[0].warning_message == warnings[0].raw
 
 
 def test_build_hierarchy_subtree_never_synthesizes_a_non_flagged_leaf() -> None:

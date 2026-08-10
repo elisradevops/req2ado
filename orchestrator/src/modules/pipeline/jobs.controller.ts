@@ -29,6 +29,7 @@ import { LlmProxyBearerGuard } from '../llm/llm-proxy-bearer.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
+import type { WarningRecord } from '../writeback/dry-run.service';
 import { Public } from '../auth/public.decorator';
 
 // Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
@@ -262,7 +263,7 @@ export class JobsController {
     status: string;
     mode: string;
     dryRunDiff: unknown;
-    warnings: string[];
+    warnings: (WarningRecord | string)[];
     kbCitations: unknown;
     figureDescriptions: { figureIndex: number; caption: string }[];
     createdAt: Date;
@@ -460,7 +461,7 @@ export class JobsController {
   async getSummary(
     @Param('id') id: string,
     @CurrentUser() user: SessionUser,
-  ): Promise<{ created: number; reused: number; dedupSkipped: number; flagged: number; warnings: string[] }> {
+  ): Promise<{ created: number; reused: number; dedupSkipped: number; flagged: number; warnings: (WarningRecord | string)[] }> {
     await this.ownedJob(id, user);
     const summary = await this.jobsService.getSummary(id);
     if (!summary) {

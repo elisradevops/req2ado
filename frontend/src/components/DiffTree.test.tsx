@@ -1,8 +1,40 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { forwardRef } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { DiffTree } from './DiffTree';
 import type { DryRunDiffEntry } from './DiffTree';
+
+// Real react-window virtualizes by measured container height, which jsdom
+// reports as 0 -- fine for every other test here (small fixtures still fit
+// the FALLBACK_LIST_HEIGHT window), but scrollToItem is an imperative
+// method on the real FixedSizeList instance with no observable DOM effect
+// in jsdom, so the only way to assert DiffTree actually CALLS it (the bug
+// this fixes: "Review item" never scrolled/highlighted its target) is to
+// substitute a minimal stub exposing a spy-able scrollToItem and rendering
+// every item unconditionally (no virtualization needed for these tiny
+// fixtures). vi.hoisted is required here -- vi.mock factories are hoisted
+// above regular imports/consts, so a plain outer `const` would throw a
+// use-before-initialization error.
+const { scrollToItem } = vi.hoisted(() => ({ scrollToItem: vi.fn() }));
+
+vi.mock('react-window', () => ({
+  FixedSizeList: forwardRef<
+    { scrollToItem: typeof scrollToItem },
+    { itemCount: number; children: (args: { index: number; style: CSSProperties }) => ReactNode }
+  >((props, ref) => {
+    if (typeof ref === 'function') ref({ scrollToItem });
+    else if (ref) ref.current = { scrollToItem };
+    return (
+      <div>
+        {Array.from({ length: props.itemCount }, (_, index) => (
+          <div key={index}>{props.children({ index, style: {} })}</div>
+        ))}
+      </div>
+    );
+  }),
+}));
 
 const ENTRIES: DryRunDiffEntry[] = [
   { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root Epic', description: '', action: 'create', customerId: null, tags: [] },
@@ -146,6 +178,42 @@ describe('DiffTree', () => {
     onSelect.mockClear();
     await userEvent.keyboard('{ArrowUp}');
     expect(onSelect).toHaveBeenCalledWith('e1');
+  });
+});
+
+describe('DiffTree selectedId navigation (jump-to-node from outside the tree)', () => {
+  beforeEach(() => {
+    scrollToItem.mockClear();
+  });
+
+  // Real gap this closes (user-reported): CollapsibleWarnings' "Review
+  // item ->" button only ever set selectedId -- if the target's ancestor
+  // chain was collapsed, the row never rendered at all and the click
+  // looked like it did nothing.
+  it('auto-expands a collapsed ancestor when selectedId changes to one of its descendants, then scrolls it into view', async () => {
+    const { rerender } = render(
+      <DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /collapse root epic/i }));
+    expect(screen.queryByText('Child Feature')).not.toBeInTheDocument();
+    scrollToItem.mockClear(); // isolate the assertion below from any scroll the collapse click itself triggered
+
+    rerender(<DiffTree entries={ENTRIES} selectedId="f1" onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+
+    expect(screen.getByText('Child Feature')).toBeInTheDocument(); // ancestor (e1) auto-expanded
+    expect(scrollToItem).toHaveBeenCalledWith(1, 'center'); // e1=0, f1=1 once expanded
+  });
+
+  it('scrolls to the selected row even when no ancestor needs expanding', () => {
+    render(<DiffTree entries={ENTRIES} selectedId="orphan1" onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+
+    expect(scrollToItem).toHaveBeenCalledWith(2, 'center'); // e1=0, f1=1, orphan1=2
+  });
+
+  it('does not scroll when selectedId is null', () => {
+    render(<DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+
+    expect(scrollToItem).not.toHaveBeenCalled();
   });
 });
 

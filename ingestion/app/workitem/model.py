@@ -212,13 +212,130 @@ class WorkItemNode(BaseModel):
     needs_synthesis: bool = Field(default=False, exclude=True)
 
 
+class WarningSeverity(str, Enum):
+    """How a reviewer should treat an IntegrityWarning. auto_fixed:
+    deterministic code already resolved it, no action needed. needs_review:
+    an AI/heuristic judgment call a human should verify. pipeline_issue:
+    something broke or was incomplete for this run -- re-running (optionally
+    with a different model) is the general fix."""
+
+    AUTO_FIXED = "auto_fixed"
+    NEEDS_REVIEW = "needs_review"
+    PIPELINE_ISSUE = "pipeline_issue"
+
+
+class WarningKind(str, Enum):
+    """Closed vocabulary of integrity-warning kinds a WorkItemTree can carry.
+    Severity is a pure function of kind (see WARNING_SEVERITY below) --
+    never set ad hoc at an emission site, so the mapping stays auditable in
+    one place. ADO_VERIFICATION_FAILED is never emitted here -- it's the
+    orchestrator's own (TypeScript-side) kind, listed for parity with its
+    mirrored WarningRecord type."""
+
+    REPARENTED_TO_FEATURE = "reparented_to_feature"
+    GROUP_REPARENTED = "group_reparented"
+    BRIDGE_FEATURE_SYNTHESIZED = "bridge_feature_synthesized"
+    ROOTS_REGROUPED = "roots_regrouped"
+    CATCHALL_EPIC_WRAP = "catchall_epic_wrap"
+    NEAR_DUPLICATE_CONFLICT = "near_duplicate_conflict"
+    OUTPUT_TRUNCATED = "output_truncated"
+    NO_MODEL_TITLE = "no_model_title"
+    INVALID_FIGURE_IDS = "invalid_figure_ids"
+    INVALID_TABLE_IDS = "invalid_table_ids"
+    INVALID_NODE_TYPE = "invalid_node_type"
+    DANGLING_PARENT = "dangling_parent"
+    LOW_GROUNDING = "low_grounding"
+    ZERO_NODES = "zero_nodes"
+    DROPPED_BLOCKS = "dropped_blocks"
+    MISSING_TABLE_GROUP_COVERAGE = "missing_table_group_coverage"
+    EXTERNAL_REFERENCE = "external_reference"
+    SCORING_FAILED = "scoring_failed"
+    SCORING_MISSING = "scoring_missing"
+    SCORING_INCONSISTENT_CATEGORIES = "scoring_inconsistent_categories"
+    ADO_VERIFICATION_FAILED = "ado_verification_failed"
+    # Deterministic-hierarchy path (id_tree_builder.py) title/tag,
+    # parent-summary, and requirement-synthesis enhancement passes -- all
+    # three share these two kinds (see `detail["pass"]` for which one),
+    # rather than one kind per pass, since the failure mode and reviewer
+    # action are identical across all three.
+    ENHANCEMENT_CALL_FAILED = "enhancement_call_failed"
+    ENHANCEMENT_RESPONSE_INCOMPLETE = "enhancement_response_incomplete"
+    DROPPED_ROW = "dropped_row"
+    FRONT_MATTER_FOLDED = "front_matter_folded"
+    TRACE_LINK_INFERENCE_FAILED = "trace_link_inference_failed"
+    HEADING_ID_OFFSET_MISMATCH = "heading_id_offset_mismatch"
+
+
+WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
+    WarningKind.REPARENTED_TO_FEATURE: WarningSeverity.AUTO_FIXED,
+    WarningKind.GROUP_REPARENTED: WarningSeverity.AUTO_FIXED,
+    WarningKind.BRIDGE_FEATURE_SYNTHESIZED: WarningSeverity.AUTO_FIXED,
+    WarningKind.ROOTS_REGROUPED: WarningSeverity.AUTO_FIXED,
+    WarningKind.CATCHALL_EPIC_WRAP: WarningSeverity.AUTO_FIXED,
+    WarningKind.NEAR_DUPLICATE_CONFLICT: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.OUTPUT_TRUNCATED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.NO_MODEL_TITLE: WarningSeverity.AUTO_FIXED,
+    WarningKind.INVALID_FIGURE_IDS: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.INVALID_TABLE_IDS: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.INVALID_NODE_TYPE: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.DANGLING_PARENT: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.LOW_GROUNDING: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.ZERO_NODES: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.DROPPED_BLOCKS: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.MISSING_TABLE_GROUP_COVERAGE: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.EXTERNAL_REFERENCE: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.SCORING_FAILED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.SCORING_MISSING: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.SCORING_INCONSISTENT_CATEGORIES: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.ADO_VERIFICATION_FAILED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.ENHANCEMENT_CALL_FAILED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE: WarningSeverity.AUTO_FIXED,
+    WarningKind.DROPPED_ROW: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.FRONT_MATTER_FOLDED: WarningSeverity.AUTO_FIXED,
+    WarningKind.TRACE_LINK_INFERENCE_FAILED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.HEADING_ID_OFFSET_MISMATCH: WarningSeverity.NEEDS_REVIEW,
+}
+
+
+class IntegrityWarning(BaseModel):
+    """A single structured integrity signal surfaced to a human reviewer.
+    Named IntegrityWarning (not `Warning`) to avoid shadowing the builtin.
+    `raw` is the fully-formed human sentence -- always populated, so a
+    client that doesn't recognize `kind` yet (or a legacy plain-string
+    warning normalized on read by the frontend) can still show something
+    sane. Construct via `make()`, never set `severity` directly, so
+    WARNING_SEVERITY stays the single source of truth for the mapping."""
+
+    kind: WarningKind
+    severity: WarningSeverity
+    node_ids: list[str] = Field(default_factory=list)
+    detail: dict = Field(default_factory=dict)
+    raw: str
+
+    @classmethod
+    def make(
+        cls,
+        kind: WarningKind,
+        raw: str,
+        node_ids: list[str] | None = None,
+        detail: dict | None = None,
+    ) -> "IntegrityWarning":
+        return cls(
+            kind=kind,
+            severity=WARNING_SEVERITY[kind],
+            node_ids=node_ids or [],
+            detail=detail or {},
+            raw=raw,
+        )
+
+
 class WorkItemTree(BaseModel):
     nodes: list[WorkItemNode] = Field(default_factory=list)
     # Non-fatal integrity signals surfaced to a human reviewer -- e.g.
     # SURVEY's LLM output covering noticeably fewer/more nodes than the
     # source document had blocks (see build_survey_tree's sanity check).
     # Always [] for BASELINE, which has no LLM step to produce a mismatch.
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[IntegrityWarning] = Field(default_factory=list)
     # Source document excerpts (SharePoint/OneDrive KB, see app/kb/) cited
     # while formalizing this tree's requirements -- whole-document, not
     # per-node, mirroring trace_links below.

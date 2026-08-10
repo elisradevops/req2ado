@@ -264,14 +264,13 @@ def test_build_survey_tree_warns_when_analysis_drops_most_of_the_document() -> N
     )
     tree = build_survey_tree(doc, fake)
     assert len(tree.warnings) == 1
-    assert "did not reference 4 of 5 source block(s)" in tree.warnings[0]
-    assert "[1, 2, 3, 4]" in tree.warnings[0]
+    assert "did not reference 4 of 5 source block(s)" in tree.warnings[0].raw
     # Regression: a bare index list forced a reviewer to go dig up the raw
     # parsed document to judge whether a dropped block was a real loss or
-    # benign non-requirement content -- a text preview per index answers
-    # that right in the warning itself.
-    assert '[1] "The receiver shall log all firmware errors."' in tree.warnings[0]
-    assert '[4] "The battery shall charge fully within two hours."' in tree.warnings[0]
+    # benign non-requirement content -- a text preview per block answers
+    # that right in the warning itself, with no internal index/id exposed.
+    assert '"The receiver shall log all firmware errors."' in tree.warnings[0].raw
+    assert '"The battery shall charge fully within two hours."' in tree.warnings[0].raw
 
 
 def test_build_survey_tree_does_not_warn_when_a_dropped_blocks_content_was_merged_elsewhere() -> None:
@@ -364,8 +363,11 @@ def test_build_survey_tree_falls_back_dangling_parent_temp_id_to_root_and_warns(
     assert len(tree.nodes) == 2
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n1"].parent_local_id == "n0"  # repaired under the real Feature, not left orphaned
-    assert any("does-not-exist" in w and "attached as section root" in w for w in tree.warnings)
-    assert any("re-parented under Feature n0" in w for w in tree.warnings)
+    assert any(
+        '"Orphan requirement."' in w.raw and "attached as a root of this section instead" in w.raw
+        for w in tree.warnings
+    )
+    assert any('re-parented under Feature "Root requirement."' in w.raw for w in tree.warnings)
 
 
 def test_survey_tree_nodes_have_survey_mode_and_real_fidelity_hash() -> None:
@@ -410,7 +412,7 @@ def test_build_survey_tree_falls_back_to_description_derived_title_when_model_om
     )
     tree = build_survey_tree(_small_doc(), fake)
     assert tree.nodes[0].title == "The system shall power on."
-    assert any("had no model title" in w for w in tree.warnings)
+    assert any("had no model title" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_truncates_an_overlong_model_title() -> None:
@@ -773,7 +775,7 @@ def test_build_survey_tree_builds_the_group_deterministically_regardless_of_llm_
     )
     tree = build_survey_tree(doc, fake)
     assert any(n.title == "External Source Detection" for n in tree.nodes)
-    assert not any("did not produce a distinctly-titled node" in w for w in tree.warnings)
+    assert not any("did not produce a distinctly-titled node" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_does_not_warn_when_a_qualifying_group_did_become_a_node() -> None:
@@ -799,7 +801,7 @@ def test_build_survey_tree_does_not_warn_when_a_qualifying_group_did_become_a_no
         ]
     )
     tree = build_survey_tree(doc, fake)
-    assert not any("did not produce a distinctly-titled node" in w for w in tree.warnings)
+    assert not any("did not produce a distinctly-titled node" in w.raw for w in tree.warnings)
 
 
 def test_repair_group_attachment_resolves_the_correct_parent_despite_common_word_ambiguity() -> None:
@@ -841,7 +843,7 @@ def test_repair_group_attachment_resolves_the_correct_parent_despite_common_word
     mute_node = next(n for n in nodes if n.title == "Mute Behavior")
     audio_control_node = next(n for n in nodes if n.title == "Audio Control Settings")
     assert mute_node.parent_local_id == audio_control_node.local_id
-    assert any("attached under the wrong ancestor" in w for w in warnings)
+    assert any("attached under the wrong ancestor" in w.raw for w in warnings)
 
 
 def test_repair_group_attachment_repairs_a_group_attached_to_the_wrong_ancestor() -> None:
@@ -873,7 +875,7 @@ def test_repair_group_attachment_repairs_a_group_attached_to_the_wrong_ancestor(
     mute_node = next(n for n in nodes if n.title == "Mute Behavior")
     audio_control_node = next(n for n in nodes if n.title == "Audio Control")
     assert mute_node.parent_local_id == audio_control_node.local_id
-    assert any("attached under the wrong ancestor" in w for w in warnings)
+    assert any("attached under the wrong ancestor" in w.raw for w in warnings)
 
 
 def test_build_survey_tree_does_not_repair_attachment_when_already_correct() -> None:
@@ -903,7 +905,7 @@ def test_build_survey_tree_does_not_repair_attachment_when_already_correct() -> 
         ]
     )
     tree = build_survey_tree(doc, fake)
-    assert not any("attached under the wrong ancestor" in w for w in tree.warnings)
+    assert not any("attached under the wrong ancestor" in w.raw for w in tree.warnings)
 
 
 def test_repair_group_attachment_does_not_repair_when_correct_parent_node_is_missing() -> None:
@@ -930,7 +932,7 @@ def test_repair_group_attachment_does_not_repair_when_correct_parent_node_is_mis
     volume_control_node = next(n for n in nodes if n.title == "Adjust Volume Level")
     # Left exactly where the model put it -- no repair attempted.
     assert mute_node.parent_local_id == volume_control_node.local_id
-    assert not any("attached under the wrong ancestor" in w for w in warnings)
+    assert not any("attached under the wrong ancestor" in w.raw for w in warnings)
 
 
 def test_group_label_became_a_node_is_not_fooled_by_a_single_common_word() -> None:
@@ -1151,10 +1153,12 @@ def test_build_survey_tree_warns_when_a_non_empty_branch_produces_zero_nodes(mon
     _force_multi_branch(monkeypatch)
     fake = FakeSectionAnalysisClient(nodes=[])
     tree = build_survey_tree(_two_branch_doc(), fake)
-    zero_node_warnings = [w for w in tree.warnings if "produced 0 work items" in w]
+    zero_node_warnings = [w for w in tree.warnings if "produced 0 work items" in w.raw]
     assert len(zero_node_warnings) == 2  # both branches returned zero nodes
-    assert "br0" in zero_node_warnings[0]
-    assert "br1" in zero_node_warnings[1]
+    # Section labels, not internal branch ids ("br0"/"br1") -- see
+    # _two_branch_doc's own fixture headings.
+    assert "Display" in zero_node_warnings[0].raw
+    assert "Audio" in zero_node_warnings[1].raw
 
 
 def test_build_survey_tree_does_not_warn_about_zero_nodes_when_a_branch_genuinely_has_none(monkeypatch) -> None:
@@ -1163,7 +1167,7 @@ def test_build_survey_tree_does_not_warn_about_zero_nodes_when_a_branch_genuinel
     _force_multi_branch(monkeypatch)
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(_two_branch_doc(), fake)
-    assert not any("produced 0 work items" in w for w in tree.warnings)
+    assert not any("produced 0 work items" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_does_not_warn_about_tables_on_the_single_branch_path() -> None:
@@ -1324,7 +1328,7 @@ def test_build_survey_tree_flags_a_generated_description_unrelated_to_its_source
     )
     tree = build_survey_tree(_small_doc(), fake)
     assert any(node.grounding_score is not None and node.grounding_score < 0.2 for node in tree.nodes)
-    assert any("low grounding" in w for w in tree.warnings)
+    assert any("low grounding" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_grounds_against_the_whole_rendered_section() -> None:
@@ -1519,7 +1523,7 @@ def test_build_survey_tree_requirement_scoring_failure_is_caught_and_warned() ->
 
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n1"].quality_score is None  # failed -- but the job itself did not fail
-    assert any("Requirement quality scoring failed" in w for w in tree.warnings)
+    assert any("Requirement quality scoring failed" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_requirement_scoring_failure_fires_chunk_warning() -> None:
@@ -1537,7 +1541,7 @@ def test_build_survey_tree_requirement_scoring_failure_fires_chunk_warning() -> 
 
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
-    assert chunk_warnings[0].warning_message in tree.warnings
+    assert any(chunk_warnings[0].warning_message == w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_epic_feature_scoring_is_a_noop_without_scoring_client() -> None:
@@ -1558,7 +1562,7 @@ def test_build_survey_tree_epic_feature_scoring_failure_is_caught_and_warned() -
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n0"].quality_score is None  # failed -- but the job itself did not fail
     assert by_id["n1"].quality_score == 90  # Requirement scoring, a separate call, is unaffected
-    assert any("Epic/Feature quality scoring failed" in w for w in tree.warnings)
+    assert any("Epic/Feature quality scoring failed" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_epic_feature_scoring_failure_fires_chunk_warning() -> None:
@@ -1574,7 +1578,7 @@ def test_build_survey_tree_epic_feature_scoring_failure_fires_chunk_warning() ->
 
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
-    assert chunk_warnings[0].warning_message in tree.warnings
+    assert any(chunk_warnings[0].warning_message == w.raw for w in tree.warnings)
 
 
 def test_apply_quality_scores_missing_score_fires_chunk_warning() -> None:
@@ -1590,10 +1594,10 @@ def test_apply_quality_scores_missing_score_fires_chunk_warning() -> None:
 
     _apply_quality_scores(nodes, _EmptyScoringClient(), warnings, "", progress_callback=fired.append)
 
-    assert "returned no valid score" in warnings[0]
+    assert "returned no valid score" in warnings[0].raw
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
-    assert chunk_warnings[0].warning_message == warnings[0]
+    assert chunk_warnings[0].warning_message == warnings[0].raw
 
 
 def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> None:
@@ -1612,10 +1616,10 @@ def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> N
 
     _apply_quality_scores(nodes, _InconsistentCategoriesClient(), warnings, "", progress_callback=fired.append)
 
-    assert any("inconsistent categoryScores" in w for w in warnings)
+    assert any("2 different sets of category names" in w.raw for w in warnings)
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
-    assert "inconsistent categoryScores" in chunk_warnings[0].warning_message
+    assert "2 different sets of category names" in chunk_warnings[0].warning_message
 
 
 def test_build_survey_tree_captures_the_raw_response_when_epic_feature_scoring_fails() -> None:
@@ -1771,7 +1775,7 @@ def test_build_survey_tree_falls_back_to_none_for_a_missing_or_malformed_score_a
 
     for node in tree.nodes:
         assert node.quality_score is None
-    assert any("no valid score" in w for w in tree.warnings)
+    assert any("no valid score" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_rejects_boolean_score_values() -> None:
@@ -1824,7 +1828,7 @@ def test_build_survey_tree_defaults_an_invalid_analysis_type_to_requirement() ->
     tree = build_survey_tree(_small_doc(), fake)
     assert len(tree.nodes) == 1
     assert tree.nodes[0].type == WorkItemType.REQUIREMENT
-    assert any("invalid type" in w for w in tree.warnings)
+    assert any("invalid type" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_without_area_path_skips_retrieval_entirely() -> None:
@@ -2650,7 +2654,7 @@ def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises()
     )
     assert tree.trace_links == []
     assert len(tree.nodes) == 2  # analysis output is unaffected
-    assert any("Trace/coverage link inference failed" in w for w in tree.warnings)
+    assert any("Trace/coverage link inference failed" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_captures_the_raw_response_when_trace_link_inference_fails() -> None:
@@ -3060,7 +3064,7 @@ def test_build_survey_tree_drops_a_hallucinated_table_id_and_warns() -> None:
     node = tree.nodes[0]
     assert node.table_ids == []
     assert "<table>" not in node.description
-    assert any("t99" in w for w in tree.warnings)
+    assert any('"t" referenced 1 table(s) not offered in this section' in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_records_figure_ids_named_by_the_model() -> None:
@@ -3097,7 +3101,7 @@ def test_build_survey_tree_drops_a_hallucinated_figure_id_and_warns() -> None:
     )
     tree = build_survey_tree(doc, fake)
     assert tree.nodes[0].figure_ids == []
-    assert any("f99" in w for w in tree.warnings)
+    assert any('"t" referenced 1 figure(s) not offered in this section' in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_scopes_table_ids_validation_per_branch(monkeypatch) -> None:
@@ -3181,12 +3185,12 @@ def test_build_survey_tree_warns_on_a_referenced_attachment_it_did_not_ingest() 
         nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "See ReqID 12345 for the full connector pinout.", "tags": []}]
     )
     tree = build_survey_tree(doc, fake)
-    assert any("ReqID 12345" in w and "did not ingest" in w for w in tree.warnings)
+    assert any("ReqID 12345" in w.raw and "did not ingest" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_does_not_warn_on_a_section_with_no_attachment_references() -> None:
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
-    assert not any("did not ingest" in w for w in tree.warnings)
+    assert not any("did not ingest" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_warns_on_an_unfilled_reqid_placeholder() -> None:
@@ -3207,7 +3211,7 @@ def test_build_survey_tree_warns_on_an_unfilled_reqid_placeholder() -> None:
     tree = build_survey_tree(doc, fake)
     # The match itself is bare "ReqID" (no trailing digits to capture from
     # the unfilled "XXXX" placeholder) -- still enough to flag the section.
-    assert any("ReqID" in w and "did not ingest" in w for w in tree.warnings)
+    assert any("ReqID" in w.raw and "did not ingest" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_does_not_double_report_a_block_as_both_dropped_and_referenced() -> None:
@@ -3229,8 +3233,8 @@ def test_build_survey_tree_does_not_double_report_a_block_as_both_dropped_and_re
         nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "An unrelated requirement.", "tags": []}]
     )
     tree = build_survey_tree(doc, fake)
-    assert any("did not ingest" in w for w in tree.warnings)
-    assert not any("did not reference" in w for w in tree.warnings)
+    assert any("did not ingest" in w.raw for w in tree.warnings)
+    assert not any("did not reference" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_produces_a_non_empty_tree_for_a_table_only_xlsx_doc() -> None:
@@ -3345,7 +3349,7 @@ def test_build_survey_tree_reparents_a_requirement_directly_under_an_epic() -> N
     by_id = {node.local_id: node for node in tree.nodes}
     assert len(tree.nodes) == 3  # re-parented, not synthesized -- a real Feature (n1) was available
     assert by_id["n2"].parent_local_id == "n1"
-    assert any("re-parented under Feature n1" in w for w in tree.warnings)
+    assert any('re-parented under Feature "A capability."' in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_keeps_a_child_requirement_parented_under_its_requirement() -> None:
@@ -3366,7 +3370,7 @@ def test_build_survey_tree_keeps_a_child_requirement_parented_under_its_requirem
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n1"].parent_local_id == "n0"
     assert by_id["n2"].parent_local_id == "n1"  # child Requirement preserved, not re-parented
-    assert not any("re-parented" in w for w in tree.warnings)
+    assert not any("re-parented" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_reparents_a_requirement_chain_that_bypasses_every_feature() -> None:
@@ -3389,7 +3393,7 @@ def test_build_survey_tree_reparents_a_requirement_chain_that_bypasses_every_fea
     assert by_id["n2"].parent_local_id == "n1"
     # n3 (parented under n2, now a Requirement -- valid) is untouched.
     assert by_id["n3"].parent_local_id == "n2"
-    assert any("re-parented under Feature n1" in w for w in tree.warnings)
+    assert any('re-parented under Feature "A capability."' in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_synthesizes_a_feature_when_no_real_feature_exists_at_all() -> None:
@@ -3411,7 +3415,7 @@ def test_build_survey_tree_synthesizes_a_feature_when_no_real_feature_exists_at_
     # Both requirements land under the SAME synthesized Feature, not one each.
     assert by_id["n0"].parent_local_id == synthesized[0].local_id
     assert by_id["n1"].parent_local_id == synthesized[0].local_id
-    assert any("inserted a synthesized grouping Feature" in w for w in tree.warnings)
+    assert any("inserted a grouping Feature" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_does_not_touch_an_already_valid_hierarchy() -> None:
@@ -3428,7 +3432,7 @@ def test_build_survey_tree_does_not_touch_an_already_valid_hierarchy() -> None:
     assert len(tree.nodes) == 3
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n2"].parent_local_id == "n1"
-    assert not any("re-parented" in w or "synthesized" in w for w in tree.warnings)
+    assert not any("re-parented" in w.raw or "synthesized" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_does_not_touch_a_genuinely_sole_root_requirement() -> None:
@@ -3443,7 +3447,7 @@ def test_build_survey_tree_does_not_touch_a_genuinely_sole_root_requirement() ->
     tree = build_survey_tree(_small_doc(), fake)
     assert len(tree.nodes) == 1
     assert tree.nodes[0].parent_local_id is None
-    assert not any("re-parented" in w or "synthesized" in w for w in tree.warnings)
+    assert not any("re-parented" in w.raw or "synthesized" in w.raw for w in tree.warnings)
 
 
 def test_build_survey_tree_synthesizes_one_feature_shared_by_three_root_requirements() -> None:
@@ -3613,7 +3617,9 @@ def test_build_survey_tree_never_calls_the_llm_for_a_pure_deterministic_document
 
     tree = build_survey_tree(_structural_heading_doc(), ExplodingClient())
     assert len(tree.nodes) == 6
-    assert any("no language-model analysis was needed" in w for w in tree.warnings)
+    # The det/LLM content-split informational message was removed (not
+    # actionable, not a defect signal) -- ExplodingClient's own raise is
+    # this test's real proof the LLM path was never invoked.
 
 
 def test_build_survey_tree_merges_deterministic_and_llm_nodes_as_sibling_roots() -> None:
@@ -3646,7 +3652,6 @@ def test_build_survey_tree_merges_deterministic_and_llm_nodes_as_sibling_roots()
     llm_root = next(n for n in tree.nodes if n.title == "Display")
     assert det_root.parent_local_id is None
     assert llm_root.parent_local_id is None
-    assert any("were built deterministically" in w for w in tree.warnings)
 
 
 def test_build_survey_tree_retrieves_kb_context_on_the_pure_deterministic_path() -> None:
@@ -3712,7 +3717,7 @@ def test_build_survey_tree_is_a_true_no_op_when_nothing_qualifies() -> None:
     doc = _small_doc()
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(doc, fake)
-    assert not any("built deterministically" in w for w in tree.warnings)
+    assert tree.warnings == []
 
 
 # ---------------------------------------------------------------------------
@@ -3767,18 +3772,18 @@ def test_detect_conflicting_duplicates_flags_a_contradictory_cluster() -> None:
 
     assert len(conflict_client.calls) == 1
     assert set(conflict_client.calls[0].keys()) == {"n0", "n1"}
-    assert any("conflicting values" in w for w in warnings)
+    assert any("conflicting values" in w.raw for w in warnings)
     for node in nodes:
         assert RequirementQualityIssue.CONFLICTING_VALUE in node.quality_issues
     # Confirmed real gap (user-reported): a bare local_id list means
-    # nothing to a reviewer -- the real TITLE must appear too, alongside a
-    # stable, parseable "[localId: ...]" marker the frontend uses to build
-    # a real jump-to-node link.
-    conflict_warning = next(w for w in warnings if "conflicting values" in w)
-    assert nodes[0].title in conflict_warning
-    assert nodes[1].title in conflict_warning
-    assert "[localId: n0]" in conflict_warning
-    assert "[localId: n1]" in conflict_warning
+    # nothing to a reviewer -- the real TITLE is all the prose carries now;
+    # the structured `node_ids` field (not a text tag) is what the frontend
+    # uses to build a real jump-to-node link.
+    conflict_warning = next(w for w in warnings if "conflicting values" in w.raw)
+    assert nodes[0].title in conflict_warning.raw
+    assert nodes[1].title in conflict_warning.raw
+    assert "localId" not in conflict_warning.raw
+    assert conflict_warning.node_ids == ["n0", "n1"]
 
 
 def test_detect_conflicting_duplicates_emits_progress_narration_before_the_llm_call() -> None:
@@ -3944,7 +3949,7 @@ def test_regroup_disconnected_roots_groups_matching_roots_under_a_new_feature() 
     assert n0.parent_local_id == group_node.local_id
     assert n1.parent_local_id == group_node.local_id
     assert n2.parent_local_id is None  # left untouched -- not mentioned in any group
-    assert any("Grouped 2" in w for w in warnings)
+    assert any("Grouped 2" in w.raw for w in warnings)
 
 
 def test_regroup_disconnected_roots_uses_epic_type_when_any_member_is_an_epic() -> None:
@@ -4036,7 +4041,7 @@ def test_ensure_root_features_have_epic_parent_wraps_orphan_features_when_an_epi
     assert n0.parent_local_id == catch_all.local_id
     assert n1.parent_local_id == catch_all.local_id
     assert epic0.parent_local_id is None  # a real root Epic is left untouched
-    assert any("2 root Feature(s) had no Epic ancestor" in w for w in warnings)
+    assert any("2 root Feature(s) had no Epic ancestor" in w.raw for w in warnings)
 
 
 def test_ensure_root_features_have_epic_parent_is_a_noop_without_orphan_features() -> None:

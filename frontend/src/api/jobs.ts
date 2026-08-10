@@ -1,5 +1,6 @@
 import { httpClient } from './httpClient';
 import type { JobSummary, JobDetail } from '../store/jobsStore';
+import type { WarningRecord } from '../utils/warnings';
 
 export interface AuditEntry {
   id: string;
@@ -234,7 +235,7 @@ export interface JobSummaryReport {
   reused: number;
   dedupSkipped: number;
   flagged: number;
-  warnings: string[];
+  warnings: (WarningRecord | string)[];
 }
 
 export async function getSummary(id: string): Promise<JobSummaryReport> {

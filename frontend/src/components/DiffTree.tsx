@@ -281,8 +281,13 @@ export function DiffTree({
 
   const isFiltering = !!filterAction || !!filterText;
 
+  // Unfiltered/uncollapsed rows -- kept separate from `rows` below so the
+  // selectedId-driven effects further down can find a target's real
+  // ancestorIds regardless of current collapse state (that's the whole
+  // point: discovering which ancestors need to be UNcollapsed).
+  const allRows = useMemo(() => buildFlatRows(entries), [entries]);
+
   const rows = useMemo(() => {
-    const allRows = buildFlatRows(entries);
     return allRows.filter((row) => {
       const matchesAction = !filterAction || row.entry.action === filterAction;
       const matchesText = !filterText || row.entry.title.toLowerCase().includes(filterText.toLowerCase());
@@ -293,7 +298,7 @@ export function DiffTree({
       if (isFiltering) return true;
       return !row.ancestorIds.some((ancestorId) => collapsedIds.has(ancestorId));
     });
-  }, [entries, filterAction, filterText, isFiltering, collapsedIds]);
+  }, [allRows, filterAction, filterText, isFiltering, collapsedIds]);
 
   const clauseColumnWidth = useClauseColumnWidth(entries);
   const statusColumnWidth = useStatusColumnWidth(entries);
@@ -305,6 +310,39 @@ export function DiffTree({
   function openDetails(localId: string): void {
     (onOpenDetails ?? onSelect)(localId);
   }
+
+  // Real gap this closes (user-reported): a "jump to node" action from
+  // outside the tree (e.g. CollapsibleWarnings' "Review item ->") only ever
+  // set `selectedId` -- if the target row's ancestor chain happened to be
+  // collapsed, it never rendered at all, so the jump looked like it did
+  // nothing. Expands every collapsed ancestor of `selectedId` found in the
+  // FULL (unfiltered/uncollapsed) row list; a no-op when nothing needs
+  // expanding (e.g. arrow-key navigation between already-visible rows).
+  useEffect(() => {
+    if (!selectedId) return;
+    const target = allRows.find((row) => row.entry.localId === selectedId);
+    if (!target || target.ancestorIds.length === 0) return;
+    setCollapsedIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const ancestorId of target.ancestorIds) {
+        if (next.delete(ancestorId)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [selectedId, allRows]);
+
+  // Scrolls the selected row into view. Depends on `rows` (not just
+  // `selectedId`) so this re-runs with the FINAL post-expansion index once
+  // the effect above finishes uncollapsing an ancestor -- using `rows` from
+  // this same render would still reflect the stale, pre-expansion filtered
+  // list and could scroll to the wrong position or find nothing at all.
+  useEffect(() => {
+    if (!selectedId) return;
+    const index = rows.findIndex((row) => row.entry.localId === selectedId);
+    if (index === -1) return;
+    listRef.current?.scrollToItem(index, 'center');
+  }, [selectedId, rows]);
 
   // ArrowUp/ArrowDown move selection between currently-VISIBLE rows (post
   // filter/collapse) and scroll the new selection into view -- a virtualized

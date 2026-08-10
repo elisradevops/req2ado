@@ -29,7 +29,7 @@ from app.distillation.title import extract_baseline_title
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.leveling.tree_builder import _hash_description
-from app.workitem.model import RequirementTag, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
 # Duplicated from llm_leveling.py's own _significant_words/_grounding_score
 # (that module cannot be imported here: llm_leveling.py itself imports
@@ -113,7 +113,7 @@ def _apply_title_tag_pass(
     nodes: list[WorkItemNode],
     leaf_node_ids: list[str],
     title_tag_client: TitleTagClient,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
     progress_callback: ProgressCallback | None = None,
     subtree_index: int | None = None,
     subtree_count: int | None = None,
@@ -169,7 +169,14 @@ def _apply_title_tag_pass(
                 f"Title/tag enhancement call failed for {len(chunk_ids)} deterministic "
                 f"leaf node(s) -- kept their deterministic titles and empty tags: {exc}"
             )
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_CALL_FAILED,
+                    message,
+                    node_ids=chunk_ids,
+                    detail={"pass": "title_tag"},
+                )
+            )
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -186,7 +193,14 @@ def _apply_title_tag_pass(
                 f"Title/tag enhancement response omitted {len(missing)} of {len(chunk_ids)} "
                 "requested node(s) -- those kept their deterministic titles and empty tags."
             )
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE,
+                    message,
+                    node_ids=missing,
+                    detail={"pass": "title_tag"},
+                )
+            )
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -302,7 +316,7 @@ def _apply_parent_summary_pass(
     nodes: list[WorkItemNode],
     parent_node_ids: list[str],
     client: ParentSummaryClient,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
     token_budget: int = _PARENT_SUMMARY_TOKEN_BUDGET,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
@@ -379,7 +393,14 @@ def _apply_parent_summary_pass(
                 f"deterministic Epic/Feature node(s) -- kept their verbatim heading title "
                 f"and description: {exc}"
             )
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_CALL_FAILED,
+                    message,
+                    node_ids=chunk_ids,
+                    detail={"pass": "parent_summary"},
+                )
+            )
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -397,7 +418,14 @@ def _apply_parent_summary_pass(
                 f"{len(chunk_ids)} requested node(s) -- those kept their verbatim heading "
                 "title and description."
             )
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE,
+                    message,
+                    node_ids=missing,
+                    detail={"pass": "parent_summary"},
+                )
+            )
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -441,7 +469,7 @@ def _apply_synthesis_pass(
     nodes: list[WorkItemNode],
     leaf_node_ids: list[str],
     synthesis_client: SynthesisClient,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
     progress_callback: ProgressCallback | None = None,
     subtree_index: int | None = None,
     subtree_count: int | None = None,
@@ -515,7 +543,14 @@ def _apply_synthesis_pass(
                 f"Requirement-text synthesis call failed for {len(chunk_ids)} flagged fragment "
                 f"leaf node(s) -- kept their verbatim source text exactly as extracted: {exc}"
             )
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_CALL_FAILED,
+                    message,
+                    node_ids=chunk_ids,
+                    detail={"pass": "synthesis"},
+                )
+            )
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -532,7 +567,14 @@ def _apply_synthesis_pass(
                 f"Requirement-text synthesis response omitted {len(missing)} of {len(chunk_ids)} "
                 "requested node(s) -- those kept their verbatim source text exactly as extracted."
             )
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE,
+                    message,
+                    node_ids=missing,
+                    detail={"pass": "synthesis"},
+                )
+            )
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -570,7 +612,7 @@ def build_hierarchy_subtree(
     subtree_index: int | None = None,
     subtree_count: int | None = None,
     subtree_label: str | None = None,
-) -> tuple[list[WorkItemNode], list[str]]:
+) -> tuple[list[WorkItemNode], list[IntegrityWarning]]:
     """Constructs real WorkItemNodes from an already-hierarchy-resolved
     `rows` list (see `id_hierarchy.HierarchyRow`'s own docstring -- every
     row's `node_type`/`parent_index` is already decided by its own
@@ -598,7 +640,7 @@ def build_hierarchy_subtree(
     mechanism was rejected for. Convention 3's own nesting ladder is
     already CMMI-valid by construction, so this is a no-op there -- stated
     rather than hidden."""
-    warnings: list[str] = []
+    warnings: list[IntegrityWarning] = []
     # First pass: construct every node-producing row's WorkItemNode, and
     # separately track, for every row (producing or not), which
     # node-producing row it should eventually attach to.
@@ -668,9 +710,16 @@ def build_hierarchy_subtree(
             continue
         ancestor_row_index = _nearest_producing_ancestor(i)
         if ancestor_row_index is None:
-            warnings.append(
+            message = (
                 f"Row '{row.id_text}' ('{row.label[:60]}') had no node-producing ancestor to fold "
                 "into -- its content is not represented anywhere in the proposed tree."
+            )
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.DROPPED_ROW,
+                    message,
+                    detail={"rowIdText": row.id_text, "rowLabel": row.label[:60]},
+                )
             )
             continue
         target = by_local_id[node_index_by_row[ancestor_row_index]]

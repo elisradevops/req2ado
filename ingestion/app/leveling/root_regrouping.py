@@ -6,7 +6,7 @@ from typing import Protocol
 
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.leveling.tree_builder import _hash_identity_for_synthesized_node
-from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def _regroup_disconnected_roots(
     nodes: list[WorkItemNode],
     node_id_prefix: str,
     grouping_client: RootGroupingClient | None,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
     progress_callback: ProgressCallback | None = None,
     blocks_total: int = 0,
     branch_count: int = 0,
@@ -143,11 +143,18 @@ def _regroup_disconnected_roots(
             f"'{group_node.title}' {group_type.value} -- structure only, no content invented."
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.ROOTS_REGROUPED,
+                message,
+                node_ids=[synth_id, *(m.local_id for m in members)],
+                detail={"groupId": synth_id, "groupTitle": group_node.title, "memberIds": [m.local_id for m in members]},
+            )
+        )
 
 
 def _ensure_root_features_have_epic_parent(
-    nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[str]
+    nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[IntegrityWarning]
 ) -> None:
     """Confirmed real gap (user-reported, live review): after
     _regroup_disconnected_roots runs, a root that either wasn't offered to
@@ -206,10 +213,19 @@ def _ensure_root_features_have_epic_parent(
         "only, no content invented."
     )
     logger.warning(message)
-    warnings.append(message)
+    warnings.append(
+        IntegrityWarning.make(
+            WarningKind.CATCHALL_EPIC_WRAP,
+            message,
+            node_ids=[synth_id, *(f.local_id for f in orphan_features)],
+            detail={"epicId": synth_id, "featureIds": [f.local_id for f in orphan_features]},
+        )
+    )
 
 
-def _repair_requirement_hierarchy(nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[str]) -> None:
+def _repair_requirement_hierarchy(
+    nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[IntegrityWarning]
+) -> None:
     """Confirmed real bug (user-reported): the model occasionally ignores
     the Epic->Feature->Requirement chain the prompt now explicitly states
     (see _SECTION_ANALYSIS_SYSTEM_PROMPT's hierarchy paragraph) -- emitting
@@ -325,14 +341,25 @@ def _repair_requirement_hierarchy(nodes: list[WorkItemNode], node_id_prefix: str
         )
         nodes.append(feature)
         by_id[feature.local_id] = feature
-        location = f"under Epic {epic.local_id}" if epic is not None else "at the branch root"
+        # Human-readable anchor for WHERE this happened: the requirement that
+        # triggered it, quoted by title -- never the internal local_id
+        # (confirmed real gap, user-reported: "det0_h9_3"/"det0_h3_1_1"-style
+        # ids mean nothing to a reviewer who never sees ingestion's internal
+        # node numbering anywhere else in the product).
+        location = f'under Epic "{epic.title}"' if epic is not None else "at the top level of this section"
         message = (
-            f"Section ({node_id_prefix.rstrip('_') or '(root)'}) had Requirement(s) with no Feature "
-            f"ancestor -- inserted a synthesized grouping Feature {location} to keep the "
-            "Epic -> Feature -> Requirement chain intact."
+            f'Requirement(s) near "{requirement.title}" had no Feature ancestor -- inserted a '
+            f"grouping Feature {location} to keep the Epic -> Feature -> Requirement chain intact."
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.BRIDGE_FEATURE_SYNTHESIZED,
+                message,
+                node_ids=[synth_id],
+                detail={"featureId": synth_id, "epicId": epic_key},
+            )
+        )
         bridge_features_by_epic_id[epic_key] = feature
         # The synthesized Feature makes has_epic_or_feature true from this
         # point on (it can only ever become MORE true, never less, as nodes
@@ -408,9 +435,20 @@ def _repair_requirement_hierarchy(nodes: list[WorkItemNode], node_id_prefix: str
         if target.local_id == node.local_id or node.parent_local_id == target.local_id:
             continue
         message = (
-            f"Node {node.local_id} (Requirement) had {original_parent_label} -- re-parented under "
-            f"Feature {target.local_id} to keep the Epic -> Feature -> Requirement chain intact."
+            f'"{node.title}" had {original_parent_label} -- re-parented under Feature '
+            f'"{target.title}" to keep the Epic -> Feature -> Requirement chain intact.'
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.REPARENTED_TO_FEATURE,
+                message,
+                node_ids=[node.local_id],
+                detail={
+                    "targetFeatureId": target.local_id,
+                    "targetFeatureTitle": target.title,
+                    "originalParent": original_parent_label,
+                },
+            )
+        )
         node.parent_local_id = target.local_id

@@ -46,6 +46,7 @@ import { StatTile } from '../ui/StatTile';
 import { TextField } from '../ui/TextField';
 import { Select } from '../ui/Select';
 import { CollapsibleWarnings } from '../components/CollapsibleWarnings';
+import { normalizeWarning, type WarningRecord } from '../utils/warnings';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
@@ -61,7 +62,7 @@ export function JobDetail(): React.ReactElement {
   const [status, setStatus] = useState<string | null>(null);
   const [mode, setMode] = useState<string | null>(null);
   const [kbCitations, setKbCitations] = useState<KbCitation[]>([]);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<(WarningRecord | string)[]>([]);
   // Populated directly from the SSE callback on 'chunk_warning' events --
   // docs/ui-progress-review.md item #3: previously a mid-run chunk failure
   // was invisible until the whole job finished and `warnings` (above) got
@@ -265,6 +266,17 @@ export function JobDetail(): React.ReactElement {
               // fallback icons/colors for the rest of the page's lifetime,
               // even though a real diff (and thus a real catalog) now exists.
               setTypeCatalog(job.workItemTypeCatalog ?? null);
+              // Real bug (user-reported): warnings/kbCitations are written
+              // to the Job row by this SAME pipeline.worker.ts update that
+              // sets status/dryRunDiff/workItemTypeCatalog (all handled
+              // above) -- omitting these two here meant they stayed stuck
+              // at their mount-time value ([], since the job was still
+              // running when loadJob's own getJob() call resolved) for the
+              // rest of the page's lifetime. Confirmed live: the warnings
+              // panel only ever showed content after a manual reload, which
+              // re-runs loadJob() and picks them up for the first time.
+              setWarnings(job.warnings ?? []);
+              setKbCitations(job.kbCitations ?? []);
             });
           }
         },
@@ -370,11 +382,16 @@ export function JobDetail(): React.ReactElement {
   // While running: only liveWarnings has content (warnings is still []
   // from the one-time getJob fetch). Once terminal, warnings becomes the
   // real, authoritative post-completion list -- deduped against
-  // liveWarnings by exact text so nothing shows twice.
-  const mergedWarnings = useMemo(
-    () => [...warnings, ...liveWarnings.filter((w) => !warnings.includes(w))],
-    [warnings, liveWarnings],
-  );
+  // liveWarnings by raw text so nothing shows twice. Both sides normalize
+  // through the same normalizeWarning (persisted `warnings` may still be a
+  // legacy string[] job; liveWarnings is always plain strings, see its own
+  // doc comment above) so the rest of the page only ever handles one shape.
+  const mergedWarnings = useMemo<WarningRecord[]>(() => {
+    const normalizedPersisted = warnings.map(normalizeWarning);
+    const persistedRawTexts = new Set(normalizedPersisted.map((w) => w.raw));
+    const normalizedLive = liveWarnings.filter((raw) => !persistedRawTexts.has(raw)).map(normalizeWarning);
+    return [...normalizedPersisted, ...normalizedLive];
+  }, [warnings, liveWarnings]);
 
   async function handleConfirm(): Promise<void> {
     if (!id || !orgUrl || isMutatingRef.current) return;
@@ -669,6 +686,17 @@ export function JobDetail(): React.ReactElement {
     return result;
   }, [diff]);
 
+  // Disambiguates CollapsibleWarnings' per-nodeId "Review item" buttons --
+  // real gap this closes (user-reported): 2-3 buttons all labeled "Review
+  // item ->" sitting side by side read as duplicated UI even though each
+  // targets a different item, since nothing on the button itself says
+  // which item it is.
+  const titleByLocalId = useMemo(() => {
+    const result: Record<string, string> = {};
+    for (const entry of diff) result[entry.localId] = entry.title;
+    return result;
+  }, [diff]);
+
   // Same filter predicate DiffTree applies internally (see its own `rows`
   // useMemo) -- NOT collapse-aware, since collapse state is internal to
   // DiffTree and not lifted here. Good enough for "step to the next
@@ -920,10 +948,17 @@ export function JobDetail(): React.ReactElement {
       <CollapsibleWarnings
         warnings={mergedWarnings}
         onJumpToNode={(localId) => {
+          // Matches onOpenDetails below exactly -- previously this only
+          // switched tabs and set selection, which (a) never scrolled the
+          // target into view (DiffTree's own useEffect on selectedId below
+          // handles that) and (b) never opened the dialog, so "Review item"
+          // looked like it did nothing on any list of real size.
           setTab('tree');
           setSelectedId(localId);
+          setDialogOpen(true);
         }}
         adoIdByLocalId={adoIdByLocalId}
+        titleByLocalId={titleByLocalId}
         orgUrl={orgUrl}
         project={teamProject}
       />

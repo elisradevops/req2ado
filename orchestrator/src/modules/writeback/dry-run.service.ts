@@ -77,6 +77,24 @@ export interface DryRunTreeNode {
   figureIds?: string[];
 }
 
+// Mirrors ingestion's IntegrityWarning (app.workitem.model) -- structured
+// integrity signal replacing the old flat warning string. `severity` lets
+// the frontend group by "already fixed" vs "needs your judgment" vs
+// "something broke" instead of every warning reading as equally urgent
+// prose. `raw` is the fully-formed human sentence -- always populated, so a
+// client that doesn't recognize `kind` yet can still show something sane.
+// `kind` is intentionally `string` (not a closed TS union) -- ingestion owns
+// the closed vocabulary (WarningKind, app.workitem.model) and can add a kind
+// without a matching orchestrator/frontend release; only severity's 3-value
+// contract is enforced here.
+export interface WarningRecord {
+  kind: string;
+  severity: 'auto_fixed' | 'needs_review' | 'pipeline_issue';
+  nodeIds: string[];
+  detail: Record<string, unknown>;
+  raw: string;
+}
+
 export interface DryRunDiffEntry {
   localId: string;
   parentLocalId: string | null;

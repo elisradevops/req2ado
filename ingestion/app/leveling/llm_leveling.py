@@ -62,11 +62,14 @@ from app.leveling.tree_builder import (
 )
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL
+from app.leveling.warnings_finalize import finalize_warnings
 from app.workitem.model import (
+    IntegrityWarning,
     KbCitation,
     KbCitationRelevance,
     RequirementTag,
     TraceLink,
+    WarningKind,
     WorkItemMode,
     WorkItemNode,
     WorkItemTree,
@@ -310,7 +313,7 @@ def _repair_group_attachment(
     nodes: list[WorkItemNode],
     table_groups: list[TableGroupInfo] | None,
     node_id_prefix: str,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
 ) -> None:
     """Confirmed real bug, live-tested against a human-authored reference
     hierarchy: a source table group that DID get correctly detected,
@@ -372,13 +375,24 @@ def _repair_group_attachment(
             # chain-valid) attachment alone rather than re-breaking it.
             continue
         message = (
-            f"Node {node.local_id} ({node.type.value}) matching source table group "
+            f'"{node.title}" ({node.type.value}) matching source table group '
             f"'{group.label}' was attached under the wrong ancestor -- re-parented under "
-            f"{correct_parent.local_id} to match its known correct parent '{group.parent_label}' "
+            f'"{correct_parent.title}" to match its known correct parent (\'{group.parent_label}\') '
             "from the table's own ID hierarchy."
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.GROUP_REPARENTED,
+                message,
+                node_ids=[node.local_id],
+                detail={
+                    "targetParentId": correct_parent.local_id,
+                    "targetParentTitle": correct_parent.title,
+                    "groupLabel": group.label,
+                },
+            )
+        )
         node.parent_local_id = correct_parent.local_id
 
 
@@ -575,7 +589,7 @@ _REFERENCED_ATTACHMENT_PATTERN = re.compile(
 )
 
 
-def _referenced_attachment_warnings(section_text: str, node_id_prefix: str) -> list[str]:
+def _referenced_attachment_warnings(section_text: str, section_label: str | None) -> list[IntegrityWarning]:
     """One warning per distinct matched reference phrase in this branch's
     rendered section text, deduped case-insensitively (so a phrase repeated
     many times in one section doesn't spam the warnings list) while
@@ -583,9 +597,14 @@ def _referenced_attachment_warnings(section_text: str, node_id_prefix: str) -> l
     seen_by_key: dict[str, str] = {}
     for m in _REFERENCED_ATTACHMENT_PATTERN.finditer(section_text):
         seen_by_key.setdefault(m.group(0).lower(), m.group(0))
+    section_ref = f'The "{section_label}" section' if section_label else "This section"
     return [
-        f"Section {node_id_prefix or '(root)'} references an external artifact ({seen_by_key[key]!r}) this "
-        "SURVEY run did not ingest -- consider adding it to the knowledge base."
+        IntegrityWarning.make(
+            WarningKind.EXTERNAL_REFERENCE,
+            f"{section_ref} references an external artifact ({seen_by_key[key]!r}) this "
+            "SURVEY run did not ingest -- consider adding it to the knowledge base.",
+            detail={"section": section_label or "(root)", "phrase": seen_by_key[key]},
+        )
         for key in sorted(seen_by_key)
     ]
 
@@ -746,7 +765,7 @@ def render_section(
 
 def _apply_det_parent_summary(
     det_nodes: list[WorkItemNode],
-    det_warnings: list[str],
+    det_warnings: list[IntegrityWarning],
     parent_summary_client: ParentSummaryClient | None,
     model: str | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -795,7 +814,7 @@ def _detect_deterministic_subtrees(
     parent_summary_client: ParentSummaryClient | None = None,
     model: str | None = None,
     progress_callback: ProgressCallback | None = None,
-) -> tuple[list[WorkItemNode], list[str], CanonicalDoc]:
+) -> tuple[list[WorkItemNode], list[IntegrityWarning], CanonicalDoc]:
     """Detects and builds every deterministic hierarchy subtree this
     document's own structure already encodes -- a 2-column dotted-ID
     table (`rows_from_table`), a native Word Heading hierarchy with the ID
@@ -831,7 +850,7 @@ def _detect_deterministic_subtrees(
     in `doc` matches any of the three conventions -- the exact guarantee
     every one of these detectors already gives individually."""
     det_nodes: list[WorkItemNode] = []
-    det_warnings: list[str] = []
+    det_warnings: list[IntegrityWarning] = []
     claimed_table_ids: set[str] = set()
     subtree_index = 0
 
@@ -1036,23 +1055,6 @@ def _detect_deterministic_subtrees(
         update={"blocks": residual_blocks, "tables": residual_tables, "figures": residual_figures},
     )
 
-    total_content = len(doc.blocks) + sum(len(t.rows) for t in doc.tables)
-    det_content = len(claimed_heading_block_ids) + sum(
-        len(t.rows) for t in doc.tables if t.id in claimed_table_ids
-    )
-    if det_content and det_content < total_content:
-        det_warnings.append(
-            f"{det_content} of {total_content} source block(s)/table row(s) were built "
-            f"deterministically from the document's own structure into {len(det_nodes)} work "
-            "item(s); the rest were authored by the language model from the residual content."
-        )
-    elif det_content and det_content >= total_content:
-        det_warnings.append(
-            f"All {total_content} source block(s)/table row(s) were built deterministically "
-            f"from the document's own structure into {len(det_nodes)} work item(s) -- no "
-            "language-model analysis was needed for this document."
-        )
-
     _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model, progress_callback)
     return det_nodes, det_warnings, llm_doc
 
@@ -1252,7 +1254,7 @@ def build_survey_tree(
         # KB query is grounded in real document content, not the (empty)
         # residual.
         all_nodes: list[WorkItemNode] = list(det_nodes)
-        all_warnings: list[str] = list(det_warnings)
+        all_warnings: list[IntegrityWarning] = list(det_warnings)
 
         # preparing_analysis already fired at function entry, before
         # _detect_deterministic_subtrees ran -- covers this guard's own KB
@@ -1327,7 +1329,7 @@ def build_survey_tree(
             )
 
         return WorkItemTree(
-            nodes=all_nodes, warnings=all_warnings,
+            nodes=all_nodes, warnings=finalize_warnings(all_warnings),
             kb_citations=deduped_citations, trace_links=trace_links,
         )
 
@@ -1519,7 +1521,7 @@ def build_survey_tree(
     # (below) is appended after. No cheap document-order key exists across
     # the two (LLM nodes share a coarse branch-representative source_ref).
     all_nodes: list[WorkItemNode] = list(det_nodes)
-    all_warnings: list[str] = list(det_warnings)
+    all_warnings: list[IntegrityWarning] = list(det_warnings)
     all_kb_citations: list[KbCitation] = list(doc_kb_citations)
     # Every branch's own scoring-grounding text (see _BranchAnalysisResult's
     # docstring) -- collected here so the single whole-document scoring pass
@@ -1745,7 +1747,10 @@ def build_survey_tree(
             progress_callback, blocks_total, len(branches), debug_capture=debug_capture,
         )
 
-    return WorkItemTree(nodes=all_nodes, warnings=all_warnings, kb_citations=deduped_citations, trace_links=trace_links)
+    return WorkItemTree(
+        nodes=all_nodes, warnings=finalize_warnings(all_warnings),
+        kb_citations=deduped_citations, trace_links=trace_links,
+    )
 
 
 
@@ -1987,11 +1992,15 @@ def _build_survey_tree_for_branch(
 
     by_temp_id = {n["temp_id"]: n for n in raw_nodes if isinstance(n, dict) and n.get("temp_id")}
     valid_tag_values = {t.value for t in RequirementTag}
-    warnings: list[str] = []
+    warnings: list[IntegrityWarning] = []
     if truncated:
         warnings.append(
-            "Model output was truncated by the token limit -- results may be incomplete; "
-            "consider raising the model's output cap."
+            IntegrityWarning.make(
+                WarningKind.OUTPUT_TRUNCATED,
+                "Model output was truncated by the token limit -- results may be incomplete; "
+                "consider raising the model's output cap.",
+                detail={"branch": node_id_prefix or "(root)"},
+            )
         )
     nodes: list[WorkItemNode] = []
 
@@ -2029,9 +2038,11 @@ def _build_survey_tree_for_branch(
             # required, but a model can still omit it -- degrade to the
             # pre-title-distillation behavior (derive from the full
             # description text) rather than crashing the branch.
-            message = f"Node {node_id_prefix}{temp_id} had no model title -- derived from description text."
+            message = f"An item near {_truncate_for_preview(text)} had no model title -- derived from its description text."
             logger.warning(message)
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(WarningKind.NO_MODEL_TITLE, message, node_ids=[f"{node_id_prefix}{temp_id}"])
+            )
             title = extract_baseline_title(text)
         tags = sorted(
             {RequirementTag(tag) for tag in entry.get("tags", []) if tag in valid_tag_values},
@@ -2040,21 +2051,37 @@ def _build_survey_tree_for_branch(
         raw_figure_ids = entry.get("figure_ids") or []
         figure_ids = sorted({fid for fid in raw_figure_ids if isinstance(fid, str) and fid in valid_figure_ids})
         if len(figure_ids) < len(raw_figure_ids):
+            dropped_figure_count = len(raw_figure_ids) - len(figure_ids)
             message = (
-                f"Node {node_id_prefix}{temp_id} named figure_ids {raw_figure_ids!r}, but not all "
-                f"match a real figure offered in this section -- kept only {figure_ids!r}."
+                f'"{title}" referenced {dropped_figure_count} figure(s) not offered in this section -- '
+                "the invalid reference(s) were dropped."
             )
             logger.warning(message)
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.INVALID_FIGURE_IDS,
+                    message,
+                    node_ids=[f"{node_id_prefix}{temp_id}"],
+                    detail={"requested": raw_figure_ids, "kept": figure_ids},
+                )
+            )
         raw_table_ids = entry.get("table_ids") or []
         table_ids = sorted({tid for tid in raw_table_ids if isinstance(tid, str) and tid in valid_table_ids})
         if len(table_ids) < len(raw_table_ids):
+            dropped_table_count = len(raw_table_ids) - len(table_ids)
             message = (
-                f"Node {node_id_prefix}{temp_id} named table_ids {raw_table_ids!r}, but not all "
-                f"match a real table offered in this section -- kept only {table_ids!r}."
+                f'"{title}" referenced {dropped_table_count} table(s) not offered in this section -- '
+                "the invalid reference(s) were dropped."
             )
             logger.warning(message)
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.INVALID_TABLE_IDS,
+                    message,
+                    node_ids=[f"{node_id_prefix}{temp_id}"],
+                    detail={"requested": raw_table_ids, "kept": table_ids},
+                )
+            )
 
         # Embeds each named table's real HTML into the description (§ known
         # issues item 20, "the easy half" -- tables need no new ADO write
@@ -2082,32 +2109,50 @@ def _build_survey_tree_for_branch(
             # Requirement -- the safest default, since it never implies a
             # parent/child expectation the way Epic/Feature do.
             message = (
-                f"Node {node_id_prefix}{temp_id} had an invalid type "
-                f"({entry.get('type')!r}) from section analysis -- defaulted to Requirement."
+                f'"{title}" had an invalid type ({entry.get("type")!r}) from section analysis -- '
+                "defaulted to Requirement."
             )
             logger.warning(message)
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.INVALID_NODE_TYPE,
+                    message,
+                    node_ids=[f"{node_id_prefix}{temp_id}"],
+                    detail={"rawType": entry.get("type")},
+                )
+            )
             node_type = WorkItemType.REQUIREMENT
 
         parent_temp_id = entry.get("parent_temp_id")
         if parent_temp_id is not None and parent_temp_id not in by_temp_id:
-            message = (
-                f"Node {node_id_prefix}{temp_id} referenced unknown parent_temp_id "
-                f"{parent_temp_id!r} -- attached as section root."
-            )
+            message = f'"{title}" referenced a parent that could not be resolved -- attached as a root of this section instead.'
             logger.warning(message)
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.DANGLING_PARENT,
+                    message,
+                    node_ids=[f"{node_id_prefix}{temp_id}"],
+                    detail={"unresolvedParentTempId": parent_temp_id},
+                )
+            )
             parent_temp_id = None
 
         grounding_score = _grounding_score(text, section_text)
         if grounding_score < _LOW_GROUNDING_THRESHOLD:
             message = (
-                f"Node {node_id_prefix}{temp_id}'s generated description has low grounding "
+                f'"{title}"\'s generated description has low grounding '
                 f"({grounding_score:.0%} of its vocabulary traces back to the source section) -- "
                 "worth reviewing for possible fabrication."
             )
             logger.warning(message)
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.LOW_GROUNDING,
+                    message,
+                    node_ids=[f"{node_id_prefix}{temp_id}"],
+                    detail={"groundingScore": grounding_score, "threshold": _LOW_GROUNDING_THRESHOLD},
+                )
+            )
 
         local_id = f"{node_id_prefix}{temp_id}"
         nodes.append(
@@ -2176,15 +2221,21 @@ def _build_survey_tree_for_branch(
         # dropped-block coverage note) distinct from the dropped_blocks
         # check below, which assumes at least SOME nodes exist to compare
         # source blocks against.
-        section_ref = f"branch {node_id_prefix.rstrip('_')}" if node_id_prefix else "the document"
+        section_ref = f'The "{section_label}" section' if section_label else "This section"
         message = (
-            f"Section ({section_ref}) produced 0 work items from {len(blocks)} block(s)/"
+            f"{section_ref} produced 0 work items from {len(blocks)} block(s)/"
             f"{len(tables or [])} table(s)/{len(figures or [])} figure(s) of real content -- "
             "likely a model or tool-calling failure for this section; nothing from it will "
             "appear in the proposed tree."
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.ZERO_NODES,
+                message,
+                detail={"branch": node_id_prefix or "(root)", "blockCount": len(blocks), "tableCount": len(tables or []), "figureCount": len(figures or [])},
+            )
+        )
 
     # Coverage check: since analyze_section can merge N input blocks into
     # M != N nodes, there is no 1:1 node<->block mapping left to check
@@ -2217,15 +2268,21 @@ def _build_survey_tree_for_branch(
         # text preview per index lets that judgment happen right in the
         # warning itself.
         previews = "\n".join(
-            f"  [{i}] {_truncate_for_preview(resolved_block_texts[i])}" for i in dropped_blocks[:10]
+            f"  - {_truncate_for_preview(resolved_block_texts[i])}" for i in dropped_blocks[:10]
         )
         message = (
             f"SURVEY analysis did not reference {len(dropped_blocks)} of {len(blocks)} source "
             "block(s), and their content does not appear (even paraphrased) in any generated node "
-            f"-- likely dropped, not merged: {dropped_blocks[:10]}\n{previews}"
+            f"-- likely dropped, not merged:\n{previews}"
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.DROPPED_BLOCKS,
+                message,
+                detail={"branch": node_id_prefix or "(root)", "droppedIndices": dropped_blocks[:10], "totalBlocks": len(blocks)},
+            )
+        )
 
     # Table-group coverage check -- the "catch" half of this fix, pairing
     # with the generation-time floor (topic_count + _table_group_hint)
@@ -2250,9 +2307,15 @@ def _build_survey_tree_for_branch(
             f"folded into a broader ancestor instead): {group_previews}"
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.MISSING_TABLE_GROUP_COVERAGE,
+                message,
+                detail={"branch": node_id_prefix or "(root)", "groupLabels": [g.label for g in missing_groups[:10]]},
+            )
+        )
 
-    warnings.extend(_referenced_attachment_warnings(section_text, node_id_prefix))
+    warnings.extend(_referenced_attachment_warnings(section_text, section_label))
 
     # Quality scoring moved to whole-document scope (see
     # _score_all_requirements, called once from build_survey_tree after

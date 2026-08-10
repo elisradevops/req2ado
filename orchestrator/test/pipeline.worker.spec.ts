@@ -640,7 +640,15 @@ describe('runPipelineJob', () => {
           tags: ['functional', 'safety'],
         },
       ],
-      warnings: ['SURVEY node count (1) diverges from source block count (5) by more than 50%'],
+      warnings: [
+        {
+          kind: 'zero_nodes',
+          severity: 'pipeline_issue',
+          node_ids: [],
+          detail: { blockCount: 5 },
+          raw: 'SURVEY node count (1) diverges from source block count (5) by more than 50%',
+        },
+      ],
     });
     fakeDryRunService.diff.mockResolvedValue([]);
 
@@ -676,7 +684,15 @@ describe('runPipelineJob', () => {
       data: {
         status: 'diff_ready',
         dryRunDiff: [],
-        warnings: ['SURVEY node count (1) diverges from source block count (5) by more than 50%'],
+        warnings: [
+          {
+            kind: 'zero_nodes',
+            severity: 'pipeline_issue',
+            nodeIds: [],
+            detail: { blockCount: 5 },
+            raw: 'SURVEY node count (1) diverges from source block count (5) by more than 50%',
+          },
+        ],
         kbCitations: [],
         figureDescriptions: [],
         blockCount: 0,
@@ -1104,6 +1120,45 @@ describe('runPipelineJob', () => {
     expect(fakeIdempotencyService.deleteByAdoWorkItemId).toHaveBeenCalledWith(533);
     expect(fakeIngestionClient.deleteDedupEntry).toHaveBeenCalledTimes(1);
     expect(fakeIngestionClient.deleteDedupEntry).toHaveBeenCalledWith('999', 'Project\\Area1');
+  });
+
+  it('persists a structured ado_verification_failed WarningRecord (not a bare string) when verifyExistingAdoIdsStillExist itself throws', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([
+      { localId: 'n0', action: 'reuse', existingAdoId: 533, similarity: null },
+    ]);
+    fakeMcpClient.getWorkItemsBatch.mockRejectedValueOnce(new Error('ADO unreachable'));
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.job.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warnings: [
+            expect.objectContaining({
+              kind: 'ado_verification_failed',
+              severity: 'pipeline_issue',
+              nodeIds: [],
+              raw: expect.stringContaining('ADO unreachable'),
+            }),
+          ],
+        }),
+      }),
+    );
   });
 
   it('never fails the job when the stale-mapping cleanup call itself throws', async () => {

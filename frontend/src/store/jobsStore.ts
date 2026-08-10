@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { KbCitation } from '../components/KbCitationChips';
 import type { FigureDescriptionEntry } from '../components/FigureDescriptions';
+import type { WarningRecord } from '../utils/warnings';
 
 export interface JobSummary {
   id: string;
@@ -21,8 +22,11 @@ export interface JobDetail {
   kbCitations?: KbCitation[];
   // Tree-level integrity warnings from ingestion's /level response
   // (SURVEY-only, e.g. generated node count diverging from source block
-  // count) -- distinct from per-node quality/grounding signals.
-  warnings?: string[];
+  // count) -- distinct from per-node quality/grounding signals. `string`
+  // is the back-compat seam: a job persisted before the structured-warnings
+  // migration still has a literal string[] here -- see utils/warnings.ts's
+  // normalizeWarning for where that legacy shape gets reclassified.
+  warnings?: (WarningRecord | string)[];
   // Persisted vision-model figure captions (see Job.figureDescriptions'
   // schema.prisma doc comment) -- lets JobDetail's FigureDescriptions panel
   // survive a reload or reopening a completed job, seeding the same

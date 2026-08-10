@@ -3,22 +3,31 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { CollapsibleWarnings } from './CollapsibleWarnings';
+import type { WarningRecord } from '../utils/warnings';
+
+function warning(overrides: Partial<WarningRecord> & Pick<WarningRecord, 'kind' | 'severity' | 'raw'>): WarningRecord {
+  return { nodeIds: [], detail: {}, ...overrides };
+}
 
 function renderWarnings(
-  warnings: string[],
-  onJumpToNode?: (localId: string) => void,
-  adoIdByLocalId?: Record<string, number>,
-  orgUrl?: string | null,
-  project?: string | null,
+  warnings: WarningRecord[],
+  opts?: {
+    onJumpToNode?: (localId: string) => void;
+    adoIdByLocalId?: Record<string, number>;
+    titleByLocalId?: Record<string, string>;
+    orgUrl?: string | null;
+    project?: string | null;
+  },
 ) {
   return render(
     <MemoryRouter>
       <CollapsibleWarnings
         warnings={warnings}
-        onJumpToNode={onJumpToNode}
-        adoIdByLocalId={adoIdByLocalId}
-        orgUrl={orgUrl}
-        project={project}
+        onJumpToNode={opts?.onJumpToNode}
+        adoIdByLocalId={opts?.adoIdByLocalId}
+        titleByLocalId={opts?.titleByLocalId}
+        orgUrl={opts?.orgUrl}
+        project={opts?.project}
       />
     </MemoryRouter>,
   );
@@ -30,131 +39,169 @@ describe('CollapsibleWarnings', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('groups dropped-block and external-reference warnings under separate, labeled headers', async () => {
+  it('groups warnings by severity tier first, with a per-tier count', async () => {
     renderWarnings([
-      'SURVEY analysis did not reference 2 of 5 source block(s), and their content does not appear (even paraphrased) in any generated node -- likely dropped, not merged: [1, 2]',
-      "Section br0_ references an external artifact ('ReqID') this SURVEY run did not ingest -- consider adding it to the knowledge base.",
+      warning({ kind: 'reparented_to_feature', severity: 'auto_fixed', raw: '3 Requirement(s) were re-parented under Feature f0.' }),
+      warning({ kind: 'low_grounding', severity: 'needs_review', raw: "Node n0's generated description has low grounding." }),
+      warning({ kind: 'zero_nodes', severity: 'pipeline_issue', raw: 'Section produced 0 work items.' }),
+    ]);
+
+    await userEvent.click(screen.getByText(/3 integrity warnings/i));
+
+    expect(screen.getByText('Automatically fixed')).toBeInTheDocument();
+    expect(screen.getByText('Needs your review')).toBeInTheDocument();
+    expect(screen.getByText('Pipeline issue')).toBeInTheDocument();
+  });
+
+  it('groups by kind within a severity tier, showing the tip once per kind not once per warning', async () => {
+    renderWarnings([
+      warning({ kind: 'dropped_blocks', severity: 'needs_review', raw: 'SURVEY analysis did not reference 2 of 5 source block(s).' }),
+      warning({ kind: 'dropped_blocks', severity: 'needs_review', raw: 'SURVEY analysis did not reference 3 of 9 source block(s).' }),
     ]);
 
     await userEvent.click(screen.getByText(/2 integrity warnings/i));
+    await userEvent.click(screen.getByText('Needs your review'));
 
     expect(screen.getByText('Content the model may have dropped')).toBeInTheDocument();
-    expect(screen.getByText('References to documents not in your knowledge base')).toBeInTheDocument();
+    expect(screen.getAllByText(/under-synthesized/i).length).toBe(1);
+    expect(screen.getByText('SURVEY analysis did not reference 2 of 5 source block(s).')).toBeInTheDocument();
+    expect(screen.getByText('SURVEY analysis did not reference 3 of 9 source block(s).')).toBeInTheDocument();
+  });
+
+  it('falls back an unrecognized kind to a humanized title', async () => {
+    renderWarnings([warning({ kind: 'some_future_kind', severity: 'needs_review', raw: 'A brand new kind of notice.' })]);
+
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Needs your review'));
+
+    expect(screen.getByText('Some Future Kind')).toBeInTheDocument();
   });
 
   it('shows an actionable link to the knowledge base only for external-reference warnings', async () => {
     renderWarnings([
-      "Section br0_ references an external artifact ('ReqID') this SURVEY run did not ingest -- consider adding it to the knowledge base.",
+      warning({
+        kind: 'external_reference',
+        severity: 'needs_review',
+        raw: "Section br0_ references an external artifact ('ReqID') this SURVEY run did not ingest.",
+      }),
     ]);
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Needs your review'));
     await userEvent.click(screen.getByText('References to documents not in your knowledge base'));
 
     const link = screen.getByRole('link', { name: /add to knowledge base/i });
     expect(link).toHaveAttribute('href', '/knowledge-base');
   });
 
-  it('falls back every other warning kind into a single "Other analysis notices" group', async () => {
+  it('marks a legacy (reclassified) warning distinctly from a freshly-classified one', async () => {
     renderWarnings([
-      'Model output was truncated by the token limit -- results may be incomplete; consider raising the model\'s output cap.',
-      "Quality scoring returned no valid score for 1 node(s) in branch 'br0_': ['br0_n33']",
+      warning({ kind: 'other', severity: 'needs_review', raw: 'An old, unclassified warning.', legacy: true }),
     ]);
 
-    await userEvent.click(screen.getByText(/2 integrity warnings/i));
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Needs your review'));
 
-    expect(screen.getByText('Other analysis notices')).toBeInTheDocument();
-    expect(screen.queryByText('Content the model may have dropped')).not.toBeInTheDocument();
-    expect(screen.queryByText('References to documents not in your knowledge base')).not.toBeInTheDocument();
+    expect(screen.getByText(/from an older run/i)).toBeInTheDocument();
   });
 
-  it('shows a why/what-to-do tip once per group, not once per warning', async () => {
-    renderWarnings([
-      'SURVEY analysis did not reference 2 of 5 source block(s), and their content does not appear (even paraphrased) in any generated node -- likely dropped, not merged: [1, 2]',
-      'SURVEY analysis did not reference 3 of 9 source block(s), and their content does not appear (even paraphrased) in any generated node -- likely dropped, not merged: [4, 5, 6]',
-    ]);
-
-    await userEvent.click(screen.getByText(/2 integrity warnings/i));
-    await userEvent.click(screen.getByText('Content the model may have dropped'));
-
-    expect(screen.getAllByText(/under-synthesized/i).length).toBe(1);
-  });
-
-  it('groups near-duplicate conflict warnings and offers a jump-to-node action per referenced item', async () => {
+  it('offers a disambiguated jump-to-node button per referenced item, using the real item title', async () => {
     const onJumpToNode = vi.fn();
     renderWarnings(
       [
-        "Near-duplicate items 'Power supply efficiency' [localId: n0], 'Power supply efficiency (appendix)' [localId: n1] appear to state conflicting values for the same parameter (['85%', '93%']) -- resolve before this can be finalized.",
+        warning({
+          kind: 'near_duplicate_conflict',
+          severity: 'needs_review',
+          raw: "Near-duplicate items 'Power supply efficiency', 'Power supply efficiency (appendix)' appear to state conflicting values.",
+          nodeIds: ['n0', 'n1'],
+        }),
       ],
-      onJumpToNode,
+      { onJumpToNode, titleByLocalId: { n0: 'Power supply efficiency', n1: 'Power supply efficiency (appendix)' } },
     );
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Near-duplicate items with conflicting values'));
+    await userEvent.click(screen.getByText('Needs your review'));
 
-    const jumpButtons = screen.getAllByRole('button', { name: /review item/i });
-    expect(jumpButtons).toHaveLength(2);
+    // Real gap this closes (user-reported): two buttons both labeled
+    // "Review item ->" read as duplicated UI -- each must now carry the
+    // real item title so they're visually distinct.
+    const reviewButtons = screen.getAllByRole('button', { name: /^review /i });
+    expect(reviewButtons).toHaveLength(2);
+    expect(reviewButtons[0]).toHaveAccessibleName('Review "Power supply efficiency" →');
+    expect(reviewButtons[1]).toHaveAccessibleName('Review "Power supply efficiency (appendix)" →');
 
-    await userEvent.click(jumpButtons[0]);
+    await userEvent.click(reviewButtons[0]);
     expect(onJumpToNode).toHaveBeenCalledWith('n0');
+  });
 
-    await userEvent.click(jumpButtons[1]);
-    expect(onJumpToNode).toHaveBeenCalledWith('n1');
+  it('falls back to an indexed label when no title is known for a referenced item', async () => {
+    renderWarnings([
+      warning({
+        kind: 'near_duplicate_conflict',
+        severity: 'needs_review',
+        raw: "Near-duplicate items 'A', 'B' appear to state conflicting values.",
+        nodeIds: ['n0', 'n1'],
+      }),
+    ], { onJumpToNode: vi.fn() });
+
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Needs your review'));
+
+    expect(screen.getByRole('button', { name: 'Review item 1 →' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review item 2 →' })).toBeInTheDocument();
   });
 
   it('links to the real ADO work item for a conflict item that already exists there, alongside the jump-to-node action', async () => {
-    // Real gap this closes (user-reported): "[localId: n1]" is an internal,
-    // this-run-only reference -- for a near-duplicate that's already a
-    // real ADO work item (dedup_skip/reuse), there was previously no way
-    // to find the ACTUAL item to verify the conflict against.
     renderWarnings(
       [
-        "Near-duplicate items 'RS-232 Receiver Support' [localId: n0], 'LVCMOS Driver Support' [localId: n1] appear to state conflicting values for the same parameter (['eight RS-232', 'eight LVCMOS']) -- resolve before this can be finalized.",
+        warning({
+          kind: 'near_duplicate_conflict',
+          severity: 'needs_review',
+          raw: "Near-duplicate items 'RS-232 Receiver Support', 'LVCMOS Driver Support' appear to state conflicting values.",
+          nodeIds: ['n0', 'n1'],
+        }),
       ],
-      vi.fn(),
-      { n1: 604 }, // only n1 already exists in ADO -- n0 is a plain 'create'
-      'https://dev.azure.com/example-org',
+      { onJumpToNode: vi.fn(), adoIdByLocalId: { n1: 604 }, orgUrl: 'https://dev.azure.com/example-org' },
     );
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Near-duplicate items with conflicting values'));
+    await userEvent.click(screen.getByText('Needs your review'));
 
-    expect(screen.getAllByRole('button', { name: /review item/i })).toHaveLength(2); // still offered for both
+    expect(screen.getAllByRole('button', { name: /^review /i })).toHaveLength(2); // still offered for both
     const adoLink = screen.getByRole('link', { name: /view wi #604 in azure devops/i });
     expect(adoLink).toHaveAttribute('href', 'https://dev.azure.com/example-org/_workitems/edit/604');
-    expect(screen.queryByRole('link', { name: /view wi #.*n0/i })).not.toBeInTheDocument();
   });
 
   it('includes the project segment in the ADO link when project is provided', async () => {
     renderWarnings(
       [
-        "Near-duplicate items 'RS-232 Receiver Support' [localId: n0], 'LVCMOS Driver Support' [localId: n1] appear to state conflicting values for the same parameter (['eight RS-232', 'eight LVCMOS']) -- resolve before this can be finalized.",
+        warning({
+          kind: 'near_duplicate_conflict',
+          severity: 'needs_review',
+          raw: "Near-duplicate items 'RS-232 Receiver Support', 'LVCMOS Driver Support' appear to state conflicting values.",
+          nodeIds: ['n0', 'n1'],
+        }),
       ],
-      vi.fn(),
-      { n1: 604 },
-      'https://dev.azure.com/example-org',
-      'elisradevops-project',
+      { onJumpToNode: vi.fn(), adoIdByLocalId: { n1: 604 }, orgUrl: 'https://dev.azure.com/example-org', project: 'elisradevops-project' },
     );
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Near-duplicate items with conflicting values'));
+    await userEvent.click(screen.getByText('Needs your review'));
 
     const adoLink = screen.getByRole('link', { name: /view wi #604 in azure devops/i });
     expect(adoLink).toHaveAttribute('href', 'https://dev.azure.com/example-org/elisradevops-project/_workitems/edit/604');
   });
 
-  it('offers no ADO link for a conflict item that is still only a proposed create', async () => {
-    renderWarnings(
-      [
-        "Near-duplicate items 'A' [localId: n0], 'B' [localId: n1] appear to state conflicting values for the same parameter (['x', 'y']) -- resolve before this can be finalized.",
-      ],
-      vi.fn(),
-      {}, // neither n0 nor n1 exists in ADO yet
-      'https://dev.azure.com/example-org',
-    );
+  it('offers no ADO link and no review buttons for a warning with no affected node ids', async () => {
+    renderWarnings([warning({ kind: 'zero_nodes', severity: 'pipeline_issue', raw: 'Section produced 0 work items.' })], {
+      onJumpToNode: vi.fn(),
+      orgUrl: 'https://dev.azure.com/example-org',
+    });
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Near-duplicate items with conflicting values'));
+    await userEvent.click(screen.getByText('Pipeline issue'));
 
+    expect(screen.queryByRole('button', { name: /review/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /view wi/i })).not.toBeInTheDocument();
   });
 });

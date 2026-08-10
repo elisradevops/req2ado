@@ -8,9 +8,11 @@ if TYPE_CHECKING:
 
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback, _sample_titles
 from app.workitem.model import (
+    IntegrityWarning,
     TraceLink,
     TraceLinkResolutionStatus,
     TraceLinkTargetKind,
+    WarningKind,
     WorkItemNode,
 )
 
@@ -36,7 +38,7 @@ def _infer_trace_links_for_nodes(
     all_nodes: list[WorkItemNode],
     link_type_client: TraceLinkInferenceClient,
     catalog: list[dict],
-    all_warnings: list[str],
+    all_warnings: list[IntegrityWarning],
     progress_callback: ProgressCallback | None,
     blocks_total: int,
     branch_count: int,
@@ -92,8 +94,11 @@ def _infer_trace_links_for_nodes(
         if debug_capture is not None:
             debug_capture.capture("infer_trace_links", "document", str(exc))
         all_warnings.append(
-            "Trace/coverage link inference failed for this document -- no trace links were added, "
-            "but every proposed work item above is otherwise unaffected."
+            IntegrityWarning.make(
+                WarningKind.TRACE_LINK_INFERENCE_FAILED,
+                "Trace/coverage link inference failed for this document -- no trace links were added, "
+                "but every proposed work item above is otherwise unaffected.",
+            )
         )
         raw_links = []
     catalog_by_ref = {entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog}

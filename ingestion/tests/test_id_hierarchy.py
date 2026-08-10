@@ -134,7 +134,7 @@ def test_rows_from_id_headings_excludes_and_warns_on_a_deviant_offset() -> None:
     ]
     rows, warnings, claimed = rows_from_id_headings(blocks)
     assert "b3" not in claimed
-    assert any("dominant heading-level offset" in w for w in warnings)
+    assert any("dominant heading-level offset" in w.raw for w in warnings)
 
 
 def test_rows_from_id_headings_returns_empty_for_a_flat_single_level_outline() -> None:

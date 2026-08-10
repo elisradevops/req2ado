@@ -12,7 +12,7 @@ export interface WorkItemTree {
   /**
    * Non-fatal integrity signals surfaced to a human reviewer. Always [] for BASELINE.
    */
-  warnings?: string[];
+  warnings?: IntegrityWarning[];
   kb_citations?: KbCitation[];
   trace_links?: TraceLink[];
 }
@@ -92,6 +92,54 @@ export interface WorkItemNode {
   quality_category_scores?: {
     [k: string]: number;
   } | null;
+}
+export interface IntegrityWarning {
+  /**
+   * Closed vocabulary (app.workitem.model.WarningKind). ado_verification_failed is deliberately absent -- that kind is only ever added by the orchestrator's own post-processing, never by ingestion's /level response this schema describes.
+   */
+  kind:
+    | 'reparented_to_feature'
+    | 'group_reparented'
+    | 'bridge_feature_synthesized'
+    | 'roots_regrouped'
+    | 'catchall_epic_wrap'
+    | 'near_duplicate_conflict'
+    | 'output_truncated'
+    | 'no_model_title'
+    | 'invalid_figure_ids'
+    | 'invalid_table_ids'
+    | 'invalid_node_type'
+    | 'dangling_parent'
+    | 'low_grounding'
+    | 'zero_nodes'
+    | 'dropped_blocks'
+    | 'missing_table_group_coverage'
+    | 'external_reference'
+    | 'scoring_failed'
+    | 'scoring_missing'
+    | 'scoring_inconsistent_categories'
+    | 'enhancement_call_failed'
+    | 'enhancement_response_incomplete'
+    | 'dropped_row'
+    | 'front_matter_folded'
+    | 'trace_link_inference_failed'
+    | 'heading_id_offset_mismatch';
+  /**
+   * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
+   */
+  severity: 'auto_fixed' | 'needs_review' | 'pipeline_issue';
+  /**
+   * Affected local ids, if any -- what a 'Review item' UI affordance iterates over. Empty when the warning describes content that never became a node (e.g. a dropped row/block).
+   */
+  node_ids: string[];
+  /**
+   * Kind-specific structured payload (e.g. targetFeatureId, threshold, rawType) -- see each WarningKind's own emission site for its shape.
+   */
+  detail: {};
+  /**
+   * The fully-formed human sentence -- always populated, so a client that doesn't recognize `kind` yet can still show something sane.
+   */
+  raw: string;
 }
 export interface KbCitation {
   source_file: string;

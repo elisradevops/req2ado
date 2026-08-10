@@ -11,7 +11,8 @@ from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.depth import resolve_block_depth
 from app.leveling.profiles import heading_style_type_for_depth
-from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
+from app.leveling.warnings_finalize import finalize_warnings
+from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
 
 
 def _split_into_branches(doc: CanonicalDoc) -> list[list[Block]]:
@@ -483,7 +484,7 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     # description, so there is nothing to hash-mismatch against. Surfacing it
     # here closes that blind spot without changing behavior -- the entry is
     # still dropped, a human reviewer now has a chance to notice.
-    warnings: list[str] = []
+    warnings: list[IntegrityWarning] = []
 
     # Front-matter buffer: an orphan entry (table or block with no node yet
     # open to fold into) is typically the document's own preamble -- a cover
@@ -539,10 +540,14 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     if orphan_source_ref is None:
                         orphan_source_ref = table.source_ref
                     orphan_entries.append(description)
-                    title_preview = table.caption or table.id
+                    title_preview = table.caption or "an untitled table"
                     warnings.append(
-                        f"Table {table.id} ({title_preview}) precedes any heading/numbering in its "
-                        f"branch -- folded into a synthetic front-matter node instead of being dropped."
+                        IntegrityWarning.make(
+                            WarningKind.FRONT_MATTER_FOLDED,
+                            f"A table ({title_preview}) precedes any heading/numbering in its "
+                            f"branch -- folded into a synthetic front-matter node instead of being dropped.",
+                            detail={"kind": "table", "sourceId": table.id, "preview": title_preview},
+                        )
                     )
                 continue
 
@@ -567,8 +572,12 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     orphan_entries.append(display_text)
                     preview = display_text[:80].replace("\n", " ")
                     warnings.append(
-                        f"Block {block.id} precedes any heading/numbering in its branch -- folded "
-                        f'into a synthetic front-matter node instead of being dropped. Text: "{preview}"'
+                        IntegrityWarning.make(
+                            WarningKind.FRONT_MATTER_FOLDED,
+                            f'A block of text ("{preview}") precedes any heading/numbering in its branch -- '
+                            "folded into a synthetic front-matter node instead of being dropped.",
+                            detail={"kind": "block", "sourceId": block.id, "preview": preview},
+                        )
                     )
                 continue
 
@@ -648,4 +657,4 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                 nodes.append(front_matter_node)
                 nodes_by_id[front_matter_local_id] = front_matter_node
 
-    return WorkItemTree(nodes=nodes, warnings=warnings)
+    return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))

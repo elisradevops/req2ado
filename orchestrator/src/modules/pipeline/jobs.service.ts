@@ -13,7 +13,7 @@ import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
 import { IngestionHttpError, type IngestionHttpClient } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
-import type { DryRunDiffEntry } from '../writeback/dry-run.service';
+import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency } from './map-with-concurrency';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import { toAdoDescriptionHtml } from './description-html';
@@ -334,7 +334,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     status: string;
     mode: string;
     dryRunDiff: unknown;
-    warnings: string[];
+    // Union with `string` is the back-compat seam: a job persisted before
+    // the structured-warnings migration still has a literal string[] in its
+    // Json? column -- see CollapsibleWarnings.tsx's normalizeWarning for
+    // where that legacy shape gets reclassified into a WarningRecord.
+    warnings: (WarningRecord | string)[];
     kbCitations: unknown;
     // {figureIndex, caption}[] -- see Job.figureDescriptions' schema.prisma
     // doc comment. Defaults to [] for a historical job (null column), same
@@ -359,7 +363,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       status: job.status,
       mode: job.mode,
       dryRunDiff: job.dryRunDiff,
-      warnings: (job.warnings as string[] | null) ?? [],
+      warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [],
       kbCitations: job.kbCitations,
       figureDescriptions: (job.figureDescriptions as { figureIndex: number; caption: string }[] | null) ?? [],
       createdAt: job.createdAt,
@@ -610,7 +614,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     reused: number;
     dedupSkipped: number;
     flagged: number;
-    warnings: string[];
+    // Union with `string` is the back-compat seam: a job persisted before
+    // the structured-warnings migration still has a literal string[] in its
+    // Json? column -- see CollapsibleWarnings.tsx's normalizeWarning for
+    // where that legacy shape gets reclassified into a WarningRecord.
+    warnings: (WarningRecord | string)[];
   } | null> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
@@ -620,7 +628,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       reused: diff.filter((e) => e.action === 'reuse').length,
       dedupSkipped: diff.filter((e) => e.action === 'dedup_skip').length,
       flagged: diff.filter((e) => JobsService.isFlagged(e)).length,
-      warnings: (job.warnings as string[] | null) ?? [],
+      warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [],
     };
   }
 
@@ -773,6 +781,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       this.prisma.auditEntry.deleteMany({ where: { jobId: id } }),
       this.prisma.jobSourceFile.deleteMany({ where: { jobId: id } }),
       this.prisma.jobFigureFile.deleteMany({ where: { jobId: id } }),
+      // Real bug (user-reported): JobEvent has a required FK to Job with no
+      // onDelete: Cascade (schema.prisma) -- every job that ever emitted a
+      // narration event (i.e. every job that actually ran) has JobEvent
+      // rows, so job.delete() below unconditionally failed with a foreign
+      // key violation. This was the one relation missing from this list.
+      this.prisma.jobEvent.deleteMany({ where: { jobId: id } }),
       this.prisma.job.delete({ where: { id } }),
     ]);
     return { deleted: true };

@@ -85,6 +85,27 @@ def test_survey_tree_matches_work_item_tree_schema(schema) -> None:
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
+def test_survey_tree_with_a_real_warning_matches_work_item_tree_schema(schema) -> None:
+    # Neither fixture above ever produces a non-empty `warnings` list, so
+    # this schema's own IntegrityWarning shape (kind/severity/node_ids/
+    # detail/raw) was never actually exercised against real serialized
+    # output -- an empty array trivially satisfies any `items` schema
+    # regardless of whether that schema is even correct.
+    fake = FakeSectionAnalysisClient()
+    # No "title" key at all -- triggers the NO_MODEL_TITLE warning
+    # regardless of hierarchy shape (a lone root Requirement with no
+    # Feature/Epic anywhere is otherwise a legitimate no-op, see
+    # test_build_survey_tree_does_not_touch_a_genuinely_sole_root_requirement
+    # in test_llm_leveling.py).
+    fake.analyze_section = lambda *a, **k: (
+        [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []}],
+        False,
+    )
+    tree = build_survey_tree(_survey_doc(), fake)
+    assert len(tree.warnings) >= 1
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
 def test_schema_rejects_a_stray_field_on_a_node(schema) -> None:
     # Regression: before additionalProperties:false, this schema was nearly
     # vacuous -- it validated any node shape, stray fields included, so a

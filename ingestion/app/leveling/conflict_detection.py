@@ -4,7 +4,7 @@ import logging
 from typing import Protocol
 
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
-from app.workitem.model import RequirementQualityIssue, WorkItemNode, WorkItemType
+from app.workitem.model import IntegrityWarning, RequirementQualityIssue, WarningKind, WorkItemNode, WorkItemType
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def _detect_conflicting_duplicates(
     all_nodes: list[WorkItemNode],
     embed_client: object | None,
     conflict_client: ConflictJudgeClient | None,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
     progress_callback: ProgressCallback | None = None,
     blocks_total: int = 0,
     branch_count: int = 0,
@@ -129,22 +129,28 @@ def _detect_conflicting_duplicates(
             continue
         conflicting_values = verdict_entry.get("conflicting_values") or []
         # Confirmed real gap (user-reported): a bare local_id list
-        # ("det0_h6_1_2_1") means nothing to a reviewer -- it isn't
-        # visible anywhere in the diff-tree UI on its own. Each member's
-        # real TITLE (what the reviewer actually sees in the tree) comes
-        # first; the "[localId: ...]" marker is a stable, parseable tail
-        # the frontend uses to turn this into a real jump-to-node link
-        # (see CollapsibleWarnings.tsx's 'conflict' warning group).
-        member_descriptions = ", ".join(
-            f"'{n.title}' [localId: {n.local_id}]" for n in cluster_nodes
-        )
+        # ("det0_h6_1_2_1") means nothing to a reviewer -- it isn't visible
+        # anywhere in the diff-tree UI on its own. Each member's real TITLE
+        # (what the reviewer actually sees in the tree) is all the prose
+        # carries; the structured `node_ids` field below (not a text tag) is
+        # what the frontend uses to build a real jump-to-node link -- see
+        # CollapsibleWarnings.tsx, which reads warning.nodeIds directly and
+        # never parses this sentence.
+        member_descriptions = ", ".join(f"'{n.title}'" for n in cluster_nodes)
         message = (
             f"Near-duplicate items {member_descriptions} appear to state conflicting "
             f"values for the same parameter ({conflicting_values}) -- resolve before this "
             "can be finalized."
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.NEAR_DUPLICATE_CONFLICT,
+                message,
+                node_ids=[n.local_id for n in cluster_nodes],
+                detail={"conflictingValues": conflicting_values},
+            )
+        )
         for node in cluster_nodes:
             if RequirementQualityIssue.CONFLICTING_VALUE not in node.quality_issues:
                 node.quality_issues = sorted(

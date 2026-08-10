@@ -1336,7 +1336,7 @@ describe('JobsService.getSummary', () => {
     );
   }
 
-  it('aggregates create/reuse/dedup_skip counts and warnings from the stored job', async () => {
+  it('aggregates create/reuse/dedup_skip counts and warnings from the stored job (legacy string[] jobs)', async () => {
     const service = makeService({
       id: 'job-1',
       dryRunDiff: [
@@ -1357,6 +1357,25 @@ describe('JobsService.getSummary', () => {
       flagged: 0,
       warnings: ['SURVEY node count diverges from source block count'],
     });
+  });
+
+  it('round-trips a structured WarningRecord[] job unchanged (no reclassification at this layer)', async () => {
+    const warning = {
+      kind: 'reparented_to_feature',
+      severity: 'auto_fixed',
+      nodeIds: ['n0', 'n1'],
+      detail: { targetFeatureId: 'f0' },
+      raw: '2 Requirement(s) were re-parented under Feature f0 to keep the Epic -> Feature -> Requirement chain intact.',
+    };
+    const service = makeService({
+      id: 'job-1',
+      dryRunDiff: [],
+      warnings: [warning],
+    });
+
+    const summary = await service.getSummary('job-1');
+
+    expect(summary?.warnings).toEqual([warning]);
   });
 
   it('counts an entry as flagged when groundingScore is below 0.2 or qualityScore is below 50', async () => {
@@ -2493,6 +2512,7 @@ describe('JobsService.delete', () => {
       const auditEntryDeleteMany = jest.fn().mockResolvedValue(undefined);
       const jobSourceFileDeleteMany = jest.fn().mockResolvedValue(undefined);
       const jobFigureFileDeleteMany = jest.fn().mockResolvedValue(undefined);
+      const jobEventDeleteMany = jest.fn().mockResolvedValue(undefined);
       const jobDelete = jest.fn().mockResolvedValue(undefined);
       const prisma = {
         job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status }), delete: jobDelete },
@@ -2502,6 +2522,7 @@ describe('JobsService.delete', () => {
         auditEntry: { deleteMany: auditEntryDeleteMany },
         jobSourceFile: { deleteMany: jobSourceFileDeleteMany },
         jobFigureFile: { deleteMany: jobFigureFileDeleteMany },
+        jobEvent: { deleteMany: jobEventDeleteMany },
         idempotencyMapping: { deleteMany: jest.fn() },
         $transaction: jest.fn(async (ops: unknown[]) => Promise.all(ops)),
       };
@@ -2515,6 +2536,12 @@ describe('JobsService.delete', () => {
       expect(auditEntryDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
       expect(jobSourceFileDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
       expect(jobFigureFileDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+      // Real bug (user-reported): JobEvent has a required FK to Job with no
+      // onDelete: Cascade -- was the only child table missing from this
+      // transaction, so job.delete() unconditionally hit a foreign key
+      // violation for every job that ever emitted a narration event (i.e.
+      // every job that actually ran).
+      expect(jobEventDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
       expect(jobDelete).toHaveBeenCalledWith({ where: { id: 'job-1' } });
       expect(prisma.idempotencyMapping.deleteMany).not.toHaveBeenCalled();
       expect(result).toEqual({ deleted: true });

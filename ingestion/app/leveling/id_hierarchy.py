@@ -39,7 +39,7 @@ from typing import NamedTuple, TypeVar
 
 from app.canonical.model import Block, BlockKind, SourceRef
 from app.leveling.numbering import parse_numbering
-from app.workitem.model import WorkItemType
+from app.workitem.model import IntegrityWarning, WarningKind, WorkItemType
 
 _K = TypeVar("_K", bound=Hashable)
 
@@ -575,7 +575,7 @@ def classify_by_nesting(
 
 def rows_from_id_headings(
     blocks: list[Block],
-) -> tuple[list[HierarchyRow], list[str], list[str]]:
+) -> tuple[list[HierarchyRow], list[IntegrityWarning], list[str]]:
     """Convention 2: a native Word Heading hierarchy where the document's
     own author typed a dotted numeric ID directly into the heading text
     (e.g. "1.1.2.2.a  If multiple active sources are available..."), so
@@ -664,7 +664,7 @@ def rows_from_id_headings(
         else:
             deviants.append((block, segments, label))
 
-    warnings: list[str] = []
+    warnings: list[IntegrityWarning] = []
     if deviants:
         previews = "; ".join(
             f"'{b.text[:60]}' (heading level {b.heading_level}, expected "
@@ -672,9 +672,13 @@ def rows_from_id_headings(
             for b, segs, _label in deviants[:10]
         )
         warnings.append(
-            f"{len(deviants)} heading(s) had an ID that doesn't match this document's dominant "
-            "heading-level offset and were excluded from deterministic structure detection: "
-            f"{previews}"
+            IntegrityWarning.make(
+                WarningKind.HEADING_ID_OFFSET_MISMATCH,
+                f"{len(deviants)} heading(s) had an ID that doesn't match this document's dominant "
+                "heading-level offset and were excluded from deterministic structure detection: "
+                f"{previews}",
+                detail={"deviantCount": len(deviants)},
+            )
         )
 
     parsed = [(segments, label) for _block, segments, label in confirmed]
@@ -695,7 +699,7 @@ def rows_from_id_headings(
 
 def rows_from_heading_structure(
     blocks: list[Block],
-) -> tuple[list[HierarchyRow], list[str], list[str]]:
+) -> tuple[list[HierarchyRow], list[IntegrityWarning], list[str]]:
     """Convention 3: a native Word Heading hierarchy with NO id text at
     all. Confirmed live against a real ICD-style document (AirPro): Word
     renders "3.2.1"-style numbers for its headings, but those numbers are

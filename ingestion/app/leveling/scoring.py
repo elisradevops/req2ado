@@ -9,9 +9,11 @@ if TYPE_CHECKING:
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback, _sample_titles
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.workitem.model import (
+    IntegrityWarning,
     KbCitation,
     QualityCategoryScores,
     RequirementQualityIssue,
+    WarningKind,
     WorkItemNode,
     WorkItemType,
 )
@@ -79,7 +81,7 @@ _SCORING_CHUNK_NODE_COUNT = 150
 def _score_all_requirements(
     nodes: list[WorkItemNode],
     scoring_client: BatchedScoringClient,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
     criteria_retriever: CriteriaRetriever | None,
     kb_context: str | None,
     kb_citations: list[KbCitation],
@@ -190,7 +192,14 @@ def _score_all_requirements(
             # identical kind of call.
             message = f"Requirement quality scoring failed for {len(chunk)} node(s): {exc}"
             logger.warning(message)
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.SCORING_FAILED,
+                    message,
+                    node_ids=[n.local_id for n in chunk],
+                    detail={"scope": "requirement", "chunkSize": len(chunk)},
+                )
+            )
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -215,7 +224,7 @@ def _score_all_requirements(
 def _score_epics_and_features(
     nodes: list[WorkItemNode],
     scoring_client: object,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
     progress_callback: ProgressCallback | None,
     model_name: str | None,
     blocks_total: int,
@@ -301,7 +310,14 @@ def _score_epics_and_features(
             logger.warning(message)
             if debug_capture is not None:
                 debug_capture.capture("score_epics_and_features", f"chunk_{start}", str(exc))
-            warnings.append(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.SCORING_FAILED,
+                    message,
+                    node_ids=[n.local_id for n in chunk],
+                    detail={"scope": "epic_feature", "chunkSize": len(chunk)},
+                )
+            )
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -395,7 +411,7 @@ def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
 def _apply_quality_scores(
     nodes: list[WorkItemNode],
     scoring_client: BatchedScoringClient,
-    warnings: list[str],
+    warnings: list[IntegrityWarning],
     node_id_prefix: str,
     criteria_context: str | None = None,
     kb_context: str | None = None,
@@ -446,14 +462,22 @@ def _apply_quality_scores(
         )
         node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
 
-    missing_or_invalid = [node.local_id for node in nodes if node.quality_score is None]
+    missing_nodes = [node for node in nodes if node.quality_score is None]
+    missing_or_invalid = [node.local_id for node in missing_nodes]
     if missing_or_invalid:
-        message = (
-            f"Quality scoring returned no valid score for {len(missing_or_invalid)} node(s) in branch "
-            f"'{node_id_prefix or '(root)'}': {missing_or_invalid[:10]}"
-        )
+        preview = ", ".join(f'"{n.title}"' for n in missing_nodes[:5])
+        if len(missing_nodes) > 5:
+            preview += f", and {len(missing_nodes) - 5} more"
+        message = f"Quality scoring returned no valid score for {len(missing_or_invalid)} item(s): {preview}."
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.SCORING_MISSING,
+                message,
+                node_ids=missing_or_invalid,
+                detail={"branch": node_id_prefix or "(root)"},
+            )
+        )
         if progress_callback is not None:
             progress_callback(
                 LevelingProgress(
@@ -479,12 +503,18 @@ def _apply_quality_scores(
     }
     if len(scored_key_sets) > 1:
         message = (
-            f"Quality scoring returned inconsistent categoryScores key sets across nodes in branch "
-            f"'{node_id_prefix or '(root)'}' ({len(scored_key_sets)} distinct sets) -- the model did not "
-            "use the same category names for every node in this batch."
+            f"Quality scoring used {len(scored_key_sets)} different sets of category names across items in "
+            "the same batch -- the model did not stay consistent, so quality breakdowns may not line up "
+            "for comparison."
         )
         logger.warning(message)
-        warnings.append(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.SCORING_INCONSISTENT_CATEGORIES,
+                message,
+                detail={"branch": node_id_prefix or "(root)", "distinctKeySetCount": len(scored_key_sets)},
+            )
+        )
         if progress_callback is not None:
             progress_callback(
                 LevelingProgress(

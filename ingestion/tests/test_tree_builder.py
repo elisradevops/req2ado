@@ -154,8 +154,7 @@ def test_a_branch_starting_with_no_recognized_heading_folds_its_orphan_block_int
     front_matter_node = next(n for n in tree.nodes if "stray line" in n.description)
     assert front_matter_node.title.startswith("Front Matter:")
     assert len(tree.warnings) == 1
-    assert "b0" in tree.warnings[0]
-    assert "stray line" in tree.warnings[0]
+    assert "stray line" in tree.warnings[0].raw
 
 
 def test_a_document_with_a_recognized_heading_first_produces_no_warnings() -> None:
@@ -662,7 +661,7 @@ def test_a_table_before_any_heading_in_its_branch_is_folded_into_front_matter() 
     front_matter_node = next(n for n in tree.nodes if "Rail" in n.description)
     assert front_matter_node.parent_local_id == tree.nodes[0].local_id
     assert len(tree.warnings) == 1
-    assert "t0" in tree.warnings[0]
+    assert "Rail Table" in tree.warnings[0].raw
 
 
 def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -> None:
@@ -695,7 +694,11 @@ def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -
     # prose (offset 0) and the heading (offset 40) -- it must appear AFTER
     # the prose in the joined description, not before.
     assert front_matter_node.description.index("Scope:") < front_matter_node.description.index("Rev")
-    assert len(tree.warnings) == 2
+    # Both front-matter folds (the table AND the prose block) are the same
+    # IntegrityWarning kind with no natural sub-key, so finalize_warnings
+    # merges them into ONE summary record instead of two near-identical lines.
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].detail["mergedCount"] == 2
 
 
 def test_document_with_both_headings_and_tables_skips_a_fully_blank_table() -> None:
