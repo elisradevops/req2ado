@@ -112,8 +112,15 @@ function escapeWiqlValue(value: string): string {
 }
 
 function buildWiqlQuery(fieldMatch: Record<string, string>): string {
+  // System.AreaPath uses UNDER, not = -- callers querying "everything under
+  // this area path" (e.g. backfill.service.ts) need the whole subtree, not
+  // just an exact-match node; confirmed via Microsoft's WIQL docs that
+  // UNDER is fully supported at api-version 7.0 on-prem (this server's own
+  // ladder already resolves there for a real Server 2022.1 instance -- see
+  // config/env.ts), with no on-prem-vs-cloud quirk for this operator. Every
+  // other field keeps exact-match semantics -- unrelated to this bug.
   const conditions = Object.entries(fieldMatch)
-    .map(([field, value]) => `[${field}] = '${escapeWiqlValue(value)}'`)
+    .map(([field, value]) => `[${field}] ${field === 'System.AreaPath' ? 'UNDER' : '='} '${escapeWiqlValue(value)}'`)
     .join(' AND ');
   return `SELECT [System.Id] FROM WorkItems WHERE ${conditions}`;
 }
@@ -279,9 +286,10 @@ export class RealAdoBackend implements AdoBackend {
     );
   }
 
-  async queryIds(fieldMatch: Record<string, string>): Promise<number[]> {
+  async queryIds(fieldMatch: Record<string, string>, project?: string): Promise<number[]> {
+    const proj = project ?? this.config.adoProject;
     const version = await this.getApiVersion();
-    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/wiql${versionQueryParam(version)}`;
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/wiql${versionQueryParam(version)}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.post(
         url,

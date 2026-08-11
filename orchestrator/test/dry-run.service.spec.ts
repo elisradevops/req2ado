@@ -316,7 +316,7 @@ describe('DryRunService', () => {
         tags: [],
       },
     ]);
-    expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Project\\Area1');
+    expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1');
   });
 
   it('marks a node as "create" when no exact-hash match exists and dedupCheck finds no duplicate', async () => {

@@ -62,7 +62,7 @@ describe('McpClient', () => {
     expect(JSON.parse(options.body)).toEqual({ workItemType: 'Requirement' });
   });
 
-  it('queryIds POSTs to ado_query_ids with the given field match', async () => {
+  it('queryIds POSTs to ado_query_ids with the given field match, omitting project when not given', async () => {
     mockJsonResponse([100, 101]);
 
     const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
@@ -71,6 +71,16 @@ describe('McpClient', () => {
     expect(result).toEqual([100, 101]);
     const [, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(JSON.parse(options.body)).toEqual({ fieldMatch: { 'System.AreaPath': 'Project\\Area1' } });
+  });
+
+  it('queryIds forwards project when given (per-job ADO project override)', async () => {
+    mockJsonResponse([100, 101]);
+
+    const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
+    await client.queryIds({ 'System.AreaPath': 'Project\\Area1' }, 'Project');
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({ fieldMatch: { 'System.AreaPath': 'Project\\Area1' }, project: 'Project' });
   });
 
   it('readAreaPaths POSTs to ado_read_area_paths and parses the result', async () => {

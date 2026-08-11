@@ -206,11 +206,17 @@ export class IngestionHttpClient {
     };
   }
 
-  async checkDuplicate(text: string, areaPath: string): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
+  // title: blended 50/50 with the description embedding on the ingestion
+  // side -- description alone can't separate "same requirement, reworded"
+  // from "different requirement, same topic" (confirmed real miss: a true
+  // duplicate scored 0.755, its nearest false neighbor 0.747). See
+  // check_for_duplicates.py's own docstring for the full rationale; the
+  // fixed 0.90 threshold itself is unchanged.
+  async checkDuplicate(text: string, title: string, areaPath: string): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
     const response = await fetch(`${this.baseUrl}/dedup/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, area_path: areaPath }),
+      body: JSON.stringify({ text, title, area_path: areaPath }),
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /dedup/check request failed: ${await _readErrorDetail(response)}`);
@@ -219,11 +225,11 @@ export class IngestionHttpClient {
     return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
   }
 
-  async upsertDedupEntry(itemId: string, text: string, areaPath: string): Promise<void> {
+  async upsertDedupEntry(itemId: string, text: string, title: string, areaPath: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/dedup/upsert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId, text, area_path: areaPath }),
+      body: JSON.stringify({ item_id: itemId, text, title, area_path: areaPath }),
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /dedup/upsert request failed: ${await _readErrorDetail(response)}`);
@@ -236,13 +242,13 @@ export class IngestionHttpClient {
    * per-node loop triggering one /dedup/upsert (and one embed() call) per
    * item. A no-op for an empty list (never makes the HTTP call at all).
    */
-  async upsertDedupEntriesBatch(items: { itemId: string; text: string; areaPath: string }[]): Promise<void> {
+  async upsertDedupEntriesBatch(items: { itemId: string; text: string; title: string; areaPath: string }[]): Promise<void> {
     if (items.length === 0) return;
     const response = await fetch(`${this.baseUrl}/dedup/upsert-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        items: items.map((item) => ({ item_id: item.itemId, text: item.text, area_path: item.areaPath })),
+        items: items.map((item) => ({ item_id: item.itemId, text: item.text, title: item.title, area_path: item.areaPath })),
       }),
     });
     if (!response.ok) {
@@ -264,6 +270,21 @@ export class IngestionHttpClient {
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /dedup/delete request failed: ${await _readErrorDetail(response)}`);
+    }
+  }
+
+  /**
+   * Irreversibly drops a user's entire KB collection -- the admin/CLI
+   * remediation (scripts/purge-user-data.ts) for a deleted-and-recreated
+   * ADO account whose new session resolves to the same descriptor-derived
+   * userId as the old one. Never called from any normal request path.
+   */
+  async purgeUserKb(userId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/kb/collection?user_id=${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /kb/collection delete request failed: ${await _readErrorDetail(response)}`);
     }
   }
 

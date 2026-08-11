@@ -19,6 +19,7 @@ from app.chat.redis_publisher import RedisChatPublisher
 from app.config import settings
 from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
+from app.dedup.embedding_blend import blend_embeddings
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
@@ -454,12 +455,14 @@ def _build_survey_tree_with_scoring(
 
 class DedupCheckRequest(BaseModel):
     text: str
+    title: str
     area_path: str
 
 
 class DedupUpsertRequest(BaseModel):
     item_id: str
     text: str
+    title: str
     area_path: str
 
 
@@ -896,6 +899,7 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
 async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
     return check_for_duplicates(
         body.text,
+        body.title,
         item_id="",
         area_path=body.area_path,
         embed_client=_embed_client,
@@ -906,7 +910,8 @@ async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
 
 @app.post("/dedup/upsert")
 async def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
-    [embedding] = _embed_client.embed([body.text])
+    title_embedding, description_embedding = _embed_client.embed([body.title, body.text])
+    embedding = blend_embeddings(title_embedding, description_embedding)
     # document=body.text: stores the item's original text alongside its
     # embedding, so a future check_for_duplicates call can run its
     # numeric-literal guard (X7) against the actual matched text.
@@ -929,10 +934,17 @@ async def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     # Previously every confirmed work item triggered its own single-item
     # /dedup/upsert call (one embed() round-trip per item) from
     # JobsService.confirm()'s per-node loop, despite embed() already
-    # accepting a list. Batches all items' texts into ONE embed() call.
+    # accepting a list. Batches all items' titles AND texts into ONE
+    # embed() call (2N texts, not N) -- still one round trip.
     if not body.items:
         return {"ok": True}
-    embeddings = _embed_client.embed([item.text for item in body.items])
+    n = len(body.items)
+    embeddings = _embed_client.embed([item.title for item in body.items] + [item.text for item in body.items])
+    title_embeddings, description_embeddings = embeddings[:n], embeddings[n:]
+    blended_embeddings = [
+        blend_embeddings(title_embedding, description_embedding)
+        for title_embedding, description_embedding in zip(title_embeddings, description_embeddings)
+    ]
 
     # Group by area_path before calling vector_store.upsert_many -- one
     # Chroma round trip per distinct area path instead of one per item
@@ -944,7 +956,7 @@ async def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     # areaPath (see JobsService's dedupUpsertItems), but the grouping here
     # stays correct even if that ever stops holding.
     items_by_area_path: dict[str, list[tuple[str, list[float], str]]] = {}
-    for item, embedding in zip(body.items, embeddings):
+    for item, embedding in zip(body.items, blended_embeddings):
         items_by_area_path.setdefault(item.area_path, []).append((item.item_id, embedding, item.text))
 
     for area_path, items in items_by_area_path.items():
@@ -1052,6 +1064,25 @@ async def kb_delete_document(user_id: str, source_file: str, source_id: str) -> 
     # remove. run_in_threadpool: same reasoning as every other route here --
     # Chroma's client is synchronous I/O, must not block the event loop.
     await run_in_threadpool(_kb_vector_store.delete_file_chunks, user_id, source_file, source_id)
+    return {"ok": True}
+
+
+@app.delete("/kb/collection")
+async def kb_purge_collection(user_id: str) -> dict[str, bool]:
+    # Admin/CLI-only remediation (see docs/runbook.md) for a deleted-and-
+    # recreated ADO account whose new session resolves to the same
+    # descriptor-derived user_id as the old one -- KbVectorStore.purge_user
+    # irreversibly drops the ENTIRE collection, not just one file's chunks
+    # (contrast with kb_delete_document above). run_in_threadpool: same
+    # reasoning as every other Chroma-touching route here.
+    #
+    # Rejects a blank/whitespace-only user_id explicitly: this delete is
+    # irreversible, so a malformed query string must 400 loudly rather than
+    # either silently no-op against a nonexistent collection or (if it ever
+    # collided with a real descriptor) drop the wrong user's KB.
+    if not user_id.strip():
+        raise HTTPException(status_code=400, detail="user_id is required")
+    await run_in_threadpool(_kb_vector_store.purge_user, user_id)
     return {"ok": True}
 
 

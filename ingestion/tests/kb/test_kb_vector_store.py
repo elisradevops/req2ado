@@ -77,7 +77,10 @@ def test_kb_collections_are_isolated_from_dedup_collections_for_the_same_area_pa
         assert dedup_store.query_nearest([1.0, 0.0, 0.0], area_path="Project\\Area1") is None
 
 
-def test_delete_file_chunks_removes_all_chunks_for_that_file_only() -> None:
+def test_delete_file_chunks_removes_all_chunks_for_that_source_id_only() -> None:
+    # source_id is the Graph drive-item identity -- unique per real file
+    # (see ingest_service.py's call sites). Two genuinely distinct files use
+    # distinct source_ids, so deleting one's chunks must not touch the other.
     with tempfile.TemporaryDirectory() as tmp:
         store = KbVectorStore(persist_path=tmp)
         store.upsert_chunk(
@@ -85,12 +88,76 @@ def test_delete_file_chunks_removes_all_chunks_for_that_file_only() -> None:
             source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
         )
         store.upsert_chunk(
-            chunk_id="source-1:other.txt:0", embedding=[0.0, 1.0, 0.0], text="t1", user_id="Project\\Area1",
-            source_file="other.txt", source_id="source-1", chunk_index=0, file_hash="hash-2",
+            chunk_id="source-2:other.txt:0", embedding=[0.0, 1.0, 0.0], text="t1", user_id="Project\\Area1",
+            source_file="other.txt", source_id="source-2", chunk_index=0, file_hash="hash-2",
         )
         store.delete_file_chunks("Project\\Area1", "doc.txt", "source-1")
         assert store.existing_file_hash("Project\\Area1", "doc.txt", "source-1") is None
-        assert store.existing_file_hash("Project\\Area1", "other.txt", "source-1") == "hash-2"
+        assert store.existing_file_hash("Project\\Area1", "other.txt", "source-2") == "hash-2"
+
+
+def test_existing_file_hash_matches_by_source_id_even_when_source_file_differs() -> None:
+    # Regression for the confirmed SharePoint rename bug: source_id (the
+    # stable Graph drive-item id) is what identifies "the same file" --
+    # matching also on source_file caused a pure rename to look brand-new.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:old.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
+            source_file="old.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        assert store.existing_file_hash("Project\\Area1", "new.docx", "source-1") == "hash-1"
+
+
+def test_delete_file_chunks_removes_the_old_named_chunks_on_a_rename() -> None:
+    # Regression: previously filtering delete_file_chunks by
+    # (source_file, source_id) meant a renamed file's re-ingest deleted
+    # nothing (old chunks are stored under the old name), leaving both
+    # old-named and new-named chunks as permanent duplicates.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:old.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
+            source_file="old.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        store.delete_file_chunks("Project\\Area1", "new.docx", "source-1")
+        assert store.existing_file_hash("Project\\Area1", "old.docx", "source-1") is None
+        assert store.list_documents("Project\\Area1") == []
+
+
+def test_rename_file_updates_stored_source_file_for_every_chunk() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:old.docx:0", embedding=[1.0, 0.0, 0.0], text="first", user_id="Project\\Area1",
+            source_file="old.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        store.upsert_chunk(
+            chunk_id="source-1:old.docx:1", embedding=[0.0, 1.0, 0.0], text="second", user_id="Project\\Area1",
+            source_file="old.docx", source_id="source-1", chunk_index=1, file_hash="hash-1",
+        )
+        store.rename_file("Project\\Area1", "source-1", "new.docx")
+        assert store.list_documents("Project\\Area1") == ["new.docx"]
+        assert store.get_document("Project\\Area1", "old.docx") == (None, False)
+        assert store.get_document("Project\\Area1", "new.docx") == ("first\n\nsecond", False)
+
+
+def test_rename_file_is_a_noop_when_the_name_is_already_current() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.docx:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="Project\\Area1",
+            source_file="doc.docx", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        store.rename_file("Project\\Area1", "source-1", "doc.docx")  # must not raise or corrupt
+        assert store.list_documents("Project\\Area1") == ["doc.docx"]
+
+
+def test_rename_file_is_a_noop_when_never_ingested() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.rename_file("Project\\Area1", "never-ingested-source", "doc.docx")  # must not raise
+        assert store.list_documents("Project\\Area1") == []
 
 
 def test_two_sources_sharing_an_area_path_do_not_clobber_same_named_files() -> None:
@@ -333,6 +400,40 @@ def test_upsert_chunk_default_retrieval_mode_is_not_stored_as_always_include() -
             retrieval_mode="retrieve",
         )
         assert store.list_always_include_documents("Project\\Area1") == []
+
+
+def test_purge_user_drops_the_collection() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="user-old",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        store.purge_user("user-old")
+        assert store.list_documents("user-old") == []
+        assert store.query("user-old", embedding=[1.0, 0.0, 0.0], top_k=5) == []
+
+
+def test_purge_user_is_idempotent_when_never_ingested() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.purge_user("never-ingested-user")  # must not raise
+
+
+def test_purge_user_does_not_affect_other_users() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="user-a",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="user-b",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        store.purge_user("user-a")
+        assert store.list_documents("user-a") == []
+        assert store.list_documents("user-b") == ["doc.txt"]
 
 
 def test_list_documents_stops_at_the_document_ceiling(monkeypatch) -> None:

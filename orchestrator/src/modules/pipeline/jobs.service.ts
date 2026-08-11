@@ -933,7 +933,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // vector store in ONE batched call after the loop finishes -- previously
     // each newly-created item triggered its own /dedup/upsert call (one
     // embed() round-trip per item) inline in the loop.
-    const dedupUpsertItems: { itemId: string; text: string; areaPath: string }[] = [];
+    const dedupUpsertItems: { itemId: string; text: string; title: string; areaPath: string }[] = [];
 
     try {
       // Split into 'already resolved' (reuse/dedup_skip, cheap+sync) vs
@@ -1116,7 +1116,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         adoIdByLocalId.set(entry.localId, result.value.id);
         // Backstop future dedup checks against this newly-real item --
         // collected here, actually upserted in one batched call below.
-        dedupUpsertItems.push({ itemId: String(result.value.id), text: entry.description, areaPath: job.areaPath });
+        dedupUpsertItems.push({ itemId: String(result.value.id), text: entry.description, title: entry.title, areaPath: job.areaPath });
         createdCount += 1;
       }
       if (firstCreateError !== null) {

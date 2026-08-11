@@ -84,9 +84,11 @@ export const adoOperations: AdoOperation[] = [
   {
     name: 'ado_query_ids',
     title: 'Query work item ids by exact field match',
-    description: 'Returns ids of work items whose fields exactly match every key/value pair given. Used for dedup/idempotency lookups.',
-    inputSchema: { fieldMatch: z.record(z.string()) },
-    handler: (backend, { fieldMatch }: { fieldMatch: Record<string, string> }) => callBackend(() => backend.queryIds(fieldMatch)),
+    description:
+      'Returns ids of work items whose fields exactly match every key/value pair given (System.AreaPath matches the whole subtree via WIQL UNDER, not just an exact node). Used for dedup/idempotency lookups. `project`, when supplied, overrides the server-configured default project.',
+    inputSchema: { fieldMatch: z.record(z.string()), project: z.string().optional() },
+    handler: (backend, { fieldMatch, project }: { fieldMatch: Record<string, string>; project?: string }) =>
+      callBackend(() => backend.queryIds(fieldMatch, project)),
   },
   {
     name: 'ado_get_work_items_batch',

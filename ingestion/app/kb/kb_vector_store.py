@@ -118,30 +118,89 @@ class KbVectorStore:
 
     def existing_file_hash(self, user_id: str, source_file: str, source_id: str) -> str | None:
         """Returns the stored file_hash for any existing chunk of this
-        source_file scoped to source_id, or None if the file has never been
-        ingested by this source. Used for hash-based skip-unchanged: if this
-        matches the freshly-computed hash, the caller skips
-        re-parsing/re-embedding the file. Scoping by source_id (in addition
-        to source_file) prevents two different KbSource rows that happen to
-        share a user_id from clobbering each other's same-named files —
-        nothing today enforces user_id uniqueness across KbSource rows."""
+        source_id, or None if the file has never been ingested by this
+        source. Used for hash-based skip-unchanged: if this matches the
+        freshly-computed hash, the caller skips re-parsing/re-embedding the
+        file.
+
+        Matches by source_id ALONE, not source_file -- source_id is the
+        stable Graph drive-item identity (survives SharePoint renames/
+        same-drive moves), so a pure rename must still be recognized as the
+        same file. Confirmed real bug (fixed here): the previous compound
+        (source_file, source_id) match required the filename to ALSO match,
+        so a rename alone (same source_id, new name) looked like a
+        brand-new file -- see rename_file below for how a rename's stored
+        metadata gets brought current without a full re-embed. `source_file`
+        is accepted but intentionally unused for filtering -- kept so this
+        method's call sites don't need to change."""
         collection = self._get_collection(user_id)
-        result = collection.get(
-            where={"$and": [{"source_file": source_file}, {"source_id": source_id}]}, limit=1
-        )
+        result = collection.get(where={"source_id": source_id}, limit=1)
         metadatas = result.get("metadatas") or []
         if not metadatas:
             return None
         return metadatas[0].get("file_hash")
 
     def delete_file_chunks(self, user_id: str, source_file: str, source_id: str) -> None:
-        """Deletes all previously-stored chunks for this source_file (scoped
-        to source_id) before re-ingesting a changed file, so stale chunks
-        (e.g. from a since-removed section) don't linger alongside the new
-        ones. Scoping by source_id prevents deleting another source's
-        same-named file's chunks when two sources share a user_id."""
+        """Deletes all previously-stored chunks for this source_id before
+        re-ingesting a changed file, so stale chunks (e.g. from a
+        since-removed section) don't linger alongside the new ones.
+
+        Matches by source_id ALONE, not source_file -- same fix as
+        existing_file_hash above: a renamed file's OLD chunks are stored
+        under the old source_file value, so filtering on the new name would
+        miss them entirely and leave them as permanent duplicates alongside
+        the freshly-ingested new-named chunks. `source_file` is accepted but
+        intentionally unused for filtering -- kept so this method's call
+        sites don't need to change."""
         collection = self._get_collection(user_id)
-        collection.delete(where={"$and": [{"source_file": source_file}, {"source_id": source_id}]})
+        collection.delete(where={"source_id": source_id})
+
+    def rename_file(self, user_id: str, source_id: str, source_file: str) -> None:
+        """Brings a renamed/moved file's stored source_file metadata current
+        on every one of its existing chunks, without re-parsing/re-embedding
+        -- the counterpart fix for the skip-unchanged path (content hash
+        matches, so _store_document never reaches delete_file_chunks/
+        upsert_chunk at all). Cheap no-op check first: only pays for the
+        full-collection rewrite when the name has actually changed. No-op
+        (not an error) if source_id was never ingested."""
+        collection = self._get_collection(user_id)
+        probe = collection.get(where={"source_id": source_id}, limit=1, include=["metadatas"])
+        probe_metadatas = probe.get("metadatas") or []
+        if not probe_metadatas:
+            return  # never ingested -- nothing to rename
+        if probe_metadatas[0].get("source_file") == source_file:
+            return  # already current -- common case, avoid the full rewrite below
+
+        ids: list[str] = []
+        metadatas: list[dict] = []
+        offset = 0
+        while True:
+            page = collection.get(
+                where={"source_id": source_id}, limit=_GET_PAGE_SIZE, offset=offset, include=["metadatas"]
+            )
+            page_ids = page.get("ids") or []
+            if not page_ids:
+                break
+            ids.extend(page_ids)
+            metadatas.extend(page.get("metadatas") or [])
+            if len(page_ids) < _GET_PAGE_SIZE:
+                break  # real last page
+            offset += _GET_PAGE_SIZE
+        collection.update(ids=ids, metadatas=[{**m, "source_file": source_file} for m in metadatas])
+
+    def purge_user(self, user_id: str) -> None:
+        """Irreversibly drops this user_id's entire KB collection -- the
+        admin/CLI remediation for a deleted-and-recreated ADO account whose
+        new session resolves to the same descriptor-derived user_id as the
+        old one (see docs/runbook.md). Never called from any ingest/query/
+        delete flow -- deliberately not wired into anything automatic.
+        Idempotent: purging a user_id with no collection yet is a no-op,
+        matching every other method here that treats "no such user" as an
+        empty result rather than an error."""
+        try:
+            self._client.delete_collection(name=_kb_collection_name_for_user(user_id))
+        except chromadb.errors.NotFoundError:
+            pass
 
     def get_document(self, user_id: str, source_file: str) -> tuple[str | None, bool]:
         """Reassembles ONE previously-ingested document's FULL text by

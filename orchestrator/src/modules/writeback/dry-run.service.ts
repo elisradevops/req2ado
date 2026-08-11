@@ -255,7 +255,7 @@ export class DryRunService {
   async diff(
     nodes: DryRunTreeNode[],
     idempotencyService: IdempotencyService,
-    dedupCheck?: (text: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+    dedupCheck?: (text: string, title: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
     // Optional -- previously this burst (confirmed live: ~543 calls on a
     // real job) published NO progress signal at all, so the UI showed
     // nothing for however long it took. `completed`/`total` (not a
@@ -298,7 +298,7 @@ export class DryRunService {
   private async diffOneNode(
     node: DryRunTreeNode,
     idempotencyService: IdempotencyService,
-    dedupCheck?: (text: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
+    dedupCheck?: (text: string, title: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
   ): Promise<DryRunDiffEntry> {
     {
       const existingAdoId = await idempotencyService.lookup(
@@ -327,7 +327,7 @@ export class DryRunService {
         // creating a possible duplicate is always safer than blocking every
         // submission on a dedup-service hiccup.
         try {
-          const dedupResult = await dedupCheck(node.description, node.areaPath);
+          const dedupResult = await dedupCheck(node.description, node.title, node.areaPath);
           if (dedupResult.isDuplicate && dedupResult.matchedItemId !== null) {
             return {
               localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,

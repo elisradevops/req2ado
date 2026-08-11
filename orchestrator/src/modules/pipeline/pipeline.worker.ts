@@ -463,6 +463,11 @@ export async function runPipelineJob(
     }
 
     const customerIdFieldCandidates = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES;
+    // Hoisted above the crossJob-only if-block below so the SAME derivation
+    // is also in scope for queryIds's project param further down (line
+    // ~577) -- both operate on this job's ADO project, not just the
+    // Requirement-category resolution.
+    const project = job.areaPath.split('\\')[0];
     // Cross-job trace-link targets are always Requirement-CATEGORY items in
     // practice (System/Customer requirement pairs — the driving use case),
     // so a single discoverFields call is enough; if this assumption stops
@@ -476,7 +481,6 @@ export async function runPipelineJob(
     // Same vaulted credential as discoverLinkTypes above.
     let resolvedCustomerIdField: string | null = null;
     if ((tree.trace_links ?? []).some((l) => l.target_kind === 'crossJob')) {
-      const project = job.areaPath.split('\\')[0];
       const realRequirementType = await deps.mcpClient
         .discoverWorkItemTypeCategories(project, credential)
         .then((categories) => categories.Requirement)
@@ -504,7 +508,7 @@ export async function runPipelineJob(
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      (text, areaPath) => deps.ingestionClient.checkDuplicate(text, areaPath),
+      (text, title, areaPath) => deps.ingestionClient.checkDuplicate(text, title, areaPath),
       (completed, total, currentTitle) => {
         void deps.jobEventsPublisher.publishNarration(job.id, {
           phase: 'dedup_check',
@@ -574,7 +578,7 @@ export async function runPipelineJob(
               ...entry,
               traceLinks: entry.traceLinks
                 ? await resolveCrossJobTraceLinks(entry.traceLinks, async (customerId) =>
-                    deps.mcpClient.queryIds({ [resolvedCustomerIdField as string]: customerId }, credential),
+                    deps.mcpClient.queryIds({ [resolvedCustomerIdField as string]: customerId }, project, credential),
                   )
                 : entry.traceLinks,
             })),

@@ -411,7 +411,11 @@ describe('RealAdoBackend.queryIds', () => {
     expect(postSpy.mock.calls[0][1].query).toContain("[Custom.SourceHash] = 'abc123'");
   });
 
-  it('combines multiple field-match entries with AND', async () => {
+  it('combines multiple field-match entries with AND, using UNDER for System.AreaPath and = for every other field', async () => {
+    // Regression: System.AreaPath previously used exact-match (=), which
+    // misses nested area-path sub-nodes -- a normal ADO hierarchy shape.
+    // UNDER matches the node itself plus its entire subtree. Every other
+    // field keeps exact-match semantics, unaffected by this fix.
     const backend = new RealAdoBackend(testConfig, credential);
     const httpClient = axios.create();
     vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
@@ -423,7 +427,8 @@ describe('RealAdoBackend.queryIds', () => {
 
     const query = postSpy.mock.calls[0][1].query;
     expect(query).toContain("[Custom.SourceHash] = 'abc123'");
-    expect(query).toContain("[System.AreaPath] = 'Project\\Area1'");
+    expect(query).toContain("[System.AreaPath] UNDER 'Project\\Area1'");
+    expect(query).not.toContain("[System.AreaPath] = ");
     expect(query).toContain(' AND ');
   });
 
@@ -450,6 +455,32 @@ describe('RealAdoBackend.queryIds', () => {
     await backend.queryIds({ 'System.Title': "O'Brien's spec" });
     const query = postSpy.mock.calls[0][1].query;
     expect(query).toContain("O''Brien''s spec");
+  });
+
+  it('uses config.adoProject by default', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { workItems: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.queryIds({ 'System.AreaPath': 'Project\\Area1' });
+
+    expect(postSpy.mock.calls[0][0]).toContain(`/${testConfig.adoProject}/_apis/wit/wiql`);
+  });
+
+  it('uses the given project instead of the configured default', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { workItems: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.queryIds({ 'System.AreaPath': 'OtherProject\\Area1' }, 'OtherProject');
+
+    expect(postSpy.mock.calls[0][0]).toContain('/OtherProject/_apis/wit/wiql');
   });
 });
 

@@ -220,6 +220,87 @@ def test_skips_a_document_whose_hash_is_unchanged(mock_dispatch, tmp_path) -> No
     assert result.chunks_stored == 0
 
 
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_pure_rename_is_skipped_unchanged_and_updates_the_stored_name(mock_dispatch, tmp_path) -> None:
+    # Regression for the confirmed SharePoint rename bug: same Graph
+    # drive-item id (source_id), new filename, identical content -- must be
+    # recognized as the same file (skip re-embed) AND leave the KB's
+    # document listing reflecting the new name, not stuck on the old one.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="old.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+    )
+
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="new.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    result = ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+    )
+
+    assert result.skipped_unchanged is True
+    assert result.chunks_stored == 0
+    assert vector_store.list_documents("Project\\Area1") == ["new.docx"]
+    assert vector_store.get_document("Project\\Area1", "old.docx") == (None, False)
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_rename_file_failure_does_not_turn_skip_unchanged_into_a_failure(mock_dispatch, tmp_path) -> None:
+    # Regression for a confirmed real bug: skip-unchanged used to be a
+    # guaranteed-success, read-only branch. rename_file()'s Chroma write
+    # must be best-effort -- a failure there must not turn this safest
+    # branch into a raised exception / failed ingest.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="old.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+    )
+
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="new.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    with patch.object(vector_store, "rename_file", side_effect=RuntimeError("Chroma unreachable")):
+        result = ingest_document_from_url(
+            url=VALID_URL,
+            user_id="Project\\Area1",
+            doc_type="requirements",
+            graph_client=graph_client,
+            embed_client=FakeEmbedClient(),
+            vector_store=vector_store,
+        )
+
+    assert result.skipped_unchanged is True
+    assert result.chunks_stored == 0
+
+
 def test_rejects_oversize_files_before_downloading_content(tmp_path) -> None:
     graph_client = MagicMock()
     graph_client.get_drive_item.return_value = GraphDriveItem(

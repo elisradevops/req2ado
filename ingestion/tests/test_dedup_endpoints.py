@@ -22,7 +22,7 @@ def test_dedup_check_against_an_empty_store_returns_not_a_duplicate(tmp_path, mo
     monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
     main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
 
-    response = client.post("/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"})
+    response = client.post("/dedup/check", json={"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"})
     assert response.status_code == 200
     body = response.json()
     assert body["is_duplicate"] is False
@@ -34,13 +34,13 @@ def test_dedup_upsert_then_check_with_the_same_text_returns_a_duplicate(tmp_path
 
     upsert_response = client.post(
         "/dedup/upsert",
-        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
     )
     assert upsert_response.status_code == 200
     assert upsert_response.json() == {"ok": True}
 
     check_response = client.post(
-        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
     )
     assert check_response.status_code == 200
     body = check_response.json()
@@ -59,7 +59,7 @@ def test_dedup_delete_removes_a_stale_match_so_it_no_longer_matches(tmp_path, mo
 
     client.post(
         "/dedup/upsert",
-        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
     )
 
     delete_response = client.post("/dedup/delete", json={"item_id": "item-1", "area_path": "Project\\Area1"})
@@ -67,7 +67,7 @@ def test_dedup_delete_removes_a_stale_match_so_it_no_longer_matches(tmp_path, mo
     assert delete_response.json() == {"ok": True}
 
     check_response = client.post(
-        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
     )
     assert check_response.json()["is_duplicate"] is False
 
@@ -90,8 +90,8 @@ def test_dedup_upsert_batch_upserts_all_items_in_one_embed_call(tmp_path, monkey
         "/dedup/upsert-batch",
         json={
             "items": [
-                {"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
-                {"item_id": "item-2", "text": "The unit shall operate at low temperature.", "area_path": "Project\\Area1"},
+                {"item_id": "item-1", "text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+                {"item_id": "item-2", "text": "The unit shall operate at low temperature.", "title": "The unit shall operate at low temperature.", "area_path": "Project\\Area1"},
             ]
         },
     )
@@ -100,7 +100,7 @@ def test_dedup_upsert_batch_upserts_all_items_in_one_embed_call(tmp_path, monkey
     assert embed_call_count == 1  # both items embedded in one call, not two
 
     check_response = client.post(
-        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
     )
     assert check_response.json()["matched_item_id"] == "item-1"
 
@@ -130,9 +130,9 @@ def test_dedup_upsert_batch_issues_one_chroma_upsert_call_per_area_path(tmp_path
             "/dedup/upsert-batch",
             json={
                 "items": [
-                    {"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
-                    {"item_id": "item-2", "text": "The unit shall operate at low temperature.", "area_path": "Project\\Area1"},
-                    {"item_id": "item-3", "text": "The unit shall withstand vibration.", "area_path": "Project\\Area1"},
+                    {"item_id": "item-1", "text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+                    {"item_id": "item-2", "text": "The unit shall operate at low temperature.", "title": "The unit shall operate at low temperature.", "area_path": "Project\\Area1"},
+                    {"item_id": "item-3", "text": "The unit shall withstand vibration.", "title": "The unit shall withstand vibration.", "area_path": "Project\\Area1"},
                 ]
             },
         )
@@ -154,22 +154,74 @@ def test_dedup_upsert_batch_groups_by_area_path_without_cross_contaminating(tmp_
         "/dedup/upsert-batch",
         json={
             "items": [
-                {"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
-                {"item_id": "item-2", "text": "The unit shall survive a drop.", "area_path": "Project\\Area2"},
+                {"item_id": "item-1", "text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+                {"item_id": "item-2", "text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area2"},
             ]
         },
     )
     assert response.status_code == 200
 
     check_area1 = client.post(
-        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"}
     )
     assert check_area1.json()["matched_item_id"] == "item-1"
 
     check_area2 = client.post(
-        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area2"}
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area2"}
     )
     assert check_area2.json()["matched_item_id"] == "item-2"
+
+
+def test_dedup_upsert_and_check_blend_title_and_text_into_one_embedding(tmp_path, monkeypatch) -> None:
+    # Regression for the confirmed real bug: embedding description alone
+    # let a genuine duplicate (title differs slightly in wording from the
+    # matched item, description differs more) score below the fixed 0.90
+    # threshold. /dedup/upsert and /dedup/check must both embed title AND
+    # text (2 embed calls' worth of texts, blended into 1 vector) -- not
+    # just text alone. A mock that returns a FIXED vector per exact input
+    # string (not a length-derived one) proves the route actually sends
+    # both title and text to embed(), in the right per-item order, and
+    # blends them -- a route that silently dropped the title would embed
+    # only "matched description" (KeyError'ing here) or produce a
+    # different, non-blended vector.
+    import math
+
+    # Description-only similarity is cos(theta) = 0.65 (well below 0.90).
+    # Both titles point in the SAME direction as the matched item's own
+    # vector, so the 50/50 blend lands at the angle bisector -- cos(theta/2)
+    # ~= 0.909, clearing 0.90 on the blend alone (mirrors the confirmed real
+    # case: WI-647 went 0.755 -> 0.9026 once its title was blended in).
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    theta = math.acos(0.65)
+    off_axis_vector = [math.cos(theta), math.sin(theta)]
+    vectors = {
+        "matched title": [1.0, 0.0],
+        "matched description": [1.0, 0.0],
+        "candidate title": [1.0, 0.0],
+        "candidate description": off_axis_vector,
+    }
+
+    def _fixed_vector_handler(request: httpx.Request) -> httpx.Response:
+        texts = json.loads(request.content)["texts"]
+        return httpx.Response(200, json={"embeddings": [vectors[text] for text in texts]})
+
+    main._embed_client._transport = httpx.MockTransport(_fixed_vector_handler)
+
+    upsert_response = client.post(
+        "/dedup/upsert",
+        json={"item_id": "item-1", "text": "matched description", "title": "matched title", "area_path": "Project\\Area1"},
+    )
+    assert upsert_response.status_code == 200
+
+    check_response = client.post(
+        "/dedup/check",
+        json={"text": "candidate description", "title": "candidate title", "area_path": "Project\\Area1"},
+    )
+    assert check_response.status_code == 200
+    body = check_response.json()
+    assert body["matched_item_id"] == "item-1"
+    assert body["similarity"] > 0.90
+    assert body["is_duplicate"] is True
 
 
 def test_dedup_check_scopes_by_area_path_and_finds_no_match_across_area_paths(tmp_path, monkeypatch) -> None:
@@ -178,12 +230,12 @@ def test_dedup_check_scopes_by_area_path_and_finds_no_match_across_area_paths(tm
 
     upsert_response = client.post(
         "/dedup/upsert",
-        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+        json={"item_id": "item-1", "text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
     )
     assert upsert_response.status_code == 200
 
     check_response = client.post(
-        "/dedup/check", json={"text": "The unit shall survive a drop.", "area_path": "Project\\Area2"}
+        "/dedup/check", json={"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.", "area_path": "Project\\Area2"}
     )
     assert check_response.status_code == 200
     body = check_response.json()

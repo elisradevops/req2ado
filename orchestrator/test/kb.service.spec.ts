@@ -189,4 +189,56 @@ describe('KbService', () => {
     );
     expect(credentialVault.set).toHaveBeenCalledWith('shared', 'sharepoint_token', expect.stringContaining('"rotatedByUserId":"user-1"'));
   });
+
+  describe('browseFolder() / withIngestedFlag()', () => {
+    const child = (overrides: Partial<{ id: string; name: string; isFolder: boolean }> = {}) => ({
+      id: 'drive-1',
+      name: 'doc.docx',
+      mimeType: null,
+      sizeBytes: 100,
+      isFolder: false,
+      driveId: null,
+      downloadUrl: null,
+      ...overrides,
+    });
+
+    it('matches an already-ingested file by driveItemId even when the filename has changed (rename/move)', async () => {
+      // Regression for the confirmed SharePoint rename bug: the file was
+      // ingested as "old.docx" but Graph now reports it renamed to
+      // "new.docx" under the SAME drive-item id -- must still match.
+      const prisma = {
+        ingestedDocument: { findMany: jest.fn().mockResolvedValue([{ id: 'doc-1', driveItemId: 'drive-1' }]) },
+      };
+      const ingestionClient = { browseFolder: jest.fn().mockResolvedValue([child({ id: 'drive-1', name: 'new.docx' })]) };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+      const result = await service.browseFolder('https://contoso.sharepoint.com/x', 'Project\\Area1', '');
+
+      expect(result).toEqual([
+        expect.objectContaining({ id: 'drive-1', name: 'new.docx', alreadyIngested: true, ingestedDocumentId: 'doc-1' }),
+      ]);
+    });
+
+    it('does not match a file whose driveItemId is not in this user\'s KB', async () => {
+      const prisma = { ingestedDocument: { findMany: jest.fn().mockResolvedValue([{ id: 'doc-1', driveItemId: 'drive-1' }]) } };
+      const ingestionClient = { browseFolder: jest.fn().mockResolvedValue([child({ id: 'drive-2', name: 'other.docx' })]) };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+      const result = await service.browseFolder('https://contoso.sharepoint.com/x', 'Project\\Area1', '');
+
+      expect(result).toEqual([expect.objectContaining({ alreadyIngested: false, ingestedDocumentId: null })]);
+    });
+
+    it('folders are never marked alreadyIngested regardless of a matching driveItemId', async () => {
+      const prisma = { ingestedDocument: { findMany: jest.fn().mockResolvedValue([{ id: 'doc-1', driveItemId: 'drive-1' }]) } };
+      const ingestionClient = {
+        browseFolder: jest.fn().mockResolvedValue([child({ id: 'drive-1', name: 'SomeFolder', isFolder: true })]),
+      };
+      const service = new KbService(prisma as any, ingestionClient as any, fakeCredentialVault as any);
+
+      const result = await service.browseFolder('https://contoso.sharepoint.com/x', 'Project\\Area1', '');
+
+      expect(result).toEqual([expect.objectContaining({ alreadyIngested: false, ingestedDocumentId: null })]);
+    });
+  });
 });

@@ -27,12 +27,57 @@ export interface BackfillResult {
   skippedReasons: Record<string, number>;
 }
 
-// Only these three types are ever created by req2ado's own taxonomy
-// (WorkItemType in ingestion/app/workitem/model.py) -- backfilling a Bug,
-// Task, or any other real-world work item type from the same area path
-// would seed false-positive matches against content req2ado would never
-// have generated itself.
-const BACKFILLABLE_TYPES = new Set(['Epic', 'Feature', 'Requirement']);
+// Only Epic/Feature/Requirement-CATEGORY items are ever created by req2ado's
+// own taxonomy (WorkItemType in ingestion/app/workitem/model.py) --
+// backfilling a Bug, Task, or any other real-world work item type from the
+// same area path would seed false-positive matches against content req2ado
+// would never have generated itself.
+//
+// Confirmed real bug (fixed here): this used to be a fixed
+// Set(['Epic','Feature','Requirement']) checked directly against item.type,
+// which is the REAL ADO System.WorkItemType name -- 'Requirement' is only
+// the literal type name on the CMMI process template. Agile's
+// Requirement-category type is 'User Story', Scrum's is 'Product Backlog
+// Item', Basic's is 'Issue' -- on any non-CMMI project every pre-existing
+// item was silently skipped ('unsupported type'), so the dedup store was
+// never seeded from real ADO content. Resolved per-call via the same
+// discoverWorkItemTypeCategories concept jobs.service.ts's confirm() and
+// pipeline.worker.ts's crossJob resolution already use -- see those for the
+// full category-vs-real-type-name explanation.
+async function resolveBackfillableRealTypes(
+  mcpClient: McpClient,
+  project: string,
+  credential: AdoRequestCredential | undefined,
+): Promise<Set<string>> {
+  // Fail OPEN, never closed: this used to be a pure/static Set with zero
+  // network dependency -- discoverWorkItemTypeCategories throwing (custom
+  // process template, transient ADO/network blip) must not abort the whole
+  // backfill call, nor silently disable it forever via maybeBackfillAreaPath's
+  // own catch (pipeline.worker.ts). Falls back to the exact pre-fix
+  // CMMI-shaped set so a failure here degrades to old behavior, not zero
+  // behavior.
+  try {
+    const categories = await mcpClient.discoverWorkItemTypeCategories(project, credential);
+    return new Set(Object.values(categories));
+  } catch (error) {
+    // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+    console.error(`Backfill: discoverWorkItemTypeCategories failed for project ${project}, falling back to CMMI-shaped defaults:`, error);
+    return new Set(['Epic', 'Feature', 'Requirement']);
+  }
+}
+
+// ADO's System.Description is rich-text HTML (e.g. "<p>...</p>\n"), unlike
+// req2ado's own generated node descriptions (always plain text). Confirmed
+// real gap: embedding raw HTML on this seed side against always-plain text
+// on the check side silently cost ~2.5 similarity points on every
+// comparison -- byte-identical text scored 0.975 instead of 1.0 cosine
+// similarity. Stripped only for the dedup embedding text below -- the
+// sourceHash a few lines down must stay on the untouched raw text, or
+// every existing IdempotencyMapping row keyed on the old (HTML-included)
+// hash would silently stop matching.
+function stripHtmlTags(html: string): string {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
 
 // One item's outcome from the concurrent per-item worker below -- kept as
 // a plain data record (not a direct shared-counter mutation) so the worker
@@ -41,7 +86,7 @@ const BACKFILLABLE_TYPES = new Set(['Epic', 'Feature', 'Requirement']);
 // over the settled (order-preserved) results.
 type ItemOutcome =
   | { kind: 'skipped'; reason: string }
-  | { kind: 'seeded'; itemId: string; text: string; areaPath: string };
+  | { kind: 'seeded'; itemId: string; text: string; title: string; areaPath: string };
 
 @Injectable()
 export class BackfillService {
@@ -58,7 +103,8 @@ export class BackfillService {
   ) {}
 
   async backfillAreaPath(areaPath: string, credential?: AdoRequestCredential): Promise<BackfillResult> {
-    const ids = await this.mcpClient.queryIds({ 'System.AreaPath': areaPath }, credential);
+    const project = areaPath.split('\\')[0];
+    const ids = await this.mcpClient.queryIds({ 'System.AreaPath': areaPath }, project, credential);
     const result: BackfillResult = { scanned: 0, seeded: 0, skipped: 0, skippedReasons: {} };
     if (ids.length === 0) {
       return result;
@@ -66,9 +112,14 @@ export class BackfillService {
 
     const items = await this.mcpClient.getWorkItemsBatch(ids, credential);
     result.scanned = items.length;
+    if (items.length === 0) {
+      return result;
+    }
+
+    const backfillableRealTypes = await resolveBackfillableRealTypes(this.mcpClient, project, credential);
 
     const settled = await mapWithConcurrency(items, this.concurrency, async (item): Promise<ItemOutcome> => {
-      if (!BACKFILLABLE_TYPES.has(item.type)) {
+      if (!backfillableRealTypes.has(item.type)) {
         return { kind: 'skipped', reason: 'unsupported type' };
       }
       // Prefer Description (matches what confirm() actually writes as the
@@ -79,6 +130,34 @@ export class BackfillService {
       if (!description) {
         return { kind: 'skipped', reason: 'no title or description' };
       }
+      // Stripped once, reused for both the seeded text below and this
+      // fallback -- title and text must contain the SAME text when Title
+      // is blank, or the title/description blend mixes HTML-laden and
+      // HTML-stripped embeddings of the same content (confirmed real bug:
+      // that reintroduces the ~2.5-similarity-point HTML-noise penalty
+      // stripHtmlTags exists to eliminate).
+      const strippedDescription = stripHtmlTags(description);
+      // Falls back to the (already-stripped) description itself in the
+      // rare case Title is blank -- keeps the title/description blend a
+      // no-op (same text both sides) rather than blending against an
+      // empty string.
+      const title = item.fields['System.Title'] || strippedDescription;
+
+      // Confirmed real bug (fixed here): queryIds now matches the whole
+      // area-path SUBTREE (WIQL UNDER, not exact match -- see realAdo.ts's
+      // buildWiqlQuery), so `item` can legitimately live under a NESTED
+      // area path (e.g. requested 'Project\Parent', item actually under
+      // 'Project\Parent\Child'). Both the idempotency row and the dedup
+      // vector-store entry are scoped by exact area-path string match
+      // (IdempotencyMapping's compound key; ChromaVectorStore's per-area-
+      // path collection), so seeding under the outer `areaPath` param
+      // instead of the item's own real area path means a later job
+      // submitted against 'Project\Parent\Child' never finds this entry --
+      // the exact bug this backfill exists to prevent, just for any
+      // subtree area path other than the one literally requested. Falls
+      // back to the requested `areaPath` only if System.AreaPath is ever
+      // missing (defensive; ADO always returns it for a real work item).
+      const itemAreaPath = item.fields['System.AreaPath'] || areaPath;
 
       // Same scheme as ingestion's fidelity_hash (sha256 of the exact
       // description text) so a document whose content matches this
@@ -90,10 +169,10 @@ export class BackfillService {
       // supplied one, so this is consistent with the existing scheme, not
       // a new assumption.
       const sourceHash = createHash('sha256').update(description).digest('hex');
-      const existing = await this.idempotencyService.lookup(sourceHash, null, areaPath);
+      const existing = await this.idempotencyService.lookup(sourceHash, null, itemAreaPath);
       if (existing === null) {
         try {
-          await this.idempotencyService.record(sourceHash, null, areaPath, item.id);
+          await this.idempotencyService.record(sourceHash, null, itemAreaPath, item.id);
         } catch (error) {
           // Two distinct manual items sharing byte-identical description
           // text (or a race against a concurrent backfill run) would
@@ -104,7 +183,7 @@ export class BackfillService {
         }
       }
 
-      return { kind: 'seeded', itemId: String(item.id), text: description, areaPath };
+      return { kind: 'seeded', itemId: String(item.id), text: strippedDescription, title, areaPath: itemAreaPath };
     });
 
     // Preserve the exact pre-parallelization failure semantics: an
@@ -119,7 +198,7 @@ export class BackfillService {
       throw firstError.reason;
     }
 
-    const dedupUpsertItems: { itemId: string; text: string; areaPath: string }[] = [];
+    const dedupUpsertItems: { itemId: string; text: string; title: string; areaPath: string }[] = [];
     for (const r of settled as { status: 'fulfilled'; value: ItemOutcome }[]) {
       const outcome = r.value;
       if (outcome.kind === 'skipped') {
@@ -127,7 +206,7 @@ export class BackfillService {
         result.skippedReasons[outcome.reason] = (result.skippedReasons[outcome.reason] ?? 0) + 1;
       } else {
         result.seeded += 1;
-        dedupUpsertItems.push({ itemId: outcome.itemId, text: outcome.text, areaPath: outcome.areaPath });
+        dedupUpsertItems.push({ itemId: outcome.itemId, text: outcome.text, title: outcome.title, areaPath: outcome.areaPath });
       }
     }
 

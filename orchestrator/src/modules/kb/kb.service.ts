@@ -52,11 +52,11 @@ export interface BrowseFolderEntry {
   sizeBytes: number;
   isFolder: boolean;
   driveId: string | null;
-  // True when a file at this relative path is already in this user's KB
-  // (matched against IngestedDocument.name -- see kb.service.ts's own
-  // ingestUrl/ingestFolderUrl, which store either the plain document name
-  // or `relativePath ?? file` for folder ingests). Always false for
-  // folders themselves; a folder has no single ingested/not state.
+  // True when this file is already in this user's KB -- matched against
+  // IngestedDocument.driveItemId (the stable Graph identity, so a
+  // rename/move still matches; driveItemId is a required column, so there
+  // is no legacy-row fallback to fall back to). Always false for folders
+  // themselves; a folder has no single ingested/not state.
   alreadyIngested: boolean;
   // The matched IngestedDocument's own id when alreadyIngested is true,
   // null otherwise -- needed because removing a document (DELETE
@@ -196,11 +196,20 @@ export class KbService {
   }
 
   private async withIngestedFlag(children: FolderChild[], userId: string, pathPrefix: string): Promise<BrowseFolderEntry[]> {
-    const documents = await this.prisma.ingestedDocument.findMany({ where: { userId }, select: { id: true, name: true } });
-    const idByName = new Map(documents.map((d) => [d.name, d.id]));
+    const documents = await this.prisma.ingestedDocument.findMany({
+      where: { userId },
+      select: { id: true, driveItemId: true },
+    });
+    // Matched by driveItemId -- the stable Graph drive-item identity, which
+    // survives a SharePoint rename/move. Confirmed real bug (fixed here):
+    // matching by name/fullName alone meant a renamed/moved file no longer
+    // matched its own IngestedDocument row, so the tree showed it as
+    // not-yet-ingested and invited a duplicate re-ingest. driveItemId is a
+    // required, unique-per-user column (schema.prisma), so every row has
+    // one -- no fallback needed.
+    const idByDriveItemId = new Map(documents.map((d) => [d.driveItemId, d.id]));
     return children.map((child) => {
-      const fullName = pathPrefix ? `${pathPrefix}/${child.name}` : child.name;
-      const ingestedDocumentId = !child.isFolder ? (idByName.get(fullName) ?? null) : null;
+      const ingestedDocumentId = !child.isFolder ? (idByDriveItemId.get(child.id) ?? null) : null;
       return {
         ...child,
         alreadyIngested: ingestedDocumentId !== null,

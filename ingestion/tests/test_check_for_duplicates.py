@@ -32,6 +32,7 @@ def test_similarity_0_91_is_flagged_as_duplicate() -> None:
         embed_client = FakeEmbedClient({"candidate text": candidate_vector})
         result = check_for_duplicates(
             text="candidate text",
+            title="candidate text",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -56,6 +57,7 @@ def test_similarity_0_89_is_not_flagged_as_duplicate() -> None:
         embed_client = FakeEmbedClient({"candidate text": candidate_vector})
         result = check_for_duplicates(
             text="candidate text",
+            title="candidate text",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -74,6 +76,7 @@ def test_exactly_0_90_similarity_is_flagged_as_duplicate() -> None:
         embed_client = FakeEmbedClient({"candidate text": [1.0, 0.0]})  # identical -> similarity 1.0
         result = check_for_duplicates(
             text="candidate text",
+            title="candidate text",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -83,12 +86,58 @@ def test_exactly_0_90_similarity_is_flagged_as_duplicate() -> None:
         assert result.is_duplicate is True
 
 
+def test_title_blend_rescues_a_match_that_description_alone_misses() -> None:
+    # Mirrors the confirmed real bug (WI-647): description-alone similarity
+    # was 0.755, below the fixed 0.90 threshold, even though the item was a
+    # genuine duplicate. Blending in the title got it to 0.9026. Reproduced
+    # here with exact math: description-only similarity is 0.65 (well
+    # below 0.90); the title matches the existing item's own embedding
+    # direction exactly, so the 50/50 blend lands at the angle bisector --
+    # cos(theta/2) ~= 0.909, clearing 0.90 on the blend alone.
+    import math
+
+    existing_vector = [1.0, 0.0]
+    theta = math.acos(0.65)
+    description_vector = [math.cos(theta), math.sin(theta)]
+    title_vector = [1.0, 0.0]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChromaVectorStore(persist_path=tmp)
+        store.upsert("existing-item", existing_vector, area_path="Project\\Area1")
+
+        embed_client = FakeEmbedClient(
+            {"candidate title": title_vector, "candidate description": description_vector}
+        )
+        result = check_for_duplicates(
+            text="candidate description",
+            title="candidate title",
+            item_id="candidate-item",
+            area_path="Project\\Area1",
+            embed_client=embed_client,
+            vector_store=store,
+        )
+        assert result.is_duplicate is True
+        assert result.matched_item_id == "existing-item"
+        assert result.similarity > 0.90
+
+
+def test_description_alone_would_have_missed_the_same_match() -> None:
+    # Sanity check on the fixture above -- confirms description-only
+    # similarity really is below threshold, so the previous test is
+    # actually exercising the blend's rescue, not a coincidence.
+    import math
+
+    theta = math.acos(0.65)
+    assert math.cos(theta) < 0.90
+
+
 def test_empty_store_never_flags_a_duplicate() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         store = ChromaVectorStore(persist_path=tmp)
         embed_client = FakeEmbedClient({"candidate text": [1.0, 0.0]})
         result = check_for_duplicates(
             text="candidate text",
+            title="candidate text",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -107,6 +156,7 @@ def test_does_not_mutate_the_vector_store() -> None:
 
         check_for_duplicates(
             text="candidate text",
+            title="candidate text",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -147,6 +197,7 @@ def test_high_similarity_with_different_numeric_tokens_is_not_flagged_as_duplica
         embed_client = FakeEmbedClient({"at least 93%": [1.0, 0.0]})
         result = check_for_duplicates(
             text="at least 93%",
+            title="at least 93%",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -166,6 +217,7 @@ def test_high_similarity_with_different_wattage_tokens_is_not_flagged_as_duplica
         embed_client = FakeEmbedClient({"at least 600W": [1.0, 0.0]})
         result = check_for_duplicates(
             text="at least 600W",
+            title="at least 600W",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -184,6 +236,7 @@ def test_high_similarity_with_identical_numeric_tokens_is_still_flagged_as_dupli
         embed_client = FakeEmbedClient({"efficiency of at least 87%": [1.0, 0.0]})
         result = check_for_duplicates(
             text="efficiency of at least 87%",
+            title="efficiency of at least 87%",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -203,6 +256,7 @@ def test_high_similarity_with_no_numbers_in_either_text_is_unaffected() -> None:
         embed_client = FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]})
         result = check_for_duplicates(
             text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -222,6 +276,7 @@ def test_high_similarity_with_no_stored_document_fails_open_ignoring_the_guard()
         embed_client = FakeEmbedClient({"at least 93%": [1.0, 0.0]})
         result = check_for_duplicates(
             text="at least 93%",
+            title="at least 93%",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -260,6 +315,7 @@ def test_judge_client_distinct_verdict_downgrades_an_embedding_match() -> None:
         judge_client = RecordingJudgeClient("distinct")
         result = check_for_duplicates(
             text="BP_MEZ UART and USB Ports",
+            title="BP_MEZ UART and USB Ports",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -280,6 +336,7 @@ def test_judge_client_redundant_verdict_keeps_the_duplicate_flag() -> None:
         judge_client = RecordingJudgeClient("redundant")
         result = check_for_duplicates(
             text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -303,6 +360,7 @@ def test_judge_client_contradictory_verdict_also_keeps_the_duplicate_flag() -> N
         judge_client = RecordingJudgeClient("contradictory")
         result = check_for_duplicates(
             text="minimum efficiency at least 87%",
+            title="minimum efficiency at least 87%",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -325,6 +383,7 @@ def test_judge_client_exception_falls_back_to_the_embedding_only_verdict() -> No
         embed_client = FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]})
         result = check_for_duplicates(
             text="shall support terrestrial broadcast input",
+            title="shall support terrestrial broadcast input",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -347,6 +406,7 @@ def test_judge_client_is_never_called_when_the_embedding_itself_says_not_duplica
         judge_client = RecordingJudgeClient("distinct")
         result = check_for_duplicates(
             text="candidate text",
+            title="candidate text",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,
@@ -367,6 +427,7 @@ def test_judge_client_is_never_called_when_the_numeric_veto_already_downgraded_t
         judge_client = RecordingJudgeClient("redundant")
         result = check_for_duplicates(
             text="at least 93%",
+            title="at least 93%",
             item_id="candidate-item",
             area_path="Project\\Area1",
             embed_client=embed_client,

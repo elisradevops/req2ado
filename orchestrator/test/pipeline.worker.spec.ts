@@ -736,8 +736,8 @@ describe('runPipelineJob', () => {
     );
 
     const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
-    await dedupCheckArg('Desc 0', 'Project\\Area1');
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Project\\Area1');
+    await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1');
   });
 
   it('always supplies the dedupCheck callback even when job.followUp is false -- deciding whether a work item already exists is a required step, not opt-in', async () => {
@@ -764,8 +764,8 @@ describe('runPipelineJob', () => {
 
     const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
     expect(dedupCheckArg).toBeDefined();
-    await dedupCheckArg('Desc 0', 'Project\\Area1');
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Project\\Area1');
+    await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1');
   });
 
   it('always supplies the dedupCheck callback when job.followUp is unset (older/mocked job predating this field)', async () => {

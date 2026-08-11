@@ -72,12 +72,22 @@ export class MockAdoBackend implements AdoBackend {
     // has nowhere to record an attachment relation.
   }
 
-  async queryIds(fieldMatch: Record<string, string>): Promise<number[]> {
+  async queryIds(fieldMatch: Record<string, string>, _project?: string): Promise<number[]> {
+    // System.AreaPath mirrors realAdo.ts's buildWiqlQuery: UNDER (subtree
+    // match), not exact equality -- confirmed real contract divergence
+    // otherwise, since callers (backfillAreaPath) rely on the whole
+    // subtree being returned against either backend.
     const rows = this.db.prepare('SELECT id, fields FROM work_items').all() as { id: number; fields: string }[];
     return rows
       .filter((row) => {
         const fields = JSON.parse(row.fields) as Record<string, string>;
-        return Object.entries(fieldMatch).every(([key, value]) => fields[key] === value);
+        return Object.entries(fieldMatch).every(([key, value]) => {
+          if (key === 'System.AreaPath') {
+            const actual = fields[key];
+            return actual === value || (actual?.startsWith(`${value}\\`) ?? false);
+          }
+          return fields[key] === value;
+        });
       })
       .map((row) => row.id);
   }

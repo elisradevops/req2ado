@@ -183,8 +183,14 @@ export class McpClient {
     return this.call('ado_get_work_items_batch', { ids }, credential);
   }
 
-  async queryIds(fieldMatch: Record<string, string>, credential?: AdoRequestCredential): Promise<number[]> {
-    return this.call('ado_query_ids', { fieldMatch }, credential);
+  // project: threads the job's real ADO project through instead of relying
+  // on mcp-ado-server's single server-wide ADO_PROJECT env var -- needed for
+  // any deployment where a job's area path belongs to a different project
+  // than the server's configured default. Omitted (undefined) reproduces
+  // the exact previous wire payload -- JSON.stringify in call() above drops
+  // undefined keys, so existing callers are unaffected.
+  async queryIds(fieldMatch: Record<string, string>, project?: string, credential?: AdoRequestCredential): Promise<number[]> {
+    return this.call('ado_query_ids', { fieldMatch, project }, credential);
   }
 
   async uploadAttachment(

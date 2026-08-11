@@ -32,6 +32,43 @@ describe('MockAdoBackend', () => {
     expect(ids).toHaveLength(1);
   });
 
+  it('queryIds matches System.AreaPath as a subtree (UNDER), mirroring realAdo.ts -- includes nested sub-paths', async () => {
+    // Regression for a confirmed contract divergence: realAdo.ts's
+    // buildWiqlQuery uses UNDER (subtree match) for System.AreaPath, not
+    // exact equality. The mock must mirror that, or dev/test/demo runs
+    // against the mock backend validate a narrower behavior than
+    // production traffic actually gets.
+    const parent = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'Parent item', 'System.AreaPath': 'ProjectX\\TV' } });
+    const child = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'Child item', 'System.AreaPath': 'ProjectX\\TV\\Sub' } });
+    const unrelated = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'Unrelated', 'System.AreaPath': 'ProjectX\\Radio' } });
+
+    const ids = await backend.queryIds({ 'System.AreaPath': 'ProjectX\\TV' });
+
+    expect(ids.sort()).toEqual([parent.id, child.id].sort());
+    expect(ids).not.toContain(unrelated.id);
+  });
+
+  it('queryIds does not match a sibling area path that merely shares a string prefix', async () => {
+    // 'ProjectX\TVGuide' must not match a query for 'ProjectX\TV' -- the
+    // subtree check requires a path-segment boundary (backslash), not a
+    // bare string prefix.
+    const sibling = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'Sibling', 'System.AreaPath': 'ProjectX\\TVGuide' } });
+
+    const ids = await backend.queryIds({ 'System.AreaPath': 'ProjectX\\TV' });
+
+    expect(ids).not.toContain(sibling.id);
+  });
+
+  it('queryIds still requires exact match for non-AreaPath fields even when combined with an AreaPath subtree match', async () => {
+    const match = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'Exact', 'System.AreaPath': 'ProjectX\\TV\\Sub' } });
+    const wrongTitle = await backend.createWorkItem({ type: 'Requirement', fields: { 'System.Title': 'Different', 'System.AreaPath': 'ProjectX\\TV\\Sub' } });
+
+    const ids = await backend.queryIds({ 'System.Title': 'Exact', 'System.AreaPath': 'ProjectX\\TV' });
+
+    expect(ids).toEqual([match.id]);
+    expect(ids).not.toContain(wrongTitle.id);
+  });
+
   it('ping returns ok:true', async () => {
     expect(await backend.ping()).toEqual({ ok: true, backend: 'mock' });
   });

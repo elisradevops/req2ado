@@ -98,8 +98,12 @@ export interface AdoBackend {
    * Exact-match field query, used for dedup/idempotency lookups (later phases) and tests here.
    * Note: this exact-full-match mock semantics diverges from the documented Phase 7
    * area-path-scoped dedup contract (docs/architecture.md) and will need revisiting then.
+   * `project`, when supplied, overrides the backend's configured default --
+   * same convention as readAreaPaths/readIterationPaths/readStates below,
+   * needed so a caller whose area path belongs to a different project than
+   * the server's configured default still queries the right project.
    */
-  queryIds(fieldMatch: Record<string, string>): Promise<number[]>;
+  queryIds(fieldMatch: Record<string, string>, project?: string): Promise<number[]>;
   /**
    * Returns the field reference names available on a given work-item type —
    * real backing for docs/architecture.md's "Customer ID Field Resolution"

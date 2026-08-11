@@ -97,6 +97,23 @@ def _store_document(
 
     file_hash = hashlib.sha256(content).hexdigest()
     if vector_store.existing_file_hash(user_id, name, item_id) == file_hash:
+        # Content unchanged, so no re-parse/re-embed needed -- but the file
+        # may have been renamed/moved on SharePoint since it was last
+        # ingested (source_id, the stable Graph drive-item identity,
+        # matched; the name may not have). Bring the stored source_file
+        # metadata current so list_documents/get_document reflect the new
+        # name going forward, without paying for a full re-ingest.
+        #
+        # Best-effort: this used to be a guaranteed-success, read-only
+        # branch (skip-unchanged never failed). A Chroma write failure here
+        # must not turn the safest branch into a 500/failed status -- the
+        # skip-unchanged result is still correct even if the rename metadata
+        # update doesn't land; it just means the name update is deferred to
+        # a future re-ingest.
+        try:
+            vector_store.rename_file(user_id, item_id, name)
+        except Exception as exc:  # noqa: BLE001 - rename metadata update must never fail an ingest
+            logger.warning("rename_file failed for %s (source_id=%s): %s", name, item_id, exc)
         return IngestResult(
             document_name=name,
             driveitem_id=item_id,

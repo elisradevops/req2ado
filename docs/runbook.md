@@ -10,6 +10,35 @@
 3. **If the job must be force-cleared while still locked**, use the BullMQ `Queue` API, not raw redis-cli: `const job = await queue.getJob(id); await job.remove()` — note this itself throws `Job could not be removed because it is locked by another worker` if the lock is still live (confirmed live), which is BullMQ correctly protecting against the exact corruption manual `LREM` causes. If it throws, fall back to option 2.
 4. As a last resort, mark the Postgres `Job` row `status='failed'` directly with an audit-trail note explaining the manual intervention (do this only after the BullMQ-side state is already clean via options 1-3, not as a substitute for them).
 
+## Purging a user's KB/PAT-vault data after an ADO account reset
+
+**When to use this:** a user deleted their ADO account and created a new one, and the new account's session still sees the old account's KB context and/or dedup matches. Root cause: both the KB vector store (`ingestion/app/kb/kb_vector_store.py`, Chroma collection keyed by `sha256(userId)`) and the encrypted PAT vault (`credential-vault.service.ts`, row keyed by `user:<userId>`) are keyed off ADO's own `authenticatedUser.descriptor` — deliberately chosen because it survives display-name/email changes, which is exactly what let it survive the account reset too. Neither store has an automated cleanup path (see `job-retention.service.ts`'s own comment: it explicitly never touches either, by design, for unrelated reasons — see the note there about a prior manual DB wipe after an account migration, which this script now replaces with a repeatable, non-destructive-to-other-users command).
+
+**Run from `orchestrator/`:**
+```sh
+npx ts-node scripts/purge-user-data.ts <userId> [--purge-jobs]
+```
+- `<userId>` is the ADO descriptor value from `Job.userId` / `IngestedDocument.userId` for the affected account (look it up via `SELECT DISTINCT "userId" FROM "Job" ORDER BY "createdAt" DESC LIMIT 5;` if unsure).
+- Always purges: the vaulted PAT row (`ExternalCredential` for `user:<userId>`) and the user's entire KB Chroma collection (`DELETE /kb/collection?user_id=...` on the ingestion service).
+- `--purge-jobs` additionally deletes that user's `Job` rows (and their children) — use only when you're certain the old identity is gone forever; job history has no other retention/expiry path (`job-retention.service.ts` only ages out jobs by `createdAt`, regardless of `userId`).
+- This does **not** touch `IdempotencyMapping` or the dedup vector store — those are area-path-scoped, not user-scoped, and are deliberately never pruned (see `job-retention.service.ts`'s own comment on why: pruning them would let identical content get recreated as a duplicate work item on a later resubmit).
+
+## Re-backfilling every area path after a dedup embedding-scheme change (e.g. the title/description blend)
+
+**Deploy-critical, not optional.** `check_for_duplicates`/`/dedup/upsert*` compute the dedup similarity vector as a blend of the title and description embeddings (`ingestion/app/dedup/embedding_blend.py`), not the description alone. This is a **breaking change to the embedding scheme**: any vector already stored in an area path's Chroma collection before this deploy was embedded under the OLD (description-only) scheme, and is not directly comparable to a NEW blended query vector — cosine similarity between an old-scheme and new-scheme vector for the same content is not 1.0, and can legitimately land below the fixed 0.90 threshold even for a true duplicate. There is no code-level migration for this (no embedding-scheme version tag is stored per vector); the only fix is to physically re-run the backfill for every area path that has ever been backfilled or seeded before this deploy.
+
+**After deploying any change to `ingestion/app/dedup/embedding_blend.py` (or anything else that changes what gets embedded for dedup), re-run backfill for every known area path:**
+```sh
+# List every area path that's ever been backfilled:
+docker exec <postgres-container> psql -U req2ado -d req2ado -t -c 'SELECT "areaPath" FROM "AreaPathBackfill";'
+
+# Then, authenticated as a user with a valid vaulted PAT, re-run for each:
+POST /backfill { "areaPath": "<each one>" }
+```
+- This re-embeds and re-upserts every scanned item under the new scheme, overwriting the old vectors in place (same Chroma collection, same item ids).
+- Skipping this for an area path means every pre-deploy dedup entry in that area path silently stops being a reliable duplicate match until it's re-backfilled — exactly the class of bug this blend change exists to fix, reintroduced for old data.
+- This does not touch `IdempotencyMapping` (the exact-hash `reuse` path) — that scheme didn't change.
+
 ## Real ADO Write — Verification Steps (CR7, gated on production access)
 
 **Status: VERIFIED** against a real Azure DevOps Services org

@@ -210,12 +210,12 @@ describe('IngestionHttpClient', () => {
     ]);
   });
 
-  it('upsertDedupEntriesBatch POSTs all items to /dedup/upsert-batch in one call', async () => {
+  it('upsertDedupEntriesBatch POSTs all items (including title) to /dedup/upsert-batch in one call', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true });
     const client = new IngestionHttpClient('http://ingestion.internal');
     await client.upsertDedupEntriesBatch([
-      { itemId: '1', text: 'a', areaPath: 'Proj\\Area' },
-      { itemId: '2', text: 'b', areaPath: 'Proj\\Area' },
+      { itemId: '1', text: 'a', title: 'Title A', areaPath: 'Proj\\Area' },
+      { itemId: '2', text: 'b', title: 'Title B', areaPath: 'Proj\\Area' },
     ]);
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
@@ -223,8 +223,8 @@ describe('IngestionHttpClient', () => {
     expect(url).toBe('http://ingestion.internal/dedup/upsert-batch');
     expect(JSON.parse(options.body)).toEqual({
       items: [
-        { item_id: '1', text: 'a', area_path: 'Proj\\Area' },
-        { item_id: '2', text: 'b', area_path: 'Proj\\Area' },
+        { item_id: '1', text: 'a', title: 'Title A', area_path: 'Proj\\Area' },
+        { item_id: '2', text: 'b', title: 'Title B', area_path: 'Proj\\Area' },
       ],
     });
   });
@@ -239,8 +239,55 @@ describe('IngestionHttpClient', () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 502 });
     const client = new IngestionHttpClient('http://ingestion.internal');
     await expect(
-      client.upsertDedupEntriesBatch([{ itemId: '1', text: 'a', areaPath: 'Proj\\Area' }]),
+      client.upsertDedupEntriesBatch([{ itemId: '1', text: 'a', title: 'Title A', areaPath: 'Proj\\Area' }]),
     ).rejects.toThrow(/upsert-batch.*502/i);
+  });
+
+  it('checkDuplicate POSTs text, title, and area_path to /dedup/check', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ is_duplicate: true, matched_item_id: '649', similarity: 0.92 }),
+    });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    const result = await client.checkDuplicate('a description', 'a title', 'Proj\\Area');
+
+    expect(result).toEqual({ isDuplicate: true, matchedItemId: '649', similarity: 0.92 });
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/dedup/check');
+    expect(JSON.parse(options.body)).toEqual({ text: 'a description', title: 'a title', area_path: 'Proj\\Area' });
+  });
+
+  it('throws on a non-ok /dedup/check response', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 502 });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await expect(client.checkDuplicate('text', 'title', 'Proj\\Area')).rejects.toThrow(/dedup\/check.*502/i);
+  });
+
+  it('upsertDedupEntry POSTs item_id, text, title, and area_path to /dedup/upsert', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.upsertDedupEntry('1', 'a description', 'a title', 'Proj\\Area');
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/dedup/upsert');
+    expect(JSON.parse(options.body)).toEqual({ item_id: '1', text: 'a description', title: 'a title', area_path: 'Proj\\Area' });
+  });
+
+  it('purgeUserKb sends a DELETE to /kb/collection with user_id as a query param', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.purgeUserKb('vstfs:///Framework/Identity/old-user');
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/kb/collection?user_id=vstfs%3A%2F%2F%2FFramework%2FIdentity%2Fold-user');
+    expect(options.method).toBe('DELETE');
+  });
+
+  it('throws on a non-ok purgeUserKb response', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await expect(client.purgeUserKb('some-user')).rejects.toThrow(/kb\/collection.*500/i);
   });
 });
 

@@ -816,8 +816,8 @@ describe('JobsService.confirm', () => {
 
     expect(upsertDedupEntriesBatch).toHaveBeenCalledTimes(1);
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
-      { itemId: '500', text: 'D', areaPath: 'Project\\Area1' },
-      { itemId: '501', text: 'D2', areaPath: 'Project\\Area1' },
+      { itemId: '500', text: 'D', title: 'T', areaPath: 'Project\\Area1' },
+      { itemId: '501', text: 'D2', title: 'T2', areaPath: 'Project\\Area1' },
     ]);
   });
 
