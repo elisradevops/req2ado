@@ -1,12 +1,24 @@
 import { Injectable } from '@nestjs/common';
 import type { IdempotencyService } from './idempotency.service';
 import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
+import { stripHtmlTags } from './backfill.service';
 
 export interface DryRunSourceRef {
   documentPath: string;
   startOffset: number;
   endOffset: number;
   page: number | null;
+  // Last page this node's folded content covers -- see ingestion's
+  // WorkItemNode.source_ref.page_end docstring. Null means same as page, or
+  // unknown -- never set without page also being set.
+  pageEnd: number | null;
+  // Null when page/pageEnd came from the file's own real pagination,
+  // 'rendered'/'interpolated' otherwise -- see ingestion's own docstring for
+  // the full distinction.
+  pageProvenance: string | null;
+  // Root-first heading/section labels this ref was parsed from, e.g.
+  // ["3 Power", "3.2 Backplane"]. Empty when no heading ancestry applies.
+  sectionPath: string[];
 }
 
 // Mirrors ingestion's quality_category_scores (app.workitem.model) --
@@ -21,6 +33,16 @@ export interface DryRunSourceRef {
 // clarity/testability/atomicity/style/rationale fallback used when no KB
 // standard is available. See orchestrator_llm_client.score_requirements_for_document.
 export type QualityCategoryScores = Record<string, number>;
+
+// Mirrors ingestion's quality_category_checklist (app.workitem.model) --
+// per-category CITATION text backing a SUBSET of QualityCategoryScores'
+// keys: the org's own ingested checklist document's stated definition for
+// that category, when one was found. Not all-or-nothing like
+// QualityCategoryScores -- a category absent from this map is a real,
+// expected case (no KB standard at all, or the org's document states no
+// separate definition for that one category), not a parse failure. See
+// frontend QualityGauge.categoryDescription for how this renders.
+export type QualityCategoryChecklist = Record<string, string>;
 
 export interface TraceLink {
   sourceLocalId: string;
@@ -62,6 +84,7 @@ export interface DryRunTreeNode {
   // SURVEY node whose scoring entry was missing/malformed (same
   // all-or-nothing tolerance as qualityScore itself).
   qualityCategoryScores?: QualityCategoryScores | null;
+  qualityCategoryChecklist?: QualityCategoryChecklist | null;
   // Carried from ingestion's WorkItemNode (source_ref/child_type/trace_links)
   // so confirm() can eventually write a traceability link, classification
   // tags, and child-type-derived fields to ADO -- previously dropped at
@@ -71,10 +94,21 @@ export interface DryRunTreeNode {
   traceLinks?: TraceLink[];
   // Carried from ingestion's WorkItemNode.figure_ids (SURVEY-only,
   // LLM-judged relevance) so confirm() knows which JobFigureFile rows to
-  // attach to this created work item. tableIds has no equivalent field
-  // here -- table embedding already happens fully inside `description`
-  // before this point, there's nothing left to attach separately.
+  // attach to this created work item.
   figureIds?: string[];
+  // Carried from ingestion's WorkItemNode.table_ids -- a non-empty list
+  // means that table's HTML is already embedded into `description` (see
+  // figureIds' doc comment for the same all-4-paths distinction). Not
+  // consumed for attachment like figureIds -- table content has nothing to
+  // attach separately, it's purely informational for the diff view.
+  tableIds?: string[];
+  // Carried from ingestion's WorkItemNode.uncaptioned_figure_ids -- figures
+  // that folded into this node's span but produced no caption. Disjoint
+  // from figureIds: a figure id appears in exactly one of the two lists.
+  // Bytes for these are still retained by pipeline.worker.ts's prune step
+  // (see its own doc comment) since an uncaptioned figure might still get
+  // manually captioned/reviewed later.
+  uncaptionedFigureIds?: string[];
 }
 
 // Mirrors ingestion's IntegrityWarning (app.workitem.model) -- structured
@@ -122,9 +156,26 @@ export interface DryRunDiffEntry {
   qualityScore?: number | null;
   qualityIssues?: string[];
   qualityCategoryScores?: QualityCategoryScores | null;
+  qualityCategoryChecklist?: QualityCategoryChecklist | null;
   sourceRef?: DryRunSourceRef | null;
   childType?: string | null;
   traceLinks?: TraceLink[];
+  // Carried through from DryRunTreeNode.figureIds by diffOneNode below --
+  // previously declared on DryRunTreeNode only and silently dropped at the
+  // node -> diff-entry conversion (diffOneNode built each returned object
+  // as an explicit literal, never including this field), which meant
+  // jobs.service.ts's confirm()-time figure-attachment phase always iterated
+  // an empty list: entry.figureIds was undefined on every persisted diff
+  // entry, so no figure was EVER auto-attached to ADO regardless of what
+  // ingestion captioned/stored. Real, confirmed bug -- see the fix at each
+  // of diffOneNode's three return branches.
+  figureIds?: string[];
+  // Carried through from DryRunTreeNode.tableIds/uncaptionedFigureIds by
+  // diffOneNode below, same all-3-branches requirement as figureIds above
+  // -- see that field's own doc comment for the exact bug this guards
+  // against.
+  tableIds?: string[];
+  uncaptionedFigureIds?: string[];
   excluded?: boolean;
   isManual?: boolean;
   // CR-7d rescore: set by JobsService.editDiffEntry whenever a patch
@@ -314,8 +365,10 @@ export class DryRunService {
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
           tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
           qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
+          qualityCategoryChecklist: node.qualityCategoryChecklist,
           sourceRef: node.sourceRef, childType: node.childType,
-          traceLinks: node.traceLinks,
+          traceLinks: node.traceLinks, figureIds: node.figureIds,
+          tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
         };
       }
       if (dedupCheck) {
@@ -327,7 +380,22 @@ export class DryRunService {
         // creating a possible duplicate is always safer than blocking every
         // submission on a dedup-service hiccup.
         try {
-          const dedupResult = await dedupCheck(node.description, node.title, node.areaPath);
+          // Strip HTML before the similarity check -- node.description is
+          // req2ado's own generated rich-text HTML (plain prose today,
+          // increasingly table-markup-heavy as table fidelity ships), while
+          // backfill.service.ts's equivalent seeding call
+          // (resolveBackfillableRealTypes's caller, backfillAreaPath)
+          // already strips ADO's own System.Description HTML with this
+          // SAME stripHtmlTags before embedding it. Confirmed real
+          // asymmetry (see stripHtmlTags's own doc comment): comparing raw
+          // HTML against backfill's stripped text cost ~2.5 similarity
+          // points on plain prose alone, byte-identical content scoring
+          // 0.975 instead of 1.0 -- a table-bearing description carries far
+          // more markup per character of real content than a <p> wrapper
+          // ever did, so the same asymmetry left unfixed here would widen
+          // sharply and risk real duplicate ADO item creation for exactly
+          // the requirements this feature touches.
+          const dedupResult = await dedupCheck(stripHtmlTags(node.description), node.title, node.areaPath);
           if (dedupResult.isDuplicate && dedupResult.matchedItemId !== null) {
             return {
               localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
@@ -335,8 +403,10 @@ export class DryRunService {
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
               groundingScore: node.groundingScore, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
-              qualityCategoryScores: node.qualityCategoryScores,
+              qualityCategoryScores: node.qualityCategoryScores, qualityCategoryChecklist: node.qualityCategoryChecklist,
               sourceRef: node.sourceRef, childType: node.childType, traceLinks: node.traceLinks,
+              figureIds: node.figureIds,
+              tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
             };
           }
         } catch (error) {
@@ -350,8 +420,10 @@ export class DryRunService {
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
         tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
         qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
+        qualityCategoryChecklist: node.qualityCategoryChecklist,
         sourceRef: node.sourceRef, childType: node.childType,
-        traceLinks: node.traceLinks,
+        traceLinks: node.traceLinks, figureIds: node.figureIds,
+        tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
       };
     }
   }

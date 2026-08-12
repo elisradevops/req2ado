@@ -259,6 +259,41 @@ describe('DiffTree signal counts', () => {
     expect(screen.queryByText(/Ambiguous/i)).not.toBeInTheDocument();
   });
 
+  it('shows a compact table-count badge when tableIds is present', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, tableIds: ['t3', 't7'] }];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    expect(screen.getByTitle('2 table(s)')).toBeInTheDocument();
+  });
+
+  it('shows a single combined figure-count badge (captioned + uncaptioned), neutral-tinted when every figure has a caption', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, figureIds: ['f0', 'f1'] }];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    const badge = screen.getByTitle('2 figure(s)');
+    expect(badge).toBeInTheDocument();
+    expect(badge.className).not.toContain('text-warning');
+  });
+
+  it('tints the figure-count badge amber and gives a breakdown tooltip when at least one figure is uncaptioned', () => {
+    const entries: DryRunDiffEntry[] = [{ ...baseEntry, figureIds: ['f0'], uncaptionedFigureIds: ['f1'] }];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    const badge = screen.getByTitle('2 figure(s), 1 without a description');
+    expect(badge).toBeInTheDocument();
+    expect(badge.className).toContain('text-warning');
+  });
+
+  it('shows no table/figure badges when neither tableIds nor figureIds/uncaptionedFigureIds is present', () => {
+    render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    expect(screen.queryByTitle(/table\(s\)/)).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/figure\(s\)/)).not.toBeInTheDocument();
+  });
+
   it('calls onOpenDetails (not just onSelect) when the details button is clicked', async () => {
     const onSelect = vi.fn();
     const onOpenDetails = vi.fn();

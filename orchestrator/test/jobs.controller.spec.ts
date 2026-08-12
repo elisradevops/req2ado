@@ -244,6 +244,75 @@ describe('JobsController.uploadFigureFile', () => {
   });
 });
 
+describe('JobsController.getFigureFile', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+
+  it('streams the figure bytes with the stored Content-Type', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }),
+      getFigureFile: jest.fn().mockResolvedValue({ bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const res = { set: jest.fn(), send: jest.fn() };
+
+    await controller.getFigureFile('job-1', 'f0', TEST_USER, res as any);
+
+    expect(jobsService.getFigureFile).toHaveBeenCalledWith('job-1', 'f0');
+    expect(res.set).toHaveBeenCalledWith('Content-Type', 'image/png');
+    expect(res.send).toHaveBeenCalledWith(Buffer.from('png bytes'));
+  });
+
+  it('404s when the figure was never stored or already attached to ADO', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }),
+      getFigureFile: jest.fn().mockResolvedValue(null),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const res = { set: jest.fn(), send: jest.fn() };
+
+    await expect(controller.getFigureFile('job-1', 'f0', TEST_USER, res as any)).rejects.toThrow('not found');
+    expect(res.send).not.toHaveBeenCalled();
+  });
+
+  it('404s for a job that does not belong to the caller -- same not-403 convention as every other per-job route', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), getFigureFile: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const res = { set: jest.fn(), send: jest.fn() };
+
+    await expect(controller.getFigureFile('job-1', 'f0', TEST_USER, res as any)).rejects.toThrow('not found');
+    expect(jobsService.getFigureFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsController.attachFigureToAdo', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+
+  it('resolves an ADO credential and delegates to jobsService.attachFigureToAdo', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }),
+      attachFigureToAdo: jest.fn().mockResolvedValue({ attached: true, adoId: 555 }),
+    };
+    const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    const result = await controller.attachFigureToAdo('job-1', 'n0', 'f0', TEST_USER);
+
+    expect(adoCredentialResolver.resolve).toHaveBeenCalledWith('user-descriptor-1');
+    expect(jobsService.attachFigureToAdo).toHaveBeenCalledWith('job-1', 'n0', 'f0', { orgUrl: 'https://ado.example', pat: 'x' });
+    expect(result).toEqual({ attached: true, adoId: 555 });
+  });
+
+  it('404s for a job that does not belong to the caller before resolving any credential', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), attachFigureToAdo: jest.fn() };
+    const adoCredentialResolver = { resolve: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.attachFigureToAdo('job-1', 'n0', 'f0', TEST_USER)).rejects.toThrow('not found');
+    expect(adoCredentialResolver.resolve).not.toHaveBeenCalled();
+    expect(jobsService.attachFigureToAdo).not.toHaveBeenCalled();
+  });
+});
+
 // DESIGN.md §11.2.3.d -- re-pricing without re-uploading. Route ORDERING
 // (declared before @Get(':id') in jobs.controller.ts) is a source-level
 // concern verified by reading the decorator order, not something a unit

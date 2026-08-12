@@ -48,6 +48,15 @@ describe('JobDetail', () => {
     // Individual tests override this when they need to assert against a
     // specific event-history payload (e.g. a job_failed detail panel).
     vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([]);
+    // vi.mock('../api/jobs') above auto-mocks every export as a bare
+    // vi.fn() returning undefined by default -- FigureImage (mounted
+    // whenever FigureDescriptions is expanded, or a selected entry has
+    // figureIds) calls this and .then()s the result, which throws on a
+    // bare `undefined` rather than a resolved/rejected promise. null is
+    // the real "nothing stored" response shape (see getFigureFile's own
+    // doc comment), so this default renders FigureImage's quiet
+    // "Image no longer available" placeholder rather than crashing.
+    vi.spyOn(jobsApi, 'getFigureFile').mockResolvedValue(null);
   });
 
   it('renders an explicit failure screen for a failed job, not a blank diff', async () => {

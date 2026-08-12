@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
 import * as chatApi from '../api/chat';
+import * as jobsApi from '../api/jobs';
 
 vi.mock('../api/chat');
+vi.mock('../api/jobs');
 vi.mock('../hooks/useChatSocket', async () => {
   const actual = await vi.importActual<typeof import('../hooks/useChatSocket')>('../hooks/useChatSocket');
   return { ...actual, useChatSocket: vi.fn() };
@@ -36,6 +38,12 @@ describe('NodeDetailDialog', () => {
     vi.clearAllMocks();
     vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
     vi.mocked(chatApi.listModels).mockResolvedValue([]);
+    // vi.mock('../api/jobs') auto-mocks every export as a bare vi.fn() that
+    // returns undefined by default -- FigureImage (mounted by the Figures
+    // section whenever entry.figureIds is non-empty) calls this and
+    // .then()s the result, which throws on undefined rather than a real
+    // promise. null is the real "nothing stored" response shape.
+    vi.mocked(jobsApi.getFigureFile).mockResolvedValue(null);
   });
 
   it('renders nothing when entry is null', () => {
@@ -136,5 +144,61 @@ describe('NodeDetailDialog', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(screen.getByRole('tab', { name: /chat/i }));
     expect(screen.getByText(/this job's review is closed/i)).toBeInTheDocument();
+  });
+
+  // Figures section (item 3/4 of the figure-viewing + manual-attach work):
+  // this entry's OWN referenced figures, distinct from the document-wide
+  // FigureDescriptions panel (JobDetail.tsx).
+  describe('Figures section', () => {
+    it('renders nothing when the entry has no figureIds', () => {
+      renderDialog({ entry: { ...ENTRY, figureIds: [] } });
+      expect(screen.queryByText('Figures')).not.toBeInTheDocument();
+    });
+
+    it('shows each referenced figure with its caption from captionByFigureId', () => {
+      renderDialog({
+        entry: { ...ENTRY, figureIds: ['f0'] },
+        captionByFigureId: { f0: 'A block diagram showing power distribution.' },
+      });
+      expect(screen.getByText('Figures')).toBeInTheDocument();
+      expect(screen.getByText('A block diagram showing power distribution.')).toBeInTheDocument();
+    });
+
+    it('offers an enabled "Upload to ADO" action for a reuse entry with a resolved existingAdoId, and calls onAttachFigure on click', async () => {
+      const onAttachFigure = vi.fn().mockResolvedValue(undefined);
+      renderDialog({
+        entry: { ...ENTRY, action: 'reuse', existingAdoId: 555, figureIds: ['f0'] },
+        onAttachFigure,
+      });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      const button = screen.getByRole('button', { name: /upload to ado \(wi-555\)/i });
+      expect(button).toBeEnabled();
+      await userEvent.click(button);
+
+      expect(onAttachFigure).toHaveBeenCalledWith('e1', 'f0');
+      await waitFor(() => expect(screen.getByRole('button', { name: /uploaded/i })).toBeDisabled());
+    });
+
+    it('offers the action for a dedup_skip entry too (the case that never gets confirm()\'s automatic attachment)', () => {
+      renderDialog({ entry: { ...ENTRY, action: 'dedup_skip', existingAdoId: 777, figureIds: ['f0'] }, onAttachFigure: vi.fn() });
+      expect(screen.getByRole('button', { name: /upload to ado \(wi-777\)/i })).toBeEnabled();
+    });
+
+    it('does not offer the upload action for a "create" entry -- no resolved ADO id is available in this view', () => {
+      renderDialog({ entry: { ...ENTRY, action: 'create', existingAdoId: null, figureIds: ['f0'] }, onAttachFigure: vi.fn() });
+      expect(screen.queryByRole('button', { name: /upload to ado/i })).not.toBeInTheDocument();
+      expect(screen.getByText(/not available for a new item in this view/i)).toBeInTheDocument();
+    });
+
+    it('reverts to a clickable button (not stuck) when onAttachFigure rejects', async () => {
+      const onAttachFigure = vi.fn().mockRejectedValue(new Error('upload failed'));
+      renderDialog({ entry: { ...ENTRY, action: 'reuse', existingAdoId: 555, figureIds: ['f0'] }, onAttachFigure });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.click(screen.getByRole('button', { name: /upload to ado \(wi-555\)/i }));
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /upload to ado \(wi-555\)/i })).toBeEnabled());
+    });
   });
 });

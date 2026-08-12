@@ -157,6 +157,21 @@ interface LeveledSourceRef {
   start_offset: number;
   end_offset: number;
   page: number | null;
+  // Last page this node's folded content covers -- see ingestion's
+  // WorkItemNode.source_ref.page_end docstring (shared/schemas/work-item-tree.schema.json).
+  // Optional for the same backward-compat reason as the scoring fields
+  // below: an older/mocked ingestion response predating this field must
+  // not crash the mapping.
+  page_end?: number | null;
+  // Null when page/page_end came from the file's own real pagination,
+  // 'rendered'/'interpolated' otherwise -- see ingestion's own docstring
+  // for the full distinction. Optional for the same backward-compat
+  // reason as page_end above.
+  page_provenance?: string | null;
+  // Root-first heading/section labels this ref was parsed from -- see
+  // ingestion's WorkItemNode.source_ref.section_path docstring. Optional
+  // for the same backward-compat reason as page_end above.
+  section_path?: string[];
 }
 
 interface LeveledNode {
@@ -205,6 +220,12 @@ interface LeveledNode {
   // Optional for the same backward-compat reason as the other scoring
   // fields.
   quality_category_scores?: Record<string, number> | null;
+  // Per-category citation text backing a SUBSET of quality_category_scores'
+  // keys -- see ingestion's quality_category_checklist docstring
+  // (app.workitem.model) and dry-run.service.ts's QualityCategoryChecklist.
+  // Optional for the same backward-compat reason as the other scoring
+  // fields.
+  quality_category_checklist?: Record<string, string> | null;
   // Previously computed by ingestion (WorkItemNode.source_ref/tags) but
   // dropped here -- neither reached DryRunTreeNode nor any ADO field.
   // Optional for the same backward-compat reason as the scoring fields above.
@@ -213,9 +234,19 @@ interface LeveledNode {
   child_type?: string | null;
   // SURVEY-only, LLM-judged relevance (see ingestion's WorkItemNode) --
   // optional for the same backward-compat reason as the scoring fields
-  // above. tableIds has no equivalent here; table embedding already
-  // happens fully inside `description` before this point.
+  // above.
   figure_ids?: string[];
+  // Ids of tables folded into/relevant to this node -- populated by all 4
+  // node-building paths, not SURVEY-only (see ingestion's WorkItemNode.table_ids
+  // docstring). A non-empty list means that table's HTML is already embedded
+  // into `description`. Optional for the same backward-compat reason as
+  // figure_ids above.
+  table_ids?: string[];
+  // Figures that folded into this node's span but produced no caption --
+  // disjoint from figure_ids, a figure id appears in exactly one of the two
+  // lists (see ingestion's WorkItemNode.uncaptioned_figure_ids docstring).
+  // Optional for the same backward-compat reason as figure_ids above.
+  uncaptioned_figure_ids?: string[];
 }
 
 interface LeveledTraceLink {
@@ -429,35 +460,54 @@ export async function runPipelineJob(
         qualityScore: node.quality_score,
         qualityIssues: node.quality_issues,
         qualityCategoryScores: node.quality_category_scores,
+        qualityCategoryChecklist: node.quality_category_checklist,
         sourceRef: node.source_ref
           ? {
               documentPath: node.source_ref.document_path,
               startOffset: node.source_ref.start_offset,
               endOffset: node.source_ref.end_offset,
               page: node.source_ref.page,
+              pageEnd: node.source_ref.page_end ?? null,
+              pageProvenance: node.source_ref.page_provenance ?? null,
+              sectionPath: node.source_ref.section_path ?? [],
             }
           : null,
         tags: node.tags ?? [],
         childType: node.child_type,
         traceLinks: traceLinksByLocalId.get(node.local_id) ?? [],
         figureIds: node.figure_ids ?? [],
+        tableIds: node.table_ids ?? [],
+        uncaptionedFigureIds: node.uncaptioned_figure_ids ?? [],
       };
     });
 
     // Ingestion stored a JobFigureFile row for EVERY figure at ingest time
     // (relevance wasn't known yet then) -- now that the real tree exists,
-    // prune down to only the figures some node's figure_ids actually
-    // references (see JobFigureFile's own Prisma model comment for the full
-    // lifecycle). Best-effort: a failure here must never fail the whole
-    // job over what's purely a storage-cost cleanup step -- a leftover row
-    // just means one extra figure sticks around until confirm() deletes it
-    // on successful attachment upload, or the retention sweep's safety net
+    // prune down to only the figures some node's figureIds/uncaptionedFigureIds
+    // actually references (see JobFigureFile's own Prisma model comment for
+    // the full lifecycle). Both lists are unioned: an uncaptioned figure's
+    // bytes must be retained too (it might still get manually
+    // captioned/reviewed later), not just the ones that already got a
+    // caption. Best-effort: a failure here must never fail the whole job
+    // over what's purely a storage-cost cleanup step -- a leftover row just
+    // means one extra figure sticks around until confirm() deletes it on
+    // successful attachment upload, or the retention sweep's safety net
     // eventually reclaims it.
     try {
-      const referencedFigureIds = [...new Set(diffInputs.flatMap((node) => node.figureIds ?? []))];
-      await deps.prisma.jobFigureFile.deleteMany({
-        where: { jobId: job.id, figureId: { notIn: referencedFigureIds } },
-      });
+      const referencedFigureIds = [
+        ...new Set(diffInputs.flatMap((node) => [...(node.figureIds ?? []), ...(node.uncaptionedFigureIds ?? [])])),
+      ];
+      // Real, confirmed bug: Prisma's `notIn: []` matches EVERY row, not
+      // zero, so a job where NO node references any figure at all
+      // (referencedFigureIds === []) would delete ALL of this job's stored
+      // figure bytes instead of leaving them untouched. Guard explicitly
+      // rather than relying on notIn's empty-array semantics happening to
+      // mean "match nothing" -- it means the opposite.
+      if (referencedFigureIds.length > 0) {
+        await deps.prisma.jobFigureFile.deleteMany({
+          where: { jobId: job.id, figureId: { notIn: referencedFigureIds } },
+        });
+      }
     } catch (error) {
       console.error(`JobFigureFile prune failed for job ${job.id}:`, error);
     }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FixedSizeList } from 'react-window';
-import { ChevronDown, ChevronRight, TriangleAlert, Link2, SquareArrowOutUpRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, TriangleAlert, Link2, Table, Image, SquareArrowOutUpRight } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { ActionBadge } from './ActionBadge';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
@@ -69,6 +69,15 @@ export interface DryRunDiffEntry {
   // null whenever qualityScore itself is (BASELINE, no scoring_client, or
   // a malformed scoring entry).
   qualityCategoryScores?: Record<string, number> | null;
+  // Per-category citation text backing a SUBSET of qualityCategoryScores'
+  // keys -- maps a category key to the org's own ingested quality-
+  // checklist document's stated definition for it, when one was found
+  // (see ingestion's quality_category_checklist docstring, app.workitem.
+  // model). Not all-or-nothing like qualityCategoryScores: a category
+  // absent from this map is a real, expected case (no KB standard at all,
+  // or the org's document states no separate definition for that one
+  // category), not a parse failure -- see QualityGauge.categoryDescription.
+  qualityCategoryChecklist?: Record<string, string> | null;
   // CR-7d rescore: true from the moment a description edit invalidates the
   // score above until a successful rescore clears it -- the last-known
   // numbers are KEPT (never zeroed), only their freshness is in question.
@@ -96,7 +105,36 @@ export interface DryRunDiffEntry {
     startOffset: number;
     endOffset: number;
     page: number | null;
+    // See sourceRef.ts's SourceRefLike for what each of these means --
+    // same shape, just duplicated here since DryRunDiffEntry doesn't import
+    // that type. Optional/nullable so an entry from before Phase 5 (or a
+    // manually-added one) renders identically to today.
+    sectionPath?: string[];
+    pageEnd?: number | null;
+    pageProvenance?: string | null;
   } | null;
+  // Which JobFigureFile row(s) (see orchestrator's DryRunDiffEntry.figureIds
+  // doc comment) this entry's description cited -- lets NodeDetailPanel show
+  // this entry's OWN referenced figure(s) inline (thumbnail + caption +
+  // manual "Upload to ADO" action), distinct from FigureDescriptions'
+  // document-wide list of every figure in the source file. Empty/absent for
+  // an entry whose description didn't reference any figure, or a manually-
+  // added entry (addDiffEntry), which has no source document position at
+  // all.
+  figureIds?: string[];
+  // Sibling of figureIds for tables -- same "folded into this node's
+  // description" relationship, but a table's content already renders as a
+  // real HTML <table> via DescriptionMarkdown, so there is no image/upload
+  // treatment for these, only an id chip (NodeDetailPanel's Sources block).
+  tableIds?: string[];
+  // Figures folded into this node whose caption failed/was dropped (vision
+  // disabled, the vision call failed, or the model found no technical
+  // content) -- DISJOINT from figureIds: a given figure id appears in
+  // exactly one of the two lists, never both. Rendered as a visually
+  // distinct amber chip (NodeDetailPanel) so a reviewer can see a figure was
+  // captured but silently contributed nothing to this item's description,
+  // instead of that gap being invisible.
+  uncaptionedFigureIds?: string[];
 }
 
 interface FlatRow {
@@ -226,7 +264,11 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
 // guarantees pixel-exact column alignment (a single source of truth, not
 // two hand-kept-in-sync definitions). exclude / clause id / elastic item /
 // status / flags / details-button.
-const GRID_TEMPLATE_COLUMNS = '32px var(--clause-w, 44px) minmax(0,1fr) var(--status-w, 108px) 60px 36px';
+// Flags column widened from 60px -- it used to fit only the issue-count and
+// trace-link-count chips; a table-count and a combined figure-count chip
+// (Phase 5 provenance work) can now both show alongside them on the same
+// row.
+const GRID_TEMPLATE_COLUMNS = '32px var(--clause-w, 44px) minmax(0,1fr) var(--status-w, 108px) 100px 36px';
 
 export function DiffTree({
   entries,
@@ -382,7 +424,7 @@ export function DiffTree({
         </span>
         <span className="flex items-center justify-end gap-1">
           Flags
-          <InfoTip content="Quick counts for this item: a triangle shows how many quality issues were flagged (open it for details), a link icon shows how many trace links it has." />
+          <InfoTip content="Quick counts for this item: a triangle shows how many quality issues were flagged (open it for details), a link icon shows how many trace links it has, a table icon shows how many tables fed it, and an image icon shows how many figures fed it (amber when one or more of those figures got no description)." />
         </span>
         <span />
       </div>
@@ -399,6 +441,15 @@ export function DiffTree({
             const entry = row.entry;
             const issueCount = entry.qualityIssues?.length ?? 0;
             const traceLinkCount = entry.traceLinks?.length ?? 0;
+            const tableCount = entry.tableIds?.length ?? 0;
+            // ONE chip for figures total (captioned + uncaptioned combined),
+            // not two -- keeps the Flags column from growing a second
+            // figure-specific chip on top of the table one, per DESIGN.md's
+            // own width-budget call. Tinted amber below when any of those
+            // figures has no description, so the gap is visible without a
+            // reviewer needing to open the details dialog first.
+            const uncaptionedFigureCount = entry.uncaptionedFigureIds?.length ?? 0;
+            const figureCount = (entry.figureIds?.length ?? 0) + uncaptionedFigureCount;
             return (
               <div
                 style={{ ...style, gridTemplateColumns: GRID_TEMPLATE_COLUMNS }}
@@ -487,6 +538,25 @@ export function DiffTree({
                     <span className="flex items-center gap-0.5 text-ink-3" title={`${traceLinkCount} trace link(s)`}>
                       <Link2 className="h-3.5 w-3.5" />
                       {traceLinkCount}
+                    </span>
+                  )}
+                  {tableCount > 0 && (
+                    <span className="flex items-center gap-0.5 text-ink-3" title={`${tableCount} table(s)`}>
+                      <Table className="h-3.5 w-3.5" />
+                      {tableCount}
+                    </span>
+                  )}
+                  {figureCount > 0 && (
+                    <span
+                      className={cn('flex items-center gap-0.5', uncaptionedFigureCount > 0 ? 'text-warning' : 'text-ink-3')}
+                      title={
+                        uncaptionedFigureCount > 0
+                          ? `${figureCount} figure(s), ${uncaptionedFigureCount} without a description`
+                          : `${figureCount} figure(s)`
+                      }
+                    >
+                      <Image className="h-3.5 w-3.5" />
+                      {figureCount}
                     </span>
                   )}
                 </span>

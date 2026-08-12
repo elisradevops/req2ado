@@ -15,6 +15,7 @@ import {
   deleteJob,
   resubmitJob,
   getSummary,
+  attachFigureToAdo,
   type AuditEntry,
   type DebugCaptureEntry,
   type JobEventRecord,
@@ -369,9 +370,25 @@ export function JobDetail(): React.ReactElement {
   const figureDescriptions = useMemo<FigureDescriptionEntry[]>(
     () =>
       Object.entries(figureCaptionsByIndex)
-        .map(([figureIndex, caption]) => ({ figureIndex: Number(figureIndex), caption }))
+        // figureId derivation matches ingestion's own established convention
+        // exactly (main.py's _describe_figure_with_progress: `figure_id =
+        // f"f{index - 1}"`, where `index` IS this same 1-based figureIndex)
+        // -- every loader appends a figure immediately after describing it,
+        // in the same order, so this lockstep relationship is guaranteed,
+        // not a guess. See FigureDescriptionEntry.figureId's own doc comment.
+        .map(([figureIndex, caption]) => ({ figureIndex: Number(figureIndex), caption, figureId: `f${Number(figureIndex) - 1}` }))
         .sort((a, b) => a.figureIndex - b.figureIndex),
     [figureCaptionsByIndex],
+  );
+
+  // localId -> caption lookup keyed by the SAME figureId scheme, derived
+  // from the array above rather than a second independent pass over
+  // figureCaptionsByIndex -- lets NodeDetailPanel's own per-entry Figures
+  // section (entry.figureIds) show each figure's caption without needing
+  // its own figureIndex/figureId translation.
+  const captionByFigureId = useMemo(
+    () => Object.fromEntries(figureDescriptions.map((d) => [d.figureId, d.caption])),
+    [figureDescriptions],
   );
 
   const sectionResults = useMemo<SectionResultEntry[]>(
@@ -594,6 +611,22 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // Re-throws on failure, same contract as handleRescore above -- lets
+  // NodeDetailPanel's own per-figure loading-button guard know the call
+  // failed and reset itself, rather than this function owning that local
+  // UI state. No diff/setDiff update needed on success: attaching a figure
+  // doesn't change dryRunDiff, only JobFigureFile server-side.
+  async function handleAttachFigure(localId: string, figureId: string): Promise<void> {
+    if (!id) return;
+    try {
+      await attachFigureToAdo(id, localId, figureId);
+      showToast('Figure uploaded to Azure DevOps.', 'success');
+    } catch (err) {
+      showToast('Failed to upload figure — please try again.', 'error');
+      throw err;
+    }
+  }
+
   async function handleAddChild(parentLocalId: string, input: { type: string; title: string; description: string }): Promise<void> {
     if (!id) return;
     try {
@@ -650,24 +683,27 @@ export function JobDetail(): React.ReactElement {
         childrenByParent.set(entry.parentLocalId, [...(childrenByParent.get(entry.parentLocalId) ?? []), entry]);
       }
     }
-    const cache = new Map<string, { features: number; requirements: number }>();
-    function countFor(localId: string): { features: number; requirements: number } {
+    const cache = new Map<string, { epics: number; features: number; requirements: number }>();
+    function countFor(localId: string): { epics: number; features: number; requirements: number } {
       const cached = cache.get(localId);
       if (cached) return cached;
+      let epics = 0;
       let features = 0;
       let requirements = 0;
       for (const child of childrenByParent.get(localId) ?? []) {
+        if (child.type === 'Epic') epics += 1;
         if (child.type === 'Feature') features += 1;
         if (child.type === 'Requirement') requirements += 1;
         const sub = countFor(child.localId);
+        epics += sub.epics;
         features += sub.features;
         requirements += sub.requirements;
       }
-      const result = { features, requirements };
+      const result = { epics, features, requirements };
       cache.set(localId, result);
       return result;
     }
-    const result: Record<string, { features: number; requirements: number }> = {};
+    const result: Record<string, { epics: number; features: number; requirements: number }> = {};
     for (const entry of diff) result[entry.localId] = countFor(entry.localId);
     return result;
   }, [diff]);
@@ -925,7 +961,7 @@ export function JobDetail(): React.ReactElement {
       {isRunDetailStatus(status) && stage && mode && startedAt && (
         <ProgressBanner stage={stage} startedAt={startedAt} mode={mode as 'baseline' | 'survey'} narrations={mergedNarrations} />
       )}
-      <FigureDescriptions items={figureDescriptions} />
+      <FigureDescriptions jobId={id!} items={figureDescriptions} />
       <SectionResults items={sectionResults} />
       {showTiles && summary && (
         // Plain tiles -- no icon/hint/interactive. Confirmed against the
@@ -1027,8 +1063,10 @@ export function JobDetail(): React.ReactElement {
                 traceTargetTitles={traceTargetTitles}
                 diffByLocalId={diffByLocalId}
                 descendantCountsByLocalId={descendantCountsByLocalId}
+                captionByFigureId={captionByFigureId}
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
+                onAttachFigure={handleAttachFigure}
                 onAddChild={handleAddChild}
                 onNavigate={handleNavigateDialog}
                 hasPrev={hasPrevEntry}

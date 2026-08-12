@@ -39,7 +39,25 @@ const KNOWN_CATEGORY_DESCRIPTIONS: Record<string, string> = {
   rationale: 'Does it state WHY when the reason isn’t self-evident?',
 };
 
-function categoryDescription(key: string): string {
+// `matchedChecklistText`, when present, is a VERBATIM quote from the org's
+// own ingested checklist document for this exact category (see ingestion's
+// quality_category_checklist docstring, app.workitem.model, and
+// _match_category_checklist for the exact-key matching heuristic that
+// produced it) -- always shown as a citation, never rewritten/padded, and
+// never gated on how long or detailed it is. Org checklists vary wildly:
+// some state a precise, multi-clause definition per category; others list
+// barely more than the category name itself. Both are genuine, honest
+// citations of what the org actually wrote -- presenting either as "the
+// definition" would overstate what a sparse source document says, so this
+// is framed as a quote of the source, not an assertion that it's a good or
+// complete explanation. Falls back to the generic placeholder ONLY when no
+// confident match exists at all (see KNOWN_CATEGORY_DESCRIPTIONS above for
+// the 5 built-in dimensions, which never have KB text behind them) --
+// never on the matched text being short.
+function categoryDescription(key: string, matchedChecklistText?: string): string {
+  if (matchedChecklistText) {
+    return `Per your organization's document: "${matchedChecklistText}"`;
+  }
   return (
     KNOWN_CATEGORY_DESCRIPTIONS[key.toLowerCase()] ??
     "From your organization's own ingested quality-checklist standard."
@@ -206,6 +224,7 @@ function CategoryRow({
 export function QualityGauge({
   score,
   categoryScores,
+  categoryChecklist,
   qualityIssues,
   previousScore,
   previousCategoryScores,
@@ -213,6 +232,14 @@ export function QualityGauge({
 }: {
   score: number;
   categoryScores?: QualityCategoryScores | null;
+  // Per-category citation text backing a SUBSET of categoryScores' keys --
+  // see ingestion's quality_category_checklist docstring (app.workitem.
+  // model) and categoryDescription's own doc comment above for how/why
+  // this renders as a citation, not an assertion. A category absent here
+  // is real and expected (no KB standard, or the org's document states no
+  // separate definition for it), not a lookup failure -- falls back to
+  // categoryDescription's generic sentence for that row only.
+  categoryChecklist?: Record<string, string> | null;
   // DESIGN.md §11.4.3 point 3 -- grouped by category below so each row can
   // answer "why is THIS number what it is" with the real, already-written
   // fix-oriented remedy text, not just a plain-language definition of what
@@ -352,7 +379,7 @@ export function QualityGauge({
             <CategoryRow
               key={key}
               label={categoryLabel(key)}
-              description={categoryDescription(key)}
+              description={categoryDescription(key, categoryChecklist?.[key])}
               value={value}
               previousValue={previousCategoryScores?.[key]}
               issueCodes={issuesByCategory.get(key) ?? []}

@@ -67,6 +67,14 @@ export interface NarrationEvent {
     | 'detect_conflicts'
     | 'regroup_roots'
     | 'infer_trace_links'
+    // Fired for a docx source only, after parsing, while deriving real page
+    // numbers by converting the docx to PDF and anchor-matching its blocks
+    // against the PDF's own real per-page text (see ingestion's
+    // docx_pagination.py) -- a real, potentially 30-120s silent window
+    // otherwise. Two fires per docx: an in-flight start event, then a
+    // completion event carrying pageAlignPageCount/pageAlignAnchoredRatio
+    // below (both null on the first fire, same describe_figure convention).
+    | 'page_alignment'
     // Published by the orchestrator (not ingestion) during the dedup-check
     // burst and the Confirm/writing phase -- reuses blocksDone/blocksTotal
     // for a plain N-of-M counter rather than new field names, matching
@@ -175,6 +183,12 @@ export interface NarrationEvent {
   // dedupe a live warning against the final list without string-parsing
   // `message`.
   warningMessage?: string | null;
+  // page_alignment only: set on the SECOND (completion) event only -- the
+  // converted PDF's real total page count and what fraction of the docx's
+  // own blocks were confidently anchored against it. Null on the first
+  // "in flight" event, same convention describe_figure's figureCaption uses.
+  pageAlignPageCount?: number | null;
+  pageAlignAnchoredRatio?: number | null;
   message: string;
 }
 
@@ -199,6 +213,7 @@ export const INGESTION_NARRATION_PHASES = [
   'detect_conflicts',
   'regroup_roots',
   'infer_trace_links',
+  'page_alignment',
   'job_failed',
   'chunk_warning',
 ] as const;

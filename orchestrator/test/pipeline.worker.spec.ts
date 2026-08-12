@@ -289,10 +289,12 @@ describe('runPipelineJob', () => {
         {
           localId: 'n0', sourceHash: 'hashA', legacySourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [], traceLinks: [], figureIds: [],
+          tableIds: [], uncaptionedFigureIds: [],
         },
         {
           localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [], traceLinks: [], figureIds: [],
+          tableIds: [], uncaptionedFigureIds: [],
         },
       ],
       fakeIdempotencyService,
@@ -359,6 +361,7 @@ describe('runPipelineJob', () => {
           tags: [],
           traceLinks: [],
           figureIds: [],
+          tableIds: [], uncaptionedFigureIds: [],
         },
         {
           localId: 'n1',
@@ -375,6 +378,7 @@ describe('runPipelineJob', () => {
           tags: [],
           traceLinks: [],
           figureIds: [],
+          tableIds: [], uncaptionedFigureIds: [],
         },
       ],
       fakeIdempotencyService,
@@ -428,12 +432,14 @@ describe('runPipelineJob', () => {
           qualityScore: 72, qualityIssues: ['vague_term'],
           qualityCategoryScores: { clarity: 40, testability: 80, atomicity: 90, style: 60, rationale: 20 },
           childType: 'Requirement', traceLinks: [], figureIds: [],
+          tableIds: [], uncaptionedFigureIds: [],
         },
         {
           localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [],
           qualityScore: undefined, qualityIssues: undefined, qualityCategoryScores: undefined,
           childType: undefined, traceLinks: [], figureIds: [],
+          tableIds: [], uncaptionedFigureIds: [],
         },
       ],
       fakeIdempotencyService,
@@ -482,6 +488,52 @@ describe('runPipelineJob', () => {
     expect(fakeDryRunService.diff).toHaveBeenCalledWith(
       [
         expect.objectContaining({ qualityCategoryScores: { Necessary: 90, Verifiable: 80 } }),
+      ],
+      fakeIdempotencyService,
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it('carries quality_category_checklist from ingestion through to the dry-run diff input, mapped to camelCase', async () => {
+    // Companion to quality_category_scores -- see ingestion's
+    // quality_category_checklist docstring (app.workitem.model). Only a
+    // SUBSET of the score keys is expected to have a matched definition
+    // (Verifiable has none here), which is the real, common case, not a
+    // partial-failure signal.
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        {
+          local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1',
+          quality_score: 85, quality_issues: [],
+          quality_category_scores: { Necessary: 90, Verifiable: 80 },
+          quality_category_checklist: { Necessary: 'States something not already satisfied.' },
+        },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt', followUp: true },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakeDryRunService.diff).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          qualityCategoryChecklist: { Necessary: 'States something not already satisfied.' },
+        }),
       ],
       fakeIdempotencyService,
       expect.any(Function),
@@ -671,7 +723,10 @@ describe('runPipelineJob', () => {
       [
         expect.objectContaining({
           localId: 'n0',
-          sourceRef: { documentPath: '/tmp/doc.docx', startOffset: 10, endOffset: 20, page: null },
+          sourceRef: {
+            documentPath: '/tmp/doc.docx', startOffset: 10, endOffset: 20, page: null,
+            pageEnd: null, pageProvenance: null, sectionPath: [],
+          },
           tags: ['functional', 'safety'],
         }),
       ],
@@ -699,6 +754,127 @@ describe('runPipelineJob', () => {
         figureCount: 0,
         diffReadyAt: expect.any(Date),
       },
+    });
+  });
+
+  // Phase 4 provenance fields: sectionPath/pageEnd/pageProvenance
+  // (source_ref) and tableIds/uncaptionedFigureIds (top-level, siblings of
+  // figure_ids) -- ingestion now populates real values for these on every
+  // scored WorkItemNode, threaded through the exact same raw-to-diff-input
+  // mapping figureIds/sourceRef already take (see LeveledSourceRef/
+  // LeveledNode above).
+  it('carries source_ref.page_end/page_provenance/section_path and table_ids/uncaptioned_figure_ids through to the dry-run diff input', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        {
+          local_id: 'n0',
+          fidelity_hash: 'hashA',
+          customer_id: 'CUST-1',
+          source_ref: {
+            document_path: '/tmp/doc.pdf', start_offset: 10, end_offset: 20, page: 12,
+            page_end: 14, page_provenance: 'rendered', section_path: ['3 Power', '3.2 Backplane'],
+          },
+          table_ids: ['t0', 't1'],
+          uncaptioned_figure_ids: ['f9'],
+        },
+        // Omits every new field entirely -- must default exactly like
+        // figure_ids does (page_end/page_provenance null, section_path/
+        // table_ids/uncaptioned_figure_ids []), never crash the mapping.
+        { local_id: 'n1', fidelity_hash: 'hashB', customer_id: 'CUST-1' },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakeDryRunService.diff).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          localId: 'n0',
+          sourceRef: {
+            documentPath: '/tmp/doc.pdf', startOffset: 10, endOffset: 20, page: 12,
+            pageEnd: 14, pageProvenance: 'rendered', sectionPath: ['3 Power', '3.2 Backplane'],
+          },
+          tableIds: ['t0', 't1'],
+          uncaptionedFigureIds: ['f9'],
+        }),
+        expect.objectContaining({ localId: 'n1', tableIds: [], uncaptionedFigureIds: [] }),
+      ],
+      fakeIdempotencyService,
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it('prune-bug fix: an empty referenced-figures list (no node references any figure) results in ZERO deletions, not everything deleted', async () => {
+    // Regression guard: Prisma's `notIn: []` matches EVERY row, so before
+    // this fix a job where no node referenced any figure at all would wipe
+    // every JobFigureFile row for the job instead of leaving them untouched.
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [{ local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1' }],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.jobFigureFile.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('prune union: referencedFigureIds is the union of figureIds AND uncaptionedFigureIds across all nodes', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        { local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1', figure_ids: ['f0'], uncaptioned_figure_ids: ['f9'] },
+        { local_id: 'n1', fidelity_hash: 'hashB', customer_id: 'CUST-1', figure_ids: ['f2'] },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.jobFigureFile.deleteMany).toHaveBeenCalledWith({
+      where: { jobId: 'job-1', figureId: { notIn: ['f0', 'f9', 'f2'] } },
     });
   });
 

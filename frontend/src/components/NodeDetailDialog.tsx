@@ -67,8 +67,10 @@ export function NodeDetailDialog({
   traceTargetTitles,
   diffByLocalId,
   descendantCountsByLocalId,
+  captionByFigureId,
   onSave,
   onRescore,
+  onAttachFigure,
   onAddChild,
   onNavigate,
   hasPrev,
@@ -87,9 +89,19 @@ export function NodeDetailDialog({
   // DESIGN.md §11.4.1 -- an Epic/Feature's Scope group needs real
   // descendant counts from the WHOLE diff tree; computed once by the
   // caller (JobDetail.tsx), resolved per-entry here same as diffByLocalId.
-  descendantCountsByLocalId?: Record<string, { features: number; requirements: number }>;
+  descendantCountsByLocalId?: Record<string, { epics: number; features: number; requirements: number }>;
+  // figureId -> vision-model caption, same figureId scheme entry.figureIds
+  // references -- lets NodeDetailPanel's Figures section show each of THIS
+  // entry's own referenced figures with its caption, without re-deriving
+  // the figureIndex/figureId relationship itself.
+  captionByFigureId?: Record<string, string>;
   onSave?: (localId: string, patch: { title: string; description: string }) => void;
   onRescore?: (localId: string) => Promise<void>;
+  // Manual "Upload to ADO" action for one of this entry's figures -- see
+  // NodeDetailPanel's Figures section and JobsService.attachFigureToAdo's
+  // own doc comment for why this exists alongside confirm()'s automatic
+  // attachment.
+  onAttachFigure?: (localId: string, figureId: string) => Promise<void>;
   onAddChild: (parentLocalId: string, input: { type: string; title: string; description: string }) => void;
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
@@ -121,6 +133,7 @@ export function NodeDetailDialog({
 
   const detailsContent = (
     <NodeDetailPanel
+      jobId={jobId}
       entry={entry}
       jobMode={jobMode}
       jobStatus={jobStatus}
@@ -128,8 +141,10 @@ export function NodeDetailDialog({
       traceTargetTitles={traceTargetTitles}
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
+      captionByFigureId={captionByFigureId}
       onSave={onSave}
       onRescore={onRescore}
+      onAttachFigure={onAttachFigure}
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}
     />
   );

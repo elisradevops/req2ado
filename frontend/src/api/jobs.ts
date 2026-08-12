@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { httpClient } from './httpClient';
 import type { JobSummary, JobDetail } from '../store/jobsStore';
 import type { WarningRecord } from '../utils/warnings';
@@ -253,5 +254,39 @@ export interface DedupSkipEntry {
 
 export async function getDedupSkips(id: string): Promise<DedupSkipEntry[]> {
   const response = await httpClient.get<DedupSkipEntry[]>(`/jobs/${id}/dedup-skips`);
+  return response.data;
+}
+
+// Fetches a stored figure's compressed image bytes (JobFigureFile) as a
+// Blob, through the same session-cookie-carrying httpClient every other
+// request already uses -- pointing an <img src="..."> tag directly at the
+// API origin would need its own crossOrigin="use-credentials" wiring and
+// server-side CORS-with-credentials config, independent of (and easy to
+// drift from) the axios session this app is otherwise built around. The
+// caller turns the returned Blob into an object URL (URL.createObjectURL)
+// to actually render it. Returns null (not a thrown error) for a 404 --
+// the figure was never stored, or was already attached to ADO and deleted
+// server-side (see attachFigureToAdo below) -- both are normal states the
+// caller renders a quiet placeholder for, not application errors.
+export async function getFigureFile(jobId: string, figureId: string): Promise<Blob | null> {
+  try {
+    const response = await httpClient.get(`/jobs/${jobId}/figures/${figureId}`, { responseType: 'blob' });
+    return response.data;
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+// Manually (re-)triggers the same ADO attachment jobs.service.ts's confirm()
+// already performs automatically for newly-created work items -- the only
+// way to attach a figure to a 'reuse'/'dedup_skip' entry (which never goes
+// through confirm()'s create/writeback path at all) or to retry a single
+// figure that failed confirm()'s best-effort automatic pass. Deletes the
+// server-side JobFigureFile row on success, same as the automatic path --
+// a re-click after success 404s via getFigureFile above rather than
+// re-uploading a duplicate attachment.
+export async function attachFigureToAdo(jobId: string, localId: string, figureId: string): Promise<{ attached: true; adoId: number }> {
+  const response = await httpClient.post(`/jobs/${jobId}/diff/${localId}/figures/${figureId}/attach`);
   return response.data;
 }

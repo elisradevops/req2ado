@@ -10,12 +10,14 @@ import {
   PayloadTooLargeException,
   Post,
   Query,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
+import type { Response } from 'express';
 import { JobsService, JobSummary } from './jobs.service';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
@@ -428,6 +430,54 @@ export class JobsController {
     }
     await this.jobsService.storeFigureFile(id, figureId, bytes, parseResult.data.mimeType);
     return { stored: true };
+  }
+
+  // Browser-facing counterpart to the internal upload route above -- lets
+  // the review UI actually render a figure's image (FigureDescriptions,
+  // NodeDetailPanel), not just the vision-model's text caption. Session-
+  // cookie/ownedJob guarded like every other per-job GET route on this
+  // controller (NOT the LlmProxyBearerGuard the upload route above uses --
+  // that convention is for service-to-service calls with no session user
+  // at all, which doesn't apply here). Streams the raw bytes directly via
+  // the response object rather than returning them from the handler --
+  // NestJS's default handling would JSON-serialize a Buffer, not send it as
+  // a real image body. 404s (not a JSON `null`) when the figure was never
+  // stored or has already been attached to ADO and deleted (see
+  // JobsService.attachFigureToAdo/confirm()'s own attach phase) -- both are
+  // normal, expected states for an <img> tag to handle, not server errors.
+  @Get(':id/figures/:figureId')
+  async getFigureFile(
+    @Param('id') id: string,
+    @Param('figureId') figureId: string,
+    @CurrentUser() user: SessionUser,
+    @Res() res: Response,
+  ): Promise<void> {
+    await this.ownedJob(id, user);
+    const figureFile = await this.jobsService.getFigureFile(id, figureId);
+    if (!figureFile) {
+      throw new NotFoundException(`Figure ${figureId} not found for job ${id}`);
+    }
+    res.set('Content-Type', figureFile.mimeType);
+    res.send(figureFile.bytes);
+  }
+
+  // Manual retry/backfill for confirm()'s best-effort automatic attach --
+  // see JobsService.attachFigureToAdo's own doc comment for the two gaps
+  // this closes (an already-'succeeded' job can never re-enter confirm(),
+  // and a single silently-swallowed failure there had no retry path).
+  // Session-cookie/ownedJob guarded and resolves a real ADO credential the
+  // same way confirm()/validateCreatedTree do -- this performs a real ADO
+  // write, not a read.
+  @Post(':id/diff/:localId/figures/:figureId/attach')
+  async attachFigureToAdo(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @Param('figureId') figureId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<{ attached: true; adoId: number }> {
+    await this.ownedJob(id, user);
+    const credential = await this.adoCredentialResolver.resolve(user.userId);
+    return this.jobsService.attachFigureToAdo(id, localId, figureId, credential);
   }
 
   @Get(':id/audit')

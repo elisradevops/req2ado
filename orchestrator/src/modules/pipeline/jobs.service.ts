@@ -527,6 +527,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (result.qualityScore == null) {
       throw new BadGatewayException('Rescore did not return a usable score -- the item was left unchanged.');
     }
+    // qualityCategoryChecklist (the org's own checklist citation text per
+    // category, see ingestion's quality_category_checklist docstring,
+    // app.workitem.model) is deliberately NOT overwritten here -- the
+    // spread above carries the entry's EXISTING map through untouched.
+    // ingestion's /score-item route has no access to the raw KB checklist
+    // text at all (only category NAMES, via categoryChecklist above, reused
+    // as this rescore's fixed rubric) so there is nothing fresher to write.
+    // Reusing the old map is still correct, not stale: resolveCategoryChecklist
+    // guarantees this rescore is judged against the SAME category key set,
+    // so whichever keys already had a matched citation still do.
     diff[index] = {
       ...diff[index],
       qualityScore: result.qualityScore,
@@ -805,6 +815,85 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  // Browser-facing counterpart to storeFigureFile (GET :id/figures/:figureId
+  // route) -- serves a stored figure's raw bytes back to an authenticated
+  // review session so FigureDescriptions/NodeDetailPanel can render the
+  // actual image instead of only the vision-model's text caption. Returns
+  // null (not a thrown error) when the row doesn't exist: a figure already
+  // attached to ADO (deleted on success, see attachFigureToAdo/confirm()'s
+  // own attach phase) or never stored is a normal outcome here, not a
+  // service-layer failure -- the controller decides the HTTP shape.
+  async getFigureFile(jobId: string, figureId: string): Promise<{ bytes: Buffer; mimeType: string } | null> {
+    const figureFile = await this.prisma.jobFigureFile.findUnique({ where: { jobId_figureId: { jobId, figureId } } });
+    if (!figureFile) return null;
+    return { bytes: Buffer.from(figureFile.bytes), mimeType: figureFile.mimeType };
+  }
+
+  // Manual counterpart to confirm()'s automatic figure-attachment phase --
+  // needed for two real gaps that phase alone can't cover: (1) it only ever
+  // runs ONCE, at confirm() time, guarded on job.status === 'diff_ready' --
+  // a job that's already 'succeeded' (including every job confirmed before
+  // the DryRunDiffEntry.figureIds carry-through bug was fixed -- see that
+  // field's own doc comment in dry-run.service.ts) can never re-enter
+  // confirm() to pick up a figure it missed. (2) even going forward, a
+  // single figure's attachment there is best-effort/silently-swallowed by
+  // design (one bad upload must not revert an otherwise-successful
+  // confirm), so there was previously no way to retry one specific
+  // failure. Reuses the SAME mcpClient.uploadAttachment call and
+  // delete-on-success bookkeeping confirm() already uses -- not a second
+  // implementation of ADO attachment.
+  //
+  // Resolves the entry's real ADO id from whichever of the two sources
+  // confirm()'s own adoIdByLocalId map draws from: existingAdoId directly
+  // for a reuse/dedup_skip entry (known at diff time, before this job is
+  // even confirmed), or CreatedItemMapping for a 'create' entry (only
+  // resolvable once this job's confirm() has actually run).
+  async attachFigureToAdo(
+    jobId: string,
+    localId: string,
+    figureId: string,
+    credential?: { orgUrl: string; pat: string },
+  ): Promise<{ attached: true; adoId: number }> {
+    const job = await this.prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException(`Job ${jobId} not found`);
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const entry = diff.find((e) => e.localId === localId);
+    if (!entry) throw new NotFoundException(`Diff entry ${localId} not found in job ${jobId}`);
+
+    let adoId: number | null = null;
+    if ((entry.action === 'reuse' || entry.action === 'dedup_skip') && entry.existingAdoId !== null) {
+      adoId = entry.existingAdoId;
+    } else {
+      const mapping = await this.prisma.createdItemMapping.findUnique({
+        where: { jobId_localId: { jobId, localId } },
+      });
+      adoId = mapping?.adoWorkItemId ?? null;
+    }
+    if (adoId === null) {
+      throw new BadRequestException(`Entry ${localId} has no resolved ADO work item id yet`);
+    }
+
+    const figureFile = await this.prisma.jobFigureFile.findUnique({ where: { jobId_figureId: { jobId, figureId } } });
+    if (!figureFile) {
+      throw new NotFoundException(`Figure ${figureId} not found for job ${jobId}`);
+    }
+
+    await this.mcpClient.uploadAttachment(
+      adoId,
+      `${figureId}.png`,
+      Buffer.from(figureFile.bytes).toString('base64'),
+      figureFile.mimeType,
+      credential,
+    );
+    // Same delete-on-success bookkeeping as confirm()'s own attach phase --
+    // a re-triggered manual attach after a prior success 404s via
+    // getFigureFile/this same lookup instead of re-uploading a duplicate
+    // attachment, and the row doesn't linger forever once its bytes have a
+    // permanent home in ADO.
+    await this.prisma.jobFigureFile.delete({ where: { id: figureFile.id } });
+    return { attached: true, adoId };
+  }
+
   // Rejecting is only meaningful from 'diff_ready' -- once writing/succeeded,
   // real ADO writes may already exist and a reject can't undo those
   // (P4b's CreatedItemMapping enables safe RESUME of a failed confirm, not
@@ -880,6 +969,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // get as ADO attachments, see the attach phase near the end of this
       // method. Optional/nullable: older/mocked diff shapes predate this.
       figureIds?: string[];
+      // Carried through from ingestion (see DryRunDiffEntry.tableIds/
+      // uncaptionedFigureIds) -- not consumed anywhere in this method today,
+      // but must still be declared on this inline type: omitting a field
+      // here silently drops it on the `{...diff[index]}`-style rewrites this
+      // file does elsewhere (same class of bug figureIds itself previously
+      // hit, see DryRunDiffEntry.figureIds' own doc comment).
+      tableIds?: string[];
+      uncaptionedFigureIds?: string[];
     }[];
 
     // Excluding an entry excludes its whole subtree too, even if a descendant

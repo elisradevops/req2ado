@@ -89,7 +89,7 @@ export function Dialog({
         >
           <div className="flex flex-none flex-col gap-1 px-5 pt-4 pb-3">
             <div className="flex items-start justify-between gap-3">
-              <RadixDialog.Title className="text-title">{title}</RadixDialog.Title>
+              <RadixDialog.Title className="min-w-0 flex-1 text-title">{title}</RadixDialog.Title>
               <RadixDialog.Close asChild>
                 <button type="button" aria-label="Close" className="text-ink-3 hover:text-ink-1">
                   <X className="h-4 w-4" />

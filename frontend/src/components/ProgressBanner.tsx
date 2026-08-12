@@ -38,6 +38,10 @@ const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   detect_conflicts: 'Checking for conflicts',
   regroup_roots: 'Grouping by topic',
   infer_trace_links: 'Resolving trace links',
+  // Docx-only, fires during parse like describe_figure/parse_done above --
+  // never actually looked up for the same reason (no per-section row),
+  // present only so this Record stays exhaustive.
+  page_alignment: 'Deriving page numbers',
   // dedup_check is never looked up for the SectionStepList sub-label (it
   // always carries branchCount 0, so no per-section row reads it), but IS
   // now read for ProgressBanner's own headline -- spec's own quoted example
@@ -74,6 +78,9 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   detect_conflicts: 1,
   regroup_roots: 1,
   infer_trace_links: 1,
+  // Parse-stage phase, same as describe_figure/parse_done above -- section
+  // scoring hasn't started yet, so no partial credit to give.
+  page_alignment: 0,
   // Never actually read: dedup_check/writing both carry branchCount 0, so
   // the `averageSectionShare * PHASE_START_WEIGHT[...]` term this Record
   // feeds is always multiplied by 0 anyway -- their blocksDone/blocksTotal

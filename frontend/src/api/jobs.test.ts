@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import axios from 'axios';
 import { httpClient } from './httpClient';
-import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry } from './jobs';
+import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo } from './jobs';
 
 vi.mock('./httpClient');
 
@@ -52,5 +53,45 @@ describe('jobs api', () => {
     (httpClient.post as any).mockResolvedValue({ data: { dryRunDiff: [] } });
     await rescoreDiffEntry('job-1', 'n0');
     expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/rescore');
+  });
+
+  it('getFigureFile GETs the figure route as a blob', async () => {
+    const blob = new Blob(['png bytes'], { type: 'image/png' });
+    (httpClient.get as any).mockResolvedValue({ data: blob });
+    const result = await getFigureFile('job-1', 'f0');
+    expect(httpClient.get).toHaveBeenCalledWith('/jobs/job-1/figures/f0', { responseType: 'blob' });
+    expect(result).toBe(blob);
+  });
+
+  it('getFigureFile returns null (not a throw) on a 404 -- the figure was never stored or already attached', async () => {
+    const notFound = Object.assign(new Error('Request failed with status code 404'), {
+      isAxiosError: true,
+      response: { status: 404 },
+    });
+    (httpClient.get as any).mockRejectedValue(notFound);
+    // Sanity-check the fixture actually satisfies axios.isAxiosError's real
+    // runtime check (not just this test's own assumption about its shape).
+    expect(axios.isAxiosError(notFound)).toBe(true);
+
+    const result = await getFigureFile('job-1', 'f0');
+
+    expect(result).toBeNull();
+  });
+
+  it('getFigureFile rethrows a non-404 error', async () => {
+    const serverError = Object.assign(new Error('Request failed with status code 500'), {
+      isAxiosError: true,
+      response: { status: 500 },
+    });
+    (httpClient.get as any).mockRejectedValue(serverError);
+
+    await expect(getFigureFile('job-1', 'f0')).rejects.toBe(serverError);
+  });
+
+  it('attachFigureToAdo POSTs to the per-figure attach sub-route with no body', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { attached: true, adoId: 555 } });
+    const result = await attachFigureToAdo('job-1', 'n0', 'f0');
+    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/figures/f0/attach');
+    expect(result).toEqual({ attached: true, adoId: 555 });
   });
 });

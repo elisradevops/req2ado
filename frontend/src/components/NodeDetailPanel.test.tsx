@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { NodeDetailPanel, canEditEntry, editabilityOf } from './NodeDetailPanel';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
@@ -204,7 +204,7 @@ describe('NodeDetailPanel', () => {
       renderPanel(
         <NodeDetailPanel
           entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body', action: 'create', customerId: null, tags: [] }}
-          descendantCounts={{ features: 6, requirements: 41 }}
+          descendantCounts={{ epics: 0, features: 6, requirements: 41 }}
         />,
       );
       expect(screen.getByText('Covers 6 features, 41 requirements.')).toBeInTheDocument();
@@ -215,10 +215,20 @@ describe('NodeDetailPanel', () => {
       renderPanel(
         <NodeDetailPanel
           entry={{ localId: 'e1', parentLocalId: null, type: 'Feature', title: 'F', description: 'D', action: 'create', customerId: null, tags: [] }}
-          descendantCounts={{ features: 0, requirements: 1 }}
+          descendantCounts={{ epics: 0, features: 0, requirements: 1 }}
         />,
       );
       expect(screen.getByText('Covers 0 features, 1 requirement.')).toBeInTheDocument();
+    });
+
+    it('includes nested epics in the covered count, not just features/requirements', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body', action: 'create', customerId: null, tags: [] }}
+          descendantCounts={{ epics: 2, features: 6, requirements: 41 }}
+        />,
+      );
+      expect(screen.getByText('Covers 2 epics, 6 features, 41 requirements.')).toBeInTheDocument();
     });
 
     it('shows a real empty state, not a fabricated count, when there are no descendants yet', () => {
@@ -485,6 +495,51 @@ describe('NodeDetailPanel', () => {
       />,
     );
     expect(screen.queryByText(/chars \d/)).not.toBeInTheDocument();
+  });
+
+  describe('Tables and figures (Phase 5 provenance)', () => {
+    const tableEntry = (patch: Partial<DryRunDiffEntry> = {}): DryRunDiffEntry => ({
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: null, tags: [],
+      ...patch,
+    });
+
+    it('renders a neutral chip per tableId when present', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ tableIds: ['t3', 't7'] })} />);
+      expect(screen.getByText('Tables')).toBeInTheDocument();
+      expect(screen.getByText('Table t3')).toBeInTheDocument();
+      expect(screen.getByText('Table t7')).toBeInTheDocument();
+    });
+
+    it('renders no Tables block when tableIds is absent or empty', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ tableIds: [] })} />);
+      expect(screen.queryByText('Tables')).not.toBeInTheDocument();
+    });
+
+    it('renders an amber, distinctly-labeled chip for an uncaptioned figure, with an explanatory tooltip', async () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'] })} />);
+      const chip = screen.getByText('Figure f5 · no description');
+      expect(chip).toBeInTheDocument();
+      // Same warning-band token QualityGauge's "Needs review" chip uses --
+      // not a one-off color, so "amber" reads consistently everywhere.
+      expect(chip.className).toContain('warning');
+
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.hover(chip);
+      await waitFor(() =>
+        expect(screen.getByText(/no description was produced/i)).toBeInTheDocument(),
+      );
+    });
+
+    it('renders the "Figures" section for an uncaptioned figure even with no jobId/figureIds supplied', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f2'] })} />);
+      expect(screen.getByText('Figures')).toBeInTheDocument();
+    });
+
+    it('renders no uncaptioned-figure chip when uncaptionedFigureIds is absent or empty', () => {
+      renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: [] })} />);
+      expect(screen.queryByText(/no description/)).not.toBeInTheDocument();
+    });
   });
 
   it('does not show an Edit button for a reuse entry, and explains why instead of rendering nothing', () => {

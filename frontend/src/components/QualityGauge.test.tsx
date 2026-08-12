@@ -142,6 +142,69 @@ describe('QualityGauge', () => {
     });
   });
 
+  // Real per-category checklist citation text (see ingestion's
+  // quality_category_checklist docstring, app.workitem.model) -- when a
+  // category key was matched against the org's own ingested checklist
+  // document, the row's definition is a real quote from that document
+  // instead of the generic placeholder sentence.
+  describe('categoryChecklist citation', () => {
+    it('shows the matched checklist text as a citation, replacing the generic placeholder', async () => {
+      render(
+        <QualityGauge
+          score={72}
+          categoryScores={{ Necessary: 90 }}
+          categoryChecklist={{ Necessary: 'States something not already satisfied.' }}
+        />,
+      );
+      await userEvent.click(screen.getByRole('button', { name: /necessary/i }));
+      expect(
+        screen.getByText('Per your organization\'s document: "States something not already satisfied."'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("From your organization's own ingested quality-checklist standard.")).not.toBeInTheDocument();
+    });
+
+    it('shows a short/sparse matched definition verbatim, with the same citation framing -- no "too short to show" gate', () => {
+      // Product requirement: org checklists vary wildly in detail. A
+      // near-floor-length source sentence must render exactly like a
+      // detailed one, never specially suppressed or flagged as thin.
+      render(
+        <QualityGauge
+          score={72}
+          categoryScores={{ Necessary: 90 }}
+          categoryChecklist={{ Necessary: 'Ok' }}
+        />,
+      );
+      expect(screen.getByText('Per your organization\'s document: "Ok"')).toBeInTheDocument();
+    });
+
+    it('falls back to the generic placeholder for a category with no matched checklist entry, even when categoryChecklist has other keys', () => {
+      render(
+        <QualityGauge
+          score={72}
+          categoryScores={{ Necessary: 90, Unambiguous: 55 }}
+          categoryChecklist={{ Necessary: 'States something not already satisfied.' }}
+        />,
+      );
+      expect(screen.getByText("From your organization's own ingested quality-checklist standard.")).toBeInTheDocument();
+    });
+
+    it('falls back to the KNOWN_CATEGORY_DESCRIPTIONS sentence for a fixed 5-dimension key even when categoryChecklist is supplied but has no entry for it', () => {
+      render(
+        <QualityGauge
+          score={40}
+          categoryScores={{ clarity: 20 }}
+          categoryChecklist={{ Necessary: 'Unrelated KB text.' }}
+        />,
+      );
+      expect(screen.getByText(/free of vague terms/i)).toBeInTheDocument();
+    });
+
+    it('renders every row with the generic placeholder when categoryChecklist is omitted entirely (pre-existing behavior, unchanged)', () => {
+      render(<QualityGauge score={72} categoryScores={{ Necessary: 90 }} />);
+      expect(screen.getByText("From your organization's own ingested quality-checklist standard.")).toBeInTheDocument();
+    });
+  });
+
   // CR-7d rescore: "Rescored" shows a real before/after delta, not just the
   // new number with no context for what changed.
   describe('rescore delta', () => {

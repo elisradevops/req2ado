@@ -319,6 +319,53 @@ describe('DryRunService', () => {
     expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1');
   });
 
+  it('strips HTML from node.description before calling dedupCheck, matching backfill.service.ts\'s own stripping so both sides of the comparison are symmetric', async () => {
+    // Regression for the asymmetry documented on stripHtmlTags and at this
+    // call site: node.description is req2ado's own generated rich-text
+    // HTML (a <table> block here, standing in for what table-fidelity
+    // ships), while backfill.service.ts's equivalent seeding path already
+    // strips ADO's own System.Description HTML with the SAME stripHtmlTags
+    // before running its half of the comparison. Before this fix, this
+    // call site sent the raw HTML straight through -- comparing "HTML +
+    // real content" against backfill's "just real content" silently cost
+    // similarity points (confirmed ~2.5 points on plain prose alone), and
+    // a table's much higher markup-to-content ratio makes that gap far
+    // worse. Proving the fix means proving BOTH sides now see the exact
+    // same plain-text content, not merely that stripHtmlTags exists.
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
+    const service = new DryRunService();
+    const tableBearingDescription =
+      '<p>Intro.</p>\n<table><thead><tr><th>Slot</th><th>Qty</th></tr></thead>' +
+      '<tbody><tr><td>A</td><td>2</td></tr></tbody></table>';
+    await service.diff(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: tableBearingDescription,
+          sourceHash: 'hash1',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
+          tags: [],
+        },
+      ],
+      fakeIdempotencyService,
+      dedupCheck,
+    );
+    // What backfill.service.ts's stripHtmlTags would independently produce
+    // from the SAME markup, standing in for what a real ADO-side
+    // equivalent item's stripped description looks like -- both sides of
+    // the comparison must land on this identical plain-text string.
+    expect(dedupCheck).toHaveBeenCalledWith('Intro. Slot Qty A 2', 'Title 0', 'Project\\Area1');
+  });
+
   it('marks a node as "create" when no exact-hash match exists and dedupCheck finds no duplicate', async () => {
     (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
@@ -554,10 +601,43 @@ describe('DryRunService', () => {
     });
   });
 
+  it('carries a real qualityCategoryChecklist through to a create entry', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: null,
+          areaPath: 'Project\\Area1',
+          qualityScore: 80,
+          qualityIssues: [],
+          qualityCategoryScores: { Necessary: 80, Unambiguous: 70 },
+          qualityCategoryChecklist: { Necessary: 'States something not already satisfied.' },
+          sourceRef: null,
+          tags: [],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0]).toMatchObject({
+      qualityCategoryScores: { Necessary: 80, Unambiguous: 70 },
+      qualityCategoryChecklist: { Necessary: 'States something not already satisfied.' },
+    });
+  });
+
   it('carries a real sourceRef/tags through to every action type', async () => {
     (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
-    const sourceRef = { documentPath: '/tmp/doc.docx', startOffset: 10, endOffset: 20, page: null };
+    const sourceRef = {
+      documentPath: '/tmp/doc.docx', startOffset: 10, endOffset: 20, page: null,
+      pageEnd: null, pageProvenance: null, sectionPath: [],
+    };
     const result = await service.diff(
       [
         {
@@ -675,6 +755,144 @@ describe('DryRunService', () => {
       fakeIdempotencyService,
     );
     expect(result[0].childType).toBe('Requirement');
+  });
+
+  // Regression: diffOneNode's three return branches previously built each
+  // DryRunDiffEntry as an explicit object literal that never included
+  // figureIds -- DryRunTreeNode carried it (see pipeline.worker.ts's
+  // diffInputs mapping), but it was silently dropped at this exact
+  // conversion, so jobs.service.ts's confirm()-time figure-attachment phase
+  // always iterated an empty list. One case per action branch since each
+  // branch is its own object literal, not a shared code path.
+  it('carries figureIds through on the "create" branch', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          figureIds: ['f0', 'f1'],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0].action).toBe('create');
+    expect(result[0].figureIds).toEqual(['f0', 'f1']);
+  });
+
+  it('carries figureIds through on the "reuse" branch', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(42);
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          figureIds: ['f2'],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0].action).toBe('reuse');
+    expect(result[0].figureIds).toEqual(['f2']);
+  });
+
+  it('carries figureIds through on the "dedup_skip" branch', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: '99', similarity: 0.9 });
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          figureIds: ['f3'],
+        },
+      ],
+      fakeIdempotencyService,
+      dedupCheck,
+    );
+    expect(result[0].action).toBe('dedup_skip');
+    expect(result[0].figureIds).toEqual(['f3']);
+  });
+
+  // Phase 4 provenance fields: tableIds/uncaptionedFigureIds (siblings of
+  // figureIds on DryRunTreeNode/DryRunDiffEntry) and sourceRef's own new
+  // sectionPath/pageEnd/pageProvenance members. Same regression shape as
+  // figureIds above -- diffOneNode's three return branches are each their
+  // own object literal, so a field added to only some of them is silently
+  // dropped on the others. One case per action branch, mirroring the
+  // figureIds tests exactly.
+  it('carries tableIds/uncaptionedFigureIds/sectionPath/pageEnd/pageProvenance through on the "create" branch', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const service = new DryRunService();
+    const sourceRef = {
+      documentPath: '/tmp/doc.pdf', startOffset: 10, endOffset: 20, page: 12,
+      pageEnd: 14, pageProvenance: 'rendered', sectionPath: ['3 Power', '3.2 Backplane'],
+    };
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceRef, tableIds: ['t0'], uncaptionedFigureIds: ['f9'],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0].action).toBe('create');
+    expect(result[0].sourceRef).toEqual(sourceRef);
+    expect(result[0].tableIds).toEqual(['t0']);
+    expect(result[0].uncaptionedFigureIds).toEqual(['f9']);
+  });
+
+  it('carries tableIds/uncaptionedFigureIds/sectionPath/pageEnd/pageProvenance through on the "reuse" branch', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(42);
+    const service = new DryRunService();
+    const sourceRef = {
+      documentPath: '/tmp/doc.pdf', startOffset: 10, endOffset: 20, page: 12,
+      pageEnd: null, pageProvenance: 'interpolated', sectionPath: ['4 Interfaces'],
+    };
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceRef, tableIds: ['t1'], uncaptionedFigureIds: ['f8'],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0].action).toBe('reuse');
+    expect(result[0].sourceRef).toEqual(sourceRef);
+    expect(result[0].tableIds).toEqual(['t1']);
+    expect(result[0].uncaptionedFigureIds).toEqual(['f8']);
+  });
+
+  it('carries tableIds/uncaptionedFigureIds/sectionPath/pageEnd/pageProvenance through on the "dedup_skip" branch', async () => {
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: '99', similarity: 0.9 });
+    const service = new DryRunService();
+    const sourceRef = {
+      documentPath: '/tmp/doc.pdf', startOffset: 10, endOffset: 20, page: null,
+      pageEnd: null, pageProvenance: null, sectionPath: [],
+    };
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceRef, tableIds: ['t2'], uncaptionedFigureIds: ['f7'],
+        },
+      ],
+      fakeIdempotencyService,
+      dedupCheck,
+    );
+    expect(result[0].action).toBe('dedup_skip');
+    expect(result[0].sourceRef).toEqual(sourceRef);
+    expect(result[0].tableIds).toEqual(['t2']);
+    expect(result[0].uncaptionedFigureIds).toEqual(['f7']);
   });
 
   it('calls onProgress once per node with a monotonically-increasing completed count, final call at the total', async () => {

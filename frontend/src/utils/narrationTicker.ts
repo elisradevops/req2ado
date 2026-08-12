@@ -41,6 +41,7 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   detect_conflicts: 'Checking for conflicts.',
   regroup_roots: 'Grouping by topic.',
   infer_trace_links: 'Resolving trace links.',
+  page_alignment: 'Deriving real page numbers for the source document.',
   dedup_check: 'Checking for existing/duplicate work items.',
   writing: 'Writing to Azure DevOps.',
   job_failed: 'Job failed.',

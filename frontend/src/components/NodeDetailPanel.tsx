@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pencil, Link2, RefreshCw } from 'lucide-react';
+import { Pencil, Link2, RefreshCw, Upload, Check } from 'lucide-react';
 import { TagChips } from './TagChips';
 import { QualityGauge, type QualityCategoryScores } from './QualityGauge';
 import { TraceLinkChips } from './TraceLinkChips';
 import { KbCitationChips, type KbCitation } from './KbCitationChips';
+import { FigureImage } from './FigureImage';
 import type { DryRunDiffEntry } from './DiffTree';
 import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
+import { Chip } from '../ui/Chip';
+import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { formatSourceRef } from '../utils/sourceRef';
@@ -46,6 +49,7 @@ export function canEditEntry(entry: DryRunDiffEntry, jobStatus?: string | null):
 }
 
 export function NodeDetailPanel({
+  jobId,
   entry,
   jobMode,
   jobStatus,
@@ -53,10 +57,16 @@ export function NodeDetailPanel({
   traceTargetTitles,
   parentEntry,
   addChildSlot,
+  captionByFigureId,
   onSave,
   onRescore,
+  onAttachFigure,
   descendantCounts,
 }: {
+  // Needed only by the Figures section below (FigureImage's fetch route is
+  // job-scoped) -- optional so every existing caller/test that has no
+  // reason to touch figures keeps working unchanged.
+  jobId?: string;
   entry: DryRunDiffEntry | null;
   jobMode?: 'baseline' | 'survey' | null;
   jobStatus?: string | null;
@@ -87,6 +97,17 @@ export function NodeDetailPanel({
   // flag) untouched -- this component never fabricates a fresh number on
   // failure, it just reflects whatever the server actually persisted.
   onRescore?: (localId: string) => Promise<void>;
+  // figureId -> vision-model caption, same figureId scheme entry.figureIds
+  // references (computed by the caller, JobDetail.tsx, from the SAME
+  // figureIndex-based array FigureDescriptions renders). Absent figures
+  // (e.g. a caption event that never fired, or a job reopened whose live
+  // narration history hasn't loaded yet) just render without caption text.
+  captionByFigureId?: Record<string, string>;
+  // Manual "Upload to ADO" action for one of entry.figureIds -- see the
+  // Figures section below and JobsService.attachFigureToAdo's own doc
+  // comment for why this exists alongside confirm()'s automatic
+  // attachment. Same re-throw-on-failure contract as onRescore.
+  onAttachFigure?: (localId: string, figureId: string) => Promise<void>;
   // DESIGN.md §11.4.1 -- an Epic/Feature has no quality rubric (it's judged
   // on scope coherence, a review note, not a number), so its Scope group
   // shows what it covers instead: how many Feature/Requirement descendants
@@ -94,7 +115,7 @@ export function NodeDetailPanel({
   // over the WHOLE diff array, not here -- this component only ever sees
   // one entry at a time. Absent (not zeroed) for a Requirement, which
   // never renders this group at all.
-  descendantCounts?: { features: number; requirements: number };
+  descendantCounts?: { epics: number; features: number; requirements: number };
 }): React.ReactElement {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
@@ -116,6 +137,15 @@ export function NodeDetailPanel({
   // render that created it, not the entry the component displays by the
   // time the promise resolves.
   const selectedLocalIdRef = useRef(entry?.localId);
+  // Per-figureId "Upload to ADO" status, keyed by figureId since an entry
+  // can reference more than one figure and each has its own independent
+  // in-flight/done state. attachingFigureIdsRef is the synchronous guard
+  // (checked/set before the await, per this project's Async Mutation
+  // Handler convention) -- figureAttachStatus alone can't serve that role
+  // since its update is async and wouldn't be visible yet to a second
+  // rapid click on the same button.
+  const [figureAttachStatus, setFigureAttachStatus] = useState<Record<string, 'attaching' | 'done'>>({});
+  const attachingFigureIdsRef = useRef<Set<string>>(new Set());
 
   // Exit edit mode whenever the selected node changes so a stale draft from
   // the previously-edited node can never be saved onto a different node.
@@ -129,6 +159,8 @@ export function NodeDetailPanel({
     setRescoring(false);
     isRescoringRef.current = false;
     setPreRescoreSnapshot(null);
+    setFigureAttachStatus({});
+    attachingFigureIdsRef.current = new Set();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entry?.localId]);
 
@@ -188,6 +220,28 @@ export function NodeDetailPanel({
     } finally {
       isRescoringRef.current = false;
       setRescoring(false);
+    }
+  }
+
+  async function handleAttachFigureClick(figureId: string): Promise<void> {
+    if (!entry || !onAttachFigure || attachingFigureIdsRef.current.has(figureId)) return;
+    attachingFigureIdsRef.current.add(figureId);
+    setFigureAttachStatus((prev) => ({ ...prev, [figureId]: 'attaching' }));
+    try {
+      await onAttachFigure(entry.localId, figureId);
+      setFigureAttachStatus((prev) => ({ ...prev, [figureId]: 'done' }));
+    } catch {
+      // onAttachFigure's caller (JobDetail.tsx) owns surfacing the failure
+      // (a toast) -- drop this figureId's status entirely so the button
+      // reverts to its normal, clickable state for a retry rather than
+      // getting stuck showing "Uploading...".
+      setFigureAttachStatus((prev) => {
+        const next = { ...prev };
+        delete next[figureId];
+        return next;
+      });
+    } finally {
+      attachingFigureIdsRef.current.delete(figureId);
     }
   }
 
@@ -341,6 +395,7 @@ export function NodeDetailPanel({
                   key={entry.localId}
                   score={entry.qualityScore}
                   categoryScores={entry.qualityCategoryScores}
+                  categoryChecklist={entry.qualityCategoryChecklist}
                   qualityIssues={entry.qualityIssues}
                   previousScore={preRescoreSnapshot?.score}
                   previousCategoryScores={preRescoreSnapshot?.categoryScores}
@@ -393,9 +448,16 @@ export function NodeDetailPanel({
         <div className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5">
           <span className="text-xs font-semibold text-ink-2">Scope</span>
           <p className="text-sm text-ink-2">
-            {descendantCounts && (descendantCounts.features > 0 || descendantCounts.requirements > 0) ? (
+            {descendantCounts &&
+            (descendantCounts.epics > 0 || descendantCounts.features > 0 || descendantCounts.requirements > 0) ? (
               <>
-                Covers {descendantCounts.features} feature{descendantCounts.features === 1 ? '' : 's'}, {descendantCounts.requirements}{' '}
+                Covers{' '}
+                {descendantCounts.epics > 0 && (
+                  <>
+                    {descendantCounts.epics} epic{descendantCounts.epics === 1 ? '' : 's'},{' '}
+                  </>
+                )}
+                {descendantCounts.features} feature{descendantCounts.features === 1 ? '' : 's'}, {descendantCounts.requirements}{' '}
                 requirement{descendantCounts.requirements === 1 ? '' : 's'}.
               </>
             ) : (
@@ -453,6 +515,115 @@ export function NodeDetailPanel({
               <KbCitationChips citations={kbCitations} />
             </div>
           )}
+        </div>
+      )}
+      {/* This entry's OWN referenced figure(s) -- distinct from the
+          document-wide FigureDescriptions panel (JobDetail.tsx), which
+          lists every figure in the source file regardless of which
+          requirement(s) cited it. Gives the reviewer the actual image next
+          to a description that only names it in text (e.g. "Figure: This
+          diagram illustrates..."), plus a manual retry/backfill for ADO
+          attachment -- confirm()'s own automatic attach only ever runs
+          once, at confirm() time, so a 'reuse'/'dedup_skip' entry (which
+          never goes through that create/writeback path) or a job already
+          'succeeded' before this figure's attachment succeeded has no
+          other way to get it attached. See JobsService.attachFigureToAdo's
+          own doc comment. */}
+      {((jobId && entry.figureIds && entry.figureIds.length > 0) ||
+        (entry.uncaptionedFigureIds && entry.uncaptionedFigureIds.length > 0)) && (
+        <div className="mt-1">
+          <span className="text-xs font-semibold text-ink-2">Figures</span>
+          {jobId && entry.figureIds && entry.figureIds.length > 0 && (
+            <ul className="mt-1 flex flex-col gap-2">
+              {entry.figureIds.map((figureId) => {
+                const status = figureAttachStatus[figureId];
+                // Mirrors the backend's own resolution order (see
+                // JobsService.attachFigureToAdo): existingAdoId is known
+                // immediately for reuse/dedup_skip, while a 'create' entry's
+                // real ADO id only exists AFTER this job's confirm() has run
+                // and isn't exposed to the frontend today (CreatedItemMapping
+                // is never returned on any job-read route) -- so this button
+                // is only ever offered for the reuse/dedup_skip case, exactly
+                // the case that never gets confirm()'s automatic attachment.
+                const canAttach = entry.action !== 'create' && entry.existingAdoId != null;
+                return (
+                  <li
+                    key={figureId}
+                    className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-2.5 sm:flex-row sm:items-start"
+                  >
+                    <FigureImage jobId={jobId} figureId={figureId} active alt={`Figure referenced by ${entry.title}`} />
+                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      {captionByFigureId?.[figureId] && <p className="text-xs text-ink-2">{captionByFigureId[figureId]}</p>}
+                      {onAttachFigure &&
+                        (canAttach ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex-none self-start"
+                            disabled={status === 'done'}
+                            loading={status === 'attaching'}
+                            onClick={() => handleAttachFigureClick(figureId)}
+                          >
+                            {status === 'done' ? <Check className="h-3.5 w-3.5" /> : <Upload className="h-3.5 w-3.5" />}
+                            {status === 'done' ? 'Uploaded' : `Upload to ADO (WI-${entry.existingAdoId})`}
+                          </Button>
+                        ) : (
+                          <p className="text-xs text-ink-3">
+                            {entry.action === 'create'
+                              ? 'Uploading requires a resolved ADO work item id -- not available for a new item in this view.'
+                              : 'No resolved ADO work item id yet.'}
+                          </p>
+                        ))}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {/* Uncaptioned figures -- disjoint from figureIds above (a figure
+              id is in exactly one of the two lists). These sit immediately
+              below the captioned figures' full image cards, not in a
+              separate/collapsed section, because the whole point is making a
+              silently-dropped figure visible to a reviewer without them
+              needing to go looking for it. No image fetch here (unlike
+              above) -- there is nothing about this figure in the pipeline's
+              output worth rendering beyond "this exists and got nothing". */}
+          {entry.uncaptionedFigureIds && entry.uncaptionedFigureIds.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {entry.uncaptionedFigureIds.map((figureId) => (
+                <Tooltip
+                  key={figureId}
+                  content="This figure's image was captured, but no description was produced (vision disabled, or the description call failed) -- nothing about this figure reached this item's description."
+                >
+                  {/* Same warning-band treatment QualityGauge's "Needs
+                      review" chip uses (bg-warning-soft + border-warning-
+                      border + text-warning-ink) -- reused, not a new color,
+                      so "amber" means the same thing everywhere in this
+                      app. */}
+                  <Chip className="border border-warning-border bg-warning-soft text-warning-ink">
+                    Figure {figureId} · no description
+                  </Chip>
+                </Tooltip>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {/* Tables folded into this node -- sibling of Figures above, but with
+          no image/upload treatment: a table's content already renders as a
+          real HTML <table> via DescriptionMarkdown elsewhere in this same
+          description, so this is purely "here's which table(s) fed this
+          item", not a second table viewer. */}
+      {entry.tableIds && entry.tableIds.length > 0 && (
+        <div className="mt-1">
+          <span className="text-xs font-semibold text-ink-2">Tables</span>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {entry.tableIds.map((tableId) => (
+              <Chip key={tableId} className="border border-hairline-strong bg-surface-alt text-ink-2">
+                Table {tableId}
+              </Chip>
+            ))}
+          </div>
         </div>
       )}
       {/* Add Child sits LAST, after everything the reviewer might read

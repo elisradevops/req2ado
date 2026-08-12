@@ -1736,6 +1736,32 @@ describe('JobsService.rescoreDiffEntry', () => {
     expect(result[0].qualityStale).toBe(false);
   });
 
+  it('leaves qualityCategoryChecklist untouched across a rescore -- ingestion has no fresher citation text to offer', async () => {
+    // The rescore rubric is forced to the SAME category keys (see
+    // resolveCategoryChecklist above), so the entry's EXISTING checklist
+    // citation text is still accurate for them -- ingestion's /score-item
+    // route only ever receives category NAMES, never the raw KB definition
+    // text, so there is nothing new to overwrite it with.
+    const entryWithChecklist = {
+      ...staleEntry,
+      qualityCategoryChecklist: { clarity: 'Per your organization\'s document: "Wording is unambiguous."' },
+    };
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: 'qwen3.6:35b', dryRunDiff: [entryWithChecklist] }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const scoreItem = jest.fn().mockResolvedValue({ qualityScore: 80, qualityIssues: [], qualityCategoryScores: { clarity: 80 } });
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    const result = await service.rescoreDiffEntry('job-1', 'n0');
+
+    expect(result[0].qualityCategoryChecklist).toEqual({
+      clarity: 'Per your organization\'s document: "Wording is unambiguous."',
+    });
+  });
+
   it('passes null as the category checklist when the entry has no existing category breakdown and no scored sibling exists', async () => {
     const neverScored = { ...staleEntry, qualityScore: null, qualityCategoryScores: null, qualityStale: undefined };
     const prisma = {
@@ -2567,6 +2593,157 @@ describe('JobsService.storeFigureFile', () => {
       create: { jobId: 'job-1', figureId: 'f3', bytes, mimeType: 'image/png' },
       update: { bytes, mimeType: 'image/png' },
     });
+  });
+});
+
+describe('JobsService.getFigureFile', () => {
+  it('returns bytes/mimeType for a stored figure', async () => {
+    const prisma = {
+      jobFigureFile: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.getFigureFile('job-1', 'f0');
+
+    expect(prisma.jobFigureFile.findUnique).toHaveBeenCalledWith({ where: { jobId_figureId: { jobId: 'job-1', figureId: 'f0' } } });
+    expect(result).toEqual({ bytes: Buffer.from('png bytes'), mimeType: 'image/png' });
+  });
+
+  it('returns null (not a thrown error) when the figure was never stored or already attached', async () => {
+    const prisma = { jobFigureFile: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.getFigureFile('job-1', 'f0');
+
+    expect(result).toBeNull();
+  });
+});
+
+describe('JobsService.attachFigureToAdo', () => {
+  it('attaches using existingAdoId for a reuse entry and deletes the JobFigureFile row on success', async () => {
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const figureFileDelete = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
+          ],
+        }),
+      },
+      jobFigureFile: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
+        delete: figureFileDelete,
+      },
+    };
+    const service = new JobsService(prisma as any, { uploadAttachment } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.attachFigureToAdo('job-1', 'n0', 'f0', { orgUrl: 'https://ado.example', pat: 'x' });
+
+    expect(uploadAttachment).toHaveBeenCalledWith(555, 'f0.png', Buffer.from('png bytes').toString('base64'), 'image/png', { orgUrl: 'https://ado.example', pat: 'x' });
+    expect(figureFileDelete).toHaveBeenCalledWith({ where: { id: 'jff-1' } });
+    expect(result).toEqual({ attached: true, adoId: 555 });
+  });
+
+  it('attaches using existingAdoId for a dedup_skip entry', async () => {
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'dedup_skip', existingAdoId: 777, sourceHash: 'h0', customerId: null },
+          ],
+        }),
+      },
+      jobFigureFile: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
+        delete: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new JobsService(prisma as any, { uploadAttachment } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.attachFigureToAdo('job-1', 'n0', 'f0');
+
+    expect(uploadAttachment).toHaveBeenCalledWith(777, 'f0.png', expect.any(String), 'image/png', undefined);
+    expect(result.adoId).toBe(777);
+  });
+
+  it('falls back to CreatedItemMapping for a "create" entry (post-confirm)', async () => {
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+          ],
+        }),
+      },
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue({ jobId: 'job-1', localId: 'n0', adoWorkItemId: 321, linked: true }) },
+      jobFigureFile: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
+        delete: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new JobsService(prisma as any, { uploadAttachment } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.attachFigureToAdo('job-1', 'n0', 'f0');
+
+    expect(prisma.createdItemMapping.findUnique).toHaveBeenCalledWith({ where: { jobId_localId: { jobId: 'job-1', localId: 'n0' } } });
+    expect(uploadAttachment).toHaveBeenCalledWith(321, 'f0.png', expect.any(String), 'image/png', undefined);
+    expect(result.adoId).toBe(321);
+  });
+
+  it('throws BadRequestException when the entry has no resolved ADO id yet', async () => {
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+          ],
+        }),
+      },
+      createdItemMapping: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    const service = new JobsService(prisma as any, { uploadAttachment: jest.fn() } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.attachFigureToAdo('job-1', 'n0', 'f0')).rejects.toThrow('no resolved ADO work item id yet');
+  });
+
+  it('throws NotFoundException when the job does not exist', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.attachFigureToAdo('missing', 'n0', 'f0')).rejects.toThrow('not found');
+  });
+
+  it('throws NotFoundException when the diff entry does not exist', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', dryRunDiff: [] }) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.attachFigureToAdo('job-1', 'missing-local-id', 'f0')).rejects.toThrow('not found');
+  });
+
+  it('throws NotFoundException when the figure was never stored or already attached', async () => {
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
+          ],
+        }),
+      },
+      jobFigureFile: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    const service = new JobsService(prisma as any, { uploadAttachment: jest.fn() } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.attachFigureToAdo('job-1', 'n0', 'f0')).rejects.toThrow('not found');
   });
 });
 
