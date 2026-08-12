@@ -257,16 +257,6 @@ def _row_is_header(row: list[TableCell | None]) -> bool:
     return bool(real_cells) and all(cell.is_header for cell in real_cells)
 
 
-def _row_is_blank(row: list[TableCell | None]) -> bool:
-    """A row is blank (skip it entirely, same contract as before the
-    TableCell migration) only when it has at least one real cell and every
-    real cell's text is empty after stripping. A row of ALL None positions
-    is NOT blank by this definition -- see the fully-absorbed-row comment in
-    _table_to_html for why that case is handled separately."""
-    real_cells = [cell for cell in row if cell is not None]
-    return bool(real_cells) and all(not cell.text.strip() for cell in real_cells)
-
-
 def _render_table_row(row: list[TableCell | None], cell_tag: str, border_style: str | None) -> str:
     """Renders one grid row as a single-line <tr>...</tr>. A None position
     is a SPANNED cell (absorbed by a preceding cell's colspan/rowspan) and
@@ -346,17 +336,34 @@ def _table_to_html(table: Table) -> str:
     <thead> without inventing non-standard structure -- not done here.
 
     Fully-blank rows (every real cell's text is empty after stripping) are
-    skipped entirely, same as before. A row made ENTIRELY of None
-    positions (fully absorbed by rowspans from earlier rows -- e.g. every
-    column in that source row is covered by a taller cell above it) is
-    handled differently: it is NOT treated as blank and NOT skipped, and
-    instead emits an empty <tr></tr>. Rationale: skipping it would shrink
-    the rendered <tr> count below the table's real row count, and HTML's
-    rowspan is resolved purely by physical <tr> position in the rendered
-    output -- a rowspan covering 3+ physical rows with a fully-absorbed row
-    omitted from the middle would then overflow into a LATER row's cells
-    that were never meant to be covered, corrupting that row's alignment
-    too. An empty <tr></tr> costs nothing and keeps row-count truthful.
+    RENDERED, not skipped -- confirmed real gap (reported live): a source
+    table can use a genuinely empty row as a deliberate visual spacer
+    between two labeled sub-sections stacked inside one physical table
+    (e.g. two sequential "SRU module / QTY / ..." blocks separated by one
+    blank row), and dropping that row silently collapsed the visual
+    separation the document's own author put there, even though the row
+    itself carries no text or styling to preserve. Rendered through the
+    SAME `_render_table_row` path as any other row -- each of its real
+    cells (which all have `text=""`) becomes its own empty `<td></td>`,
+    exactly the existing "a real TableCell with empty text is a genuine
+    gap, not a spanned position" convention already used everywhere else
+    in this model (see the None-vs-TableCell(text="") distinction
+    documented on `Table.cells` itself) -- not a special-cased bare
+    `<tr></tr>`, which is reserved for the structurally different
+    fully-absorbed case directly below.
+
+    A row made ENTIRELY of None positions (fully absorbed by rowspans from
+    earlier rows -- e.g. every column in that source row is covered by a
+    taller cell above it) IS still special-cased to a bare `<tr></tr>`, for
+    a different reason than a blank row: there are no real TableCell
+    objects here to hand to `_render_table_row` at all -- every position is
+    a span continuation. Rationale for keeping the row itself (not
+    skipping it either): skipping it would shrink the rendered <tr> count
+    below the table's real row count, and HTML's rowspan is resolved
+    purely by physical <tr> position in the rendered output -- a rowspan
+    covering 3+ physical rows with a fully-absorbed row omitted from the
+    middle would then overflow into a LATER row's cells that were never
+    meant to be covered, corrupting that row's alignment too.
 
     Cell text (and caption) is HTML-escaped (html.escape) since it is
     untrusted source-document content about to be embedded in an HTML
@@ -373,8 +380,6 @@ def _table_to_html(table: Table) -> str:
     tbody_rows: list[str] = []
     still_leading = True  # False once the first non-header kept row is seen
     for row in table.cells:
-        if _row_is_blank(row):
-            continue
         if all(cell is None for cell in row):
             # Fully-absorbed structural row -- see docstring above.
             still_leading = False

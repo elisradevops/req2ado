@@ -599,11 +599,17 @@ def test_mixed_numbering_styles_in_one_branch_still_resolve_depth_correctly() ->
     assert sub_item.description == "The receiver shall support terrestrial broadcast input."
 
 
-def test_table_with_a_fully_blank_row_skips_only_that_row_not_the_whole_table() -> None:
+def test_table_with_a_fully_blank_row_renders_it_as_a_visual_spacer_not_the_whole_table() -> None:
     # Distinct from test_table_only_document_skips_a_fully_blank_table_...
     # above (every row blank -> whole table skipped): here only ONE row of a
-    # table with real content elsewhere is blank -- that row must contribute
-    # no line at all to the folded description, while the real rows survive.
+    # table with real content elsewhere is blank. Confirmed real gap
+    # (reported live): a source table can use a genuinely empty row as a
+    # deliberate visual spacer between two labeled sub-sections stacked
+    # inside one physical table -- dropping it silently collapsed that
+    # visual separation, even though the row itself carries no text. The
+    # blank row is now RENDERED (each real cell becomes its own empty
+    # <td></td>, same "empty text is a genuine gap, not skipped" convention
+    # already used everywhere else in this model), not dropped.
     path = "table.xlsx"
     table = Table(
         id="t0",
@@ -620,9 +626,10 @@ def test_table_with_a_fully_blank_row_skips_only_that_row_not_the_whole_table() 
     requirement = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
     # No caption on this table, and no cell is is_header=True, so "Header A"/
     # "Header B" is plain text here -- everything lands in one <tbody>, no
-    # <thead>. The blank middle row contributes nothing at all.
+    # <thead>. The blank middle row survives as a real (if empty) <tr>.
     assert requirement.description == (
         "<table><tbody><tr><td>Header A</td><td>Header B</td></tr>"
+        "<tr><td></td><td></td></tr>"
         "<tr><td>value 1</td><td>value 2</td></tr></tbody></table>"
     )
 
@@ -870,13 +877,16 @@ def test_table_to_html_output_never_contains_an_embedded_newline() -> None:
 
 def test_table_to_html_keeps_a_fully_absorbed_row_as_an_empty_tr_not_skipped() -> None:
     # A row entirely covered by rowspans from an earlier row (every column
-    # is None) is NOT "blank" in the content sense -- it must still emit
-    # an empty <tr></tr> to preserve physical row-count alignment for
-    # rowspan math (see _table_to_html's own docstring for why skipping it
-    # would corrupt a LATER row's alignment instead). Distinct from
-    # test_table_with_a_fully_blank_row_skips_only_that_row_not_the_whole_table,
-    # which covers the OTHER case (real cells, all empty text) that IS
-    # still skipped exactly as before.
+    # is None) is different from a row of real-but-empty-text cells -- there
+    # are no real TableCell objects here at all to hand to
+    # _render_table_row, so it must be special-cased to a bare <tr></tr> to
+    # preserve physical row-count alignment for rowspan math (see
+    # _table_to_html's own docstring for why skipping it would corrupt a
+    # LATER row's alignment instead). Distinct from
+    # test_table_with_a_fully_blank_row_renders_it_as_a_visual_spacer_not_the_whole_table,
+    # which covers the OTHER case (real cells, all empty text) -- that one
+    # renders through the normal _render_table_row path instead, producing
+    # real (if empty) <td> cells rather than a bare <tr></tr>.
     table = Table(
         id="t0",
         cells=[
