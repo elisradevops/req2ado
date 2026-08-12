@@ -33,6 +33,15 @@ Phase = Literal[
     # hierarchy detection) before the user has to wait for analysis to find
     # out the hard way.
     "table_detected",
+    # Real gap this closes: a docx's page-alignment pass (see
+    # app/loaders/docx_pagination.py) converts the whole document to PDF via
+    # headless LibreOffice then aligns every block/table/figure against it --
+    # a real, sometimes slow (30-120s observed) synchronous step with zero
+    # narration of its own before this phase existed, fired once at the
+    # start (before conversion) and once on completion (carrying the real
+    # page count + anchored ratio, distinguishing the two events the same
+    # way describe_figure's figure_caption presence does).
+    "page_alignment",
     # Real gap this closes (user-reported, live): a multi-minute SILENT
     # window between parse_done and the first analyze_section event, during
     # which build_survey_tree does real, sometimes-slow setup work
@@ -149,6 +158,15 @@ class LevelingProgress:
     block_count: int | None = None
     table_count: int | None = None
     figure_count: int | None = None
+    # page_alignment only: set on the SECOND (completion) event only -- the
+    # first (kickoff) event omits both, the same None-means-"in flight"
+    # convention describe_figure's figure_caption uses. page_align_page_count
+    # is the converted PDF's real total page count; page_align_anchored_ratio
+    # is the fraction of anchorable block text that was actually matched
+    # against it (see PageAlignment's own docstring) -- surfaced together so
+    # a reviewer can tell "how many pages" from "how much do I trust them".
+    page_align_page_count: int | None = None
+    page_align_anchored_ratio: float | None = None
     # describe_figure only: the real vision-model caption for THIS figure,
     # set on a SECOND event fired once the (potentially slow) vision call
     # actually returns -- the first event (figure_caption=None) only signals
@@ -272,6 +290,7 @@ _PHASE_MESSAGES: dict[Phase, str] = {
     "describe_figure": "Describing an embedded figure via the vision model",
     "parse_done": "Finished parsing the document",
     "table_detected": "Detected a table",
+    "page_alignment": "Deriving real page numbers from a converted PDF",
     "preparing_analysis": "Preparing analysis -- splitting sections, retrieving context",
     "deterministic_subtree": "Extracting a deterministic hierarchy subtree",
     "analyze_section": "Analyzing and synthesizing requirements",
@@ -334,6 +353,14 @@ def _format_message(progress: LevelingProgress) -> str:
         base += " (qualifies for deterministic hierarchy detection)" if progress.table_qualifies else " (not ID-shaped, will go through LLM analysis)"
         return base
     if progress.phase == "preparing_analysis":
+        return base
+    if progress.phase == "page_alignment":
+        # Completion fire (page_align_page_count present) vs. the earlier
+        # kickoff fire (still None) -- same distinguishing convention
+        # describe_figure's figure_caption presence uses.
+        if progress.page_align_page_count is not None:
+            pct = round((progress.page_align_anchored_ratio or 0.0) * 100)
+            base += f" -- {progress.page_align_page_count} page(s), {pct}% anchored"
         return base
     if progress.phase == "deterministic_subtree":
         if progress.subtree_index is not None and progress.subtree_count is not None:
@@ -465,6 +492,8 @@ class NarrationPublisher:
                 "blockCount": progress.block_count,
                 "tableCount": progress.table_count,
                 "figureCount": progress.figure_count,
+                "pageAlignPageCount": progress.page_align_page_count,
+                "pageAlignAnchoredRatio": progress.page_align_anchored_ratio,
                 "figureCaption": progress.figure_caption,
                 "sectionNodes": (
                     [

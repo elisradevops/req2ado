@@ -5,7 +5,7 @@ import html
 import re
 from pathlib import Path
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, SourceRef, Table
+from app.canonical.model import Block, BlockKind, CanonicalDoc, SourceRef, Table, plain_text_rows
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
@@ -159,6 +159,33 @@ def _hash_identity_for_synthesized_node(discriminator: str, source_ref: SourceRe
     ).hexdigest()
 
 
+def _widen_page_end(open_ref: SourceRef, folded_ref: SourceRef) -> SourceRef:
+    """Widens an already-open node's own page_end to also cover a block/
+    table that just folded into its Description -- so a node's page range
+    reflects the FULL span of everything folded into it (see
+    docx_pagination.py, which is what actually populates real page/page_end
+    on a docx's blocks/tables/figures; pdf/pptx loaders already set `page`
+    directly). A no-op when the open node itself has no page at all (True
+    for every docx document before alignment ever runs, or when it failed)
+    -- SourceRef's own docstring insists page_end is never set without page
+    also being set, so this must never widen page_end on a page-less ref.
+
+    Folds always proceed in document order, so the folded content's own
+    page is never EARLIER than the open node's own -- max() here can only
+    ever hold or grow page_end, never lower it (asserted directly in this
+    module's and llm_leveling.py's own fold tests)."""
+    if open_ref.page is None:
+        return open_ref
+    existing_end = open_ref.page_end if open_ref.page_end is not None else open_ref.page
+    incoming_end = folded_ref.page_end if folded_ref.page_end is not None else folded_ref.page
+    if incoming_end is None:
+        return open_ref
+    widened = max(existing_end, incoming_end)
+    if widened == open_ref.page_end:
+        return open_ref
+    return open_ref.model_copy(update={"page_end": widened})
+
+
 def _derive_doc_title(doc: CanonicalDoc) -> str:
     """Filename-derived title for a document with no heading structure at
     all — there is no heading/numbered-line text to extract a title from,
@@ -190,6 +217,33 @@ def _figure_line(block: Block) -> str | None:
     return f"> Figure: {caption}"
 
 
+def figure_id_by_block_id(doc: CanonicalDoc) -> dict[str, str]:
+    """block.id -> Figure.id map, built once over a document (or residual
+    document) by pairing every FIGURE-kind Block in `doc.blocks` with
+    `doc.figures` in loader-append order -- every loader (docx/pptx/pdf)
+    appends a Figure and its paired inline FIGURE-kind Block in lockstep
+    (confirmed via each loader's own source), so the i-th FIGURE-kind block
+    really is doc.figures[i] for the SAME i, without needing a
+    source_ref-based lookup (source_ref alone is ambiguous for docx's own
+    floating-image fallback path, which can give several figures the
+    identical (0, 0) placeholder ref).
+
+    Shared here so every node-building path that needs to attribute a
+    figure's real id to a work item (see WorkItemNode.figure_ids/
+    uncaptioned_figure_ids' own docstrings) reuses the identical pairing
+    logic instead of duplicating it -- originally inlined once in
+    llm_leveling.py's SURVEY path alone (known-issues item 20); hoisted
+    here so BASELINE (this module) and the deterministic heading/table-row
+    path can build the same map over their own `doc`/`llm_doc` without a
+    copy of this zip."""
+    return dict(
+        zip(
+            (b.id for b in doc.blocks if b.kind == BlockKind.FIGURE),
+            (f.id for f in doc.figures),
+        )
+    )
+
+
 def _table_to_html(table: Table) -> str:
     """Renders a Table's rows as an HTML <table>, preserving row/column
     structure for ADO's System.Description field (a rich-HTML field, not
@@ -198,9 +252,15 @@ def _table_to_html(table: Table) -> str:
     string, never as an actual table. Fully-blank rows are skipped, same as
     before. Cell text is HTML-escaped (html.escape) since it is untrusted
     source-document content about to be embedded in an HTML field."""
+    # NOTE: minimal compat shim over the new TableCell grid -- flattens back
+    # to plain text/no styling, IDENTICAL output to before. Real semantic
+    # HTML (colspan/rowspan/thead/th/caption/validated inline styles) is a
+    # dedicated rewrite, Phase 1 of
+    # docs/superpowers/specs/2026-08-12-table-fidelity-design.md, not done
+    # here.
     rows_html = [
         "<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>"
-        for row in table.rows
+        for row in plain_text_rows(table)
         if any(cell.strip() for cell in row)
     ]
     return f"<table>{''.join(rows_html)}</table>" if rows_html else ""
@@ -308,9 +368,33 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
         child_type=WorkItemType.REQUIREMENT,
     )
     nodes: list[WorkItemNode] = [epic, feature]
+    # section_path=[] is correct for every node this function builds (both
+    # the two synthetic wrapper nodes above and every block/table node
+    # below) -- there is no real heading ancestry in a headingless document,
+    # and [] is already SourceRef.section_path's own default, so no
+    # model_copy is needed anywhere in this function purely for that field.
     if doc.blocks:
+        figure_map = figure_id_by_block_id(doc)
         for index, block in enumerate(doc.blocks):
             description = block.text
+            # This function gives every block its own node (no folding into
+            # a prior "open" node the way build_baseline_tree's structured
+            # path does), so a FIGURE-kind block's figure/uncaptioned id
+            # attributes to that SAME node -- there is no earlier node to
+            # fold it into. `description` deliberately keeps its existing
+            # raw block.text shape (unchanged by this fix -- see
+            # _figure_line's own "[FIGURE: none]" leak warning, a
+            # pre-existing, separate concern this task doesn't touch); only
+            # the new id lists are populated here.
+            figure_ids: list[str] = []
+            uncaptioned_figure_ids: list[str] = []
+            if block.kind == BlockKind.FIGURE:
+                figure_id = figure_map.get(block.id)
+                if figure_id is not None:
+                    if _figure_line(block) is not None:
+                        figure_ids = [figure_id]
+                    else:
+                        uncaptioned_figure_ids = [figure_id]
             nodes.append(
                 WorkItemNode(
                     local_id=f"n{index + 2}",
@@ -323,6 +407,8 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     fidelity_hash=_hash_description(description),
                     identity_hash=_hash_identity(description, block.source_ref),
                     tags=[],
+                    figure_ids=figure_ids,
+                    uncaptioned_figure_ids=uncaptioned_figure_ids,
                     mode=WorkItemMode.BASELINE,
                     child_type=WorkItemType.REQUIREMENT,
                 )
@@ -345,6 +431,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     fidelity_hash=_hash_description(description),
                     identity_hash=_hash_identity(description, table.source_ref),
                     tags=[],
+                    table_ids=[table.id],
                     mode=WorkItemMode.BASELINE,
                     child_type=WorkItemType.REQUIREMENT,
                 )
@@ -388,17 +475,41 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
         identity_hash=_hash_identity(doc_title, first_source_ref),
         tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
     )
+    # section_path=[] is correct throughout this function, same reasoning as
+    # _build_headingless_tree's identical comment -- a flat numbered list
+    # has no heading ancestry to record, and [] is already
+    # SourceRef.section_path's own default.
+    figure_map = figure_id_by_block_id(doc)
     nodes: list[WorkItemNode] = [epic, feature]
     for index, branch in enumerate(branches):
         block = branch[0]
         _, display_text = resolve_block_depth(block)
+        # Every branch here is, by this function's own gate
+        # (build_baseline_tree: "all(len(branch) == 1 ...)"), a single
+        # depth-resolving block -- a FIGURE-kind block never resolves a
+        # depth (resolve_block_depth has no heading_level/numbering signal
+        # for it), so this is unreachable via that gate today. Handled
+        # anyway (same fold logic as every other path) for a caller that
+        # invokes this function directly with a hand-built branch, and so
+        # this function's own behavior doesn't silently diverge from
+        # _build_headingless_tree's if that invariant ever changes.
+        figure_ids: list[str] = []
+        uncaptioned_figure_ids: list[str] = []
+        if block.kind == BlockKind.FIGURE:
+            figure_id = figure_map.get(block.id)
+            if figure_id is not None:
+                if _figure_line(block) is not None:
+                    figure_ids = [figure_id]
+                else:
+                    uncaptioned_figure_ids = [figure_id]
         nodes.append(
             WorkItemNode(
                 local_id=f"n{index + 2}", type=WorkItemType.REQUIREMENT, parent_local_id=feature.local_id,
                 title=extract_baseline_title(display_text), description=display_text, customer_id=customer_id,
                 source_ref=block.source_ref, fidelity_hash=_hash_description(display_text),
                 identity_hash=_hash_identity(display_text, block.source_ref),
-                tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
+                tags=[], figure_ids=figure_ids, uncaptioned_figure_ids=uncaptioned_figure_ids,
+                mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
             )
         )
     return WorkItemTree(nodes=nodes)
@@ -470,6 +581,11 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
         return _build_flat_list_tree(doc, branches, customer_id)
 
     table_buckets = _partition_tables_by_branch(branches, doc.tables) if doc.tables else [[] for _ in branches]
+    # Whole-document (not per-branch) block.id -> Figure.id map -- see
+    # figure_id_by_block_id's own docstring. Built once, up front, since a
+    # figure's block can never move between branches after
+    # _split_into_branches (branches are a partition of doc.blocks).
+    figure_map = figure_id_by_block_id(doc)
 
     nodes: list[WorkItemNode] = []
     nodes_by_id: dict[str, WorkItemNode] = {}
@@ -536,6 +652,8 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     open_node.description = assemble_description(open_node.description, description)
                     open_node.fidelity_hash = _hash_description(open_node.description)
                     open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
+                    open_node.source_ref = _widen_page_end(open_node.source_ref, table.source_ref)
+                    open_node.table_ids.append(table.id)
                 else:
                     if orphan_source_ref is None:
                         orphan_source_ref = table.source_ref
@@ -555,9 +673,29 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
             depth, display_text = resolve_block_depth(block)
 
             if depth is None:
+                # figure_id is None for every non-FIGURE block (the common
+                # case) -- looked up once here so both branches below (real
+                # caption vs none) can use the SAME value without a second
+                # BlockKind check.
+                figure_id = figure_map.get(block.id) if block.kind == BlockKind.FIGURE else None
                 if block.kind == BlockKind.FIGURE:
                     figure_line = _figure_line(block)
                     if figure_line is None:
+                        # Caption failed / vision disabled / the vision call
+                        # returned NO_TECHNICAL_CONTENT (_figure_line returns
+                        # None in all three cases -- see its own docstring):
+                        # the literal placeholder must never reach
+                        # `description`, same as before this field existed.
+                        # The figure itself still exists in the source
+                        # document though, so record it as uncaptioned on
+                        # whatever node is currently open, instead of letting
+                        # it vanish with zero trace. No open node yet (this
+                        # branch's own leading front matter) has nowhere real
+                        # to attach it to -- dropped silently, same as every
+                        # other orphan entry that precedes a branch's first
+                        # heading/numbering.
+                        if stack and figure_id is not None:
+                            nodes_by_id[stack[-1][1]].uncaptioned_figure_ids.append(figure_id)
                         continue
                     display_text = figure_line
 
@@ -566,6 +704,9 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     open_node.description = assemble_description(open_node.description, display_text)
                     open_node.fidelity_hash = _hash_description(open_node.description)
                     open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
+                    open_node.source_ref = _widen_page_end(open_node.source_ref, block.source_ref)
+                    if figure_id is not None:
+                        open_node.figure_ids.append(figure_id)
                 else:
                     if orphan_source_ref is None:
                         orphan_source_ref = block.source_ref
@@ -614,6 +755,18 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
             local_id = f"n{node_counter}"
             node_counter += 1
 
+            # `stack` at this point holds exactly this node's real ancestor
+            # chain (its own entry hasn't been pushed yet) -- root-first,
+            # since entries are appended in nesting order and popped from
+            # the end above. Reusing it as section_path means no separate
+            # heading-label bookkeeping is needed: the SAME structure that
+            # decides parent_local_id also names the section path.
+            # `.model_copy(update=...)` is required here, not a plain
+            # `source_ref=block.source_ref` + later mutation -- pydantic v2
+            # does not copy a nested BaseModel on assignment, so mutating
+            # the new node's own source_ref in place would corrupt the
+            # ORIGINAL Block's source_ref too (they'd be the same object).
+            section_path = [nodes_by_id[ancestor_id].title for _ancestor_depth, ancestor_id in stack]
             node = WorkItemNode(
                 local_id=local_id,
                 type=node_type,
@@ -621,7 +774,7 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                 title=extract_baseline_title(display_text),
                 description=display_text,
                 customer_id=customer_id,
-                source_ref=block.source_ref,
+                source_ref=block.source_ref.model_copy(update={"section_path": section_path}),
                 fidelity_hash=_hash_description(display_text),
                 identity_hash=_hash_identity(display_text, block.source_ref),
                 tags=[],

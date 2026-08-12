@@ -31,7 +31,11 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
     figure_index = 0
     offset = 0
 
-    for slide in presentation.slides:
+    # 1-based: slide numbers are conventionally 1-based (matches how a
+    # human would refer to "slide 1"), and page_provenance's docstring in
+    # model.py already treats a pptx slide index as a real, ground-truth
+    # pagination source -- not an approximation needing a provenance tag.
+    for slide_index, slide in enumerate(presentation.slides, start=1):
         title_shape = slide.shapes.title
         for shape in slide.shapes:
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
@@ -41,11 +45,19 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                         caption = describe_figure(shape.image.blob)
                     except Exception:  # noqa: BLE001 -- a vision failure must not abort the whole deck
                         caption = None
+                # A figure gets a real slot in the same running offset
+                # counter used for text blocks below (like docx_loader's
+                # table handling), instead of a hardcoded (0, 0), so it
+                # orders correctly WITHIN its slide relative to surrounding
+                # text -- not just at the right slide via `page`.
+                start = offset
+                end = start + 1
+                offset = end
                 figures.append(
                     Figure(
                         id=f"f{figure_index}",
                         caption=caption,
-                        source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
+                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
                     )
                 )
                 blocks.append(
@@ -53,7 +65,7 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                         id=f"b{block_id}",
                         kind=BlockKind.FIGURE,
                         text=f"[FIGURE: {caption or 'none'}]",
-                        source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
+                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
                     )
                 )
                 block_id += 1
@@ -76,7 +88,7 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                         kind=BlockKind.HEADING if is_title else BlockKind.PARAGRAPH,
                         text=content,
                         heading_level=1 if is_title else None,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
                     )
                 )
                 block_id += 1
@@ -87,12 +99,18 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                 start = offset
                 end = start + len(notes)
                 offset = end + 1
+                # Every block/figure on this slide -- title, bullets, notes,
+                # figures -- must set the SAME slide_index as `page`. Mixing
+                # a real page on some elements with None (-> 0 via `ref.page
+                # or 0`, see tree_builder._order_key) on others would sort
+                # this slide's own content inconsistently against itself and
+                # against other slides', not just leave it unranked.
                 blocks.append(
                     Block(
                         id=f"b{block_id}",
                         kind=BlockKind.NOTE,
                         text=notes,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
                     )
                 )
                 block_id += 1

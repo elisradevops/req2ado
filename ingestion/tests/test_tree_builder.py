@@ -1,5 +1,12 @@
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table
-from app.leveling.tree_builder import _bound_branch_size, _split_into_branches, build_baseline_tree
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
+from app.leveling.tree_builder import (
+    _bound_branch_size,
+    _build_flat_list_tree,
+    _hash_identity,
+    _split_into_branches,
+    _widen_page_end,
+    build_baseline_tree,
+)
 from app.workitem.model import WorkItemType
 
 
@@ -234,7 +241,7 @@ def test_table_only_document_folds_each_table_into_a_requirement_instead_of_an_e
     doc = CanonicalDoc(
         document=Document(path="empty.xlsx", format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
-        tables=[Table(id="t0", rows=[["a", "b"]], caption="Sheet1", source_ref=_sr("empty.xlsx", 0, 0))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr("empty.xlsx", 0, 0))],
     )
     tree = build_baseline_tree(doc)
     assert len(tree.nodes) == 3  # synthetic Epic + Feature + one Requirement for the table
@@ -251,8 +258,8 @@ def test_table_only_document_folds_multiple_tables_into_separate_requirements() 
         document=Document(path="multi.xlsx", format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
         tables=[
-            Table(id="t0", rows=[["a"]], caption="Sheet1", source_ref=_sr("multi.xlsx", 0, 0)),
-            Table(id="t1", rows=[["b"]], caption="Sheet2", source_ref=_sr("multi.xlsx", 0, 0)),
+            Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a"]]], caption="Sheet1", source_ref=_sr("multi.xlsx", 0, 0)),
+            Table(id="t1", cells=[[TableCell(text=c) for c in row] for row in [["b"]]], caption="Sheet2", source_ref=_sr("multi.xlsx", 0, 0)),
         ],
     )
     tree = build_baseline_tree(doc)
@@ -265,7 +272,7 @@ def test_table_only_document_skips_a_fully_blank_table_rather_than_creating_an_e
     doc = CanonicalDoc(
         document=Document(path="blank.xlsx", format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
-        tables=[Table(id="t0", rows=[["", ""], ["", ""]], caption="Sheet1", source_ref=_sr("blank.xlsx", 0, 0))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["", ""], ["", ""]]], caption="Sheet1", source_ref=_sr("blank.xlsx", 0, 0))],
     )
     tree = build_baseline_tree(doc)
     requirements = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
@@ -597,7 +604,7 @@ def test_table_with_a_fully_blank_row_skips_only_that_row_not_the_whole_table() 
     path = "table.xlsx"
     table = Table(
         id="t0",
-        rows=[["Header A", "Header B"], ["", ""], ["value 1", "value 2"]],
+        cells=[[TableCell(text=c) for c in row] for row in [["Header A", "Header B"], ["", ""], ["value 1", "value 2"]]],
         source_ref=_sr(path, 0, 1),
     )
     doc = CanonicalDoc(
@@ -631,7 +638,7 @@ def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_
             Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
             Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
         ],
-        tables=[Table(id="t0", rows=[["Rail", "Voltage"], ["3.3V", "3.3"]], caption="Rail Table", source_ref=_sr(path, 44, 45))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]], caption="Rail Table", source_ref=_sr(path, 44, 45))],
     )
     tree = build_baseline_tree(doc)
 
@@ -653,7 +660,7 @@ def test_a_table_before_any_heading_in_its_branch_is_folded_into_front_matter() 
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 20, 39))],
-        tables=[Table(id="t0", rows=[["Rail", "Voltage"]], caption="Rail Table", source_ref=_sr(path, 0, 1))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]], caption="Rail Table", source_ref=_sr(path, 0, 1))],
     )
     tree = build_baseline_tree(doc)
 
@@ -681,7 +688,7 @@ def test_leading_table_and_prose_both_fold_into_one_shared_front_matter_node() -
             # instead of the structured per-branch path this test targets.
             Block(id="b2", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail", source_ref=_sr(path, 60, 69)),
         ],
-        tables=[Table(id="t0", rows=[["Rev", "Date"], ["A", "2026-01-01"]], caption="Revision History", source_ref=_sr(path, 20, 21))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rev", "Date"], ["A", "2026-01-01"]]], caption="Revision History", source_ref=_sr(path, 20, 21))],
     )
     tree = build_baseline_tree(doc)
 
@@ -706,7 +713,7 @@ def test_document_with_both_headings_and_tables_skips_a_fully_blank_table() -> N
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
         blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19))],
-        tables=[Table(id="t0", rows=[["", ""]], caption="Blank", source_ref=_sr(path, 20, 21))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["", ""]]], caption="Blank", source_ref=_sr(path, 20, 21))],
     )
     tree = build_baseline_tree(doc)
 
@@ -720,7 +727,7 @@ def test_table_html_escapes_cell_content() -> None:
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
-        tables=[Table(id="t0", rows=[["<script>alert(1)</script>", "A & B"]], caption="Sheet1", source_ref=_sr(path, 0, 0))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["<script>alert(1)</script>", "A & B"]]], caption="Sheet1", source_ref=_sr(path, 0, 0))],
     )
     tree = build_baseline_tree(doc)
 
@@ -1068,3 +1075,257 @@ def test_a_heading_styled_block_with_non_numeric_text_inside_a_numbering_label_b
     # OWN heading_level) -> Requirement, matching heading_style_type_for_depth.
     assert notes_node.type == WorkItemType.REQUIREMENT
     assert by_id[notes_node.parent_local_id].title == "Rail Requirements"
+
+
+# --- section_path / figure_ids / table_ids / uncaptioned_figure_ids (Phase 2) ---
+
+
+def test_baseline_structured_tree_section_path_is_the_root_first_ancestor_title_chain() -> None:
+    # The SAME `stack` build_baseline_tree already maintains to assign
+    # parent_local_id is reused here as section_path -- root-first, and NOT
+    # including the node's own title (only its ancestors).
+    path = "nested.md"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.MD, sha256="h"),
+        blocks=[
+            Block(id="c0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(id="c1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
+            Block(
+                id="c2",
+                kind=BlockKind.PARAGRAPH,
+                text="1.1.1 The rail shall regulate within 2% tolerance.",
+                source_ref=_sr(path, 44, 96),
+            ),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    # Looked up by title, not by type -- both "3.3V Rail Requirements" (the
+    # depth-2 heading) and the leaf below it resolve to WorkItemType.REQUIREMENT
+    # in this fixture's own depth-based classification (heading_style_type_for_depth),
+    # so a type-only lookup would ambiguously match the wrong one.
+    root = next(n for n in tree.nodes if n.title == "Power Distribution")
+    middle = next(n for n in tree.nodes if n.title == "3.3V Rail Requirements")
+    leaf = next(n for n in tree.nodes if "shall regulate" in n.description)
+
+    assert root.source_ref.section_path == []
+    assert middle.source_ref.section_path == ["Power Distribution"]
+    assert leaf.source_ref.section_path == ["Power Distribution", "3.3V Rail Requirements"]
+
+
+def test_baseline_structured_tree_figure_fold_populates_figure_ids_and_uncaptioned_figure_ids() -> None:
+    path = "figures.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: Rail topology diagram]", source_ref=_sr(path, 20, 40)),
+            Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 41, 55)),
+        ],
+        figures=[
+            Figure(id="f0", caption="Rail topology diagram", source_ref=_sr(path, 20, 40)),
+            Figure(id="f1", caption=None, source_ref=_sr(path, 41, 55)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    parent = next(n for n in tree.nodes if n.title == "Power Distribution")
+    assert parent.figure_ids == ["f0"]
+    assert parent.uncaptioned_figure_ids == ["f1"]
+    # Disjoint: a given figure id appears in exactly one of the two lists.
+    assert set(parent.figure_ids).isdisjoint(parent.uncaptioned_figure_ids)
+
+
+def test_baseline_structured_tree_table_fold_populates_table_ids() -> None:
+    path = "mixed.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
+        ],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]], caption="Rail Table", source_ref=_sr(path, 44, 45))],
+    )
+    tree = build_baseline_tree(doc)
+    parent = next(n for n in tree.nodes if n.title == "3.3V Rail Requirements")
+    assert parent.table_ids == ["t0"]
+
+
+def test_baseline_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> None:
+    # Critical invariant (Phase 2): section_path/page_end/page_provenance
+    # are ADDITIVE provenance fields, deliberately excluded from
+    # _hash_identity's own input (document_path/start_offset/end_offset
+    # only) -- widening them must never change identity_hash/fidelity_hash,
+    # or a re-run would look like a new item and duplicate-create in ADO.
+    # This proves it two ways: (1) _hash_identity itself is insensitive to
+    # section_path directly, and (2) a real build_baseline_tree run's nodes
+    # match hashes computed from a section_path-free copy of their own
+    # source_ref.
+    ref_no_path = _sr("doc.md", 10, 20)
+    ref_with_path = ref_no_path.model_copy(update={"section_path": ["A", "B"]})
+    assert _hash_identity("same description", ref_no_path) == _hash_identity("same description", ref_with_path)
+
+    icd_doc = _icd_style_doc()
+    tree = build_baseline_tree(icd_doc)
+    for node in tree.nodes:
+        bare_ref = node.source_ref.model_copy(update={"section_path": []})
+        assert node.identity_hash == _hash_identity(node.description, bare_ref)
+        # fidelity_hash never depends on source_ref at all (see
+        # _hash_description), but asserted here too for completeness -- a
+        # widened source_ref must never touch it either.
+        import hashlib
+
+        assert node.fidelity_hash == hashlib.sha256(node.description.encode()).hexdigest()
+
+
+def test_headingless_tree_populates_figure_and_table_ids_with_section_path_empty() -> None:
+    path = "flat_with_figure.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(
+                id="f0",
+                kind=BlockKind.PARAGRAPH,
+                text="The system shall support at least four simultaneous audio channels.",
+                source_ref=_sr(path, 0, 68),
+            ),
+            Block(id="f1", kind=BlockKind.FIGURE, text="[FIGURE: Audio routing diagram]", source_ref=_sr(path, 69, 90)),
+            Block(id="f2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 91, 105)),
+        ],
+        figures=[
+            Figure(id="fig0", caption="Audio routing diagram", source_ref=_sr(path, 69, 90)),
+            Figure(id="fig1", caption=None, source_ref=_sr(path, 91, 105)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    figure_node = next(n for n in tree.nodes if n.local_id == "n3")  # f1 -> index 1 -> n{1+2}
+    uncaptioned_node = next(n for n in tree.nodes if n.local_id == "n4")  # f2 -> index 2 -> n{2+2}
+    assert figure_node.figure_ids == ["fig0"]
+    assert figure_node.uncaptioned_figure_ids == []
+    assert uncaptioned_node.figure_ids == []
+    assert uncaptioned_node.uncaptioned_figure_ids == ["fig1"]
+    # section_path stays [] for every node -- no heading structure exists
+    # in a headingless document.
+    assert all(n.source_ref.section_path == [] for n in tree.nodes)
+
+
+def test_headingless_table_only_tree_sets_table_ids_to_its_own_table() -> None:
+    doc = CanonicalDoc(
+        document=Document(path="sheet.xlsx", format=DocumentFormat.XLSX, sha256="h"),
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr("sheet.xlsx", 0, 0))],
+    )
+    tree = build_baseline_tree(doc)
+    requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
+    assert requirement_node.table_ids == ["t0"]
+
+
+def test_flat_list_tree_direct_call_populates_figure_ids_when_a_branch_root_is_a_figure() -> None:
+    # Unreachable via build_baseline_tree's own routing today (a FIGURE-kind
+    # block never resolves a depth, so it can never be a lone-block branch
+    # root that triggers this path -- see this function's own comment) --
+    # exercised here via direct invocation so this function's own fold
+    # logic doesn't silently diverge from _build_headingless_tree's if that
+    # invariant ever changes.
+    path = "flat_list.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: Wiring diagram]", source_ref=_sr(path, 0, 20)),
+        ],
+        figures=[Figure(id="fig0", caption="Wiring diagram", source_ref=_sr(path, 0, 20))],
+    )
+    tree = _build_flat_list_tree(doc, [[doc.blocks[0]]], customer_id=None)
+    requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
+    assert requirement_node.figure_ids == ["fig0"]
+    assert requirement_node.uncaptioned_figure_ids == []
+
+
+# --- _widen_page_end (Phase 6 -- real docx page numbers, see
+# app/loaders/docx_pagination.py) ---
+
+
+def _paged_sr(path: str, start: int, end: int, page: int | None, page_end: int | None = None) -> SourceRef:
+    return SourceRef(document_path=path, start_offset=start, end_offset=end, page=page, page_end=page_end)
+
+
+def test_widen_page_end_is_a_no_op_when_the_open_node_has_no_page_at_all() -> None:
+    # True for every docx document before docx_pagination.py's alignment
+    # ever runs (or when it failed) -- must never set page_end without page
+    # also being set (SourceRef's own docstring invariant).
+    open_ref = _paged_sr("x.docx", 0, 10, page=None)
+    folded_ref = _paged_sr("x.docx", 11, 20, page=3, page_end=5)
+    assert _widen_page_end(open_ref, folded_ref) is open_ref
+
+
+def test_widen_page_end_is_a_no_op_when_the_folded_ref_has_no_page_either() -> None:
+    open_ref = _paged_sr("x.docx", 0, 10, page=1, page_end=1)
+    folded_ref = _paged_sr("x.docx", 11, 20, page=None)
+    assert _widen_page_end(open_ref, folded_ref) is open_ref
+
+
+def test_widen_page_end_widens_using_the_folded_refs_own_page_when_it_has_no_page_end() -> None:
+    open_ref = _paged_sr("x.docx", 0, 10, page=1, page_end=1)
+    folded_ref = _paged_sr("x.docx", 11, 20, page=2)  # page_end None -> falls back to page=2
+    widened = _widen_page_end(open_ref, folded_ref)
+    assert widened.page == 1  # the open node's own page never changes
+    assert widened.page_end == 2
+
+
+def test_widen_page_end_widens_using_the_folded_refs_page_end() -> None:
+    open_ref = _paged_sr("x.docx", 0, 10, page=1, page_end=1)
+    folded_ref = _paged_sr("x.docx", 11, 20, page=2, page_end=4)
+    widened = _widen_page_end(open_ref, folded_ref)
+    assert widened.page_end == 4
+
+
+def test_widen_page_end_never_lowers_an_already_wider_page_end() -> None:
+    # Folds always proceed in document order, so this should never actually
+    # occur live -- asserted directly anyway as the guard's own contract.
+    open_ref = _paged_sr("x.docx", 0, 10, page=1, page_end=5)
+    folded_ref = _paged_sr("x.docx", 11, 20, page=2, page_end=2)
+    widened = _widen_page_end(open_ref, folded_ref)
+    assert widened.page_end == 5
+    assert widened is open_ref  # no-op copy avoided when nothing actually changes
+
+
+def test_build_baseline_tree_widens_page_end_when_a_block_folds_into_an_open_node() -> None:
+    path = "paged.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(
+                id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution",
+                source_ref=_paged_sr(path, 0, 19, page=1, page_end=1),
+            ),
+            Block(
+                id="b1", kind=BlockKind.PARAGRAPH,
+                text="Additional detail spilling onto a later page in the same section.",
+                source_ref=_paged_sr(path, 20, 88, page=3, page_end=3),
+            ),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    node = next(n for n in tree.nodes if "Power Distribution" in n.title)
+    assert node.source_ref.page == 1
+    assert node.source_ref.page_end == 3
+
+
+def test_build_baseline_tree_widens_page_end_when_a_table_folds_into_an_open_node() -> None:
+    path = "paged_table.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(
+                id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution",
+                source_ref=_paged_sr(path, 0, 19, page=1, page_end=1),
+            ),
+        ],
+        tables=[
+            Table(
+                id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"], ["3.3V", "3.3"]]],
+                source_ref=_paged_sr(path, 20, 21, page=2, page_end=4),
+            ),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    node = next(n for n in tree.nodes if "Power Distribution" in n.title)
+    assert node.source_ref.page == 1
+    assert node.source_ref.page_end == 4

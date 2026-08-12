@@ -70,6 +70,7 @@ class KbVectorStore:
         file_hash: str,
         doc_type: str | None = None,
         quality_checklist: list[str] | None = None,
+        quality_checklist_definitions: dict[str, str] | None = None,
         retrieval_mode: str | None = None,
     ) -> None:
         collection = self._get_collection(user_id)
@@ -109,6 +110,20 @@ class KbVectorStore:
         # chunks ingested before this existed).
         if quality_checklist is not None:
             metadata["quality_checklist_json"] = json.dumps(quality_checklist)
+        # Companion to quality_checklist above, from the SAME ingestion-time
+        # extraction pass (see OrchestratorLlmClient.
+        # extract_quality_checklist_definitions's own docstring) -- name ->
+        # stated-definition text for whichever of quality_checklist's
+        # category names the document actually explains, not just names.
+        # Stored (and looked up) separately rather than folded into
+        # quality_checklist_json itself so every EXISTING reader of that
+        # key (get_quality_checklist's plain list[str] contract, replayed
+        # verbatim as categoryScores keys) stays byte-identical. `None`
+        # (extraction skipped, failed, or found no checklist to attach
+        # definitions to at all) omits the key entirely, same convention as
+        # quality_checklist_json's own `is not None` check above.
+        if quality_checklist_definitions is not None:
+            metadata["quality_checklist_definitions_json"] = json.dumps(quality_checklist_definitions)
         collection.upsert(
             ids=[chunk_id],
             embeddings=[embedding],
@@ -263,6 +278,28 @@ class KbVectorStore:
         if not metadatas:
             return None
         raw = metadatas[0].get("quality_checklist_json")
+        if raw is None:
+            return None
+        return json.loads(raw)
+
+    def get_quality_checklist_definitions(self, user_id: str, source_file: str) -> dict[str, str] | None:
+        """Companion to get_quality_checklist above -- name -> stated-
+        definition text for whichever of THAT method's category names the
+        document actually explains (see OrchestratorLlmClient.
+        extract_quality_checklist_definitions's own docstring). `None`
+        means this extraction pass never ran (skipped -- e.g. the first
+        pass found no checklist to attach definitions to -- or failed) for
+        this document; `{}` means it ran and genuinely found no stated
+        definition for any category. Both are a "nothing to show" signal to
+        the caller (app.leveling.scoring._match_category_checklist), kept
+        distinct only for the same debuggability reason get_quality_
+        checklist's own None/[] distinction is."""
+        collection = self._get_collection(user_id)
+        result = collection.get(where={"source_file": source_file}, limit=1)
+        metadatas = result.get("metadatas") or []
+        if not metadatas:
+            return None
+        raw = metadatas[0].get("quality_checklist_definitions_json")
         if raw is None:
             return None
         return json.loads(raw)

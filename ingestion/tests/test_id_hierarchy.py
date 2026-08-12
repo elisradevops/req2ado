@@ -1,4 +1,4 @@
-from app.canonical.model import Block, BlockKind, SourceRef, Table
+from app.canonical.model import Block, BlockKind, SourceRef, Table, TableCell
 from app.leveling.id_hierarchy import (
     _is_requirement_shaped,
     classify_by_nesting,
@@ -15,7 +15,7 @@ def _sr(offset: int) -> SourceRef:
 
 
 def _table(rows: list[list[str]]) -> Table:
-    return Table(id="t1", rows=rows, source_ref=_sr(0))
+    return Table(id="t1", cells=[[TableCell(text=cell) for cell in row] for row in rows], source_ref=_sr(0))
 
 
 def _heading(block_id: str, level: int, text: str, offset: int) -> Block:

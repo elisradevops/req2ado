@@ -607,3 +607,73 @@ def test_build_hierarchy_subtree_fires_one_progress_event_per_chunk_not_per_subt
     assert subtree_events[0].blocks_total == 151
     assert subtree_events[1].blocks_done == 150
     assert subtree_events[1].blocks_total == 151
+
+
+# --- section_path (Phase 2) ---
+
+
+def test_build_hierarchy_subtree_section_path_is_the_root_first_ancestor_label_chain() -> None:
+    # Root row: no ancestors -> []. A producing row's OWN label is never
+    # part of its own section_path (only its ancestors' labels are).
+    rows = [
+        _row("Audio Control", "Feature", None, "1"),
+        _row("Volume", "Feature", 0, "1.1"),
+        _row("The system shall control volume.", "Requirement", 1, "1.1.1", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    root = next(n for n in nodes if n.title == "Audio Control")
+    middle = next(n for n in nodes if n.title == "Volume")
+    leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+
+    assert root.source_ref.section_path == []
+    assert middle.source_ref.section_path == ["Audio Control"]
+    assert leaf.source_ref.section_path == ["Audio Control", "Volume"]
+
+
+def test_build_hierarchy_subtree_section_path_includes_a_fold_rows_own_label() -> None:
+    # A fold row (node_type=None) never becomes its own node, but its own
+    # label IS real, human-authored section text -- it belongs in a
+    # descendant's section_path exactly like a real heading would, even
+    # though it never appears as a node anywhere in the returned list.
+    rows = [
+        _row("Real Group", "Feature", None, "1"),
+        _row("Lone Wrapper", None, 0, "1.1"),
+        _row("The system shall do A.", "Requirement", 1, "1.1.1", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+    assert leaf.source_ref.section_path == ["Real Group", "Lone Wrapper"]
+
+
+def test_build_hierarchy_subtree_section_path_root_seeds_a_table_subtrees_own_identity() -> None:
+    # The table-row convention's caller (llm_leveling._detect_deterministic_subtrees)
+    # seeds section_path_root with the table's own identity, since a
+    # table-row subtree's rows have no heading ancestor of their own.
+    rows = [
+        _row("Power Requirements", "Feature", None, "1"),
+        _row("The rail shall regulate within 2%.", "Requirement", 0, "1.1", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None, section_path_root="Table t7")
+    root = next(n for n in nodes if n.title == "Power Requirements")
+    leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+    assert root.source_ref.section_path == ["Table t7"]
+    assert leaf.source_ref.section_path == ["Table t7", "Power Requirements"]
+
+
+def test_build_hierarchy_subtree_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> None:
+    # Same invariant as tree_builder.py's own identical test: section_path
+    # is additive provenance, deliberately excluded from _hash_identity's
+    # input -- widening it must never change identity_hash/fidelity_hash.
+    import hashlib
+
+    from app.leveling.id_tree_builder import _hash_identity
+
+    rows = [
+        _row("Audio Control", "Feature", None, "1"),
+        _row("The system shall control volume.", "Requirement", 0, "1.1", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", None, section_path_root="Table t7")
+    for node in nodes:
+        bare_ref = node.source_ref.model_copy(update={"section_path": []})
+        assert node.identity_hash == _hash_identity(node.description, bare_ref)
+        assert node.fidelity_hash == hashlib.sha256(node.description.encode()).hexdigest()

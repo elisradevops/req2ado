@@ -1,6 +1,6 @@
 import time
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
     _detect_conflicting_duplicates,
@@ -502,7 +502,7 @@ def test_build_survey_tree_passes_a_per_branch_topic_count_on_the_multi_branch_p
 
 def _table_with_group(rows: list[list[str]], path: str = "survey_input.txt", offset: int = 0) -> Table:
     return Table(
-        id="t0", rows=rows,
+        id="t0", cells=[[TableCell(text=c) for c in row] for row in rows],
         source_ref=SourceRef(document_path=path, start_offset=offset, end_offset=offset + 10),
     )
 
@@ -1097,7 +1097,7 @@ def test_build_survey_tree_places_a_table_into_its_own_branchs_section_text(monk
         update={
             "tables": [
                 Table(
-                    id="t0", rows=[["a", "b"]],
+                    id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
                     source_ref=SourceRef(document_path=doc.document.path, start_offset=20, end_offset=30),
                 )
             ]
@@ -1176,7 +1176,7 @@ def test_build_survey_tree_does_not_warn_about_tables_on_the_single_branch_path(
     path = "table_only.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        tables=[Table(id="t0", rows=[["a", "b"]], source_ref=_sr(path))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
     )
     fake = FakeSectionAnalysisClient(
         nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "t", "text": "x", "tags": []}]
@@ -1700,6 +1700,100 @@ def test_build_survey_tree_leaves_category_scores_none_when_the_field_is_absent(
 
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n1"].quality_category_scores is None
+
+
+def test_build_survey_tree_carries_the_matched_checklist_definitions_through_to_the_node(tmp_path, monkeypatch) -> None:
+    # End-to-end: KbVectorStore's stored quality_checklist_definitions_json
+    # (the companion to quality_checklist_json, see
+    # OrchestratorLlmClient.extract_quality_checklist_definitions's own
+    # docstring) reaches the scored node's quality_category_checklist,
+    # matched against whatever categoryScores keys the scoring client
+    # actually returned -- see _match_category_checklist.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "agentic KB text", [{"source_file": "standard.pdf", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    vector_store.upsert_chunk(
+        chunk_id="s1:standard.pdf:0", embedding=[1.0, 0.0, 0.0], text="checklist text", user_id="Project\\Area1",
+        source_file="standard.pdf", source_id="s1", chunk_index=0, file_hash="h1",
+        quality_checklist=["Necessary", "Unambiguous"],
+        quality_checklist_definitions={"Necessary": "States something not already satisfied."},
+    )
+
+    class _CapturingScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            return {
+                node_id: {"score": 90, "issues": [], "categoryScores": {"Necessary": 80, "Unambiguous": 70}}
+                for node_id in descriptions_by_node_id
+            }
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[{"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}],
+    )
+    tree = build_survey_tree(
+        _small_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=vector_store,
+        model="qwen3:4b",
+        scoring_client=_CapturingScoringClient(),
+    )
+
+    by_id = {node.local_id: node for node in tree.nodes}
+    n0 = by_id["n0"]
+    assert n0.quality_category_scores == {"Necessary": 80, "Unambiguous": 70}
+    # Only "Necessary" has a stored definition -- "Unambiguous" is a real,
+    # expected non-match (bare name, no separate definition text), not a
+    # missing/failed lookup.
+    assert n0.quality_category_checklist == {"Necessary": "States something not already satisfied."}
+
+
+def test_build_survey_tree_leaves_checklist_none_when_no_definitions_were_ever_extracted(tmp_path, monkeypatch) -> None:
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "agentic KB text", [{"source_file": "standard.pdf", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    # quality_checklist stored, but the definitions companion never was --
+    # e.g. ingested before extract_quality_checklist_definitions existed.
+    vector_store.upsert_chunk(
+        chunk_id="s1:standard.pdf:0", embedding=[1.0, 0.0, 0.0], text="checklist text", user_id="Project\\Area1",
+        source_file="standard.pdf", source_id="s1", chunk_index=0, file_hash="h1",
+        quality_checklist=["Necessary", "Unambiguous"],
+    )
+
+    class _CapturingScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            return {
+                node_id: {"score": 90, "issues": [], "categoryScores": {"Necessary": 80}}
+                for node_id in descriptions_by_node_id
+            }
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[{"source_file": "standard.pdf", "similarity": 0.9, "text": "checklist text"}],
+    )
+    tree = build_survey_tree(
+        _small_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=vector_store,
+        model="qwen3:4b",
+        scoring_client=_CapturingScoringClient(),
+    )
+
+    by_id = {node.local_id: node for node in tree.nodes}
+    assert by_id["n0"].quality_category_checklist is None
 
 
 def test_build_survey_tree_passes_none_criteria_context_when_no_retriever_is_supplied() -> None:
@@ -2822,7 +2916,7 @@ def test_build_survey_tree_progress_callback_falls_back_to_a_tables_caption_for_
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.XLSX, sha256="h"),
         blocks=[],
-        tables=[Table(id="t0", rows=[["a", "b"]], caption="Sheet1", source_ref=_sr(path))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr(path))],
     )
     events = []
     build_survey_tree(doc, FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
@@ -3012,7 +3106,7 @@ def test_render_section_prefixes_each_table_with_its_own_id_marker() -> None:
     # Unlike figures, no id map is needed here -- table.id is already
     # directly available from the `tables` list itself.
     path = "x.docx"
-    table = Table(id="t2", rows=[["h1", "h2"], ["a", "b"]], source_ref=_sr(path))
+    table = Table(id="t2", cells=[[TableCell(text=c) for c in row] for row in [["h1", "h2"], ["a", "b"]]], source_ref=_sr(path))
     text = render_section([], tables=[table])
     assert "[TABLE t2]" in text
     assert text.index("[TABLE t2]") < text.index("| h1 | h2 |")
@@ -3026,7 +3120,7 @@ def test_build_survey_tree_embeds_a_named_tables_html_and_records_table_ids() ->
     path = "table_only.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        tables=[Table(id="t0", rows=[["a", "b"]], source_ref=_sr(path))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
     )
     fake = FakeSectionAnalysisClient(
         nodes=[{
@@ -3051,7 +3145,7 @@ def test_build_survey_tree_drops_a_hallucinated_table_id_and_warns() -> None:
     path = "table_only.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        tables=[Table(id="t0", rows=[["a", "b"]], source_ref=_sr(path))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
     )
     fake = FakeSectionAnalysisClient(
         nodes=[{
@@ -3118,7 +3212,7 @@ def test_build_survey_tree_scopes_table_ids_validation_per_branch(monkeypatch) -
         update={
             "tables": [
                 Table(
-                    id="t0", rows=[["a", "b"]],
+                    id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
                     source_ref=SourceRef(document_path=doc.document.path, start_offset=20, end_offset=30),
                 )
             ]
@@ -3250,7 +3344,7 @@ def test_build_survey_tree_produces_a_non_empty_tree_for_a_table_only_xlsx_doc()
         tables=[
             Table(
                 id="t0",
-                rows=[["Req ID", "Text"], ["R1", "The unit shall power on within 5 seconds."]],
+                cells=[[TableCell(text=c) for c in row] for row in [["Req ID", "Text"], ["R1", "The unit shall power on within 5 seconds."]]],
                 caption="Sheet1",
                 source_ref=_sr(path),
             )
@@ -3263,7 +3357,17 @@ def test_build_survey_tree_produces_a_non_empty_tree_for_a_table_only_xlsx_doc()
     assert len(tree.nodes) == 1
     assert len(fake.calls) == 1
     assert "Req ID" in fake.calls[0]["section_text"]  # the table actually reached render_section
-    assert tree.nodes[0].source_ref == doc.tables[0].source_ref  # representative ref falls back to the table
+    # representative ref falls back to the table's own position (document_path/
+    # start_offset/end_offset/page) -- section_path is NOT part of that
+    # fallback comparison since it's populated separately (from
+    # _derive_section_label's table-caption fallback, "Sheet1" here), see
+    # the section_path assertion right below.
+    node_ref = tree.nodes[0].source_ref
+    table_ref = doc.tables[0].source_ref
+    assert (node_ref.document_path, node_ref.start_offset, node_ref.end_offset, node_ref.page) == (
+        table_ref.document_path, table_ref.start_offset, table_ref.end_offset, table_ref.page,
+    )
+    assert node_ref.section_path == ["Sheet1"]
 
 
 def test_build_survey_tree_progress_callback_never_fires_when_omitted() -> None:
@@ -3603,6 +3707,226 @@ def test_build_survey_tree_drops_a_placeholder_figure_caption_deterministically(
     last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
     assert "[FIGURE" not in last_leaf.description
     assert "none" not in last_leaf.description.lower()
+
+
+def test_build_survey_tree_deterministic_block_span_fold_widens_page_end() -> None:
+    # Real page numbers (see app/loaders/docx_pagination.py) only ever
+    # arrive on a document's own blocks/tables AFTER page alignment has
+    # run -- confirms the heading-span-claiming block fold widens its
+    # target's own page_end to cover everything folded into it, not just
+    # its own originating heading's page (mirrors
+    # test_build_baseline_tree_widens_page_end_when_a_block_folds_into_an_
+    # open_node in test_tree_builder.py for the BASELINE fold sites).
+    path = "structural_survey_input.txt"
+    base_doc = _structural_heading_doc()
+    paged_blocks = [
+        b.model_copy(update={"source_ref": b.source_ref.model_copy(update={"page": 1, "page_end": 1})})
+        for b in base_doc.blocks
+    ]
+    trailing_block = Block(
+        id="trail0", kind=BlockKind.PARAGRAPH, text="Additional clarifying detail for requirement E.",
+        source_ref=SourceRef(document_path=path, start_offset=0, end_offset=10, page=3, page_end=3),
+    )
+    doc = base_doc.model_copy(update={"blocks": [*paged_blocks, trailing_block]})
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
+    assert last_leaf.source_ref.page == 1  # the node's own originating page never changes
+    assert last_leaf.source_ref.page_end == 3  # widened to cover the folded trailing block
+
+
+def test_build_survey_tree_deterministic_table_span_fold_widens_page_end() -> None:
+    # Companion to the block-span-fold widen test above, for the SEPARATE
+    # non-qualifying-table-falls-in-a-heading's-span fold site (a table
+    # that does NOT itself qualify as its own ID-hierarchy subtree --
+    # contrast with test_build_survey_tree_table_row_subtree_sets_table_
+    # ids_and_section_path, which exercises a QUALIFYING table's own
+    # separate subtree-building path entirely, not this fold site).
+    path = "structural_survey_input.txt"
+    base_doc = _structural_heading_doc()
+    paged_blocks = [
+        b.model_copy(
+            update={
+                "source_ref": SourceRef(
+                    document_path=path, start_offset=i * 10, end_offset=i * 10 + 9, page=1, page_end=1,
+                )
+            }
+        )
+        for i, b in enumerate(base_doc.blocks)
+    ]
+    doc = base_doc.model_copy(
+        update={
+            "blocks": paged_blocks,
+            "tables": [
+                Table(
+                    id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Note", "See appendix for full rationale."]]],
+                    source_ref=SourceRef(document_path=path, start_offset=999, end_offset=1000, page=4, page_end=4),
+                ),
+            ],
+        }
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
+    assert last_leaf.source_ref.page == 1
+    assert last_leaf.source_ref.page_end == 4
+
+
+# --- section_path / figure_ids / table_ids / uncaptioned_figure_ids (Phase 2) ---
+
+
+def test_build_survey_tree_deterministic_span_fold_records_figure_ids_and_uncaptioned_figure_ids() -> None:
+    # Companion to the two "folds/drops a figure caption deterministically"
+    # tests above -- those only prove the DESCRIPTION text; this proves the
+    # id lists a real Figure now attributes to the span-claiming target.
+    path = "structural_survey_input.txt"
+    doc = _structural_heading_doc().model_copy(
+        update={
+            "blocks": [
+                *_structural_heading_doc().blocks,
+                Block(id="fig0", kind=BlockKind.FIGURE, text="[FIGURE: a wiring diagram]", source_ref=_sr(path)),
+                Block(id="fig1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+            ],
+            "figures": [
+                Figure(id="f0", caption="a wiring diagram", source_ref=_sr(path)),
+                Figure(id="f1", caption=None, source_ref=_sr(path)),
+            ],
+        }
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
+    assert last_leaf.figure_ids == ["f0"]
+    assert last_leaf.uncaptioned_figure_ids == ["f1"]
+    assert set(last_leaf.figure_ids).isdisjoint(last_leaf.uncaptioned_figure_ids)
+
+
+def test_build_survey_tree_structural_heading_subtree_sets_section_path() -> None:
+    tree = build_survey_tree(_structural_heading_doc(), FakeSectionAnalysisClient())
+    root = next(n for n in tree.nodes if n.title == "System Domain")
+    leaf = next(n for n in tree.nodes if n.title == "The system shall do A.")
+    assert root.source_ref.section_path == []
+    assert leaf.source_ref.section_path == ["System Domain"]
+
+
+def test_build_survey_tree_table_row_subtree_sets_table_ids_and_section_path() -> None:
+    # Every node in a table-row subtree came from THAT one Table -- table_ids
+    # is that table's id on every node, unconditionally. section_path is
+    # seeded with the table's own identity (no caption here, so it falls
+    # back to "Table {id}", same convention _build_headingless_tree's own
+    # per-table title already uses).
+    doc = _small_doc().model_copy(
+        update={
+            "tables": [
+                _table_with_group([
+                    ["Requirement ID", "Requirement / Section"],
+                    ["1.1", "External Source Detection"],
+                    ["1.1.1", "The system shall detect X."],
+                    ["1.1.2", "The system shall detect Y."],
+                ])
+            ]
+        }
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    group_node = next(n for n in tree.nodes if n.title == "External Source Detection")
+    leaf = next(n for n in tree.nodes if n.title == "The system shall detect X.")
+    assert group_node.table_ids == ["t0"]
+    assert leaf.table_ids == ["t0"]
+    assert group_node.source_ref.section_path == ["Table t0"]
+    assert leaf.source_ref.section_path == ["Table t0", "External Source Detection"]
+
+
+def test_build_survey_tree_llm_branch_section_path_is_the_sections_own_label() -> None:
+    # SURVEY nodes share one coarse, section-level source_ref (see
+    # _build_survey_tree_for_branch's own representative_source_ref
+    # docstring) -- section_path is a single-element path here (the
+    # branch's own _derive_section_label), not a multi-level ancestor
+    # chain the way BASELINE/the deterministic path can produce.
+    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
+    for node in tree.nodes:
+        assert node.source_ref.section_path == ["Display"]
+
+
+def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positionally_and_stays_disjoint() -> None:
+    # An uncaptioned figure's id is never rendered into section_text at all
+    # (_render_block_line returns None for it), so the model can never name
+    # it in figure_ids -- attributed instead via this branch's own
+    # positional bracketing. Also proves the disjointness guarantee holds
+    # even when the model HALLUCINATES the same id into figure_ids: it must
+    # still be dropped there (not offered in this section, per
+    # valid_figure_ids' own captioned-only restriction), never double-counted.
+    path = "survey_input.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+        ],
+        figures=[Figure(id="fig0", caption=None, source_ref=_sr(path))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Feature", "parent_temp_id": None,
+                "title": "Display", "text": "The system shall handle: Display", "tags": [],
+                "figure_ids": ["fig0"],  # hallucinated -- fig0 was never offered (uncaptioned)
+            },
+            {
+                "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0",
+                "title": "HDR support", "text": "The system shall handle: HDR.", "tags": [],
+            },
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    all_figure_ids = [fid for n in tree.nodes for fid in n.figure_ids]
+    all_uncaptioned_ids = [fid for n in tree.nodes for fid in n.uncaptioned_figure_ids]
+    assert "fig0" not in all_figure_ids  # the hallucinated claim was dropped, never trusted
+    assert all_uncaptioned_ids == ["fig0"]  # attributed exactly once, positionally
+    assert set(all_figure_ids).isdisjoint(all_uncaptioned_ids)
+
+
+def test_build_survey_tree_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> None:
+    # Whole-pipeline version of tree_builder.py's/id_tree_builder.py's own
+    # identical invariant tests -- section_path is additive provenance
+    # regardless of which of the four node-building paths populated it
+    # (here: the deterministic heading-hierarchy path AND the LLM branch
+    # path both contribute nodes to the same tree, via
+    # test_build_survey_tree_merges_deterministic_and_llm_nodes_as_sibling_roots'
+    # own hybrid-document pattern -- each path hashes identity differently,
+    # see _hash_identity vs _hash_identity_for_synthesized_node's own
+    # docstrings, but BOTH deliberately exclude section_path from their input).
+    import hashlib
+
+    from app.leveling.tree_builder import _hash_identity, _hash_identity_for_synthesized_node
+
+    # Same hybrid-document pattern
+    # test_build_survey_tree_merges_deterministic_and_llm_nodes_as_sibling_roots
+    # uses -- residual content BEFORE the heading blocks stays outside every
+    # span-claiming fold (which greedily claims everything trailing the LAST
+    # claimed heading), guaranteeing this tree really does mix both a
+    # deterministic (det0_...) and an LLM-branch (bare temp-id) node.
+    path = "hybrid_survey_input.txt"
+    residual = [
+        Block(id="r0", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)),
+        Block(id="r1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+    ]
+    doc = _structural_heading_doc().model_copy(update={"blocks": residual + _structural_heading_doc().blocks})
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    det_root = next(n for n in tree.nodes if n.title == "System Domain")
+    llm_root = next(n for n in tree.nodes if n.title == "Display")
+    assert det_root.local_id.startswith("det")
+    assert not llm_root.local_id.startswith("det")
+
+    for node in tree.nodes:
+        bare_ref = node.source_ref.model_copy(update={"section_path": []})
+        assert node.fidelity_hash == hashlib.sha256(node.description.encode()).hexdigest()
+        if node.local_id.startswith("det"):
+            # Deterministic node -- identity is position-only, same as
+            # every BASELINE node (see _hash_identity's own docstring).
+            assert node.identity_hash == _hash_identity(node.description, bare_ref)
+        else:
+            # LLM branch node -- identity is keyed on local_id (see
+            # _hash_identity_for_synthesized_node's own docstring), never on
+            # the generated (wording-unstable) description text.
+            assert node.identity_hash == _hash_identity_for_synthesized_node(node.local_id, bare_ref)
 
 
 def test_build_survey_tree_never_calls_the_llm_for_a_pure_deterministic_document() -> None:

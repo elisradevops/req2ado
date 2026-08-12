@@ -89,6 +89,11 @@ def test_extract_quality_checklist_prompt_loads() -> None:
     assert len(result) > 0
 
 
+def test_extract_quality_checklist_definitions_prompt() -> None:
+    result = load_prompt("extract_quality_checklist_definitions", category_names='["Necessary", "Unambiguous"]')
+    assert '["Necessary", "Unambiguous"]' in result
+
+
 def test_section_analysis_prompt_root_count_marker() -> None:
     # The one prompt using __ROOT_COUNT_CLAUSE__ (filled by
     # orchestrator_llm_client._root_count_clause, not load_prompt itself --

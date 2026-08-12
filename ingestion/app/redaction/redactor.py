@@ -28,7 +28,21 @@ def redact_canonical_doc(doc: CanonicalDoc, *, trusted_local: bool = False) -> C
     for block in redacted.blocks:
         block.text = _redact_text(block.text)
     for table in redacted.tables:
-        table.rows = [[_redact_text(cell) for cell in row] for row in table.rows]
+        # Redacts cell TEXT only -- every style field (colspan/rowspan/
+        # is_header/bold/background_color/text_color/align) is numeric or
+        # enum-valued and cannot itself carry PII, so those pass through
+        # untouched.
+        for row in table.cells:
+            for cell in row:
+                if cell is not None:
+                    cell.text = _redact_text(cell.text)
+        # Pre-existing hole, closed here while touching this function: a
+        # Table's own caption (xlsx sheet name, csv filename stem) was never
+        # redacted despite being just as capable of carrying a sensitive
+        # string (a hostname, part number, etc.) as a figure's caption
+        # already is below.
+        if table.caption:
+            table.caption = _redact_text(table.caption)
     for figure in redacted.figures:
         if figure.caption:
             figure.caption = _redact_text(figure.caption)

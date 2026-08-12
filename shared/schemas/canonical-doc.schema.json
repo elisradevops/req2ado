@@ -42,7 +42,10 @@
         "document_path": { "type": "string" },
         "start_offset": { "type": "integer", "minimum": 0 },
         "end_offset": { "type": "integer", "minimum": 0 },
-        "page": { "type": ["integer", "null"] }
+        "page": { "type": ["integer", "null"] },
+        "page_end": { "type": ["integer", "null"], "description": "Last page this ref's content covers. Null means same as page, or unknown." },
+        "page_provenance": { "type": ["string", "null"], "description": "Null = real pagination from the file itself. 'rendered' = derived via a re-render (e.g. docx->PDF for pagination). 'interpolated' = bracketed between anchors, not directly matched." },
+        "section_path": { "type": "array", "items": { "type": "string" }, "description": "Root-first heading/section labels for the section this ref was parsed from. Empty when no heading ancestry applies." }
       }
     },
     "Block": {
@@ -61,16 +64,40 @@
         "source_ref": { "$ref": "#/definitions/SourceRef" }
       }
     },
+    "TableCell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "colspan": { "type": "integer", "minimum": 1, "default": 1 },
+        "rowspan": { "type": "integer", "minimum": 1, "default": 1 },
+        "is_header": { "type": "boolean", "default": false },
+        "bold": { "type": "boolean", "default": false },
+        "background_color": { "type": ["string", "null"], "description": "Normalized #rrggbb, contrast-adapted for dual light/dark theme safety. 'No fill' (auto/white/near-white) is normalized to null, not a literal white." },
+        "text_color": { "type": ["string", "null"], "description": "Normalized #rrggbb, contrast-adapted -- see background_color." },
+        "align": { "type": ["string", "null"], "enum": ["left", "center", "right", "justify", null] }
+      }
+    },
     "Table": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "rows", "source_ref"],
+      "required": ["id", "cells", "source_ref"],
       "properties": {
         "id": { "type": "string" },
-        "rows": {
+        "cells": {
           "type": "array",
-          "items": { "type": "array", "items": { "type": "string" } }
+          "description": "Row-major grid. null at a position means it's SPANNED (absorbed by a preceding cell's colspan/rowspan) -- render no <td> there. A real TableCell with text:\"\" at a position is a genuine GAP (e.g. an empty PDF-detected cell) -- render an empty <td>. Every row has the same length (validated) -- a merge/gridBefore/gridAfter mismatch is a bug, not a valid shape.",
+          "items": {
+            "type": "array",
+            "items": {
+              "oneOf": [{ "$ref": "#/definitions/TableCell" }, { "type": "null" }]
+            }
+          }
         },
+        "column_widths": { "type": ["array", "null"], "items": { "type": "number", "minimum": 0 }, "description": "Fractions of table width (never source units like twips/EMU/chars/points) -- must sum to ~1.0 when present." },
+        "border_style": { "type": ["string", "null"], "enum": ["none", "grid", "outer", null], "description": "Deliberately coarse -- not a full per-side border spec." },
+        "style_provenance": { "type": ["string", "null"], "description": "Null = read from explicit source markup. 'heuristic' = geometrically/heuristically inferred (PDF only). Mirrors SourceRef.page_provenance's precedent." },
         "caption": { "type": ["string", "null"] },
         "source_ref": { "$ref": "#/definitions/SourceRef" }
       }

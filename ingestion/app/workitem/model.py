@@ -160,19 +160,35 @@ class WorkItemNode(BaseModel):
     # fixture) -- optional so this is purely additive.
     identity_hash: str | None = None
     tags: list[RequirementTag] = Field(default_factory=list)
-    # SURVEY-only: which of this section's candidate figures/tables the LLM
-    # judged relevant to this specific node (see llm_leveling.render_section's
-    # figure/table id injection and _build_survey_tree_for_branch's
-    # figure_ids/table_ids validation against the section's real candidate
-    # ids -- a model-hallucinated id that doesn't match any real Figure/Table
-    # in scope is dropped, never trusted verbatim). []/[] for BASELINE and
-    # for any SURVEY node the model didn't judge relevant to anything.
+    # Populated by ALL FOUR node-building paths (BASELINE, the deterministic
+    # heading/ID-tree path, the deterministic span-fold, and SURVEY's LLM
+    # branch) -- not SURVEY-only, despite this field's original SURVEY-only
+    # history. For SURVEY, these are which of a section's candidate
+    # figures/tables the LLM judged relevant to this specific node (see
+    # llm_leveling.render_section's figure/table id injection and
+    # _build_survey_tree_for_branch's figure_ids/table_ids validation
+    # against the section's real candidate ids -- a model-hallucinated id
+    # that doesn't match any real Figure/Table in scope is dropped, never
+    # trusted verbatim). For the deterministic paths, these are simply every
+    # figure/table whose block/span folded into this node -- no LLM
+    # judgment involved. []/[] for a node with no associated figures/tables.
     # table_ids additionally drives embedding that table's HTML into
     # description (see _table_to_html) -- figure_ids does not yet drive an
     # attachment (no ADO upload capability exists; see known-issues item 20
     # piece (d)), it is currently link-only.
     figure_ids: list[str] = Field(default_factory=list)
     table_ids: list[str] = Field(default_factory=list)
+    # Figures that folded into this node's span but produced NO caption --
+    # vision disabled, the vision call failed/errored, or the model itself
+    # returned the NO_TECHNICAL_CONTENT sentinel (_figure_line returns None
+    # in all three cases, so nothing about the figure reaches `description`
+    # and it would otherwise be invisible to a reviewer). Disjoint from
+    # figure_ids: a figure id appears in exactly one of the two lists, never
+    # both. The review UI renders this as a distinct "figure present but
+    # undescribed" signal rather than folding it into a plain figure count,
+    # since a silently-dropped figure is exactly the kind of pipeline
+    # correctness issue a reviewer needs to catch.
+    uncaptioned_figure_ids: list[str] = Field(default_factory=list)
     mode: WorkItemMode
     # The work-item type a NEW manual child entry added under this node
     # should default to (see orchestrator's JobsService.addDiffEntry) —
@@ -202,6 +218,22 @@ class WorkItemNode(BaseModel):
     # missing/malformed) -- same all-or-nothing tolerance as quality_score
     # itself, never partially populated.
     quality_category_scores: QualityCategoryScores | None = None
+    # Per-category CITATION text backing quality_category_scores' keys --
+    # maps a subset of those SAME keys to the org's own ingested checklist
+    # document's stated definition for that category, when one exists (see
+    # KbVectorStore.get_quality_checklist_definitions and
+    # app.leveling.scoring._match_category_checklist for how this is built
+    # and its known matching limitations). Deliberately NOT all-or-nothing
+    # like quality_category_scores/quality_category_checklist above --
+    # a category with no entry here is a real, common, EXPECTED case (no KB
+    # standard behind it at all, or the org's own document states no
+    # separate definition for that one category), not a parse failure, so
+    # the frontend (QualityGauge.categoryDescription) falls back to a
+    # generic sentence PER CATEGORY rather than discarding the whole map.
+    # None whenever no category in quality_category_scores had a matched
+    # definition (including every SURVEY node when no scoring_client was
+    # supplied at all, or the grounding document defined no checklist).
+    quality_category_checklist: dict[str, str] | None = None
     # Internal-only, never serialized (exclude=True) -- deterministic-
     # hierarchy path only (see id_hierarchy.HierarchyRow.needs_synthesis's
     # own docstring for the per-root-subtree gate that sets this). Signals

@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.main import _sniff_image_mime_type, app
+from app.main import _rasterize_for_vision, _sniff_image_mime_type, app
 
 client = TestClient(app)
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -68,7 +68,7 @@ def test_ingest_csv() -> None:
     body = _upload("sample.csv", FIXTURES / "sample.csv")
     assert body["document"]["format"] == "csv"
     assert len(body["tables"]) == 1
-    assert body["tables"][0]["rows"][0] == ["Component", "Voltage", "Current (A)"]
+    assert [cell["text"] for cell in body["tables"][0]["cells"][0]] == ["Component", "Voltage", "Current (A)"]
 
 
 def test_ingest_rtf() -> None:
@@ -438,7 +438,7 @@ def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_i
     real_doc = dispatch_by_extension("sample.docx", str(FIXTURES / "sample.docx"))
     table_events = [p for p in payloads if p["phase"] == "table_detected"]
     assert len(table_events) == 1
-    assert table_events[0]["tableRowCount"] == len(real_doc.tables[0].rows)
+    assert table_events[0]["tableRowCount"] == len(real_doc.tables[0].cells)
     assert table_events[0]["tableRowCount"] > 0
     # table_detected doesn't need a pre-count -- it fires from a post-parse
     # loop over the full table list, so position/total are always known.
@@ -710,3 +710,93 @@ def test_sniff_image_mime_type_detects_tiff() -> None:
 
 def test_sniff_image_mime_type_returns_none_for_unrecognized_bytes() -> None:
     assert _sniff_image_mime_type(b"not a real image format") is None
+
+
+def test_rasterize_for_vision_passes_through_a_real_raster_format_unchanged() -> None:
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"rest of png"
+    rasterized, mime_type = _rasterize_for_vision(png_bytes)
+    assert rasterized == png_bytes
+    assert mime_type == "image/png"
+
+
+def test_rasterize_for_vision_converts_a_vector_format_via_emf_converter(monkeypatch) -> None:
+    # Real gap this guards against (confirmed live): compress_figure_for_
+    # storage (Pillow-only) silently failed for an EMF/WMF figure that
+    # _describe_figure captioned successfully via this exact conversion --
+    # a figure could be fully described yet never become storable/viewable.
+    # This is the shared helper both call sites must now go through.
+    import app.main as main_module
+
+    fake_emf_bytes = b"fake emf bytes"
+    fake_png_bytes = b"\x89PNG\r\n\x1a\nconverted"
+    monkeypatch.setattr(main_module, "sniff_vector_image_extension", lambda _b: ".emf")
+    monkeypatch.setattr(main_module, "convert_vector_image_to_png", lambda _b, _ext: fake_png_bytes)
+
+    rasterized, mime_type = _rasterize_for_vision(fake_emf_bytes)
+    assert rasterized == fake_png_bytes
+    assert mime_type == "image/png"
+
+
+def test_rasterize_for_vision_falls_back_to_original_bytes_when_conversion_fails(monkeypatch) -> None:
+    import app.main as main_module
+
+    fake_emf_bytes = b"fake emf bytes, conversion will fail"
+    monkeypatch.setattr(main_module, "sniff_vector_image_extension", lambda _b: ".emf")
+    monkeypatch.setattr(main_module, "convert_vector_image_to_png", lambda _b, _ext: None)
+
+    rasterized, mime_type = _rasterize_for_vision(fake_emf_bytes)
+    assert rasterized == fake_emf_bytes  # unchanged -- same degrade-gracefully contract as before
+    assert mime_type is None
+
+
+def test_rasterize_for_vision_returns_original_bytes_for_a_genuinely_unrecognized_format() -> None:
+    rasterized, mime_type = _rasterize_for_vision(b"not a real image at all")
+    assert rasterized == b"not a real image at all"
+    assert mime_type is None
+
+
+def test_figure_storage_uses_the_same_rasterized_bytes_as_captioning_not_the_original(monkeypatch) -> None:
+    # Direct regression test for the confirmed real bug (reported live,
+    # "not the first time it occurs"): sample.docx's one embedded figure is
+    # a real raster PNG, so it wouldn't naturally exercise the vector-
+    # conversion path -- sniff_vector_image_extension is force-monkeypatched
+    # to claim EVERY figure is an EMF regardless of its real bytes, making
+    # this test deterministic without needing a real EMF-embedded fixture
+    # or a real soffice conversion.
+    import app.main as main_module
+
+    fake_converted_bytes = b"\x89PNG\r\n\x1a\nconverted-for-storage"
+    captured_store_calls: list[tuple[str, str, bytes, str]] = []
+
+    class _FakeVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+            return "a real caption"
+
+    class _FakeFigureFileClient:
+        def store(self, job_id: str, figure_id: str, image_bytes: bytes, mime_type: str) -> None:
+            captured_store_calls.append((job_id, figure_id, image_bytes, mime_type))
+
+    def _fake_compress_for_storage(image_bytes: bytes):
+        # Returns whatever it was handed, unmodified -- lets this test
+        # assert exactly which bytes reached the storage call, without also
+        # depending on real PNG re-encoding/Pillow behavior.
+        return (image_bytes, "image/png")
+
+    monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
+    monkeypatch.setattr(main_module, "_figure_file_client", _FakeFigureFileClient())
+    # sample.docx's one embedded figure is a real PNG, so _sniff_image_mime_
+    # type would correctly identify it and short-circuit BEFORE ever
+    # reaching the vector-extension check below -- forced to None here so
+    # this test exercises the vector-conversion branch deterministically,
+    # regardless of the fixture's real (raster) content.
+    monkeypatch.setattr(main_module, "_sniff_image_mime_type", lambda _b: None)
+    monkeypatch.setattr(main_module, "sniff_vector_image_extension", lambda _b: ".emf")
+    monkeypatch.setattr(main_module, "convert_vector_image_to_png", lambda _b, _ext: fake_converted_bytes)
+    monkeypatch.setattr(main_module, "compress_figure_for_storage", _fake_compress_for_storage)
+
+    _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-test")
+
+    assert len(captured_store_calls) == 1
+    _job_id, _figure_id, stored_bytes, stored_mime_type = captured_store_calls[0]
+    assert stored_bytes == fake_converted_bytes  # the RASTERIZED bytes, not sample.docx's original figure bytes
+    assert stored_mime_type == "image/png"

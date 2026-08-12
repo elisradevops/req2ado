@@ -452,6 +452,78 @@ def test_extract_quality_checklist_sends_temperature_zero_and_think_false() -> N
     assert captured["body"]["think"] is False
 
 
+def test_extract_quality_checklist_definitions_parses_a_real_mapping() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(
+        {"content": json.dumps({"Necessary": "The requirement states something not already satisfied."})}
+    )
+
+    result = client.extract_quality_checklist_definitions(
+        "3.3 Customer requirement quality checklist\n...", ["Necessary", "Unambiguous"],
+    )
+    assert result == {"Necessary": "The requirement states something not already satisfied."}
+
+
+def test_extract_quality_checklist_definitions_returns_empty_dict_with_no_category_names() -> None:
+    # Deliberately never issues a call at all when the first extraction
+    # pass (extract_quality_checklist) found no checklist -- nothing to ask
+    # a definition for, see this method's own docstring.
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(lambda request: (_ for _ in ()).throw(AssertionError("should not be called")))
+
+    result = client.extract_quality_checklist_definitions("text", [])
+    assert result == {}
+
+
+def test_extract_quality_checklist_definitions_drops_a_key_not_in_category_names() -> None:
+    # Confirmed real safeguard: a model that hallucinates or misspells a
+    # category name in its response must never introduce a NEW key the
+    # scores dict never had -- only the FIXED, already-decided names given
+    # to this call are ever accepted.
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(
+        {"content": json.dumps({"Necessary": "Real def.", "Made Up Category": "Should be dropped."})}
+    )
+
+    result = client.extract_quality_checklist_definitions("text", ["Necessary", "Unambiguous"])
+    assert result == {"Necessary": "Real def."}
+
+
+def test_extract_quality_checklist_definitions_matches_case_insensitively_but_keys_by_canonical_name() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"NECESSARY": "Real def."})})
+
+    result = client.extract_quality_checklist_definitions("text", ["Necessary"])
+    assert result == {"Necessary": "Real def."}
+
+
+def test_extract_quality_checklist_definitions_truncates_an_oversized_definition() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    oversized = "x" * 500
+    client._transport = _mock_transport({"content": json.dumps({"Necessary": oversized})})
+
+    result = client.extract_quality_checklist_definitions("text", ["Necessary"])
+    assert result == {"Necessary": oversized[:280]}
+
+
+def test_extract_quality_checklist_definitions_drops_empty_and_non_string_values() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(
+        {"content": json.dumps({"Necessary": "   ", "Unambiguous": 5})}
+    )
+
+    result = client.extract_quality_checklist_definitions("text", ["Necessary", "Unambiguous"])
+    assert result == {}
+
+
+def test_extract_quality_checklist_definitions_raises_on_a_non_object_response() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "[1, 2, 3]"})
+
+    with pytest.raises(ValueError, match="malformed JSON"):
+        client.extract_quality_checklist_definitions("text", ["Necessary"])
+
+
 def test_infer_trace_links_sends_nodes_and_catalog_returns_parsed_links() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

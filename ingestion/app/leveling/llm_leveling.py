@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, Table
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, Table, plain_text_rows
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_CHUNKS
@@ -59,7 +59,9 @@ from app.leveling.tree_builder import (
     _partition_tables_by_branch,
     _split_into_branches,
     _table_to_html,
+    _widen_page_end,
 )
+from app.leveling.tree_builder import figure_id_by_block_id as _build_figure_id_by_block_id
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL
 from app.leveling.warnings_finalize import finalize_warnings
@@ -666,7 +668,7 @@ def _table_to_markdown(table: Table) -> str | None:
     field). Fully-blank rows are skipped, same convention as
     _table_to_html. Returns None for a table with no non-empty rows (a
     blank table contributes nothing, not an empty table block)."""
-    rows = [row for row in table.rows if any(cell.strip() for cell in row)]
+    rows = [row for row in plain_text_rows(table) if any(cell.strip() for cell in row)]
     if not rows:
         return None
     header, *body = rows
@@ -814,6 +816,14 @@ def _detect_deterministic_subtrees(
     parent_summary_client: ParentSummaryClient | None = None,
     model: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    # Whole-document (not residual) block.id -> Figure.id map -- see
+    # figure_id_by_block_id's own docstring (tree_builder.py) and
+    # build_survey_tree's own call site comment for why this must be built
+    # over the FULL `doc` and passed in from there, BEFORE this function
+    # ever filters anything into a residual llm_doc. None (a caller that
+    # hasn't been updated, e.g. an older test) simply skips figure
+    # attribution below -- every other deterministic behavior is unchanged.
+    figure_id_by_block_id: dict[str, str] | None = None,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning], CanonicalDoc]:
     """Detects and builds every deterministic hierarchy subtree this
     document's own structure already encodes -- a 2-column dotted-ID
@@ -888,7 +898,21 @@ def _detect_deterministic_subtrees(
             rows, f"det{subtree_index}_", customer_id, title_tag_client, synthesis_client,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label=f"Table {table.id}",
+            # Every row here came from parsing THIS one table (see
+            # rows_from_table) -- there is no heading ancestor above it to
+            # walk via parent_index alone, so section_path is seeded with
+            # the table's own identity as its root segment. Same
+            # caption-or-id-fallback convention _build_headingless_tree's
+            # own per-table title already uses.
+            section_path_root=table.caption or f"Table {table.id}",
         )
+        # Every node in this subtree came from THIS one Table -- unlike a
+        # heading-derived node, which can fold zero or more Tables into its
+        # span (see the span-claiming loop below), a table-row subtree's
+        # nodes ARE that table, so table_ids is simply every node pointing
+        # back at it, unconditionally.
+        for node in nodes:
+            node.table_ids = [table.id]
         # Post-hoc structural safety net -- same reasoning and same
         # already-tested function the LLM-analysis path uses (see its own
         # docstring): a deterministic subtree can still end up with a
@@ -984,7 +1008,24 @@ def _detect_deterministic_subtrees(
             # real caption, fold nothing"; a real caption folds in as the
             # same clearly-labeled "> Figure: ..." line the LLM path uses.
             span_text = _figure_line(block) if block.kind == BlockKind.FIGURE else block.text
+            # Same known-issues item 20 pairing SURVEY's render_section
+            # already relies on -- None whenever this isn't a FIGURE-kind
+            # block, or figure_id_by_block_id wasn't supplied at all (an
+            # older/未-updated caller), matching pre-figure_ids behavior.
+            figure_id = (
+                figure_id_by_block_id.get(block.id)
+                if block.kind == BlockKind.FIGURE and figure_id_by_block_id is not None
+                else None
+            )
             if span_text is None:
+                # No real caption (vision disabled/failed/NO_TECHNICAL_CONTENT --
+                # see _figure_line's own docstring) -- the figure still exists
+                # in the source though, so it's recorded as uncaptioned on
+                # whatever node its span belongs to rather than vanishing
+                # with zero trace, same as build_baseline_tree's identical
+                # fold-site fix.
+                if figure_id is not None:
+                    current_target.uncaptioned_figure_ids.append(figure_id)
                 continue
             current_target.description = assemble_description(
                 current_target.description, span_text,
@@ -993,6 +1034,9 @@ def _detect_deterministic_subtrees(
             current_target.identity_hash = _hash_identity(
                 current_target.description, current_target.source_ref,
             )
+            current_target.source_ref = _widen_page_end(current_target.source_ref, block.source_ref)
+            if figure_id is not None:
+                current_target.figure_ids.append(figure_id)
 
         for table in doc.tables:
             if table.id in claimed_table_ids:
@@ -1022,6 +1066,8 @@ def _detect_deterministic_subtrees(
             target.description = assemble_description(target.description, _table_to_html(table))
             target.fidelity_hash = _hash_description(target.description)
             target.identity_hash = _hash_identity(target.description, target.source_ref)
+            target.source_ref = _widen_page_end(target.source_ref, table.source_ref)
+            target.table_ids.append(table.id)
         del id_disambiguator_needed  # only used to document the branch above; both heading
         # adapters always pass id_disambiguator_needed=False, so span-fold hashing always
         # uses the plain _hash_identity, never the table-row disambiguated variant.
@@ -1226,6 +1272,26 @@ def build_survey_tree(
             )
         )
 
+    # known-issues item 20: a block.id -> Figure.id map, built ONCE here,
+    # over the FULL, ORIGINAL `doc` -- moved from its previous location
+    # (after `doc = llm_doc` below, over the residual document only) to
+    # HERE, before _detect_deterministic_subtrees ever runs, so the
+    # deterministic path's own span-claiming fold sites (see that
+    # function's docstring) can name figures too, not just the SURVEY
+    # LLM-analysis path below. This reorder is safe: every loader
+    # (docx/pptx/pdf) appends a Figure and its paired inline FIGURE-kind
+    # Block in lockstep regardless of what happens to `doc` afterward, so
+    # the pairing itself doesn't depend on WHEN it's computed -- only on
+    # `doc.blocks`/`doc.figures` still being in their original loader-append
+    # order (true both before and after residual filtering, which only
+    # removes entries, never reorders them). Built over the full document,
+    # this map is a strict SUPERSET of the old residual-only map (every key
+    # the SURVEY path below could ever look up is still present, plus the
+    # deterministically-claimed figures' keys it never needed before) -- so
+    # the existing SURVEY branch path (still keyed by this SAME dict,
+    # further down) is entirely unaffected by moving this earlier.
+    figure_id_by_block_id: dict[str, str] = _build_figure_id_by_block_id(doc)
+
     # Deterministic hierarchy detection (table-row / ID-bearing-heading /
     # structural-heading conventions -- see _detect_deterministic_subtrees's
     # own docstring) runs BEFORE anything else in this function: every
@@ -1237,6 +1303,7 @@ def build_survey_tree(
     det_nodes, det_warnings, llm_doc = _detect_deterministic_subtrees(
         doc, customer_id, title_tag_client, synthesis_client, parent_summary_client, model,
         progress_callback=progress_callback,
+        figure_id_by_block_id=figure_id_by_block_id,
     )
 
     if llm_doc.blocks == [] and llm_doc.tables == [] and llm_doc.figures == []:
@@ -1289,6 +1356,14 @@ def build_survey_tree(
                 # relevant grounding document, if one exists, takes priority
                 # over asking the scoring model to derive categories live.
                 category_checklist: list[str] | None = None
+                # Companion to category_checklist -- name -> the SAME
+                # grounding document's own stated definition text, when one
+                # exists (see KbVectorStore.get_quality_checklist_
+                # definitions and _match_category_checklist's own
+                # docstring). Fetched for the identical winning citation
+                # category_checklist itself resolved to, never a different
+                # one, so the two stay about the same document.
+                category_checklist_definitions: dict[str, str] | None = None
                 if vector_store is not None and user_id is not None:
                     sorted_citations = sorted(
                         doc_kb_citations, key=lambda c: c.similarity, reverse=True,
@@ -1299,11 +1374,14 @@ def build_survey_tree(
                         )
                         if checklist:
                             category_checklist = checklist
+                            category_checklist_definitions = vector_store.get_quality_checklist_definitions(
+                                user_id, citation.source_file,
+                            )
                             break
                 _score_all_requirements(
                     requirement_nodes, scoring_client, all_warnings, criteria_retriever,
                     doc_kb_context, doc_kb_citations, progress_callback, model_name,
-                    len(det_nodes), 0, category_checklist,
+                    len(det_nodes), 0, category_checklist, category_checklist_definitions,
                 )
             _score_epics_and_features(
                 all_nodes, scoring_client, all_warnings, progress_callback, model_name,
@@ -1335,23 +1413,13 @@ def build_survey_tree(
 
     doc = llm_doc  # every remaining read below sees only the residual, non-claimed content
 
-    # known-issues item 20: a block.id -> Figure.id map, built once here
-    # (not per-branch) over the RESIDUAL doc.blocks/doc.figures (post
-    # deterministic-claiming, via the `doc = llm_doc` reassignment just
-    # above) -- these are the exact same lists every branch's own figures
-    # get sliced from below, so a positional pairing built here stays valid
-    # per branch too. Every loader (docx/pptx/pdf) appends a Figure and its
-    # paired inline FIGURE-kind Block in lockstep (confirmed via each
-    # loader's own source), and `_detect_deterministic_subtrees`'s residual
-    # filtering above preserves both lists' relative order (plain predicate
-    # filters, never resorted) -- so the i-th FIGURE-kind block here really
-    # is doc.figures[i] for the SAME i, without needing a source_ref-based
-    # lookup (source_ref alone is ambiguous for docx's own floating-image
-    # fallback path, which can give several figures the identical (0, 0)
-    # placeholder ref).
-    figure_id_by_block_id: dict[str, str] = dict(
-        zip((b.id for b in doc.blocks if b.kind == BlockKind.FIGURE), (f.id for f in doc.figures))
-    )
+    # figure_id_by_block_id was already built above, BEFORE
+    # _detect_deterministic_subtrees ran, over the FULL original document --
+    # see that assignment's own comment for why this reorder is safe. Every
+    # key any branch below could ever look up (a FIGURE-kind block still
+    # present in this RESIDUAL `doc`) is still present in that
+    # whole-document map, since residual filtering only ever REMOVES
+    # entries, never adds or reorders them.
 
     # preparing_analysis already fired at function entry, before
     # _detect_deterministic_subtrees ran -- covers the branch splitting/
@@ -1707,16 +1775,24 @@ def build_survey_tree(
             # falls back to score_requirements_for_document's own live-derive/
             # fixed-5-dimension behavior, unchanged.
             category_checklist: list[str] | None = None
+            # Companion to category_checklist -- see the deterministic-
+            # hierarchy path's own identical comment further up this file
+            # for why this is fetched for the SAME winning citation, never
+            # a different one.
+            category_checklist_definitions: dict[str, str] | None = None
             if vector_store is not None and user_id is not None:
                 for citation in sorted(deduped_citations, key=lambda c: c.similarity, reverse=True):
                     checklist = vector_store.get_quality_checklist(user_id, citation.source_file)
                     if checklist:
                         category_checklist = checklist
+                        category_checklist_definitions = vector_store.get_quality_checklist_definitions(
+                            user_id, citation.source_file,
+                        )
                         break
             _score_all_requirements(
                 requirement_nodes, scoring_client, all_warnings, criteria_retriever,
                 combined_kb_context, deduped_citations, progress_callback, model_name, blocks_total,
-                len(branches), category_checklist,
+                len(branches), category_checklist, category_checklist_definitions,
             )
         # Separate rubric/prompt from Requirement scoring above -- see
         # OrchestratorLlmClient.score_epics_and_features_for_document's own
@@ -2007,6 +2083,24 @@ def _build_survey_tree_for_branch(
     representative_source_ref = (
         blocks[0].source_ref if blocks else (tables[0].source_ref if tables else (figures[0].source_ref if figures else None))
     )
+    if representative_source_ref is not None:
+        # section_label (computed above, right next to where this ref is
+        # built) is this branch's own heading/excerpt label -- see
+        # _derive_section_label's own docstring. A single-element path, not
+        # a full ancestor chain: SURVEY branches are split at the
+        # document's shallowest heading depth only (_split_into_branches),
+        # so there is no multi-level ancestry available here the way
+        # BASELINE's stack-walk or the deterministic path's parent_index
+        # walk have -- this is the coarser, section-level granularity every
+        # node in this branch already shares (see representative_source_ref
+        # itself). `.model_copy(...)`, never an in-place mutation -- same
+        # reasoning as every other section_path call site in this codebase
+        # (pydantic v2 doesn't copy a nested BaseModel on assignment, so
+        # mutating this copy in place would corrupt the ORIGINAL block's/
+        # table's/figure's own source_ref too).
+        representative_source_ref = representative_source_ref.model_copy(
+            update={"section_path": [section_label] if section_label else []}
+        )
 
     # known-issues item 20: the real candidate ids THIS branch's own
     # rendered section_text actually offered the model (see render_section's
@@ -2017,12 +2111,24 @@ def _build_survey_tree_for_branch(
     # this branch's own `tables` param; valid_figure_ids is derived from
     # this branch's own `blocks` via the whole-document figure_id_by_block_id
     # map (branch-scoped implicitly, since only this branch's own FIGURE-kind
-    # blocks are in `blocks`).
+    # blocks are in `blocks`) -- restricted to CAPTIONED figures only
+    # (`_figure_line(b) is not None`): an uncaptioned figure's id is never
+    # rendered into section_text at all (_render_block_line returns None for
+    # it, so its id-injection branch never runs -- see that function's own
+    # docstring), and is attributed separately, POSITIONALLY, into
+    # uncaptioned_figure_ids below. Excluding it here keeps figure_ids and
+    # uncaptioned_figure_ids provably disjoint regardless of what the model
+    # returns (e.g. a hallucinated id that happens to collide with a real
+    # uncaptioned figure's id), not just in the common case where the model
+    # never sees the id to begin with.
     valid_table_ids = {t.id for t in (tables or [])}
     valid_figure_ids = {
         figure_id_by_block_id[b.id]
         for b in blocks
-        if figure_id_by_block_id is not None and b.kind == BlockKind.FIGURE and b.id in figure_id_by_block_id
+        if figure_id_by_block_id is not None
+        and b.kind == BlockKind.FIGURE
+        and b.id in figure_id_by_block_id
+        and _figure_line(b) is not None
     }
     tables_by_id = {t.id: t for t in (tables or [])}
 
@@ -2193,6 +2299,40 @@ def _build_survey_tree_for_branch(
                 grounding_score=grounding_score,
             )
         )
+
+    # known-issues item 20 extension: an UNCAPTIONED figure's id is never
+    # rendered into section_text at all (_render_block_line returns None
+    # for it -- see that function's own docstring), so the model never sees
+    # it and can never name it in a node's own figure_ids the way a
+    # captioned figure can. Unlike BASELINE/the deterministic path, which
+    # walk blocks sequentially and always have a real currently-"open" node
+    # to attach an uncaptioned figure to, SURVEY nodes carry no individual
+    # per-node source position at all (see representative_source_ref's own
+    # trade-off comment above -- every node in this branch shares ONE
+    # coarse, section-level source_ref). With no true per-node offset to
+    # bracket against, the best available deterministic proxy is `nodes`'
+    # own list order: by_temp_id preserves the model's own raw_nodes
+    # response order, which in practice tracks the section's top-to-bottom
+    # structure closely enough to stand in for real document order. Each
+    # uncaptioned figure's own block-order position (within this branch's
+    # `blocks`) is mapped proportionally onto that same node ordering --
+    # same "bucket by document-order position" spirit as
+    # _partition_tables_by_branch's forward-scan bucketing and
+    # _detect_deterministic_subtrees's heading-boundary bracketing, just
+    # applied at node-LIST granularity instead of an offset/boundary
+    # comparison, since a node-list index is all a SURVEY node actually
+    # carries. A branch that produced zero nodes has nowhere to attach one
+    # -- silently skipped, consistent with every other content this branch
+    # would also be unable to place.
+    if nodes:
+        for i, block in enumerate(blocks):
+            if block.kind != BlockKind.FIGURE or _figure_line(block) is not None:
+                continue  # non-figure, or captioned (already handled via the model's own figure_ids)
+            figure_id = (figure_id_by_block_id or {}).get(block.id)
+            if figure_id is None:
+                continue
+            bracket_index = min(len(nodes) - 1, i * len(nodes) // len(blocks))
+            nodes[bracket_index].uncaptioned_figure_ids.append(figure_id)
 
     # §CMMI hierarchy repair (task confirmed real bug: the prompt alone is a
     # soft LLM instruction with no backstop -- a model still occasionally

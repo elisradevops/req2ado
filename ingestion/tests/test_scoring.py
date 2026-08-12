@@ -1,4 +1,4 @@
-from app.leveling.scoring import score_single_requirement_text
+from app.leveling.scoring import _match_category_checklist, score_single_requirement_text
 
 
 class _FakeScoringClient:
@@ -122,3 +122,59 @@ def test_blank_description_skips_criteria_retrieval() -> None:
     score_single_requirement_text("   ", client, retriever, None, None)
 
     assert retriever.queries == []
+
+
+class TestMatchCategoryChecklist:
+    """_match_category_checklist builds quality_category_checklist -- see
+    its own docstring for the exact-match-only heuristic and its known
+    limitations (model key drift, categories with no stated definition)."""
+
+    def test_matches_keys_present_in_both(self) -> None:
+        result = _match_category_checklist(
+            {"Necessary": 80, "Unambiguous": 60},
+            {"Necessary": "States something not already satisfied.", "Verifiable": "Can be objectively checked."},
+        )
+        assert result == {"Necessary": "States something not already satisfied."}
+
+    def test_matches_case_insensitively_and_whitespace_normalized(self) -> None:
+        # The scoring model is instructed to use category_checklist's names
+        # VERBATIM, but this stays tolerant of minor case/whitespace drift
+        # rather than losing a real match over it.
+        result = _match_category_checklist(
+            {"  necessary  ": 80}, {"Necessary": "Real definition."},
+        )
+        assert result == {"  necessary  ": "Real definition."}
+
+    def test_no_match_for_a_key_with_no_stated_definition(self) -> None:
+        # A category the org's document lists only by bare name (no
+        # separate explanation) is a real, expected case -- correctly
+        # produces no entry for it, not an error.
+        result = _match_category_checklist(
+            {"Necessary": 80, "Ranked": 70}, {"Necessary": "Real definition."},
+        )
+        assert result == {"Necessary": "Real definition."}
+        assert "Ranked" not in result
+
+    def test_returns_none_when_nothing_matches_at_all(self) -> None:
+        result = _match_category_checklist(
+            {"clarity": 80}, {"Necessary": "Real definition."},
+        )
+        assert result is None
+
+    def test_returns_none_when_category_scores_is_none(self) -> None:
+        assert _match_category_checklist(None, {"Necessary": "Real definition."}) is None
+
+    def test_returns_none_when_no_definitions_were_supplied(self) -> None:
+        assert _match_category_checklist({"Necessary": 80}, None) is None
+        assert _match_category_checklist({"Necessary": 80}, {}) is None
+
+    def test_always_injected_completeness_key_never_matches(self) -> None:
+        # completeness_as_requirement is req2ado's own structural check,
+        # added regardless of checklist source -- never part of any org's
+        # document, so it correctly never has a checklist definition.
+        result = _match_category_checklist(
+            {"Necessary": 80, "completeness_as_requirement": 90},
+            {"Necessary": "Real definition."},
+        )
+        assert result == {"Necessary": "Real definition."}
+        assert "completeness_as_requirement" not in result

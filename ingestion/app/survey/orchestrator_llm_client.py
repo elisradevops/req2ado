@@ -14,6 +14,7 @@ from app.otel import get_tracer
 from app.prompts import load_prompt
 
 from app.survey._response_schemas import (
+    checklist_definitions_schema,
     checklist_extraction_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
@@ -97,6 +98,14 @@ _CHECKLIST_EXTRACTION_MAX_CHARS = 12_000
 _CHECKLIST_MIN_ITEMS = 2
 _CHECKLIST_MAX_ITEMS = 30
 _CHECKLIST_MIN_ITEM_CHARS = 2
+# extract_quality_checklist_definitions's own per-item bound -- a stated
+# definition/pass-condition is prose, not a bare category name, so this is
+# deliberately much larger than _CHECKLIST_MAX_ITEM_CHARS below (which
+# bounds the NAME used verbatim as a categoryScores key -- see that
+# method's own docstring for why names must stay short). Over-length
+# values are TRUNCATED, not dropped (see _sanitize_checklist_definitions),
+# since a trimmed real quote is still useful, unlike a malformed score.
+_CHECKLIST_DEFINITION_MAX_CHARS = 280
 _CHECKLIST_MAX_ITEM_CHARS = 60
 
 # Retry policy for a TRANSIENT /llm/chat failure only (429/5xx) -- confirmed
@@ -1063,6 +1072,85 @@ class OrchestratorLlmClient:
             )
             return []
         return cleaned
+
+    def extract_quality_checklist_definitions(
+        self, document_text: str, category_names: list[str],
+    ) -> dict[str, str]:
+        """Best-effort SECOND extraction pass, run once at KB ingestion time
+        immediately AFTER extract_quality_checklist (see
+        app.kb.ingest_service), never replacing it and never run on its
+        own -- `category_names` is that method's own already-sanitized,
+        cross-run-deterministic output (the FIXED categoryScores key list,
+        see score_requirements_for_document's own docstring for why those
+        names are used VERBATIM as dict keys downstream). This pass asks the
+        SAME document for whatever definition/explanation/pass-condition
+        text it states for each of those ALREADY-DECIDED names -- it does
+        NOT attempt to name the categories itself -- specifically so the
+        returned dict's keys line up with category_names by construction,
+        instead of risking a second, independent extraction drifting to
+        slightly different wording for the same category (e.g.
+        "Unambiguous" vs "Unambiguity") and silently failing to match up
+        with the scores the reviewer actually sees.
+
+        Returns {} (not None) for "ran, found no stated definition text for
+        any of these categories" -- a document that lists only bare
+        category names with no separate explanation is a genuine, common,
+        EXPECTED outcome (org checklists vary widely in how much they
+        write per category), not a failure. A category absent from the
+        returned dict falls back to QualityGauge's generic description on
+        the frontend, indistinguishable from a genuine no-checklist-at-all
+        case -- see app.leveling.scoring._match_category_checklist."""
+        if not category_names:
+            return {}
+        system_prompt = load_prompt(
+            "extract_quality_checklist_definitions", category_names=json.dumps(category_names),
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS]},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": checklist_definitions_schema(),
+            "think": False,
+            "maxTokens": 2000,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        response = self._post_chat(payload)
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        parsed = _parse_json_object(content)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {content!r}")
+        return self._sanitize_checklist_definitions(parsed, category_names)
+
+    def _sanitize_checklist_definitions(self, raw: dict, category_names: list[str]) -> dict[str, str]:
+        """Tolerant of a model returning extra/misspelled keys (dropped,
+        never trusted -- see extract_quality_checklist_definitions's own
+        docstring for why matching against the FIXED category_names,
+        case-insensitively, is safer than trusting the model's own key
+        spelling verbatim) or a non-string value (dropped, same tolerant
+        philosophy as _parse_category_scores). Values are TRUNCATED to
+        _CHECKLIST_DEFINITION_MAX_CHARS, not dropped when over-length -- a
+        trimmed real quote is still useful. An empty (whitespace-only)
+        value is dropped, same as a missing one -- both mean "no real
+        definition text for this category"."""
+        valid_lower = {name.strip().lower(): name for name in category_names}
+        result: dict[str, str] = {}
+        if not isinstance(raw, dict):
+            return result
+        for key, value in raw.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            canonical_name = valid_lower.get(key.strip().lower())
+            if canonical_name is None:
+                continue
+            definition = " ".join(value.split())  # strips whitespace, collapses embedded newlines
+            if not definition:
+                continue
+            result[canonical_name] = definition[:_CHECKLIST_DEFINITION_MAX_CHARS]
+        return result
 
     def score_epics_and_features_for_document(self, nodes_by_id: dict[str, dict]) -> dict[str, dict]:
         """Batched Epic/Feature quality review -- the counterpart to

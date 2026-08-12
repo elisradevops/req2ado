@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.canonical.model import plain_text_rows
 from app.loaders.xlsx_loader import load_xlsx
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -13,7 +14,7 @@ def test_load_xlsx_produces_one_table_per_sheet() -> None:
 def test_load_xlsx_table_rows_match_sheet_contents() -> None:
     doc = load_xlsx(str(FIXTURES / "sample.xlsx"))
     power_budget = next(t for t in doc.tables if t.caption == "PowerBudget")
-    assert power_budget.rows == [
+    assert plain_text_rows(power_budget) == [
         ["Component", "Voltage", "Current (A)"],
         ["FPGA", "3.3V", "2.5"],
         ["CPU", "5V", "4.0"],
@@ -23,7 +24,7 @@ def test_load_xlsx_table_rows_match_sheet_contents() -> None:
 def test_load_xlsx_second_sheet_present() -> None:
     doc = load_xlsx(str(FIXTURES / "sample.xlsx"))
     address_map = next(t for t in doc.tables if t.caption == "AddressMap")
-    assert address_map.rows[0] == ["Address", "Register"]
+    assert plain_text_rows(address_map)[0] == ["Address", "Register"]
 
 
 def test_load_xlsx_format_is_xlsx() -> None:

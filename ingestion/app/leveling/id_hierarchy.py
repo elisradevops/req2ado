@@ -37,7 +37,7 @@ import re
 from collections.abc import Hashable
 from typing import NamedTuple, TypeVar
 
-from app.canonical.model import Block, BlockKind, SourceRef
+from app.canonical.model import Block, BlockKind, SourceRef, plain_text_rows
 from app.leveling.numbering import parse_numbering
 from app.workitem.model import IntegrityWarning, WarningKind, WorkItemType
 
@@ -389,7 +389,7 @@ def parsed_id_rows_from_table(table) -> list[tuple[tuple[int, ...], str]]:
     rows). Used both by `table_groups.qualifying_table_groups` (the
     existing LLM-hint/repair consumer) and by the new deterministic
     builder path."""
-    return _parse_id_hierarchy_table_rows(table.rows)
+    return _parse_id_hierarchy_table_rows(plain_text_rows(table))
 
 
 def _resolve_hierarchy_rows(

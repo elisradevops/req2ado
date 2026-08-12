@@ -8,6 +8,7 @@ from app.canonical.model import (
     Figure,
     SourceRef,
     Table,
+    TableCell,
 )
 from app.redaction.redactor import redact_canonical_doc
 
@@ -76,14 +77,57 @@ def test_redacts_table_cell_content() -> None:
         tables=[
             Table(
                 id="t0",
-                rows=[["Contact", "jane.doe@example.com"]],
+                cells=[[TableCell(text="Contact"), TableCell(text="jane.doe@example.com")]],
                 source_ref=SourceRef(document_path="x.txt", start_offset=0, end_offset=0),
             )
         ],
     )
     redacted = redact_canonical_doc(doc)
-    assert "jane.doe@example.com" not in redacted.tables[0].rows[0][1]
-    assert "<redacted>" in redacted.tables[0].rows[0][1]
+    assert "jane.doe@example.com" not in redacted.tables[0].cells[0][1].text
+    assert "<redacted>" in redacted.tables[0].cells[0][1].text
+
+
+def test_redacts_table_cell_content_leaves_style_fields_untouched() -> None:
+    # Redaction touches ONLY cell text -- colspan/rowspan/is_header/bold/
+    # colors/align are numeric or enum-valued and cannot carry PII.
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="abc"),
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="jane.doe@example.com", colspan=2, is_header=True, bold=True, align="center")]],
+                source_ref=SourceRef(document_path="x.txt", start_offset=0, end_offset=0),
+            )
+        ],
+    )
+    redacted = redact_canonical_doc(doc)
+    cell = redacted.tables[0].cells[0][0]
+    assert "<redacted>" in cell.text
+    assert cell.colspan == 2
+    assert cell.is_header is True
+    assert cell.bold is True
+    assert cell.align == "center"
+
+
+def test_redacts_table_caption() -> None:
+    # Pre-existing hole, closed alongside this feature's redactor changes --
+    # a Table's own caption (xlsx sheet name, csv filename stem) can carry a
+    # sensitive string exactly like a Figure's caption already gets redacted
+    # below, but was never redacted itself.
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="abc"),
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="A")]],
+                caption="See connector PN-4471-A2 for wiring",
+                source_ref=SourceRef(document_path="x.txt", start_offset=0, end_offset=0),
+            )
+        ],
+    )
+    redacted = redact_canonical_doc(doc)
+    assert "PN-4471-A2" not in redacted.tables[0].caption
+    assert "<redacted>" in redacted.tables[0].caption
 
 
 def test_redacts_figure_caption() -> None:

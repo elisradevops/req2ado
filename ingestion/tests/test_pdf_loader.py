@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from pypdf import PdfReader
 
-from app.canonical.model import BlockKind
+from app.canonical.model import BlockKind, plain_text_rows
 from app.loaders.pdf_loader import cached_pdf_reader, load_pdf, page_has_extractable_text
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -20,7 +20,7 @@ def test_load_pdf_extracts_text_blocks_with_page_number() -> None:
 def test_load_pdf_extracts_at_least_one_table() -> None:
     doc = load_pdf(str(FIXTURES / "sample.pdf"))
     assert len(doc.tables) >= 1
-    flat = [cell for row in doc.tables[0].rows for cell in row]
+    flat = [cell for row in plain_text_rows(doc.tables[0]) for cell in row]
     assert "3.3V" in flat
 
 

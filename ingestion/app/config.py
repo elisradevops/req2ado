@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     # delay and connection overhead for every one of those other users
     # without buying this job anything back.
     survey_branch_concurrency: int = 1
+    # Kill switch for app/loaders/docx_pagination.py's docx->PDF page
+    # alignment (see /ingest's own comment for wiring) -- default on, but
+    # lets this be disabled without a code deploy if the LibreOffice
+    # conversion causes latency or accuracy problems in practice. A failure
+    # inside the alignment itself already degrades to `doc` unchanged (see
+    # annotate_docx_pages's own try/except) -- this flag skips even
+    # ATTEMPTING it, for when the conversion step itself is the problem
+    # (e.g. contending on shared LibreOffice profile resources under load).
+    docx_page_alignment_enabled: bool = True
 
     class Config:
         env_prefix = ""

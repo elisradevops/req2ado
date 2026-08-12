@@ -45,7 +45,10 @@
             "document_path": { "type": "string" },
             "start_offset": { "type": "integer", "minimum": 0 },
             "end_offset": { "type": "integer", "minimum": 0 },
-            "page": { "type": ["integer", "null"] }
+            "page": { "type": ["integer", "null"] },
+            "page_end": { "type": ["integer", "null"], "description": "Last page this node's folded content covers. Null means same as page, or unknown -- never set without page also being set." },
+            "page_provenance": { "type": ["string", "null"], "description": "Null when page/page_end came from the file's own real pagination (PDF, OCR, pptx slide index). 'rendered' when derived by re-rendering the source through a different layout engine (e.g. docx converted to PDF for pagination purposes). 'interpolated' when bracketed between confidently-matched anchors rather than directly matched." },
+            "section_path": { "type": "array", "items": { "type": "string" }, "description": "Root-first heading/section labels for the section this ref was parsed from, e.g. [\"3 Power\", \"3.2 Backplane\"]. Empty when no heading ancestry applies." }
           }
         },
         "fidelity_hash": {
@@ -70,12 +73,17 @@
         "figure_ids": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "SURVEY-only: ids of this section's own candidate figures the LLM judged relevant to this node (see llm_leveling.render_section's figure id injection). Link-only today -- does not drive an ADO attachment (no upload capability exists yet)."
+          "description": "Ids of figures folded into/relevant to this node -- populated by all 4 node-building paths (BASELINE, deterministic heading/ID-tree, deterministic span-fold, SURVEY's LLM branch), not SURVEY-only. For SURVEY this is the LLM's own judged-relevant subset (see llm_leveling.render_section's figure id injection); for the deterministic paths it's every figure whose block folded into this node's span, no LLM judgment involved."
         },
         "table_ids": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "SURVEY-only: ids of this section's own candidate tables the LLM judged relevant to this node. A non-empty list means that table's HTML is already embedded into `description` (see _table_to_html)."
+          "description": "Ids of tables folded into/relevant to this node -- populated by all 4 node-building paths, not SURVEY-only (see figure_ids' description for the same distinction). A non-empty list means that table's HTML is already embedded into `description` (see _table_to_html)."
+        },
+        "uncaptioned_figure_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Figures that folded into this node's span but produced no caption (vision disabled, the vision call failed, or the model returned the no-technical-content sentinel) -- disjoint from figure_ids, a figure id appears in exactly one of the two lists."
         },
         "mode": { "type": "string", "enum": ["BASELINE", "SURVEY"] },
         "child_type": {
@@ -107,6 +115,11 @@
           "type": ["object", "null"],
           "additionalProperties": { "type": "integer", "minimum": 0, "maximum": 100 },
           "description": "Per-dimension 0-100 breakdown backing quality_score. Dynamic keys (KB-checklist-derived) or the 5-dimension fallback (clarity/testability/atomicity/style/rationale). Null whenever quality_score is null."
+        },
+        "quality_category_checklist": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" },
+          "description": "Per-category citation text backing a subset of quality_category_scores' keys -- maps a category key to the org's own ingested quality-checklist document's stated definition for it, when one was found (see KbVectorStore.get_quality_checklist_definitions). Not all-or-nothing like quality_category_scores: a category absent from this map is a real, expected case (no KB standard at all, or the org's document states no separate definition for that one category), not a parse failure. Null when nothing matched."
         }
       }
     },

@@ -34,6 +34,7 @@ from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.scoring import score_single_requirement_text
 from app.leveling.tree_builder import build_baseline_tree
+from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.redaction.redactor import redact_canonical_doc
@@ -259,6 +260,31 @@ def _figure_caption_cache_key(original_image_bytes: bytes) -> str:
     return f"figcap:{hashlib.sha256(original_image_bytes).hexdigest()}"
 
 
+def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
+    """Sniffs `image_bytes` and, for a non-raster vector format (most
+    commonly a docx/pptx-embedded EMF/WMF metafile), converts it to PNG --
+    shared by _describe_figure (vision captioning) AND
+    _describe_figure_with_progress's figure-storage call (compress_figure_
+    for_storage) below, which previously called Pillow directly on the
+    ORIGINAL bytes and silently failed for every vector figure (Pillow has
+    no EMF/WMF support -- confirmed real gap: a figure could be captioned
+    successfully via this exact conversion yet never become attachable/
+    viewable in the review UI, since only the caption path used it). Returns
+    the original bytes and a None mime type unchanged when the format is
+    already raster or the vector conversion itself fails -- callers must
+    treat a None mime type as "use your own format detection/fallback",
+    not as an error."""
+    mime_type = _sniff_image_mime_type(image_bytes)
+    if mime_type is not None:
+        return image_bytes, mime_type
+    vector_extension = sniff_vector_image_extension(image_bytes)
+    if vector_extension is not None:
+        converted = convert_vector_image_to_png(image_bytes, vector_extension)
+        if converted is not None:
+            return converted, "image/png"
+    return image_bytes, None
+
+
 def _describe_figure(image_bytes: bytes) -> str:
     # Confirmed real root cause of run-to-run SURVEY node-count variance
     # (74 vs ~120 nodes for the identical document): a figure's caption was
@@ -299,23 +325,7 @@ def _describe_figure(image_bytes: bytes) -> str:
     # hardcoded image/png regardless of actual content (see
     # OrchestratorVisionClient.describe_figure's docstring) -- harmless for
     # an actual PNG, silently wrong for anything else.
-    mime_type = _sniff_image_mime_type(image_bytes)
-    describe_bytes = image_bytes
-    if mime_type is None:
-        # Not a raster format at all -- most commonly an EMF/WMF vector
-        # metafile (Word's embedding format for a pasted Visio/PowerPoint
-        # diagram), which the vision endpoint can never describe correctly
-        # regardless of mimeType label (see emf_converter.py). Convert to a
-        # real raster image first; if that fails or the bytes are some other
-        # unrecognized format entirely, fall through to the pre-existing
-        # behavior (image/png default, likely still wrong but no worse than
-        # before this conversion path existed).
-        vector_extension = sniff_vector_image_extension(image_bytes)
-        if vector_extension is not None:
-            converted = convert_vector_image_to_png(image_bytes, vector_extension)
-            if converted is not None:
-                describe_bytes = converted
-                mime_type = "image/png"
+    describe_bytes, mime_type = _rasterize_for_vision(image_bytes)
     caption = _vision_client.describe_figure(describe_bytes, mime_type)
     # Never cache a blank result -- see the read-side comment above for why.
     # A blank caption is never useful to replay, and skipping the write lets
@@ -712,14 +722,21 @@ async def ingest(
             # figure with a 0-based sequential id, in the same order -- the
             # same lockstep-append invariant llm_leveling.py's
             # figure_id_by_block_id mapping already relies on. Best-effort:
-            # any failure here (network, oversized, non-raster/EMF-WMF bytes
-            # compress_figure_for_storage can't open) must never fail the
-            # describe_figure call it's piggybacking on -- a figure that
-            # doesn't get stored simply won't be attachable in ADO later.
+            # any failure here (network, oversized bytes compress_figure_
+            # for_storage can't open even after rasterization) must never
+            # fail the describe_figure call it's piggybacking on -- a
+            # figure that doesn't get stored simply won't be attachable/
+            # viewable later. Uses the SAME rasterized bytes _describe_figure
+            # (above) used for captioning -- not the original `image_bytes`
+            # -- confirmed real gap: an EMF/WMF figure captioned fine here
+            # but compress_figure_for_storage (Pillow-only, no EMF/WMF
+            # support) silently failed on the un-converted original bytes,
+            # so a real, successfully-described figure was never storable.
             if job_id is not None and _figure_file_client is not None:
                 figure_id = f"f{index - 1}"
                 try:
-                    compressed = compress_figure_for_storage(image_bytes)
+                    rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
+                    compressed = compress_figure_for_storage(rasterized_bytes)
                     if compressed is not None:
                         _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
                 except Exception:
@@ -743,6 +760,46 @@ async def ingest(
             languages=languages,
             describe_figure=describe_figure_fn,
         )
+        # Real page numbers for a docx's own blocks/tables/figures -- a docx
+        # carries none in its own file format (see docx_pagination.py's own
+        # module docstring; pagination is a rendering-time computation, not
+        # document structure). Deliberately called HERE, not inside
+        # load_docx/dispatch_by_extension themselves: this exact
+        # dispatch_by_extension call is ALSO made a second time above (the
+        # figure-count precount pass, .docx-only) -- annotating inside
+        # either loader-level function would double the (expensive)
+        # docx->PDF conversion cost for a vision-active docx job. Needs
+        # `tmp_path` (still on disk -- the `finally` below hasn't run yet
+        # ), not `doc.document.path` (dispatch_by_extension already
+        # rewrote every SourceRef.document_path to the ORIGINAL filename by
+        # the time doc is returned -- see
+        # dispatch._normalize_document_identity). settings.docx_page_
+        # alignment_enabled is a kill switch (default on) for disabling
+        # this without a code deploy; annotate_docx_pages' own blanket
+        # try/except already makes a conversion/alignment FAILURE
+        # transparent (doc returned unchanged) -- this flag instead skips
+        # even ATTEMPTING it.
+        docx_uploaded = Path(file.filename or "").suffix.lower() == ".docx"
+        if settings.docx_page_alignment_enabled and docx_uploaded:
+            if narration_publisher is not None:
+                narration_publisher.publish(
+                    LevelingProgress(
+                        phase="page_alignment",
+                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                        kb_grounded=False, kb_citations=[],
+                    )
+                )
+            doc, page_alignment = await run_in_threadpool(annotate_docx_pages, doc, tmp_path)
+            if narration_publisher is not None:
+                narration_publisher.publish(
+                    LevelingProgress(
+                        phase="page_alignment",
+                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                        kb_grounded=False, kb_citations=[],
+                        page_align_page_count=page_alignment.page_count,
+                        page_align_anchored_ratio=page_alignment.anchored_ratio,
+                    )
+                )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -773,7 +830,7 @@ async def ingest(
                     phase="table_detected",
                     branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
                     kb_grounded=False, kb_citations=[],
-                    table_id=table.id, table_row_count=len(table.rows), table_qualifies=bool(qualifying_rows),
+                    table_id=table.id, table_row_count=len(table.cells), table_qualifies=bool(qualifying_rows),
                     table_index=table_index, table_count=len(doc.tables),
                 )
             )

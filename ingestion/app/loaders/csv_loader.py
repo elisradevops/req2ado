@@ -4,7 +4,7 @@ import csv
 import hashlib
 from pathlib import Path
 
-from app.canonical.model import CanonicalDoc, Document, DocumentFormat, SourceRef, Table
+from app.canonical.model import CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
 
 
 def load_csv(path: str) -> CanonicalDoc:
@@ -22,9 +22,21 @@ def load_csv(path: str) -> CanonicalDoc:
     with file_path.open("r", encoding="utf-8-sig", newline="") as f:
         rows = [row for row in csv.reader(f)]
 
+    # A malformed/inconsistent CSV can have ragged row lengths (unlike a
+    # real table) -- the pre-TableCell `rows: list[list[str]]` shape
+    # tolerated this freely, but `Table.cells` now validates a rectangular
+    # grid (needed for every OTHER loader, where a ragged grid is a real
+    # colspan/rowspan bug). Pad short rows with "" cells to the widest row's
+    # length rather than let a merely-ragged CSV raise -- this is genuinely
+    # different from a structural bug in a spanned-cell format.
+    max_width = max((len(row) for row in rows), default=0)
     table = Table(
         id="t0",
-        rows=rows,
+        # CSV has no styling concept at all (plain delimited text) -- every
+        # cell is a bare TableCell with no span/header/color/alignment info,
+        # never upgraded by a later phase (unlike PDF, which gets real
+        # heuristic extraction in Phase 4).
+        cells=[[TableCell(text=cell) for cell in row] + [TableCell(text="")] * (max_width - len(row)) for row in rows],
         caption=file_path.stem,
         source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
     )

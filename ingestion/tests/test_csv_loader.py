@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.canonical.model import plain_text_rows
 from app.loaders.csv_loader import load_csv
 
 
@@ -14,7 +15,7 @@ def test_load_csv_produces_one_table_with_all_rows(tmp_path: Path) -> None:
     doc = load_csv(path)
     assert doc.blocks == []
     assert len(doc.tables) == 1
-    assert doc.tables[0].rows == [
+    assert plain_text_rows(doc.tables[0]) == [
         ["Component", "Voltage", "Current"],
         ["FPGA", "3.3V", "2.5"],
         ["CPU", "5V", "4.0"],
@@ -37,4 +38,4 @@ def test_load_csv_strips_utf8_bom(tmp_path: Path) -> None:
     path = tmp_path / "bom.csv"
     path.write_bytes("﻿a,b\r\n1,2\r\n".encode("utf-8"))
     doc = load_csv(str(path))
-    assert doc.tables[0].rows[0] == ["a", "b"]
+    assert plain_text_rows(doc.tables[0])[0] == ["a", "b"]

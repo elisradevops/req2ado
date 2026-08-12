@@ -113,6 +113,29 @@ class RaisingChecklistClient:
         raise ValueError("boom")
 
 
+class FakeChecklistClientWithDefinitions(FakeChecklistClient):
+    """Also implements the optional SECOND extraction pass (see
+    OrchestratorLlmClient.extract_quality_checklist_definitions) -- a
+    separate test double from FakeChecklistClient rather than always adding
+    the method there, so test_ingest_stores_the_extracted_checklist_on_
+    every_chunk (above) keeps exercising the real duck-typed getattr(...,
+    None) absence path, not a mock that happens to always implement it."""
+
+    def __init__(self, checklist: list[str], definitions: dict[str, str]) -> None:
+        super().__init__(checklist)
+        self.definitions = definitions
+        self.definition_calls: list[tuple[str, list[str]]] = []
+
+    def extract_quality_checklist_definitions(self, document_text: str, category_names: list[str]) -> dict[str, str]:
+        self.definition_calls.append((document_text, category_names))
+        return self.definitions
+
+
+class RaisingDefinitionsChecklistClient(FakeChecklistClient):
+    def extract_quality_checklist_definitions(self, document_text: str, category_names: list[str]) -> dict[str, str]:
+        raise ValueError("boom")
+
+
 @patch("app.kb.ingest_service.dispatch_by_extension")
 def test_ingest_stores_the_extracted_checklist_on_every_chunk(mock_dispatch, tmp_path) -> None:
     # Confirmed real determinism requirement (user-reported): the checklist
@@ -192,6 +215,122 @@ def test_ingest_does_not_fail_when_checklist_extraction_raises(mock_dispatch, tm
 
     assert result.chunks_stored == 1  # ingest itself still succeeded
     assert vector_store.get_quality_checklist("Project\\Area1", "doc.docx") is None
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_stores_the_extracted_checklist_definitions_alongside_the_names(mock_dispatch, tmp_path) -> None:
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    checklist_client = FakeChecklistClientWithDefinitions(
+        ["Necessary", "Unambiguous"], {"Necessary": "States something not already satisfied."},
+    )
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        checklist_client=checklist_client,
+    )
+
+    assert len(checklist_client.definition_calls) == 1  # extracted exactly once, not per chunk
+    # The second pass is handed the FIRST pass's own output names, not a
+    # second independent guess -- see extract_quality_checklist_
+    # definitions's own docstring for why.
+    assert checklist_client.definition_calls[0][1] == ["Necessary", "Unambiguous"]
+    assert vector_store.get_quality_checklist_definitions("Project\\Area1", "doc.docx") == {
+        "Necessary": "States something not already satisfied."
+    }
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_skips_the_definitions_pass_when_the_checklist_client_does_not_implement_it(mock_dispatch, tmp_path) -> None:
+    # Backward-compat: a checklist_client test double (or, currently, the
+    # real one too until this ships) that only implements
+    # extract_quality_checklist must keep working unchanged -- the
+    # definitions pass is a duck-typed optional capability.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        checklist_client=FakeChecklistClient(["Necessary", "Unambiguous"]),
+    )
+
+    assert vector_store.get_quality_checklist_definitions("Project\\Area1", "doc.docx") is None
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_skips_the_definitions_pass_when_the_names_pass_found_no_checklist(mock_dispatch, tmp_path) -> None:
+    # No category names extracted -> nothing to ask the second pass for --
+    # never called at all, not called with an empty list.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    checklist_client = FakeChecklistClientWithDefinitions([], {})
+    ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        checklist_client=checklist_client,
+    )
+
+    assert checklist_client.definition_calls == []
+    assert vector_store.get_quality_checklist_definitions("Project\\Area1", "doc.docx") is None
+
+
+@patch("app.kb.ingest_service.dispatch_by_extension")
+def test_ingest_does_not_fail_when_checklist_definitions_extraction_raises(mock_dispatch, tmp_path) -> None:
+    # Best-effort enhancement, same tolerant philosophy as the names pass
+    # itself -- a failure here must never fail the whole ingest, and must
+    # not clobber the names list that the (successful) first pass already
+    # produced.
+    mock_dispatch.return_value = _fake_doc("Some paragraph text")
+    graph_client = MagicMock()
+    graph_client.get_drive_item.return_value = GraphDriveItem(
+        id="item-1", name="doc.docx", mime_type="application/vnd.openxmlformats", size=len(DOCX_CONTENT)
+    )
+    graph_client.fetch_content.return_value = DOCX_CONTENT
+
+    vector_store = KbVectorStore(persist_path=str(tmp_path))
+    result = ingest_document_from_url(
+        url=VALID_URL,
+        user_id="Project\\Area1",
+        doc_type="requirements",
+        graph_client=graph_client,
+        embed_client=FakeEmbedClient(),
+        vector_store=vector_store,
+        checklist_client=RaisingDefinitionsChecklistClient(["Necessary", "Unambiguous"]),
+    )
+
+    assert result.chunks_stored == 1  # ingest itself still succeeded
+    assert vector_store.get_quality_checklist("Project\\Area1", "doc.docx") == ["Necessary", "Unambiguous"]
+    assert vector_store.get_quality_checklist_definitions("Project\\Area1", "doc.docx") is None
 
 
 @patch("app.kb.ingest_service.dispatch_by_extension")

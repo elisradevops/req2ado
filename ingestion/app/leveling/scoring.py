@@ -90,6 +90,7 @@ def _score_all_requirements(
     blocks_total: int,
     branch_count: int,
     category_checklist: list[str] | None = None,
+    category_checklist_definitions: dict[str, str] | None = None,
 ) -> None:
     """Whole-document quality scoring (§2c redesign): replaces the old
     one-batched-call-per-branch design with one (or, for a very large
@@ -121,7 +122,13 @@ def _score_all_requirements(
     temperature=0. Only ONE representative per unique description is ever
     sent to the model; every other node sharing that exact text gets the
     SAME result copied over afterward, making the score a genuine property
-    of the text again, not of which chunk it happened to land in."""
+    of the text again, not of which chunk it happened to land in.
+
+    `category_checklist_definitions` (see KbVectorStore.
+    get_quality_checklist_definitions), when supplied, is passed straight
+    through to _apply_quality_scores per chunk to build each node's own
+    quality_category_checklist -- see _match_category_checklist's own
+    docstring for the matching heuristic."""
     if not nodes:
         return
     criteria_context = (
@@ -179,7 +186,7 @@ def _score_all_requirements(
         try:
             _apply_quality_scores(
                 chunk, scoring_client, warnings, "", criteria_context, kb_context, category_checklist,
-                progress_callback=progress_callback,
+                category_checklist_definitions, progress_callback=progress_callback,
             )
         except Exception as exc:  # noqa: BLE001 - one chunk's transient failure (confirmed live:
             # a real job lost 45+ minutes of prior parse/tree-build/title-tag/
@@ -217,6 +224,7 @@ def _score_all_requirements(
                 duplicate.quality_score = representative.quality_score
                 duplicate.quality_issues = representative.quality_issues
                 duplicate.quality_category_scores = representative.quality_category_scores
+                duplicate.quality_category_checklist = representative.quality_category_checklist
         issues_found = sum(len(node.quality_issues) for node in chunk)
         _fire("score_requirements_done", chunk, nodes_done=start + len(chunk), chunk_index=chunk_index, issues_found=issues_found)
 
@@ -408,6 +416,56 @@ def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
     return values
 
 
+def _match_category_checklist(
+    category_scores: "QualityCategoryScores | None",
+    category_checklist_definitions: dict[str, str] | None,
+) -> dict[str, str] | None:
+    """Builds this node's quality_category_checklist -- the source for
+    QualityGauge's "Per your organization's document" citation on the
+    frontend -- by matching each of THIS node's own scored category keys
+    against the org's ingested checklist's stated definitions.
+
+    Matching heuristic: when `category_checklist_definitions` is supplied
+    at all, its keys are, by construction, the SAME FIXED name strings
+    `category_checklist` (see score_requirements_for_document's own
+    docstring) instructs the scoring model to use VERBATIM as its
+    categoryScores keys -- so a case-insensitive, whitespace-normalized
+    EXACT lookup is enough for the overwhelming majority of real matches.
+    No fuzzy/substring matching is attempted here (deliberately -- see
+    known limitations below); this is a lookup, not a search.
+
+    Known limitations: (1) a model that still drifts and renames/retypes a
+    key despite the "use EXACTLY these" instruction produces no match for
+    that key, even though a human would recognize it as the same category
+    -- falls back to QualityGauge's generic description, same as if no KB
+    checklist existed at all. (2) the always-injected
+    'completeness_as_requirement' key (added in every category_instruction
+    branch regardless of checklist source, see score_requirements_for_
+    document) never has a checklist definition -- it's req2ado's own
+    structural check, not part of any org's document, so it correctly never
+    matches. (3) a category whose document lists only a bare name with no
+    stated definition (common -- org checklists vary widely in how much
+    they write per category) has no entry in category_checklist_definitions
+    at all, indistinguishable here from case (1) -- both fall back the same
+    way, which is the intended, honest behavior (there is genuinely nothing
+    real to cite in either case).
+
+    Returns None (not {}) when nothing matched at all -- same "absent, not
+    empty" convention as quality_category_checklist's own docstring
+    (app.workitem.model), letting a partial match (some categories cited,
+    others not) still populate real entries rather than being discarded
+    wholesale like quality_category_scores' own all-or-nothing parsing."""
+    if not category_scores or not category_checklist_definitions:
+        return None
+    normalized = {name.strip().lower(): definition for name, definition in category_checklist_definitions.items()}
+    matched = {
+        key: normalized[key.strip().lower()]
+        for key in category_scores
+        if key.strip().lower() in normalized
+    }
+    return matched or None
+
+
 def _apply_quality_scores(
     nodes: list[WorkItemNode],
     scoring_client: BatchedScoringClient,
@@ -416,6 +474,7 @@ def _apply_quality_scores(
     criteria_context: str | None = None,
     kb_context: str | None = None,
     category_checklist: list[str] | None = None,
+    category_checklist_definitions: dict[str, str] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Judges every node's FINAL formalized description in ONE batched call
@@ -437,8 +496,15 @@ def _apply_quality_scores(
     ingestion time for the grounding document -- takes priority over
     `kb_context`'s own live-derive fallback (see score_requirements_for_
     document's own docstring for the determinism guarantee this provides).
-    All three are independent/optional; omitting them is byte-identical to
-    before any of these capabilities existed."""
+    `category_checklist_definitions` (see KbVectorStore.
+    get_quality_checklist_definitions) is category_checklist's own
+    companion -- name -> the org's own stated definition text, when one
+    exists -- used ONLY to populate each node's quality_category_checklist
+    below (see _match_category_checklist's own docstring); never sent to
+    the LLM, which has no need to be told back the definitions of names it
+    was itself instructed to use. All four are independent/optional;
+    omitting them is byte-identical to before any of these capabilities
+    existed."""
     descriptions_by_node_id = {node.local_id: node.description for node in nodes}
     scores_by_node_id = scoring_client.score_requirements_for_document(
         descriptions_by_node_id, criteria_context, kb_context, category_checklist
@@ -461,6 +527,9 @@ def _apply_quality_scores(
             key=lambda i: i.value,
         )
         node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
+        node.quality_category_checklist = _match_category_checklist(
+            node.quality_category_scores, category_checklist_definitions,
+        )
 
     missing_nodes = [node for node in nodes if node.quality_score is None]
     missing_or_invalid = [node.local_id for node in missing_nodes]

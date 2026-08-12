@@ -1,4 +1,4 @@
-from app.canonical.model import SourceRef, Table
+from app.canonical.model import SourceRef, Table, TableCell
 from app.leveling.table_groups import EPIC, FEATURE, REQUIREMENT, TableGroupInfo, qualifying_table_groups
 
 
@@ -7,7 +7,7 @@ def _sr(path: str = "x.docx") -> SourceRef:
 
 
 def _table(rows: list[list[str]]) -> Table:
-    return Table(id="t1", rows=rows, source_ref=_sr())
+    return Table(id="t1", cells=[[TableCell(text=cell) for cell in row] for row in rows], source_ref=_sr())
 
 
 def test_qualifying_table_groups_finds_a_group_with_two_children() -> None:
@@ -51,11 +51,14 @@ def test_qualifying_table_groups_excludes_a_group_with_only_one_child() -> None:
 def test_qualifying_table_groups_ignores_a_table_with_a_third_column() -> None:
     table = Table(
         id="t1",
-        rows=[
-            ["Requirement ID", "Requirement / Section", "Priority"],
-            ["1.1", "External Source Detection", "High"],
-            ["1.1.1", "The system shall detect X.", "High"],
-            ["1.1.2", "The system shall detect Y.", "Medium"],
+        cells=[
+            [TableCell(text=cell) for cell in row]
+            for row in [
+                ["Requirement ID", "Requirement / Section", "Priority"],
+                ["1.1", "External Source Detection", "High"],
+                ["1.1.1", "The system shall detect X.", "High"],
+                ["1.1.2", "The system shall detect Y.", "Medium"],
+            ]
         ],
         source_ref=_sr(),
     )

@@ -28,6 +28,18 @@ export interface WorkItemNode {
     start_offset: number;
     end_offset: number;
     page?: number | null;
+    /**
+     * Last page this node's folded content covers. Null means same as page, or unknown -- never set without page also being set.
+     */
+    page_end?: number | null;
+    /**
+     * Null when page/page_end came from the file's own real pagination (PDF, OCR, pptx slide index). 'rendered' when derived by re-rendering the source through a different layout engine (e.g. docx converted to PDF for pagination purposes). 'interpolated' when bracketed between confidently-matched anchors rather than directly matched.
+     */
+    page_provenance?: string | null;
+    /**
+     * Root-first heading/section labels for the section this ref was parsed from, e.g. ["3 Power", "3.2 Backplane"]. Empty when no heading ancestry applies.
+     */
+    section_path?: string[];
   };
   /**
    * sha256 over the normalized verbatim source span. Required in BASELINE mode, null in SURVEY.
@@ -51,13 +63,17 @@ export interface WorkItemNode {
     | 'behavior'
   )[];
   /**
-   * SURVEY-only: ids of this section's own candidate figures the LLM judged relevant to this node (see llm_leveling.render_section's figure id injection). Link-only today -- does not drive an ADO attachment (no upload capability exists yet).
+   * Ids of figures folded into/relevant to this node -- populated by all 4 node-building paths (BASELINE, deterministic heading/ID-tree, deterministic span-fold, SURVEY's LLM branch), not SURVEY-only. For SURVEY this is the LLM's own judged-relevant subset (see llm_leveling.render_section's figure id injection); for the deterministic paths it's every figure whose block folded into this node's span, no LLM judgment involved.
    */
   figure_ids?: string[];
   /**
-   * SURVEY-only: ids of this section's own candidate tables the LLM judged relevant to this node. A non-empty list means that table's HTML is already embedded into `description` (see _table_to_html).
+   * Ids of tables folded into/relevant to this node -- populated by all 4 node-building paths, not SURVEY-only (see figure_ids' description for the same distinction). A non-empty list means that table's HTML is already embedded into `description` (see _table_to_html).
    */
   table_ids?: string[];
+  /**
+   * Figures that folded into this node's span but produced no caption (vision disabled, the vision call failed, or the model returned the no-technical-content sentinel) -- disjoint from figure_ids, a figure id appears in exactly one of the two lists.
+   */
+  uncaptioned_figure_ids?: string[];
   mode: 'BASELINE' | 'SURVEY';
   /**
    * Default work-item type for a new manual child added under this node. Null when ineligible or unresolvable.
@@ -91,6 +107,12 @@ export interface WorkItemNode {
    */
   quality_category_scores?: {
     [k: string]: number;
+  } | null;
+  /**
+   * Per-category citation text backing a subset of quality_category_scores' keys -- maps a category key to the org's own ingested quality-checklist document's stated definition for it, when one was found (see KbVectorStore.get_quality_checklist_definitions). Not all-or-nothing like quality_category_scores: a category absent from this map is a real, expected case (no KB standard at all, or the org's document states no separate definition for that one category), not a parse failure. Null when nothing matched.
+   */
+  quality_category_checklist?: {
+    [k: string]: string;
   } | null;
 }
 export interface IntegrityWarning {

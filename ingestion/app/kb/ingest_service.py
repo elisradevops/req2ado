@@ -142,6 +142,18 @@ def _store_document(
     # as-is -- distinguishable from `[]` (extraction ran, found nothing),
     # see KbVectorStore.get_quality_checklist's own docstring.
     quality_checklist: list[str] | None = None
+    # Companion to quality_checklist above -- name -> the document's OWN
+    # stated definition/pass-condition text for whichever category names it
+    # actually explains (see OrchestratorLlmClient.
+    # extract_quality_checklist_definitions's own docstring for why this is
+    # a deliberately SEPARATE second pass, keyed off quality_checklist's
+    # own already-decided names, rather than a second independent
+    # extraction). `getattr` duck-typing (not a required Protocol method)
+    # since checklist_client is untyped `object` here and existing test
+    # doubles implementing only extract_quality_checklist must keep working
+    # unchanged -- same optional-capability convention llm_leveling.py's
+    # _score_epics_and_features already uses for scoring_client.
+    quality_checklist_definitions: dict[str, str] | None = None
     if checklist_client is not None:
         try:
             full_text = "\n\n".join(chunk.text for chunk in chunks)
@@ -149,6 +161,13 @@ def _store_document(
         except Exception as exc:  # noqa: BLE001 - checklist extraction must never fail an ingest
             logger.warning("Quality-checklist extraction failed for %s: %s", name, exc)
             quality_checklist = None
+        definitions_fn = getattr(checklist_client, "extract_quality_checklist_definitions", None)
+        if quality_checklist and definitions_fn is not None:
+            try:
+                quality_checklist_definitions = definitions_fn(full_text, quality_checklist)
+            except Exception as exc:  # noqa: BLE001 - same "enhancement, never a hard dependency" tolerance
+                logger.warning("Quality-checklist definition extraction failed for %s: %s", name, exc)
+                quality_checklist_definitions = None
 
     # Embed every chunk BEFORE deleting the file's old chunks or upserting
     # any new one: if embedding fails partway through, the old chunks stay
@@ -170,6 +189,7 @@ def _store_document(
             file_hash=file_hash,
             doc_type=doc_type,
             quality_checklist=quality_checklist,
+            quality_checklist_definitions=quality_checklist_definitions,
             retrieval_mode=retrieval_mode,
         )
 

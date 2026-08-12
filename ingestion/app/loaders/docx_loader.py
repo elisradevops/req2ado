@@ -8,14 +8,69 @@ from typing import Callable
 from docx import Document as DocxDocument
 from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
+from docx.table import _Cell as DocxCell
 from docx.text.paragraph import Paragraph as DocxParagraph
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
 
 logger = logging.getLogger(__name__)
 
 _STYLE_HEADING_PREFIX = "Heading "
 _IMAGE_RELTYPE_MARKER = "image"
+
+
+def _extract_table_rows(docx_table: DocxTable) -> list[list[str]]:
+    """Builds the canonical flat `rows: list[list[str]]` grid for a table,
+    expanding merged cells structurally instead of naively reading
+    `row.cells` (the previous approach). `row.cells` has DOCUMENTED
+    behavior in python-docx: for a cell with a horizontal merge
+    (`w:tcPr/w:gridSpan`) or a vertical merge (`w:tcPr/w:vMerge`), it
+    returns text resolved from the SAME origin `_Cell` at every grid
+    position the merge spans -- so a naive per-position `.text` read
+    duplicates the merged cell's real content across every column/row it
+    covers (the reported "FAN configuration - 1" x3 / "GPU" x2 garbling).
+    Relying on `.text` equality or `_Cell` object identity to detect this
+    is unreliable (fresh wrapper objects are created per `row.cells` call,
+    so `id()` can coincidentally collide after GC reuse) -- so merge state
+    is instead read from the real OOXML via each physical `w:tc` element's
+    `grid_span` / `vMerge` properties (there is no other public API for
+    this in python-docx):
+      - `w:tcPr/w:gridSpan/@w:val` (`tc.grid_span`, defaults to 1 when
+        absent): the cell's real text goes in the first grid position it
+        covers; the remaining `grid_span - 1` positions become "" so the
+        row keeps one entry per table column.
+      - `w:tcPr/w:vMerge` (`tc.vMerge`): `None` when absent (not merged),
+        `"restart"` for the origin row of a vertical span, `"continue"`
+        for every subsequent row -- including when `w:vMerge` is present
+        with NO `@w:val` attribute at all, which OOXML (and python-docx's
+        own `ST_Merge` default) treats as an implicit "continue". A
+        `"continue"` cell is a pure continuation regardless of what text,
+        if any, its own paragraph carries -- it always becomes "" and
+        never contributes real content, since the real content lives in
+        the origin cell several rows up.
+
+    The canonical `Table` model (`app/canonical/model.py`) is a flat
+    `list[list[str]]` with no colspan/rowspan concept, so this is the
+    minimal fix within that shape: a merge's real text is placed ONLY in
+    its origin grid position, and every other position it spans becomes an
+    empty-string continuation marker -- preserving row/column count
+    without inventing new syntax. `_table_to_html` (tree_builder.py) then
+    renders each "" continuation as an empty `<td></td>`, matching how
+    Word itself shows nothing in the grid positions a merge spans over.
+    """
+    rows: list[list[str]] = []
+    for row in docx_table.rows:
+        cells: list[str] = []
+        for tc in row._tr.tc_lst:
+            grid_span = tc.grid_span
+            if tc.vMerge == "continue":
+                cells.extend([""] * grid_span)
+                continue
+            text = DocxCell(tc, docx_table).text.strip()
+            cells.append(text)
+            cells.extend([""] * (grid_span - 1))
+        rows.append(cells)
+    return rows
 
 
 def _describe_one_figure(
@@ -145,14 +200,21 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                 figure_index += 1
         elif child.tag == qn("w:tbl"):
             docx_table = DocxTable(child, docx_doc)
-            rows = [[cell.text.strip() for cell in row.cells] for row in docx_table.rows]
+            rows = _extract_table_rows(docx_table)
             start = offset
             end = start + 1
             offset = end
+            # NOTE: bare TableCell wrap, colspan/rowspan collapsed back to
+            # "" placeholders (matching _extract_table_rows' own pre-
+            # TableCell convention) -- real span/alignment/is_header
+            # extraction (Phase 1 of
+            # docs/superpowers/specs/2026-08-12-table-fidelity-design.md) is
+            # a dedicated rewrite of _extract_table_rows itself, not done
+            # here.
             tables.append(
                 Table(
                     id=f"t{table_index}",
-                    rows=rows,
+                    cells=[[TableCell(text=cell) for cell in row] for row in rows],
                     source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                 )
             )

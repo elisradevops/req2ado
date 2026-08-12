@@ -182,6 +182,21 @@ def checklist_extraction_schema() -> dict:
     }
 
 
+def checklist_definitions_schema() -> dict:
+    """extract_quality_checklist_definitions (app.kb.checklist_extraction):
+    a plain object mapping each ALREADY-KNOWN category name (see that
+    method's own docstring) to whatever definition/explanation text the
+    document itself states for it. additionalProperties (not `properties`)
+    since the concrete key set is per-document/per-call, the same dynamic-
+    object shape family as scores_schema below -- an empty object is a
+    valid, expected response (a checklist with no separate per-category
+    prose, just bare names)."""
+    return {
+        "name": "quality_checklist_definitions",
+        "schema": {"type": "object", "additionalProperties": {"type": "string"}},
+    }
+
+
 def epic_feature_scores_schema() -> dict:
     """score_epics_and_features_for_document: a dynamic node_id-keyed
     object -- additionalProperties (not properties), same shape family as

@@ -48,8 +48,19 @@ def convert_vector_image_to_png(image_bytes: bytes, extension: str) -> bytes | N
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / f"figure{extension}"
             input_path.write_bytes(image_bytes)
+            # -env:UserInstallation=... gives this invocation its own soffice
+            # user profile instead of the shared default one -- without it,
+            # two concurrent soffice invocations (this one and, e.g.,
+            # docx_pagination.py's own docx->PDF conversion) contend on the
+            # default profile's lock file. Harmless for this call's own
+            # sub-second EMF/WMF conversion, but a real latent bug now that a
+            # much longer-running conversion shares the same binary.
+            profile_dir = Path(tmpdir) / "lo_profile"
             subprocess.run(
-                ["soffice", "--headless", "--convert-to", "png", "--outdir", tmpdir, str(input_path)],
+                [
+                    "soffice", "--headless", f"-env:UserInstallation=file://{profile_dir}",
+                    "--convert-to", "png", "--outdir", tmpdir, str(input_path),
+                ],
                 capture_output=True,
                 timeout=_CONVERT_TIMEOUT_SECONDS,
                 check=True,

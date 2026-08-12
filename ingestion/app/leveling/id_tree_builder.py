@@ -612,6 +612,16 @@ def build_hierarchy_subtree(
     subtree_index: int | None = None,
     subtree_count: int | None = None,
     subtree_label: str | None = None,
+    # Prepended, root-most, to every node's own section_path in this
+    # subtree -- used ONLY by the table-row convention's caller
+    # (llm_leveling._detect_deterministic_subtrees), which seeds it with the
+    # table's own identity (`table.caption or f"Table {table.id}"`), since a
+    # table-row subtree's rows have no heading ancestor of their own to walk
+    # via parent_index alone -- the table itself IS the top of that
+    # hierarchy. None (the default) is correct for the heading conventions
+    # (2/3): a heading's own row.parent_index chain already reaches all the
+    # way to a true document root with nothing else to prepend.
+    section_path_root: str | None = None,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning]]:
     """Constructs real WorkItemNodes from an already-hierarchy-resolved
     `rows` list (see `id_hierarchy.HierarchyRow`'s own docstring -- every
@@ -646,6 +656,30 @@ def build_hierarchy_subtree(
     # node-producing row it should eventually attach to.
     node_index_by_row: dict[int, str] = {}  # row index -> local_id, producing rows only
     fold_target_by_row: dict[int, int | None] = {}  # row index -> nearest producing ancestor
+    ancestor_labels_by_row: dict[int, list[str]] = {}  # row index -> root-first ancestor labels
+
+    def _ancestor_labels(i: int) -> list[str]:
+        """Root-first chain of row `i`'s own ANCESTOR labels (never
+        including row `i`'s own label) -- becomes each producing row's
+        node.source_ref.section_path (see SourceRef's own docstring for the
+        `["3 Power", "3.2 Backplane"]`-shaped contract this must match).
+        Walks the SAME `row.parent_index` chain `_nearest_producing_ancestor`
+        walks above, but does NOT skip fold rows the way that function
+        does: a fold row's own label is still real, human-authored section
+        text (it just isn't node-worthy on its own), and belongs in a
+        descendant's path exactly like a real heading would. Memoized the
+        same way and for the same reason: a deeply-nested document would
+        otherwise re-walk the same shared prefix chain once per descendant
+        row, O(rows * depth) instead of O(rows)."""
+        if i in ancestor_labels_by_row:
+            return ancestor_labels_by_row[i]
+        row = rows[i]
+        if row.parent_index is None:
+            result: list[str] = []
+        else:
+            result = _ancestor_labels(row.parent_index) + [rows[row.parent_index].label]
+        ancestor_labels_by_row[i] = result
+        return result
 
     def _nearest_producing_ancestor(i: int) -> int | None:
         if i in fold_target_by_row:
@@ -672,6 +706,13 @@ def build_hierarchy_subtree(
             if row.id_disambiguator_needed
             else _hash_identity(description, row.source_ref)
         )
+        # `.model_copy(update=...)`, never an in-place mutation of
+        # `row.source_ref` -- pydantic v2 doesn't copy a nested BaseModel on
+        # plain assignment, so `source_ref=row.source_ref` followed by a
+        # later `node.source_ref.section_path = ...` would corrupt the
+        # SAME SourceRef object `row` itself still holds (and that every
+        # OTHER row derived from the same source might also reference).
+        section_path = ([section_path_root] if section_path_root else []) + _ancestor_labels(i)
         node = WorkItemNode(
             local_id=local_id,
             type=WorkItemType(row.node_type),
@@ -679,7 +720,7 @@ def build_hierarchy_subtree(
             title=title,
             description=description,
             customer_id=customer_id,
-            source_ref=row.source_ref,
+            source_ref=row.source_ref.model_copy(update={"section_path": section_path}),
             fidelity_hash=_hash_description(description),
             identity_hash=identity_hash,
             tags=[],

@@ -63,6 +63,45 @@ def test_get_quality_checklist_round_trips_a_genuinely_empty_list() -> None:
         assert store.get_quality_checklist("Project\\Area1", "doc.txt") == []
 
 
+def test_get_quality_checklist_definitions_returns_none_when_extraction_never_ran() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            quality_checklist=["Necessary", "Unambiguous"],
+        )
+        assert store.get_quality_checklist_definitions("Project\\Area1", "doc.txt") is None
+
+
+def test_upsert_chunk_then_get_quality_checklist_definitions_round_trips_the_stored_dict() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            quality_checklist=["Necessary", "Unambiguous"],
+            quality_checklist_definitions={"Necessary": "States something not already satisfied."},
+        )
+        assert store.get_quality_checklist_definitions("Project\\Area1", "doc.txt") == {
+            "Necessary": "States something not already satisfied."
+        }
+        # quality_checklist itself (the FIXED categoryScores key list) is
+        # untouched by the companion field's presence.
+        assert store.get_quality_checklist("Project\\Area1", "doc.txt") == ["Necessary", "Unambiguous"]
+
+
+def test_get_quality_checklist_definitions_round_trips_a_genuinely_empty_dict() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="chunk text", user_id="Project\\Area1",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+            quality_checklist=["Necessary"], quality_checklist_definitions={},
+        )
+        assert store.get_quality_checklist_definitions("Project\\Area1", "doc.txt") == {}
+
+
 def test_kb_collections_are_isolated_from_dedup_collections_for_the_same_area_path() -> None:
     from app.dedup.vector_store import ChromaVectorStore
 
