@@ -481,7 +481,8 @@ describe('NodeDetailPanel', () => {
         onSave={vi.fn()}
       />,
     );
-    expect(screen.getByText('spec.docx · p. 3 · chars 100–200')).toBeInTheDocument();
+    expect(screen.getByText('spec.docx')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
   });
 
   it('renders no provenance line for a manually-added entry (sourceRef null)', () => {
@@ -494,7 +495,7 @@ describe('NodeDetailPanel', () => {
         onSave={vi.fn()}
       />,
     );
-    expect(screen.queryByText(/chars \d/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Sources')).not.toBeInTheDocument();
   });
 
   describe('Tables and figures (Phase 5 provenance)', () => {
@@ -614,10 +615,9 @@ describe('NodeDetailPanel', () => {
     // contributed. DESIGN.md §11.4.3 -- no standard's name (EARS/INCOSE/
     // ISO/IEC/IEEE 29148) appears anywhere in this copy, glossed or not;
     // an earlier version of this test asserted the opposite and was wrong.
-    expect(screen.getByText(/Scored on how the requirement is written/)).toBeInTheDocument();
-    expect(screen.getByText(/Your knowledge base contributed 2 documents\./)).toBeInTheDocument();
-    expect(screen.getByText('doc-a.docx')).toBeInTheDocument();
-    expect(screen.getByText('doc-b.pdf')).toBeInTheDocument();
+    expect(screen.getByText('Scored on wording only, not engineering content.')).toBeInTheDocument();
+    expect(screen.getByText('Relevant · doc-a.docx')).toBeInTheDocument();
+    expect(screen.getByText('Unverified · doc-b.pdf')).toBeInTheDocument();
   });
 
   it('shows the standards line but no KB-count sentence when kbCitations is empty', () => {
@@ -628,8 +628,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], qualityScore: 80 }}
       />,
     );
-    expect(screen.getByText(/Scored on how the requirement is written/)).toBeInTheDocument();
-    expect(screen.queryByText(/Your knowledge base contributed/)).not.toBeInTheDocument();
+    expect(screen.getByText('Scored on wording only, not engineering content.')).toBeInTheDocument();
     expect(screen.queryByText(/KB references/i)).not.toBeInTheDocument();
   });
 
@@ -640,7 +639,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body', action: 'create', customerId: null, tags: [] }}
       />,
     );
-    expect(screen.queryByText(/Scored on how the requirement is written/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Scored on wording only, not engineering content.')).not.toBeInTheDocument();
     expect(screen.queryByText('Sources')).not.toBeInTheDocument();
   });
 
@@ -652,7 +651,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
       />,
     );
-    expect(screen.queryByText(/Scored on how the requirement is written/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Scored on wording only, not engineering content.')).not.toBeInTheDocument();
   });
 
   it('does not show the Sources section for a reuse entry, even in a SURVEY job', () => {
@@ -663,7 +662,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
       />,
     );
-    expect(screen.queryByText(/Scored on how the requirement is written/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Scored on wording only, not engineering content.')).not.toBeInTheDocument();
   });
 
   it('does not show the Sources section when jobMode is omitted (backward compatible with pre-existing callers)', () => {
@@ -672,7 +671,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
       />,
     );
-    expect(screen.queryByText(/Scored on how the requirement is written/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Scored on wording only, not engineering content.')).not.toBeInTheDocument();
   });
 
   it('shows the full trace link list for the selected node', () => {

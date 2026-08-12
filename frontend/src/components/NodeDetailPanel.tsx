@@ -3,7 +3,8 @@ import { Pencil, Link2, RefreshCw, Upload, Check } from 'lucide-react';
 import { TagChips } from './TagChips';
 import { QualityGauge, type QualityCategoryScores } from './QualityGauge';
 import { TraceLinkChips } from './TraceLinkChips';
-import { KbCitationChips, type KbCitation } from './KbCitationChips';
+import { SourceProvenance } from './SourceProvenance';
+import type { KbCitation } from './KbCitationChips';
 import { FigureImage } from './FigureImage';
 import type { DryRunDiffEntry } from './DiffTree';
 import { TextField, TextArea } from '../ui/TextField';
@@ -12,7 +13,6 @@ import { Chip } from '../ui/Chip';
 import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
-import { formatSourceRef } from '../utils/sourceRef';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
 // successful rescore -- held briefly so QualityGauge can render a real
@@ -479,42 +479,10 @@ export function NodeDetailPanel({
         (jobMode === 'survey' && entry.action === 'create' && (entry.type === 'Requirement' || (kbCitations && kbCitations.length > 0)))) && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Sources</span>
-          {/* Document provenance -- computed server-side and shipped on
-              every entry, previously never rendered anywhere. Available
-              regardless of mode/action (unlike the judged-against lines
-              below, which are SURVEY/create-scoped); null for manually-added
-              entries, which have no source document position. */}
-          {entry.sourceRef && (
-            <p className="font-mono text-xs text-ink-3">{formatSourceRef(entry.sourceRef)}</p>
-          )}
-          {/* DESIGN.md §11.4.3 -- gated on the item's real ADO work-item
-              type (matching the gauge above), not on qualityScore presence
-              (see that block's own comment for why they're not the same
-              check). Copy is a REVERSAL, not a tune-up: an earlier version
-              of this line named EARS/INCOSE/ISO/IEC/IEEE 29148 with a
-              glossed InfoTip explaining each acronym -- customer feedback
-              was that the acronyms themselves, independent of whether they
-              came with an explanation, were the problem. No standard's
-              name appears anywhere below, glossed or not; do not
-              reintroduce one. */}
-          {entry.type === 'Requirement' && (
-            <>
-              <p className="text-sm text-ink-2">Scored on how the requirement is written — its wording, not its engineering content.</p>
-              <p className="text-xs text-ink-3">
-                The checklist follows established requirements-writing practice — the same checks a systems engineer would run by
-                hand.
-                {kbCitations && kbCitations.length > 0
-                  ? ` Your knowledge base contributed ${kbCitations.length} document${kbCitations.length === 1 ? '' : 's'}.`
-                  : ''}
-              </p>
-            </>
-          )}
-          {kbCitations && kbCitations.length > 0 && (
-            <div className="mt-1">
-              <p className="text-sm text-ink-2">KB references:</p>
-              <KbCitationChips citations={kbCitations} />
-            </div>
-          )}
+          {/* DESIGN.md §11.4.3 -- gauge/section gating rationale is unchanged
+              from before this component was extracted; see SourceProvenance
+              for the row-by-row rendering rules (2026-08-12 redesign spec). */}
+          <SourceProvenance sourceRef={entry.sourceRef} showScoringNote={entry.type === 'Requirement'} kbCitations={kbCitations} />
         </div>
       )}
       {/* This entry's OWN referenced figure(s) -- distinct from the
