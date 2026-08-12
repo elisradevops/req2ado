@@ -13,6 +13,28 @@ type FigureImageState =
   | { status: 'missing' }
   | { status: 'error' };
 
+// Real, confirmed race (reported live, during an in-progress SURVEY run
+// with this panel already expanded): ingestion publishes a figure's SSE
+// narration event (caption text, which is what makes FigureDescriptions
+// render this figure's row and flip `active` to true) BEFORE it makes its
+// own separate HTTP call to store that figure's compressed bytes on
+// orchestrator (see ingestion/app/main.py's _describe_figure_with_progress
+// -- narration publish happens first, _figure_file_client.store() second).
+// A fetch that fires the instant `active` turns true can beat that store
+// call to orchestrator and get a real, honest 404 for a figure that WILL
+// exist a moment later -- previously cached as a terminal "missing" state
+// with no way to recover short of a full page refresh (which re-mounts the
+// component well after storage has caught up). A few retries with a short,
+// fixed delay absorbs this normal, bounded network race without turning a
+// GENUINELY missing figure (attached-then-deleted, or storage failed) into
+// an infinite retry loop.
+const _MISSING_RETRY_ATTEMPTS = 3;
+const _MISSING_RETRY_DELAY_MS = 1500;
+
+function _delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // Lazily fetches ONE figure's stored bytes (JobFigureFile, via the
 // session-authed GET /jobs/:id/figures/:figureId route) and renders it as
 // an <img> -- the actual image the product owner asked to SEE, alongside
@@ -42,17 +64,41 @@ export function FigureImage({
     if (!active || state.status !== 'idle') return;
     let cancelled = false;
     setState({ status: 'loading' });
-    getFigureFile(jobId, figureId)
-      .then((blob) => {
+    // A null result on the FIRST attempt is genuinely ambiguous -- see
+    // _MISSING_RETRY_ATTEMPTS' own comment -- so it's retried a few times
+    // before being trusted as a real, stable "missing" rather than a
+    // storage-write-still-in-flight race. Retries stay entirely inside
+    // this one effect run (not a second useEffect firing) so `cancelled`
+    // correctly aborts an in-flight retry loop too, same as the original
+    // single-shot fetch.
+    async function fetchWithRetry(): Promise<void> {
+      for (let attempt = 0; attempt <= _MISSING_RETRY_ATTEMPTS; attempt++) {
+        // A real 0ms delay on the first attempt, not a skipped one --
+        // behaviorally identical (a 0ms setTimeout is still effectively
+        // immediate), but keeps every attempt going through the exact same
+        // await-a-timer path, which is what actually makes this reliably
+        // testable with fake timers (a microtask with no timer anywhere in
+        // its chain can't be advanced-to by a fake-timer clock at all).
+        await _delay(attempt === 0 ? 0 : _MISSING_RETRY_DELAY_MS);
         if (cancelled) return;
-        // null (not an error) means the figure was never stored, or was
+        const blob = await getFigureFile(jobId, figureId);
+        if (cancelled) return;
+        if (blob) {
+          setState({ status: 'ready', url: URL.createObjectURL(blob) });
+          return;
+        }
+        // null (not an error) means the figure was never stored, was
         // already attached to ADO and deleted server-side on success (see
-        // JobsService.attachFigureToAdo) -- a normal, expected state.
-        setState(blob ? { status: 'ready', url: URL.createObjectURL(blob) } : { status: 'missing' });
-      })
-      .catch(() => {
-        if (!cancelled) setState({ status: 'error' });
-      });
+        // JobsService.attachFigureToAdo), or -- the case this retry loop
+        // exists for -- ingestion's own storage HTTP call simply hasn't
+        // reached orchestrator yet. Keep retrying until the attempt budget
+        // is exhausted; only then is "missing" treated as final.
+      }
+      if (!cancelled) setState({ status: 'missing' });
+    }
+    fetchWithRetry().catch(() => {
+      if (!cancelled) setState({ status: 'error' });
+    });
     return () => {
       cancelled = true;
     };
