@@ -283,6 +283,50 @@ key. Re-run the golden-e2e 100%-reuse assertion (`scripts/run-golden-e2e.sh`)
 as part of Phase 1/2 verification to confirm this holds in practice, not just
 in theory.
 
+## Phase 0 findings (confirmed empirically, not assumed)
+
+1. **ADO round-trip HTML normalization — UNRESOLVED, requires a live write.**
+   No public documentation covers ADO's server-side REST-API HTML storage
+   behavior for `System.Description` (roosterjs's sanitizer is a client-side
+   paste-cleanup path in the browser editor, not what happens when a REST
+   client PATCHes raw HTML directly, which is how req2ado writes). This
+   remains a genuine open question, but it only gates Phase 2 (the first
+   phase introducing inline `style="..."` attributes) — Phase 1 emits only
+   `<table>/<thead>/<tr>/<th>/<td>` plus `colspan`/`rowspan`, and bare
+   `<table>/<tr>/<td>` is ALREADY proven working in real ADO today (existing
+   production behavior). Resolve this with an explicit live-write spike
+   (one throwaway work item, real MCP path, crafted HTML, read back and
+   diff) before Phase 2 starts, not before Phase 1.
+
+2. **docx table-style shading — confirmed via real fixture, scope decision made.**
+   Built a real docx using Word's built-in "Light Grid Accent 1" table style
+   (visually has header shading + row banding in Word) and inspected every
+   cell's raw XML directly: **zero** `w:shd/@w:fill` present anywhere. All
+   styling lives in `w:tblStyle`'s reference into `styles.xml`'s conditional
+   formatting (`w:tblStylePr` variants per firstRow/lastRow/band1Horz/etc.),
+   invisible to per-cell XML reading. Decision: full OOXML table-style
+   conditional-formatting resolution (layering wholeTable < conditional
+   variant < explicit per-cell override) is a disproportionately large
+   feature on its own — **out of scope for v1**. Only explicit per-cell
+   `w:shd` and explicit `w:trPr/w:tblHeader` are captured; table-style-implied
+   shading is a documented, honest v1 gap (consistent with "absent means not
+   detected, never half-guess").
+
+3. **PDF span-vs-gap disambiguation — confirmed via real fixture, algorithm locked in.**
+   Built a real PDF (reportlab) with a genuine horizontal cell merge (`SPAN`
+   command) plus a separate genuinely-empty cell, then inspected
+   `pdfplumber.find_tables()`'s actual output directly:
+   - A **spanned** position: `bbox=None`, and the origin cell's own bbox is
+     abnormally wide (200pt vs. every other cell's 100pt) — colspan is
+     directly readable by counting how many normal column widths the
+     origin's bbox covers.
+   - A **genuine gap**: bbox is present and completely normal
+     (single-column-width), extracted text is merely empty.
+   These are unambiguously distinguishable by checking `bbox is None` first
+   (span) vs. `bbox is not None` + empty text (gap) — confirms the model's
+   span/gap disambiguation requirement is both necessary and directly
+   implementable exactly as designed.
+
 ## Phased build order
 
 - **Phase 0 (prerequisite spike, blocks Phase 2+)**: (a) write one real work
