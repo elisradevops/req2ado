@@ -1,6 +1,8 @@
 import tempfile
 from pathlib import Path
 
+from docx.oxml.ns import qn
+
 from app.canonical.model import BlockKind, plain_text_rows
 from app.loaders.docx_loader import load_docx
 
@@ -464,6 +466,268 @@ def test_load_docx_uniform_bold_rejects_bold_prefix_but_accepts_wholly_bold_cell
     assert row[0].bold is False  # bold label prefix must NOT bold the whole cell
     assert row[1] is not None
     assert row[1].bold is True  # wholly-bold text + trailing non-bold whitespace run
+
+
+def _build_docx_with_background_colors(tmp_path: Path) -> Path:
+    # One row, 3 cells: an explicit real fill, an explicit "auto" (OOXML's
+    # "no fill" token, not a color), and an explicit "FFFFFF" (Word's own
+    # default fill for a shaded-but-uncustomized cell -- also "no fill" per
+    # the design spec, NOT a deliberate white choice). No high-level
+    # python-docx API sets `w:shd` at all -- built via the same raw
+    # `docx.oxml`/`qn()` layer the gridBefore/header-row fixtures above
+    # already use.
+    from docx import Document as DocxDocument
+    from docx.oxml import OxmlElement
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=1, cols=3)
+    table.cell(0, 0).text = "Real fill"
+    table.cell(0, 1).text = "Auto"
+    table.cell(0, 2).text = "White"
+
+    def _set_shd(cell, fill: str) -> None:
+        tcPr = cell._tc.get_or_add_tcPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:fill"), fill)
+        tcPr.append(shd)
+
+    _set_shd(table.cell(0, 0), "FFFF00")
+    _set_shd(table.cell(0, 1), "auto")
+    _set_shd(table.cell(0, 2), "FFFFFF")
+
+    out_path = tmp_path / "background_colors.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_background_color_real_fill_vs_auto_vs_white_vs_absent() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_background_colors(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    row = doc.tables[0].cells[0]
+    assert row[0] is not None and row[0].background_color == "#ffff00"
+    assert row[1] is not None and row[1].background_color is None  # "auto" -- no fill
+    assert row[2] is not None and row[2].background_color is None  # "FFFFFF" -- no fill
+    # A cell with no w:shd element at all (the third column above has one,
+    # but a brand-new table.cell() with nothing set is the "absent" case).
+    doc2 = load_docx(str(FIXTURES / "sample.docx"))
+    absent_cell = doc2.tables[0].cells[0][0]
+    assert absent_cell is not None and absent_cell.background_color is None
+
+
+def _build_docx_with_disagreeing_run_colors(tmp_path: Path) -> Path:
+    # A cell whose first non-whitespace run is red, followed by a second
+    # run with a different color -- proves the "first non-empty run wins"
+    # rule (same simplification precedent as _cell_alignment's "first
+    # paragraph wins"), not some aggregate/last-run/majority rule. A
+    # leading whitespace-only run (no color at all) must not win over the
+    # first REAL run either.
+    from docx import Document as DocxDocument
+    from docx.oxml import OxmlElement
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=1, cols=1)
+    paragraph = table.cell(0, 0).paragraphs[0]
+
+    def _set_color(run, val: str) -> None:
+        rPr = run._r.get_or_add_rPr()
+        color = OxmlElement("w:color")
+        color.set(qn("w:val"), val)
+        rPr.append(color)
+
+    leading_blank_run = paragraph.add_run("   ")
+    _set_color(leading_blank_run, "0000FF")  # must be skipped -- whitespace only
+    first_real_run = paragraph.add_run("Red")
+    _set_color(first_real_run, "FF0000")
+    second_run = paragraph.add_run(" then green")
+    _set_color(second_run, "00FF00")
+
+    out_path = tmp_path / "disagreeing_colors.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_text_color_uses_first_non_empty_run_when_runs_disagree() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_disagreeing_run_colors(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    cell = doc.tables[0].cells[0][0]
+    assert cell is not None
+    assert cell.text_color == "#ff0000"  # first non-whitespace run's color wins
+
+
+def _build_docx_with_borders(tmp_path: Path, *, inside: bool) -> Path:
+    # Table-level w:tblBorders with all 4 outer sides always present;
+    # `inside=True` additionally adds insideH/insideV, exercising the
+    # "grid" vs "outer" branch of the border_style classification. No
+    # high-level python-docx setter exists for w:tblBorders either.
+    from docx import Document as DocxDocument
+    from docx.oxml import OxmlElement
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=2, cols=2)
+    for r in range(2):
+        for c in range(2):
+            table.cell(r, c).text = f"r{r}c{c}"
+
+    borders = OxmlElement("w:tblBorders")
+    sides = ["top", "bottom", "left", "right"]
+    if inside:
+        sides += ["insideH", "insideV"]
+    for side in sides:
+        side_el = OxmlElement(f"w:{side}")
+        side_el.set(qn("w:val"), "single")
+        borders.append(side_el)
+    table._tbl.tblPr.append(borders)
+
+    out_path = tmp_path / f"borders_{'grid' if inside else 'outer'}.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_border_style_grid_when_inside_borders_present() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_borders(Path(tmp_dir), inside=True)
+        doc = load_docx(str(docx_path))
+
+    assert doc.tables[0].border_style == "grid"
+
+
+def test_load_docx_border_style_outer_when_only_outer_borders_present() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_borders(Path(tmp_dir), inside=False)
+        doc = load_docx(str(docx_path))
+
+    assert doc.tables[0].border_style == "outer"
+
+
+def test_load_docx_border_style_none_when_no_border_elements_present() -> None:
+    # sample.docx's table has no explicit w:tblBorders/w:tcBorders at all.
+    doc = load_docx(str(FIXTURES / "sample.docx"))
+    assert doc.tables[0].border_style == "none"
+
+
+def test_load_docx_border_style_none_when_borders_explicitly_set_to_none_val() -> None:
+    # An author who explicitly turned borders off (w:val="none"/"nil" on
+    # every side) must classify the same as never having specified borders
+    # at all -- both mean "no visible border", not "borders present but
+    # unclassifiable".
+    from docx import Document as DocxDocument
+    from docx.oxml import OxmlElement
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        doc = DocxDocument()
+        table = doc.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = "a"
+        table.cell(0, 1).text = "b"
+        borders = OxmlElement("w:tblBorders")
+        for side in ("top", "bottom", "left", "right", "insideH", "insideV"):
+            side_el = OxmlElement(f"w:{side}")
+            side_el.set(qn("w:val"), "none")
+            borders.append(side_el)
+        table._tbl.tblPr.append(borders)
+        out_path = Path(tmp_dir) / "borders_explicit_none.docx"
+        doc.save(str(out_path))
+
+        result = load_docx(str(out_path))
+
+    assert result.tables[0].border_style == "none"
+
+
+def _build_docx_with_unequal_column_widths(tmp_path: Path) -> Path:
+    # 3 columns with declared widths 1000/2000/1000 twips (4:1 ratio
+    # relationship among 3 columns) via table.add_table's own tblGrid,
+    # explicitly overwritten to unequal values -- proves fractions are
+    # computed from the REAL declared ratio, not just "equal share of N
+    # columns" (which python-docx's default add_table already produces and
+    # would silently pass a bug where the loader ignores actual w:w values).
+    from docx import Document as DocxDocument
+    from docx.shared import Twips
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=1, cols=3)
+    table.cell(0, 0).text = "a"
+    table.cell(0, 1).text = "b"
+    table.cell(0, 2).text = "c"
+    grid_cols = table._tbl.tblGrid.gridCol_lst
+    grid_cols[0].w = Twips(1000)
+    grid_cols[1].w = Twips(2000)
+    grid_cols[2].w = Twips(1000)
+
+    out_path = tmp_path / "unequal_column_widths.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_column_widths_are_fractions_summing_to_one() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_unequal_column_widths(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    widths = doc.tables[0].column_widths
+    assert widths is not None
+    assert widths == [0.25, 0.5, 0.25]
+    assert abs(sum(widths) - 1.0) < 1e-9
+
+
+def test_load_docx_column_widths_none_when_sample_has_no_declared_grid_widths_issue() -> None:
+    # sample.docx's table DOES have a real tblGrid (python-docx always
+    # writes one) -- this instead asserts the fraction-summing invariant
+    # holds for a real, already-existing fixture too, not just a
+    # purpose-built one.
+    doc = load_docx(str(FIXTURES / "sample.docx"))
+    widths = doc.tables[0].column_widths
+    if widths is not None:
+        assert abs(sum(widths) - 1.0) < 1e-9
+
+
+def _build_docx_with_table_style_only(tmp_path: Path) -> Path:
+    # Mirrors the design spec's own Phase 0 fixture exactly: a table using
+    # ONLY Word's built-in "Light Grid Accent 1" table style (visually has
+    # header shading + row banding + gridlines when opened in Word) with NO
+    # explicit per-cell w:shd or explicit w:tblBorders/w:tcBorders anywhere.
+    # This is the DELIBERATE v1 scope boundary from the design spec's Phase
+    # 0 findings -- table-STYLE-implied shading/borders (w:tblStyle's
+    # reference into styles.xml's conditional formatting) is NOT resolved,
+    # so this must correctly yield None/"none", not attempt to guess the
+    # style's real visual appearance.
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=2, cols=2)
+    table.style = "Light Grid Accent 1"
+    table.cell(0, 0).text = "Header A"
+    table.cell(0, 1).text = "Header B"
+    table.cell(1, 0).text = "Row 1"
+    table.cell(1, 1).text = "Row 2"
+
+    out_path = tmp_path / "table_style_only.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_table_style_only_shading_and_borders_correctly_yield_none() -> None:
+    # REGRESSION GUARD, not a bug report: this proves the documented v1 gap
+    # (table-style-inherited shading/borders are never resolved) holds in
+    # practice, so nobody "fixes" this later by half-guessing table-style
+    # colors/borders without first re-deciding the out-of-scope call the
+    # design spec's Phase 0 section made deliberately and explicitly.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_table_style_only(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    assert len(doc.tables) == 1
+    for row in doc.tables[0].cells:
+        for cell in row:
+            assert cell is not None
+            assert cell.background_color is None
+            assert cell.text_color is None
+    # No explicit w:tblBorders/w:tcBorders anywhere -- despite Word showing
+    # a full grid for this table style, the table-level classification must
+    # stay "none", the same documented honest gap as per-cell shading.
+    assert doc.tables[0].border_style == "none"
 
 
 def test_load_docx_end_to_end_folds_each_figure_into_its_own_section() -> None:

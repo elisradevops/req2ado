@@ -11,6 +11,7 @@ from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
 from app.leveling.depth import resolve_block_depth
 from app.leveling.profiles import heading_style_type_for_depth
+from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
 from app.leveling.warnings_finalize import finalize_warnings
 from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, WorkItemNode, WorkItemTree, WorkItemType
 
@@ -266,7 +267,7 @@ def _row_is_blank(row: list[TableCell | None]) -> bool:
     return bool(real_cells) and all(not cell.text.strip() for cell in real_cells)
 
 
-def _render_table_row(row: list[TableCell | None], cell_tag: str) -> str:
+def _render_table_row(row: list[TableCell | None], cell_tag: str, border_style: str | None) -> str:
     """Renders one grid row as a single-line <tr>...</tr>. A None position
     is a SPANNED cell (absorbed by a preceding cell's colspan/rowspan) and
     contributes NO output at all -- emitting an empty <td> there would add
@@ -275,7 +276,13 @@ def _render_table_row(row: list[TableCell | None], cell_tag: str) -> str:
     output, see docs/superpowers/specs/2026-08-12-table-fidelity-design.md's
     Phase 0 findings). A real TableCell with text="" (a genuine gap) DOES
     get its own empty <td></td> -- that distinction is the entire point of
-    the None-vs-TableCell(text="") grid encoding."""
+    the None-vs-TableCell(text="") grid encoding.
+
+    border_style is the table-level `Table.border_style` value, threaded
+    down here (rather than resolved once by the caller into a style
+    fragment) because "grid" borders apply per-cell -- see table_color.py's
+    table_style_attr docstring for why "outer" is instead applied once, on
+    the <table> tag itself, by the caller."""
     cells_html: list[str] = []
     for cell in row:
         if cell is None:
@@ -285,17 +292,33 @@ def _render_table_row(row: list[TableCell | None], cell_tag: str) -> str:
             attrs += f' colspan="{cell.colspan}"'
         if cell.rowspan > 1:
             attrs += f' rowspan="{cell.rowspan}"'
+        style_parts: list[str] = []
         if cell.align is not None:
             # SAFE BY CONSTRUCTION, not defensively re-validated here:
             # `align` is a Literal["left","center","right","justify"] | None
             # field on the TableCell pydantic model, so any value that
             # reaches this line has already been validated to one of
             # exactly those 4 literals -- pydantic itself is the guard.
-            # This is NOT a precedent for Phase 2's background/text colors:
-            # those are plain `str | None` (not a closed Literal), so they
-            # will need real runtime validation (hex regex) before ever
-            # reaching a style attribute -- never copy this shortcut there.
-            attrs += f' style="text-align:{cell.align}"'
+            # This IS NOT a precedent for the background/text colors right
+            # below: those are plain `str | None` (not a closed Literal),
+            # so resolve_cell_style_colors runs them through real runtime
+            # hex validation (table_color.py's validate_hex_color) before
+            # they can ever reach this style attribute -- never copy this
+            # align shortcut for a color value.
+            style_parts.append(f"text-align:{cell.align}")
+        background_css, text_css = resolve_cell_style_colors(cell.background_color, cell.text_color)
+        if background_css is not None:
+            style_parts.append(f"background-color:{background_css}")
+        if text_css is not None:
+            style_parts.append(f"color:{text_css}")
+        if border_style == "grid":
+            # Per-cell border, deliberately with NO color component -- see
+            # table_color.border_css's docstring for why (currentColor
+            # theme adaptation). "outer" is handled once on <table> itself
+            # by the caller, not per-cell.
+            style_parts.append("border:1px solid")
+        if style_parts:
+            attrs += f' style="{";".join(style_parts)}"'
         cells_html.append(f"<{cell_tag}{attrs}>{html.escape(cell.text)}</{cell_tag}>")
     return "<tr>" + "".join(cells_html) + "</tr>"
 
@@ -358,10 +381,10 @@ def _table_to_html(table: Table) -> str:
             tbody_rows.append("<tr></tr>")
             continue
         if still_leading and _row_is_header(row):
-            thead_rows.append(_render_table_row(row, "th"))
+            thead_rows.append(_render_table_row(row, "th", table.border_style))
             continue
         still_leading = False
-        tbody_rows.append(_render_table_row(row, "th" if _row_is_header(row) else "td"))
+        tbody_rows.append(_render_table_row(row, "th" if _row_is_header(row) else "td", table.border_style))
 
     caption_html = (
         f"<caption>{html.escape(table.caption)}</caption>"
@@ -370,7 +393,16 @@ def _table_to_html(table: Table) -> str:
     )
     thead_html = f"<thead>{''.join(thead_rows)}</thead>" if thead_rows else ""
     tbody_html = f"<tbody>{''.join(tbody_rows)}</tbody>" if tbody_rows else ""
-    return f"<table>{caption_html}{thead_html}{tbody_html}</table>"
+    # colgroup MUST be the first child of <table> per the HTML spec's
+    # required child order (see colgroup_html's own docstring) -- placed
+    # before caption_html/thead_html/tbody_html accordingly. table_style_attr
+    # carries width:100% (only meaningful alongside colgroup's percentages)
+    # and, for an "outer" border, the border itself -- "grid" borders are
+    # instead applied per-cell above, see table_style_attr's own docstring
+    # for why the two variants attach at different levels.
+    table_attrs = table_style_attr(table.border_style, table.column_widths is not None)
+    colgroup = colgroup_html(table.column_widths)
+    return f"<table{table_attrs}>{colgroup}{caption_html}{thead_html}{tbody_html}</table>"
 
 
 def _order_key(ref: SourceRef) -> tuple[int, int]:

@@ -152,11 +152,21 @@ def test_load_xlsx_general_alignment_maps_to_none(tmp_path: Path) -> None:
     assert all(cell.align is None for row in table.cells for cell in row if cell is not None)
 
 
-def test_load_xlsx_phase2_fields_stay_at_defaults(tmp_path: Path) -> None:
+def test_load_xlsx_no_explicit_styling_yields_honest_none_and_none_border(tmp_path: Path) -> None:
+    # _build_styled_xlsx sets merges/bold/alignment/freeze_panes but never a
+    # fill, font color, border, or column width -- Phase 2's real extraction
+    # (_classify_border_style/_resolve_fill_color/_resolve_font_color/
+    # _resolve_column_widths) correctly reports that as `border_style=
+    # "none"` (scanned, found no border sides -- a real, informative
+    # answer, distinct from a color/width's `None` meaning "nothing to
+    # report" for a genuinely absent style dimension) and `None` for every
+    # color/width field (nothing was ever set, so there is nothing to
+    # normalize into a value). style_provenance stays None -- xlsx
+    # extraction is always explicit-markup-derived, never heuristic.
     doc = load_xlsx(str(_build_styled_xlsx(tmp_path)))
     table = doc.tables[0]
     assert table.column_widths is None
-    assert table.border_style is None
+    assert table.border_style == "none"
     assert table.style_provenance is None
     for row in table.cells:
         for cell in row:

@@ -38,6 +38,48 @@ _JC_TO_ALIGN: dict[str, Literal["left", "center", "right", "justify"]] = {
     "end": "right",
 }
 
+# w:tblBorders/w:tcBorders share the same OOXML child-element vocabulary --
+# insideH/insideV are valid on a per-cell w:tcBorders too, not just the
+# table-level element (a cell can override just its own interior sides).
+_BORDER_INSIDE_TAGS = ("insideH", "insideV")
+_BORDER_OUTER_TAGS = ("top", "bottom", "left", "right")
+# OOXML's two spellings for "explicitly no border on this side" -- both must
+# be excluded, not just one, or an author who wrote w:val="nil" instead of
+# "none" would be mis-read as having a real border.
+_BORDER_NONE_VALS = {"none", "nil"}
+
+
+def _normalize_hex_color(raw: str | None, *, treat_white_as_no_fill: bool) -> str | None:
+    """Normalizes a raw OOXML color token (`w:shd/@w:fill` or `w:color/@w:val`)
+    to a lowercase `#rrggbb` string, or `None` when it doesn't represent a
+    real, explicit color choice.
+
+    `None`/missing and the literal token `"auto"` (OOXML's own "theme/
+    inherited default, not an explicit value" marker, used by BOTH shading
+    fill and run text color) always normalize to `None` -- `"auto"` isn't
+    merely coincidentally excluded by the hex-format check below (it also
+    isn't valid hex), the exclusion is semantic, not a parsing accident.
+
+    `treat_white_as_no_fill=True` (background only, per the design spec's
+    Phase 2 section) additionally excludes literal `"FFFFFF"` (case-
+    insensitive) -- Word's own default fill for a shaded-but-uncustomized
+    cell, which would otherwise round-trip as if the author had explicitly
+    chosen white. This exclusion deliberately does NOT apply to text color:
+    a genuine white-text-on-dark-background choice is a legitimate explicit
+    color, not a Word-default artifact, so `_cell_text_color` calls this
+    with `treat_white_as_no_fill=False`.
+
+    Anything else that isn't a well-formed 6-hex-digit string (a malformed
+    or unsupported token) also normalizes to `None` rather than guessing.
+    """
+    if raw is None:
+        return None
+    if treat_white_as_no_fill and raw.upper() == "FFFFFF":
+        return None
+    if len(raw) == 6 and all(c in "0123456789abcdefABCDEF" for c in raw):
+        return f"#{raw.lower()}"
+    return None
+
 
 def _row_is_header(tr: CT_Row) -> bool:
     """`w:trPr/w:tblHeader` presence (any value, or none at all -- OOXML
@@ -105,6 +147,173 @@ def _cell_is_bold(cell: DocxCell) -> bool:
             if not run.bold:
                 return False
     return saw_non_whitespace_run
+
+
+def _cell_background_color(tc: CT_Tc) -> str | None:
+    """`w:tcPr/w:shd/@w:fill`, normalized via `_normalize_hex_color` with
+    the background-specific "treat literal white as no fill" rule (see that
+    function's own docstring, and the design spec's Phase 0/2 sections).
+
+    No high-level python-docx property exposes `w:shd` at all (`CT_TcPr`'s
+    own declared fields stop at `tcW`/`gridSpan`/`vMerge`/`vAlign`/`width` --
+    confirmed by reading its source), so this reads the raw element
+    directly via `qn()`, the same fallback-to-raw-OOXML convention
+    `_row_is_header`/`_cell_alignment` already established in this module.
+
+    A table using ONLY a table STYLE (e.g. Word's built-in "Light Grid
+    Accent 1") for its header shading/row banding has ZERO `w:shd` on any
+    cell despite visually showing shading in Word -- confirmed via a real
+    fixture in the design spec's Phase 0 findings. That styling lives in
+    `w:tblStyle`'s reference into `styles.xml`'s conditional formatting
+    (`w:tblStylePr` firstRow/band1Horz/etc. variants), which this function
+    deliberately does NOT resolve -- out of scope for v1, a documented
+    honest gap rather than a bug (see this module's Phase 2 note above
+    `_extract_table_cells`).
+    """
+    tcPr = tc.tcPr
+    if tcPr is None:
+        return None
+    shd = tcPr.find(qn("w:shd"))
+    if shd is None:
+        return None
+    return _normalize_hex_color(shd.get(qn("w:fill")), treat_white_as_no_fill=True)
+
+
+def _cell_text_color(cell: DocxCell) -> str | None:
+    """FIRST non-whitespace run's `w:rPr/w:color/@w:val`, across every
+    paragraph in the cell, normalized via `_normalize_hex_color`.
+
+    Unlike the uniform-bold rule (`_cell_is_bold`), text color has no safe
+    "no color" default to fall back to when runs disagree: `bold=False` is
+    itself a meaningful, correct value for "not bold", but there is no
+    equivalent "the natural text color" sentinel to assign when, e.g., a
+    colored label prefix is followed by default-colored body text in the
+    same cell. This deliberately reuses the SAME "first wins" simplification
+    `_cell_alignment` already established (first PARAGRAPH's `w:jc` --
+    documented there as accepted, not exhaustive) rather than inventing a
+    new precedent for color specifically; it is a deliberate v1
+    simplification, not an oversight.
+
+    Whitespace-only runs are skipped when looking for the "first" run (same
+    non-whitespace gate `_cell_is_bold` uses), so a leading blank run
+    doesn't win over the first real text. Once the first non-whitespace run
+    is found, ITS color (or lack of one) is authoritative -- later runs are
+    never consulted, even if that run has no `w:color` at all or an explicit
+    `"auto"`. `run._r` (the underlying `CT_R` oxml element) is used because
+    python-docx's own `run.font.color` raises on some theme-color shapes and
+    this module already prefers raw-OOXML reads for exactly this kind of
+    edge case.
+    """
+    for paragraph in cell.paragraphs:
+        for run in paragraph.runs:
+            if not run.text.strip():
+                continue
+            rPr = run._r.find(qn("w:rPr"))
+            color = rPr.find(qn("w:color")) if rPr is not None else None
+            val = color.get(qn("w:val")) if color is not None else None
+            return _normalize_hex_color(val, treat_white_as_no_fill=False)
+    return None
+
+
+def _borders_element_has_real_border(borders_el, tags: tuple[str, ...]) -> bool:
+    """True if `borders_el` (a `w:tblBorders` or `w:tcBorders` element --
+    both share the same child-element vocabulary per the OOXML schema,
+    including `insideH`/`insideV` on `w:tcBorders` too, not just the
+    table-level element) has at least one of the given side elements
+    present with a real (non-`"none"`/`"nil"`) `@w:val`. A present border
+    element with no `@w:val` attribute at all is treated as real -- this
+    loader doesn't second-guess malformed source XML, it simply doesn't
+    special-case a missing attribute as "explicitly no border" either.
+    """
+    for tag in tags:
+        el = borders_el.find(qn(f"w:{tag}"))
+        if el is None:
+            continue
+        val = el.get(qn("w:val"))
+        if val is None or val.lower() not in _BORDER_NONE_VALS:
+            return True
+    return False
+
+
+def _table_border_style(docx_table: DocxTable) -> Literal["none", "grid", "outer"]:
+    """Deliberately coarse, TABLE-LEVEL (not per-cell) classification of
+    border presence, exactly matching `Table.border_style`'s own documented
+    scope (see model.py) -- not a full per-side/per-cell border spec.
+
+    Aggregates every border-bearing element in the table: the table-level
+    `w:tblPr/w:tblBorders` (if present) plus every cell's own
+    `w:tcPr/w:tcBorders` override (if present) -- a real Word table can
+    declare its grid via either, and a per-cell override with no
+    table-level `w:tblBorders` at all is a legitimate way to author a
+    bordered table.
+
+    Classification: `"grid"` if ANY aggregated element has a real
+    (non-none/nil) `insideH` or `insideV` side -- an interior gridline
+    implies a full grid look regardless of what the outer sides also say.
+    Else `"outer"` if ANY aggregated element has a real `top`/`bottom`/
+    `left`/`right` side with no interior line found anywhere. Else
+    `"none"` -- covers both "no border elements at all" and "border
+    elements present but every side is explicitly none/nil" (an author
+    explicitly turning borders off produces the same visual and semantic
+    outcome as never specifying them, so both collapse to the same value).
+
+    Table STYLE-implied borders (`w:tblStyle`'s reference into
+    `styles.xml`) are NOT resolved -- same v1 boundary as
+    `_cell_background_color`. A table that gets its gridlines purely from
+    an applied table style, with no explicit `w:tblBorders`/`w:tcBorders`
+    anywhere, correctly yields `"none"` here -- a documented honest gap,
+    not a bug to "fix" without re-deciding the table-style-resolution scope
+    question.
+    """
+    borders_elements = []
+    tblBorders = docx_table._tbl.tblPr.find(qn("w:tblBorders"))
+    if tblBorders is not None:
+        borders_elements.append(tblBorders)
+    for row in docx_table.rows:
+        for tc in row._tr.tc_lst:
+            tcPr = tc.tcPr
+            if tcPr is None:
+                continue
+            tcBorders = tcPr.find(qn("w:tcBorders"))
+            if tcBorders is not None:
+                borders_elements.append(tcBorders)
+
+    if any(_borders_element_has_real_border(el, _BORDER_INSIDE_TAGS) for el in borders_elements):
+        return "grid"
+    if any(_borders_element_has_real_border(el, _BORDER_OUTER_TAGS) for el in borders_elements):
+        return "outer"
+    return "none"
+
+
+def _column_widths(docx_table: DocxTable) -> list[float] | None:
+    """`w:tblGrid/w:gridCol/@w:w`, converted to FRACTIONS of the table's
+    total declared width (each column's width divided by the sum of every
+    column's width) -- never the raw twips value itself, which must never
+    reach the renderer (same "no source units past the loader" rule that
+    fixed the earlier figure-sizing overflow bug, per the design spec's
+    layout-overflow section).
+
+    `gridCol.w` (python-docx's own `ST_TwipsMeasure`-typed accessor)
+    already resolves to a `Length` (EMU) object rather than a raw twips
+    int, but since only the RATIO between columns is used here, the
+    absolute unit is irrelevant -- no explicit twips/EMU conversion step is
+    needed.
+
+    Returns `None` (never a fabricated equal-width fallback) when
+    `w:tblGrid` has no `w:gridCol` children at all, or when any column's
+    width is missing/non-positive (a `w:gridCol` with no `@w:w` attribute,
+    or a degenerate zero-width column) -- an honest "don't know" beats
+    guessing equal shares from nothing, per the model's own
+    `column_widths` documentation.
+    """
+    grid_cols = docx_table._tbl.tblGrid.gridCol_lst
+    if not grid_cols:
+        return None
+    widths = [col.w for col in grid_cols]
+    if any(w is None or w <= 0 for w in widths):
+        return None
+    total = sum(widths)
+    return [w / total for w in widths]
 
 
 def _extract_table_cells(docx_table: DocxTable) -> list[list[TableCell | None]]:
@@ -175,15 +384,22 @@ def _extract_table_cells(docx_table: DocxTable) -> list[list[TableCell | None]]:
         (`_cell_is_bold`) are both per-origin-cell only, for the same
         reason spans are -- a `"continue"`/spanned position never gets its
         own `TableCell` to hold them.
+      - `background_color` (`_cell_background_color`) and `text_color`
+        (`_cell_text_color`) are likewise per-origin-cell only, same
+        reason. This is Phase 2 of
+        docs/superpowers/specs/2026-08-12-table-fidelity-design.md --
+        EXPLICIT per-cell `w:shd`/`w:color` only. Phase 0 of that spec
+        found most real Word table shading actually comes from
+        `w:tblStyle`-inherited conditional formatting (`styles.xml`'s
+        `w:tblStylePr` variants), which python-docx does not resolve and
+        this loader deliberately does not attempt either -- a table
+        relying purely on a table style for its shading correctly yields
+        `background_color=None` for every cell, a documented honest v1
+        gap, not a bug.
 
-    `background_color`/`text_color`/`column_widths`/`border_style` are
-    deliberately left at their model defaults (`None`) here -- explicit
-    per-cell shading/border/width extraction is Phase 2 of
-    docs/superpowers/specs/2026-08-12-table-fidelity-design.md, and Phase
-    0 of that spec found most real Word table shading comes from
-    `w:tblStyle`-inherited conditional formatting that python-docx doesn't
-    resolve at all, not per-cell `w:shd` -- extracting only the per-cell
-    case would be misleadingly incomplete, so it isn't attempted here.
+    `column_widths`/`border_style` are TABLE-level, not per-cell -- they
+    are computed once by `_column_widths`/`_table_border_style` in
+    `load_docx`'s own `Table(...)` construction, not here.
     """
     n_cols = len(docx_table.columns)
     grid: list[list[TableCell | None]] = []
@@ -202,6 +418,8 @@ def _extract_table_cells(docx_table: DocxTable) -> list[list[TableCell | None]]:
                 is_header=is_header,
                 bold=_cell_is_bold(cell),
                 align=_cell_alignment(tc),
+                background_color=_cell_background_color(tc),
+                text_color=_cell_text_color(cell),
             )
         grid.append(row_cells)
     return grid
@@ -338,16 +556,18 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
             start = offset
             end = start + 1
             offset = end
-            # Real per-cell colspan/rowspan/is_header/align/bold -- see
-            # _extract_table_cells' own docstring. background_color/
-            # text_color/column_widths/border_style stay at their model
-            # defaults (None): explicit style extraction is Phase 2 of
-            # docs/superpowers/specs/2026-08-12-table-fidelity-design.md,
-            # not this pass.
+            # Real per-cell colspan/rowspan/is_header/align/bold/
+            # background_color/text_color -- see _extract_table_cells' own
+            # docstring. column_widths/border_style are TABLE-level (not
+            # per-cell), computed here via _column_widths/
+            # _table_border_style per Phase 2 of
+            # docs/superpowers/specs/2026-08-12-table-fidelity-design.md.
             tables.append(
                 Table(
                     id=f"t{table_index}",
                     cells=cells,
+                    column_widths=_column_widths(docx_table),
+                    border_style=_table_border_style(docx_table),
                     source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                 )
             )

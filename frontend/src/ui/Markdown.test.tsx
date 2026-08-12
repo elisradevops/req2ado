@@ -163,4 +163,92 @@ describe('DescriptionMarkdown', () => {
     expect(cell.style.textAlign).toBe('center'); // the one allowlisted property still comes through
     expect(cell.style.background).toBe(''); // everything else is silently dropped, not passed through
   });
+
+  // --- Phase 2: background-color/color/border (cell), width/border-collapse (col/table) ---
+
+  it('applies valid background-color and color together as real inline styles', () => {
+    const description = '<table><tbody><tr><td style="background-color:#ff0000;color:#ffffff">x</td></tr></tbody></table>';
+    render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const cell = screen.getByText('x') as HTMLTableCellElement;
+    // Read the actual DOM style properties (not the raw string) -- proves
+    // the values reached a real inline style, not just a matching substring
+    // somewhere in the output.
+    expect(cell.style.backgroundColor).toBe('rgb(255, 0, 0)');
+    expect(cell.style.color).toBe('rgb(255, 255, 255)');
+  });
+
+  // The exact cross-match bug the design spec calls out: "background-color"
+  // contains "color" as a literal substring, and a naive `/\bcolor\s*:/`
+  // regex would wrongly also match inside it. A cell with ONLY
+  // background-color set must not spuriously get a `color` style out of
+  // misreading part of that same declaration.
+  it('does not populate `color` when only `background-color` is set (cross-match guard)', () => {
+    const description = '<table><tbody><tr><td style="background-color:#00ff00">x</td></tr></tbody></table>';
+    render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const cell = screen.getByText('x') as HTMLTableCellElement;
+    expect(cell.style.backgroundColor).toBe('rgb(0, 255, 0)');
+    expect(cell.style.color).toBe('');
+  });
+
+  // Ingestion's contrast-adaptation algorithm relies on the browser's own
+  // `currentColor` fallback for borders (never a captured/literal border
+  // color) so borders adapt automatically between light/dark ADO themes --
+  // asserting `borderColor` is empty is what actually proves that fallback
+  // is left intact, not overridden by an accidental hardcoded color.
+  it('renders border as exactly "1px solid" with no explicit color, leaving currentColor to apply', () => {
+    const description = '<table><tbody><tr><td style="border: 1px solid">x</td></tr></tbody></table>';
+    render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const cell = screen.getByText('x') as HTMLTableCellElement;
+    expect(cell.style.borderStyle).toBe('solid');
+    expect(cell.style.borderWidth).toBe('1px');
+    expect(cell.style.borderColor).toBe('');
+  });
+
+  it('renders <colgroup>/<col> with validated percentage widths', () => {
+    const description =
+      '<table><colgroup><col style="width:30%"><col style="width:70%"></colgroup>' +
+      '<tbody><tr><td>a</td><td>b</td></tr></tbody></table>';
+    const { container } = render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const cols = Array.from(container.querySelectorAll('col')) as HTMLElement[];
+    expect(cols).toHaveLength(2);
+    expect(cols[0].style.width).toBe('30%');
+    expect(cols[1].style.width).toBe('70%');
+  });
+
+  it('applies table-level width and border-collapse from a validated style attribute', () => {
+    const description = '<table style="width:100%; border-collapse:collapse"><tbody><tr><td>x</td></tr></tbody></table>';
+    const { container } = render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const table = container.querySelector('table') as HTMLTableElement;
+    expect(table.style.width).toBe('100%');
+    expect(table.style.borderCollapse).toBe('collapse');
+  });
+
+  it('ignores an invalid background-color value (not a 6-digit hex) instead of passing it through', () => {
+    const description = '<table><tbody><tr><td style="background-color: url(javascript:alert(1))">x</td></tr></tbody></table>';
+    render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const cell = screen.getByText('x') as HTMLTableCellElement;
+    expect(cell.style.backgroundColor).toBe('');
+  });
+
+  it('ignores a border value with anything appended after "1px solid", and any injection riding alongside it', () => {
+    const description = '<table><tbody><tr><td style="border: 1px solid red; background:url(evil)">x</td></tr></tbody></table>';
+    render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const cell = screen.getByText('x') as HTMLTableCellElement;
+    expect(cell.style.border).toBe(''); // "red" appended means it's not the exact literal ingestion emits
+    expect(cell.style.background).toBe('');
+  });
+
+  it('ignores an out-of-range col width (150%) instead of passing it through', () => {
+    const description = '<table><colgroup><col style="width:150%"></colgroup><tbody><tr><td>x</td></tr></tbody></table>';
+    const { container } = render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const col = container.querySelector('col') as HTMLElement;
+    expect(col.style.width).toBe('');
+  });
+
+  it('ignores a non-percentage table width (px) instead of passing it through', () => {
+    const description = '<table style="width:10px"><tbody><tr><td>x</td></tr></tbody></table>';
+    const { container } = render(<DescriptionMarkdown>{description}</DescriptionMarkdown>);
+    const table = container.querySelector('table') as HTMLTableElement;
+    expect(table.style.width).toBe('');
+  });
 });
