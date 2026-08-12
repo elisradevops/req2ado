@@ -126,13 +126,28 @@ export function FigureImage({
       // row wider instead of shrinking, squeezing the caption text next to
       // it into a near-unreadable single-word-per-line column (confirmed
       // real, reported live). `min-w-0` lets this box actually shrink
-      // below its content size, which is what makes max-w-full/max-h-64
+      // below its content size, which is what makes max-w-full/h-40
       // below actually bound the rendered size instead of only bounding an
       // already-oversized box.
+      //
+      // `h-40` (a FIXED height, not just a max) is the other half of this:
+      // these are line diagrams/schematics captured from a source document,
+      // and some are genuinely low-resolution (a small pasted screenshot).
+      // The previous `w-auto` sizing meant the <img> rendered at its own
+      // NATIVE pixel size with only an upper bound -- correct for an
+      // oversized image, but left a small one looking lost/illegibly tiny
+      // inside a much larger card (confirmed real, reported live). A fixed
+      // height decouples the rendered BOX from the image's own intrinsic
+      // size, so `object-contain` can scale the real image content to FILL
+      // that box on both ends -- shrinking an oversized image exactly as
+      // before, but also enlarging an undersized one up to a legible floor,
+      // always preserving aspect ratio (letterboxed on the shorter axis
+      // when the source doesn't match the box's proportions, never
+      // stretched/distorted).
       <img
         src={state.url}
         alt={alt}
-        className="max-h-64 w-auto min-w-0 max-w-full flex-none rounded-sm border border-hairline object-contain sm:max-w-xs"
+        className="h-40 w-full min-w-0 max-w-full flex-none rounded-sm border border-hairline object-contain sm:max-w-xs"
       />
     );
   }
