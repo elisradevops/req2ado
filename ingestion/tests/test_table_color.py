@@ -112,6 +112,34 @@ def test_normalize_background_keeps_a_strongly_colored_background() -> None:
     assert normalize_background("#c62828") == "#c62828"
 
 
+def test_normalize_background_preserves_pure_yellow_despite_its_high_luminance() -> None:
+    # Real bug found via live verification against an actual container:
+    # pure yellow (#ffff00) has relative luminance ~0.928, narrowly ABOVE
+    # the 0.92 "near-white" threshold, purely because R+G are both maxed
+    # and G alone carries a 0.7152 luma weight -- luminance-only gating
+    # silently dropped this real, deliberately-chosen color (the literal
+    # color from this feature's own original bug report's yellow header
+    # bar) as if it were "basically white". Chroma must rescue it.
+    assert normalize_background("#ffff00") == "#ffff00"
+
+
+def test_normalize_background_preserves_other_bright_saturated_colors() -> None:
+    # Not just yellow specifically -- any bright, fully-saturated primary/
+    # secondary color must survive, since the underlying bug (luminance
+    # alone) would affect any color whose luminance happens to exceed 0.92.
+    assert normalize_background("#00ffff") == "#00ffff"  # cyan, luminance ~0.787 -- sanity check, well below threshold anyway
+    assert normalize_background("#ffff33") == "#ffff33"  # a slightly-softened yellow, still bright + saturated
+
+
+def test_normalize_background_still_treats_genuinely_near_gray_bright_colors_as_no_fill() -> None:
+    # The chroma gate must not swallow the ORIGINAL, still-valid case this
+    # function exists for -- a true near-white/near-gray tint (low chroma,
+    # AND luminance genuinely above the 0.92 threshold, unlike #f5f5f0
+    # which turns out to already sit just under 0.92 on luminance alone)
+    # stays normalized to no-fill even though it's also bright.
+    assert normalize_background("#f8f8f5") is None  # luminance ~0.937, chroma ~0.012
+
+
 def test_normalize_background_treats_none_as_no_fill() -> None:
     assert normalize_background(None) is None
 

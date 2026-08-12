@@ -44,7 +44,38 @@ _HEX_COLOR_RE = re.compile(r"^#[0-9a-f]{6}$", re.IGNORECASE)
 # deliberately generous cutoff -- it catches literal white (L=1.0) and
 # near-white off-whites/very-light tints alike, which are visually
 # indistinguishable from "no fill" in the vast majority of real documents.
+#
+# CONFIRMED REAL BUG, found via live verification against an actual
+# container (not just unit tests): luminance ALONE is not sufficient to
+# gate this. Pure yellow (#ffff00) -- one of the single most common header-
+# highlight colors in real Word documents, and the literal color from this
+# feature's own original bug report ("FAN configuration - 1" yellow header
+# bar) -- has relative luminance ~0.928, narrowly ABOVE this threshold,
+# purely because its R+G channels are both maxed and G alone carries a
+# 0.7152 luma weight. Luminance-only gating was silently discarding a real,
+# deliberately-chosen color as if it were "basically white", defeating the
+# entire point of the feature it was supposed to serve. _CHROMA_THRESHOLD
+# below fixes this: a color is only ever normalized to "no fill" when it is
+# BOTH bright (luminance) AND genuinely close to gray/white (chroma) --
+# never for a saturated color, no matter how bright.
 _NO_FILL_LUMINANCE_THRESHOLD = 0.92
+
+# Raw sRGB channel spread (max(r,g,b) - min(r,g,b), each channel in [0, 1],
+# gamma-encoded/NOT linearized -- this is a simple "how far from gray"
+# measure, not a perceptual quantity, and doesn't need to be one for this
+# purpose). Deliberately NOT standard HSL saturation: HSL's saturation
+# formula is scale-invariant near the lightness extremes, so it reports
+# close to 100% for ANY non-gray color once lightness is very high or very
+# low -- confirmed empirically that a genuinely pale, low-chroma tint like
+# #fff2cc registers as HSL S=100%, identical to pure #ffff00, which would
+# make an HSL-based gate just as unable to tell them apart as no gate at
+# all. Raw channel spread doesn't have this problem: true near-white/near-
+# gray colors (#ffffff, #fefefe, #fdfdfd) all have spread ~0 regardless of
+# lightness, while any real colored tint has a nonzero, roughly lightness-
+# independent spread. 0.05 (~13 of 255 levels) comfortably separates
+# confirmed near-gray examples (#fefefe: 0.0, #f5f5f0: ~0.02) from a real
+# saturated color at any brightness (#ffff00: 1.0).
+_CHROMA_THRESHOLD = 0.05
 
 # The "genuinely hard case" band (see adapt_text_color_no_background's
 # docstring for the full derivation): the range of relative luminance
@@ -174,18 +205,38 @@ def contrast_ratio(hex_a: str, hex_b: str) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+def _chroma(hex_color: str) -> float:
+    """Raw sRGB channel spread -- see _CHROMA_THRESHOLD's own comment for
+    why this, and not HSL saturation, is the right "how far from gray"
+    measure for this specific purpose. hex_color must already be
+    validated."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    return max(r, g, b) - min(r, g, b)
+
+
 def normalize_background(hex_color: str | None) -> str | None:
     """Step 1 of the contrast-adaptation algorithm: treat None AND any
-    background whose relative luminance exceeds
-    _NO_FILL_LUMINANCE_THRESHOLD (0.92) as "no background at all", and
-    return None for both. This runs BEFORE anything else touches the
-    background -- a near-white/white fill is normalized away entirely, it
-    is never rendered as a literal white box. That matters specifically
-    because a literal white `background-color` would look fine in ADO's
-    light theme and then glare as an unstyled white patch the instant the
-    same work item is viewed in ADO's dark theme -- there is no way to
-    conditionally suppress it from inside a single static inline style, so
-    the only safe fix is to never emit it in the first place.
+    background that is BOTH bright (relative luminance exceeds
+    _NO_FILL_LUMINANCE_THRESHOLD, 0.92) AND close to gray/white (chroma
+    under _CHROMA_THRESHOLD, 0.05) as "no background at all", and return
+    None for both. This runs BEFORE anything else touches the background --
+    a near-white/white fill is normalized away entirely, it is never
+    rendered as a literal white box. That matters specifically because a
+    literal white `background-color` would look fine in ADO's light theme
+    and then glare as an unstyled white patch the instant the same work
+    item is viewed in ADO's dark theme -- there is no way to conditionally
+    suppress it from inside a single static inline style, so the only safe
+    fix is to never emit it in the first place.
+
+    BOTH conditions are required, not luminance alone -- see
+    _NO_FILL_LUMINANCE_THRESHOLD's own comment for the confirmed real bug
+    this fixes (pure yellow, #ffff00, has luminance ~0.928, just above the
+    threshold, yet is an unmistakably real, deliberately-chosen color, not
+    "basically white"). A bright, low-chroma color (an actual near-white/
+    near-gray tint) is normalized away; a bright, HIGH-chroma color (a real
+    saturated highlight, however light) never is, regardless of how close
+    its luminance is to 1.0.
 
     Also doubles as the security gate for background colors specifically
     (via validate_hex_color) -- an invalid/malformed value is treated
@@ -193,7 +244,7 @@ def normalize_background(hex_color: str | None) -> str | None:
     validated = validate_hex_color(hex_color)
     if validated is None:
         return None
-    if relative_luminance(validated) > _NO_FILL_LUMINANCE_THRESHOLD:
+    if relative_luminance(validated) > _NO_FILL_LUMINANCE_THRESHOLD and _chroma(validated) < _CHROMA_THRESHOLD:
         return None
     return validated
 
