@@ -21,7 +21,6 @@ const HEX_PATTERN = /#[0-9a-fA-F]{3,8}/g;
 // definition site too.
 const ALLOWLISTED_FILES = new Set([
   'utils/tagColors.ts', // 11 requirement-tag colors, no equivalent token exists
-  'components/KbCitationChips.tsx', // 3 KB-relevance colors (relevant/not_relevant/unknown)
   'components/WorkItemTypeBadge.tsx', // Azure DevOps' OWN official work-item-type colors + an rgba() alpha-compositing helper for live ADO-fetched colors, not hardcoded chrome
   'components/FileTypeIcon.tsx', // per-file-extension icon colors (docx/pdf/xlsx/etc.), same genre as tagColors
 ]);

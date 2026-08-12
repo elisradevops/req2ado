@@ -40,7 +40,14 @@ export function SourceProvenance({
           ))}
         </dl>
       )}
-      {showScoringNote && <p className="text-sm text-ink-2">Scored on wording only, not engineering content.</p>}
+      {showScoringNote && (
+        // DESIGN.md §11.4.3 -- no standard's name (EARS/INCOSE/ISO/IEC/IEEE
+        // 29148) may appear in this sentence, glossed or not -- customer
+        // feedback was that the acronyms themselves were the problem,
+        // independent of any explanation attached to them. Do not
+        // reintroduce one.
+        <p className="text-sm text-ink-2">Scored on wording only, not engineering content.</p>
+      )}
       {kbCitations && kbCitations.length > 0 && (
         <div className="flex flex-col gap-1">
           <p className="text-xs font-semibold text-ink-2">KB references</p>

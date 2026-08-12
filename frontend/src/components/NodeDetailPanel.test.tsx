@@ -600,7 +600,7 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
   });
 
-  it('shows the standards line and KB references for a SURVEY create entry with citations', () => {
+  it('shows the scoring note and KB references for a SURVEY create entry with citations', () => {
     renderPanel(
       <NodeDetailPanel
         jobMode="survey"
@@ -611,8 +611,7 @@ describe('NodeDetailPanel', () => {
         entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [], qualityScore: 80 }}
       />,
     );
-    // Mentions the knowledge base by a real count when it actually
-    // contributed. DESIGN.md §11.4.3 -- no standard's name (EARS/INCOSE/
+    // DESIGN.md §11.4.3 -- no standard's name (EARS/INCOSE/
     // ISO/IEC/IEEE 29148) appears anywhere in this copy, glossed or not;
     // an earlier version of this test asserted the opposite and was wrong.
     expect(screen.getByText('Scored on wording only, not engineering content.')).toBeInTheDocument();
@@ -620,7 +619,7 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText('Unverified · doc-b.pdf')).toBeInTheDocument();
   });
 
-  it('shows the standards line but no KB-count sentence when kbCitations is empty', () => {
+  it('shows the scoring note but no KB references when kbCitations is empty', () => {
     renderPanel(
       <NodeDetailPanel
         jobMode="survey"
