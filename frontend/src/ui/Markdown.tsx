@@ -40,52 +40,138 @@ export function Markdown({ children }: { children: string }): React.ReactElement
 
 // Matches orchestrator's description-html.ts TABLE_BLOCK_PATTERN exactly --
 // the only raw HTML a description ever legitimately contains: BASELINE's
-// _table_to_html fold-in (ingestion/app/leveling/tree_builder.py), always
-// exactly this shape (<table><tr><td>...</td></tr>...</table>, no
-// thead/th). Treating this specific pattern as trusted mirrors the
-// orchestrator's own write-back carve-out instead of enabling rehype-raw
-// (which would treat ALL raw HTML in a description as trusted).
-const TABLE_BLOCK_PATTERN = /<table>[\s\S]*?<\/table>/g;
+// _table_to_html fold-in (ingestion/app/leveling/tree_builder.py). Tolerates
+// attributes on the opening <table> tag (e.g. a future table-level style)
+// since the emitted shape now includes <thead>/<th>/colspan/rowspan/caption
+// and per-cell alignment styles -- the bare `<table>`-only pattern this
+// replaced would silently stop matching the moment ingestion added any of
+// that, dumping the whole block through the untrusted markdown path as
+// literal escaped text (the exact known-issues #17 bug class).
+const TABLE_BLOCK_PATTERN = /<table[^>]*>[\s\S]*?<\/table>/g;
 
-// Reverses Python's html.escape(quote=True), which is what put these
-// entities into the cell text in the first place -- &amp; last, so an
-// already-escaped "&amp;lt;" doesn't get double-unescaped into "<".
-function unescapeHtmlEntities(text: string): string {
-  return text
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'")
-    .replace(/&amp;/g, '&');
+// The only inline style ingestion's _table_to_html emits (Phase 1). Anything
+// else in a `style="..."` attribute -- a color, a url(), an injection
+// attempt riding along on a crafted source value -- is silently dropped.
+// This is the file's one place that touches a `style` attribute at all, so
+// the allowlist is intentionally this narrow rather than a general CSS
+// parser.
+type SafeCellStyle = { textAlign: 'left' | 'center' | 'right' | 'justify' };
+const ALLOWED_TEXT_ALIGN_VALUES = new Set<string>(['left', 'center', 'right', 'justify']);
+
+// Extracts ONLY `text-align` out of a raw `style` attribute string and
+// returns a safe React style object built from a validated, closed enum --
+// never interpolates the raw attribute value into anything that becomes a
+// DOM attribute or style (the design spec's explicit security requirement).
+// The `[a-z]+` capture group can only ever pick up a bare lowercase word --
+// no colons/parens/semicolons -- so a crafted value like
+// `background:url(javascript:alert(1))` or an out-of-enum alignment word
+// simply fails the Set membership check below and is ignored, not passed
+// through.
+function parseSafeCellStyle(styleAttr: string | null): SafeCellStyle | undefined {
+  if (!styleAttr) return undefined;
+  const match = /\btext-align\s*:\s*([a-z]+)/i.exec(styleAttr);
+  const value = match?.[1]?.toLowerCase();
+  return value && ALLOWED_TEXT_ALIGN_VALUES.has(value) ? { textAlign: value as SafeCellStyle['textAlign'] } : undefined;
 }
 
-function parseTrustedTableRows(tableHtml: string): string[][] {
-  const rowMatches = tableHtml.match(/<tr>[\s\S]*?<\/tr>/g) ?? [];
-  return rowMatches.map((row) => {
-    const cellMatches = row.match(/<td>[\s\S]*?<\/td>/g) ?? [];
-    return cellMatches.map((cell) => unescapeHtmlEntities(cell.slice('<td>'.length, -'</td>'.length)));
-  });
+// HTML's own limit for colspan is 1000 (rowspan 65534) -- reuse the smaller,
+// stricter bound for both so a pathological or hand-crafted value can never
+// blow up table layout.
+const MAX_SPAN = 1000;
+
+// Reads colspan/rowspan straight off the attribute string rather than
+// trusting the DOM's own reflected `.colSpan`/`.rowSpan` IDL properties, so
+// the validation here is explicit rather than an assumption about
+// browser-internal clamping. Absent, non-integer, and non-positive values
+// all return undefined (React then falls back to the HTML default of 1,
+// matching "no colspan/rowspan attribute present" -- Phase 1 only emits the
+// attribute at all when N > 1).
+function parseSafeSpan(el: Element, attr: 'colspan' | 'rowspan'): number | undefined {
+  const raw = el.getAttribute(attr);
+  if (raw === null) return undefined;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 1) return undefined;
+  return Math.min(n, MAX_SPAN);
 }
 
-// Renders as real <table>/<tr>/<td> elements (never dangerouslySetInnerHTML)
-// -- text content goes through React's normal child rendering, so this is
-// exactly as safe against injection as any other React output.
+// Renders one <tr>'s <th>/<td> children as real React cells.
+// `rowEl.cells` is the standard HTMLTableRowElement IDL collection of only
+// th/td children, in source order -- a grid position that ingestion
+// SPANNED (absorbed by a preceding cell's colspan/rowspan) simply has no
+// <td>/<th> in the source markup at all, so it naturally produces no React
+// element here either; a genuine gap still has a real (empty) <td> and
+// renders as an empty cell. No special-casing needed for either case.
+function renderRow(rowEl: HTMLTableRowElement, rowKey: number): React.ReactElement {
+  return (
+    <tr key={rowKey}>
+      {Array.from(rowEl.cells).map((cellEl, cellIndex) => {
+        const colSpan = parseSafeSpan(cellEl, 'colspan');
+        const rowSpan = parseSafeSpan(cellEl, 'rowspan');
+        const style = parseSafeCellStyle(cellEl.getAttribute('style'));
+        // .textContent decodes any HTML entities in the source (e.g.
+        // "&lt;script&gt;" becomes the literal string "<script>") as a
+        // plain JS string, not as markup -- putting that string into a
+        // React text child is then re-escaped safely by React's own JSX
+        // text-child rendering on output, so this can never become a real
+        // element or execute (see Markdown.test.tsx's injection-safety
+        // tests).
+        const text = cellEl.textContent ?? '';
+        return cellEl.tagName === 'TH' ? (
+          <th
+            key={cellIndex}
+            colSpan={colSpan}
+            rowSpan={rowSpan}
+            style={style}
+            className="border-b border-hairline px-2.5 py-1.5 text-left font-semibold"
+          >
+            {text}
+          </th>
+        ) : (
+          <td key={cellIndex} colSpan={colSpan} rowSpan={rowSpan} style={style} className="border-b border-hairline px-2.5 py-1.5">
+            {text}
+          </td>
+        );
+      })}
+    </tr>
+  );
+}
+
+// Renders as real <table>/<thead>/<tbody>/<tr>/<th>/<td>/<caption> elements
+// (never dangerouslySetInnerHTML) -- text content goes through React's
+// normal child rendering, so this is exactly as safe against injection as
+// any other React output. Parses the trusted block with the browser's own
+// DOMParser instead of regex-matching literal tag substrings, so it walks
+// the REAL shape ingestion emits (any attributes on <table>, <th> vs <td>,
+// nested <thead>/<tbody>, colspan/rowspan, <caption>) structurally, instead
+// of needing a new special case every time a feature adds an HTML shape --
+// this is intentionally scoped to exactly that one shape (table ->
+// thead/tbody -> tr -> th/td -> text), not a general-purpose sanitizing
+// HTML-to-React converter.
 function TrustedTable({ tableHtml }: { tableHtml: string }): React.ReactElement {
-  const rows = parseTrustedTableRows(tableHtml);
+  const doc = new DOMParser().parseFromString(tableHtml, 'text/html');
+  const tableEl = doc.querySelector('table');
+  if (!tableEl) {
+    // Defensive only: TABLE_BLOCK_PATTERN already guarantees this string
+    // matched `<table...>...</table>`, so this branch should be
+    // unreachable -- but a malformed fragment should never crash the panel.
+    return <></>;
+  }
+
+  const headRows = tableEl.tHead ? Array.from(tableEl.tHead.rows) : [];
+  // tBodies[0]: Phase 1's shape wraps all non-header rows in exactly one
+  // <tbody>. The HTML5 tree-construction algorithm also auto-wraps any
+  // stray <tr> that isn't already inside a thead/tbody/tfoot into an
+  // implicit <tbody> during parsing, so this also covers today's
+  // pre-rewrite bare <table><tr><td> shape with zero special-casing.
+  const bodyRows = tableEl.tBodies[0] ? Array.from(tableEl.tBodies[0].rows) : [];
+  const captionText = tableEl.caption?.textContent ?? '';
+
   return (
     <div className="mb-1.5 overflow-x-auto">
       <table className="w-full text-sm">
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              {row.map((cell, cellIndex) => (
-                <td key={cellIndex} className="border-b border-hairline px-2.5 py-1.5">
-                  {cell}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
+        {captionText && <caption className="pb-1 text-left text-xs text-ink-2">{captionText}</caption>}
+        {headRows.length > 0 && <thead>{headRows.map((row, rowIndex) => renderRow(row, rowIndex))}</thead>}
+        <tbody>{bodyRows.map((row, rowIndex) => renderRow(row, rowIndex))}</tbody>
       </table>
     </div>
   );

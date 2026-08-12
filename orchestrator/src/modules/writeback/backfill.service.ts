@@ -75,7 +75,11 @@ async function resolveBackfillableRealTypes(
 // sourceHash a few lines down must stay on the untouched raw text, or
 // every existing IdempotencyMapping row keyed on the old (HTML-included)
 // hash would silently stop matching.
-function stripHtmlTags(html: string): string {
+//
+// Exported so dry-run.service.ts's diffOneNode can strip node.description
+// with this SAME function before running its own dedup-similarity check --
+// see that call site's own comment for the asymmetry this closes.
+export function stripHtmlTags(html: string): string {
   return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 

@@ -4,6 +4,7 @@ from app.leveling.tree_builder import (
     _build_flat_list_tree,
     _hash_identity,
     _split_into_branches,
+    _table_to_html,
     _widen_page_end,
     build_baseline_tree,
 )
@@ -250,7 +251,9 @@ def test_table_only_document_folds_each_table_into_a_requirement_instead_of_an_e
     assert feature.type == WorkItemType.FEATURE
     assert requirement.type == WorkItemType.REQUIREMENT
     assert requirement.parent_local_id == feature.local_id
-    assert requirement.description == "<table><tr><td>a</td><td>b</td></tr></table>"
+    # Real semantic HTML now: caption rendered, non-header row grouped
+    # into <tbody> (no leading header row here, so no <thead> at all).
+    assert requirement.description == "<table><caption>Sheet1</caption><tbody><tr><td>a</td><td>b</td></tr></tbody></table>"
 
 
 def test_table_only_document_folds_multiple_tables_into_separate_requirements() -> None:
@@ -615,8 +618,12 @@ def test_table_with_a_fully_blank_row_skips_only_that_row_not_the_whole_table() 
     tree = build_baseline_tree(doc)
 
     requirement = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
+    # No caption on this table, and no cell is is_header=True, so "Header A"/
+    # "Header B" is plain text here -- everything lands in one <tbody>, no
+    # <thead>. The blank middle row contributes nothing at all.
     assert requirement.description == (
-        "<table><tr><td>Header A</td><td>Header B</td></tr><tr><td>value 1</td><td>value 2</td></tr></table>"
+        "<table><tbody><tr><td>Header A</td><td>Header B</td></tr>"
+        "<tr><td>value 1</td><td>value 2</td></tr></tbody></table>"
     )
 
 
@@ -646,7 +653,8 @@ def test_document_with_both_headings_and_tables_folds_the_table_into_its_parent_
     parent = next(n for n in tree.nodes if n.title == "3.3V Rail Requirements")
     assert parent.description == (
         "3.3V Rail Requirements"
-        "\n<table><tr><td>Rail</td><td>Voltage</td></tr><tr><td>3.3V</td><td>3.3</td></tr></table>"
+        "\n<table><caption>Rail Table</caption><tbody><tr><td>Rail</td><td>Voltage</td></tr>"
+        "<tr><td>3.3V</td><td>3.3</td></tr></tbody></table>"
     )
     assert tree.warnings == []
 
@@ -735,6 +743,153 @@ def test_table_html_escapes_cell_content() -> None:
     assert "<script>" not in requirement.description
     assert "&lt;script&gt;" in requirement.description
     assert "A &amp; B" in requirement.description
+
+
+def test_table_to_html_wraps_a_fully_header_row_in_thead_with_th_cells() -> None:
+    # Direct unit test of the Phase 1 rewrite's thead/th emission: a row
+    # where EVERY real cell is is_header=True becomes a <thead> row of
+    # <th> cells; the following ordinary row is plain <td> in <tbody>.
+    table = Table(
+        id="t0",
+        cells=[
+            [TableCell(text="Col A", is_header=True), TableCell(text="Col B", is_header=True)],
+            [TableCell(text="1"), TableCell(text="2")],
+        ],
+        source_ref=_sr("x.xlsx", 0, 0),
+    )
+    assert _table_to_html(table) == (
+        "<table><thead><tr><th>Col A</th><th>Col B</th></tr></thead>"
+        "<tbody><tr><td>1</td><td>2</td></tr></tbody></table>"
+    )
+
+
+def test_table_to_html_only_groups_the_leading_run_of_header_rows_into_thead() -> None:
+    # A header row that is NOT at the very top (the "odd position" case the
+    # rewrite's docstring documents as a deliberate v1 limitation) still
+    # renders its cells as <th>, but stays inside <tbody> -- standard HTML
+    # supports only one <thead>/<tbody> pair per table, so a second,
+    # out-of-order header run cannot get its own <thead>.
+    table = Table(
+        id="t0",
+        cells=[
+            [TableCell(text="1"), TableCell(text="2")],
+            [TableCell(text="H1", is_header=True), TableCell(text="H2", is_header=True)],
+        ],
+        source_ref=_sr("x.xlsx", 0, 0),
+    )
+    assert _table_to_html(table) == (
+        "<table><tbody><tr><td>1</td><td>2</td></tr><tr><th>H1</th><th>H2</th></tr></tbody></table>"
+    )
+
+
+def test_table_to_html_emits_colspan_and_rowspan_attributes_only_when_greater_than_one() -> None:
+    # colspan="1"/rowspan="1" (the default, ordinary case) must NOT appear
+    # in the output -- only real spans (>1) get an attribute, matching a
+    # hand-authored table's own convention.
+    table = Table(
+        id="t0",
+        cells=[
+            [TableCell(text="Wide", colspan=2), None],
+            [TableCell(text="a"), TableCell(text="b")],
+        ],
+        source_ref=_sr("x.xlsx", 0, 0),
+    )
+    html_out = _table_to_html(table)
+    assert html_out == (
+        '<table><tbody><tr><td colspan="2">Wide</td></tr>'
+        "<tr><td>a</td><td>b</td></tr></tbody></table>"
+    )
+    assert 'colspan="1"' not in html_out
+    assert 'rowspan="1"' not in html_out
+
+
+def test_table_to_html_distinguishes_a_spanned_none_position_from_a_genuine_empty_gap() -> None:
+    # The single most important structural rule in this rewrite: a None
+    # grid position (absorbed by the preceding cell's colspan) must
+    # contribute NO <td> at all, while a real TableCell(text="") (a
+    # genuine gap) DOES get its own empty <td></td>. Both appear in the
+    # SAME row here to prove they render differently, not just that each
+    # works in isolation.
+    table = Table(
+        id="t0",
+        cells=[[TableCell(text="a", colspan=2), None, TableCell(text="")]],
+        source_ref=_sr("x.xlsx", 0, 0),
+    )
+    # Exactly two <td> elements: the colspan=2 origin cell, then the
+    # genuine gap's empty <td></td> -- the None position in between adds
+    # nothing, so the row does NOT have three <td>s despite three grid
+    # positions.
+    assert _table_to_html(table) == (
+        '<table><tbody><tr><td colspan="2">a</td><td></td></tr></tbody></table>'
+    )
+
+
+def test_table_to_html_renders_and_escapes_the_caption_as_the_first_child() -> None:
+    table = Table(
+        id="t0",
+        cells=[[TableCell(text="a")]],
+        caption="Rev & <History>",
+        source_ref=_sr("x.xlsx", 0, 0),
+    )
+    html_out = _table_to_html(table)
+    # <caption> must be untrusted-content-escaped exactly like cell text
+    # (it was never rendered at all before this rewrite, so it never got
+    # this treatment previously).
+    assert html_out.startswith("<table><caption>Rev &amp; &lt;History&gt;</caption>")
+    assert "<History>" not in html_out
+
+
+def test_table_to_html_emits_text_align_style_only_when_align_is_set() -> None:
+    table = Table(
+        id="t0",
+        cells=[[TableCell(text="left default"), TableCell(text="centered", align="center")]],
+        source_ref=_sr("x.xlsx", 0, 0),
+    )
+    html_out = _table_to_html(table)
+    assert html_out == (
+        "<table><tbody><tr><td>left default</td>"
+        '<td style="text-align:center">centered</td></tr></tbody></table>'
+    )
+
+
+def test_table_to_html_output_never_contains_an_embedded_newline() -> None:
+    # description-html.ts's TABLE_BLOCK_PATTERN and the frontend's
+    # TrustedTable matcher both assume/require a single-line <table> block
+    # -- a newline anywhere inside it would break their matching.
+    table = Table(
+        id="t0",
+        cells=[
+            [TableCell(text="Col A", is_header=True), TableCell(text="Col B", is_header=True)],
+            [TableCell(text="1", align="right"), TableCell(text="2")],
+        ],
+        caption="A caption",
+        source_ref=_sr("x.xlsx", 0, 0),
+    )
+    assert "\n" not in _table_to_html(table)
+
+
+def test_table_to_html_keeps_a_fully_absorbed_row_as_an_empty_tr_not_skipped() -> None:
+    # A row entirely covered by rowspans from an earlier row (every column
+    # is None) is NOT "blank" in the content sense -- it must still emit
+    # an empty <tr></tr> to preserve physical row-count alignment for
+    # rowspan math (see _table_to_html's own docstring for why skipping it
+    # would corrupt a LATER row's alignment instead). Distinct from
+    # test_table_with_a_fully_blank_row_skips_only_that_row_not_the_whole_table,
+    # which covers the OTHER case (real cells, all empty text) that IS
+    # still skipped exactly as before.
+    table = Table(
+        id="t0",
+        cells=[
+            [TableCell(text="A", rowspan=2), TableCell(text="B", rowspan=2)],
+            [None, None],
+            [TableCell(text="C"), TableCell(text="D")],
+        ],
+        source_ref=_sr("x.xlsx", 0, 0),
+    )
+    assert _table_to_html(table) == (
+        '<table><tbody><tr><td rowspan="2">A</td><td rowspan="2">B</td></tr>'
+        "<tr></tr><tr><td>C</td><td>D</td></tr></tbody></table>"
+    )
 
 
 def test_split_into_branches_uses_the_documents_own_shallowest_depth_not_hardcoded_1() -> None:

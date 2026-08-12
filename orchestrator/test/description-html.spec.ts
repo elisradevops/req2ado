@@ -65,4 +65,53 @@ describe('toAdoDescriptionHtml', () => {
     expect(html).toContain('&lt;TBD&gt;');
     expect(html).toContain('<table><tr><td>Cell A</td></tr></table>');
   });
+
+  it('passes a table using the real Phase 1 semantic shape (<thead>/<th>/colspan/<caption>) through completely intact', () => {
+    // Regression: ingestion's _table_to_html is being rewritten away from
+    // the old flat <table><tr><td> shape to real semantic HTML --
+    // <thead>, <th>, colspan/rowspan, and <caption>. TABLE_BLOCK_PATTERN's
+    // job is only to find the outer <table>...</table> boundaries so its
+    // content bypasses angle-bracket escaping; it must not care what tags
+    // live inside that boundary, or every one of these new tags would
+    // regress into unreadable "&lt;thead&gt;" garbage in the real ADO item.
+    const description =
+      'Intro text.\n<table><caption>Slot allocation</caption><thead><tr><th colspan="2">Slot</th></tr></thead>' +
+      '<tbody><tr><td>A</td><td>B</td></tr></tbody></table>';
+    const html = toAdoDescriptionHtml(description);
+    expect(html).toContain(
+      '<table><caption>Slot allocation</caption><thead><tr><th colspan="2">Slot</th></tr></thead>' +
+        '<tbody><tr><td>A</td><td>B</td></tr></tbody></table>',
+    );
+    expect(html).not.toContain('&lt;thead&gt;');
+    expect(html).not.toContain('&lt;th');
+    expect(html).not.toContain('&lt;caption&gt;');
+  });
+
+  it('tolerates attributes on the opening <table> tag itself without breaking the block match', () => {
+    // A bare `<table>` pattern (no `[^>]*`) would fail to match this block
+    // at all, since the opening tag no longer matches literally -- the
+    // whole block (including its genuinely-safe style attribute) would
+    // fall through to the general escaping path and come out as garbled
+    // "&lt;table style=..." text. `style="..."` here previews Phase 2
+    // (out of scope for this task's content), but the REGEX must already
+    // tolerate it since it's just "some attribute on the opening tag" as
+    // far as matching is concerned.
+    const description = '<table style="width:100%; border-collapse:collapse"><tr><td>Cell</td></tr></table>';
+    const html = toAdoDescriptionHtml(description);
+    expect(html).toContain('<table style="width:100%; border-collapse:collapse"><tr><td>Cell</td></tr></table>');
+    expect(html).not.toContain('&lt;table');
+  });
+
+  it('still escapes a literal angle-bracket placeholder next to a semantically-rich table block', () => {
+    // Same non-regression guarantee as the earlier bare-<table> version of
+    // this test, re-proven against the new richer shape: the fix to
+    // tolerate attributes/nested tags inside the trusted block must not
+    // accidentally widen what counts as "inside the block" and start
+    // swallowing unrelated prose <TBD> as HTML.
+    const description =
+      'Value: <TBD>\n<table><thead><tr><th>H</th></tr></thead><tbody><tr><td>Cell A</td></tr></tbody></table>';
+    const html = toAdoDescriptionHtml(description);
+    expect(html).toContain('&lt;TBD&gt;');
+    expect(html).toContain('<table><thead><tr><th>H</th></tr></thead><tbody><tr><td>Cell A</td></tr></tbody></table>');
+  });
 });

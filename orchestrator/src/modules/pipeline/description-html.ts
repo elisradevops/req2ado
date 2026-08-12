@@ -17,7 +17,16 @@ import { marked } from 'marked';
 // noise in the final ADO work item -- these blocks must reach `marked`
 // untouched so CommonMark's raw-HTML-block rule (which recognizes `table`
 // as a block-level tag) passes them through as-is.
-const TABLE_BLOCK_PATTERN = /<table>[\s\S]*?<\/table>/g;
+//
+// `<table[^>]*>` (not a bare `<table>`) tolerates attributes on the
+// opening tag: table-fidelity work has ingestion emitting real semantic
+// HTML inside the block (`<thead>`, `<th>`, `colspan`/`rowspan`,
+// `<caption>`) starting now, and will add `style="width:100%; ..."`
+// directly on `<table>` itself in a later phase. Nested tags never
+// affected matching -- the lazy `[\s\S]*?` already runs to the first
+// `</table>` regardless of what's inside -- only the opening tag itself
+// needed to stop assuming zero attributes.
+const TABLE_BLOCK_PATTERN = /<table[^>]*>[\s\S]*?<\/table>/g;
 
 function escapeAngleBrackets(text: string): string {
   let result = '';

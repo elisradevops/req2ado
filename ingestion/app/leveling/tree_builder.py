@@ -5,7 +5,7 @@ import html
 import re
 from pathlib import Path
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, SourceRef, Table, plain_text_rows
+from app.canonical.model import Block, BlockKind, CanonicalDoc, SourceRef, Table, TableCell
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
@@ -244,26 +244,133 @@ def figure_id_by_block_id(doc: CanonicalDoc) -> dict[str, str]:
     )
 
 
+def _row_is_header(row: list[TableCell | None]) -> bool:
+    """A row counts as a header row only if it has at least one real
+    (non-None) cell AND every real cell in it is is_header=True. The signal
+    is inherently row-level on every format that sets it today (docx's
+    w:trPr/w:tblHeader, xlsx's freeze_panes heuristic) -- there is no
+    "partially header" row in v1, so a row with a mix of header/non-header
+    real cells renders entirely as <td> (see _table_to_html's per-row
+    dispatch below), not a per-cell split."""
+    real_cells = [cell for cell in row if cell is not None]
+    return bool(real_cells) and all(cell.is_header for cell in real_cells)
+
+
+def _row_is_blank(row: list[TableCell | None]) -> bool:
+    """A row is blank (skip it entirely, same contract as before the
+    TableCell migration) only when it has at least one real cell and every
+    real cell's text is empty after stripping. A row of ALL None positions
+    is NOT blank by this definition -- see the fully-absorbed-row comment in
+    _table_to_html for why that case is handled separately."""
+    real_cells = [cell for cell in row if cell is not None]
+    return bool(real_cells) and all(not cell.text.strip() for cell in real_cells)
+
+
+def _render_table_row(row: list[TableCell | None], cell_tag: str) -> str:
+    """Renders one grid row as a single-line <tr>...</tr>. A None position
+    is a SPANNED cell (absorbed by a preceding cell's colspan/rowspan) and
+    contributes NO output at all -- emitting an empty <td> there would add
+    an extra cell beyond the row's real column count and corrupt the whole
+    table's alignment (confirmed live against pdfplumber's own span/gap
+    output, see docs/superpowers/specs/2026-08-12-table-fidelity-design.md's
+    Phase 0 findings). A real TableCell with text="" (a genuine gap) DOES
+    get its own empty <td></td> -- that distinction is the entire point of
+    the None-vs-TableCell(text="") grid encoding."""
+    cells_html: list[str] = []
+    for cell in row:
+        if cell is None:
+            continue
+        attrs = ""
+        if cell.colspan > 1:
+            attrs += f' colspan="{cell.colspan}"'
+        if cell.rowspan > 1:
+            attrs += f' rowspan="{cell.rowspan}"'
+        if cell.align is not None:
+            # SAFE BY CONSTRUCTION, not defensively re-validated here:
+            # `align` is a Literal["left","center","right","justify"] | None
+            # field on the TableCell pydantic model, so any value that
+            # reaches this line has already been validated to one of
+            # exactly those 4 literals -- pydantic itself is the guard.
+            # This is NOT a precedent for Phase 2's background/text colors:
+            # those are plain `str | None` (not a closed Literal), so they
+            # will need real runtime validation (hex regex) before ever
+            # reaching a style attribute -- never copy this shortcut there.
+            attrs += f' style="text-align:{cell.align}"'
+        cells_html.append(f"<{cell_tag}{attrs}>{html.escape(cell.text)}</{cell_tag}>")
+    return "<tr>" + "".join(cells_html) + "</tr>"
+
+
 def _table_to_html(table: Table) -> str:
-    """Renders a Table's rows as an HTML <table>, preserving row/column
-    structure for ADO's System.Description field (a rich-HTML field, not
-    plain text) -- replaces a previous pipe-delimited plain-text fold, which
-    flattened every row into one line ADO could only ever display as a flat
-    string, never as an actual table. Fully-blank rows are skipped, same as
-    before. Cell text is HTML-escaped (html.escape) since it is untrusted
-    source-document content about to be embedded in an HTML field."""
-    # NOTE: minimal compat shim over the new TableCell grid -- flattens back
-    # to plain text/no styling, IDENTICAL output to before. Real semantic
-    # HTML (colspan/rowspan/thead/th/caption/validated inline styles) is a
-    # dedicated rewrite, Phase 1 of
-    # docs/superpowers/specs/2026-08-12-table-fidelity-design.md, not done
-    # here.
-    rows_html = [
-        "<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>"
-        for row in plain_text_rows(table)
-        if any(cell.strip() for cell in row)
-    ]
-    return f"<table>{''.join(rows_html)}</table>" if rows_html else ""
+    """Renders a Table's TableCell grid as a real semantic HTML <table>,
+    preserving row/column structure AND colspan/rowspan/is_header/caption
+    for ADO's System.Description field (a rich-HTML field, not plain text)
+    -- full rewrite of the schema-migration compat shim that used to flatten
+    everything back to bare <tr><td> with no styling (Phase 1 of
+    docs/superpowers/specs/2026-08-12-table-fidelity-design.md). Output is
+    kept on a SINGLE line with no embedded newlines -- the orchestrator's
+    description-html.ts TABLE_BLOCK_PATTERN and the frontend's TrustedTable
+    matcher both assume/require a single-line block.
+
+    thead/tbody grouping rule: only a LEADING run of header rows (every
+    real cell in the row is_header=True, checked from row index 0) is
+    wrapped in one <thead>; every row after the first non-header row --
+    including any later row that individually still qualifies as a header
+    row -- goes into one <tbody> (still rendered with <th> cells, just not
+    inside a second <thead>). This is a deliberate simplification: standard
+    HTML only supports a single <thead>/<tbody> pair per table, so a
+    document with header rows in a structurally odd position (e.g. a
+    repeated header mid-table) cannot be represented with more than one
+    <thead> without inventing non-standard structure -- not done here.
+
+    Fully-blank rows (every real cell's text is empty after stripping) are
+    skipped entirely, same as before. A row made ENTIRELY of None
+    positions (fully absorbed by rowspans from earlier rows -- e.g. every
+    column in that source row is covered by a taller cell above it) is
+    handled differently: it is NOT treated as blank and NOT skipped, and
+    instead emits an empty <tr></tr>. Rationale: skipping it would shrink
+    the rendered <tr> count below the table's real row count, and HTML's
+    rowspan is resolved purely by physical <tr> position in the rendered
+    output -- a rowspan covering 3+ physical rows with a fully-absorbed row
+    omitted from the middle would then overflow into a LATER row's cells
+    that were never meant to be covered, corrupting that row's alignment
+    too. An empty <tr></tr> costs nothing and keeps row-count truthful.
+
+    Cell text (and caption) is HTML-escaped (html.escape) since it is
+    untrusted source-document content about to be embedded in an HTML
+    field."""
+    # Bail out entirely (matches the pre-rewrite contract: a wholly blank
+    # table produces no HTML at all, so its caller skips creating a node
+    # for it) if there is genuinely no content anywhere in the grid --
+    # checked directly over every cell, independent of the per-row
+    # blank/header/fully-absorbed classification below.
+    if not any(cell is not None and cell.text.strip() for row in table.cells for cell in row):
+        return ""
+
+    thead_rows: list[str] = []
+    tbody_rows: list[str] = []
+    still_leading = True  # False once the first non-header kept row is seen
+    for row in table.cells:
+        if _row_is_blank(row):
+            continue
+        if all(cell is None for cell in row):
+            # Fully-absorbed structural row -- see docstring above.
+            still_leading = False
+            tbody_rows.append("<tr></tr>")
+            continue
+        if still_leading and _row_is_header(row):
+            thead_rows.append(_render_table_row(row, "th"))
+            continue
+        still_leading = False
+        tbody_rows.append(_render_table_row(row, "th" if _row_is_header(row) else "td"))
+
+    caption_html = (
+        f"<caption>{html.escape(table.caption)}</caption>"
+        if table.caption and table.caption.strip()
+        else ""
+    )
+    thead_html = f"<thead>{''.join(thead_rows)}</thead>" if thead_rows else ""
+    tbody_html = f"<tbody>{''.join(tbody_rows)}</tbody>" if tbody_rows else ""
+    return f"<table>{caption_html}{thead_html}{tbody_html}</table>"
 
 
 def _order_key(ref: SourceRef) -> tuple[int, int]:

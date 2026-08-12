@@ -241,6 +241,231 @@ def test_load_docx_combined_horizontal_and_vertical_merge() -> None:
     assert sum(row.count("GPU") for row in rows) == 1
 
 
+def test_load_docx_horizontal_merge_colspan_value() -> None:
+    # Regression/extension of the horizontal-merge fixture above: the
+    # earlier tests only asserted TEXT placement via plain_text_rows
+    # (which can't see colspan at all -- it collapses every position to a
+    # bare string). This asserts the real TableCell.colspan value the
+    # Phase 1 rewrite is responsible for, and that the two spanned grid
+    # positions are `None` (SPANNED), not empty-string TableCells (GAP) --
+    # the model's two meanings are not interchangeable.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_horizontal_merge(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    row = doc.tables[0].cells[0]
+    assert row[0] is not None
+    assert row[0].colspan == 3
+    assert row[1] is None
+    assert row[2] is None
+
+
+def _build_docx_with_three_row_vertical_merge(tmp_path: Path) -> Path:
+    # 4 rows, 2 columns; column 0 rows 1-3 (3 rows) merged vertically --
+    # deliberately more than the 2-row case above, since a rowspan
+    # computation that happens to work for exactly 2 rows (e.g. an
+    # off-by-one that only manifests at 3+) would pass the 2-row test
+    # anyway.
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=4, cols=2)
+    table.cell(0, 0).text = "Header"
+    table.cell(0, 1).text = "Value"
+    table.cell(1, 0).text = "GPU"
+    table.cell(1, 1).text = "Row 1"
+    table.cell(2, 1).text = "Row 2"
+    table.cell(3, 1).text = "Row 3"
+    table.cell(1, 0).merge(table.cell(3, 0))
+
+    out_path = tmp_path / "three_row_vertical_merge.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_vertical_merge_rowspan_value_for_three_rows() -> None:
+    # Confirms the EXACT rowspan count (3), not just "greater than 1" --
+    # the algorithm (tc.bottom - tc.top, see _extract_table_cells'
+    # docstring) must walk ALL consecutive vMerge=="continue" rows, not
+    # stop after the first one.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_three_row_vertical_merge(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    cells = doc.tables[0].cells
+    origin = cells[1][0]
+    assert origin is not None
+    assert origin.rowspan == 3
+    assert cells[2][0] is None
+    assert cells[3][0] is None
+
+
+def _build_docx_with_grid_before(tmp_path: Path) -> Path:
+    # 2 rows, 3 columns; row 1 (0-indexed) has NO `w:tc` at all for grid
+    # column 0 -- it declares `w:trPr/w:gridBefore w:val="1"` instead,
+    # OOXML's way of saying "this row's first populated column is 1, not
+    # 0" without an explicit continuation cell. There is no high-level
+    # python-docx Table/Cell API to author this (no `Row.grid_before`
+    # setter exists) -- this uses python-docx's own lower-level `docx.oxml`
+    # layer instead (`get_or_add_trPr()`/`get_or_add_gridBefore()`, the
+    # same auto-generated accessors `_extract_table_cells` itself reads
+    # `w:trPr` through), which DOES support constructing it directly, just
+    # not via the friendly `Document`/`Table` wrapper API.
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "a"
+    table.cell(0, 1).text = "b"
+    table.cell(0, 2).text = "c"
+    table.cell(1, 0).text = "REMOVE_ME"
+    table.cell(1, 1).text = "x"
+    table.cell(1, 2).text = "y"
+
+    second_row_tr = table.rows[1]._tr
+    second_row_tr.remove(second_row_tr.tc_lst[0])
+    trPr = second_row_tr.get_or_add_trPr()
+    trPr.get_or_add_gridBefore().val = 1
+
+    out_path = tmp_path / "grid_before.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_grid_before_shifts_column_position() -> None:
+    # Without accounting for w:trPr/w:gridBefore, the omitted row-1 cell
+    # would be mistaken for column 0 (the first `w:tc` physically present
+    # in that row's XML) instead of its real column 1 -- silently
+    # misaligning every later column too. python-docx's own tc.grid_offset
+    # (which _extract_table_cells relies on rather than hand-rolling a
+    # column counter) already factors in grid_before; this proves that
+    # holds through this loader's own output.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_grid_before(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    row = doc.tables[0].cells[1]
+    assert row[0] is None  # omitted grid_before position -- SPANNED, not a gap
+    assert row[1] is not None and row[1].text == "x"
+    assert row[2] is not None and row[2].text == "y"
+
+
+def _build_docx_with_header_row(tmp_path: Path) -> Path:
+    # `w:trPr/w:tblHeader` has no high-level python-docx setter either
+    # (Row has no `.is_header`/`.repeats_as_header_row` property) -- built
+    # via the same `docx.oxml` `OxmlElement`/`get_or_add_trPr()` layer as
+    # the gridBefore fixture above.
+    from docx import Document as DocxDocument
+    from docx.oxml import OxmlElement
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Mode"
+    table.cell(0, 1).text = "Description"
+    table.cell(1, 0).text = "Vivid"
+    table.cell(1, 1).text = "High saturation"
+
+    header_tr = table.rows[0]._tr
+    trPr = header_tr.get_or_add_trPr()
+    trPr.append(OxmlElement("w:tblHeader"))
+
+    out_path = tmp_path / "header_row.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_detects_header_row_via_tblHeader() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_header_row(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    cells = doc.tables[0].cells
+    assert all(cell is not None and cell.is_header for cell in cells[0])
+    assert all(cell is not None and not cell.is_header for cell in cells[1])
+
+
+def _build_docx_with_alignment(tmp_path: Path) -> Path:
+    # Covers both a legacy w:jc value settable via python-docx's own
+    # WD_ALIGN_PARAGRAPH enum (CENTER -> "center") and a modern spelling
+    # ("start") that enum has NO member for at all -- set via a raw
+    # `w:jc` element instead, since `paragraph.alignment = ...` only
+    # accepts the enum. This is exactly the case _cell_alignment's
+    # docstring exists to explain: reading it back via python-docx's own
+    # `paragraph.alignment`/`jc.val` would raise ValueError on "start".
+    from docx import Document as DocxDocument
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Centered"
+    table.cell(0, 0).paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    second_paragraph = table.cell(0, 1).paragraphs[0]
+    second_paragraph.text = "Modern"
+    pPr = second_paragraph._p.get_or_add_pPr()
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "start")
+    pPr.append(jc)
+
+    out_path = tmp_path / "alignment.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_reads_alignment_including_modern_start_end_spellings() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_alignment(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    row = doc.tables[0].cells[0]
+    assert row[0] is not None and row[0].align == "center"
+    assert row[1] is not None and row[1].align == "left"  # "start" -> left (LTR reading)
+
+
+def _build_docx_with_bold_prefix_cell(tmp_path: Path) -> Path:
+    # The exact case the uniform-bold rule exists for: a bold "Note:"
+    # prefix followed by non-bold body text in the SAME cell/paragraph. A
+    # naive "first run bold" rule would flag the whole cell bold; the
+    # uniform rule must not. A second, wholly-bold cell (with a trailing
+    # whitespace-only, non-bold run that must NOT break uniformity) proves
+    # the positive case still works.
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=1, cols=2)
+
+    mixed_paragraph = table.cell(0, 0).paragraphs[0]
+    bold_prefix_run = mixed_paragraph.add_run("Note:")
+    bold_prefix_run.bold = True
+    rest_run = mixed_paragraph.add_run(" rest of sentence")
+    rest_run.bold = False
+
+    bold_paragraph = table.cell(0, 1).paragraphs[0]
+    bold_run = bold_paragraph.add_run("AllBold")
+    bold_run.bold = True
+    trailing_whitespace_run = bold_paragraph.add_run("   ")
+    trailing_whitespace_run.bold = False
+
+    out_path = tmp_path / "bold_prefix.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_uniform_bold_rejects_bold_prefix_but_accepts_wholly_bold_cell() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_bold_prefix_cell(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    row = doc.tables[0].cells[0]
+    assert row[0] is not None
+    assert row[0].text == "Note: rest of sentence"
+    assert row[0].bold is False  # bold label prefix must NOT bold the whole cell
+    assert row[1] is not None
+    assert row[1].bold is True  # wholly-bold text + trailing non-bold whitespace run
+
+
 def test_load_docx_end_to_end_folds_each_figure_into_its_own_section() -> None:
     # Same fixture, run through build_baseline_tree end to end: proves the
     # placement fix actually changes which node each figure's Description
