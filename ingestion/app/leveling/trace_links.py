@@ -110,7 +110,30 @@ def _infer_trace_links_for_nodes(
             continue
         if catalog and reference_name not in valid_reference_names:
             continue
+        if target_ref == source_node_id:
+            # A self-referencing "link" carries no information -- confirmed
+            # a real possibility, not a hypothetical: the model has no
+            # structural signal preventing it from proposing a node relates
+            # to itself.
+            continue
         if target_ref in node_by_local_id:
+            target_node = node_by_local_id[target_ref]
+            source_node = node_by_local_id[source_node_id]
+            if target_node.parent_local_id == source_node_id or source_node.parent_local_id == target_ref:
+                # CONFIRMED REAL BUG, found via live testing: this whole-tree
+                # call has no structural signal telling it two nodes are
+                # already directly related via the tree's OWN parent/child
+                # hierarchy (that's a separate field entirely, never part of
+                # the `llm_nodes` payload above) -- it can and does propose
+                # e.g. an "Affects" trace link from a parent requirement to
+                # its own child, which confirm() then writes as a SECOND,
+                # fully redundant ADO link alongside the real Parent/Child
+                # hierarchy link already covering the exact same pair.
+                # Direct parent/child (either direction) is dropped here,
+                # before it ever reaches confirm() -- a trace/coverage link
+                # is meant to capture relationships the hierarchy does NOT
+                # already express.
+                continue
             trace_links.append(
                 TraceLink(
                     source_local_id=source_node_id,

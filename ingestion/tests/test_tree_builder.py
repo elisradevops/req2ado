@@ -859,6 +859,25 @@ def test_table_to_html_emits_text_align_style_only_when_align_is_set() -> None:
     )
 
 
+def test_table_to_html_wraps_bold_cell_text_in_b_tag() -> None:
+    # TableCell.bold is extracted by docx_loader/xlsx_loader's uniform-bold
+    # rule but was never actually rendered -- confirmed live via a real job's
+    # ADO-written description (a bold+colored source label came out colored
+    # but NOT bold). <b> wraps the escaped text, same ordering as
+    # align/color style parts already do -- bold and non-bold cells stay
+    # distinguishable regardless of what color/border styling also applies
+    # to the same cell.
+    table = Table(
+        id="t0",
+        cells=[[TableCell(text="Module A", bold=True), TableCell(text="plain")]],
+        source_ref=_sr("x.docx", 0, 0),
+    )
+    html_out = _table_to_html(table)
+    assert html_out == (
+        "<table><tbody><tr><td><b>Module A</b></td><td>plain</td></tr></tbody></table>"
+    )
+
+
 def test_table_to_html_output_never_contains_an_embedded_newline() -> None:
     # description-html.ts's TABLE_BLOCK_PATTERN and the frontend's
     # TrustedTable matcher both assume/require a single-line <table> block

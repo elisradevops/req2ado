@@ -708,12 +708,17 @@ def _build_docx_with_table_style_only(tmp_path: Path) -> Path:
     return out_path
 
 
-def test_load_docx_table_style_only_shading_and_borders_correctly_yield_none() -> None:
-    # REGRESSION GUARD, not a bug report: this proves the documented v1 gap
-    # (table-style-inherited shading/borders are never resolved) holds in
-    # practice, so nobody "fixes" this later by half-guessing table-style
-    # colors/borders without first re-deciding the out-of-scope call the
-    # design spec's Phase 0 section made deliberately and explicitly.
+def test_load_docx_table_style_only_shading_still_none_but_borders_now_resolved() -> None:
+    # Shading resolution (_cell_background_color) is a SEPARATE, still-
+    # unresolved v1 boundary -- unchanged, still correctly None here. Border
+    # resolution (_table_border_style/_table_style_borders_elements) is NOT
+    # unresolved anymore (confirmed real user complaint: a live document's
+    # table showed correct explicit shading but no internal gridlines,
+    # because those came purely from this exact style mechanism). Word's
+    # default python-docx-generated tblLook for a freshly applied style has
+    # firstRow=1/noHBand=0 -- "Light Grid Accent 1"'s own firstRow and
+    # band1Horz/band2Horz w:tblStylePr entries all declare real insideH/
+    # insideV sides, so this must now classify as "grid", not "none".
     with tempfile.TemporaryDirectory() as tmp_dir:
         docx_path = _build_docx_with_table_style_only(Path(tmp_dir))
         doc = load_docx(str(docx_path))
@@ -724,10 +729,194 @@ def test_load_docx_table_style_only_shading_and_borders_correctly_yield_none() -
             assert cell is not None
             assert cell.background_color is None
             assert cell.text_color is None
-    # No explicit w:tblBorders/w:tcBorders anywhere -- despite Word showing
-    # a full grid for this table style, the table-level classification must
-    # stay "none", the same documented honest gap as per-cell shading.
+    assert doc.tables[0].border_style == "grid"
+
+
+def test_load_docx_table_grid_style_resolves_via_its_own_unconditional_tblborders() -> None:
+    # CONFIRMED REAL BUG found in code review: Word's built-in "Table Grid"
+    # style -- arguably the single most common way real documents get a
+    # gridded table at all -- declares its borders as a bare, UNCONDITIONAL
+    # w:tblPr/w:tblBorders directly on the w:style element, with NO
+    # w:tblStylePr children whatsoever. _table_style_borders_elements
+    # previously only ever looked inside w:tblStylePr's conditional regions
+    # and completely missed this, silently resolving to "none" for the most
+    # common real-world case.
+    from docx import Document as DocxDocument
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        doc_x = DocxDocument()
+        table = doc_x.add_table(rows=3, cols=2)
+        table.style = "Table Grid"
+        docx_path = Path(tmp_dir) / "table_grid_style.docx"
+        doc_x.save(str(docx_path))
+
+        doc = load_docx(str(docx_path))
+
+    assert doc.tables[0].border_style == "grid"
+
+
+def _inject_conditional_only_style(doc_x, style_id: str) -> None:
+    # A style with ONLY a w:tblStylePr firstRow region (real insideH/
+    # insideV) and deliberately NO base w:tblPr/w:tblBorders at all --
+    # isolates tblLook gating from the unconditional base-border path
+    # (see test_load_docx_table_grid_style_resolves_via_its_own_unconditional_tblborders,
+    # which covers that separate, ungated path). "Light Grid Accent 1" was
+    # used here previously, but it ALSO has its own unconditional base
+    # tblBorders (confirmed live) -- gating firstRow off there still left
+    # "grid" true via the ungated base borders, so it couldn't actually
+    # prove tblLook gating was doing anything.
+    from docx.oxml.ns import qn
+
+    styles_root = doc_x.part.styles.element
+    style_el = styles_root.makeelement(qn("w:style"), {qn("w:type"): "table", qn("w:styleId"): style_id})
+    name_el = style_el.makeelement(qn("w:name"), {qn("w:val"): style_id})
+    style_el.append(name_el)
+    pr = style_el.makeelement(qn("w:tblStylePr"), {qn("w:type"): "firstRow"})
+    tcPr = pr.makeelement(qn("w:tcPr"), {})
+    tcBorders = tcPr.makeelement(qn("w:tcBorders"), {})
+    for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        tcBorders.append(tcPr.makeelement(qn(f"w:{side}"), {qn("w:val"): "single"}))
+    tcPr.append(tcBorders)
+    pr.append(tcPr)
+    style_el.append(pr)
+    styles_root.append(style_el)
+
+
+def test_load_docx_table_style_borders_respect_tbllook_off_switches() -> None:
+    # A style whose ONLY border definition is a conditional firstRow region
+    # (with real insideH/insideV) must NOT contribute grid evidence once
+    # w:tblLook explicitly switches firstRow off for this table instance --
+    # proving tblLook actually gates conditional regions, isolated from the
+    # separate unconditional-base-borders path.
+    from docx import Document as DocxDocument
+    from docx.oxml.ns import qn
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        doc_x = DocxDocument()
+        _inject_conditional_only_style(doc_x, "ConditionalOnly")
+        table = doc_x.add_table(rows=2, cols=2)
+        tblPr = table._tbl.tblPr
+        tblStyle = tblPr.makeelement(qn("w:tblStyle"), {qn("w:val"): "ConditionalOnly"})
+        tblPr.insert(0, tblStyle)
+        # add_table() already inserts its own default w:tblLook (firstRow=1)
+        # -- mutate that EXISTING element rather than appending a second
+        # one, which .find() would never see (confirmed live: appending a
+        # duplicate silently left the default's firstRow=1 in effect).
+        tblLook = tblPr.find(qn("w:tblLook"))
+        tblLook.set(qn("w:firstRow"), "0")
+        tblLook.set(qn("w:lastRow"), "0")
+        tblLook.set(qn("w:noHBand"), "1")
+        table.cell(0, 0).text = "A"
+        docx_path = Path(tmp_dir) / "table_look_off.docx"
+        doc_x.save(str(docx_path))
+
+        doc = load_docx(str(docx_path))
+
     assert doc.tables[0].border_style == "none"
+
+
+def test_load_docx_table_style_borders_apply_conditional_region_when_tbllook_enables_it() -> None:
+    # Same conditional-only style, but WITH firstRow enabled via tblLook --
+    # positive-case counterpart to the test above, proving the gate lets a
+    # real conditional region through when the table actually opts in.
+    from docx import Document as DocxDocument
+    from docx.oxml.ns import qn
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        doc_x = DocxDocument()
+        _inject_conditional_only_style(doc_x, "ConditionalOnly2")
+        table = doc_x.add_table(rows=2, cols=2)
+        tblPr = table._tbl.tblPr
+        tblStyle = tblPr.makeelement(qn("w:tblStyle"), {qn("w:val"): "ConditionalOnly2"})
+        tblPr.insert(0, tblStyle)
+        # add_table()'s default w:tblLook already has firstRow=1 -- nothing
+        # to change here, but asserted explicitly so this test doesn't
+        # silently start passing for the wrong reason if that default ever
+        # changes.
+        tblLook = tblPr.find(qn("w:tblLook"))
+        assert tblLook.get(qn("w:firstRow")) == "1"
+        table.cell(0, 0).text = "A"
+        docx_path = Path(tmp_dir) / "table_look_on.docx"
+        doc_x.save(str(docx_path))
+
+        doc = load_docx(str(docx_path))
+
+    assert doc.tables[0].border_style == "grid"
+
+
+def _add_full_box_tcborders(tcPr) -> None:
+    tcBorders = tcPr.makeelement(qn("w:tcBorders"), {})
+    for side in ("top", "left", "bottom", "right"):
+        tcBorders.append(tcPr.makeelement(qn(f"w:{side}"), {qn("w:val"): "single"}))
+    tcPr.append(tcBorders)
+
+
+def test_load_docx_two_plus_fully_boxed_cells_classify_as_grid_with_no_inside_tags() -> None:
+    # Confirmed real: a real customer document authors its "grid" entirely
+    # via explicit per-cell top/left/bottom/right on every cell, never
+    # insideH/insideV anywhere in the whole table -- the insideH/insideV
+    # check alone can't see this at all and previously misclassified it as
+    # "outer", the actual live bug report this test guards against.
+    from docx import Document as DocxDocument
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        doc_x = DocxDocument()
+        table = doc_x.add_table(rows=1, cols=2)
+        for cell in table.rows[0].cells:
+            tcPr = cell._tc.get_or_add_tcPr()
+            _add_full_box_tcborders(tcPr)
+        docx_path = Path(tmp_dir) / "fully_boxed_cells.docx"
+        doc_x.save(str(docx_path))
+
+        doc = load_docx(str(docx_path))
+
+    assert doc.tables[0].border_style == "grid"
+
+
+def test_load_docx_single_fully_boxed_cell_does_not_alone_imply_grid() -> None:
+    # A lone fully-boxed cell (e.g. one decorative emphasis box) must NOT
+    # flip the whole table to "grid" -- _FULLY_BOXED_CELL_GRID_THRESHOLD
+    # requires 2+ distinct cells before trusting this as real grid evidence.
+    # It DOES still have real border presence on its own (top/bottom/left/
+    # right are each real), so "outer" -- not "none" -- is the correct
+    # classification here; only "grid" is what the threshold guards.
+    from docx import Document as DocxDocument
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        doc_x = DocxDocument()
+        table = doc_x.add_table(rows=1, cols=2)
+        _add_full_box_tcborders(table.cell(0, 0)._tc.get_or_add_tcPr())
+        docx_path = Path(tmp_dir) / "one_boxed_cell.docx"
+        doc_x.save(str(docx_path))
+
+        doc = load_docx(str(docx_path))
+
+    assert doc.tables[0].border_style == "outer"
+
+
+def test_load_docx_explicit_table_borders_still_detected_with_no_table_style() -> None:
+    # Regression guard for the pre-existing explicit-XML path: a table with
+    # NO w:tblStyle reference at all must still classify correctly off its
+    # own explicit w:tblBorders, unaffected by anything style-resolution-
+    # related added alongside it.
+    from docx import Document as DocxDocument
+    from docx.oxml.ns import qn
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        doc_x = DocxDocument()
+        table = doc_x.add_table(rows=1, cols=1)
+        tblPr = table._tbl.tblPr
+        tblBorders = tblPr.makeelement(qn("w:tblBorders"), {})
+        for side in ("top", "left", "bottom", "right"):
+            el = tblPr.makeelement(qn(f"w:{side}"), {qn("w:val"): "single"})
+            tblBorders.append(el)
+        tblPr.append(tblBorders)
+        docx_path = Path(tmp_dir) / "explicit_outer.docx"
+        doc_x.save(str(docx_path))
+
+        doc = load_docx(str(docx_path))
+
+    assert doc.tables[0].border_style == "outer"
 
 
 def test_load_docx_end_to_end_folds_each_figure_into_its_own_section() -> None:

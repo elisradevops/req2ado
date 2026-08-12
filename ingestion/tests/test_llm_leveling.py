@@ -88,6 +88,19 @@ _DEFAULT_NODES = [
     },
 ]
 
+# Two SIBLING leaves under a common root -- for trace-link tests that need
+# two node ids NOT in a direct parent/child relationship (see
+# _infer_trace_links_for_nodes's parent/child redundancy filter: a link
+# between a node and its own tree-parent is dropped as redundant with the
+# hierarchy already covering that pair, so a trace-link test asserting a
+# link SURVIVES must not accidentally use a parent/child pair like
+# _DEFAULT_NODES' n0/n1).
+_SIBLING_NODES = [
+    {"temp_id": "s0", "type": "Feature", "parent_temp_id": None, "title": "Root", "text": "Root feature.", "tags": []},
+    {"temp_id": "s1", "type": "Requirement", "parent_temp_id": "s0", "title": "Sibling A", "text": "Requirement A.", "tags": []},
+    {"temp_id": "s2", "type": "Requirement", "parent_temp_id": "s0", "title": "Sibling B", "text": "Requirement B.", "tags": []},
+]
+
 
 class FakeSectionAnalysisClient:
     """Test double for SectionAnalysisClient -- the one-call holistic SURVEY
@@ -2728,6 +2741,61 @@ def test_build_survey_tree_calls_infer_trace_links_exactly_once_with_the_catalog
     assert fake_client.calls[0]["link_type_catalog"] == catalog
 
 
+def test_build_survey_tree_drops_a_trace_link_between_a_node_and_its_own_parent() -> None:
+    # CONFIRMED REAL BUG, found via live testing: infer_trace_links has no
+    # structural signal telling it two nodes are already directly related
+    # via the tree's own parent/child hierarchy (a separate field, never
+    # part of the llm_nodes payload the model sees) -- it proposed an
+    # "Affects" link from a parent requirement straight to its own child,
+    # which confirm() then wrote as a SECOND, fully redundant ADO link
+    # alongside the real Parent/Child hierarchy link already covering the
+    # exact same pair (ADO's Related Work panel showed both "Child" and
+    # "Affects" listing the identical work item). n0 is n1's parent per
+    # _DEFAULT_NODES -- both directions must be dropped.
+    catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[
+            {"source_node_id": "n0", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n1"},
+            {"source_node_id": "n1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n0"},
+        ]
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(),
+        link_type_client=fake_client, link_type_catalog=catalog,
+    )
+    assert tree.trace_links == []
+
+
+def test_build_survey_tree_drops_a_self_referencing_trace_link() -> None:
+    catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[{"source_node_id": "n1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n1"}]
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(),
+        link_type_client=fake_client, link_type_catalog=catalog,
+    )
+    assert tree.trace_links == []
+
+
+def test_build_survey_tree_keeps_a_trace_link_between_non_hierarchy_related_nodes() -> None:
+    # Regression guard for the parent/child filter above: it must only drop
+    # a DIRECT parent/child pair, not trace links in general -- two
+    # siblings (both children of the same root, neither one the other's
+    # parent) are a legitimate trace/coverage relationship and must survive.
+    catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[{"source_node_id": "s1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "s2"}]
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
+        link_type_client=fake_client, link_type_catalog=catalog,
+    )
+    assert len(tree.trace_links) == 1
+    assert tree.trace_links[0].source_local_id == "s1"
+    assert tree.trace_links[0].target_local_id == "s2"
+
+
 def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises() -> None:
     # Confirmed real job failure: infer_trace_links serializes every node in
     # the whole document into one prompt (the largest single payload in this
@@ -2777,18 +2845,21 @@ def test_build_survey_tree_captures_the_raw_response_when_trace_link_inference_f
 
 
 def test_build_survey_tree_resolves_intra_job_link_target() -> None:
+    # s1/s2 are siblings (both children of root s0), not a parent/child
+    # pair -- see _SIBLING_NODES' own comment for why this test can't use
+    # _DEFAULT_NODES' n0/n1 anymore.
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "n1", "target_ref": "n0", "reference_name": "System.LinkTypes.Related"}]
+        results=[{"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related"}]
     )
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
+        _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
         link_type_client=fake_client, link_type_catalog=[],
     )
     assert len(tree.trace_links) == 1
     link = tree.trace_links[0]
-    assert link.source_local_id == "n1"
+    assert link.source_local_id == "s1"
     assert link.target_kind == "intraJob"
-    assert link.target_local_id == "n0"
+    assert link.target_local_id == "s2"
     assert link.resolution_status == "pending"
 
 
@@ -2809,13 +2880,13 @@ def test_build_survey_tree_treats_a_non_node_id_target_ref_as_cross_job_customer
 def test_build_survey_tree_drops_a_link_with_a_reference_name_not_in_the_catalog() -> None:
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "n1", "target_ref": "n0", "reference_name": "Hallucinated.NotReal"},
-            {"source_node_id": "n1", "target_ref": "n0", "reference_name": "System.LinkTypes.Related"},
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "Hallucinated.NotReal"},
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related"},
         ]
     )
     catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
+        _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
         link_type_client=fake_client, link_type_catalog=catalog,
     )
     assert len(tree.trace_links) == 1
@@ -4021,9 +4092,12 @@ def test_build_survey_tree_infers_trace_links_on_the_pure_deterministic_path() -
     # supplied -- a real cross-reference in the source text (e.g. "see
     # Requirement 282393") never resolved to an actual TraceLink. Whole-tree
     # trace-link inference must now run here exactly like the LLM-analysis
-    # path.
+    # path. det0_h1_1 -> det0_h1_2 (two SIBLING leaves under the same root,
+    # not a parent/child pair) -- deliberately not det0_h1 -> det0_h1_1
+    # (root -> its own child), which the parent/child redundancy filter
+    # below now correctly drops on its own merits.
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "det0_h1", "reference_name": "Rel", "target_ref": "det0_h1_1"}]
+        results=[{"source_node_id": "det0_h1_1", "reference_name": "Rel", "target_ref": "det0_h1_2"}]
     )
     catalog = [{"reference_name": "Rel", "name": "Related", "semantic_hint": None}]
     tree = build_survey_tree(
@@ -4031,7 +4105,7 @@ def test_build_survey_tree_infers_trace_links_on_the_pure_deterministic_path() -
         link_type_client=fake_client, link_type_catalog=catalog,
     )
     assert len(fake_client.calls) == 1
-    assert any(link.source_local_id == "det0_h1" for link in tree.trace_links)
+    assert any(link.source_local_id == "det0_h1_1" for link in tree.trace_links)
 
 
 def test_build_survey_tree_is_a_true_no_op_when_nothing_qualifies() -> None:

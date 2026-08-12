@@ -309,7 +309,13 @@ def _render_table_row(row: list[TableCell | None], cell_tag: str, border_style: 
             style_parts.append("border:1px solid")
         if style_parts:
             attrs += f' style="{";".join(style_parts)}"'
-        cells_html.append(f"<{cell_tag}{attrs}>{html.escape(cell.text)}</{cell_tag}>")
+        cell_text = html.escape(cell.text)
+        if cell.bold:
+            # Semantic <b>, not a font-weight style declaration -- consistent
+            # with border_css's currentColor approach elsewhere in this file:
+            # theme-independent by construction, nothing to contrast-adapt.
+            cell_text = f"<b>{cell_text}</b>"
+        cells_html.append(f"<{cell_tag}{attrs}>{cell_text}</{cell_tag}>")
     return "<tr>" + "".join(cells_html) + "</tr>"
 
 

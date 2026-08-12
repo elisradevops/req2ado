@@ -235,17 +235,165 @@ def _borders_element_has_real_border(borders_el, tags: tuple[str, ...]) -> bool:
     return False
 
 
+# How many distinct per-cell w:tcBorders elements must be "fully boxed" (see
+# _tcborders_is_fully_boxed) before that's trusted as real grid evidence
+# rather than one decorative emphasis box on an otherwise plain table. A
+# single fully-boxed cell proves nothing about the REST of the table; 2+
+# distinct cells doing it is the same visual pattern insideH/insideV
+# shorthand produces, just expressed per-cell -- confirmed against a real
+# customer document where every cell used explicit top/left/bottom/right
+# with no insideH/insideV anywhere in the whole table.
+_FULLY_BOXED_CELL_GRID_THRESHOLD = 2
+
+
+def _tcborders_is_fully_boxed(tcBorders) -> bool:
+    """True if a per-cell `w:tcBorders` has a real (non-none/nil) border on
+    EVERY one of the 4 outer sides -- top AND bottom AND left AND right,
+    not just any one of them (that's `_borders_element_has_real_border`'s
+    job: an OR-check, for classifying "outer" at all). A genuinely
+    outer-only table (only the table's OUTWARD boundary bordered) only
+    borders a cell's OUTWARD-facing sides -- a fully-interior cell has no
+    outward side at all, so a real border on ALL FOUR of a cell's sides
+    can only come from a deliberate per-cell grid pattern."""
+    for tag in _BORDER_OUTER_TAGS:
+        el = tcBorders.find(qn(f"w:{tag}"))
+        if el is None:
+            return False
+        val = el.get(qn("w:val"))
+        if val is not None and val.lower() in _BORDER_NONE_VALS:
+            return False
+    return True
+
+
+# Conditional-formatting regions this resolves out of a referenced table
+# STYLE's own definitions, in the OOXML vocabulary's own type names --
+# deliberately NOT exhaustive. firstCol/lastCol/the 4 corner-cell types
+# (neCell/nwCell/seCell/swCell) are real OOXML conditional types but rare
+# in practice; the goal here is a table-level "does this style give the
+# table a visual grid/outer-border look" yes/no answer, not per-region
+# precision -- consistent with _table_border_style's own "deliberately
+# coarse" scope. Extend this tuple if a real document is ever found relying
+# on one of the omitted types.
+_RESOLVED_STYLE_CONDITION_TYPES = ("wholeTable", "firstRow", "lastRow", "band1Horz", "band2Horz")
+
+
+def _table_look_flags(tblPr) -> dict[str, bool]:
+    """`w:tblLook` toggles which of a table style's conditional-formatting
+    regions actually apply to THIS table instance -- a table can reference
+    a style with firstRow/banding border definitions and still have them
+    switched off for this particular table. Absent `w:tblLook`, or an
+    absent specific flag on it, defaults to "off": a style's mere
+    existence must never be assumed to apply formatting the table itself
+    never opted into via a real `w:tblLook` attribute value of `"1"`."""
+    tblLook = tblPr.find(qn("w:tblLook"))
+    if tblLook is None:
+        return {}
+
+    def flag(name: str) -> bool:
+        return tblLook.get(qn(f"w:{name}")) == "1"
+
+    return {"firstRow": flag("firstRow"), "lastRow": flag("lastRow"), "noHBand": flag("noHBand")}
+
+
+def _resolve_table_style_chain(styles_root, style_id: str | None, *, max_depth: int = 10) -> list:
+    """Walks `styleId -> w:basedOn -> styleId -> ...`, collecting every
+    `w:style` element in the chain, most-specific (the table's own directly
+    referenced style) first. `max_depth` guards a malformed/cyclic
+    `w:basedOn` chain -- OOXML's schema doesn't forbid one, and this loader
+    must not hang on a corrupt document."""
+    chain = []
+    seen: set[str] = set()
+    current_id = style_id
+    depth = 0
+    while current_id and current_id not in seen and depth < max_depth:
+        seen.add(current_id)
+        depth += 1
+        style_el = next(
+            (st for st in styles_root.findall(qn("w:style")) if st.get(qn("w:styleId")) == current_id), None
+        )
+        if style_el is None:
+            break
+        chain.append(style_el)
+        basedOn = style_el.find(qn("w:basedOn"))
+        current_id = basedOn.get(qn("w:val")) if basedOn is not None else None
+    return chain
+
+
+def _table_style_borders_elements(docx_table: DocxTable) -> list:
+    """Resolves the table's referenced `w:tblStyle` (see `_table_border_style`
+    for why this matters -- most real-document gridlines come from a table
+    style, not explicit per-cell XML) into the `w:tcBorders` elements its
+    `_RESOLVED_STYLE_CONDITION_TYPES` regions declare, filtered to only the
+    regions this specific table's own `w:tblLook` actually enables (see
+    `_table_look_flags`). Per condition type, the most-specific style in the
+    `w:basedOn` chain that defines it wins whole -- never merged
+    property-by-property across the chain, same coarse-by-design scope as
+    everywhere else in this function group. Returns `[]` when the table has
+    no `w:tblStyle` reference at all (nothing to resolve)."""
+    tblPr = docx_table._tbl.tblPr
+    tblStyle = tblPr.find(qn("w:tblStyle"))
+    if tblStyle is None:
+        return []
+    chain = _resolve_table_style_chain(docx_table.part.styles.element, tblStyle.get(qn("w:val")))
+    look = _table_look_flags(tblPr)
+
+    elements = []
+    # A style's own UNCONDITIONAL w:tblPr/w:tblBorders -- a direct sibling
+    # of w:tblStylePr on w:style, never nested inside one -- is a separate
+    # thing from the conditional-region resolution below and was
+    # completely missed by an earlier version of this function. This is
+    # exactly where Word's own built-in "Table Grid" style (arguably the
+    # single most common way real documents get a gridded table at all)
+    # declares its borders: no w:tblStylePr children whatsoever, just a
+    # bare w:tblPr/w:tblBorders with real insideH/insideV. Confirmed live:
+    # applying "Table Grid" with zero explicit per-cell/table XML previously
+    # still resolved to "none". Most-specific style in the chain that
+    # defines one wins (not gated by tblLook -- unconditional means exactly
+    # that, it doesn't need a table to opt in the way a conditional region
+    # does).
+    for style_el in chain:
+        base_tblPr = style_el.find(qn("w:tblPr"))
+        base_tblBorders = base_tblPr.find(qn("w:tblBorders")) if base_tblPr is not None else None
+        if base_tblBorders is not None:
+            elements.append(base_tblBorders)
+            break
+
+    resolved_by_type: dict[str, object] = {}
+    for style_el in chain:
+        for pr in style_el.findall(qn("w:tblStylePr")):
+            cond_type = pr.get(qn("w:type"))
+            if cond_type in resolved_by_type or cond_type not in _RESOLVED_STYLE_CONDITION_TYPES:
+                continue
+            resolved_by_type[cond_type] = pr
+
+    for cond_type, pr in resolved_by_type.items():
+        if cond_type == "firstRow" and not look.get("firstRow", False):
+            continue
+        if cond_type == "lastRow" and not look.get("lastRow", False):
+            continue
+        if cond_type in ("band1Horz", "band2Horz") and look.get("noHBand", False):
+            continue
+        tcPr = pr.find(qn("w:tcPr"))
+        tcBorders = tcPr.find(qn("w:tcBorders")) if tcPr is not None else None
+        if tcBorders is not None:
+            elements.append(tcBorders)
+    return elements
+
+
 def _table_border_style(docx_table: DocxTable) -> Literal["none", "grid", "outer"]:
     """Deliberately coarse, TABLE-LEVEL (not per-cell) classification of
     border presence, exactly matching `Table.border_style`'s own documented
     scope (see model.py) -- not a full per-side/per-cell border spec.
 
     Aggregates every border-bearing element in the table: the table-level
-    `w:tblPr/w:tblBorders` (if present) plus every cell's own
-    `w:tcPr/w:tcBorders` override (if present) -- a real Word table can
-    declare its grid via either, and a per-cell override with no
-    table-level `w:tblBorders` at all is a legitimate way to author a
-    bordered table.
+    `w:tblPr/w:tblBorders` (if present), every cell's own `w:tcPr/w:tcBorders`
+    override (if present), AND -- per `_table_style_borders_elements` -- the
+    table's referenced `w:tblStyle`'s own relevant conditional-formatting
+    regions (`styles.xml`'s `w:tblStylePr`), gated on `w:tblLook`. A real
+    Word table can declare its grid via any of these; this function doesn't
+    need to pick a winner among them, only detect whether a real border
+    exists ANYWHERE in the union -- explicit XML and style-implied borders
+    are evidence for the exact same table-level yes/no question.
 
     Classification: `"grid"` if ANY aggregated element has a real
     (non-none/nil) `insideH` or `insideV` side -- an interior gridline
@@ -257,15 +405,20 @@ def _table_border_style(docx_table: DocxTable) -> Literal["none", "grid", "outer
     explicitly turning borders off produces the same visual and semantic
     outcome as never specifying them, so both collapse to the same value).
 
-    Table STYLE-implied borders (`w:tblStyle`'s reference into
-    `styles.xml`) are NOT resolved -- same v1 boundary as
-    `_cell_background_color`. A table that gets its gridlines purely from
-    an applied table style, with no explicit `w:tblBorders`/`w:tcBorders`
-    anywhere, correctly yields `"none"` here -- a documented honest gap,
-    not a bug to "fix" without re-deciding the table-style-resolution scope
-    question.
+    ALSO `"grid"` if `_FULLY_BOXED_CELL_GRID_THRESHOLD` or more distinct
+    per-cell `w:tcBorders` elements are fully boxed (see
+    `_tcborders_is_fully_boxed`) -- confirmed real: a real customer
+    document authors its grid entirely via per-cell top/left/bottom/right
+    on every cell, never insideH/insideV at all, which the insideH/insideV
+    check above cannot see on its own.
+
+    Table STYLE-implied SHADING (`_cell_background_color`) is a separate,
+    still-unresolved v1 boundary -- this function's own scope covers
+    borders only; resolving style-implied cell shading is a distinct,
+    not-yet-made scope decision.
     """
     borders_elements = []
+    tcborders_elements = []
     tblBorders = docx_table._tbl.tblPr.find(qn("w:tblBorders"))
     if tblBorders is not None:
         borders_elements.append(tblBorders)
@@ -277,8 +430,13 @@ def _table_border_style(docx_table: DocxTable) -> Literal["none", "grid", "outer
             tcBorders = tcPr.find(qn("w:tcBorders"))
             if tcBorders is not None:
                 borders_elements.append(tcBorders)
+                tcborders_elements.append(tcBorders)
+    borders_elements.extend(_table_style_borders_elements(docx_table))
 
     if any(_borders_element_has_real_border(el, _BORDER_INSIDE_TAGS) for el in borders_elements):
+        return "grid"
+    fully_boxed_count = sum(1 for el in tcborders_elements if _tcborders_is_fully_boxed(el))
+    if fully_boxed_count >= _FULLY_BOXED_CELL_GRID_THRESHOLD:
         return "grid"
     if any(_borders_element_has_real_border(el, _BORDER_OUTER_TAGS) for el in borders_elements):
         return "outer"
