@@ -16,7 +16,7 @@ import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency } from './map-with-concurrency';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
-import { toAdoDescriptionHtml } from './description-html';
+import { normalizeAdoStoredHtml, toAdoDescriptionHtml } from './description-html';
 import type { JobEventsPublisher } from './job-events.publisher';
 
 export interface SubmitJobInput {
@@ -699,8 +699,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // toAdoDescriptionHtml's own doc comment) -- ADO actually stores the
       // converted HTML, not entry.description verbatim, so comparing raw
       // would false-positive a mismatch on every single audited item.
+      // normalizeAdoStoredHtml additionally undoes ADO's OWN write-time
+      // re-serialization (confirmed via a real round-trip spike, see
+      // docs/superpowers/specs/2026-08-12-table-fidelity-design.md's Phase
+      // 0 findings) -- without it, this comparison false-positived on
+      // EVERY item, table or not (even a plain `<p>text</p>` description
+      // came back as `<p>text </p>`).
       const expectedDescriptionHtml = toAdoDescriptionHtml(entry.description);
-      if (item.fields['System.Description'] !== expectedDescriptionHtml) {
+      const actualDescriptionHtml = normalizeAdoStoredHtml(item.fields['System.Description'] ?? '');
+      if (actualDescriptionHtml !== expectedDescriptionHtml) {
         mismatches.push({
           localId: mapping.localId, adoWorkItemId: mapping.adoWorkItemId,
           field: 'System.Description', expected: expectedDescriptionHtml, actual: item.fields['System.Description'] ?? '',

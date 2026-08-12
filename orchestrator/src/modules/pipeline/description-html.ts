@@ -55,3 +55,31 @@ function escapeAngleBrackets(text: string): string {
 export function toAdoDescriptionHtml(text: string): string {
   return marked.parse(escapeAngleBrackets(text), { gfm: true, breaks: true, async: false }) as string;
 }
+
+/**
+ * Undoes ADO's own write-time HTML re-serialization, confirmed via a real
+ * round-trip spike against a live work item (see
+ * docs/superpowers/specs/2026-08-12-table-fidelity-design.md's Phase 0
+ * findings): ADO does NOT store the exact bytes it's sent. It applies
+ * exactly 3 cosmetic, non-semantic normalizations on every write --
+ * confirmed on both a table-bearing description and a plain `<p>` one, so
+ * this isn't table-specific:
+ *   1. Unquotes a purely-numeric attribute value: `colspan="3"` -> `colspan=3`.
+ *   2. Appends a trailing `;` to a `style="..."` value that doesn't already
+ *      end with one.
+ *   3. Adds one trailing space inside leaf text content immediately before
+ *      a closing tag: `<td>GPU</td>` -> `<td>GPU </td>`.
+ * Without reversing these, any comparison against ADO's stored value
+ * (jobs.service.ts's validateCreatedTree) false-positives a "mismatch" on
+ * literally every real item, since even unstyled plain-prose descriptions
+ * hit normalization #3. This is intentionally a set of targeted string
+ * reversals, not a general HTML canonicalizer -- broader drift in ADO's
+ * serialization behavior should surface as a new confirmed mismatch here,
+ * not be silently absorbed by an overly-permissive normalizer.
+ */
+export function normalizeAdoStoredHtml(storedHtml: string): string {
+  return storedHtml
+    .replace(/(colspan|rowspan)=(\d+)/g, '$1="$2"') // undo #1: ADO always emits these bare/unquoted; re-quote to match our own generator's output
+    .replace(/style="([^"]*);"/g, 'style="$1"') // undo #2: strip the trailing `;` ADO always appends -- our own generator never emits one
+    .replace(/ (<\/(?:td|th|p)>)/g, '$1'); // undo #3: drop ADO's added trailing space immediately before these closing tags (only td/th/p confirmed via the spike; extend if another leaf tag is ever caught by this same behavior)
+}

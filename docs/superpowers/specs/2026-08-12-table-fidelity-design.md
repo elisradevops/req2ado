@@ -285,18 +285,47 @@ in theory.
 
 ## Phase 0 findings (confirmed empirically, not assumed)
 
-1. **ADO round-trip HTML normalization — UNRESOLVED, requires a live write.**
-   No public documentation covers ADO's server-side REST-API HTML storage
-   behavior for `System.Description` (roosterjs's sanitizer is a client-side
-   paste-cleanup path in the browser editor, not what happens when a REST
-   client PATCHes raw HTML directly, which is how req2ado writes). This
-   remains a genuine open question, but it only gates Phase 2 (the first
-   phase introducing inline `style="..."` attributes) — Phase 1 emits only
-   `<table>/<thead>/<tr>/<th>/<td>` plus `colspan`/`rowspan`, and bare
-   `<table>/<tr>/<td>` is ALREADY proven working in real ADO today (existing
-   production behavior). Resolve this with an explicit live-write spike
-   (one throwaway work item, real MCP path, crafted HTML, read back and
-   diff) before Phase 2 starts, not before Phase 1.
+1. **ADO round-trip HTML normalization — RESOLVED via a real live-write spike.**
+   Created one real throwaway work item (elisradevops-project\Customer
+   Requirements, ADO ids 1194/1195/1196 — deletable via ADO's UI/Recycle
+   Bin) through req2ado's actual UI, with a Phase-1-shaped description
+   (`<table><thead><tr><th colspan="3" style="text-align:center">Config</th>
+   </tr></thead><tbody><tr><td rowspan="2">GPU</td>...`), then read the
+   real stored value back via the app's own session-authenticated
+   `GET /jobs/:id/validate` diagnostic route (no PAT needed) and diffed:
+
+   ```
+   expected: <table><thead><tr><th colspan="3" style="text-align:center">Config</th></tr></thead><tbody><tr><td rowspan="2">GPU</td><td>60</td><td>3</td></tr><tr><td>85</td><td>2</td></tr></tbody></table>
+   actual:   <table><thead><tr><th colspan=3 style="text-align:center;">Config</th></tr></thead><tbody><tr><td rowspan=2>GPU </td><td>60 </td><td>3 </td></tr><tr><td>85 </td><td>2 </td></tr></tbody></table>
+   ```
+
+   `<thead>`/`<th>`/`<tbody>`/`colspan`/`rowspan`/`style` all survive
+   completely intact and structurally correct — ADO fully accepts and
+   stores real semantic HTML with inline styles. ADO applies exactly 3
+   trivial, non-semantic normalizations on every write, confirmed on both
+   the table item and plain-prose items (`<p>ado spike fixture</p>` →
+   `<p>ado spike fixture </p>`):
+   - Unquotes purely-numeric attribute values (`colspan="3"` → `colspan=3`
+     — still valid HTML, unaffected rendering).
+   - Appends a trailing `;` to any `style="..."` attribute value that
+     doesn't already end with one.
+   - Adds one trailing space inside leaf text content (`GPU` → `GPU `,
+     `Config` unaffected since it wasn't a leaf-adjacent case tested, but
+     every plain `<td>`/`<p>` text node observed gained one).
+
+   None of these block Phase 2 (colors/borders/widths) — they're cosmetic
+   serialization normalizations, not content loss or structural rejection.
+   Anything that byte-compares generated HTML against ADO's stored value
+   (e.g. `jobs.controller.ts`'s `validateCreatedTree`) must normalize for
+   these 3 specific differences before comparing, or it will report false
+   mismatches on every single write, table or not — this is a PRE-EXISTING
+   false-positive in that route, not something this feature introduces,
+   confirmed by the plain-prose n0/n1 items also mismatching.
+
+   A visual "looks bad" impression from viewing this exact real ADO item
+   (no borders, tightly-packed unstyled cells) is separately confirmed as
+   the EXPECTED look of Phase 1 (deliberately zero border/padding CSS) —
+   not a sign of a broken pipeline. Phase 2 addresses this directly.
 
 2. **docx table-style shading — confirmed via real fixture, scope decision made.**
    Built a real docx using Word's built-in "Light Grid Accent 1" table style

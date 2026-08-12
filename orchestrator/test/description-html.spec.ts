@@ -1,4 +1,4 @@
-import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
+import { normalizeAdoStoredHtml, toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 
 describe('toAdoDescriptionHtml', () => {
   it('wraps plain prose in a paragraph', () => {
@@ -113,5 +113,33 @@ describe('toAdoDescriptionHtml', () => {
     const html = toAdoDescriptionHtml(description);
     expect(html).toContain('&lt;TBD&gt;');
     expect(html).toContain('<table><thead><tr><th>H</th></tr></thead><tbody><tr><td>Cell A</td></tr></tbody></table>');
+  });
+});
+
+describe('normalizeAdoStoredHtml', () => {
+  it('reverses the exact 3 normalizations confirmed via a real ADO round-trip spike (table description)', () => {
+    // Real captured data: docs/superpowers/specs/2026-08-12-table-fidelity-design.md's
+    // Phase 0 findings -- one throwaway work item (ADO id 1195), a table
+    // description sent through toAdoDescriptionHtml, read back via
+    // GET /jobs/:id/validate, and diffed byte-for-byte against what was sent.
+    const sentByUs =
+      '<table><thead><tr><th colspan="3" style="text-align:center">Config</th></tr></thead><tbody><tr><td rowspan="2">GPU</td><td>60</td><td>3</td></tr><tr><td>85</td><td>2</td></tr></tbody></table>';
+    const adoActuallyStored =
+      '<table><thead><tr><th colspan=3 style="text-align:center;">Config</th></tr></thead><tbody><tr><td rowspan=2>GPU </td><td>60 </td><td>3 </td></tr><tr><td>85 </td><td>2 </td></tr></tbody></table>';
+    expect(normalizeAdoStoredHtml(adoActuallyStored)).toBe(sentByUs);
+  });
+
+  it('reverses the same normalizations for a plain-prose description (not table-specific)', () => {
+    // Real captured data from the SAME spike, a sibling item (ADO id 1194)
+    // with no table at all -- proves ADO's trailing-space normalization is
+    // a general write-time behavior, not something a table triggers.
+    const sentByUs = '<p>ado spike fixture</p>\n';
+    const adoActuallyStored = '<p>ado spike fixture </p>\n';
+    expect(normalizeAdoStoredHtml(adoActuallyStored)).toBe(sentByUs);
+  });
+
+  it('is a no-op on HTML that already matches our own generator output exactly', () => {
+    const html = '<p>Nothing to normalize here.</p>\n';
+    expect(normalizeAdoStoredHtml(html)).toBe(html);
   });
 });

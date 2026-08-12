@@ -1458,6 +1458,44 @@ describe('JobsService.validateCreatedTree', () => {
     expect(getWorkItemsBatch).toHaveBeenCalledWith([100, 101], undefined);
   });
 
+  it('does not false-positive on ADO own write-time HTML re-serialization (confirmed via a real round-trip spike)', async () => {
+    // Real captured shape from a live ADO work item (see
+    // docs/superpowers/specs/2026-08-12-table-fidelity-design.md's Phase 0
+    // findings): ADO unquotes numeric colspan/rowspan, appends a trailing
+    // `;` to style values, and adds a trailing space inside leaf text --
+    // none of that is a REAL mismatch, and before normalizeAdoStoredHtml
+    // this reported one on every single item, table or not.
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([
+      {
+        id: 100, type: 'Requirement',
+        fields: {
+          'System.Title': 'Table 1',
+          'System.Description':
+            '<table><thead><tr><th colspan=3 style="text-align:center;">Config</th></tr></thead><tbody><tr><td rowspan=2>GPU </td><td>60 </td><td>3 </td></tr><tr><td>85 </td><td>2 </td></tr></tbody></table>',
+        },
+        parentId: null,
+      },
+    ]);
+    const service = makeService(
+      {
+        id: 'job-1',
+        dryRunDiff: [
+          {
+            localId: 'n0', parentLocalId: null, title: 'Table 1',
+            description:
+              '<table><thead><tr><th colspan="3" style="text-align:center">Config</th></tr></thead><tbody><tr><td rowspan="2">GPU</td><td>60</td><td>3</td></tr><tr><td>85</td><td>2</td></tr></tbody></table>',
+          },
+        ],
+      },
+      [{ localId: 'n0', adoWorkItemId: 100 }],
+      getWorkItemsBatch,
+    );
+
+    const result = await service.validateCreatedTree('job-1');
+
+    expect(result).toEqual({ valid: true, checkedCount: 1, mismatches: [] });
+  });
+
   it('reports a mismatch when the real ADO title differs from the dry-run diff', async () => {
     const getWorkItemsBatch = jest.fn().mockResolvedValue([
       { id: 100, type: 'Requirement', fields: { 'System.Title': 'Truncated Ti', 'System.Description': toAdoDescriptionHtml('d0') }, parentId: null },
