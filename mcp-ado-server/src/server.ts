@@ -29,7 +29,14 @@ export type BackendFactory = (credential: AdoCredential | undefined) => AdoBacke
  */
 export function createMcpApp(backendFactory: BackendFactory, cfg: AdoMcpConfig): express.Express {
   const app = express();
-  app.use(express.json());
+  // Default express.json() body limit is 100kb -- fine for every other
+  // operation here (small metadata payloads), but ado_upload_attachment
+  // sends a figure's bytes as base64 inside this same JSON envelope
+  // (confirmed live: real figure uploads 413'd well under ADO's own 60MB-
+  // per-file cap). 90mb covers ADO's documented ceiling after base64's
+  // ~37% size inflation (60MB * 1.37 ~= 82MB) plus JSON-envelope overhead,
+  // with headroom to spare.
+  app.use(express.json({ limit: '90mb' }));
 
   app.get('/health', async (_req, res) => {
     // Liveness check must never depend on a credentialed downstream call —

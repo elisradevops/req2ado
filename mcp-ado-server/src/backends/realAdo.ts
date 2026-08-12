@@ -438,7 +438,7 @@ export class RealAdoBackend implements AdoBackend {
   }
 
   /**
-   * Two real ADO calls: (1) POST the raw bytes to attachmentsuploads --
+   * Two real ADO calls: (1) POST the raw bytes to attachments --
    * ADO's own two-step attachment flow, distinct from every other call in
    * this file since the body is raw binary, not JSON -- getting back a
    * GUID/URL reference; (2) the SAME JSON-Patch relations/- add pattern
@@ -449,11 +449,18 @@ export class RealAdoBackend implements AdoBackend {
    */
   async uploadAttachment(workItemId: number, fileName: string, dataBase64: string, mimeType: string): Promise<void> {
     const version = await this.getApiVersion();
-    const uploadBase = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/attachmentsuploads?fileName=${encodeURIComponent(fileName)}`;
+    const uploadBase = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/attachments?fileName=${encodeURIComponent(fileName)}`;
     const uploadUrl = version === 'none' ? uploadBase : `${uploadBase}&api-version=${version}`;
+    // ADO's attachments-create endpoint only accepts application/octet-stream
+    // -- confirmed both via the official REST reference (Media Types:
+    // "application/octet-stream") and live: sending the figure's real
+    // mimeType (e.g. image/png) as Content-Type here 400s with "The request
+    // indicated a Content-Type of ... which is not supported." `mimeType` is
+    // still needed on the SECOND call below (the AttachedFile relation ADO
+    // stores against the work item), just never as this upload's own header.
     const uploadResponse = await retryWithBackoff(() =>
       this.httpClient.post(uploadUrl, Buffer.from(dataBase64, 'base64'), {
-        headers: { Authorization: this.authHeader(), 'Content-Type': mimeType || 'application/octet-stream' },
+        headers: { Authorization: this.authHeader(), 'Content-Type': 'application/octet-stream' },
       }),
     );
     const attachmentUrl = uploadResponse.data.url as string;

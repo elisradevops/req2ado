@@ -6,6 +6,17 @@
  */
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
+// TF401349 is ADO's own generic "An unexpected error has occurred, please
+// verify your request and try again" catch-all, returned as an otherwise-
+// ordinary HTTP 400 -- confirmed transient via two independent real
+// occurrences (different jobs, different work items, different confirm()
+// calls) that both cleared on an identical, unmodified retry with no code
+// change in between, forcing a manual re-confirm each time. A narrow,
+// code-specific carve-out -- every OTHER 400 (bad field, malformed
+// payload) is still a genuine client error that will not succeed on retry
+// and must fail immediately, exactly as before.
+const RETRYABLE_ADO_400_CODES = ['TF401349'];
+
 // Axios sets `.code` to one of these on a genuine transport-level failure
 // (no HTTP response was ever received) — a real on-prem network is far more
 // likely to hit these than a stable cloud endpoint, and they were previously
@@ -19,11 +30,20 @@ const RETRYABLE_NETWORK_CODES = new Set([
   'EAI_AGAIN',
 ]);
 
+function isRetryableAdo400(response: { status?: number; data?: unknown } | undefined): boolean {
+  if (response?.status !== 400) {
+    return false;
+  }
+  const data = response.data as { message?: string } | string | undefined;
+  const detail = typeof data === 'string' ? data : data?.message;
+  return typeof detail === 'string' && RETRYABLE_ADO_400_CODES.some((code) => detail.startsWith(code));
+}
+
 function isRetryable(error: unknown): boolean {
-  const err = error as { response?: { status?: number }; request?: unknown; code?: string };
+  const err = error as { response?: { status?: number; data?: unknown }; request?: unknown; code?: string };
   const status = err?.response?.status;
   if (status !== undefined) {
-    return RETRYABLE_STATUSES.has(status);
+    return RETRYABLE_STATUSES.has(status) || isRetryableAdo400(err.response);
   }
   // No HTTP response at all: axios sets `.request` whenever a request was
   // actually dispatched (vs. e.g. a config error thrown before send), which

@@ -174,7 +174,7 @@ export const adoOperations: AdoOperation[] = [
     name: 'ado_upload_attachment',
     title: 'Upload and attach a file to an ADO work item',
     description:
-      'Uploads the given bytes (base64) as an ADO attachment and links it to the work item, e.g. a figure a requirement cites (JobFigureFile). Two real ADO calls under one operation: attachmentsuploads, then a relations/- patch with rel=AttachedFile.',
+      'Uploads the given bytes (base64) as an ADO attachment and links it to the work item, e.g. a figure a requirement cites (JobFigureFile). Two real ADO calls under one operation: attachments, then a relations/- patch with rel=AttachedFile.',
     inputSchema: { workItemId: z.number(), fileName: z.string(), dataBase64: z.string(), mimeType: z.string() },
     handler: (
       backend,

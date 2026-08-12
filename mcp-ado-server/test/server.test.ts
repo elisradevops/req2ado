@@ -92,6 +92,16 @@ describe('REST ADO transport auth (/api/ado)', () => {
     const res = await request(app).post('/api/ado/ado_ping').set('Authorization', `Bearer ${testConfig.mcpBearer}`).send({});
     expect(res.status).toBe(401);
   });
+
+  it('accepts a figure-attachment body well over express.json()\'s 100kb default (confirmed real 413 against actual figure uploads)', async () => {
+    const app = createMcpApp(() => new MockAdoBackend(':memory:'), testConfig);
+    const dataBase64 = Buffer.alloc(200_000, 'a').toString('base64'); // ~267kb of JSON body, > default 100kb limit
+    const res = await request(app)
+      .post('/api/ado/ado_upload_attachment')
+      .set('Authorization', `Bearer ${testConfig.mcpBearer}`)
+      .send({ workItemId: 1, fileName: 'fig.png', dataBase64, mimeType: 'image/png' });
+    expect(res.status).toBe(200);
+  });
 });
 
 describe('timingSafeEqualBearer', () => {

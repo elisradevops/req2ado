@@ -745,7 +745,7 @@ describe('RealAdoBackend.getWorkItemIcon', () => {
 });
 
 describe('RealAdoBackend.uploadAttachment', () => {
-  it('POSTs raw bytes to attachmentsuploads, then PATCHes an AttachedFile relation onto the work item', async () => {
+  it('POSTs raw bytes to attachments, then PATCHes an AttachedFile relation onto the work item', async () => {
     const backend = new RealAdoBackend(testConfig, credential);
     const httpClient = axios.create();
     vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} }); // api-version probe
@@ -758,9 +758,12 @@ describe('RealAdoBackend.uploadAttachment', () => {
 
     await backend.uploadAttachment(42, 'figure-f0.png', Buffer.from('fake-png-bytes').toString('base64'), 'image/png');
 
-    expect(postSpy.mock.calls[0][0]).toContain('/_apis/wit/attachmentsuploads?fileName=figure-f0.png');
+    expect(postSpy.mock.calls[0][0]).toContain('/_apis/wit/attachments?fileName=figure-f0.png');
     expect(postSpy.mock.calls[0][1]).toEqual(Buffer.from('fake-png-bytes'));
-    expect(postSpy.mock.calls[0][2]?.headers?.['Content-Type']).toBe('image/png');
+    // ADO's attachments-create endpoint only accepts application/octet-stream
+    // (confirmed via the official REST reference and a live 400 -- the
+    // figure's real mimeType must never reach this header).
+    expect(postSpy.mock.calls[0][2]?.headers?.['Content-Type']).toBe('application/octet-stream');
 
     expect(patchSpy.mock.calls[0][0]).toContain('/wit/workitems/42');
     expect(patchSpy.mock.calls[0][1]).toEqual([

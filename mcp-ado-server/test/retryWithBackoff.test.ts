@@ -35,6 +35,24 @@ describe('retryWithBackoff', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it('retries a 400 whose ADO error message starts with TF401349 (confirmed transient)', async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce({
+        response: { status: 400, data: { message: 'TF401349: An unexpected error has occurred, please verify your request and try again.' } },
+      })
+      .mockResolvedValueOnce('ok');
+    const result = await retryWithBackoff(fn, { baseDelayMs: 1 });
+    expect(result).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT retry a different, genuinely permanent 400 error code', async () => {
+    const fn = vi.fn().mockRejectedValue({ response: { status: 400, data: { message: 'TF401232: The field X is required.' } } });
+    await expect(retryWithBackoff(fn, { baseDelayMs: 1 })).rejects.toMatchObject({ response: { status: 400 } });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it('throws the last error after exhausting maxRetries', async () => {
     const fn = vi.fn().mockRejectedValue({ response: { status: 429 } });
     await expect(retryWithBackoff(fn, { maxRetries: 3, baseDelayMs: 1 })).rejects.toMatchObject({
