@@ -690,6 +690,91 @@ def test_load_pdf_watermark_sized_text_is_not_classified_as_heading() -> None:
     assert draft_block.kind == BlockKind.PARAGRAPH  # excluded from heading candidacy, not promoted
 
 
+def test_load_pdf_bullet_glyph_line_is_not_classified_as_a_heading() -> None:
+    # Finding 1 of this plan's whole-branch review, LIVE-REPRODUCED exactly
+    # by this fixture against the pre-fix code:
+    #     paragraph  The interface shall satisfy the following requirements.
+    #     heading   lvl=1 lbl='1' :: n        <- the bullet glyph
+    #     paragraph  provide redundant 28 VDC power to each LRU
+    #     heading   lvl=1 lbl='2' :: n
+    # A Word/LibreOffice-exported bulleted list renders each bullet as its
+    # own symbol-font glyph at its own size (12pt ZapfDingbats "n" here vs
+    # 10pt Helvetica body -- confirmed as exactly what pdfplumber extracts
+    # from this fixture), which pdfplumber clusters as its OWN line. That
+    # made every bullet a font-size outlier, classified HEADING, each
+    # consuming a real ordinal from _advance_heading_counter that a genuine
+    # heading should have received -- and (via resolve_block_depth ->
+    # _split_into_branches) a bogus top-level branch boundary whose junk
+    # outline entry then leaked into every branch's global_context.
+    # `_can_be_heading_text`'s content gate is what rejects it: zero
+    # alphanumeric characters, and not parse_numbering-parseable.
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "bulleted_list.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 730, "The interface shall satisfy the following requirements.")
+        for i, body in enumerate(
+            [
+                "provide redundant 28 VDC power to each LRU",
+                "report a fault within 500 milliseconds",
+                "survive a single-point power interruption",
+            ]
+        ):
+            c.setFont("Symbol", 12)  # a real symbol-font bullet, larger than body text
+            c.drawString(72, 700 - i * 20, "\267")
+            c.setFont("Helvetica", 10)
+            c.drawString(90, 700 - i * 20, body)
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 620, "Additional body text at the normal document size here.")
+        c.drawString(72, 605, "And one more body line at the normal document size.")
+        c.save()
+        result = load_pdf(str(path))
+
+    # No bullet glyph line anywhere became a heading, and no ordinal was
+    # fabricated for one -- the whole document has no real heading at all.
+    assert not any(b.kind == BlockKind.HEADING for b in result.blocks)
+    # Each bulleted item's own body text is still emitted, as a PARAGRAPH.
+    for body in ("redundant 28 VDC power", "fault within 500 milliseconds", "single-point power interruption"):
+        block = next(b for b in result.blocks if body in b.text)
+        assert block.kind == BlockKind.PARAGRAPH
+
+
+def test_load_pdf_drop_cap_line_is_not_classified_as_a_heading() -> None:
+    # Same finding, second shape: a drop-cap/large-first-letter paragraph
+    # (first character 11pt, the other ~54 characters of the SAME line 10pt)
+    # became a HEADING under the old "first non-empty char's size wins"
+    # `_line_size` rule -- the whole paragraph promoted, and an ordinal
+    # fabricated for it, because of one leading glyph. `_line_size` now uses
+    # the line's MODAL char size, so the 53 body characters decide the
+    # line's size, not the single drop cap. (The content gate alone cannot
+    # save this case -- the text has plenty of alphanumeric characters --
+    # which is why both halves of the fix are needed.)
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "drop_cap.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica", 11)
+        c.drawString(72, 700, "T")
+        c.setFont("Helvetica", 10)
+        c.drawString(80, 700, "he interface shall satisfy the following requirements.")
+        c.drawString(72, 680, "Additional body text at the normal document size here.")
+        c.drawString(72, 660, "And one more body line at the normal document size.")
+        c.save()
+        result = load_pdf(str(path))
+
+    drop_cap_line = next(b for b in result.blocks if "interface shall satisfy" in b.text)
+    assert drop_cap_line.kind == BlockKind.PARAGRAPH
+    assert drop_cap_line.number_label is None
+    assert not any(b.kind == BlockKind.HEADING for b in result.blocks)
+
+
 def test_load_pdf_detects_a_heading_via_real_outline_bookmark_tier_0() -> None:
     # Fix-round addition (task-3-report.md): the outline/bookmark tier-0
     # path (_outline_heading_positions) had zero test coverage -- and was
@@ -1139,6 +1224,37 @@ def test_load_pdf_does_not_flag_a_wide_table_column_as_multi_column() -> None:
         result = load_pdf(str(path))
 
     assert not any(b.kind == BlockKind.NOTE and "multi-column" in b.text for b in result.blocks)
+
+
+def test_load_pdf_text_only_never_flags_multi_column() -> None:
+    # Finding 2 of this plan's whole-branch review: `text_only=True` skips
+    # find_tables() entirely, so `table_bboxes` is always empty and the
+    # multi-column detector's mandatory table carve-out can never fire in
+    # that mode -- a genuine 2-column ruled table would emit a spurious
+    # multi-column NOTE that then leaks into docx_pagination.py's
+    # page-alignment text blob (the only caller of load_pdf(text_only=True)).
+    # The detection call is therefore skipped outright under text_only. This
+    # test pins BOTH halves against the exact same file: normal mode still
+    # flags it, text_only mode never does -- so a future revert can't
+    # silently restore the leak while still passing the positive test above.
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "two_col_text_only.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica", 12)
+        y = 700
+        for i in range(6):
+            c.drawString(72, y - i * 20, f"LEFT-{i} column text line here")
+            c.drawString(320, y - i * 20, f"RIGHT-{i} column text line here")
+        c.save()
+        normal = load_pdf(str(path))
+        text_only = load_pdf(str(path), text_only=True)
+
+    assert any(b.kind == BlockKind.NOTE and "multi-column" in b.text for b in normal.blocks)
+    assert not any(b.kind == BlockKind.NOTE and "multi-column" in b.text for b in text_only.blocks)
 
 
 def test_load_pdf_does_not_flag_a_title_page_label_value_layout() -> None:

@@ -1550,12 +1550,21 @@ describe('runPipelineJob', () => {
   });
 
   describe('whole-document primer (Phase 6c)', () => {
-    // Large enough to clear PRIMER_CONTEXT_MIN_DOCUMENT_BYTES's gate --
-    // real content doesn't matter, only byte length.
+    // The gate is on the INGESTED DOCUMENT's own text length, not on file
+    // bytes (whole-branch review Finding 3): a PDF's byte size is dominated
+    // by fonts/images, so it was a wildly inaccurate proxy for "would
+    // ingestion's own fits_whole_document gate skip this anyway".
+    // 30_000 characters clears PRIMER_CONTEXT_MIN_DOCUMENT_TEXT_CHARS
+    // (24_000) and needs ~8_500 tokens with the reserve, so it resolves the
+    // 16_384 num_ctx bucket.
+    const bigDoc = { blocks: [{ id: 'b0', text: 'a'.repeat(30_000) }] };
+    const expectedNumCtx = 16_384;
+    // File bytes are now irrelevant to the gate -- kept only because the
+    // upload call and the cache key are still keyed on the real file.
     const bigFileBuffer = Buffer.alloc(30_000, 'a');
 
     beforeEach(() => {
-      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.ingest.mockResolvedValue(bigDoc);
       fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
       fakeDryRunService.diff.mockResolvedValue([]);
     });
@@ -1584,7 +1593,7 @@ describe('runPipelineJob', () => {
       );
 
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        { blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
+        bigDoc, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
       );
       expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf');
       expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
@@ -1619,7 +1628,7 @@ describe('runPipelineJob', () => {
       );
 
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        { blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
+        bigDoc, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
       );
     });
 
@@ -1645,7 +1654,7 @@ describe('runPipelineJob', () => {
 
       expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        { blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'cached primer text',
+        bigDoc, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'cached primer text',
       );
     });
 
@@ -1670,13 +1679,21 @@ describe('runPipelineJob', () => {
       expect(fakePrimerCacheRedis.get).not.toHaveBeenCalled();
       expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        { blocks: [] }, null, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined,
+        bigDoc, null, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined,
       );
     });
 
-    it('never attempts the primer for a document under PRIMER_CONTEXT_MIN_DOCUMENT_BYTES, even in SURVEY mode with primer deps wired', async () => {
+    it('never attempts the primer for a document whose ingested TEXT is under the minimum, even when the FILE itself is large -- the gate is text length, not file bytes', async () => {
+      // Whole-branch review Finding 3: this is the image-heavy-PDF case --
+      // a big file (fonts/images dominate the bytes) carrying very little
+      // real text. The old byte-size gate fired the primer here, paying the
+      // full upload+poll+chat cost for a document ingestion's own
+      // fits_whole_document gate would analyze in ONE call, where
+      // primerContext is discarded by design.
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0', text: 'A short spec.' }] });
+
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from('short'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.alloc(5_000_000, 'a'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1759,6 +1776,188 @@ describe('runPipelineJob', () => {
       expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
         expect.any(Array),
         expect.objectContaining({ maxTokens: 300, think: false }),
+      );
+    });
+
+    it('attempts the primer for a document that is SMALL in file bytes but large in ingested text -- the inverse of the byte-size proxy bug', async () => {
+      // Whole-branch review Finding 3, other direction: a compact,
+      // text-dense file (e.g. a .txt/.md or an efficiently-compressed PDF)
+      // whose real content is far too large for one analysis call, which the
+      // old 20_000-BYTE gate skipped outright -- exactly the case the primer
+      // exists for.
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'A dense avionics ICD.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+      const tinyFileBuffer = Buffer.from('tiny-on-disk');
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: tinyFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(tinyFileBuffer, 'x.pdf');
+      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+        bigDoc, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'A dense avionics ICD.',
+      );
+    });
+
+    it('counts table cell text toward the gate -- a table-dominated ICD carries most of its content outside blocks', async () => {
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'A pinout-table ICD.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+      // Blocks alone are far under the gate; the table's cells carry the
+      // document's real content (and a null cell -- a SPANNED grid position
+      // -- must not throw).
+      const tableHeavyDoc = {
+        blocks: [{ id: 'b0', text: 'See table below.' }],
+        tables: [{ id: 't0', cells: [[{ text: 'a'.repeat(30_000) }, null]] }],
+      };
+      fakeIngestionClient.ingest.mockResolvedValue(tableHeavyDoc);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeOpenWebUiClient.chat).toHaveBeenCalled();
+    });
+
+    it('passes an explicit numCtx large enough for the whole document on the primer chat call', async () => {
+      // Whole-branch review Finding 4 / design spec Phase 6's mandatory
+      // positive num_ctx guard: without an explicit num_ctx, Ollama runs at
+      // its own small default window, silently truncates the uploaded
+      // document, and the model answers -- plausibly and confidently --
+      // about only the first few pages. Nothing raises, so the surrounding
+      // fail-open catch can never detect it.
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'A short primer.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      const chatOptions = fakeOpenWebUiClient.chat.mock.calls[0][1];
+      // The smallest bucket that covers 30_000 chars (~7_500 tokens) plus
+      // the 1_000-token reserve -- not simply the largest available.
+      expect(chatOptions.numCtx).toBe(expectedNumCtx);
+      expect(chatOptions.numCtx).toBeGreaterThanOrEqual(30_000 / 4);
+    });
+
+    it('skips the primer entirely (never calls chat) when no safe numCtx can cover the document', async () => {
+      // Same finding, the skip half: a document larger than the biggest
+      // num_ctx this deployment's models can actually run must get NO
+      // primer at all. A truncated primer is worse than no primer -- it is
+      // confidently wrong and raises nothing.
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0', text: 'a'.repeat(1_000_000) }] });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeOpenWebUiClient.chat).not.toHaveBeenCalled();
+      expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
+      expect(fakePrimerCacheRedis.get).not.toHaveBeenCalled();
+      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+        expect.anything(), null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
+      );
+    });
+
+    it('logs the primer failure (with the job id) instead of swallowing it silently', async () => {
+      // Whole-branch review Finding 6: this repo's own k8s default points
+      // LLM_BASE_URL at raw Ollama, which has no /api/v1/files/ endpoint at
+      // all -- so in that documented default deployment the primer fails on
+      // EVERY job, forever. Failing open is correct; failing open silently
+      // is not.
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      fakeOpenWebUiClient.uploadFile.mockRejectedValue(new Error('404 Not Found: /api/v1/files/'));
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      try {
+        await runPipelineJob(
+          { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+          {
+            ingestionClient: fakeIngestionClient as any,
+            dryRunService: fakeDryRunService as any,
+            idempotencyService: fakeIdempotencyService as any,
+            prisma: fakePrisma as any,
+            jobEventsPublisher: fakeJobEventsPublisher as any,
+            mcpClient: fakeMcpClient as any,
+            backfillService: fakeBackfillService as any,
+            adoCredentialResolver: fakeAdoCredentialResolver as any,
+            defaultLlmModel: 'gemma4:12b',
+            openWebUiClient: fakeOpenWebUiClient as any,
+            primerCacheRedis: fakePrimerCacheRedis as any,
+          },
+        );
+
+        // Asserted BEFORE mockRestore() below -- mockRestore also resets the
+        // spy's recorded calls, so asserting after it always sees zero.
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('job-1'),
+          expect.objectContaining({ message: expect.stringContaining('/api/v1/files/') }),
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+
+      // Still fails open -- the job itself is unaffected.
+      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+        bigDoc, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
       );
     });
   });

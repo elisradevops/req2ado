@@ -119,6 +119,40 @@ capability — its own test must pin block *count* (not just `>= 1`) against
 a real multi-line, multi-paragraph fixture, closing the exact gap that let
 the original bug ship silently.
 
+### DEFERRED (as-shipped): `ocr.py` scanned-page segmentation
+
+**Status:** deliberately **not** implemented by this plan. Recorded here
+because this phase's own scope statement above named `ocr.py:81-90`
+alongside `pdf_loader.py`, and only the `pdf_loader.py` half shipped
+(Task 2) — so without this note the omission reads as an oversight rather
+than the intentional scope decision it is.
+
+`ocr.py`'s scanned-page text extraction still emits **one flat
+`PARAGRAPH` block per scanned page** (`" ".join(kept_words)` in
+`ocr_page_to_text_filtered`, consumed by `load_pdf_with_ocr_fallback`) —
+no line/paragraph segmentation, no heading detection, no header/footer
+suppression. A scanned page therefore gets none of Phase 0–3's fidelity
+improvements; only pages with real extractable text do.
+
+Why deferred rather than dropped: properly segmenting OCR'd text is
+genuinely more work than the native-text path, not a copy of it.
+pdfplumber's `extract_text_lines()` gives real line clusters with
+per-character font sizes — the two signals Phase 0's merge rule and Phase
+2's heading classification are both built on. Tesseract's word-level
+output has neither; a real fix would have to adapt `image_to_data`'s
+line/block-number and bounding-box fields (`block_num`, `par_num`,
+`line_num`, `left`/`top`/`width`/`height`) into an equivalent
+line-and-paragraph model, and substitute a geometric signal (relative
+glyph height per line) for the font-size signal that doesn't exist in OCR
+output at all. That is its own plan, with its own fixtures (real scanned
+pages) and its own accuracy risk.
+
+Practical impact until then: a scanned-only PDF levels roughly as it did
+before this plan — one block per page, so per-page branch granularity at
+best. A mixed document (some pages with extractable text, some scanned)
+gets full fidelity on its text pages and page-granular blocks on its
+scanned ones.
+
 ## Phase 1: Header/footer suppression (same phase as segmentation, not after)
 
 **File:** `ingestion/app/loaders/pdf_loader.py`

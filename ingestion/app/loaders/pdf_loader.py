@@ -122,6 +122,21 @@ _HEADING_SIZE_MARGIN = 0.5
 # several times larger than that.
 _HEADING_SIZE_MAX_RATIO = 3.0
 
+# A font-size-outlier line must carry at least this many alphanumeric
+# characters to be eligible for HEADING classification at all (a line whose
+# own text parses as a real number label via parse_numbering is eligible
+# regardless -- see `_can_be_heading_text`). LIVE-REPRODUCED bug this
+# closes: a Word/LibreOffice-exported bulleted list renders each bullet as
+# its own Symbol-font glyph, frequently at a different size than the body
+# text it introduces, which pdfplumber clusters as its OWN line -- so a
+# bare bullet glyph ("n" from Symbol, a literal "•", ...) became a
+# size outlier, was classified HEADING, and consumed a real ordinal from
+# `_advance_heading_counter` (observed: `heading lvl=1 lbl='1' :: n`
+# between two halves of one bulleted requirement). Two characters is the
+# floor because no real heading is a single letter/symbol, while every real
+# short heading ("Scope", "1.2 Power") clears it easily.
+_HEADING_MIN_ALNUM_CHARS = 2
+
 # Phase 3b (Task 6): a caption line's own text must match this shape to be
 # attached to the immediately-following table -- deliberately narrow
 # (starts with "Table" + a number) rather than "any short line before a
@@ -705,18 +720,40 @@ def _table_has_chopped_word(rows: list[list[str]]) -> bool:
 
 
 def _line_size(line: dict) -> float:
-    """A line's representative font size -- the first non-empty char's
-    `size`, same 'first non-whitespace wins' convention this file's own
-    `_cell_text_color` already uses for the identical "no safe single
-    answer when characters could disagree" situation. A line with no
-    chars at all (shouldn't happen for a real extract_text_lines() result,
-    but degrade rather than raise) returns 0.0 -- a heading/body comparison
-    against 0.0 always fails the "is an outlier" test, which is the safe
-    direction (falls through to PARAGRAPH, never wrongly promoted)."""
-    for ch in line.get("chars", []):
-        if (ch.get("text") or "").strip():
-            return ch["size"]
-    return 0.0
+    """A line's representative font size -- the MODAL (most common)
+    non-whitespace char size on that line.
+
+    Deliberately NOT "the first non-whitespace char's size" (the original
+    convention here): a line's true size must not be decided by whichever
+    glyph happens to render first. Confirmed live on real
+    Word/LibreOffice-exported PDFs, where the first glyph is routinely NOT
+    representative -- a Symbol-font bullet at a different size than the
+    body text it introduces, a drop-cap set a point or two larger than the
+    rest of its own line, a leading superscript footnote marker. Under the
+    first-char rule each of those made its whole line a font-size outlier,
+    and Task 3's heading classification then promoted it to a HEADING with
+    a fabricated ordinal (consuming a number a real heading should have
+    got). The mode is the correct summary here for the same reason
+    `_dominant_body_size` already uses one document-wide: the size the most
+    characters actually share IS the line's size.
+
+    Ties are broken toward the SMALLER size, same rationale (and same
+    safe direction) as `_dominant_body_size`'s own tie-break: a smaller
+    representative size can only ever fail the "is an outlier" heading
+    test, never wrongly pass it.
+
+    A line with no chars at all (shouldn't happen for a real
+    extract_text_lines() result, but degrade rather than raise) returns
+    0.0 -- a heading/body comparison against 0.0 always fails the "is an
+    outlier" test, which is the safe direction (falls through to
+    PARAGRAPH, never wrongly promoted)."""
+    from collections import Counter
+
+    counts = Counter(ch["size"] for ch in line.get("chars", []) if (ch.get("text") or "").strip())
+    if not counts:
+        return 0.0
+    max_count = max(counts.values())
+    return min(size for size, count in counts.items() if count == max_count)
 
 
 def _line_is_bold(line: dict) -> bool:
@@ -726,6 +763,23 @@ def _line_is_bold(line: dict) -> bool:
         if (ch.get("text") or "").strip():
             return _fontname_is_bold(ch.get("fontname"))
     return False
+
+
+def _can_be_heading_text(text: str) -> bool:
+    """Content gate on the font-size heading path: a size-outlier line must
+    have real textual substance before it can be called a heading. Either
+    its own text parses as a real number label (`parse_numbering` -- a
+    genuinely numbered heading is a heading whatever its length), or it
+    carries at least `_HEADING_MIN_ALNUM_CHARS` alphanumeric characters.
+    Punctuation/symbol-only lines (a bullet glyph, a rule of dashes, a
+    stray dingbat) therefore never qualify -- see
+    `_HEADING_MIN_ALNUM_CHARS`'s own comment for the live-reproduced
+    bulleted-list bug this exists for. Applies ONLY to the font-size tier;
+    a real outline/bookmark entry (tier 0) is authoritative and is not
+    second-guessed here."""
+    if parse_numbering(text)[0] is not None:
+        return True
+    return sum(1 for ch in text if ch.isalnum()) >= _HEADING_MIN_ALNUM_CHARS
 
 
 def _dominant_body_size(all_pages_lines: list[list[dict]]) -> float:
@@ -1400,7 +1454,24 @@ def load_pdf(
             # order position tied to a specific paragraph/table/image -- it
             # must appear exactly once per flagged page regardless of the
             # rest of that page's content ordering.
-            suspected_gap = _detect_suspected_column_gap(page_lines, page.width, table_bboxes)
+            #
+            # Skipped entirely under `text_only` (Finding 2 of this plan's
+            # whole-branch review): that mode never calls `find_tables()`,
+            # so `table_bboxes` is ALWAYS empty and the detector's
+            # mandatory table carve-out (a table's own internal column gaps
+            # must never flag a page -- see
+            # `_detect_suspected_column_gap`'s docstring) cannot fire at
+            # all. LIVE-REPRODUCED: a page with a genuine 2-column ruled
+            # table emitted a spurious multi-column NOTE under
+            # `text_only=True`, which then leaked into
+            # `docx_pagination.py`'s page-alignment text blob (the only
+            # caller of `load_pdf(text_only=True)`) for any docx with a wide
+            # table. A flag whose own safety gate is inoperative is worse
+            # than no flag, and `text_only`'s consumer wants plain page text
+            # anyway, never layout markers.
+            suspected_gap = (
+                None if text_only else _detect_suspected_column_gap(page_lines, page.width, table_bboxes)
+            )
             if suspected_gap is not None:
                 start = offset
                 end = start + 1
@@ -1442,7 +1513,15 @@ def load_pdf(
                     number_label: str | None = None
                     if outline_depth is not None:
                         heading_level = outline_depth
-                    elif body_size + _HEADING_SIZE_MARGIN < size <= body_size * _HEADING_SIZE_MAX_RATIO:
+                    elif (
+                        body_size + _HEADING_SIZE_MARGIN < size <= body_size * _HEADING_SIZE_MAX_RATIO
+                        # Content gate -- a size outlier with no real
+                        # textual substance (a bulleted list's own bullet
+                        # glyph, most commonly) must never become a heading
+                        # and must never consume an ordinal. See
+                        # `_can_be_heading_text`.
+                        and _can_be_heading_text(text)
+                    ):
                         existing_label, _ = parse_numbering(text)
                         if existing_label is not None:
                             heading_level = numbering_depth(existing_label)
