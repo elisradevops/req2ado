@@ -1329,3 +1329,28 @@ def test_load_docx_flags_an_ole_object_and_does_not_emit_its_icon_as_a_phantom_f
     # No phantom FIGURE for the icon image.
     assert not any(b.kind == BlockKind.FIGURE for b in result.blocks)
     assert result.figures == []
+
+
+def test_load_docx_flags_a_nested_table_in_a_cell_instead_of_silently_losing_it() -> None:
+    from docx import Document as DocxDocument
+
+    from app.canonical.model import plain_text_rows
+
+    doc = DocxDocument()
+    outer_table = doc.add_table(rows=1, cols=2)
+    outer_table.rows[0].cells[0].text = "Outer cell A"
+    outer_table.rows[0].cells[1].add_table(rows=1, cols=1)  # nested table, no text set
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "nested_table.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    assert len(result.tables) == 1
+    rows = plain_text_rows(result.tables[0])
+    assert rows[0][0] == "Outer cell A"
+    assert rows[0][1] == "[UNSUPPORTED: nested table]"
+    # The marker lands on the real TableCell object too (not just the
+    # plain_text_rows projection) -- spans/bold/etc. are untouched by this
+    # fix, only .text changes.
+    assert result.tables[0].cells[0][1].text == "[UNSUPPORTED: nested table]"

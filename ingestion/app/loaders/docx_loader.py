@@ -576,8 +576,11 @@ def _extract_table_cells(docx_table: DocxTable) -> list[list[TableCell | None]]:
             if tc.vMerge == "continue":
                 continue
             cell = DocxCell(tc, docx_table)
+            cell_text = cell.text.strip()
+            if cell.tables:
+                cell_text = f"{cell_text}\n[UNSUPPORTED: nested table]".strip()
             row_cells[tc.grid_offset] = TableCell(
-                text=cell.text.strip(),
+                text=cell_text,
                 colspan=tc.grid_span,
                 rowspan=tc.bottom - tc.top,
                 is_header=is_header,
