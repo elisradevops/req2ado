@@ -749,10 +749,12 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                     )
                 )
             else:
+                own_ppr = paragraph._p.pPr
+                is_list_item = own_ppr is not None and own_ppr.find(qn("w:numPr")) is not None
                 blocks.append(
                     Block(
                         id=f"b{block_id}",
-                        kind=BlockKind.PARAGRAPH,
+                        kind=BlockKind.LIST_ITEM if is_list_item else BlockKind.PARAGRAPH,
                         text=content,
                         source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                     )

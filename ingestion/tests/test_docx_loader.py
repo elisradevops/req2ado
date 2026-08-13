@@ -1136,3 +1136,30 @@ def test_load_docx_does_not_crash_on_a_custom_heading_style_with_non_numeric_suf
     assert custom.kind == BlockKind.PARAGRAPH  # no reliable level signal -- falls through, not a crash
     normal = next(b for b in result.blocks if b.text == "A normal paragraph after it.")
     assert normal.kind == BlockKind.PARAGRAPH
+
+
+def test_load_docx_detects_a_numbered_list_item_as_list_item_kind() -> None:
+    # Regression: a numbered/bulleted paragraph (w:numPr present) was
+    # always emitted as plain PARAGRAPH -- indistinguishable from body text.
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    doc = DocxDocument()
+    paragraph = doc.add_paragraph("First bullet item.")
+    pPr = paragraph._p.get_or_add_pPr()
+    num_pr = parse_xml(
+        f'<w:numPr {nsdecls("w")}><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'
+    )
+    pPr.append(num_pr)
+    doc.add_paragraph("A normal paragraph, not a list item.")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "list.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    bullet = next(b for b in result.blocks if b.text == "First bullet item.")
+    assert bullet.kind == BlockKind.LIST_ITEM
+    normal = next(b for b in result.blocks if b.text == "A normal paragraph, not a list item.")
+    assert normal.kind == BlockKind.PARAGRAPH
