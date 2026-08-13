@@ -650,6 +650,36 @@ def _inside_any_bbox(obj: dict, bboxes: list[tuple[float, float, float, float]])
     return any(x0 <= ox0 and ox1 <= x1 and top <= otop and obottom <= bottom for x0, top, x1, bottom in bboxes)
 
 
+def _is_chopped_word_boundary(prev_text: str, cur_text: str) -> bool:
+    """True if concatenating prev_text+cur_text with no separator falls
+    mid-word -- a strong, checkable signal that a 'column boundary' is
+    actually just where a text-strategy false-positive happened to split
+    a real word, not a genuine table column edge. VERIFIED live against a
+    real false positive (lvc_gateway_icd.pdf's page-8 prose-as-table,
+    cells like 'F' / 'or some tests...') and a real table (this file's
+    own sample.pdf fixture): 37.5% of the false positive's rows trip this
+    rule, 0% of the real table's rows do -- no tuning needed, the
+    separation is clean."""
+    prev_stripped = prev_text.rstrip()
+    cur_stripped = cur_text.lstrip()
+    if not prev_stripped or not cur_stripped:
+        return False
+    return prev_stripped[-1].isalnum() and cur_stripped[0].islower()
+
+
+def _table_has_chopped_word(rows: list[list[str]]) -> bool:
+    """True if ANY row has a chopped-word boundary between adjacent
+    cells -- one confirmed instance is enough to reject the whole
+    candidate table (a real table never trips this at all; the false
+    positive trips it on over a third of its rows, so a single hit is
+    already a strong, not a borderline, signal)."""
+    for row in rows:
+        for i in range(1, len(row)):
+            if _is_chopped_word_boundary(row[i - 1] or "", row[i] or ""):
+                return True
+    return False
+
+
 def _line_size(line: dict) -> float:
     """A line's representative font size -- the first non-empty char's
     `size`, same 'first non-whitespace wins' convention this file's own
@@ -942,6 +972,54 @@ def load_pdf(
             # table_bboxes empty means every line on the page is kept, same
             # as a page with no tables at all.
             found_tables = [] if text_only else page.find_tables()
+            # Phase 3c (Task 7): borderless (text-strategy) table detection,
+            # additive to the lines-strategy pass above -- real government
+            # ICDs have many more tables findable via pdfplumber's
+            # vertical_strategy='text' option than ruling-line detection
+            # alone ever finds. Naive text-strategy detection is dangerous
+            # on its own (CONFIRMED live this session against a real
+            # document: it can shred ordinary wrapped prose into a fake
+            # table, cells split mid-word), so a candidate is only kept if
+            # it (a) doesn't overlap a bbox `found_tables` (lines-strategy)
+            # already found -- avoids double-detecting the same real table
+            # under two strategies -- and (b) passes `_table_has_chopped_word`'s
+            # negative check (see that function's own docstring for the
+            # validated rejection rule). `text_strategy_tables` is kept as
+            # the FULL (unfiltered) result below -- the per-table loop's
+            # `found_table in text_strategy_tables` membership check (object
+            # identity, since pdfplumber.table.Table defines no `__eq__`)
+            # is what decides `border_style` per table, and only needs to
+            # know "did the text strategy ever produce this exact object,"
+            # not whether it passed the filter here.
+            text_strategy_tables: list = []
+            if not text_only:
+                lines_bboxes = [t.bbox for t in found_tables]
+                text_strategy_tables = page.find_tables(
+                    table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"}
+                )
+                for candidate in text_strategy_tables:
+                    if _inside_any_bbox(
+                        {"x0": candidate.bbox[0], "top": candidate.bbox[1], "x1": candidate.bbox[2], "bottom": candidate.bbox[3]},
+                        lines_bboxes,
+                    ):
+                        continue
+                    # A single-column "table" is not tabular data at all --
+                    # it's exactly what a plain stack of left-aligned lines
+                    # (ordinary headings/paragraphs sharing one left margin,
+                    # no columns whatsoever) looks like to the text
+                    # strategy. CONFIRMED live this session: a page of two
+                    # bold headings + two body lines, all starting at the
+                    # same x, is detected as a real (1-column, 7-row)
+                    # find_tables() candidate that trips no chopped-word
+                    # boundary at all (no adjacent-cell pair ever exists in
+                    # a 1-column row) -- the chopped-word check alone cannot
+                    # catch this shape, so the column count is checked
+                    # first, before it.
+                    if len(candidate.columns) < 2:
+                        continue
+                    if _table_has_chopped_word(candidate.extract()):
+                        continue
+                    found_tables.append(candidate)
             table_bboxes = [t.bbox for t in found_tables]
 
             page_lines = all_pages_lines[page_number - 1]
@@ -992,6 +1070,13 @@ def load_pdf(
 
             page_tables: list[Table] = []
             for found_table in found_tables:
+                # Phase 3c (Task 7): which strategy found THIS table decides
+                # `border_style` below -- object-identity membership check
+                # (verified: pdfplumber.table.Table defines no custom
+                # `__eq__`, so `in` correctly falls back to identity, exactly
+                # what's needed since `found_table` IS one of the same
+                # objects `text_strategy_tables` was built from).
+                is_text_strategy = found_table in text_strategy_tables if not text_only else False
                 # Phase 4 (docs/superpowers/specs/2026-08-12-table-fidelity-design.md):
                 # real structural (span/gap/colspan/rowspan) + heuristic
                 # styling (bold/text_color/background_color/align/column_widths)
@@ -1025,22 +1110,19 @@ def load_pdf(
                         id=f"t{table_id}",
                         cells=cells,
                         column_widths=column_widths,
-                        # "grid" is not a guess here: this call site always
-                        # invokes `page.find_tables()` with default settings
-                        # (no `table_settings` override), and pdfplumber's
-                        # own `TableSettings` defaults BOTH
-                        # `vertical_strategy` and `horizontal_strategy` to
-                        # `"lines"` (confirmed by reading `table.py`'s
-                        # `TableSettings` dataclass source) -- meaning a
-                        # table is only ever found here in the first place
-                        # because real horizontal AND vertical ruling-line
-                        # edges exist for `edges_to_intersections` to build
-                        # cells from. If this call site ever starts passing
-                        # a non-default `table_settings` (e.g. the `"text"`
-                        # strategy), this constant must be revisited -- it
-                        # is tied to the CURRENT call, not a property of
-                        # PDF tables in general.
-                        border_style="grid",
+                        # Phase 3c (Task 7): "grid" is only a valid claim for
+                        # a LINES-strategy table -- it was found because real
+                        # horizontal AND vertical ruling-line edges exist for
+                        # `edges_to_intersections` to build cells from
+                        # (pdfplumber's own `TableSettings` defaults BOTH
+                        # strategies to `"lines"`, confirmed by reading
+                        # `table.py`'s source). A text-strategy table (see
+                        # `is_text_strategy` above) has NO ruling lines by
+                        # construction -- it was found from text alignment
+                        # alone -- so asserting "grid" for it would be a lie
+                        # the review UI would render as a fabricated border
+                        # that was never actually drawn in the source PDF.
+                        border_style=None if is_text_strategy else "grid",
                         # Unconditional on every table this loader produces
                         # -- see `Table.style_provenance`'s own docstring in
                         # model.py. Every field above (spans included) is

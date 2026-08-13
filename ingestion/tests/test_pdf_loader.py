@@ -267,10 +267,13 @@ def test_load_pdf_border_style_is_grid_and_provenance_is_heuristic_unconditional
     # loader produces, unconditionally -- it's the field's entire purpose
     # (see Table.style_provenance's docstring / SourceRef.page_provenance's
     # precedent it mirrors). border_style="grid" here is backed by a real
-    # signal, not asserted blindly: this call site never overrides
-    # table_settings, so pdfplumber's own TableSettings defaults both
-    # strategies to "lines" -- a table is only found at all because real
-    # ruling lines exist.
+    # signal, not asserted blindly: this fixture's own table is found via
+    # the lines-strategy pass (pdfplumber's own TableSettings default,
+    # confirmed by reading table.py's source) because real ruling lines
+    # exist -- Task 7 added an ADDITIONAL text-strategy pass on the same
+    # page (see that pass's own docstring), but this fixture's table is
+    # already claimed by the lines-strategy bbox, so it is never
+    # double-detected or re-classified.
     doc = load_pdf(str(_build_span_and_gap_pdf(tmp_path)))
     assert len(doc.tables) >= 1
     for table in doc.tables:
@@ -890,6 +893,91 @@ def test_load_pdf_survives_a_continuation_merge_failure() -> None:
     with patch("app.loaders.pdf_loader._merge_continued_tables", side_effect=RuntimeError("boom")):
         doc = load_pdf(str(FIXTURES / "sample.pdf"))
     assert len(doc.tables) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 3c (Task 7, docs/superpowers/sdd/2026-08-13-pdf-ingestion-fidelity):
+# borderless (text-strategy) table detection + chopped-word-boundary
+# validation. Before this task, table detection was 100% ruling-line-based
+# (page.find_tables() default "lines" strategy) -- a real borderless table
+# (no ruling lines drawn at all) was never detected as a table. Naive
+# text-strategy detection alone is dangerous -- confirmed live this session
+# against a real government ICD: it can shred ordinary wrapped prose into a
+# fake table (cells split mid-word). The chopped-word-boundary check below is
+# the validated rejection rule that keeps text-strategy detection safe.
+# ---------------------------------------------------------------------------
+
+
+def test_load_pdf_detects_a_borderless_table_via_text_strategy() -> None:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "borderless_table.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        # A real, consistently-aligned borderless table -- same x-positions
+        # per column across every row, no ruling lines drawn at all.
+        rows = [("Code", "Meaning"), ("01", "Rejected"), ("02", "Accepted"), ("03", "Pending")]
+        y = 700
+        for code, meaning in rows:
+            c.drawString(72, y, code)
+            c.drawString(150, y, meaning)
+            y -= 20
+        c.save()
+        result = load_pdf(str(path))
+
+    assert len(result.tables) == 1
+    from app.canonical.model import plain_text_rows
+    assert plain_text_rows(result.tables[0])[0] == ["Code", "Meaning"]
+    assert result.tables[0].border_style is None  # no ruling lines exist -- must not be "grid"
+
+
+def test_load_pdf_rejects_a_prose_page_mistaken_for_a_borderless_table() -> None:
+    # Regression guard for the confirmed false-positive shape: ordinary
+    # prose must never be shredded into a fake table.
+    #
+    # FIX-ROUND NOTE: the brief's own literal fixture for this test (a
+    # single reportlab `Paragraph` flowable, wrapped normally) was tried
+    # first and found to NOT actually exercise the validation layer at
+    # all -- confirmed live: pdfplumber's text-strategy find_tables()
+    # returns ZERO candidates for that fixture's geometry (wrapped-paragraph
+    # line starts don't recur at a second x-position across enough lines to
+    # register as a second column), so `result.tables == []` held true with
+    # or without `_table_has_chopped_word` even being wired up -- a vacuous
+    # pass that would never have caught a regression.
+    #
+    # This fixture instead reproduces the REAL verified false-positive shape
+    # directly (lvc_gateway_icd.pdf page 8: a word split into a short first
+    # fragment at one x-position and its remainder at a second, consistent
+    # x-position, across multiple lines) -- CONFIRMED live this session:
+    # this produces a real (2-column, 6-row) text-strategy find_tables()
+    # candidate whose first row is exactly ['F', 'or'], which DOES trip
+    # `_table_has_chopped_word`. Without the chopped-word validation layer,
+    # this test fails (a fake 2-column table is produced); with it wired up,
+    # it correctly passes -- a genuine, not vacuous, regression guard.
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "prose_only.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica", 10)
+        rows = [
+            ("F", "or some tests or simulations will be used."),
+            ("T", "he following section describes results."),
+            ("N", "ote that additional information applies."),
+        ]
+        y = 700
+        for first, rest in rows:
+            c.drawString(72, y, first)
+            c.drawString(90, y, rest)
+            y -= 20
+        c.save()
+        result = load_pdf(str(path))
+
+    assert result.tables == []
 
 
 def test_load_pdf_attaches_a_table_caption_from_the_preceding_line() -> None:
