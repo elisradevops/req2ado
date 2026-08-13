@@ -756,8 +756,19 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
         # reference -- so they must also be checked here, or the early
         # return below would skip them before the NOTE-marker loop ever runs.
         ole_objects = child.findall(f".//{qn('w:object')}")
+        # Text boxes/shapes (VML or DrawingML) carry their own text frame in
+        # w:txbxContent, which paragraph.text never reaches into -- only
+        # images inside it survive, via the a:blip search above (a `.//`
+        # search that already reaches into text boxes). Without this pass
+        # the text box's text is dropped with zero trace.
+        textbox_texts = []
+        for txbx_content in child.findall(f".//{qn('w:txbxContent')}"):
+            run_texts = [t.text for t in txbx_content.findall(f".//{qn('w:t')}") if t.text]
+            combined = "".join(run_texts).strip()
+            if combined:
+                textbox_texts.append(combined)
 
-        if not content and not embed_ids and not ole_objects:
+        if not content and not embed_ids and not ole_objects and not textbox_texts:
             return
 
         if content:
@@ -841,6 +852,21 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                     id=f"b{block_id}",
                     kind=BlockKind.NOTE,
                     text=f"[UNSUPPORTED: embedded object ({prog_id or 'unknown type'}) -- content not extracted]",
+                    source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                )
+            )
+            block_id += 1
+
+        for textbox_text in textbox_texts:
+            start = offset
+            end = start + 1
+            offset = end
+            preview = textbox_text[:40] + ("…" if len(textbox_text) > 40 else "")
+            blocks.append(
+                Block(
+                    id=f"b{block_id}",
+                    kind=BlockKind.NOTE,
+                    text=f"[UNSUPPORTED: text box content -- {len(textbox_text)} chars not extracted: '{preview}']",
                     source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                 )
             )

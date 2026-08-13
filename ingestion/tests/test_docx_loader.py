@@ -1354,3 +1354,30 @@ def test_load_docx_flags_a_nested_table_in_a_cell_instead_of_silently_losing_it(
     # plain_text_rows projection) -- spans/bold/etc. are untouched by this
     # fix, only .text changes.
     assert result.tables[0].cells[0][1].text == "[UNSUPPORTED: nested table]"
+
+
+def test_load_docx_flags_text_box_content_instead_of_silently_dropping_it() -> None:
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    doc = DocxDocument()
+    doc.add_paragraph("Before the text box.")
+    textbox_xml = (
+        f'<w:p {nsdecls("w")} xmlns:v="urn:schemas-microsoft-com:vml">'
+        "<w:r><w:pict><v:shape><v:textbox><w:txbxContent>"
+        "<w:p><w:r><w:t>Text box body content.</w:t></w:r></w:p>"
+        "</w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>"
+    )
+    doc.element.body.append(parse_xml(textbox_xml))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "textbox.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE]
+    assert len(note_blocks) == 1
+    assert "UNSUPPORTED" in note_blocks[0].text
+    assert "text box" in note_blocks[0].text
+    assert "Text box body content" in note_blocks[0].text
