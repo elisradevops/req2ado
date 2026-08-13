@@ -14,6 +14,7 @@ from docx.table import _Cell as DocxCell
 from docx.text.paragraph import Paragraph as DocxParagraph
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
+from app.leveling.numbering import parse_numbering
 
 logger = logging.getLogger(__name__)
 
@@ -701,6 +702,7 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
     table_index = 0
     figure_index = 0
     offset = 0
+    heading_counters: list[int] = []
     # Every image rel consumed inline (see the w:p branch below) is recorded
     # here so the fallback pass after the body walk doesn't double-emit it.
     consumed_rel_ids: set[str] = set()
@@ -741,7 +743,7 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                 block_id += 1
 
     def _handle_paragraph(child) -> None:
-        nonlocal block_id, figure_index, offset
+        nonlocal block_id, figure_index, offset, heading_counters
         paragraph = DocxParagraph(child, docx_doc)
         content = paragraph.text.strip()
         # Inline drawings (a pasted image, or a converted EMF/WMF
@@ -798,12 +800,20 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
             else:
                 heading_level = _heading_level_for_paragraph(paragraph)
                 if heading_level is not None:
+                    number_label = None
+                    if parse_numbering(content)[0] is None:
+                        while len(heading_counters) < heading_level:
+                            heading_counters.append(0)
+                        del heading_counters[heading_level:]
+                        heading_counters[heading_level - 1] += 1
+                        number_label = ".".join(str(n) for n in heading_counters)
                     blocks.append(
                         Block(
                             id=f"b{block_id}",
                             kind=BlockKind.HEADING,
                             text=content,
                             heading_level=heading_level,
+                            number_label=number_label,
                             source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                         )
                     )

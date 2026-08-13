@@ -1428,3 +1428,42 @@ def test_load_docx_alternate_content_text_box_emits_one_marker_not_two() -> None
     assert "UNSUPPORTED" in note_blocks[0].text
     assert "text box" in note_blocks[0].text
     assert "Text box body content" in note_blocks[0].text
+
+
+def test_load_docx_synthesizes_heading_numbers_for_unnumbered_headings() -> None:
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_heading("Introduction", level=1)
+    doc.add_heading("Scope", level=2)
+    doc.add_heading("Power", level=1)
+    doc.add_heading("Backplane", level=2)
+    doc.add_heading("Connectors", level=3)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "unnumbered.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    headings = {b.text: b.number_label for b in result.blocks if b.kind == BlockKind.HEADING}
+    assert headings["Introduction"] == "1"
+    assert headings["Scope"] == "1.1"
+    assert headings["Power"] == "2"
+    assert headings["Backplane"] == "2.1"
+    assert headings["Connectors"] == "2.1.1"
+
+
+def test_load_docx_does_not_double_number_a_heading_that_already_has_its_own_number() -> None:
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_heading("3.2 Backplane Power", level=1)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "already_numbered.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    heading = next(b for b in result.blocks if b.kind == BlockKind.HEADING)
+    assert heading.text == "3.2 Backplane Power"
+    assert heading.number_label is None
