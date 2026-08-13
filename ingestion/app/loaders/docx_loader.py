@@ -702,6 +702,7 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
     # real, comparable order position.
 
     def _walk_body_elements(elements) -> None:
+        nonlocal block_id, offset
         for child in elements:
             if child.tag == qn("w:p"):
                 _handle_paragraph(child)
@@ -711,6 +712,19 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
                 sdt_content = child.find(qn("w:sdtContent"))
                 if sdt_content is not None:
                     _walk_body_elements(sdt_content.iterchildren())
+            elif child.tag == qn("w:altChunk"):
+                start = offset
+                end = start + 1
+                offset = end
+                blocks.append(
+                    Block(
+                        id=f"b{block_id}",
+                        kind=BlockKind.NOTE,
+                        text="[UNSUPPORTED: embedded document (altChunk) -- content not extracted]",
+                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                    )
+                )
+                block_id += 1
 
     def _handle_paragraph(child) -> None:
         nonlocal block_id, figure_index, offset

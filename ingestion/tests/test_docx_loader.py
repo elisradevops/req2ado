@@ -1240,3 +1240,38 @@ def test_load_docx_caption_overrides_a_vision_generated_caption() -> None:
         result = load_docx(str(out_path), describe_figure=lambda _b: "a vision-generated guess")
 
     assert result.figures[0].caption == "Figure 1: Power distribution diagram."
+
+
+def test_load_docx_emits_a_note_block_for_an_altchunk_instead_of_silently_dropping_it() -> None:
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls, qn
+
+    doc = DocxDocument()
+    doc.add_paragraph("Before the embedded document.")
+
+    # Insert the altChunk before the sectPr (not at the very end) to preserve order
+    # when python-docx saves/reloads, since it keeps sectPr at the end.
+    body = doc.element.body
+    sectPr = body.find(qn("w:sectPr"))
+    altchunk_el = parse_xml(f'<w:altChunk {nsdecls("w", "r")} r:id="rIdEmbeddedDoc"/>')
+    if sectPr is not None:
+        body.insert(body.index(sectPr), altchunk_el)
+    else:
+        body.append(altchunk_el)
+
+    doc.add_paragraph("After the embedded document.")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "altchunk.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))  # must not raise
+
+    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE]
+    assert len(note_blocks) == 1
+    assert "UNSUPPORTED" in note_blocks[0].text
+    assert "altChunk" in note_blocks[0].text
+    before_idx = next(i for i, b in enumerate(result.blocks) if b.text == "Before the embedded document.")
+    after_idx = next(i for i, b in enumerate(result.blocks) if b.text == "After the embedded document.")
+    note_idx = next(i for i, b in enumerate(result.blocks) if b.kind == BlockKind.NOTE)
+    assert before_idx < note_idx < after_idx
