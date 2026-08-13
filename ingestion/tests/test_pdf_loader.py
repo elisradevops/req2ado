@@ -529,6 +529,15 @@ def test_load_pdf_suppresses_a_footer_that_varies_only_by_page_number() -> None:
 
     footer_texts = [b.text for b in result.blocks if "| Page" in b.text]
     assert footer_texts == []
+    # Regression: the digit-normalized recurrence check alone (before the
+    # 72pt margin-position gate) misclassified this page's FIRST line --
+    # "Body content unique to page N." -- as a recurring HEADER template
+    # (same digit-normalization collision the header-suppression test
+    # already guards against for the footer role), silently reducing every
+    # page to zero blocks. Undetected by this test's own assertions before
+    # this line was added -- see task-2-report.md's fix-round entry.
+    body_texts = [b.text for b in result.blocks if "Body content unique" in b.text]
+    assert len(body_texts) == 5
 
 
 def test_load_pdf_with_ocr_fallback_preserves_figures_from_text_pages(tmp_path: Path) -> None:
