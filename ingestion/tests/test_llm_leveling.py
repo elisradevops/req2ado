@@ -737,6 +737,86 @@ def test_a_branch_with_no_glossary_heading_match_gets_no_extra_context(monkeypat
         assert "Reference section" not in call["section_text"]
 
 
+# ---------------------------------------------------------------------------
+# Front-matter heading guard -- deterministic, zero-LLM-cost content filter
+# ---------------------------------------------------------------------------
+
+
+def test_front_matter_heading_pattern_matches_typical_boilerplate_headings() -> None:
+    from app.leveling.llm_leveling import _FRONT_MATTER_HEADING_PATTERN
+
+    assert _FRONT_MATTER_HEADING_PATTERN.search("1 Introduction")
+    assert _FRONT_MATTER_HEADING_PATTERN.search("Table of Contents")
+    assert _FRONT_MATTER_HEADING_PATTERN.search("Revision History")
+    assert _FRONT_MATTER_HEADING_PATTERN.search("Document History")
+    assert _FRONT_MATTER_HEADING_PATTERN.search("Appendix A")
+    assert _FRONT_MATTER_HEADING_PATTERN.search("2.3 References")
+
+
+def test_front_matter_heading_pattern_does_not_match_real_content_headings() -> None:
+    from app.leveling.llm_leveling import _FRONT_MATTER_HEADING_PATTERN
+
+    assert not _FRONT_MATTER_HEADING_PATTERN.search("3 Interface Requirements")
+    assert not _FRONT_MATTER_HEADING_PATTERN.search("System Overview")
+    assert not _FRONT_MATTER_HEADING_PATTERN.search("4.1 Power Interface")
+
+
+def test_find_front_matter_branches_returns_indices_of_matching_branches() -> None:
+    from app.leveling.llm_leveling import _find_front_matter_branches
+
+    path = "doc.txt"
+    intro_heading = Block(id="b0", kind=BlockKind.HEADING, text="Introduction", number_label="1", heading_level=1, source_ref=_sr(path))
+    intro_body = Block(id="b1", kind=BlockKind.PARAGRAPH, text="This document describes...", source_ref=_sr(path))
+    real_heading = Block(id="b2", kind=BlockKind.HEADING, text="Interface Requirements", number_label="2", heading_level=1, source_ref=_sr(path))
+    real_body = Block(id="b3", kind=BlockKind.PARAGRAPH, text="The unit shall...", source_ref=_sr(path))
+    branches = [[intro_heading, intro_body], [real_heading, real_body]]
+
+    assert _find_front_matter_branches(branches) == {0}
+
+
+def test_combine_global_context_appends_front_matter_guard_only_for_matched_branch_index() -> None:
+    from app.leveling.llm_leveling import _combine_global_context, _FRONT_MATTER_GUARD_TEXT
+
+    matched = _combine_global_context("outline", 0, [], None, front_matter_branch_indices={0})
+    assert _FRONT_MATTER_GUARD_TEXT in matched
+
+    unmatched = _combine_global_context("outline", 1, [], None, front_matter_branch_indices={0})
+    assert _FRONT_MATTER_GUARD_TEXT not in unmatched
+    assert unmatched == "outline"
+
+
+def test_combine_global_context_omits_front_matter_guard_when_indices_not_supplied() -> None:
+    # Byte-identical to pre-Task-1 behavior when the new param is omitted --
+    # every pre-existing call site that doesn't yet pass it is unaffected.
+    from app.leveling.llm_leveling import _combine_global_context
+
+    result = _combine_global_context("outline", 0, [])
+    assert result == "outline"
+
+
+def test_build_survey_tree_front_matter_branch_still_allows_a_real_requirement_to_surface() -> None:
+    # The guard is a soft instruction, not a hard skip -- if the model still
+    # emits a real node for content inside a front-matter-labeled section
+    # (e.g. a genuine requirement accidentally placed under "Introduction"),
+    # that node must still reach the tree.
+    path = "doc.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, text="Introduction", number_label="1", heading_level=1, source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The unit shall boot within ten seconds.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, text="System Overview", number_label="2", heading_level=1, source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="This system provides power management.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Boot time", "text": "The unit shall boot within ten seconds.", "tags": []}]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert len(tree.nodes) >= 1
+    assert any("Boot time" in n.title for n in tree.nodes)
+
+
 def _table_with_group(rows: list[list[str]], path: str = "survey_input.txt", offset: int = 0) -> Table:
     return Table(
         id="t0", cells=[[TableCell(text=c) for c in row] for row in rows],

@@ -680,6 +680,24 @@ def _build_document_outline(branches: list[list[Block]]) -> str:
 _GLOSSARY_HEADING_PATTERN = re.compile(r"(?i)\b(definition|acronym|glossary|abbreviation|terminolog)")
 _GLOSSARY_INLINE_MAX_TOKENS = 500
 
+# Mirrors _GLOSSARY_HEADING_PATTERN's own shape exactly -- a deterministic,
+# zero-LLM-cost signal that a branch's heading is typical front matter
+# (Introduction/TOC/Revision History/Appendix/References), used ONLY to
+# inject a soft guard instruction into that branch's own analyze_section
+# call. Never skips or merges the branch -- a genuine requirement
+# accidentally placed under "Introduction" must still be able to surface.
+_FRONT_MATTER_HEADING_PATTERN = re.compile(
+    r"(?i)\b(introduction|table of contents|revision history|document history|appendix|references?)\b"
+)
+
+_FRONT_MATTER_GUARD_TEXT = (
+    "This section's heading matches typical front-matter (Introduction/"
+    "Table of Contents/Revision History/Appendix). Only emit work items if "
+    "genuine testable/actionable content exists in this section's text -- "
+    "do not fabricate an Epic/Feature/Requirement merely to represent this "
+    "section's existence."
+)
+
 
 def _find_glossary_sections(
     branches: list[list[Block]], branch_tables: list[list[Table]]
@@ -703,6 +721,18 @@ def _find_glossary_sections(
     return matches
 
 
+def _find_front_matter_branches(branches: list[list[Block]]) -> set[int]:
+    """Branch indices whose heading label matches a front-matter keyword.
+    Same heading-label source as _find_glossary_sections (_branch_heading_labels)
+    -- deterministic, computed once before any LLM call."""
+    indices: set[int] = set()
+    for i, branch in enumerate(branches):
+        labels = _branch_heading_labels(branch)
+        if any(_FRONT_MATTER_HEADING_PATTERN.search(label) for label in labels):
+            indices.add(i)
+    return indices
+
+
 def _glossary_context_for_branch(
     branch_index: int, glossary_sections: list[tuple[int, str, str]]
 ) -> str | None:
@@ -723,10 +753,15 @@ def _glossary_context_for_branch(
 
 def _combine_global_context(
     base: str | None, branch_index: int, glossary_sections: list[tuple[int, str, str]],
-    primer_context: str | None = None,
+    primer_context: str | None = None, front_matter_branch_indices: set[int] | None = None,
 ) -> str | None:
     extra = _glossary_context_for_branch(branch_index, glossary_sections)
-    parts = [part for part in (base, extra, primer_context) if part]
+    guard = (
+        _FRONT_MATTER_GUARD_TEXT
+        if front_matter_branch_indices is not None and branch_index in front_matter_branch_indices
+        else None
+    )
+    parts = [part for part in (base, extra, primer_context, guard) if part]
     return "\n\n".join(parts) if parts else None
 
 
@@ -1588,6 +1623,7 @@ def build_survey_tree(
         global_context = _build_document_outline(branches)
         glossary_branch_tables = _partition_tables_by_branch(branches, doc.tables) if branches else []
         glossary_sections = _find_glossary_sections(branches, glossary_branch_tables)
+        front_matter_branch_indices = _find_front_matter_branches(branches)
 
     kb_deps_present = user_id is not None and embed_client is not None and vector_store is not None
     doc_kb_context: str | None = None
@@ -1781,7 +1817,9 @@ def build_survey_tree(
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
                 supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
                 list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
-                global_context=_combine_global_context(global_context, branch_index, glossary_sections, primer_context),
+                global_context=_combine_global_context(
+                    global_context, branch_index, glossary_sections, primer_context, front_matter_branch_indices,
+                ),
                 read_other_section_fn=read_other_section_fn,
                 topic_count=branch_heading_count + len(branch_table_groups),
                 table_groups=branch_table_groups,
