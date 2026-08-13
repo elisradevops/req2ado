@@ -414,3 +414,49 @@ def test_cell_background_color_defensive_degrades_to_none_on_malformed_rect() ->
         {"fill": False, "non_stroking_color": (1.0, 0.0, 0.0), "x0": 0.0, "x1": 10.0, "top": 0.0, "bottom": 10.0}
     ]
     assert _cell_background_color(unfilled_rects, (0.0, 0.0, 10.0, 10.0)) is None
+
+
+def _build_mixed_text_and_scanned_pdf_with_figure(tmp_path: Path) -> Path:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    from PIL import Image
+
+    text_page_path = tmp_path / "text_page.pdf"
+    c = rl_canvas.Canvas(str(text_page_path), pagesize=letter)
+    c.drawString(72, 700, "A text-bearing page with an embedded figure.")
+    image_path = tmp_path / "fig.png"
+    Image.new("RGB", (10, 10), color="blue").save(image_path)
+    c.drawImage(str(image_path), 72, 500, width=50, height=50)
+    c.save()
+
+    scanned_page_path = tmp_path / "scanned_page.pdf"
+    scan_image_path = tmp_path / "scan.png"
+    Image.new("RGB", (200, 200), color="white").save(scan_image_path)
+    c2 = rl_canvas.Canvas(str(scanned_page_path), pagesize=letter)
+    c2.drawImage(str(scan_image_path), 0, 0, width=letter[0], height=letter[1])
+    c2.save()
+
+    from pypdf import PdfWriter, PdfReader
+    writer = PdfWriter()
+    for p in (text_page_path, scanned_page_path):
+        reader = PdfReader(str(p))
+        writer.add_page(reader.pages[0])
+    out_path = tmp_path / "mixed.pdf"
+    with open(out_path, "wb") as f:
+        writer.write(f)
+    return out_path
+
+
+def test_load_pdf_with_ocr_fallback_preserves_figures_from_text_pages(tmp_path: Path) -> None:
+    # Regression: load_pdf_with_ocr_fallback's final CanonicalDoc construction
+    # (ocr.py:103) omitted figures= entirely -- any PDF with at least one
+    # non-text page silently lost every Figure object extracted from its
+    # TEXT-bearing pages too, even though the FIGURE-kind Block survived.
+    from app.loaders.ocr import load_pdf_with_ocr_fallback
+
+    path = _build_mixed_text_and_scanned_pdf_with_figure(tmp_path)
+    doc = load_pdf_with_ocr_fallback(str(path))
+
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) >= 1
+    assert len(doc.figures) == len(figure_blocks)

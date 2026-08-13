@@ -100,4 +100,4 @@ def load_pdf_with_ocr_fallback(
     for i, block in enumerate(blocks):
         block.id = f"b{i}"
 
-    return CanonicalDoc(document=document, blocks=blocks, tables=text_doc.tables)
+    return CanonicalDoc(document=document, blocks=blocks, tables=text_doc.tables, figures=text_doc.figures)
