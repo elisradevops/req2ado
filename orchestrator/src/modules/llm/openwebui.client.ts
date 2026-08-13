@@ -390,7 +390,12 @@ export class OpenWebUiClient implements LlmClient {
         // A transient poll failure is not itself a verdict -- keep polling
         // until the deadline, then time out the same as a stuck 'pending'.
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Clamped to the remaining budget -- without this, a poll interval
+      // longer than what's left before the deadline (the common case for a
+      // short timeoutMs, and the tail iteration of any timeoutMs) silently
+      // rounds the actual wait up to a full extra 1000ms past the caller's
+      // requested deadline.
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000, deadline - Date.now())));
     }
     return false;
   }

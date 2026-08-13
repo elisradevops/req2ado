@@ -788,10 +788,22 @@ describe('OpenWebUiClient.pollFileProcessed', () => {
   });
 
   it('returns false on timeout rather than throwing', async () => {
+    // Fake timers -- pollFileProcessed's poll loop sleeps (clamped to the
+    // remaining budget) between attempts; without this, the test would pay
+    // a real ~100ms+ wall-clock wait, and that cost grows every time this
+    // pattern gets reused (e.g. Task 12's own tests calling this method).
+    jest.useFakeTimers();
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ status: 'pending' }) });
     const client = new OpenWebUiClient(config);
-    const result = await client.pollFileProcessed('file-123', 100);
+    const resultPromise = client.pollFileProcessed('file-123', 100);
+    // advanceTimersByTimeAsync (not the sync advanceTimersByTime) -- this
+    // loop interleaves a real awaited fetch()/json() microtask chain with
+    // the setTimeout sleep on every iteration, and only the async variant
+    // correctly flushes those microtasks between fake-timer advances.
+    await jest.advanceTimersByTimeAsync(200);
+    const result = await resultPromise;
     expect(result).toBe(false);
+    jest.useRealTimers();
   });
 });
 
