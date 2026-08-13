@@ -737,29 +737,38 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
             end = start + len(content)
             offset = end + 1
 
-            heading_level = _heading_level_for_paragraph(paragraph)
-            if heading_level is not None:
-                blocks.append(
-                    Block(
-                        id=f"b{block_id}",
-                        kind=BlockKind.HEADING,
-                        text=content,
-                        heading_level=heading_level,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
-                    )
-                )
+            style_name = paragraph.style.name if paragraph.style else ""
+            if style_name == "Caption" and blocks and blocks[-1].kind == BlockKind.FIGURE:
+                # A human-authored caption is more trustworthy than a vision
+                # guess -- it always overrides describe_figure's output, and
+                # the caption paragraph is linked to the figure rather than
+                # also emitted as its own disconnected PARAGRAPH block.
+                figures[-1].caption = content
+                blocks[-1].text = f"[FIGURE: {content}]"
             else:
-                own_ppr = paragraph._p.pPr
-                is_list_item = own_ppr is not None and own_ppr.find(qn("w:numPr")) is not None
-                blocks.append(
-                    Block(
-                        id=f"b{block_id}",
-                        kind=BlockKind.LIST_ITEM if is_list_item else BlockKind.PARAGRAPH,
-                        text=content,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                heading_level = _heading_level_for_paragraph(paragraph)
+                if heading_level is not None:
+                    blocks.append(
+                        Block(
+                            id=f"b{block_id}",
+                            kind=BlockKind.HEADING,
+                            text=content,
+                            heading_level=heading_level,
+                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                        )
                     )
-                )
-            block_id += 1
+                else:
+                    own_ppr = paragraph._p.pPr
+                    is_list_item = own_ppr is not None and own_ppr.find(qn("w:numPr")) is not None
+                    blocks.append(
+                        Block(
+                            id=f"b{block_id}",
+                            kind=BlockKind.LIST_ITEM if is_list_item else BlockKind.PARAGRAPH,
+                            text=content,
+                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                        )
+                    )
+                block_id += 1
 
         for embed_id in embed_ids:
             rel = docx_doc.part.rels.get(embed_id)

@@ -1194,3 +1194,49 @@ def test_load_docx_heading_detection_takes_precedence_over_list_item_detection()
     # Heading detection must take precedence: this is HEADING, never LIST_ITEM
     assert block.kind == BlockKind.HEADING
     assert block.heading_level == 1
+
+
+def test_load_docx_links_a_caption_styled_paragraph_to_the_preceding_figure() -> None:
+    from docx import Document as DocxDocument
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        doc = DocxDocument()
+        image_path = tmp_path / "diagram.png"
+        Image.new("RGB", (4, 4), color="green").save(image_path)
+        doc.add_picture(str(image_path))
+        caption_paragraph = doc.add_paragraph("Figure 1: Power distribution diagram.")
+        caption_paragraph.style = doc.styles["Caption"]
+
+        out_path = tmp_path / "captioned.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    assert len(result.figures) == 1
+    assert result.figures[0].caption == "Figure 1: Power distribution diagram."
+    figure_block = next(b for b in result.blocks if b.kind == BlockKind.FIGURE)
+    assert figure_block.text == "[FIGURE: Figure 1: Power distribution diagram.]"
+    # The caption paragraph itself is NOT also emitted as a separate PARAGRAPH block.
+    assert not any(b.text == "Figure 1: Power distribution diagram." and b.kind == BlockKind.PARAGRAPH
+                   for b in result.blocks)
+
+
+def test_load_docx_caption_overrides_a_vision_generated_caption() -> None:
+    from docx import Document as DocxDocument
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        doc = DocxDocument()
+        image_path = tmp_path / "diagram.png"
+        Image.new("RGB", (4, 4), color="green").save(image_path)
+        doc.add_picture(str(image_path))
+        caption_paragraph = doc.add_paragraph("Figure 1: Power distribution diagram.")
+        caption_paragraph.style = doc.styles["Caption"]
+
+        out_path = tmp_path / "captioned_with_vision.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path), describe_figure=lambda _b: "a vision-generated guess")
+
+    assert result.figures[0].caption == "Figure 1: Power distribution diagram."
