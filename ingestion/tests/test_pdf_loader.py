@@ -98,6 +98,33 @@ def test_load_pdf_falls_back_to_placeholder_when_describe_figure_raises() -> Non
     assert figure_blocks[0].text == "[FIGURE: none]"
 
 
+def test_load_pdf_flags_filled_acroform_fields_with_a_note() -> None:
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "form.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.drawString(72, 700, "Static label text.")
+        form = c.acroForm
+        form.textfield(name="approver", tooltip="Approver", x=72, y=650, width=200, height=20, value="J. Smith")
+        c.save()
+        result = load_pdf(str(path))
+
+    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE]
+    assert len(note_blocks) == 1
+    assert "approver" in note_blocks[0].text
+    assert "J. Smith" in note_blocks[0].text
+
+
+def test_load_pdf_no_note_when_document_has_no_acroform() -> None:
+    # Regression guard: get_fields() returns None (not {}) on a document
+    # with no AcroForm at all -- must not raise or misbehave.
+    result = load_pdf(str(FIXTURES / "sample.pdf"))
+    assert not any(b.kind == BlockKind.NOTE for b in result.blocks)
+
+
 def test_load_pdf_figure_gets_a_real_position_not_the_old_zero_placeholder() -> None:
     # Regression: an image's SourceRef was previously always (0, 0),
     # regardless of where on the page it actually appeared -- best-effort

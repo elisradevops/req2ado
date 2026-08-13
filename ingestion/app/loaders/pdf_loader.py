@@ -1351,4 +1351,27 @@ def load_pdf(
     except Exception:  # noqa: BLE001 -- a continuation-merge failure degrades to unmerged per-page tables, never aborts the document
         pass
 
+    # Phase 4 (Task 8): AcroForm fields, fail-loud NOTE marker
+    # A filled AcroForm field's value never appears in pdfplumber's text extraction
+    # at all -- pypdf's get_fields() sees it, but we flag it for later processing
+    # rather than silently dropping it. One NOTE block per document listing every
+    # filled field's name/value, matching the docx-loader precedent.
+    reader = cached_pdf_reader(path)
+    try:
+        fields = reader.get_fields()
+    except Exception:  # noqa: BLE001 -- a malformed AcroForm must not abort the whole document load
+        fields = None
+    if fields:
+        filled = {name: field.get("/V") for name, field in fields.items() if field.get("/V")}
+        if filled:
+            note_text = "[UNSUPPORTED: AcroForm fields with values -- not extracted into body content: " + \
+                ", ".join(f"{name}: {value}" for name, value in filled.items()) + "]"
+            blocks.append(
+                Block(
+                    id=f"b{block_id}", kind=BlockKind.NOTE, text=note_text,
+                    source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
+                )
+            )
+            block_id += 1
+
     return CanonicalDoc(document=document, blocks=blocks, tables=tables, figures=figures)
