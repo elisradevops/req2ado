@@ -980,6 +980,44 @@ def test_load_pdf_rejects_a_prose_page_mistaken_for_a_borderless_table() -> None
     assert result.tables == []
 
 
+def test_load_pdf_two_ruled_tables_with_aligned_columns_do_not_produce_a_bogus_third_table() -> None:
+    # Fix-round regression guard (Task 7 review finding): the text-strategy
+    # double-detection guard originally rejected a candidate only when it
+    # was FULLY CONTAINED inside one lines-strategy bbox (`_inside_any_bbox`,
+    # a pre-existing helper built for a different purpose -- stripping
+    # table-region LINES out of paragraph text, not this overlap check).
+    # LIVE-REPRODUCED failure this guards against: two separate ruled tables
+    # at the SAME column x-positions (routine in real ICDs -- two similarly-
+    # shaped spec tables stacked with a gap between them) makes
+    # find_tables(text strategy) return ONE candidate spanning BOTH real
+    # tables' combined bbox -- not contained in EITHER individual
+    # lines-strategy bbox alone, so the old containment check let it
+    # through as a third, bogus, duplicate-content table (3 tables:
+    # ["grid", None, "grid"], the middle one duplicating both real tables'
+    # rows). The fix (`_bboxes_overlap`, a real intersection test) rejects
+    # any text-strategy candidate that overlaps ANY lines-strategy bbox at
+    # all, not just one it's fully inside.
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Spacer, Table as RLTable, TableStyle
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "two_ruled_tables.pdf"
+        doc = SimpleDocTemplate(str(path), pagesize=letter)
+        style = TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)])
+        t1 = RLTable([["Rail", "Voltage"], ["3V3", "3.3"]], style=style, colWidths=[100, 100])
+        t2 = RLTable([["Rail", "Voltage"], ["5V", "5.0"]], style=style, colWidths=[100, 100])
+        doc.build([t1, Spacer(1, 20), t2])
+        result = load_pdf(str(path))
+
+    from app.canonical.model import plain_text_rows
+    assert len(result.tables) == 2
+    assert all(t.border_style == "grid" for t in result.tables)
+    assert plain_text_rows(result.tables[0]) == [["Rail", "Voltage"], ["3V3", "3.3"]]
+    assert plain_text_rows(result.tables[1]) == [["Rail", "Voltage"], ["5V", "5.0"]]
+
+
 def test_load_pdf_attaches_a_table_caption_from_the_preceding_line() -> None:
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Table as RLTable, TableStyle

@@ -650,6 +650,30 @@ def _inside_any_bbox(obj: dict, bboxes: list[tuple[float, float, float, float]])
     return any(x0 <= ox0 and ox1 <= x1 and top <= otop and obottom <= bottom for x0, top, x1, bottom in bboxes)
 
 
+def _bboxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    """Standard axis-aligned bbox overlap test (ANY intersection at all --
+    partial or full), as opposed to `_inside_any_bbox`'s FULL-containment
+    test above. Fix-round addition (Task 7 review): the text-strategy
+    double-detection guard originally reused `_inside_any_bbox` (built for
+    a genuinely different purpose -- "is this LINE fully inside a table's
+    bbox," used to strip table-region lines out of paragraph text), which
+    only rejects a text-strategy candidate when it's fully CONTAINED inside
+    one lines-strategy table's bbox. LIVE-REPRODUCED failure this confirmed:
+    a page with two separate ruled tables at aligned column x-positions
+    (routine in real ICDs -- e.g. two similarly-shaped spec tables stacked
+    with a gap) produces a text-strategy candidate spanning BOTH real
+    tables' combined bbox -- not fully contained in EITHER individual
+    lines-strategy bbox, so it passed the old check and was added as a
+    third, bogus, duplicate-content table. Any real overlap at all (not
+    just containment) with an already-found lines-strategy table is reason
+    enough to reject a text-strategy candidate outright -- the conservative
+    direction: a candidate that merely straddles a ruled table is dropped
+    entirely rather than risking a duplicate."""
+    ax0, atop, ax1, abottom = a
+    bx0, btop, bx1, bbottom = b
+    return ax0 < bx1 and bx0 < ax1 and atop < bbottom and btop < abottom
+
+
 def _is_chopped_word_boundary(prev_text: str, cur_text: str) -> bool:
     """True if concatenating prev_text+cur_text with no separator falls
     mid-word -- a strong, checkable signal that a 'column boundary' is
@@ -998,10 +1022,14 @@ def load_pdf(
                     table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"}
                 )
                 for candidate in text_strategy_tables:
-                    if _inside_any_bbox(
-                        {"x0": candidate.bbox[0], "top": candidate.bbox[1], "x1": candidate.bbox[2], "bottom": candidate.bbox[3]},
-                        lines_bboxes,
-                    ):
+                    # Fix-round (Task 7 review): real overlap, not
+                    # containment -- see `_bboxes_overlap`'s own docstring
+                    # for the live-reproduced bogus-third-table failure this
+                    # replaces (`_inside_any_bbox` only rejected a candidate
+                    # fully contained inside ONE lines-strategy bbox; a
+                    # candidate spanning two separate ruled tables was
+                    # contained in neither and slipped through).
+                    if any(_bboxes_overlap(candidate.bbox, b) for b in lines_bboxes):
                         continue
                     # A single-column "table" is not tabular data at all --
                     # it's exactly what a plain stack of left-aligned lines
