@@ -122,6 +122,13 @@ _HEADING_SIZE_MARGIN = 0.5
 # several times larger than that.
 _HEADING_SIZE_MAX_RATIO = 3.0
 
+# Phase 3b (Task 6): a caption line's own text must match this shape to be
+# attached to the immediately-following table -- deliberately narrow
+# (starts with "Table" + a number) rather than "any short line before a
+# table," to avoid misattributing an unrelated short paragraph as a
+# caption.
+_TABLE_CAPTION_PATTERN = re.compile(r"^Table\s+[\w.]+[:.]?\s*(.*)$", re.IGNORECASE)
+
 
 def _fontname_is_bold(fontname: str | None) -> bool:
     """Widened bold-fontname substring match -- see `_BOLD_FONTNAME_EXTRA_TOKENS`
@@ -1104,9 +1111,27 @@ def load_pdf(
                 key=lambda entry: entry[1],
             )
             offset = 0
-            for kind, _top, item in merged:
+            # Phase 3b (Task 6): read-and-reset by the "table" branch below --
+            # a caption-shaped paragraph (see `_TABLE_CAPTION_PATTERN`) that is
+            # immediately followed by a table in `merged` order defers its own
+            # emission and stashes its text here instead, so the table branch
+            # can attach it as `Table.caption` rather than the paragraph also
+            # being emitted as its own standalone block (link, don't
+            # duplicate -- same precedent as docx_loader.py's own
+            # Caption-paragraph-to-figure linking).
+            pending_table_caption: str | None = None
+            for i, (kind, _top, item) in enumerate(merged):
                 if kind == "paragraph":
                     text, size, is_bold, para_top = item
+                    caption_match = _TABLE_CAPTION_PATTERN.match(text.strip())
+                    # Only treat as a pending caption if the VERY NEXT merged
+                    # entry is a table -- checked by peeking ahead, not simply
+                    # "any Table-shaped line ever seen" (which could wrongly
+                    # attach to a table several paragraphs later).
+                    next_is_table = i + 1 < len(merged) and merged[i + 1][0] == "table"
+                    if caption_match is not None and next_is_table:
+                        pending_table_caption = caption_match.group(1).strip() or text.strip()
+                        continue
                     start = offset
                     end = start + len(text)
                     offset = end + 1
@@ -1149,6 +1174,13 @@ def load_pdf(
                     end = start + 1
                     offset = end
                     table = item
+                    # Phase 3b (Task 6): a "Table N: <title>" line the
+                    # paragraph branch above deferred (because THIS table was
+                    # its immediate next `merged` entry) is attached here and
+                    # reset -- never leaked forward to a later, unrelated
+                    # table.
+                    caption = pending_table_caption
+                    pending_table_caption = None
                     # Re-keys the SAME table (built above with a real bbox-
                     # ordered page but a placeholder source_ref) with its
                     # real document-order offset -- carries every field
@@ -1162,7 +1194,7 @@ def load_pdf(
                             column_widths=table.column_widths,
                             border_style=table.border_style,
                             style_provenance=table.style_provenance,
-                            caption=table.caption,
+                            caption=caption,
                             source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
                         )
                     )

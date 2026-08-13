@@ -890,3 +890,27 @@ def test_load_pdf_survives_a_continuation_merge_failure() -> None:
     with patch("app.loaders.pdf_loader._merge_continued_tables", side_effect=RuntimeError("boom")):
         doc = load_pdf(str(FIXTURES / "sample.pdf"))
     assert len(doc.tables) >= 1
+
+
+def test_load_pdf_attaches_a_table_caption_from_the_preceding_line() -> None:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Table as RLTable, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib import colors
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "captioned_table.pdf"
+        styles = getSampleStyleSheet()
+        doc = SimpleDocTemplate(str(path), pagesize=letter)
+        style = TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)])
+        doc.build([
+            Paragraph("Table 3.4: Response Codes", styles["BodyText"]),
+            RLTable([["Code", "Meaning"], ["01", "Rejected"]], style=style),
+        ])
+        result = load_pdf(str(path))
+
+    assert len(result.tables) == 1
+    assert result.tables[0].caption == "Response Codes"
+    # The caption line is NOT also emitted as its own PARAGRAPH block.
+    assert not any("Table 3.4" in b.text for b in result.blocks if b.kind == BlockKind.PARAGRAPH)
