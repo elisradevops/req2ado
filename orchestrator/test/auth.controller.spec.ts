@@ -75,4 +75,30 @@ describe('AuthController.login', () => {
     );
     expect(res.cookie).toHaveBeenCalled();
   });
+
+  it('rejects when the PAT itself fails ADO validation', async () => {
+    const adoPatProvider = { validateAndIdentify: jest.fn().mockRejectedValue(new Error('fetch failed')) };
+    const controller = new AuthController(adoPatProvider as any, {} as any, {} as any);
+    const res = makeRes();
+
+    await expect(controller.login({ adoOrgUrl: 'https://tfs.internal/tfs/Collection', pat: 'bad-pat' }, res as any)).rejects.toThrow(
+      UnauthorizedException,
+    );
+    expect(res.cookie).not.toHaveBeenCalled();
+  });
+
+  it('reports a distinct message (not "invalid credential") when the PAT validates but session/vault setup fails', async () => {
+    const adoPatProvider = {
+      validateAndIdentify: jest.fn().mockResolvedValue({ identity: TEST_USER.userId, displayName: 'Jane Doe' }),
+    };
+    const sessionService = { create: jest.fn().mockRejectedValue(new Error('database unreachable')) };
+    const credentialVault = { set: jest.fn() };
+    const controller = new AuthController(adoPatProvider as any, sessionService as any, credentialVault as any);
+    const res = makeRes();
+
+    await expect(
+      controller.login({ adoOrgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fresh-pat' }, res as any),
+    ).rejects.toThrow('Sign-in succeeded but the server failed to establish a session. Please try again.');
+    expect(res.cookie).not.toHaveBeenCalled();
+  });
 });

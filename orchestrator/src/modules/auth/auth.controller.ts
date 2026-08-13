@@ -1,7 +1,7 @@
 import { BadRequestException, Body, Controller, Get, Post, Req, Res, UnauthorizedException } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
-import { AdoPatProvider } from './ado-pat.provider';
+import { AdoPatProvider, type AdoIdentity } from './ado-pat.provider';
 import { loginRequestSchema } from './login.dto';
 import { SessionService, type SessionUser } from './session.service';
 import { Public } from './public.decorator';
@@ -56,15 +56,31 @@ export class AuthController {
     }
     const body = parseResult.data;
 
+    let identity: AdoIdentity;
     try {
-      const identity = await this.adoPatProvider.validateAndIdentify(body.adoOrgUrl, body.pat);
+      identity = await this.adoPatProvider.validateAndIdentify(body.adoOrgUrl, body.pat);
+    } catch {
+      // validateAndIdentify already logs its own diagnostic (status/URL/body)
+      // before throwing -- this really is a bad-credential/unreachable-org
+      // case, safe to report as such.
+      throw new UnauthorizedException('Invalid ADO organization URL or Personal Access Token');
+    }
+
+    try {
       const token = await this.sessionService.create(identity.identity, identity.displayName);
       const ownerKey = userOwnerKey(identity.identity);
       await this.credentialVault.set(ownerKey, 'ado_pat', JSON.stringify({ orgUrl: body.adoOrgUrl, pat: body.pat }));
       res.cookie(SESSION_COOKIE_NAME, token, cookieOptions());
       return { displayName: identity.displayName, userId: identity.identity };
-    } catch {
-      throw new UnauthorizedException('Invalid ADO organization URL or Personal Access Token');
+    } catch (err) {
+      // The PAT was proven valid above -- a failure here is an internal
+      // fault (DB/session/vault), not a bad credential. Conflating it with
+      // the branch above previously reported "Invalid ADO organization URL
+      // or Personal Access Token" for e.g. a database outage, with no
+      // server-side trace at all.
+      // eslint-disable-next-line no-console
+      console.error('Login succeeded against ADO but session/credential setup failed:', err);
+      throw new UnauthorizedException('Sign-in succeeded but the server failed to establish a session. Please try again.');
     }
   }
 
