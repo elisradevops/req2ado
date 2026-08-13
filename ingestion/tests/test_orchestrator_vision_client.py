@@ -128,8 +128,10 @@ def test_describe_figure_recovers_a_slightly_malformed_json_reply_via_repair() -
     # A model appending stray trailing content after otherwise-valid JSON
     # (the same real failure shape orchestrator_llm_client.py's own
     # _parse_json_object already tolerates) must still parse correctly.
+    # Note: json.loads tolerates trailing whitespace, so we use non-whitespace
+    # garbage to actually trigger the json_repair fallback path.
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"description": '{"significant": true, "description": "A block diagram."} '})
+        return httpx.Response(200, json={"description": '{"significant": true, "description": "A block diagram."} garbage'})
 
     client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
