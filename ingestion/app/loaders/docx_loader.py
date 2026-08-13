@@ -604,12 +604,17 @@ def _describe_one_figure(
 
 def _outline_level_from_ppr(ppr) -> int | None:
     """w:outlineLvl is 0-based per the OOXML spec; this file's Block.
-    heading_level is 1-based, matching every existing loader/test."""
+    heading_level is 1-based, matching every existing loader/test.
+    A malformed/non-numeric `@w:val` (not valid per the OOXML schema, but
+    this loader must not trust source XML to be well-formed) falls through
+    to `None` -- not a heading via THIS signal -- rather than raising and
+    aborting the whole document load, same graceful-degradation guarantee
+    as every other malformed-input case in this module."""
     outline_lvl = ppr.find(qn("w:outlineLvl"))
     if outline_lvl is None:
         return None
     val = outline_lvl.get(qn("w:val"))
-    if val is None:
+    if val is None or not val.lstrip("-").isdigit():
         return None
     return int(val) + 1
 

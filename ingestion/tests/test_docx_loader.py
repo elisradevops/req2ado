@@ -978,13 +978,17 @@ def test_load_docx_unwraps_content_control_wrapped_heading_and_paragraph() -> No
     assert heading_block.heading_level == 1
 
 
-def test_load_docx_detects_heading_via_style_level_outline_lvl_with_no_space_in_style_name() -> None:
-    # Regression: docgen-json-to-word (the sibling repo that GENERATES real
-    # .docx files) emits style ids like "Heading3" with NO space
-    # (ParagraphService.cs), which the old startswith("Heading ") check
-    # never matched -- silently downgraded to PARAGRAPH. Word's own
-    # built-in Heading N styles carry their outlineLvl on the STYLE
-    # definition (not the paragraph's own pPr), so this exercises that path.
+def test_load_docx_detects_heading_via_style_level_outline_lvl_for_builtin_heading_style() -> None:
+    # Word's own built-in Heading N styles carry their outlineLvl on the
+    # STYLE definition (not the paragraph's own pPr), so this exercises
+    # that (tier 2) path. NOTE: this is tier 2, not the regex fallback --
+    # doc.styles["Heading 3"]'s DISPLAY NAME is "Heading 3" (WITH a space;
+    # only its style_id is the no-space "Heading3"), and it already has an
+    # outlineLvl on its own style definition, so it resolves via tier 2
+    # long before the regex tier is ever reached. See
+    # test_load_docx_detects_heading_via_regex_fallback_with_no_space_style_name
+    # below for a test that genuinely reaches and passes through the
+    # no-space regex tier.
     from docx import Document as DocxDocument
 
     doc = DocxDocument()
@@ -999,6 +1003,82 @@ def test_load_docx_detects_heading_via_style_level_outline_lvl_with_no_space_in_
     heading = next(b for b in result.blocks if b.text == "Backplane Power")
     assert heading.kind == BlockKind.HEADING
     assert heading.heading_level == 3
+
+
+def test_load_docx_detects_heading_via_regex_fallback_with_no_space_style_name() -> None:
+    # Regression: docgen-json-to-word (the sibling repo that GENERATES real
+    # .docx files) emits style ids like "Heading3" with NO space
+    # (ParagraphService.cs). This must genuinely reach the tier-3
+    # style-NAME regex fallback -- NOT tier 2 (style-level outlineLvl).
+    #
+    # `doc.styles.add_style("Heading3", ...)` does NOT isolate that:
+    # python-docx's own `styleId_from_name` slugifies "Heading3" (already
+    # spaceless) to the SAME styleId as the built-in Heading 3 style
+    # ("Heading3"), so a second `w:style` element with a DUPLICATE styleId
+    # is appended -- and both `doc.styles["Heading3"]` (falls back to a
+    # deprecated by-id lookup) and re-reading `paragraph.style` after
+    # assignment (also resolved by styleId) return the FIRST match, which
+    # is always the ORIGINAL built-in style (outlineLvl and all) -- not the
+    # new one. That version of this test silently passed via tier 2, same
+    # flaw the brief's review caught in the original test.
+    #
+    # To genuinely isolate tier 3, the custom style is injected via raw
+    # OOXML with an UNAMBIGUOUS styleId (no collision with any built-in
+    # id) but a `w:name` of literally "Heading3" (no space, matching what
+    # this loader actually reads via `style.name`) and NO `w:pPr` at all
+    # (so no outlineLvl exists anywhere -- own paragraph pPr or style pPr
+    # -- to satisfy tiers 1/2 first).
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    styles_root = doc.styles.element
+    style_el = styles_root.makeelement(
+        qn("w:style"), {qn("w:type"): "paragraph", qn("w:styleId"): "HeadingNoSpaceCustom"}
+    )
+    name_el = style_el.makeelement(qn("w:name"), {qn("w:val"): "Heading3"})
+    style_el.append(name_el)
+    styles_root.append(style_el)
+
+    paragraph = doc.add_paragraph("Backplane Power")
+    paragraph.style = doc.styles["Heading3"]  # resolves by NAME to the custom style just injected
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "heading3_custom.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    heading = next(b for b in result.blocks if b.text == "Backplane Power")
+    assert heading.kind == BlockKind.HEADING
+    assert heading.heading_level == 3
+
+
+def test_load_docx_does_not_crash_on_a_non_numeric_outline_lvl_val() -> None:
+    # Regression: _outline_level_from_ppr's int(val) call was previously
+    # unguarded -- a malformed w:outlineLvl/@w:val (not schema-valid, but
+    # this loader must not trust source XML to be well-formed) crashed the
+    # WHOLE document load, the exact crash class this task was created to
+    # eliminate, just on a different attribute. A malformed val must fall
+    # through to the next detection tier instead -- here there is no
+    # style-name signal either, so it lands on PARAGRAPH.
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    doc = DocxDocument()
+    p_xml = (
+        f'<w:p {nsdecls("w")}>'
+        '<w:pPr><w:outlineLvl w:val="not-a-number"/></w:pPr>'
+        "<w:r><w:t>Malformed outline level.</w:t></w:r></w:p>"
+    )
+    doc.element.body.append(parse_xml(p_xml))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "bad_outline_lvl.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))  # must not raise
+
+    block = next(b for b in result.blocks if b.text == "Malformed outline level.")
+    assert block.kind == BlockKind.PARAGRAPH
 
 
 def test_load_docx_treats_title_style_as_a_heading() -> None:
