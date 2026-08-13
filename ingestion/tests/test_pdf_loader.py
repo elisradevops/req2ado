@@ -110,12 +110,32 @@ def test_load_pdf_figure_gets_a_real_position_not_the_old_zero_placeholder() -> 
 
 
 def test_load_pdf_figure_placeholder_survives_into_baseline_tree_verbatim() -> None:
+    # This fixture's own "Panel Layout" heading (tests/fixtures/
+    # build_pdf_with_figure_fixture.py styles it with reportlab's "Title"
+    # style, always larger than its BodyText) is now correctly detected as
+    # a real BlockKind.HEADING by Task 3's font-size-outlier classifier --
+    # previously PDFs never emitted HEADING at all, so this document fell
+    # through to build_baseline_tree's headingless fallback path, whose
+    # own doc comment documents (as "a pre-existing, separate concern")
+    # that it renders a FIGURE block's raw block.text verbatim, including
+    # the literal "[FIGURE: none]" placeholder. Now that heading detection
+    # correctly routes this document through the STRUCTURED branch path
+    # instead, that path's _figure_line gate (already covered by
+    # test_tree_builder.py's own
+    # test_baseline_structured_tree_figure_fold_populates_figure_ids_and_uncaptioned_figure_ids)
+    # deliberately suppresses the raw placeholder and tracks the figure via
+    # uncaptioned_figure_ids instead -- the figure still survives into the
+    # tree, just not as leaked placeholder text. This test now asserts that
+    # (correct, already-fixed-elsewhere) behavior rather than the old
+    # headingless-path artifact.
     from app.leveling.tree_builder import build_baseline_tree
     from app.workitem.fidelity import verify_fidelity
 
     doc = load_pdf(str(FIXTURES / "pdf_with_figure.pdf"))
     tree = build_baseline_tree(doc)
-    assert any("[FIGURE: none]" in node.description for node in tree.nodes)
+    assert not any("[FIGURE: none]" in node.description for node in tree.nodes)
+    assert any("Panel Layout" in node.title for node in tree.nodes)
+    assert any(node.uncaptioned_figure_ids for node in tree.nodes)
     for node in tree.nodes:
         assert verify_fidelity(node)
 
@@ -480,13 +500,18 @@ def test_load_pdf_merges_wrapped_lines_into_one_paragraph_block() -> None:
         ])
         result = load_pdf(str(path))
 
-    paragraph_blocks = [b for b in result.blocks if b.kind == BlockKind.PARAGRAPH]
     # Exactly 3 blocks: title, the wrapped long paragraph (merged back into
     # ONE block despite spanning multiple lines), and the second paragraph --
-    # not 1 giant page-blob, and not one block PER LINE either.
-    assert len(paragraph_blocks) == 3
-    assert paragraph_blocks[1].text.startswith("This is a long sentence")
-    assert paragraph_blocks[1].text.count("This is a long sentence") == 3  # all 3 repeats intact, still one block
+    # not 1 giant page-blob, and not one block PER LINE either. Checked over
+    # ALL blocks (not just BlockKind.PARAGRAPH) since Task 3's font-size-
+    # outlier heading detection now correctly classifies "Title Heading"
+    # (styles["Title"], larger than styles["BodyText"]) as BlockKind.HEADING
+    # -- this test's own real concern (line-merge granularity, not heading
+    # classification) is unaffected by that and still holds over the full
+    # block list.
+    assert len(result.blocks) == 3
+    assert result.blocks[1].text.startswith("This is a long sentence")
+    assert result.blocks[1].text.count("This is a long sentence") == 3  # all 3 repeats intact, still one block
 
 
 def test_load_pdf_suppresses_a_running_header_recurring_across_most_pages() -> None:
@@ -538,6 +563,101 @@ def test_load_pdf_suppresses_a_footer_that_varies_only_by_page_number() -> None:
     # this line was added -- see task-2-report.md's fix-round entry.
     body_texts = [b.text for b in result.blocks if "Body content unique" in b.text]
     assert len(body_texts) == 5
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 (Task 3, docs/superpowers/sdd/2026-08-13-pdf-ingestion-fidelity):
+# heading detection via font-size outlier, numbering-parsed depth, and a
+# real PDF outline as a tier-0 override. Before this, every PDF text block
+# was flat PARAGRAPH -- no BlockKind.HEADING was ever emitted for a PDF.
+# ---------------------------------------------------------------------------
+
+
+def test_load_pdf_detects_a_heading_via_font_size_outlier() -> None:
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "heading.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica-Bold", 18)
+        c.drawString(72, 700, "Introduction")
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 670, "Body text at normal size.")
+        c.save()
+        result = load_pdf(str(path))
+
+    heading = next(b for b in result.blocks if b.text == "Introduction")
+    assert heading.kind == BlockKind.HEADING
+    assert heading.heading_level == 1
+    body = next(b for b in result.blocks if "Body text" in b.text)
+    assert body.kind == BlockKind.PARAGRAPH
+
+
+def test_load_pdf_uses_own_numbering_for_heading_depth_when_present() -> None:
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "numbered_heading.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(72, 700, "1.1 Scope")
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 670, "Body text.")
+        c.save()
+        result = load_pdf(str(path))
+
+    heading = next(b for b in result.blocks if "Scope" in b.text)
+    assert heading.kind == BlockKind.HEADING
+    assert heading.heading_level == 2  # from "1.1", not a size-rank guess
+    assert heading.number_label is None  # self-numbered, text kept as-is, no synthesis
+
+
+def test_load_pdf_synthesizes_a_number_for_an_unnumbered_heading() -> None:
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "unnumbered_headings.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(72, 750, "Introduction")
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 720, "Body one.")
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(72, 690, "Scope")
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 660, "Body two.")
+        c.save()
+        result = load_pdf(str(path))
+
+    headings = [b for b in result.blocks if b.kind == BlockKind.HEADING]
+    assert [h.number_label for h in headings] == ["1", "2"]
+
+
+def test_load_pdf_watermark_sized_text_is_not_classified_as_heading() -> None:
+    # Regression guard: a watermark can be the largest font on a page --
+    # must not be promoted to HEADING just because it's an outlier.
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "watermarked.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica", 60)  # watermark-sized, far beyond _HEADING_SIZE_MAX_RATIO x body
+        c.drawString(150, 400, "DRAFT")
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 700, "Real body text on this page.")
+        c.save()
+        result = load_pdf(str(path))
+
+    draft_block = next(b for b in result.blocks if b.text == "DRAFT")
+    assert draft_block.kind == BlockKind.PARAGRAPH  # excluded from heading candidacy, not promoted
 
 
 def test_load_pdf_with_ocr_fallback_preserves_figures_from_text_pages(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ import pdfplumber
 from pypdf import PdfReader
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
+from app.leveling.numbering import parse_numbering, numbering_depth
 
 # --- Phase 4 (docs/superpowers/specs/2026-08-12-table-fidelity-design.md):
 # real best-effort/heuristic PDF table styling extraction. Everything below
@@ -106,6 +107,20 @@ _BOILERPLATE_RECURRENCE_FRACTION = 0.6
 # own SimpleDocTemplate (used throughout this file's own test fixtures)
 # defaults to it -- not a value tuned to any single fixture.
 _HEADER_FOOTER_MARGIN_POINTS = 72.0
+
+# A heading candidate's line size must exceed the document's own dominant
+# body-text size by at least this many points to be classified a heading
+# -- guards against pdfplumber's float noise re-triggering on lines that
+# are only trivially, insignificantly larger than body text.
+_HEADING_SIZE_MARGIN = 0.5
+
+# A heading candidate whose size exceeds the body size by more than this
+# multiple is more likely a watermark/decorative element than a real
+# heading -- real document headings in this design's sampled corpus never
+# exceeded ~2.2x body size (24pt/11pt on the LVC Gateway ICD's title
+# page); a watermark rendered to dominate a page visually often goes
+# several times larger than that.
+_HEADING_SIZE_MAX_RATIO = 3.0
 
 
 def _fontname_is_bold(fontname: str | None) -> bool:
@@ -546,7 +561,114 @@ def _line_is_bold(line: dict) -> bool:
     return False
 
 
-def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float]]:
+def _dominant_body_size(all_pages_lines: list[list[dict]]) -> float:
+    """Mode of every line's own font size across the WHOLE document --
+    body text dominates by sheer line count in any real document (verified
+    live: 6041 tokens at 10.0pt vs 41 at 12.0pt/25 at 14.0pt on a real
+    82-page ICD), so the single most common line-size IS the body size,
+    no separate body-vs-heading classifier needed. Document-level, not
+    per-page -- a page that's mostly a table or figure would otherwise
+    skew a per-page-only histogram; body text is consistent across a real
+    document's OWN pages (confirmed: 11.04pt/10.0pt each held steady
+    across dozens of sampled pages in this design's research)."""
+    from collections import Counter
+
+    sizes = [_line_size(line) for lines in all_pages_lines for line in lines if line.get("chars")]
+    if not sizes:
+        return 0.0
+    counts = Counter(sizes)
+    # Tie-break toward the SMALLER size when two+ sizes share the max count
+    # -- `Counter.most_common` alone breaks ties by first-insertion order,
+    # which on a real document never matters (body text dominates by sheer
+    # count, per this function's own docstring), but on a small/minimal
+    # document a heading line and a body line can tie 1-for-1, and the
+    # heading -- drawn/positioned first on the page -- would otherwise win
+    # the tie and become "body_size" itself, silently defeating the entire
+    # outlier check. Body text is, by this whole feature's own layered-
+    # signal design, the SMALLER of the two, so the smaller candidate is
+    # the correct tie-break in either case.
+    max_count = max(counts.values())
+    return min(size for size, count in counts.items() if count == max_count)
+
+
+def _heading_level_from_size_rank(size: float, body_size: float, size_ranks: dict[float, int]) -> int:
+    """Font-size-cluster rank as the heading DEPTH fallback -- used only
+    when a heading candidate's own text has no parseable number (see the
+    layered-signal design: font size decides IF a line is a heading;
+    parse_numbering decides WHAT depth when it parses; this function is
+    the depth fallback when it doesn't). `size_ranks` maps every distinct
+    heading-candidate size seen so far to a 1-based depth rank, LARGEST
+    size = rank 1 (shallowest) -- built incrementally as new sizes are
+    encountered, so a document's actual heading sizes (whatever they are)
+    define their own depth ordering rather than assuming a fixed set of
+    sizes up front."""
+    if size not in size_ranks:
+        # New size -- rank it below every size seen so far that's
+        # LARGER than it (a genuinely new, smaller heading size is a
+        # deeper level than every larger size already ranked).
+        deeper_than = sum(1 for s in size_ranks if s > size)
+        size_ranks[size] = deeper_than + 1
+    return size_ranks[size]
+
+
+def _advance_heading_counter(heading_counters: list[int], heading_level: int, existing_label: str | None) -> str | None:
+    """Same validated algorithm as docx_loader.py's heading-number
+    synthesis (commit history: fc16a9e, 6c07360) -- reimplemented here
+    per this task's own non-goal (no shared-module refactor of
+    docx_loader.py). Always extends/truncates `heading_counters` for
+    EVERY heading regardless of self-numbering (the mixed-numbering fix);
+    adopts an already-numbered heading's own label into the counter state
+    when it parses AND its depth matches `heading_level`, so later
+    unnumbered siblings continue from the real numbers rather than
+    colliding with them. Mutates `heading_counters` in place. Returns the
+    synthesized label, or None when the heading is self-numbered (its own
+    text already carries the number -- text is left as-is, matching
+    docx's own convention of never stripping an existing number out of
+    a heading's text into a separate field)."""
+    while len(heading_counters) < heading_level:
+        heading_counters.append(0)
+    del heading_counters[heading_level:]
+    if existing_label is not None:
+        parts = existing_label.split(".")
+        if len(parts) == heading_level and all(p.isdigit() for p in parts):
+            heading_counters[:] = [int(p) for p in parts]
+        return None
+    heading_counters[heading_level - 1] += 1
+    return ".".join(str(n) for n in heading_counters)
+
+
+def _outline_heading_positions(path: str) -> dict[tuple[int, str], int]:
+    """(page_number, title) -> outline depth (1-based), for every REAL
+    outline/bookmark entry in the document -- confirmed real API:
+    pypdf.PdfReader.outline is a nested list of Destination objects
+    (Destination.title/.page/.top/.left), deeper nesting = deeper list.
+    reader.get_page_number(dest) resolves a Destination's indirect page
+    reference to a real 0-based page index. Degrades to an empty dict
+    (never raises) on ANY failure -- a malformed/absent outline must fall
+    through to font-size/numbering classification, never abort the load
+    or mis-anchor a heading."""
+    positions: dict[tuple[int, str], int] = {}
+
+    def _walk(items, depth: int, reader) -> None:
+        for item in items:
+            if isinstance(item, list):
+                _walk(item, depth + 1, reader)
+                continue
+            try:
+                page_number = reader.get_page_number(item) + 1
+                positions[(page_number, item.title)] = depth
+            except Exception:  # noqa: BLE001 -- one malformed entry must not lose the rest of the outline
+                continue
+
+    try:
+        reader = cached_pdf_reader(path)
+        _walk(reader.outline, 1, reader)
+    except Exception:  # noqa: BLE001 -- an absent/malformed outline degrades to "no tier-0 signal", never raises
+        return {}
+    return positions
+
+
+def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float, float, bool]]:
     """Merges pdfplumber's per-LINE extract_text_lines() output back into
     real paragraphs -- replaces the old, dead `text.split("\\n\\n")` (see
     this module's own load_pdf docstring for why that never actually
@@ -556,16 +678,22 @@ def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float]]:
     _PARAGRAPH_LINE_SIZE_TOLERANCE) and the vertical gap between them is
     small relative to that size (_PARAGRAPH_LINE_GAP_RATIO) -- see this
     file's own constants for the real measured data behind these
-    thresholds. Returns (paragraph_text, top) pairs -- `top` is the
-    FIRST line's own top, for the same real-document-order merge
-    load_pdf's main loop already does for tables/images."""
+    thresholds. Returns (paragraph_text, top, size, is_bold) tuples --
+    `top`/`size`/`is_bold` are the FIRST line's own values (a merged
+    multi-line paragraph is, by the merge rule itself, uniform in size --
+    see _PARAGRAPH_LINE_SIZE_TOLERANCE -- so the first line's size IS the
+    paragraph's size), for the same real-document-order merge load_pdf's
+    main loop already does for tables/images, plus the font-size/boldness
+    signal Task 3's heading classification needs."""
     if not lines:
         return []
-    paragraphs: list[tuple[str, float]] = []
+    paragraphs: list[tuple[str, float, float, bool]] = []
     current_texts = [lines[0]["text"]]
     current_top = lines[0]["top"]
+    current_size = _line_size(lines[0])
+    current_bold = _line_is_bold(lines[0])
     prev_bottom = lines[0]["bottom"]
-    prev_size = _line_size(lines[0])
+    prev_size = current_size
     for line in lines[1:]:
         size = _line_size(line)
         gap = line["top"] - prev_bottom
@@ -574,12 +702,14 @@ def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float]]:
         if same_size and small_gap:
             current_texts.append(line["text"])
         else:
-            paragraphs.append((" ".join(current_texts), current_top))
+            paragraphs.append((" ".join(current_texts), current_top, current_size, current_bold))
             current_texts = [line["text"]]
             current_top = line["top"]
+            current_size = size
+            current_bold = _line_is_bold(line)
         prev_bottom = line["bottom"]
         prev_size = size
-    paragraphs.append((" ".join(current_texts), current_top))
+    paragraphs.append((" ".join(current_texts), current_top, current_size, current_bold))
     return paragraphs
 
 
@@ -660,6 +790,11 @@ def load_pdf(
         pages_last_lines = [lines[-1]["text"] if lines else "" for lines in all_pages_lines]
         header_templates, footer_templates = _detect_boilerplate_templates(pages_first_lines, pages_last_lines)
 
+        heading_counters: list[int] = []
+        size_ranks: dict[float, int] = {}
+        body_size = _dominant_body_size(all_pages_lines)
+        outline_positions = _outline_heading_positions(path)
+
         for page_number, page in enumerate(pdf.pages, start=1):
             # §12/§13: table bboxes (page.find_tables()) drive BOTH fixes at
             # once -- (a) filtering table-region lines out before merging
@@ -718,9 +853,9 @@ def load_pdf(
             ):
                 filtered_lines = filtered_lines[:-1]
 
-            paragraphs_with_tops = _lines_to_paragraphs(filtered_lines)
-            paragraphs = [p for p, _ in paragraphs_with_tops]
-            tops = [t for _, t in paragraphs_with_tops]
+            paragraphs_with_meta = _lines_to_paragraphs(filtered_lines)
+            paragraphs = [p for p, _, _, _ in paragraphs_with_meta]
+            tops = [t for _, t, _, _ in paragraphs_with_meta]
 
             page_tables: list[Table] = []
             for found_table in found_tables:
@@ -828,7 +963,7 @@ def load_pdf(
             # of its real position -- interleaving them here gives each
             # figure the same real-position treatment tables already got.
             merged = sorted(
-                [("paragraph", top, paragraph) for top, paragraph in zip(tops, paragraphs)]
+                [("paragraph", top, (text, size, is_bold, top)) for text, top, size, is_bold in paragraphs_with_meta]
                 + [("table", bbox[1], table) for bbox, table in zip(table_bboxes, page_tables)]
                 + [("image", top, pypdf_image) for top, pypdf_image in page_images],
                 key=lambda entry: entry[1],
@@ -836,17 +971,43 @@ def load_pdf(
             offset = 0
             for kind, _top, item in merged:
                 if kind == "paragraph":
+                    text, size, is_bold, para_top = item
                     start = offset
-                    end = start + len(item)
+                    end = start + len(text)
                     offset = end + 1
-                    blocks.append(
-                        Block(
-                            id=f"b{block_id}",
-                            kind=BlockKind.PARAGRAPH,
-                            text=item,
-                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                    outline_depth = outline_positions.get((page_number, text.strip()))
+                    heading_level: int | None = None
+                    number_label: str | None = None
+                    if outline_depth is not None:
+                        heading_level = outline_depth
+                    elif body_size < size <= body_size * _HEADING_SIZE_MAX_RATIO:
+                        existing_label, _ = parse_numbering(text)
+                        if existing_label is not None:
+                            heading_level = numbering_depth(existing_label)
+                        else:
+                            heading_level = _heading_level_from_size_rank(size, body_size, size_ranks)
+                    if heading_level is not None:
+                        existing_label, _ = parse_numbering(text)
+                        number_label = _advance_heading_counter(heading_counters, heading_level, existing_label)
+                        blocks.append(
+                            Block(
+                                id=f"b{block_id}",
+                                kind=BlockKind.HEADING,
+                                text=text,
+                                heading_level=heading_level,
+                                number_label=number_label,
+                                source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                            )
                         )
-                    )
+                    else:
+                        blocks.append(
+                            Block(
+                                id=f"b{block_id}",
+                                kind=BlockKind.PARAGRAPH,
+                                text=text,
+                                source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                            )
+                        )
                     block_id += 1
                 elif kind == "table":
                     start = offset
