@@ -401,7 +401,7 @@ def _pdf_column_widths(found_table, xs: list[float]) -> list[float] | None:
         return None
 
 
-def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None]], list[float] | None]:
+def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None]], list[float] | None, list[float]]:
     """Builds the real per-cell styled grid for one `pdfplumber`-detected
     table, replacing the old Phase-1 bare-`TableCell(text=cell or "")`
     compat shim (which discarded the bbox-presence signal entirely -- see
@@ -510,7 +510,77 @@ def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None
         grid.append(row_out)
 
     column_widths = _pdf_column_widths(found_table, xs)
-    return grid, column_widths
+    # `xs` (the column x-edges just used for colspan/width derivation) is
+    # ALSO returned here -- Task 5's cross-page continuation merge needs it
+    # per-table to check column-x-edge alignment across a page break (see
+    # `_tables_continue`), and `Table`/`TableCell` (the canonical model)
+    # doesn't itself retain this raw geometry, so the caller must carry it
+    # forward via a side dict rather than recovering it after the fact.
+    return grid, column_widths, xs
+
+
+# A table's bottom/top edge must fall within this fraction of the page
+# height from the respective page edge to be a continuation candidate --
+# a table that ends/starts well away from a page boundary is unlikely to
+# be a real continuation regardless of column alignment.
+_TABLE_CONTINUATION_EDGE_BAND_FRACTION = 0.15
+
+# Column x-edges must align within this many points to be considered the
+# "same" columns across a page break -- pdfplumber's own geometry can
+# differ by a point or two between pages due to sub-pixel rendering, same
+# tolerance class as this file's other geometric comparisons.
+_TABLE_CONTINUATION_X_TOLERANCE = 2.0
+
+
+def _tables_continue(
+    prev_table_xs: list[float], prev_bottom: float, prev_page_height: float,
+    next_table_xs: list[float], next_top: float,
+) -> bool:
+    """True when a table ending near the bottom of one page and a table
+    starting near the top of the next page are plausibly the SAME table,
+    continued -- requires both a positional signal (near the respective
+    page edge) AND a structural signal (aligned column x-edges), not
+    column COUNT alone (verified: two unrelated same-column-count tables
+    on consecutive pages would otherwise merge incorrectly)."""
+    near_bottom = prev_bottom >= prev_page_height * (1 - _TABLE_CONTINUATION_EDGE_BAND_FRACTION)
+    near_top = next_top <= prev_page_height * _TABLE_CONTINUATION_EDGE_BAND_FRACTION
+    if not (near_bottom and near_top):
+        return False
+    if len(prev_table_xs) != len(next_table_xs):
+        return False
+    return all(abs(a - b) <= _TABLE_CONTINUATION_X_TOLERANCE for a, b in zip(prev_table_xs, next_table_xs))
+
+
+def _merge_continued_tables(
+    tables: list[Table], table_xs_by_id: dict[str, list[float]],
+    table_bbox_by_id: dict[str, tuple[float, float, float, float]], page_height: float,
+) -> list[Table]:
+    """Post-pass merging cross-page table continuations -- must run AFTER
+    every table on every page has been built (needs real page numbers to
+    know which tables are on ADJACENT pages at all). Merges row-wise: the
+    continuation's cells become additional rows appended to the prior
+    table; the continuation's own Table entry is dropped from the result.
+    Only ever merges a table into the ONE immediately preceding it in
+    document order -- a three-page continuation chains through two
+    successive merges, not a single three-way merge, which keeps this
+    function's own logic to a single pairwise rule applied repeatedly."""
+    if len(tables) < 2:
+        return tables
+    merged: list[Table] = [tables[0]]
+    for table in tables[1:]:
+        prev = merged[-1]
+        prev_page = prev.source_ref.page
+        this_page = table.source_ref.page
+        prev_bottom = table_bbox_by_id.get(prev.id, (0, 0, 0, 0))[3]
+        this_top = table_bbox_by_id.get(table.id, (0, 0, 0, 0))[1]
+        if (
+            prev_page is not None and this_page is not None and this_page == prev_page + 1
+            and _tables_continue(table_xs_by_id.get(prev.id, []), prev_bottom, page_height, table_xs_by_id.get(table.id, []), this_top)
+        ):
+            merged[-1] = prev.model_copy(update={"cells": prev.cells + table.cells})
+        else:
+            merged.append(table)
+    return merged
 
 
 @lru_cache(maxsize=8)
@@ -783,8 +853,21 @@ def load_pdf(
     block_id = 0
     table_id = 0
     figure_id = 0
+    # Side dicts feeding Task 5's post-loop `_merge_continued_tables` pass
+    # (see that function's own docstring) -- populated per-table alongside
+    # `table_id += 1` in the main loop below, keyed by each table's own id.
+    table_xs_by_id: dict[str, list[float]] = {}
+    table_bbox_by_id: dict[str, tuple[float, float, float, float]] = {}
 
     with pdfplumber.open(path) as pdf:
+        # Document-level page height, NOT per-page -- `_merge_continued_tables`
+        # runs ONCE after every page has been walked, checking pairs of
+        # tables that may span ANY two adjacent pages, so it needs a single
+        # shared value rather than per-page state. Every real document's
+        # pages share one page size in practice (confirmed: this is the
+        # common case, and this task's real fixtures always share it);
+        # captured from the first page once, up front.
+        page_height = pdf.pages[0].height if pdf.pages else 0.0
         # First pass: every page's own lines (cheap -- no table/image work
         # yet), collected once so header/footer recurrence can be checked
         # across the WHOLE document before the real per-page build below
@@ -889,10 +972,11 @@ def load_pdf(
                 # document -- the same "never fail the ingest" guarantee,
                 # one layer up.
                 try:
-                    cells, column_widths = _build_pdf_table_grid(page, found_table)
+                    cells, column_widths, xs = _build_pdf_table_grid(page, found_table)
                 except Exception:  # noqa: BLE001 -- a structural extraction failure degrades to Phase-1-shaped bare cells, never aborts the document
                     cells = [[TableCell(text=cell or "") for cell in row] for row in found_table.extract()]
                     column_widths = None
+                    xs = []
                 page_tables.append(
                     Table(
                         id=f"t{table_id}",
@@ -926,6 +1010,14 @@ def load_pdf(
                         source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0, page=page_number),
                     )
                 )
+                # Side dicts for Task 5's post-loop cross-page continuation
+                # merge (`_merge_continued_tables`) -- `Table`/`TableCell`
+                # (the canonical model) doesn't retain the raw column-x-edge
+                # list or the table's real bbox, so both are captured here,
+                # keyed by this table's own id, for that pass to consume
+                # after every page has been walked.
+                table_xs_by_id[f"t{table_id}"] = xs
+                table_bbox_by_id[f"t{table_id}"] = found_table.bbox
                 table_id += 1
 
             # pdfplumber's own page.images gives each image region's bbox
@@ -1066,5 +1158,11 @@ def load_pdf(
                     )
                     block_id += 1
                     figure_id += 1
+
+    # Phase 3a (Task 5): cross-page table continuation merge -- must run
+    # AFTER the full per-page loop above finishes (needs every table's real
+    # page number to know which tables are on ADJACENT pages at all). See
+    # `_merge_continued_tables`'s own docstring for the merge rule.
+    tables = _merge_continued_tables(tables, table_xs_by_id, table_bbox_by_id, page_height)
 
     return CanonicalDoc(document=document, blocks=blocks, tables=tables, figures=figures)

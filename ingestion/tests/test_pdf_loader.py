@@ -746,3 +746,28 @@ def test_load_pdf_with_ocr_fallback_preserves_figures_from_text_pages(tmp_path: 
     figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
     assert len(figure_blocks) >= 1
     assert len(doc.figures) == len(figure_blocks)
+
+
+def test_load_pdf_merges_a_table_continuing_across_a_page_break() -> None:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Table as RLTable, TableStyle, Spacer
+    from reportlab.lib import colors
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "cross_page_table.pdf"
+        doc = SimpleDocTemplate(str(path), pagesize=letter)
+        style = TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)])
+        # Enough rows to force a real page break inside ONE reportlab Table
+        # flowable -- reportlab itself splits it across pages, producing the
+        # exact "same table, split by pdfplumber's own per-page find_tables()"
+        # case this task fixes.
+        rows = [["Code", "Meaning"]] + [[str(i), f"Reason {i}"] for i in range(60)]
+        doc.build([RLTable(rows, style=style)])
+        result = load_pdf(str(path))
+
+    assert len(result.tables) == 1
+    from app.canonical.model import plain_text_rows
+    all_rows = plain_text_rows(result.tables[0])
+    assert len(all_rows) == 61  # header + 60 rows, all in ONE table, not split
+    assert all_rows[-1] == ["59", "Reason 59"]
