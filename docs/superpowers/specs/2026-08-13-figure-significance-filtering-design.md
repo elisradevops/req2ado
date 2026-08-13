@@ -1,26 +1,73 @@
-# Figure-Significance Filtering — Design
+# Content Significance Filtering — Design
 
 Date: 2026-08-13
 Status: Approved, pending implementation plan
 
 ## Problem
 
-Live E2E validation of SURVEY mode against a real public document (NASA
-LVC Gateway ICD, 35 pages, uploaded through the actual UI) surfaced a real
-quality gap: the document had 30 embedded figures, and only 2 had genuine
-informational content (a revision/signature sheet, an alert-level table).
-The other 28 were decorative placeholders, logos, and colored bars — the
-vision model's own real output for most of them was some variant of "The
-image displays a simple, rectangular, solid-colored block with no visible
-internal components, labels, or connecting elements." Every one of these
-28 non-answers still gets threaded into the LLM prompt that builds the
-work-item hierarchy, as noise.
+The app's core job is turning a customer requirements document (ICD or
+similar, any supported format) into a well-defined Epic/Feature/Requirement
+work-item tree. Two related gaps in SURVEY mode undermine "well-defined":
 
-This isn't a new bug in the fidelity work merged earlier today — it's a
-pre-existing gap in SURVEY mode's figure-handling path that the live test
-happened to expose for the first time with a real, messy document.
+**A. Boilerplate sections can become spurious work items.** An
+Introduction, Table of Contents, or Revision History section gets zero
+different treatment than a real requirements section today — nothing
+stops the model from inventing an Epic/Feature/Requirement out of pure
+front matter.
 
-## Root cause: the existing insignificance signal doesn't reliably fire
+**B. Figure noise dilutes node text.** Live E2E validation of SURVEY mode
+against a real public document (NASA LVC Gateway ICD, 35 pages, uploaded
+through the actual UI) surfaced this concretely: the document had 30
+embedded figures, and only 2 had genuine informational content (a
+revision/signature sheet, an alert-level table). The other 28 were
+decorative placeholders, logos, and colored bars — the vision model's own
+real output for most of them was some variant of "The image displays a
+simple, rectangular, solid-colored block with no visible internal
+components, labels, or connecting elements." Every one of these 28
+non-answers still gets threaded into the LLM prompt that builds the
+work-item hierarchy, as noise inside whatever node's text claims that
+figure.
+
+Neither is a new bug in the fidelity work merged earlier today — both are
+pre-existing gaps in SURVEY mode's content-selection path that the live
+test happened to expose for the first time with a real, messy document.
+
+Note on (B)'s actual failure mode, confirmed by research: a figure never
+becomes its own spurious work item — `WorkItemType` only ever has three
+values (Epic/Feature/Requirement), and a figure's caption is only ever
+folded as supporting text into whatever node's `figure_ids` claims it
+(`ingestion/app/leveling/tree_builder.py:202-243`). So the real damage is
+wording quality — a Requirement's text gets diluted with a decorative
+logo's description — not phantom nodes.
+
+## Root cause A: no boilerplate signal reaches the model at all
+
+`section_analysis.v1.txt` (the SURVEY prompt) gives the model a real,
+detailed Epic/Feature/Requirement scope rubric (an INVEST-style test:
+"could this span multiple sprints and cover several Features? → Epic.
+Delivers one coherent piece of user value made of testable Requirements?
+→ Feature. One testable obligation? → Requirement." — `section_analysis.v1.txt:9-19`),
+but contains **zero** instruction about front matter, revision history,
+TOC, or boilerplate legal text — confirmed absent by direct inspection.
+
+This isn't for lack of a deterministic signal to hang it on. Branch
+boundaries are already 100% deterministic — `_split_into_branches`
+(`tree_builder.py:19-43`) splits purely on the document's own resolved
+heading depth, with no LLM involvement, and `_build_document_outline`
+(`llm_leveling.py:658-677`) already produces a numbered list mapping every
+branch to its heading label *before* any LLM call runs:
+```
+1. 1 Introduction
+2. 2 System Overview
+3. 3 Interface Requirements
+```
+The codebase already has a working precedent for classifying a branch by
+its heading text deterministically: `_GLOSSARY_HEADING_PATTERN`
+(`llm_leveling.py:680`, `re.compile(r"(?i)\b(definition|acronym|glossary|abbreviation|terminolog)")`),
+used to special-case glossary sections. Nothing analogous exists for front
+matter.
+
+## Root cause B: the existing insignificance signal doesn't reliably fire
 
 The vision prompt (`ingestion/app/vision/orchestrator_vision_client.py:16-21`)
 already asks the model to signal "no technical content" with an exact
@@ -55,11 +102,41 @@ bytes) -> str` — image bytes only). A figure that's genuinely relevant to
 *this* document's subject can't be judged as such without knowing what the
 document is about.
 
-## Chosen approach
+## Chosen approach: two independent mechanisms
 
-Three changes, together:
+These solve different problems and use different tools deliberately — (A)
+is a pure text-classification problem with a cheap deterministic answer
+already available; (B) genuinely requires looking at image content, which
+text keyword-matching cannot do.
 
-### 1. Structured significance output, not a hoped-for sentinel
+### A. Deterministic front-matter guard (no LLM cost, no primer involved)
+
+Add `_FRONT_MATTER_HEADING_PATTERN`, a keyword regex mirroring
+`_GLOSSARY_HEADING_PATTERN`'s exact established shape (case-insensitive,
+word-boundary, same file/neighborhood in `llm_leveling.py`):
+`introduction|table of contents|revision history|document history|appendix|references?\b`
+(exact keyword list finalized during implementation against real
+documents already in `tests/fixtures/` — the pattern shape, not the
+literal list, is the load-bearing decision here).
+
+Run this against each branch's heading label — already available from
+`_build_document_outline`'s own per-branch label lookup
+(`_branch_heading_labels`), before any LLM call. On a match, inject an
+explicit instruction into that branch's `kb_context` (via
+`_combine_global_context`, the same injection point the glossary and
+primer context already use): *"This section's heading matches typical
+front-matter (Introduction/Table of Contents/Revision History/Appendix).
+Only emit work items if genuine testable/actionable content exists in
+this section's text — do not fabricate an Epic/Feature/Requirement merely
+to represent this section's existence."*
+
+This does **not** skip the LLM call or discard the branch — a real
+requirement occasionally buried inside an Introduction must still surface.
+It only adds the missing negative signal the prompt currently lacks,
+using the same deterministic, zero-added-cost mechanism the glossary
+special-case already proved out.
+
+### B. Structured, primer-informed figure significance (LLM judgment, image content)
 
 `orchestrator/src/modules/llm/openwebui.client.ts`'s `vision()` gains the
 same `responseSchema` option `chat()` already has (`llm-client.interface.ts:52`,
@@ -90,20 +167,18 @@ two existing tests that exercise it
 `test_build_survey_tree_skips_a_figure_the_vision_model_flagged_as_no_content`)
 get replaced with equivalents against the new boolean field.
 
-### 2. Whole-document context reaches the vision prompt
-
-The vision prompt is enriched with document-level context (title/subject)
-so "is this figure significant" can mean "significant *to this document*,"
-not just "does this look technical in isolation."
-
-This reuses the exact mechanism Phase 6 (the whole-document AI context
-primer, merged earlier today) already built: upload the raw file to Open
-WebUI, one chat completion with `files: [{type: 'file', id}]` in "Using
-Entire Document" mode (confirmed via Open WebUI's own docs: this mode
-"injects the full file content into every message," bypassing RAG
-chunk-retrieval — a real, documented toggle, not an assumption). No new
-upload/attach code — the same `uploadFile`/`pollFileProcessed`/`chat()`
-call Phase 6 already added to `openwebui.client.ts`.
+**Whole-document context reaches the vision prompt.** The vision prompt is
+enriched with document-level context (title/subject) so "is this figure
+significant" can mean "significant *to this document*," not just "does
+this look technical in isolation." This reuses the exact mechanism Phase 6
+(the whole-document AI context primer, merged earlier today) already
+built: upload the raw file to Open WebUI, one chat completion with
+`files: [{type: 'file', id}]` in "Using Entire Document" mode (confirmed
+via Open WebUI's own docs: this mode "injects the full file content into
+every message," bypassing RAG chunk-retrieval — a real, documented
+toggle, not an assumption). No new upload/attach code — the same
+`uploadFile`/`pollFileProcessed`/`chat()` call Phase 6 already added to
+`openwebui.client.ts`.
 
 **What moves:** today, `pipeline.worker.ts` computes `primerContext` after
 `/ingest` returns, gated on the parsed document's estimated text length
@@ -130,30 +205,46 @@ whole-document primer for `/level`) rather than failing the job.
 The same `primerContext` value is computed once and reused for both figure
 description and the existing `/level` call — not recomputed twice.
 
-### 3. `/ingest` carries `primerContext` through to figure description
-
-New optional request param on `POST /ingest`. Threaded to
+**`/ingest` carries `primerContext` through to figure description.** New
+optional request param on `POST /ingest`. Threaded to
 `_describe_figure_with_progress`/`_describe_figure`
 (`ingestion/app/main.py:677,288`) as a new `document_context: str | None`
 parameter, included in the vision prompt sent to `describe_figure`
 (`orchestrator_vision_client.py`).
 
+### Table/figure attribution: already adequate, no change needed
+
+Confirmed by research: for anything the model actually sees (captioned
+figures, all tables), attribution to a specific node is already the
+model's own choice, validated against a per-branch set of real ids
+(`llm_leveling.py:2235-2253`) — hallucinated ids get dropped with an
+`INVALID_FIGURE_IDS`/`INVALID_TABLE_IDS` warning. This mechanism is sound
+and out of scope for this design. The only attribution weakness is the
+positional fallback for *uncaptioned* figures (never shown to the model at
+all, so it can't choose) — mechanism B above reduces how often that path
+is hit by making captions more reliable, but the positional fallback
+itself is unchanged.
+
 ## Data flow
 
 ```
-1. orchestrator: job.mode === 'survey'
+0. orchestrator: job.mode === 'survey'
    -> uploadFile(job.fileBuffer) -> pollFileProcessed -> chat(
         "Using Entire Document" mode, fixed generous numCtx
       ) -> primerContext | undefined (fail-open on any error)
 
-2. POST /ingest(file, mode, primerContext)
+1. POST /ingest(file, mode, primerContext)
    -> per figure: describe_figure(image_bytes, mime_type, primerContext)
         -> vision() with responseSchema {significant, description}
         -> caption = significant ? description : None
    -> doc { figures: [...], blocks: [...], ... }  (unchanged shape otherwise)
 
-3. POST /level(doc, ..., primerContext)   -- same primerContext, reused
+2. POST /level(doc, ..., primerContext)   -- same primerContext, reused
    -> build_survey_tree(doc, ..., primer_context=primerContext)
+        -> _build_document_outline gives branch -> heading label (existing, deterministic)
+        -> _FRONT_MATTER_HEADING_PATTERN match on heading label (new, deterministic)
+             -> matched: inject front-matter guard instruction into that branch's kb_context
+        -> analyze_section(...) per branch (unchanged call shape)
 ```
 
 ## Error handling
@@ -170,11 +261,25 @@ parameter, included in the vision prompt sent to `describe_figure`
   treat as non-significant (`caption = None`) rather than surfacing a raw
   parse error into a work item — a bad figure description must never fail
   the whole job.
+- Front-matter guard injection never removes or truncates a branch's
+  actual text — it only adds one extra sentence to `kb_context`, so a
+  failure to detect (a false negative) degrades to today's exact behavior,
+  and a false positive (a real-content section whose heading happens to
+  match) still lets the model emit real nodes if genuine content is
+  present — the instruction says "only emit if genuine content exists,"
+  not "never emit."
 - No change to `/level`'s existing fail-open behavior or the 1000-char
   clamp / `maxTokens: 300` guard already on the primer's chat call.
 
 ## Testing
 
+- `test_llm_leveling.py`: new tests for `_FRONT_MATTER_HEADING_PATTERN`
+  matching real heading labels ("1 Introduction", "Table of Contents",
+  "Appendix A") and not matching real content headings ("3 Interface
+  Requirements"); a branch whose heading matches gets the guard
+  instruction appended to its `kb_context` via `_combine_global_context`;
+  a non-matching branch's `kb_context` is unchanged (byte-identical to
+  today).
 - `openwebui.client.spec.ts`: `vision()` forwards `responseSchema` when
   provided, omits it when not (matches this file's own established
   forwards/omits convention); schema-rejection retry path reused/verified
@@ -193,9 +298,12 @@ parameter, included in the vision prompt sent to `describe_figure`
   open" tests; primer computed before `/ingest` is called (call-order
   assertion); same `primerContext` value passed to both `/ingest` and
   `/level` (not recomputed).
-- No new golden-fixture PDF/docx needed — this changes prompt construction
-  and response shape, not document segmentation; existing fixtures already
-  exercise figure blocks.
+- No new golden-fixture PDF/docx needed for mechanism B — it changes
+  prompt construction and response shape, not document segmentation;
+  existing fixtures already exercise figure blocks. Mechanism A may want
+  one small real-shaped fixture with an "Introduction" section containing
+  no testable content, to pin end-to-end that no spurious node is
+  produced for it — finalized during plan-writing.
 
 ## Global Constraints
 
@@ -206,6 +314,10 @@ parameter, included in the vision prompt sent to `describe_figure`
   backward compatible).
 - Retired sentinel code (`NO_TECHNICAL_CONTENT_SENTINEL` and all its call
   sites) must be deleted, not left dead alongside the new boolean field.
+- The front-matter guard must never fully suppress a branch or skip
+  `analyze_section` — it only adds a soft instruction; a genuine
+  requirement inside an Introduction section must still be able to
+  surface as a real node.
 
 ## Explicitly out of scope
 
@@ -214,8 +326,14 @@ parameter, included in the vision prompt sent to `describe_figure`
   the chosen approach above.
 - No change to how `/level`'s own existing primer-consumption logic
   (`_combine_global_context`, `build_survey_tree`'s trailing
-  `primer_context` param) works — only *when* and *how often* the primer
-  is computed changes, not how `/level` uses the value it's given.
+  `primer_context` param) works beyond adding the front-matter guard
+  ingredient — *when* and *how often* the primer is computed changes, not
+  the rest of how `/level` uses the value it's given.
 - No deduplication/merging of near-identical decorative figures (e.g. the
   same logo repeated across pages) — each figure is still judged
   independently; only its significance verdict changes.
+- No change to the existing table/figure attribution mechanism (LLM
+  choice validated against a per-branch id set) — confirmed adequate,
+  see "Table/figure attribution" above.
+- No BASELINE-mode changes — both mechanisms are SURVEY-mode only, since
+  BASELINE never calls `analyze_section` or the vision-significance path.
