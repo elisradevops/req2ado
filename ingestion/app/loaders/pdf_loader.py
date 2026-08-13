@@ -887,6 +887,146 @@ def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float, float, boo
     return paragraphs
 
 
+# Phase 5 (Task 9): flag-only multi-column detection. Real-document
+# research this design ran found ZERO of 9 sampled documents genuinely
+# multi-column, and a false-positive SPLIT (interleaving unrelated content
+# into one block) is worse than today's plain reading-order garbling on a
+# rare real multi-column page -- so this deliberately never splits, only
+# flags. A candidate column gap must span at least this fraction of the
+# page's own text height (top of the first line to the bottom of the last)
+# to be considered a real column boundary, not an isolated coincidental gap
+# on one or two lines (a title page's label/value layout, or a wide table
+# column, both confirmed as real false candidates during this design's
+# research).
+_COLUMN_GAP_MIN_HEIGHT_FRACTION = 0.5
+
+# The gap band itself must be at least this many points wide -- guards
+# against a normal word-spacing gap being mistaken for a column gutter.
+_COLUMN_GAP_MIN_WIDTH = 30.0
+
+
+def _line_segments(line: dict) -> list[dict]:
+    """Splits ONE `extract_text_lines()` line record into contiguous
+    horizontal character runs, broken wherever the gap between two
+    adjacent characters is itself >= _COLUMN_GAP_MIN_WIDTH.
+
+    CONFIRMED empirically this session: pdfplumber's `extract_text_lines()`
+    clusters purely by vertical (`top`) position -- it merges ALL same-row
+    text into ONE line record regardless of horizontal separation, so a
+    real two-column layout with both columns' text landing on the same row
+    (the common case -- most real multi-column documents use a consistent
+    line-height grid across columns) produces a SINGLE line dict whose own
+    x0/x1 spans the ENTIRE row, left column through right column. That
+    line-level x0/x1 span is therefore useless on its own as a "does any
+    word cross this candidate gap" signal -- it would cross every
+    candidate gap between the two columns, and `_detect_suspected_column_gap`
+    would never find a qualifying gap on any such page. Each line's own
+    per-CHARACTER positions (`chars`, present because `extract_text_lines()`
+    is always called with its default `return_chars=True`) are the finest-
+    grained real signal available, so every line is re-split into same-row
+    runs from them before the gap search runs. A run boundary is exactly a
+    real horizontal gap wide enough to itself qualify as a candidate column
+    gap -- reuses `_COLUMN_GAP_MIN_WIDTH` rather than a second,
+    independently-tuned threshold. A line with no chars (shouldn't happen
+    for a real extract_text_lines() result, but degrade rather than raise)
+    is returned as a single one-item list unchanged."""
+    chars = sorted((line.get("chars") or []), key=lambda ch: ch["x0"])
+    if not chars:
+        return [line]
+    segments: list[dict] = []
+    run = [chars[0]]
+    for ch in chars[1:]:
+        if ch["x0"] - max(c["x1"] for c in run) >= _COLUMN_GAP_MIN_WIDTH:
+            segments.append(
+                {"x0": min(c["x0"] for c in run), "x1": max(c["x1"] for c in run), "top": line["top"], "bottom": line["bottom"]}
+            )
+            run = [ch]
+        else:
+            run.append(ch)
+    segments.append(
+        {"x0": min(c["x0"] for c in run), "x1": max(c["x1"] for c in run), "top": line["top"], "bottom": line["bottom"]}
+    )
+    return segments
+
+
+def _detect_suspected_column_gap(
+    lines: list[dict], page_width: float, table_bboxes: list[tuple[float, float, float, float]],
+) -> tuple[float, float] | None:
+    """Flags (never splits) a page as SUSPECTED multi-column: a vertical
+    band with NO word crossing it, spanning at least
+    _COLUMN_GAP_MIN_HEIGHT_FRACTION of the page's own text height, at
+    least _COLUMN_GAP_MIN_WIDTH points wide, that does not fall inside any
+    table's own bbox (a table's internal column gaps must never trigger
+    this -- a table is not a multi-column PAGE layout). Returns None (no
+    action, no marker) when no such band exists, which is the ordinary
+    case for the overwhelming majority of real single-column documents
+    (confirmed: 0 of 9 real sampled documents in this design's own
+    research were genuinely multi-column).
+
+    `lines` is re-split into per-row character runs via `_line_segments`
+    before anything else -- see that function's own docstring for why the
+    raw `extract_text_lines()` records themselves cannot be used directly
+    for the "no word crosses this gap" check below."""
+    if not lines:
+        return None
+    lines = [segment for line in lines for segment in _line_segments(line)]
+    if not lines:
+        return None
+    text_top = min(line["top"] for line in lines)
+    text_bottom = max(line["bottom"] for line in lines)
+    text_height = text_bottom - text_top
+    if text_height <= 0:
+        return None
+
+    # Candidate gap boundaries: every line's own x0/x1 are potential gap
+    # edges (a real column gutter's edges are defined by where TEXT stops
+    # and starts, not an arbitrary grid).
+    xs = sorted({line["x0"] for line in lines} | {line["x1"] for line in lines})
+    for i in range(len(xs) - 1):
+        gap_start, gap_end = xs[i], xs[i + 1]
+        gap_width = gap_end - gap_start
+        if gap_width < _COLUMN_GAP_MIN_WIDTH:
+            continue
+        # Any table overlapping this x-range invalidates it as a page-level
+        # column gap -- it's the table's own internal structure instead.
+        if any(bbox[0] < gap_end and gap_start < bbox[2] for bbox in table_bboxes):
+            continue
+        crossing_lines = [line for line in lines if line["x0"] < gap_end and gap_start < line["x1"]]
+        if crossing_lines:
+            continue
+        # Height coverage: EACH side of the gap must, ON ITS OWN, have real
+        # column content spanning most of the page's own text height -- not
+        # just the two sides' COMBINED span. LIVE-REPRODUCED false positive
+        # this guards against (tests/test_pdf_survey_golden.py's own golden
+        # fixture): a suppressed-boilerplate header line (top-left), a
+        # single CENTERED heading (positioned well to the right by its own
+        # style, not a second column), and one left-aligned body line below
+        # it -- the header+body pair alone already spans the page's full
+        # text height on the LEFT, and the lone centered heading sits to
+        # its right, so the OLD "combined flanking span" check (any lines on
+        # either side, measured together) saw full height coverage even
+        # though the right "side" was really just one unrelated heading, not
+        # a second running column. Requiring the left-of-gap lines AND the
+        # right-of-gap lines to EACH independently cover
+        # _COLUMN_GAP_MIN_HEIGHT_FRACTION rejects that (the lone heading's
+        # own height is far short of the page's text height) while still
+        # accepting a real two-column page, where both columns independently
+        # run the full height.
+        left_lines = [line for line in lines if line["x1"] <= gap_start]
+        right_lines = [line for line in lines if line["x0"] >= gap_end]
+        if not left_lines or not right_lines:
+            continue
+
+        def _side_spans_min_height(side_lines: list[dict]) -> bool:
+            side_top = min(line["top"] for line in side_lines)
+            side_bottom = max(line["bottom"] for line in side_lines)
+            return (side_bottom - side_top) >= text_height * _COLUMN_GAP_MIN_HEIGHT_FRACTION
+
+        if _side_spans_min_height(left_lines) and _side_spans_min_height(right_lines):
+            return (gap_start, gap_end)
+    return None
+
+
 def _normalize_digits(text: str) -> str:
     return _DIGIT_RUN_PATTERN.sub("#", text)
 
@@ -1221,6 +1361,28 @@ def load_pdf(
                 key=lambda entry: entry[1],
             )
             offset = 0
+            # Phase 5 (Task 9): flag-only multi-column detection -- checked
+            # against `page_lines` (the table-region-filtered line list from
+            # Task 2, before header/footer stripping; see
+            # `_detect_suspected_column_gap`'s own docstring for the
+            # conservative gates). Appended directly to `blocks`, not folded
+            # into `merged`, because this marker has no natural document-
+            # order position tied to a specific paragraph/table/image -- it
+            # must appear exactly once per flagged page regardless of the
+            # rest of that page's content ordering.
+            suspected_gap = _detect_suspected_column_gap(page_lines, page.width, table_bboxes)
+            if suspected_gap is not None:
+                start = offset
+                end = start + 1
+                offset = end
+                blocks.append(
+                    Block(
+                        id=f"b{block_id}", kind=BlockKind.NOTE,
+                        text=f"[UNSUPPORTED: page {page_number} appears multi-column (gap at x={suspected_gap[0]:.0f}-{suspected_gap[1]:.0f}) -- reading order below may be incorrect]",
+                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
+                    )
+                )
+                block_id += 1
             # Phase 3b (Task 6): read-and-reset by the "table" branch below --
             # a caption-shaped paragraph (see `_TABLE_CAPTION_PATTERN`) that is
             # immediately followed by a table in `merged` order defers its own

@@ -1067,3 +1067,63 @@ def test_load_pdf_attaches_a_table_caption_from_the_preceding_line() -> None:
     assert result.tables[0].caption == "Response Codes"
     # The caption line is NOT also emitted as its own PARAGRAPH block.
     assert not any("Table 3.4" in b.text for b in result.blocks if b.kind == BlockKind.PARAGRAPH)
+
+
+def test_load_pdf_flags_a_suspected_multi_column_page() -> None:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "two_col.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica", 12)
+        y = 700
+        for i in range(6):
+            c.drawString(72, y - i * 20, f"LEFT-{i} column text line here")
+            c.drawString(320, y - i * 20, f"RIGHT-{i} column text line here")
+        c.save()
+        result = load_pdf(str(path))
+
+    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE and "multi-column" in b.text]
+    assert len(note_blocks) == 1
+
+
+def test_load_pdf_does_not_flag_a_wide_table_column_as_multi_column() -> None:
+    # Regression guard for a confirmed real false candidate: a wide table
+    # column produces a large x-gap with no real column boundary.
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Table as RLTable, TableStyle
+    from reportlab.lib import colors
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "wide_table.pdf"
+        doc = SimpleDocTemplate(str(path), pagesize=letter)
+        style = TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)])
+        doc.build([RLTable([["Narrow", "A much wider column with more text content in it"]], style=style, colWidths=[80, 380])])
+        result = load_pdf(str(path))
+
+    assert not any(b.kind == BlockKind.NOTE and "multi-column" in b.text for b in result.blocks)
+
+
+def test_load_pdf_does_not_flag_a_title_page_label_value_layout() -> None:
+    # Regression guard for the SECOND confirmed real false candidate: a
+    # cover-page label/value pair (e.g. "Prepared for:      ISTP Project")
+    # produces a large gap on ONE line, not a real column boundary spanning
+    # most of the page.
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "label_value.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica", 12)
+        c.drawString(72, 700, "Prepared for:")
+        c.drawString(300, 700, "ISTP Project")
+        c.drawString(72, 680, "A single normal body paragraph below the label/value line.")
+        c.save()
+        result = load_pdf(str(path))
+
+    assert not any(b.kind == BlockKind.NOTE and "multi-column" in b.text for b in result.blocks)
