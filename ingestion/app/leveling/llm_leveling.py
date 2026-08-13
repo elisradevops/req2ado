@@ -677,6 +677,57 @@ def _build_document_outline(branches: list[list[Block]]) -> str:
     return "\n".join(lines)
 
 
+_GLOSSARY_HEADING_PATTERN = re.compile(r"(?i)\b(definition|acronym|glossary|abbreviation|terminolog)")
+_GLOSSARY_INLINE_MAX_TOKENS = 500
+
+
+def _find_glossary_sections(
+    branches: list[list[Block]], branch_tables: list[list[Table]]
+) -> list[tuple[int, str, str]]:
+    """(branch_index, section_label, rendered_text) for every branch whose
+    heading matches a definitions/acronyms/glossary/abbreviations/
+    terminology keyword AND whose full rendered content fits under
+    _GLOSSARY_INLINE_MAX_TOKENS. An oversized match is excluded entirely
+    (never partially inlined -- an unpredictable truncation appearing
+    mid-glossary would be worse than the label-only status quo)."""
+    matches = []
+    for i, (branch, tables) in enumerate(zip(branches, branch_tables)):
+        labels = _branch_heading_labels(branch)
+        if not any(_GLOSSARY_HEADING_PATTERN.search(label) for label in labels):
+            continue
+        rendered = render_section(branch, tables)
+        if not rendered or _estimate_tokens(rendered) > _GLOSSARY_INLINE_MAX_TOKENS:
+            continue
+        section_label = labels[0] if labels else "(untitled section)"
+        matches.append((i, section_label, rendered))
+    return matches
+
+
+def _glossary_context_for_branch(
+    branch_index: int, glossary_sections: list[tuple[int, str, str]]
+) -> str | None:
+    """Every glossary_sections entry EXCEPT the branch's own (a branch
+    already sees its own content in full as section_text -- re-inlining
+    it into the SAME call's global_context would duplicate it within one
+    prompt, risking a duplicate-node result for that one call)."""
+    others = [(label, rendered) for i, label, rendered in glossary_sections if i != branch_index]
+    if not others:
+        return None
+    parts = [f'Reference section "{label}":\n{rendered}' for label, rendered in others]
+    return (
+        "The following short reference section(s) from elsewhere in this "
+        "document are inlined in full because every section may need them "
+        "(definitions/acronyms/units):\n\n" + "\n\n".join(parts)
+    )
+
+
+def _combine_global_context(
+    base: str | None, branch_index: int, glossary_sections: list[tuple[int, str, str]]
+) -> str | None:
+    extra = _glossary_context_for_branch(branch_index, glossary_sections)
+    if extra is None:
+        return base
+    return f"{base}\n\n{extra}" if base else extra
 
 
 def _table_to_markdown(table: Table) -> str | None:
@@ -1485,6 +1536,7 @@ def build_survey_tree(
     doc_table_groups = qualifying_table_groups(doc.tables)
 
     global_context: str | None = None
+    glossary_sections: list[tuple[int, str, str]] = []
     if fits_whole_document:
         branches: list[list[Block]] = [doc.blocks] if doc.blocks else []
     else:
@@ -1529,6 +1581,8 @@ def build_survey_tree(
         # awareness without repeating the confirmed degrading pattern of
         # re-sending the same raw full document on every one of many calls.
         global_context = _build_document_outline(branches)
+        glossary_branch_tables = _partition_tables_by_branch(branches, doc.tables) if branches else []
+        glossary_sections = _find_glossary_sections(branches, glossary_branch_tables)
 
     kb_deps_present = user_id is not None and embed_client is not None and vector_store is not None
     doc_kb_context: str | None = None
@@ -1722,7 +1776,8 @@ def build_survey_tree(
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
                 supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
                 list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
-                global_context=global_context, read_other_section_fn=read_other_section_fn,
+                global_context=_combine_global_context(global_context, branch_index, glossary_sections),
+                read_other_section_fn=read_other_section_fn,
                 topic_count=branch_heading_count + len(branch_table_groups),
                 table_groups=branch_table_groups,
                 branch_index=branch_index, branch_count=len(branches),

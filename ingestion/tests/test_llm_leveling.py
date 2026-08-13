@@ -650,6 +650,93 @@ def test_build_document_outline_shows_a_synthesized_number_label_when_present(mo
     assert "1 Display" in fake.calls[0]["section_text"]
 
 
+def _force_multi_branch_with_real_token_sizes(monkeypatch) -> None:
+    """Same GOAL as _force_multi_branch (force the doesn't-fit-in-one-call
+    multi-branch path, and stop _merge_branches_by_budget from re-combining
+    the resulting branches) but via the coverage-BUDGET lever instead of
+    blanket-mocking _estimate_tokens to a constant. The glossary-inlining
+    tests below need _estimate_tokens to report each branch's REAL rendered
+    size, because _find_glossary_sections evaluates a candidate glossary
+    branch's actual size against _GLOSSARY_INLINE_MAX_TOKENS -- blanket-
+    mocking _estimate_tokens (as _force_multi_branch does) makes EVERY
+    branch, including a genuinely tiny glossary section, report as
+    oversized, collapsing the inline-vs-exclude distinction these tests
+    exist to verify. Forcing coverage_budget_tokens down to an
+    unsatisfiable 1 achieves the same "doesn't fit, never re-merge"
+    behavior as _force_multi_branch's blanket mock, without touching
+    _estimate_tokens at all."""
+    import app.leveling.llm_leveling as llm_leveling_module
+    from app.leveling.model_caps import _ModelCaps
+
+    monkeypatch.setattr(
+        llm_leveling_module, "_resolve_caps",
+        lambda model, caps_client=None: _ModelCaps(1000, 28_000, 1, False),
+    )
+
+
+def _doc_with_glossary_branch(path: str = "glossary_doc.txt") -> CanonicalDoc:
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Definitions and Acronyms",
+                  source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="HDR: High Dynamic Range.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+        ],
+    )
+
+
+def test_a_small_glossary_branch_is_inlined_into_a_different_branchs_context(monkeypatch) -> None:
+    _force_multi_branch_with_real_token_sizes(monkeypatch)
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(_doc_with_glossary_branch(), fake)
+    assert len(fake.calls) == 2
+    # The Display branch's OWN call receives the glossary branch's content.
+    display_call = next(c for c in fake.calls if "The display shall support HDR." in c["section_text"])
+    assert "HDR: High Dynamic Range." in display_call["section_text"]
+
+
+def test_a_branch_does_not_get_its_own_content_re_inlined(monkeypatch) -> None:
+    _force_multi_branch_with_real_token_sizes(monkeypatch)
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(_doc_with_glossary_branch(), fake)
+    glossary_call = next(c for c in fake.calls if "Definitions and Acronyms" in c["section_text"])
+    # "HDR: High Dynamic Range." appears once (in section_text itself, as
+    # the glossary branch's OWN content) -- not a second time via a
+    # self-referential inlined copy.
+    assert glossary_call["section_text"].count("HDR: High Dynamic Range.") == 1
+
+
+def test_an_oversized_glossary_branch_is_not_inlined(monkeypatch) -> None:
+    _force_multi_branch_with_real_token_sizes(monkeypatch)
+    path = "oversized_glossary.txt"
+    huge_definition = "Term: " + ("word " * 2000)  # well over the inline token cap
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Glossary", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text=huge_definition, source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    display_call = next(c for c in fake.calls if "The display shall support HDR." in c["section_text"])
+    assert huge_definition not in display_call["section_text"]
+    assert "Glossary" in display_call["section_text"]  # still shows up as an outline label
+
+
+def test_a_branch_with_no_glossary_heading_match_gets_no_extra_context(monkeypatch) -> None:
+    _force_multi_branch_with_real_token_sizes(monkeypatch)
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(_two_branch_doc(), fake)  # "Display"/"Audio" -- no glossary-keyword heading
+    assert len(fake.calls) == 2
+    for call in fake.calls:
+        assert "Reference section" not in call["section_text"]
+
+
 def _table_with_group(rows: list[list[str]], path: str = "survey_input.txt", offset: int = 0) -> Table:
     return Table(
         id="t0", cells=[[TableCell(text=c) for c in row] for row in rows],
