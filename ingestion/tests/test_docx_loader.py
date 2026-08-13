@@ -9,6 +9,12 @@ from app.loaders.docx_loader import load_docx
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def docx_oxml_ns_uri(prefix: str) -> str:
+    from docx.oxml.ns import nsmap
+
+    return nsmap[prefix]
+
+
 def _build_two_section_docx_with_inline_images(tmp_path: Path) -> Path:
     # Two headings, each immediately followed by its own inline image --
     # proves each figure resolves at its OWN paragraph's real position, not
@@ -1275,3 +1281,51 @@ def test_load_docx_emits_a_note_block_for_an_altchunk_instead_of_silently_droppi
     after_idx = next(i for i, b in enumerate(result.blocks) if b.text == "After the embedded document.")
     note_idx = next(i for i, b in enumerate(result.blocks) if b.kind == BlockKind.NOTE)
     assert before_idx < note_idx < after_idx
+
+
+def test_load_docx_flags_an_ole_object_and_does_not_emit_its_icon_as_a_phantom_figure() -> None:
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        doc = DocxDocument()
+        doc.add_heading("Attachments", level=1)
+
+        # Use add_picture to get a REAL image relationship registered on the
+        # part, then grab its rId and strip the auto-inserted inline picture
+        # paragraph -- the ONLY remaining reference to that image becomes the
+        # OLE icon reference we build below, exactly mirroring how a real
+        # OLE object's icon is the sole reference to its icon image part.
+        icon_path = tmp_path / "icon.png"
+        Image.new("RGB", (32, 32), color="white").save(icon_path)
+        doc.add_picture(str(icon_path))
+        auto_paragraph = doc.paragraphs[-1]
+        blip = auto_paragraph._p.findall(f".//{{{docx_oxml_ns_uri('a')}}}blip")
+        icon_rel_id = blip[0].get(f"{{{docx_oxml_ns_uri('r')}}}embed")
+        auto_paragraph._p.getparent().remove(auto_paragraph._p)
+
+        object_xml = (
+            f'<w:p {nsdecls("w", "r")} '
+            'xmlns:v="urn:schemas-microsoft-com:vml" '
+            'xmlns:o="urn:schemas-microsoft-com:office:office">'
+            "<w:r><w:object>"
+            f'<v:shape><v:imagedata r:id="{icon_rel_id}"/></v:shape>'
+            '<o:OLEObject Type="Embed" ProgID="Excel.Sheet.12" r:id="rIdEmbedDummy"/>'
+            "</w:object></w:r></w:p>"
+        )
+        doc.element.body.append(parse_xml(object_xml))
+
+        out_path = tmp_path / "ole.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE]
+    assert len(note_blocks) == 1
+    assert "UNSUPPORTED" in note_blocks[0].text
+    assert "Excel.Sheet.12" in note_blocks[0].text
+    # No phantom FIGURE for the icon image.
+    assert not any(b.kind == BlockKind.FIGURE for b in result.blocks)
+    assert result.figures == []

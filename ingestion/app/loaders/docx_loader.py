@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 _HEADING_STYLE_PATTERN = re.compile(r"^Heading\s*(\d+)$")
 _IMAGE_RELTYPE_MARKER = "image"
 
+# VML and office namespaces are NOT registered in python-docx's own qn()
+# helper (only OOXML-standard prefixes are) -- these are raw Clark-notation
+# strings for exactly that reason.
+_VML_IMAGEDATA_TAG = "{urn:schemas-microsoft-com:vml}imagedata"
+_OFFICE_OLEOBJECT_TAG = "{urn:schemas-microsoft-com:office:office}OLEObject"
+
 # w:jc/@w:val -> TableCell.align. Deliberately a plain dict, not python-docx's
 # own WD_PARAGRAPH_ALIGNMENT.from_xml(): that enum has NO member at all for
 # the modern `start`/`end` spellings (only the legacy left/right/center/both
@@ -742,8 +748,13 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
         # same real-position treatment tables already got.
         blip_elements = child.findall(f".//{qn('a:blip')}")
         embed_ids = [embed_id for b in blip_elements if (embed_id := b.get(qn("r:embed")))]
+        # OLE-embedded objects (w:object, e.g. a pasted Excel sheet) have
+        # neither run text nor an a:blip -- only a VML v:imagedata icon
+        # reference -- so they must also be checked here, or the early
+        # return below would skip them before the NOTE-marker loop ever runs.
+        ole_objects = child.findall(f".//{qn('w:object')}")
 
-        if not content and not embed_ids:
+        if not content and not embed_ids and not ole_objects:
             return
 
         if content:
@@ -810,6 +821,27 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
             )
             block_id += 1
             figure_index += 1
+
+        for ole_object in ole_objects:
+            icon_data = ole_object.find(f".//{_VML_IMAGEDATA_TAG}")
+            if icon_data is not None:
+                icon_rel_id = icon_data.get(qn("r:id"))
+                if icon_rel_id:
+                    consumed_rel_ids.add(icon_rel_id)
+            ole_meta = ole_object.find(f".//{_OFFICE_OLEOBJECT_TAG}")
+            prog_id = ole_meta.get("ProgID") if ole_meta is not None else None
+            start = offset
+            end = start + 1
+            offset = end
+            blocks.append(
+                Block(
+                    id=f"b{block_id}",
+                    kind=BlockKind.NOTE,
+                    text=f"[UNSUPPORTED: embedded object ({prog_id or 'unknown type'}) -- content not extracted]",
+                    source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                )
+            )
+            block_id += 1
 
     def _handle_table(child) -> None:
         nonlocal table_index, offset
