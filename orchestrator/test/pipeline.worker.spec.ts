@@ -1589,7 +1589,7 @@ describe('runPipelineJob', () => {
       expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf');
       expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
         expect.any(Array),
-        { files: [{ type: 'file', id: 'file-1' }] },
+        expect.objectContaining({ files: [{ type: 'file', id: 'file-1' }], maxTokens: 300, think: false }),
       );
       expect(fakeOpenWebUiClient.deleteFile).toHaveBeenCalledWith('file-1');
       expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(
@@ -1694,6 +1694,72 @@ describe('runPipelineJob', () => {
 
       expect(fakePrimerCacheRedis.get).not.toHaveBeenCalled();
       expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
+    });
+
+    it('clamps an overly long chat reply to PRIMER_CONTEXT_MAX_CHARS before threading it into level() -- a verbose reply must never blow past /level\'s own query-string size limit', async () => {
+      // Regression guard: primerContext is threaded into /level as a URL
+      // query param (ingestion-http.client.ts) -- an unclamped reply here
+      // risks exceeding uvicorn/h11's request-line size limit, throwing a
+      // 400/431 from the /level call itself (OUTSIDE this primer block's
+      // own try/catch), failing the whole job over exactly the kind of soft
+      // LLM misbehavior (ignoring "2-3 short sentences") the primer's
+      // fail-open design exists to absorb.
+      const overlyLongReply = 'x'.repeat(5000);
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: overlyLongReply });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      const clampedPrimerContext = fakeIngestionClient.level.mock.calls[0][7];
+      expect(clampedPrimerContext).toHaveLength(1000);
+      expect(clampedPrimerContext).toBe(overlyLongReply.slice(0, 1000));
+      expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(expect.any(String), clampedPrimerContext, 'EX', 86_400);
+    });
+
+    it('passes maxTokens and think:false on the primer chat call -- bounds worst-case latency/output, same precedent as vision()\'s own caption cap', async () => {
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'A short primer.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.objectContaining({ maxTokens: 300, think: false }),
+      );
     });
   });
 });

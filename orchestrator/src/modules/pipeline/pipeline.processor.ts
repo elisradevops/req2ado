@@ -74,12 +74,11 @@ const openWebUiClient = new OpenWebUiClient({
   FILES_STATUS_PATH: config.FILES_STATUS_PATH,
   LLM_REQUEST_TIMEOUT_MS: config.LLM_REQUEST_TIMEOUT_MS,
 });
-// Dedicated connection, same "subscribed connections aside, there's still no
-// existing general-purpose Redis command client to reuse" rationale as
-// jobs.module.ts's own PRIMER_CACHE_REDIS provider (this child process has
-// no Nest DI container to source that provider from, hence a second direct
-// `new Redis(...)` here, same pattern jobEventsPublisherRedis above already
-// uses).
+// Dedicated connection for the primer's content-hash cache -- this child
+// process has no NestJS DI container of its own (see this file's own doc
+// comment above) and there's no existing general-purpose Redis command
+// client here to reuse instead, hence a second direct `new Redis(...)`,
+// same pattern jobEventsPublisherRedis above already uses.
 const primerCacheRedis = new Redis(config.REDIS_URL);
 primerCacheRedis.on('error', (err) => {
   // eslint-disable-next-line no-console -- worker process logging, not app logging

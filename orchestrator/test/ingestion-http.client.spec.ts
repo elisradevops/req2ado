@@ -194,6 +194,24 @@ describe('IngestionHttpClient', () => {
     expect(new URL(url).searchParams.has('job_id')).toBe(false);
   });
 
+  it('forwards primerContext as a primer_context query param when provided (Phase 6c whole-document primer)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level(MINIMAL_DOC, null, 'survey', undefined, undefined, undefined, undefined, 'This is an avionics ICD.');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(url).searchParams.get('primer_context')).toBe('This is an avionics ICD.');
+  });
+
+  it('omits primer_context when not provided, matching pre-Phase-6c behavior', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.level(MINIMAL_DOC, null, 'survey');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(url).searchParams.has('primer_context')).toBe(false);
+  });
+
   it('serializes link_type_catalog with snake_case keys (ingestion/Python is the wire contract, not this side\'s camelCase AdoLinkType)', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
     const client = new IngestionHttpClient('http://ingestion.internal');

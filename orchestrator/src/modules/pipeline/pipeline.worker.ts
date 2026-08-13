@@ -38,6 +38,20 @@ const PRIMER_CONTEXT_MIN_DOCUMENT_BYTES = 20_000;
 // AREA_PATH_BACKFILL_STALE_AFTER_MS's own "throttle, don't disable" shape.
 const PRIMER_CONTEXT_CACHE_TTL_SECONDS = 86_400;
 
+// Hard clamp on the primer string, independent of maxTokens below. The
+// prompt asks for "2-3 short sentences", but a model ignoring that
+// instruction is a realistic failure mode, not an edge case -- and
+// primerContext is threaded into /level as a URL query param
+// (ingestion-http.client.ts), so an unbounded reply risks exceeding
+// uvicorn/h11's request-line size limit and throwing a 400/431 from the
+// /level call itself, OUTSIDE this block's own try/catch. That would fail
+// the whole job on exactly the kind of soft LLM misbehavior this primer's
+// fail-open design exists to absorb. A few hundred tokens' worth of
+// characters is already generous for "document type/purpose/domain
+// conventions" -- clamped here as the final backstop regardless of what
+// maxTokens below actually bounds output to.
+const PRIMER_CONTEXT_MAX_CHARS = 1000;
+
 /**
  * Closes the "manually-created ADO items are invisible to dedup" gap for
  * THIS job's own areaPath, with no user action ever needed -- previously
@@ -473,9 +487,25 @@ export async function runPipelineJob(
                       "conventions or phrasing style it uses. Do not list sections or definitions.",
                   },
                 ],
-                { files: [{ type: 'file', id: fileId }] },
+                {
+                  files: [{ type: 'file', id: fileId }],
+                  // Bounds worst-case latency AND output size -- same
+                  // "structured extraction, not creative writing" reasoning
+                  // OpenWebUiClient.vision()'s own maxTokens/think:false
+                  // already applies to figure captions, here applied to a
+                  // one-shot document-orientation summary. Without this, a
+                  // reasoning-capable model can burn the whole call on
+                  // hidden chain-of-thought (vision()'s own confirmed live
+                  // failure mode) or simply ignore "2-3 short sentences" and
+                  // produce a reply large enough to blow past /level's own
+                  // query-string size limit (see PRIMER_CONTEXT_MAX_CHARS'
+                  // own comment) -- this cap plus that clamp are two
+                  // independent backstops against the same real risk.
+                  maxTokens: 300,
+                  think: false,
+                },
               );
-              primerContext = result.content?.trim() || undefined;
+              primerContext = result.content?.trim().slice(0, PRIMER_CONTEXT_MAX_CHARS) || undefined;
               if (primerContext) {
                 await primerCacheRedis.set(cacheKey, primerContext, 'EX', PRIMER_CONTEXT_CACHE_TTL_SECONDS);
               }

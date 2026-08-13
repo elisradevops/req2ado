@@ -245,6 +245,27 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards files as-is when provided (Open WebUI-native whole-document primer reference, Phase 6c)', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { files: [{ type: 'file', id: 'file-1' }] });
+
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ files: [{ type: 'file', id: 'file-1' }] }));
+  });
+
+  it('omits files when not provided', async () => {
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('files');
+  });
+
   it('forwards tools as-is and omits tool_choice when not provided', async () => {
     const client = new OpenWebUiClient(config);
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
