@@ -794,11 +794,12 @@ def test_combine_global_context_omits_front_matter_guard_when_indices_not_suppli
     assert result == "outline"
 
 
-def test_build_survey_tree_front_matter_branch_still_allows_a_real_requirement_to_surface() -> None:
+def test_build_survey_tree_front_matter_branch_still_allows_a_real_requirement_to_surface(monkeypatch) -> None:
     # The guard is a soft instruction, not a hard skip -- if the model still
     # emits a real node for content inside a front-matter-labeled section
     # (e.g. a genuine requirement accidentally placed under "Introduction"),
     # that node must still reach the tree.
+    _force_multi_branch_with_real_token_sizes(monkeypatch)
     path = "doc.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
