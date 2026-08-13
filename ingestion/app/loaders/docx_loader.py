@@ -609,14 +609,24 @@ def _outline_level_from_ppr(ppr) -> int | None:
     this loader must not trust source XML to be well-formed) falls through
     to `None` -- not a heading via THIS signal -- rather than raising and
     aborting the whole document load, same graceful-degradation guarantee
-    as every other malformed-input case in this module."""
+    as every other malformed-input case in this module. `int()` itself is
+    the validity check (via try/except) rather than a pre-check like
+    `str.isdigit()` -- `"--3".lstrip("-").isdigit()` is True but
+    `int("--3")` still raises, and `str.isdigit()` also accepts non-decimal
+    Unicode digits (e.g. superscript "²") that `int()` rejects; only
+    `int()`'s own parsing is a reliable definition of "parseable as int,"
+    the same reasoning `_describe_one_figure`'s `except Exception` uses for
+    another input-dependent failure elsewhere in this module."""
     outline_lvl = ppr.find(qn("w:outlineLvl"))
     if outline_lvl is None:
         return None
     val = outline_lvl.get(qn("w:val"))
-    if val is None or not val.lstrip("-").isdigit():
+    if val is None:
         return None
-    return int(val) + 1
+    try:
+        return int(val) + 1
+    except ValueError:
+        return None
 
 
 def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:

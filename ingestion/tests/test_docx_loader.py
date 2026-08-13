@@ -1060,25 +1060,41 @@ def test_load_docx_does_not_crash_on_a_non_numeric_outline_lvl_val() -> None:
     # eliminate, just on a different attribute. A malformed val must fall
     # through to the next detection tier instead -- here there is no
     # style-name signal either, so it lands on PARAGRAPH.
+    #
+    # Three distinct malformed shapes, because a naive `str.isdigit()`
+    # pre-check (an earlier version of this fix used one) is NOT a reliable
+    # stand-in for "int() will accept this":
+    #   - "not-a-number": the obvious non-numeric case.
+    #   - "--3": `"--3".lstrip("-").isdigit()` is True, but `int("--3")`
+    #     still raises ValueError -- a pre-check based on lstrip+isdigit
+    #     would have missed this.
+    #   - "²" (superscript two, "²"): `str.isdigit()` returns
+    #     True for non-decimal Unicode digits like this, but `int()`
+    #     rejects it -- another isdigit()-pre-check blind spot.
+    # The real fix wraps the actual int(val) call in try/except ValueError
+    # rather than pre-validating with isdigit()/lstrip() at all.
     from docx import Document as DocxDocument
     from docx.oxml import parse_xml
     from docx.oxml.ns import nsdecls
 
     doc = DocxDocument()
-    p_xml = (
-        f'<w:p {nsdecls("w")}>'
-        '<w:pPr><w:outlineLvl w:val="not-a-number"/></w:pPr>'
-        "<w:r><w:t>Malformed outline level.</w:t></w:r></w:p>"
-    )
-    doc.element.body.append(parse_xml(p_xml))
+    malformed_vals = ["not-a-number", "--3", "²"]
+    for i, val in enumerate(malformed_vals):
+        p_xml = (
+            f'<w:p {nsdecls("w")}>'
+            f'<w:pPr><w:outlineLvl w:val="{val}"/></w:pPr>'
+            f"<w:r><w:t>Malformed outline level {i}.</w:t></w:r></w:p>"
+        )
+        doc.element.body.append(parse_xml(p_xml))
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         out_path = Path(tmp_dir) / "bad_outline_lvl.docx"
         doc.save(str(out_path))
         result = load_docx(str(out_path))  # must not raise
 
-    block = next(b for b in result.blocks if b.text == "Malformed outline level.")
-    assert block.kind == BlockKind.PARAGRAPH
+    for i in range(len(malformed_vals)):
+        block = next(b for b in result.blocks if b.text == f"Malformed outline level {i}.")
+        assert block.kind == BlockKind.PARAGRAPH
 
 
 def test_load_docx_treats_title_style_as_a_heading() -> None:
