@@ -265,6 +265,52 @@ def test_describe_figure_calls_the_vision_client_again_for_genuinely_different_i
     assert fake_client.calls == 2
 
 
+def test_describe_figure_cache_key_does_not_collide_across_different_document_contexts(monkeypatch) -> None:
+    # Regression guard for _figure_caption_cache_key's document_context
+    # component: the SAME image bytes embedded in two DIFFERENT documents
+    # can legitimately get two DIFFERENT significance verdicts once
+    # document context is a real input to that judgment (an image-only
+    # cache key would silently leak document A's verdict onto document B).
+    # This fake returns a caption keyed off the document_context it was
+    # actually handed, so a false cache hit would surface as the WRONG
+    # caption coming back, not just a missing second call.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+            self.calls += 1
+            return FigureVisionResult(significant=True, description=f"caption for {document_context}")
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self._store: dict[str, bytes] = {}
+
+        def get(self, key):
+            return self._store.get(key)
+
+        def set(self, key, value, ex=None):
+            self._store[key] = value.encode("utf-8") if isinstance(value, str) else value
+
+        def publish(self, channel, payload):
+            pass
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+    monkeypatch.setattr(main_module, "_narration_redis", _FakeRedis())
+
+    first = main_module._describe_figure(b"same-image-bytes", document_context="Document A: an avionics ICD.")
+    second = main_module._describe_figure(b"same-image-bytes", document_context="Document B: a plumbing schematic.")
+
+    # NOT served from a cross-document cache collision -- each document_context
+    # gets its own live vision call and its own correct caption back.
+    assert first == "caption for Document A: an avionics ICD."
+    assert second == "caption for Document B: a plumbing schematic."
+    assert fake_client.calls == 2
+
+
 def test_describe_figure_degrades_to_a_live_call_when_the_cache_read_or_write_fails(monkeypatch) -> None:
     # Fail-open, same convention as the dedup check (dry-run.service.ts) and
     # KB retrieval (retrieval.py) -- a cache outage must never break figure
