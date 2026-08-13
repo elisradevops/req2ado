@@ -32,6 +32,8 @@ export interface OpenWebUiClientConfig {
   EMBED_MODEL: string;
   EMBED_PATH: string;
   SHOW_PATH: string;
+  FILES_UPLOAD_PATH: string;
+  FILES_STATUS_PATH: string;
   LLM_REQUEST_TIMEOUT_MS: number;
 }
 
@@ -337,5 +339,76 @@ export class OpenWebUiClient implements LlmClient {
       reasoning_effort: 'none' as OpenAI.ReasoningEffort,
     });
     return response.choices[0]?.message?.content ?? '';
+  }
+
+  // Uploads a source document to Open WebUI's native file API (not the
+  // OpenAI-compat surface -- same reason embed()/showModel() bypass
+  // this.openai) so a later call can generate the whole-document AI context
+  // primer (Phase 6) from it. FormData/Blob are global in Node 18+, no
+  // import needed.
+  async uploadFile(buffer: Buffer, filename: string): Promise<string> {
+    const baseUrl = this.config.LLM_BASE_URL.replace(/\/v1\/?$/, '');
+    const form = new FormData();
+    form.append('file', new Blob([buffer]), filename);
+    const response = await fetch(`${baseUrl}${this.config.FILES_UPLOAD_PATH}`, {
+      method: 'POST',
+      // No Content-Type header here -- fetch sets the correct
+      // multipart/form-data boundary itself when given a FormData body;
+      // nativeOllamaHeaders() hardcodes application/json, which would
+      // break the multipart upload.
+      headers: this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {},
+      body: form,
+    });
+    if (!response.ok) {
+      throw new Error(`OpenWebUiClient.uploadFile failed: ${response.status}`);
+    }
+    const data = (await response.json()) as { id: string };
+    return data.id;
+  }
+
+  // Polls Open WebUI's file-processing-status endpoint until the uploaded
+  // file reaches a terminal state, or timeoutMs elapses. Never throws --
+  // a transient poll failure is not itself a verdict, so it's swallowed and
+  // polling continues until the deadline; a stuck 'pending' and a timeout
+  // both resolve false the same way, matching "primer generation didn't
+  // work out, proceed without it" being the only two real outcomes callers
+  // need to distinguish (succeeded vs. didn't).
+  async pollFileProcessed(fileId: string, timeoutMs: number): Promise<boolean> {
+    const baseUrl = this.config.LLM_BASE_URL.replace(/\/v1\/?$/, '');
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`${baseUrl}${this.config.FILES_STATUS_PATH}/${fileId}/process/status`, {
+          headers: this.nativeOllamaHeaders(),
+        });
+        if (response.ok) {
+          const data = (await response.json()) as { status?: string };
+          if (data.status === 'completed') return true;
+          if (data.status === 'failed') return false;
+        }
+      } catch {
+        // A transient poll failure is not itself a verdict -- keep polling
+        // until the deadline, then time out the same as a stuck 'pending'.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return false;
+  }
+
+  // Best-effort cleanup of an uploaded file once the primer has already
+  // resolved (succeeded or not) -- a delete failure must never mask that
+  // already-resolved result or throw past the caller, so this swallows its
+  // own errors entirely rather than surfacing them.
+  async deleteFile(fileId: string): Promise<void> {
+    const baseUrl = this.config.LLM_BASE_URL.replace(/\/v1\/?$/, '');
+    try {
+      await fetch(`${baseUrl}${this.config.FILES_STATUS_PATH}/${fileId}`, {
+        method: 'DELETE',
+        headers: this.nativeOllamaHeaders(),
+      });
+    } catch {
+      // Best-effort cleanup -- a delete failure must never mask the
+      // primer's already-resolved result or throw past the caller.
+    }
   }
 }

@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { OpenWebUiClient } from '../src/modules/llm/openwebui.client';
+import { OpenWebUiClient, type OpenWebUiClientConfig } from '../src/modules/llm/openwebui.client';
 
 describe('OpenWebUiClient', () => {
   const config = {
@@ -15,6 +15,8 @@ describe('OpenWebUiClient', () => {
     EMBED_MODEL: 'nomic-embed-text',
     EMBED_PATH: '/api/embed',
     SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 600_000,
   };
 
@@ -521,6 +523,8 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     EMBED_MODEL: 'nomic-embed-text',
     EMBED_PATH: '/api/embed',
     SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 600_000,
   };
 
@@ -631,6 +635,8 @@ describe('OpenWebUiClient.showModel', () => {
     EMBED_MODEL: 'nomic-embed-text',
     EMBED_PATH: '/api/embed',
     SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 600_000,
   };
 
@@ -708,5 +714,109 @@ describe('OpenWebUiClient.showModel', () => {
     const client = new OpenWebUiClient(config);
     await expect(client.showModel('Arena Model')).rejects.toThrow(/virtual multi-model construct/i);
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenWebUiClient.uploadFile', () => {
+  const config = {
+    LLM_BASE_URL: 'http://localhost:3000/v1',
+    LLM_API_KEY: 'test-key',
+    LLM_CHAT_MODEL: 'test-model',
+    LLM_TRUSTED_LOCAL: true,
+    EMBED_TRANSPORT: 'ollama' as const,
+    EMBED_MODEL: 'test-embed',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 5000,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it('uploads a file and returns its id', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ id: 'file-123' }) });
+    const client = new OpenWebUiClient(config);
+    const id = await client.uploadFile(Buffer.from('pdf bytes'), 'doc.pdf');
+    expect(id).toBe('file-123');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:3000/api/v1/files/',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('throws when the upload response is not ok', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+    const client = new OpenWebUiClient(config);
+    await expect(client.uploadFile(Buffer.from('x'), 'x.pdf')).rejects.toThrow();
+  });
+});
+
+describe('OpenWebUiClient.pollFileProcessed', () => {
+  const config: OpenWebUiClientConfig = {
+    LLM_BASE_URL: 'http://localhost:3000/v1',
+    LLM_API_KEY: 'test-key',
+    LLM_CHAT_MODEL: 'test-model',
+    LLM_TRUSTED_LOCAL: true,
+    EMBED_TRANSPORT: 'ollama' as const,
+    EMBED_MODEL: 'test-embed',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 5000,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it('returns true once status is completed', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ status: 'completed' }) });
+    const client = new OpenWebUiClient(config);
+    const result = await client.pollFileProcessed('file-123', 5000);
+    expect(result).toBe(true);
+  });
+
+  it('returns false when status is failed', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ status: 'failed' }) });
+    const client = new OpenWebUiClient(config);
+    const result = await client.pollFileProcessed('file-123', 5000);
+    expect(result).toBe(false);
+  });
+
+  it('returns false on timeout rather than throwing', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ status: 'pending' }) });
+    const client = new OpenWebUiClient(config);
+    const result = await client.pollFileProcessed('file-123', 100);
+    expect(result).toBe(false);
+  });
+});
+
+describe('OpenWebUiClient.deleteFile', () => {
+  const config: OpenWebUiClientConfig = {
+    LLM_BASE_URL: 'http://localhost:3000/v1',
+    LLM_API_KEY: 'test-key',
+    LLM_CHAT_MODEL: 'test-model',
+    LLM_TRUSTED_LOCAL: true,
+    EMBED_TRANSPORT: 'ollama' as const,
+    EMBED_MODEL: 'test-embed',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 5000,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it('does not throw when the delete request fails', async () => {
+    (global.fetch as jest.Mock).mockRejectedValue(new Error('network error'));
+    const client = new OpenWebUiClient(config);
+    await expect(client.deleteFile('file-123')).resolves.not.toThrow();
   });
 });

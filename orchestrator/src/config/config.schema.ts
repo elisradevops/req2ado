@@ -54,6 +54,14 @@ export const configSchema = z.object({
   // Ollama backend (this codebase's original target); set to
   // /ollama/api/show when LLM_BASE_URL points at Open WebUI instead.
   SHOW_PATH: z.string().default('/api/show'),
+  // Open WebUI's native file-upload + processing-status endpoints, used by
+  // OpenWebUiClient.uploadFile/pollFileProcessed/deleteFile for the
+  // whole-document AI context primer (Phase 6). FILES_STATUS_PATH is a base
+  // path -- callers append `/${id}/process/status` or `/${id}` themselves,
+  // same "base + suffix" shape SHOW_PATH's own comment already documents for
+  // the raw-Ollama-vs-Open-WebUI-proxy distinction.
+  FILES_UPLOAD_PATH: z.string().default('/api/v1/files/'),
+  FILES_STATUS_PATH: z.string().default('/api/v1/files'),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().default(25),
   // Initial System.State written on every created work item. Hardcoded
   // 'Proposed' previously -- an on-prem custom process template without
