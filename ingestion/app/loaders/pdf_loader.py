@@ -642,9 +642,16 @@ def _outline_heading_positions(path: str) -> dict[tuple[int, str], int]:
     outline/bookmark entry in the document -- confirmed real API:
     pypdf.PdfReader.outline is a nested list of Destination objects
     (Destination.title/.page/.top/.left), deeper nesting = deeper list.
-    reader.get_page_number(dest) resolves a Destination's indirect page
-    reference to a real 0-based page index. Degrades to an empty dict
-    (never raises) on ANY failure -- a malformed/absent outline must fall
+    `PdfReader.get_page_number` resolves a real 0-based page index, but
+    (CONFIRMED empirically -- a live add_outline_item()-built PDF read
+    back and inspected directly, not assumed from the docstring alone)
+    it takes a `PageObject`, not a `Destination` -- passing the
+    `Destination` itself silently resolves to `None` (caught below same
+    as any other malformed entry, so it degrades safely, but every entry
+    would otherwise be silently dropped). `Destination.page` is the
+    already-resolved `PageObject` a `Destination` carries, and that IS
+    what `get_page_number` expects. Degrades to an empty dict (never
+    raises) on ANY failure -- a malformed/absent outline must fall
     through to font-size/numbering classification, never abort the load
     or mis-anchor a heading."""
     positions: dict[tuple[int, str], int] = {}
@@ -655,7 +662,7 @@ def _outline_heading_positions(path: str) -> dict[tuple[int, str], int]:
                 _walk(item, depth + 1, reader)
                 continue
             try:
-                page_number = reader.get_page_number(item) + 1
+                page_number = reader.get_page_number(item.page) + 1
                 positions[(page_number, item.title)] = depth
             except Exception:  # noqa: BLE001 -- one malformed entry must not lose the rest of the outline
                 continue
@@ -980,7 +987,7 @@ def load_pdf(
                     number_label: str | None = None
                     if outline_depth is not None:
                         heading_level = outline_depth
-                    elif body_size < size <= body_size * _HEADING_SIZE_MAX_RATIO:
+                    elif body_size + _HEADING_SIZE_MARGIN < size <= body_size * _HEADING_SIZE_MAX_RATIO:
                         existing_label, _ = parse_numbering(text)
                         if existing_label is not None:
                             heading_level = numbering_depth(existing_label)

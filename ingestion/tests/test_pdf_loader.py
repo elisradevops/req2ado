@@ -660,6 +660,79 @@ def test_load_pdf_watermark_sized_text_is_not_classified_as_heading() -> None:
     assert draft_block.kind == BlockKind.PARAGRAPH  # excluded from heading candidacy, not promoted
 
 
+def test_load_pdf_detects_a_heading_via_real_outline_bookmark_tier_0() -> None:
+    # Fix-round addition (task-3-report.md): the outline/bookmark tier-0
+    # path (_outline_heading_positions) had zero test coverage -- and was
+    # in fact silently dead: reader.get_page_number(dest) (the brief's own
+    # literal call, passing the Destination itself) resolves to None,
+    # `None + 1` raises, and the surrounding except swallowed it, so the
+    # whole tier-0 path always fell back to {} without ever running.
+    # Fixed to call reader.get_page_number(dest.page) -- the Destination's
+    # own already-resolved PageObject, which is what get_page_number
+    # actually expects (confirmed directly against the installed pypdf,
+    # not assumed).
+    #
+    # Both lines here are drawn at the SAME size (10pt) -- deliberately NOT
+    # a font-size outlier -- so this line would stay PARAGRAPH under
+    # font-size classification alone. Only a working outline entry can
+    # promote it to HEADING, proving the tier-0 override is real, not a
+    # coincidental match with the font-size path.
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    from pypdf import PdfWriter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        base_path = Path(tmp_dir) / "base.pdf"
+        c = rl_canvas.Canvas(str(base_path), pagesize=letter)
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 700, "Introduction")
+        c.drawString(72, 670, "Body text at normal size.")
+        c.save()
+
+        writer = PdfWriter(clone_from=str(base_path))
+        writer.add_outline_item("Introduction", 0)  # bookmarks page index 0 (0-based)
+        outlined_path = Path(tmp_dir) / "outlined.pdf"
+        with open(outlined_path, "wb") as f:
+            writer.write(f)
+
+        result = load_pdf(str(outlined_path))
+
+    heading = next(b for b in result.blocks if b.text == "Introduction")
+    assert heading.kind == BlockKind.HEADING
+    assert heading.heading_level == 1
+    body = next(b for b in result.blocks if "Body text" in b.text)
+    assert body.kind == BlockKind.PARAGRAPH  # untouched -- same size, no outline entry of its own
+
+
+def test_load_pdf_with_no_outline_still_classifies_headings_by_font_size() -> None:
+    # Fix-round addition: confirms _outline_heading_positions' empty-dict
+    # fallback (no outline present at all, the overwhelming common case for
+    # a plain reportlab-generated PDF -- no add_outline_item call here)
+    # doesn't break or short-circuit the font-size classification path --
+    # a document with zero outline entries must still detect headings via
+    # font-size outlier exactly as before this task's outline addition.
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "no_outline.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica-Bold", 18)
+        c.drawString(72, 700, "Introduction")
+        c.setFont("Helvetica", 10)
+        c.drawString(72, 670, "Body text at normal size.")
+        c.save()
+        result = load_pdf(str(path))
+
+    heading = next(b for b in result.blocks if b.text == "Introduction")
+    assert heading.kind == BlockKind.HEADING
+    assert heading.heading_level == 1
+    body = next(b for b in result.blocks if "Body text" in b.text)
+    assert body.kind == BlockKind.PARAGRAPH
+
+
 def test_load_pdf_with_ocr_fallback_preserves_figures_from_text_pages(tmp_path: Path) -> None:
     # Regression: load_pdf_with_ocr_fallback's final CanonicalDoc construction
     # (ocr.py:103) omitted figures= entirely -- any PDF with at least one
