@@ -1381,3 +1381,50 @@ def test_load_docx_flags_text_box_content_instead_of_silently_dropping_it() -> N
     assert "UNSUPPORTED" in note_blocks[0].text
     assert "text box" in note_blocks[0].text
     assert "Text box body content" in note_blocks[0].text
+
+
+def test_load_docx_alternate_content_text_box_emits_one_marker_not_two() -> None:
+    """A real Word 2007+ shape is commonly wrapped in mc:AlternateContent, with
+    mc:Choice holding the modern DrawingML wps:txbx/w:txbxContent and
+    mc:Fallback holding the legacy VML v:textbox/w:txbxContent -- both are
+    alternate representations of the SAME logical text box, carrying the
+    same text. Naively finding every w:txbxContent would emit two duplicate
+    NOTE markers for one real text box; only the mc:Choice copy should be
+    flagged.
+    """
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    doc = DocxDocument()
+    doc.add_paragraph("Before the text box.")
+    alt_content_xml = (
+        f'<w:p {nsdecls("w")} '
+        'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+        'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+        'xmlns:v="urn:schemas-microsoft-com:vml">'
+        "<w:r><mc:AlternateContent>"
+        '<mc:Choice Requires="wps">'
+        "<w:drawing><wps:txbx><w:txbxContent>"
+        "<w:p><w:r><w:t>Text box body content.</w:t></w:r></w:p>"
+        "</w:txbxContent></wps:txbx></w:drawing>"
+        "</mc:Choice>"
+        "<mc:Fallback>"
+        "<w:pict><v:shape><v:textbox><w:txbxContent>"
+        "<w:p><w:r><w:t>Text box body content.</w:t></w:r></w:p>"
+        "</w:txbxContent></v:textbox></v:shape></w:pict>"
+        "</mc:Fallback>"
+        "</mc:AlternateContent></w:r></w:p>"
+    )
+    doc.element.body.append(parse_xml(alt_content_xml))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "alt_content_textbox.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE]
+    assert len(note_blocks) == 1
+    assert "UNSUPPORTED" in note_blocks[0].text
+    assert "text box" in note_blocks[0].text
+    assert "Text box body content" in note_blocks[0].text

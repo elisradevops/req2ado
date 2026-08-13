@@ -25,6 +25,11 @@ _IMAGE_RELTYPE_MARKER = "image"
 # strings for exactly that reason.
 _VML_IMAGEDATA_TAG = "{urn:schemas-microsoft-com:vml}imagedata"
 _OFFICE_OLEOBJECT_TAG = "{urn:schemas-microsoft-com:office:office}OLEObject"
+# mc:Fallback wraps the legacy VML rendering of a shape whose modern
+# DrawingML rendering lives in the sibling mc:Choice -- both branches of an
+# mc:AlternateContent carry the SAME text box content, so w:txbxContent
+# elements under a Fallback are skipped to avoid double-counting.
+_MC_FALLBACK_TAG = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
 
 # w:jc/@w:val -> TableCell.align. Deliberately a plain dict, not python-docx's
 # own WD_PARAGRAPH_ALIGNMENT.from_xml(): that enum has NO member at all for
@@ -763,6 +768,12 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
         # the text box's text is dropped with zero trace.
         textbox_texts = []
         for txbx_content in child.findall(f".//{qn('w:txbxContent')}"):
+            # A shape wrapped in mc:AlternateContent duplicates its text box
+            # content across mc:Choice (modern DrawingML) and mc:Fallback
+            # (legacy VML) -- skip the Fallback copy so one logical text box
+            # doesn't emit two identical NOTE markers.
+            if any(ancestor.tag == _MC_FALLBACK_TAG for ancestor in txbx_content.iterancestors()):
+                continue
             run_texts = [t.text for t in txbx_content.findall(f".//{qn('w:t')}") if t.text]
             combined = "".join(run_texts).strip()
             if combined:
