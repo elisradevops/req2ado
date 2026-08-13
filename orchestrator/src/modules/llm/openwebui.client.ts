@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
-import type { LlmChatOptions, LlmChatResult, LlmClient, LlmStreamChunk } from './llm-client.interface';
+import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmStreamChunk } from './llm-client.interface';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { fetchWithRetry } from './retryWithBackoff';
 
@@ -278,19 +278,15 @@ export class OpenWebUiClient implements LlmClient {
     return { contextLength, capabilities: body.capabilities ?? [] };
   }
 
-  async vision(prompt: string, images: Buffer[], opts?: { model?: string; mimeType?: string }): Promise<string> {
+  async vision(
+    prompt: string,
+    images: Buffer[],
+    opts?: { model?: string; mimeType?: string; responseSchema?: LlmResponseSchema },
+  ): Promise<string> {
     const model = opts?.model ?? this.config.LLM_VISION_MODEL;
     if (!model) {
       throw new Error('vision() called with no model available -- set LLM_VISION_MODEL or pass opts.model');
     }
-    // Same OpenAI-compatible chat.completions endpoint as chat(), just with
-    // a multimodal content array -- Ollama/Open WebUI's OpenAI-compat API
-    // accepts image_url content parts for vision-capable models (llava,
-    // bakllava, moondream, etc.) the same way OpenAI's own API does.
-    // mimeType defaults to image/png -- the pre-existing hardcoded value,
-    // harmless for docx-embedded figures whose real type was never
-    // surfaced, but now correctly overridable for directly-uploaded
-    // non-PNG images (KB image ingestion).
     const mimeType = opts?.mimeType ?? 'image/png';
     const outboundPrompt = this.config.LLM_TRUSTED_LOCAL ? prompt : redactText(prompt);
     const content: OpenAI.Chat.ChatCompletionContentPart[] = [
@@ -300,49 +296,28 @@ export class OpenWebUiClient implements LlmClient {
         image_url: { url: `data:${mimeType};base64,${image.toString('base64')}` },
       })),
     ];
-    const response = await this.openai.chat.completions.create({
+    const responseFormat = opts?.responseSchema
+      ? { type: 'json_schema' as const, json_schema: { name: opts.responseSchema.name, schema: opts.responseSchema.schema } }
+      : undefined;
+    const buildParams = (includeSchema: boolean) => ({
       model,
-      messages: [{ role: 'user', content }],
-      // Confirmed real root cause of run-to-run SURVEY node-count variance
-      // (74 vs ~120 nodes for the identical document): unlike every other
-      // call in this module, this one previously set neither temperature
-      // nor seed, so each figure's caption was freshly (re-)sampled on
-      // every job -- and caption text feeds directly into
-      // llm_leveling.py's token-budget branch splitter, so a differently
-      // worded caption can shift branch boundaries and, with them, total
-      // node count. A caption is structured extraction (describe what's in
-      // the image), not creative writing -- temperature 0 is the correct
-      // setting on its own merits, seed is defensive/hygiene on top of
-      // that in case this backend ever runs at a non-zero temperature.
+      messages: [{ role: 'user' as const, content }],
       temperature: 0,
       seed: 0,
-      // No output cap previously existed here at all -- the prompt asks
-      // for "one or two sentences" (orchestrator_vision_client.py's
-      // _DESCRIBE_FIGURE_PROMPT), so a real caption is short, but nothing
-      // bounded the worst case (a reasoning-capable vision model going
-      // off the rails on a pathological image). Bounds latency risk only;
-      // the byte-hash cache (main.py's figure-caption memoization) already
-      // removes the repeat cost of a slow caption on re-runs.
       max_tokens: 200,
-      // Real, 100%-reproducible root cause (confirmed live: every single
-      // figure in a real document came back "no useful caption returned"
-      // on a genuinely fresh, uncached run): unlike chat()'s own
-      // `opts?.think === false` handling above, this call never disabled
-      // reasoning at all. gemma4:e4b (this deployment's configured vision
-      // model) reports a real "thinking" capability -- its chain-of-thought
-      // tokens consumed the entire max_tokens budget before any real answer
-      // token was ever produced, leaving message.content genuinely empty
-      // (the reasoning itself lands in the separate message.reasoning
-      // field, never read here). A one-line image caption has no
-      // legitimate use for a reasoning trace -- same "structured
-      // extraction, not creative writing" reasoning the temperature=0
-      // comment above already states, applied to the token-budget problem
-      // reasoning caused. Same `reasoning_effort: 'none'` knob chat() uses,
-      // just unconditional here since no caller ever wants a captioned
-      // reasoning trace.
       reasoning_effort: 'none' as OpenAI.ReasoningEffort,
+      ...(includeSchema && responseFormat ? { response_format: responseFormat } : {}),
     });
-    return response.choices[0]?.message?.content ?? '';
+    try {
+      const response = await this.openai.chat.completions.create(buildParams(true));
+      return response.choices[0]?.message?.content ?? '';
+    } catch (err) {
+      if (opts?.responseSchema && isSchemaRejection(err)) {
+        const response = await this.openai.chat.completions.create(buildParams(false));
+        return response.choices[0]?.message?.content ?? '';
+      }
+      throw err;
+    }
   }
 
   // Uploads a source document to Open WebUI's native file API (not the

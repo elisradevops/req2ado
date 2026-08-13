@@ -179,4 +179,21 @@ describe('LlmController', () => {
     ]);
     expect(res.end).toHaveBeenCalled();
   });
+
+  it('threads an explicit responseSchema from the request body into llmClient.vision', async () => {
+    const llmClient = { vision: jest.fn().mockResolvedValue('a description') };
+    const controller = new LlmController(llmClient as any);
+
+    await controller.vision({
+      prompt: 'describe this figure',
+      images: [Buffer.from('img').toString('base64')],
+      responseSchema: { name: 'figure_significance', schema: { type: 'object' } },
+    });
+
+    expect(llmClient.vision).toHaveBeenCalledWith(
+      'describe this figure',
+      [Buffer.from('img')],
+      expect.objectContaining({ responseSchema: { name: 'figure_significance', schema: { type: 'object' } } }),
+    );
+  });
 });

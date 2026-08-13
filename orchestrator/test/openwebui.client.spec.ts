@@ -531,6 +531,68 @@ describe('OpenWebUiClient', () => {
 
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ reasoning_effort: 'none' }));
   });
+
+  it('vision() forwards responseSchema as response_format when provided', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: '{"significant":true,"description":"A wiring diagram."}' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe this figure', [Buffer.from('img')], {
+      responseSchema: { name: 'figure_significance', schema: { type: 'object', properties: { significant: { type: 'boolean' }, description: { type: 'string' } } } },
+    });
+
+    expect(fakeCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'figure_significance', schema: { type: 'object', properties: { significant: { type: 'boolean' }, description: { type: 'string' } } } },
+        },
+      }),
+    );
+  });
+
+  it('vision() omits response_format when responseSchema is not provided -- unchanged from pre-Task-2 behavior', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'A block diagram.' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe this figure', [Buffer.from('fake-png-bytes')]);
+
+    expect(fakeCreate).toHaveBeenCalledWith({
+      model: 'llava',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe this figure' },
+            { type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.from('fake-png-bytes').toString('base64')}` } },
+          ],
+        },
+      ],
+      temperature: 0,
+      seed: 0,
+      max_tokens: 200,
+      reasoning_effort: 'none',
+    });
+  });
+
+  it('vision() retries once without the schema on a schema-rejection error (400/422) -- same degrade-once convention as chat()', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const rejection = new OpenAI.APIError(400, { message: 'bad schema' }, 'bad schema', {} as any);
+    const fakeCreate = jest.fn().mockRejectedValueOnce(rejection).mockResolvedValueOnce({ choices: [{ message: { content: 'A block diagram.' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.vision('describe', [Buffer.from('img')], {
+      responseSchema: { name: 'figure_significance', schema: { type: 'object' } },
+    });
+
+    expect(result).toBe('A block diagram.');
+    expect(fakeCreate).toHaveBeenCalledTimes(2);
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('response_format');
+  });
 });
 
 describe('OpenWebUiClient.embed (ollama transport)', () => {

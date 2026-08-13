@@ -128,10 +128,11 @@ export class LlmController {
     }
     const body = parseResult.data;
     const opts =
-      body.model !== undefined || body.mimeType !== undefined
+      body.model !== undefined || body.mimeType !== undefined || body.responseSchema !== undefined
         ? {
             ...(body.model !== undefined ? { model: body.model } : {}),
             ...(body.mimeType !== undefined ? { mimeType: body.mimeType } : {}),
+            ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
           }
         : undefined;
     const description = await this.llmClient.vision(body.prompt, body.images.map((image) => Buffer.from(image, 'base64')), opts);

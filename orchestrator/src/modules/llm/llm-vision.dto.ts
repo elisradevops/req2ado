@@ -13,6 +13,15 @@ export const llmVisionRequestSchema = z.object({
   // and for docx-embedded figures whose real type was never surfaced, but
   // wrong for a directly-uploaded non-PNG image (KB image ingestion).
   mimeType: z.string().optional(),
+  // Same shape/validation as llm-chat.dto.ts's own responseSchema field --
+  // constrains the vision model's JSON output at the sampling level (see
+  // LlmResponseSchema's own doc comment, llm-client.interface.ts).
+  responseSchema: z
+    .object({
+      name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+      schema: z.record(z.unknown()),
+    })
+    .optional(),
 });
 
 export type LlmVisionRequestBody = z.infer<typeof llmVisionRequestSchema>;
