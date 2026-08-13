@@ -1089,6 +1089,40 @@ def test_load_pdf_flags_a_suspected_multi_column_page() -> None:
     assert len(note_blocks) == 1
 
 
+def test_load_pdf_does_not_flag_an_asymmetric_two_column_page() -> None:
+    # Pins a documented trade-off of the independent-per-side height check
+    # in `_detect_suspected_column_gap` (see that function's own docstring):
+    # fixing the real false positive on tests/test_pdf_survey_golden.py's
+    # golden fixture (a centered heading misread as a "second column")
+    # required each side of a candidate gap to independently span
+    # _COLUMN_GAP_MIN_HEIGHT_FRACTION of the page's text height, not just
+    # the two sides' combined span. LIVE-VERIFIED break-even: on this same
+    # 6-row-equivalent layout, a right column with 4+ rows (>=64% of the
+    # left column's height) IS still flagged; a right column with 3 rows
+    # (~46%, below the 0.5 threshold) is NOT. This is the accepted cost of
+    # that fix, not a bug -- a real 2-column page where one column happens
+    # to run noticeably shorter than the other goes undetected. Deliberately
+    # asserting the NEGATIVE here so a future "fix" back to a combined-span
+    # check doesn't silently re-break the golden test above.
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "asymmetric_two_col.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        c.setFont("Helvetica", 12)
+        y = 700
+        for i in range(6):
+            c.drawString(72, y - i * 20, f"LEFT-{i} column text line here")
+            if i < 3:
+                c.drawString(320, y - i * 20, f"RIGHT-{i} column text line here")
+        c.save()
+        result = load_pdf(str(path))
+
+    assert not any(b.kind == BlockKind.NOTE and "multi-column" in b.text for b in result.blocks)
+
+
 def test_load_pdf_does_not_flag_a_wide_table_column_as_multi_column() -> None:
     # Regression guard for a confirmed real false candidate: a wide table
     # column produces a large x-gap with no real column boundary.

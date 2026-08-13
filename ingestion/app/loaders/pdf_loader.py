@@ -966,7 +966,37 @@ def _detect_suspected_column_gap(
     `lines` is re-split into per-row character runs via `_line_segments`
     before anything else -- see that function's own docstring for why the
     raw `extract_text_lines()` records themselves cannot be used directly
-    for the "no word crosses this gap" check below."""
+    for the "no word crosses this gap" check below.
+
+    Known trade-off (independent per-side height check, see the "Height
+    coverage" comment inline below for why this replaced the brief's
+    original combined-span check): a genuinely 2-column page where one
+    column is a small minority of the page's content -- LIVE-VERIFIED
+    break-even on a real 6-row-equivalent page: the minority side drops
+    below being flagged once it falls under ~46% of the page's own text
+    height (e.g. 3 short rows on one side against 6 on the other) -- will
+    NOT be flagged. This is an accepted, deliberate cost of fixing the
+    real false positive on `tests/test_pdf_survey_golden.py`'s golden
+    fixture (see that comment); reverting to a combined-span check would
+    re-widen detection but silently re-break that golden test. See
+    `test_load_pdf_does_not_flag_an_asymmetric_two_column_page` for the
+    pinned boundary.
+
+    Known limitation inherited from this task's own design (not introduced
+    by either deviation above, not fixed here -- a real fix needs a
+    minimum-distinct-rows-per-side requirement, out of this task's minimal-
+    diff scope): a realistic MULTI-ROW title-page label/value cover page
+    (e.g. "Prepared for: / Prepared by: / Date: / Revision: / Classification:"
+    label column, 5 rows, each row's value at a slightly IRREGULAR x
+    position so the page's own pre-existing text-strategy table detector
+    does NOT absorb it into a `Table` first -- LIVE-REPRODUCED: values at
+    the SAME x across rows get rescued as a table candidate and never reach
+    this function at all, but values at irregular per-row x positions do
+    not) DOES produce a genuine false-positive flag here, unlike the single-
+    row label/value case `test_load_pdf_does_not_flag_a_title_page_label_value_layout`
+    covers (which is saved by the crossing check, not the height check, once
+    a body paragraph line is present -- a multi-row cover page with no such
+    crossing body line has nothing to save it)."""
     if not lines:
         return None
     lines = [segment for line in lines for segment in _line_segments(line)]
