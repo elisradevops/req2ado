@@ -20,59 +20,17 @@ import type { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 // zero manual action.
 const AREA_PATH_BACKFILL_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
-// Rough chars-per-token divisor, deliberately the same value ingestion's
-// own _CHARS_PER_TOKEN_ESTIMATE uses (llm_leveling.py) so the two sides'
-// estimates stay in the same ballpark rather than drifting apart.
-const PRIMER_CONTEXT_CHARS_PER_TOKEN_ESTIMATE = 4;
-
-// Below this much TEXT, a document already comfortably fits within a
-// model's per-call coverage budget in one shot -- the whole-document primer
-// (see the primer wiring block in runPipelineJob below) exists to orient
-// the model inside content it CAN'T see in one call, so paying the
-// upload+poll+chat cost here is pure waste, and ingestion discards the
-// primer on that path anyway (build_survey_tree's single-branch/
-// whole-document path never sets global_context, by design -- one call
-// already sees everything).
-//
-// Derived from ingestion's own real gate rather than guessed: llm_leveling.py
-// takes the whole-document single-call path when
-// _estimate_tokens(text) + _WHOLE_DOC_HEADROOM_TOKENS (4_000) <=
-// coverage_budget_tokens (10_000 for local models) -- i.e. up to ~6_000
-// tokens of text, ~24_000 characters at the shared 4-chars-per-token
-// estimate. Still a COARSE proxy (this side can't know which model caps
-// ingestion will resolve, and rendering differs), but now a proxy for the
-// thing that actually matters -- TEXT CONTENT length, measured on the
-// already-ingested doc. It replaces a raw `job.fileBuffer.byteLength`
-// check, which was actively wrong: a PDF's byte size is dominated by
-// embedded fonts and images, so an image-heavy 5-page PDF cleared a
-// 20_000-byte gate while a text-dense 80-page one could sit near it.
-const PRIMER_CONTEXT_MIN_DOCUMENT_TEXT_CHARS =
-  (10_000 - 4_000) * PRIMER_CONTEXT_CHARS_PER_TOKEN_ESTIMATE;
-
-// Reserved on top of the document's own estimated tokens when sizing
-// num_ctx below: the primer prompt itself, Open WebUI's own file-context
-// scaffolding, and room for the reply (maxTokens: 300 on the chat call).
-const PRIMER_NUM_CTX_RESERVED_TOKENS = 1_000;
-
-// Candidate num_ctx values for the primer call, smallest first -- the
-// smallest one that fits the whole document (plus the reserve above) wins,
-// since num_ctx costs real KV-cache memory on the Ollama host and must not
-// be set larger than needed. 32_768 is the ceiling because it's the real
-// native context window of the models this deployment actually runs (see
-// ingestion's model_caps.py: qwen2.5:32b-instruct and qwen3.6:35b both
-// resolve 32_000-class windows), and asking Ollama for more than a model's
-// own window is exactly the silent-truncation failure this guard exists to
-// prevent.
-//
-// Consequence, deliberate: a document whose text needs more than the
-// largest bucket gets NO primer at all (see resolvePrimerNumCtx). That is
-// the design spec's own required behavior (Phase 6: "num_ctx >=
-// estimated_tokens, skip and return None otherwise") -- no primer is
-// strictly better than a primer the model silently truncated its way into,
-// which returns plausible, confidently wrong text describing only the
-// document's first few pages and never raises, so no fail-open path ever
-// engages.
-const PRIMER_NUM_CTX_BUCKETS = [8_192, 16_384, 32_768] as const;
+// The primer now runs BEFORE /ingest (figures need document context during
+// parsing, not just /level) -- there is no parsed `doc` yet to size num_ctx
+// against. Per the design's explicit direction: don't reinvent a client-
+// side size heuristic (page-count, raw-byte-count) here -- fixed at this
+// deployment's real model ceiling (see the deleted PRIMER_NUM_CTX_BUCKETS'
+// own comment: 32_768 is qwen2.5:32b-instruct/qwen3.6:35b's real native
+// context window). A document whose real text exceeds this is an accepted,
+// explicit tradeoff -- it silently loses primer enrichment (Open WebUI's
+// own file-context handling may itself truncate or error; either way this
+// call's fail-open catch below absorbs it) rather than failing the job.
+const PRIMER_FIXED_NUM_CTX = 32_768;
 
 // How long a computed primer stays cached in Redis by content hash -- long
 // enough that a resubmitted/duplicate document within the same day never
@@ -129,52 +87,6 @@ async function maybeBackfillAreaPath(
     // eslint-disable-next-line no-console -- worker process logging, not app logging
     console.error(`Area-path backfill failed for ${areaPath}:`, error);
   }
-}
-
-/**
- * Total length of an ingested document's own TEXT content -- every block's
- * text plus every table cell's text (an ICD-shaped document can carry most
- * of its real content in tables, so blocks alone would badly under-count).
- * Cheap: a walk over data already in memory from the /ingest call, no
- * re-render and no second request.
- *
- * Deliberately typed structurally rather than against the generated
- * CanonicalDoc: this is a size estimate over whatever /ingest returned, and
- * every field is read defensively so an older/mocked doc shape (or one
- * without tables) simply contributes less, never throws.
- */
-function estimateDocumentTextChars(doc: {
-  blocks?: { text?: string }[];
-  tables?: { cells?: ({ text?: string } | null)[][] }[];
-}): number {
-  let chars = 0;
-  for (const block of doc.blocks ?? []) chars += block?.text?.length ?? 0;
-  for (const table of doc.tables ?? []) {
-    for (const row of table?.cells ?? []) {
-      for (const cell of row ?? []) chars += cell?.text?.length ?? 0;
-    }
-  }
-  return chars;
-}
-
-/**
- * The positive `num_ctx` guard the design spec requires for the primer
- * (Phase 6): the smallest PRIMER_NUM_CTX_BUCKETS value that is `>=` the
- * document's estimated token count plus PRIMER_NUM_CTX_RESERVED_TOKENS, or
- * `null` when no bucket is large enough -- in which case the caller must
- * skip the primer entirely rather than fire it.
- *
- * Why a POSITIVE check and not just the surrounding try/catch: with no
- * explicit num_ctx, Ollama silently truncates the request's input to its
- * own small default window and the model answers from the fragment it saw.
- * Nothing raises, so a fail-open catch can never notice -- the primer
- * simply reaches the leveling prompt confidently describing the first few
- * pages of an 80-page document as if they were the whole thing.
- */
-function resolvePrimerNumCtx(documentTextChars: number): number | null {
-  const estimatedTokens =
-    Math.ceil(documentTextChars / PRIMER_CONTEXT_CHARS_PER_TOKEN_ESTIMATE) + PRIMER_NUM_CTX_RESERVED_TOKENS;
-  return PRIMER_NUM_CTX_BUCKETS.find((bucket) => bucket >= estimatedTokens) ?? null;
 }
 
 export interface PipelineJobInput {
@@ -467,12 +379,124 @@ export async function runPipelineJob(
     // vision-captioning progress, parse summary) instead of the parse stage
     // being a silent black box.
     //
+    // Whole-document AI context primer (Phase 6c): gives leveling -- and,
+    // now that this block runs BEFORE /ingest, ingestion's own figure-vision
+    // captioning during parsing too -- a short, model-authored orientation
+    // (document type/purpose, the system it specifies, its domain phrasing
+    // conventions) so per-branch/per-figure analysis isn't starting cold on
+    // an unfamiliar document. SURVEY-only -- BASELINE never calls an LLM at
+    // all (see defaultLlmModel's own doc comment above), so computing this
+    // for a BASELINE job would only pay real upload/poll/chat cost for a
+    // result ingestion's own baseline branch (main.py's /level route) never
+    // reads.
+    //
+    // REQUIRES an Open WebUI-backed LLM_BASE_URL to work at all: the whole
+    // mechanism is built on Open WebUI's own file-upload API
+    // (POST/DELETE /api/v1/files/, plus the `files` chat extension --
+    // openwebui.client.ts), which raw Ollama does not implement. Pointed at
+    // raw Ollama (which IS this repo's k8s default -- see
+    // k8s/01-configmap.yaml's LLM_BASE_URL) every upload attempt fails, so
+    // the primer fails on every job and primerContext simply stays
+    // undefined. That degradation is intentional and harmless, but it is
+    // NOT silent any more -- see the catch block below.
+    //
+    // Two gates, both of which just leave primerContext undefined (/level's
+    // exact pre-Phase-6c behavior) when they don't pass:
+    //   1. SURVEY mode,
+    //   2. both optional deps actually wired.
+    // No document-size gate any more -- see PRIMER_FIXED_NUM_CTX's own
+    // comment above for why (there is no parsed `doc` yet at this point to
+    // size against, and per the design's explicit direction, a client-side
+    // size heuristic isn't worth reinventing here).
+    // Cached by content hash (model included in the key: the same
+    // document primed under a different model could read differently) so a
+    // resubmitted/duplicate document never re-pays the upload+chat cost.
+    // Fail-open, same convention as linkTypeCatalog below -- a primer
+    // failure (upload down, stuck/failed processing, malformed chat
+    // response) must never block or fail the job; it only means leveling
+    // proceeds without this one optional orientation hint, same as it
+    // always has.
+    let primerContext: string | undefined;
+    if (job.mode === 'survey' && deps.openWebUiClient && deps.primerCacheRedis) {
+      const openWebUiClient = deps.openWebUiClient;
+      const primerCacheRedis = deps.primerCacheRedis;
+      try {
+        const contentHash = crypto.createHash('sha256').update(job.fileBuffer).digest('hex');
+        const cacheKey = `primer:${model}:${contentHash}`;
+        const cached = await primerCacheRedis.get(cacheKey);
+        if (cached !== null) {
+          primerContext = cached;
+        } else {
+          const fileId = await openWebUiClient.uploadFile(job.fileBuffer, job.filename);
+          try {
+            const processed = await openWebUiClient.pollFileProcessed(fileId, 60_000);
+            if (processed) {
+              const result = await openWebUiClient.chat(
+                [
+                  {
+                    role: 'user',
+                    content:
+                      'Read the attached document in full. In 2-3 short sentences, describe: the ' +
+                      'document type and purpose, the system it specifies (if any), and the domain ' +
+                      "conventions or phrasing style it uses. Do not list sections or definitions.",
+                  },
+                ],
+                {
+                  files: [{ type: 'file', id: fileId }],
+                  // Bounds worst-case latency AND output size -- same
+                  // "structured extraction, not creative writing" reasoning
+                  // OpenWebUiClient.vision()'s own maxTokens/think:false
+                  // already applies to figure captions, here applied to a
+                  // one-shot document-orientation summary. Without this, a
+                  // reasoning-capable model can burn the whole call on
+                  // hidden chain-of-thought (vision()'s own confirmed live
+                  // failure mode) or simply ignore "2-3 short sentences" and
+                  // produce a reply large enough to blow past /level's own
+                  // query-string size limit (see PRIMER_CONTEXT_MAX_CHARS'
+                  // own comment) -- this cap plus that clamp are two
+                  // independent backstops against the same real risk.
+                  maxTokens: 300,
+                  think: false,
+                  // Fixed at PRIMER_FIXED_NUM_CTX (see its own comment
+                  // above for why) -- passed explicitly because Ollama
+                  // otherwise runs at its own small default window
+                  // regardless of prompt size (see LlmChatOptions.numCtx)
+                  // and truncates the input with no error at all.
+                  numCtx: PRIMER_FIXED_NUM_CTX,
+                },
+              );
+              primerContext = result.content?.trim().slice(0, PRIMER_CONTEXT_MAX_CHARS) || undefined;
+              if (primerContext) {
+                await primerCacheRedis.set(cacheKey, primerContext, 'EX', PRIMER_CONTEXT_CACHE_TTL_SECONDS);
+              }
+            }
+          } finally {
+            await openWebUiClient.deleteFile(fileId);
+          }
+        }
+      } catch (error) {
+        // Fail-open, same convention as linkTypeCatalog below -- a primer
+        // failure must never block or fail the job.
+        primerContext = undefined;
+        // ...but it must not be INVISIBLE either. A systematically-failing
+        // primer (most likely cause by far: LLM_BASE_URL pointing at raw
+        // Ollama, which has no /api/v1/files/ endpoint at all -- see this
+        // block's own comment above and k8s/01-configmap.yaml's default)
+        // otherwise fails on every job forever with zero signal that the
+        // capability isn't working. Logged with the job id, same
+        // console.error convention every other fail-open path in this file
+        // already uses.
+        // eslint-disable-next-line no-console -- worker process logging, not app logging
+        console.error(`Whole-document primer failed for job ${job.id} (leveling proceeds without it):`, error);
+      }
+    }
+
     // Runs concurrently with the area-path backfill check (see
     // maybeBackfillAreaPath's own doc comment) -- an independent concern
     // with no data dependency on ingest, so there's no reason to pay its
     // cost serially on top of /ingest's own wall-clock time.
     const [doc] = await Promise.all([
-      deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id),
+      deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id, primerContext),
       maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential),
     ]);
     // Captions are already here -- no ingestion/`/level` change needed.
@@ -526,128 +550,6 @@ export async function runPipelineJob(
     linkTypeCatalog = linkTypeCatalog.filter(
       (t) => t.referenceName !== 'System.LinkTypes.Hierarchy-Forward' && t.referenceName !== 'System.LinkTypes.Hierarchy-Reverse',
     );
-
-    // Whole-document AI context primer (Phase 6c): gives leveling a short,
-    // model-authored orientation (document type/purpose, the system it
-    // specifies, its domain phrasing conventions) before infer_hierarchy/
-    // generate_requirements ever run, so per-branch analysis isn't starting
-    // cold on an unfamiliar document. SURVEY-only -- BASELINE never calls an
-    // LLM at all (see defaultLlmModel's own doc comment above), so computing
-    // this for a BASELINE job would only pay real upload/poll/chat cost for
-    // a result ingestion's own baseline branch (main.py's /level route)
-    // never reads.
-    //
-    // REQUIRES an Open WebUI-backed LLM_BASE_URL to work at all: the whole
-    // mechanism is built on Open WebUI's own file-upload API
-    // (POST/DELETE /api/v1/files/, plus the `files` chat extension --
-    // openwebui.client.ts), which raw Ollama does not implement. Pointed at
-    // raw Ollama (which IS this repo's k8s default -- see
-    // k8s/01-configmap.yaml's LLM_BASE_URL) every upload attempt fails, so
-    // the primer fails on every job and primerContext simply stays
-    // undefined. That degradation is intentional and harmless, but it is
-    // NOT silent any more -- see the catch block below.
-    //
-    // Three gates, all of which just leave primerContext undefined
-    // (/level's exact pre-Phase-6c behavior) when they don't pass:
-    //   1. enough real TEXT to be worth priming at all
-    //      (PRIMER_CONTEXT_MIN_DOCUMENT_TEXT_CHARS, measured on the
-    //      already-ingested `doc` -- NOT on raw file bytes),
-    //   2. a safe num_ctx exists that actually covers the document
-    //      (resolvePrimerNumCtx -- the spec's mandatory positive guard
-    //      against silent input truncation),
-    //   3. both optional deps actually wired.
-    // Cached by content hash (model included in the key: the same
-    // document primed under a different model could read differently) so a
-    // resubmitted/duplicate document never re-pays the upload+chat cost.
-    // Fail-open, same convention as linkTypeCatalog just above -- a primer
-    // failure (upload down, stuck/failed processing, malformed chat
-    // response) must never block or fail the job; it only means leveling
-    // proceeds without this one optional orientation hint, same as it
-    // always has.
-    const primerDocumentTextChars = estimateDocumentTextChars(doc);
-    const primerNumCtx = resolvePrimerNumCtx(primerDocumentTextChars);
-    let primerContext: string | undefined;
-    if (
-      job.mode === 'survey' &&
-      primerDocumentTextChars >= PRIMER_CONTEXT_MIN_DOCUMENT_TEXT_CHARS &&
-      primerNumCtx !== null &&
-      deps.openWebUiClient &&
-      deps.primerCacheRedis
-    ) {
-      const openWebUiClient = deps.openWebUiClient;
-      const primerCacheRedis = deps.primerCacheRedis;
-      try {
-        const contentHash = crypto.createHash('sha256').update(job.fileBuffer).digest('hex');
-        const cacheKey = `primer:${model}:${contentHash}`;
-        const cached = await primerCacheRedis.get(cacheKey);
-        if (cached !== null) {
-          primerContext = cached;
-        } else {
-          const fileId = await openWebUiClient.uploadFile(job.fileBuffer, job.filename);
-          try {
-            const processed = await openWebUiClient.pollFileProcessed(fileId, 60_000);
-            if (processed) {
-              const result = await openWebUiClient.chat(
-                [
-                  {
-                    role: 'user',
-                    content:
-                      'Read the attached document in full. In 2-3 short sentences, describe: the ' +
-                      'document type and purpose, the system it specifies (if any), and the domain ' +
-                      "conventions or phrasing style it uses. Do not list sections or definitions.",
-                  },
-                ],
-                {
-                  files: [{ type: 'file', id: fileId }],
-                  // Bounds worst-case latency AND output size -- same
-                  // "structured extraction, not creative writing" reasoning
-                  // OpenWebUiClient.vision()'s own maxTokens/think:false
-                  // already applies to figure captions, here applied to a
-                  // one-shot document-orientation summary. Without this, a
-                  // reasoning-capable model can burn the whole call on
-                  // hidden chain-of-thought (vision()'s own confirmed live
-                  // failure mode) or simply ignore "2-3 short sentences" and
-                  // produce a reply large enough to blow past /level's own
-                  // query-string size limit (see PRIMER_CONTEXT_MAX_CHARS'
-                  // own comment) -- this cap plus that clamp are two
-                  // independent backstops against the same real risk.
-                  maxTokens: 300,
-                  think: false,
-                  // The spec's mandatory positive num_ctx guard, resolved
-                  // above -- non-null here by this block's own gate, and
-                  // large enough to hold the whole document plus the
-                  // reserve. Passed explicitly because Ollama otherwise
-                  // runs at its own small default window regardless of
-                  // prompt size (see LlmChatOptions.numCtx) and truncates
-                  // the input with no error at all.
-                  numCtx: primerNumCtx,
-                },
-              );
-              primerContext = result.content?.trim().slice(0, PRIMER_CONTEXT_MAX_CHARS) || undefined;
-              if (primerContext) {
-                await primerCacheRedis.set(cacheKey, primerContext, 'EX', PRIMER_CONTEXT_CACHE_TTL_SECONDS);
-              }
-            }
-          } finally {
-            await openWebUiClient.deleteFile(fileId);
-          }
-        }
-      } catch (error) {
-        // Fail-open, same convention as linkTypeCatalog above -- a primer
-        // failure must never block or fail the job.
-        primerContext = undefined;
-        // ...but it must not be INVISIBLE either. A systematically-failing
-        // primer (most likely cause by far: LLM_BASE_URL pointing at raw
-        // Ollama, which has no /api/v1/files/ endpoint at all -- see this
-        // block's own comment above and k8s/01-configmap.yaml's default)
-        // otherwise fails on every job forever with zero signal that the
-        // capability isn't working. Logged with the job id, same
-        // console.error convention every other fail-open path in this file
-        // already uses.
-        // eslint-disable-next-line no-console -- worker process logging, not app logging
-        console.error(`Whole-document primer failed for job ${job.id} (leveling proceeds without it):`, error);
-      }
-    }
 
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
     // job.userId (KB scope), NOT job.areaPath (ADO write-back destination --

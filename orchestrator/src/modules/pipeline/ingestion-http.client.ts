@@ -105,6 +105,13 @@ export class IngestionHttpClient {
     // narration already uses, instead of the parse stage being a total
     // black box for however long figure captioning takes.
     jobId?: string,
+    // Whole-document AI context primer (now computed BEFORE /ingest, see
+    // pipeline.worker.ts) -- threaded through so figure vision calls during
+    // parsing can judge significance relative to the whole document, not
+    // just in visual isolation. Optional/omitted for every call site
+    // predating this field (e.g. /jobs/preview), matching jobId's own
+    // backward-compat convention above.
+    primerContext?: string,
   ): Promise<CanonicalDoc> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
@@ -114,6 +121,9 @@ export class IngestionHttpClient {
     }
     if (jobId) {
       params.set('job_id', jobId);
+    }
+    if (primerContext) {
+      params.set('primer_context', primerContext);
     }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
     const response = await fetch(url, { method: 'POST', body: form, dispatcher: this.longRunningAgent });

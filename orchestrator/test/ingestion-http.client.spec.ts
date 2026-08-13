@@ -91,6 +91,30 @@ describe('IngestionHttpClient', () => {
     expect(url).toBe('http://ingestion.internal/ingest?mode=survey');
   });
 
+  it('forwards primerContext as a primer_context query param when provided', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => MINIMAL_DOC });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+
+    await client.ingest(Buffer.from('file'), 'doc.pdf', false, 'survey', 'job-1', 'This is an avionics ICD.');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    // URLSearchParams encodes spaces as `+`, not `%20` -- comparing via
+    // encodeURIComponent (which produces `%20`) would never match a real
+    // URLSearchParams-built query string. Parsed the same way the sibling
+    // level() primer_context test above (:223) already does.
+    expect(new URL(url).searchParams.get('primer_context')).toBe('This is an avionics ICD.');
+  });
+
+  it('omits primer_context from the query string when not provided -- unchanged from pre-Task-4 behavior', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => MINIMAL_DOC });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+
+    await client.ingest(Buffer.from('file'), 'doc.pdf', false, 'survey', 'job-1');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).not.toContain('primer_context');
+  });
+
   it('throws on a non-ok /ingest response', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 422 });
     const client = new IngestionHttpClient('http://ingestion.internal');

@@ -64,7 +64,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1');
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined);
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
   });
@@ -1550,17 +1550,11 @@ describe('runPipelineJob', () => {
   });
 
   describe('whole-document primer (Phase 6c)', () => {
-    // The gate is on the INGESTED DOCUMENT's own text length, not on file
-    // bytes (whole-branch review Finding 3): a PDF's byte size is dominated
-    // by fonts/images, so it was a wildly inaccurate proxy for "would
-    // ingestion's own fits_whole_document gate skip this anyway".
-    // 30_000 characters clears PRIMER_CONTEXT_MIN_DOCUMENT_TEXT_CHARS
-    // (24_000) and needs ~8_500 tokens with the reserve, so it resolves the
-    // 16_384 num_ctx bucket.
+    // No document-size gate any more (Task 4) -- bigDoc/bigFileBuffer are
+    // kept only as a realistic fixture for tests that don't care about
+    // size, and because the upload call and the cache key are still keyed
+    // on the real file.
     const bigDoc = { blocks: [{ id: 'b0', text: 'a'.repeat(30_000) }] };
-    const expectedNumCtx = 16_384;
-    // File bytes are now irrelevant to the gate -- kept only because the
-    // upload call and the cache key are still keyed on the real file.
     const bigFileBuffer = Buffer.alloc(30_000, 'a');
 
     beforeEach(() => {
@@ -1683,36 +1677,6 @@ describe('runPipelineJob', () => {
       );
     });
 
-    it('never attempts the primer for a document whose ingested TEXT is under the minimum, even when the FILE itself is large -- the gate is text length, not file bytes', async () => {
-      // Whole-branch review Finding 3: this is the image-heavy-PDF case --
-      // a big file (fonts/images dominate the bytes) carrying very little
-      // real text. The old byte-size gate fired the primer here, paying the
-      // full upload+poll+chat cost for a document ingestion's own
-      // fits_whole_document gate would analyze in ONE call, where
-      // primerContext is discarded by design.
-      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0', text: 'A short spec.' }] });
-
-      await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.alloc(5_000_000, 'a'), filename: 'x.pdf' },
-        {
-          ingestionClient: fakeIngestionClient as any,
-          dryRunService: fakeDryRunService as any,
-          idempotencyService: fakeIdempotencyService as any,
-          prisma: fakePrisma as any,
-          jobEventsPublisher: fakeJobEventsPublisher as any,
-          mcpClient: fakeMcpClient as any,
-          backfillService: fakeBackfillService as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
-          defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
-          primerCacheRedis: fakePrimerCacheRedis as any,
-        },
-      );
-
-      expect(fakePrimerCacheRedis.get).not.toHaveBeenCalled();
-      expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
-    });
-
     it('clamps an overly long chat reply to PRIMER_CONTEXT_MAX_CHARS before threading it into level() -- a verbose reply must never blow past /level\'s own query-string size limit', async () => {
       // Regression guard: primerContext is threaded into /level as a URL
       // query param (ingestion-http.client.ts) -- an unclamped reply here
@@ -1779,41 +1743,6 @@ describe('runPipelineJob', () => {
       );
     });
 
-    it('attempts the primer for a document that is SMALL in file bytes but large in ingested text -- the inverse of the byte-size proxy bug', async () => {
-      // Whole-branch review Finding 3, other direction: a compact,
-      // text-dense file (e.g. a .txt/.md or an efficiently-compressed PDF)
-      // whose real content is far too large for one analysis call, which the
-      // old 20_000-BYTE gate skipped outright -- exactly the case the primer
-      // exists for.
-      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
-      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'A dense avionics ICD.' });
-      fakePrimerCacheRedis.get.mockResolvedValue(null);
-      const tinyFileBuffer = Buffer.from('tiny-on-disk');
-
-      await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: tinyFileBuffer, filename: 'x.pdf' },
-        {
-          ingestionClient: fakeIngestionClient as any,
-          dryRunService: fakeDryRunService as any,
-          idempotencyService: fakeIdempotencyService as any,
-          prisma: fakePrisma as any,
-          jobEventsPublisher: fakeJobEventsPublisher as any,
-          mcpClient: fakeMcpClient as any,
-          backfillService: fakeBackfillService as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
-          defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
-          primerCacheRedis: fakePrimerCacheRedis as any,
-        },
-      );
-
-      expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(tinyFileBuffer, 'x.pdf');
-      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'A dense avionics ICD.',
-      );
-    });
-
     it('counts table cell text toward the gate -- a table-dominated ICD carries most of its content outside blocks', async () => {
       fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
@@ -1846,75 +1775,6 @@ describe('runPipelineJob', () => {
       );
 
       expect(fakeOpenWebUiClient.chat).toHaveBeenCalled();
-    });
-
-    it('passes an explicit numCtx large enough for the whole document on the primer chat call', async () => {
-      // Whole-branch review Finding 4 / design spec Phase 6's mandatory
-      // positive num_ctx guard: without an explicit num_ctx, Ollama runs at
-      // its own small default window, silently truncates the uploaded
-      // document, and the model answers -- plausibly and confidently --
-      // about only the first few pages. Nothing raises, so the surrounding
-      // fail-open catch can never detect it.
-      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
-      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'A short primer.' });
-      fakePrimerCacheRedis.get.mockResolvedValue(null);
-
-      await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
-        {
-          ingestionClient: fakeIngestionClient as any,
-          dryRunService: fakeDryRunService as any,
-          idempotencyService: fakeIdempotencyService as any,
-          prisma: fakePrisma as any,
-          jobEventsPublisher: fakeJobEventsPublisher as any,
-          mcpClient: fakeMcpClient as any,
-          backfillService: fakeBackfillService as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
-          defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
-          primerCacheRedis: fakePrimerCacheRedis as any,
-        },
-      );
-
-      const chatOptions = fakeOpenWebUiClient.chat.mock.calls[0][1];
-      // The smallest bucket that covers 30_000 chars (~7_500 tokens) plus
-      // the 1_000-token reserve -- not simply the largest available.
-      expect(chatOptions.numCtx).toBe(expectedNumCtx);
-      expect(chatOptions.numCtx).toBeGreaterThanOrEqual(30_000 / 4);
-    });
-
-    it('skips the primer entirely (never calls chat) when no safe numCtx can cover the document', async () => {
-      // Same finding, the skip half: a document larger than the biggest
-      // num_ctx this deployment's models can actually run must get NO
-      // primer at all. A truncated primer is worse than no primer -- it is
-      // confidently wrong and raises nothing.
-      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0', text: 'a'.repeat(1_000_000) }] });
-      fakePrimerCacheRedis.get.mockResolvedValue(null);
-
-      await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
-        {
-          ingestionClient: fakeIngestionClient as any,
-          dryRunService: fakeDryRunService as any,
-          idempotencyService: fakeIdempotencyService as any,
-          prisma: fakePrisma as any,
-          jobEventsPublisher: fakeJobEventsPublisher as any,
-          mcpClient: fakeMcpClient as any,
-          backfillService: fakeBackfillService as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
-          defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
-          primerCacheRedis: fakePrimerCacheRedis as any,
-        },
-      );
-
-      expect(fakeOpenWebUiClient.chat).not.toHaveBeenCalled();
-      expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
-      expect(fakePrimerCacheRedis.get).not.toHaveBeenCalled();
-      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        expect.anything(), null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
-      );
     });
 
     it('logs the primer failure (with the job id) instead of swallowing it silently', async () => {
@@ -1959,6 +1819,141 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
         bigDoc, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
       );
+    });
+
+    it('attempts the primer unconditionally for a SURVEY job -- no document-size gate anymore', async () => {
+      // A TINY doc -- the old gate would have skipped the primer for this
+      // (well under PRIMER_CONTEXT_MIN_DOCUMENT_TEXT_CHARS). Deliberately NOT
+      // using this block's own bigDoc/bigFileBuffer fixtures -- the whole
+      // point of this test is that document/file size no longer matters at
+      // all.
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0', text: 'x' }] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'This is an avionics ICD.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalled();
+      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+        { blocks: [{ id: 'b0', text: 'x' }] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
+      );
+    });
+
+    it('computes the primer BEFORE calling ingestionClient.ingest -- figures need it during parsing', async () => {
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'Primer text.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      const callOrder: string[] = [];
+      fakeOpenWebUiClient.uploadFile.mockImplementation(async () => {
+        callOrder.push('primer-upload');
+        return 'file-1';
+      });
+      fakeIngestionClient.ingest.mockImplementation(async () => {
+        callOrder.push('ingest');
+        return { blocks: [] };
+      });
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(callOrder).toEqual(['primer-upload', 'ingest']);
+    });
+
+    it('passes the SAME primerContext value to both ingestionClient.ingest and ingestionClient.level -- computed once, not twice', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'Primer text.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      const ingestPrimerArg = fakeIngestionClient.ingest.mock.calls[0][5];
+      const levelPrimerArg = fakeIngestionClient.level.mock.calls[0][7];
+      expect(ingestPrimerArg).toBe('Primer text.');
+      expect(levelPrimerArg).toBe('Primer text.');
+    });
+
+    it('passes a fixed, generous numCtx on the primer chat call -- no per-document sizing is possible before /ingest has run', async () => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'Primer text.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeOpenWebUiClient.chat.mock.calls[0][1]).toEqual(expect.objectContaining({ numCtx: 32_768 }));
     });
   });
 });
