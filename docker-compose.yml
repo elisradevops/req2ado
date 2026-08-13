@@ -62,18 +62,16 @@ services:
     env_file: .env
     environment:
       PORT: 4100
-      # ADO_CA_CERT/the Cato CA bundle mount were REMOVED here (were
-      # present, pointed at .certs/cato-ca-bundle.pem) -- only relevant
-      # behind the office's Cato Networks TLS-inspecting proxy, AND that
-      # bundle's root cert expired 2025-10-29 regardless. buildHttpClient
-      # (realAdo.ts) trusts ONLY the exact CA this path points to when set
-      # (never additive to the system trust store) -- with an unreachable/
-      # expired CA configured, every real ADO call failed TLS entirely
-      # ("unable to get local issuer certificate"), even off the Cato
-      # network where dev.azure.com's real public-CA cert would otherwise
-      # validate fine via the default trust store. Re-add ADO_CA_CERT
-      # (pointed at a CURRENT cert bundle) only if back on a network that
-      # actually intercepts this traffic.
+      # Re-added 2026-08-13: back on the Cato Networks TLS-inspecting proxy
+      # network -- dev.azure.com's real leaf cert now chains through a
+      # rotated Cato intermediate (Cato-Networks-Server-tlvcatod8a, valid to
+      # 2027-07-09) that the container's default trust store never sees on
+      # its own. .certs/cato-ca-bundle.pem was refreshed from the live
+      # handshake (the old bundle's intermediate had expired 2025-10-29).
+      # buildHttpClient (realAdo.ts) trusts ONLY this exact CA when set --
+      # remove again if this stops being the deployment network.
+    volumes:
+      - ./.certs:/app/.certs:ro
     ports:
       - "4100:4100"
 
@@ -139,16 +137,16 @@ services:
       # Frontend is served on its own origin/port (4082) below, not
       # same-origin behind a reverse proxy — CORS must be enabled for it.
       CORS_ORIGIN: http://localhost:4082
-      # NODE_EXTRA_CA_CERTS/the Cato CA bundle mount were REMOVED here --
-      # only relevant behind the office's Cato Networks TLS-inspecting proxy
-      # (Cato's client installs its root CA into the host's system keychain;
-      # containers don't see it on their own without this). NODE_EXTRA_CA_CERTS
-      # is additive to Node's default trust store, so it was harmless off
-      # that network -- but the bundle's root cert also expired 2025-10-29,
-      # so it's stale either way. Re-add (pointed at a CURRENT bundle) only
-      # if back on a network that actually intercepts this traffic.
+      # Re-added 2026-08-13, same reasoning as mcp-ado-server above -- back
+      # on the Cato-intercepting network, and the bundle is now current
+      # (see .certs/cato-ca-bundle.pem). NODE_EXTRA_CA_CERTS is additive to
+      # Node's default trust store (unlike mcp-ado-server's ADO_CA_CERT),
+      # so this stays harmless if the container ever runs off that network.
+      NODE_EXTRA_CA_CERTS: /app/.certs/cato-ca-bundle.pem
     command: ["node", "dist/main.js"]
     <<: *app-logging
+    volumes:
+      - ./.certs:/app/.certs:ro
     ports:
       - "3001:3001"
     depends_on:
@@ -171,8 +169,13 @@ services:
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://req2ado:req2ado@postgres:5432/req2ado
       INGESTION_BASE_URL: http://ingestion:8000
+      # Same reasoning as orchestrator above -- pipeline-worker makes real
+      # ADO write calls on job confirm and needs the same trust.
+      NODE_EXTRA_CA_CERTS: /app/.certs/cato-ca-bundle.pem
     command: ["node", "dist/modules/pipeline/pipeline-worker.main.js"]
     <<: *app-logging
+    volumes:
+      - ./.certs:/app/.certs:ro
     depends_on:
       postgres:
         condition: service_started
