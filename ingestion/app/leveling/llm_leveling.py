@@ -638,6 +638,23 @@ def _derive_section_label(blocks: list[Block], tables: list[Table] | None, figur
     return None
 
 
+def _branch_heading_labels(blocks: list[Block]) -> list[str]:
+    """Every heading-equivalent block's text within a branch -- real
+    HEADING-kind blocks AND numbered-paragraph pseudo-headings alike, via
+    the SAME predicate _split_into_branches itself trusts
+    (resolve_block_depth), not the narrower BlockKind.HEADING check
+    _derive_section_label uses for its OWN (deliberately first-only)
+    narration label. Prepends a docx-loader-synthesized number_label
+    (see docx_loader.py's heading-number synthesis) when present, so a
+    cross-referencing branch sees the same "3.2" a human reader would."""
+    labels = []
+    for block in blocks:
+        if resolve_block_depth(block)[0] is None:
+            continue
+        labels.append(f"{block.number_label} {block.text}" if block.number_label else block.text)
+    return labels
+
+
 def _build_document_outline(branches: list[list[Block]]) -> str:
     """Compact document outline (§3.3) -- section labels only, NOT raw
     section text -- threaded as `global_context` into every branch's
@@ -654,7 +671,8 @@ def _build_document_outline(branches: list[list[Block]]) -> str:
         "if you need another section's full text for a cross-reference):"
     ]
     for i, branch in enumerate(branches, start=1):
-        label = _derive_section_label(branch, None, None) or f"(section {i})"
+        labels = _branch_heading_labels(branch)
+        label = "; ".join(labels) if labels else f"(section {i})"
         lines.append(f"{i}. {label}")
     return "\n".join(lines)
 
@@ -1455,7 +1473,7 @@ def build_survey_tree(
     # sub-headings only raises the floor, the safe direction for a coverage
     # bug). Only meaningful on the single-branch path (whole_document=True
     # there); the multi-branch loop never uses it.
-    heading_count = sum(1 for b in doc.blocks if b.kind == BlockKind.HEADING)
+    heading_count = sum(1 for b in doc.blocks if resolve_block_depth(b)[0] is not None)
     # Confirmed real gap, live-tested: source TABLE rows that are pure group
     # labels (a dotted-ID row with no 'shall' statement, grouping 2+ child
     # rows -- e.g. "1.2.1 Display", "2.2.4 Media Buttons") never contributed
@@ -1688,7 +1706,7 @@ def build_survey_tree(
             # beats a qualitative reminder" finding to the multi-branch path,
             # which previously passed no topic_count here at all. See
             # orchestrator_llm_client._branch_topic_hint's own docstring.
-            branch_heading_count = sum(1 for b in branch_blocks if b.kind == BlockKind.HEADING)
+            branch_heading_count = sum(1 for b in branch_blocks if resolve_block_depth(b)[0] is not None)
             # Per-branch table-group floor -- mirrors branch_heading_count's
             # own per-branch scoping directly above. A single Table's rows
             # are never split across branches (branch_tables buckets whole

@@ -513,6 +513,118 @@ def test_build_survey_tree_passes_a_per_branch_topic_count_on_the_multi_branch_p
     assert all(call["topic_count"] == 1 for call in fake.calls)
 
 
+def test_build_document_outline_lists_every_heading_in_a_merged_branch(monkeypatch) -> None:
+    # Regression: _build_document_outline previously called
+    # _derive_section_label, which returns only a branch's FIRST heading --
+    # a branch merged from multiple original sections (the common case)
+    # lost every heading after the first.
+    _force_multi_branch(monkeypatch)
+    path = "outline_doc.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=2, text="Picture Modes", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="Three presets are supported.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert "Display" in fake.calls[0]["section_text"]
+    assert "Picture Modes" in fake.calls[0]["section_text"]
+
+
+def test_build_document_outline_lists_a_numbered_pseudo_heading(monkeypatch) -> None:
+    # Regression: a plain-paragraph numbered heading ("3.2 Backplane
+    # Power", no HEADING-kind block at all) was invisible to the outline
+    # even though resolve_block_depth (what _split_into_branches itself
+    # uses) already treats it as a real heading boundary.
+    _force_multi_branch(monkeypatch)
+    path = "numbered_doc.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="2 Audio", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert "1 Display" in fake.calls[0]["section_text"]
+    assert "2 Audio" in fake.calls[1]["section_text"]
+
+
+def test_topic_count_counts_numbered_pseudo_headings_on_the_whole_document_path() -> None:
+    # Same undercount bug, second site: heading_count (line ~1458) used
+    # BlockKind.HEADING directly, undercounting a numbered-paragraph spec's
+    # real section count on the whole-document (fits-in-one-call) path.
+    path = "numbered_whole_doc.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="2 Audio", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert fake.calls[0]["whole_document"] is True
+    assert fake.calls[0]["topic_count"] == 2
+
+
+def test_topic_count_counts_numbered_pseudo_headings_on_the_multi_branch_path(monkeypatch) -> None:
+    # Same undercount bug, per-branch site (line ~1691).
+    # A trailing second top-level heading ("2 Audio") is required so
+    # _split_into_branches itself produces >=2 real branches -- with only
+    # one top-level heading, build_survey_tree takes the single-branch
+    # windowing fallback (§4), which re-chunks per-block under
+    # _force_multi_branch's blanket huge-token mock and always yields one
+    # block per branch, defeating this test's actual point (two
+    # heading-equivalent blocks landing in the SAME branch).
+    _force_multi_branch(monkeypatch)
+    path = "numbered_multi_branch.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Resolution", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="2 Audio", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert fake.calls[0]["topic_count"] == 2  # "1 Display" AND "1.1 Resolution", not just 0
+
+
+def test_build_document_outline_shows_a_synthesized_number_label_when_present(monkeypatch) -> None:
+    # Component 2 (docx_loader Task 9) populates Block.number_label for a
+    # heading with no number of its own -- the outline must render it
+    # ("3.2 Backplane Power") so a cross-referencing branch can actually
+    # use the number a human would recognize, not just the bare title.
+    _force_multi_branch(monkeypatch)
+    path = "labeled_doc.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display",
+                  number_label="1", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio",
+                  number_label="2", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert "1 Display" in fake.calls[0]["section_text"]
+
+
 def _table_with_group(rows: list[list[str]], path: str = "survey_input.txt", offset: int = 0) -> Table:
     return Table(
         id="t0", cells=[[TableCell(text=c) for c in row] for row in rows],
