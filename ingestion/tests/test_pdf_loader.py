@@ -447,6 +447,90 @@ def _build_mixed_text_and_scanned_pdf_with_figure(tmp_path: Path) -> Path:
     return out_path
 
 
+# ---------------------------------------------------------------------------
+# Line-level paragraph segmentation + header/footer suppression (this Phase's
+# core rewrite): the old `text.split("\n\n")` never actually split anything
+# (pdfplumber's extract_text() never emits a blank line), so every page
+# became exactly ONE giant PARAGRAPH block. Real per-LINE segmentation
+# (extract_text_lines()) merged back into paragraphs via font-size/gap
+# heuristics fixes that -- but must ship together with header/footer
+# suppression, or a page footer (e.g. "2 | Page") becomes a spurious
+# top-level numbered-heading branch boundary on every single page.
+# ---------------------------------------------------------------------------
+
+
+def test_load_pdf_merges_wrapped_lines_into_one_paragraph_block() -> None:
+    # Regression: text.split("\n\n") never actually split anything (pdfplumber
+    # never emits a blank line), so a multi-line wrapped paragraph and every
+    # OTHER paragraph/heading on the page all became ONE giant PARAGRAPH block.
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "wrapped.pdf"
+        styles = getSampleStyleSheet()
+        doc = SimpleDocTemplate(str(path), pagesize=letter)
+        long_text = "This is a long sentence that must wrap across multiple lines when rendered at normal body width in a standard page layout. " * 3
+        doc.build([
+            Paragraph("Title Heading", styles["Title"]),
+            Paragraph(long_text, styles["BodyText"]),
+            Paragraph("A second, separate paragraph.", styles["BodyText"]),
+        ])
+        result = load_pdf(str(path))
+
+    paragraph_blocks = [b for b in result.blocks if b.kind == BlockKind.PARAGRAPH]
+    # Exactly 3 blocks: title, the wrapped long paragraph (merged back into
+    # ONE block despite spanning multiple lines), and the second paragraph --
+    # not 1 giant page-blob, and not one block PER LINE either.
+    assert len(paragraph_blocks) == 3
+    assert paragraph_blocks[1].text.startswith("This is a long sentence")
+    assert paragraph_blocks[1].text.count("This is a long sentence") == 3  # all 3 repeats intact, still one block
+
+
+def test_load_pdf_suppresses_a_running_header_recurring_across_most_pages() -> None:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "headered.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        for i in range(5):
+            c.drawString(72, 750, "MY DOCUMENT - REV A")  # running header, every page
+            c.drawString(72, 700, f"Body content unique to page {i}.")
+            c.showPage()
+        c.save()
+        result = load_pdf(str(path))
+
+    header_texts = [b.text for b in result.blocks if "REV A" in b.text]
+    assert header_texts == []  # suppressed on every page, not surviving as a PARAGRAPH block
+    body_texts = [b.text for b in result.blocks if "Body content unique" in b.text]
+    assert len(body_texts) == 5  # unique body content on every page is untouched
+
+
+def test_load_pdf_suppresses_a_footer_that_varies_only_by_page_number() -> None:
+    # Regression: exact-string matching alone would miss this -- the real
+    # footer text differs per page (embedded page number), same template.
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "footered.pdf"
+        c = rl_canvas.Canvas(str(path), pagesize=letter)
+        for i in range(5):
+            c.drawString(72, 700, f"Body content unique to page {i}.")
+            c.drawString(72, 40, f"{i + 1} | Page")  # footer, page number varies
+            c.showPage()
+        c.save()
+        result = load_pdf(str(path))
+
+    footer_texts = [b.text for b in result.blocks if "| Page" in b.text]
+    assert footer_texts == []
+
+
 def test_load_pdf_with_ocr_fallback_preserves_figures_from_text_pages(tmp_path: Path) -> None:
     # Regression: load_pdf_with_ocr_fallback's final CanonicalDoc construction
     # (ocr.py:103) omitted figures= entirely -- any PDF with at least one

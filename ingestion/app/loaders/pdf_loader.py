@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -59,6 +60,52 @@ _ALIGNMENT_CENTER_BAND = 0.2
 # `_cell_background_color`'s own docstring for why) -- the threshold
 # choice cannot fix that, only bound how eagerly it guesses.
 _BACKGROUND_OVERLAP_THRESHOLD = 0.8
+
+# Added near the top of pdf_loader.py, alongside the other tuned-threshold
+# constants (_ALIGNMENT_CENTER_BAND, _BACKGROUND_OVERLAP_THRESHOLD).
+#
+# Real, measured gap data (LVC Gateway ICD, an 11.04pt-body real government
+# ICD): within-paragraph wrapped-line gaps are ~3.4-3.6pt; a paragraph or
+# section break is 19pt+ or accompanied by a font-size change. 0.5x the
+# line's own font size comfortably covers the observed within-paragraph
+# band (5.5pt at 11pt) while rejecting every observed break (19pt+) with
+# wide margin -- not derived from a formal study, a defensible threshold
+# from real measurement, same convention as this file's other heuristic
+# constants.
+_PARAGRAPH_LINE_GAP_RATIO = 0.5
+
+# Two lines' font sizes are "the same" within this many points -- guards
+# against pdfplumber's own float sub-pixel noise (confirmed live: the same
+# nominal 11.04pt size can come back as 11.039999999999964 vs
+# 11.03999999999996 across different chars/lines of the same document).
+_PARAGRAPH_LINE_SIZE_TOLERANCE = 0.1
+
+# Real measured pattern (LVC Gateway ICD): a footer's literal text varies
+# ONLY in an embedded page number ("2 | P a ge", "4 | P a ge", same
+# template) -- exact-string matching alone misses every footer. Digits are
+# normalized to a placeholder before the recurrence check.
+_DIGIT_RUN_PATTERN = re.compile(r"\d+")
+
+# A header/footer must recur on at least this fraction of pages to be
+# suppressed -- verified real case (LVC Gateway ICD) recurs on 33/35
+# (~94%); a fraction well below that (2/3, ~67%) still safely excludes a
+# genuinely one-off repeated title appearing on just a couple of pages by
+# coincidence, while catching the real running-header/footer case with
+# comfortable margin.
+_BOILERPLATE_RECURRENCE_FRACTION = 0.6
+
+# A header/footer candidate must ALSO sit within this many points of its
+# own page's respective edge to actually be suppressed -- pure digit-
+# normalized text recurrence (above) cannot, on its own, distinguish a
+# genuine running header/footer from unique body content that happens to
+# differ only by an embedded page-correlated digit across pages (e.g. "Body
+# content unique to page 3." digit-normalizes and recurs exactly like a
+# real "3 | Page" footer would). A real header/footer is by definition
+# positioned in the page's own margin; unique body content is not. 72pt (1
+# inch) is the de facto standard PDF/document page margin -- reportlab's
+# own SimpleDocTemplate (used throughout this file's own test fixtures)
+# defaults to it -- not a value tuned to any single fixture.
+_HEADER_FOOTER_MARGIN_POINTS = 72.0
 
 
 def _fontname_is_bold(fontname: str | None) -> bool:
@@ -475,21 +522,100 @@ def _inside_any_bbox(obj: dict, bboxes: list[tuple[float, float, float, float]])
     return any(x0 <= ox0 and ox1 <= x1 and top <= otop and obottom <= bottom for x0, top, x1, bottom in bboxes)
 
 
-def _paragraph_tops(filtered_page, paragraphs: list[str]) -> list[float]:
-    """One vertical (`top`) position per paragraph, for merging with table
-    bboxes into real document order (§12). `extract_words()` and
-    `extract_text()` walk the SAME word stream in the SAME top-to-bottom,
-    left-to-right reading order -- consuming `len(paragraph.split())` words
-    per paragraph, in sequence, gives each paragraph's real top position
-    without fuzzy text re-matching against the already-extracted string."""
-    words = iter(filtered_page.extract_words())
-    tops: list[float] = []
-    for paragraph in paragraphs:
-        first_word = next(words, None)
-        tops.append(first_word["top"] if first_word else 0.0)
-        for _ in range(max(len(paragraph.split()) - 1, 0)):
-            next(words, None)
-    return tops
+def _line_size(line: dict) -> float:
+    """A line's representative font size -- the first non-empty char's
+    `size`, same 'first non-whitespace wins' convention this file's own
+    `_cell_text_color` already uses for the identical "no safe single
+    answer when characters could disagree" situation. A line with no
+    chars at all (shouldn't happen for a real extract_text_lines() result,
+    but degrade rather than raise) returns 0.0 -- a heading/body comparison
+    against 0.0 always fails the "is an outlier" test, which is the safe
+    direction (falls through to PARAGRAPH, never wrongly promoted)."""
+    for ch in line.get("chars", []):
+        if (ch.get("text") or "").strip():
+            return ch["size"]
+    return 0.0
+
+
+def _line_is_bold(line: dict) -> bool:
+    """Same 'first non-whitespace char wins' convention as `_line_size`,
+    reusing this file's existing `_fontname_is_bold`."""
+    for ch in line.get("chars", []):
+        if (ch.get("text") or "").strip():
+            return _fontname_is_bold(ch.get("fontname"))
+    return False
+
+
+def _lines_to_paragraphs(lines: list[dict]) -> list[tuple[str, float]]:
+    """Merges pdfplumber's per-LINE extract_text_lines() output back into
+    real paragraphs -- replaces the old, dead `text.split("\\n\\n")` (see
+    this module's own load_pdf docstring for why that never actually
+    split anything: extract_text() never emits a blank line, so every page
+    became exactly one PARAGRAPH block). Adjacent lines merge into ONE
+    paragraph when their font size matches (within
+    _PARAGRAPH_LINE_SIZE_TOLERANCE) and the vertical gap between them is
+    small relative to that size (_PARAGRAPH_LINE_GAP_RATIO) -- see this
+    file's own constants for the real measured data behind these
+    thresholds. Returns (paragraph_text, top) pairs -- `top` is the
+    FIRST line's own top, for the same real-document-order merge
+    load_pdf's main loop already does for tables/images."""
+    if not lines:
+        return []
+    paragraphs: list[tuple[str, float]] = []
+    current_texts = [lines[0]["text"]]
+    current_top = lines[0]["top"]
+    prev_bottom = lines[0]["bottom"]
+    prev_size = _line_size(lines[0])
+    for line in lines[1:]:
+        size = _line_size(line)
+        gap = line["top"] - prev_bottom
+        same_size = abs(size - prev_size) <= _PARAGRAPH_LINE_SIZE_TOLERANCE
+        small_gap = gap <= max(size, prev_size) * _PARAGRAPH_LINE_GAP_RATIO
+        if same_size and small_gap:
+            current_texts.append(line["text"])
+        else:
+            paragraphs.append((" ".join(current_texts), current_top))
+            current_texts = [line["text"]]
+            current_top = line["top"]
+        prev_bottom = line["bottom"]
+        prev_size = size
+    paragraphs.append((" ".join(current_texts), current_top))
+    return paragraphs
+
+
+def _normalize_digits(text: str) -> str:
+    return _DIGIT_RUN_PATTERN.sub("#", text)
+
+
+def _detect_boilerplate_templates(pages_first_lines: list[str], pages_last_lines: list[str]) -> tuple[set[str], set[str]]:
+    """Returns (header_templates, footer_templates) -- the set of
+    digit-normalized line templates that recur on at least
+    _BOILERPLATE_RECURRENCE_FRACTION of pages, checked separately for the
+    FIRST line (header candidate) and LAST line (footer candidate) of
+    each page. Empty strings (a page with no lines at all) are never
+    counted as boilerplate.
+
+    `count >= 2` is a required guard, not just the fraction threshold: with
+    a single-page document, `threshold = 1 * _BOILERPLATE_RECURRENCE_FRACTION`
+    is < 1, so a line that appears exactly once (trivially true for every
+    single-page doc) would satisfy `count >= threshold` on its own --
+    "recurs across pages" is meaningless with only one page to recur across.
+    Requiring at least 2 real occurrences before the fraction is even
+    considered closes that gap without changing behavior for any document
+    that actually has multiple pages (a real recurring header/footer's count
+    is always far above 2 in practice -- see _BOILERPLATE_RECURRENCE_FRACTION's
+    own docstring for the measured 33/35-page real case)."""
+    from collections import Counter
+
+    def _templates(lines: list[str]) -> set[str]:
+        normalized = [_normalize_digits(t) for t in lines if t]
+        if not normalized:
+            return set()
+        counts = Counter(normalized)
+        threshold = len(lines) * _BOILERPLATE_RECURRENCE_FRACTION
+        return {template for template, count in counts.items() if count >= 2 and count >= threshold}
+
+    return _templates(pages_first_lines), _templates(pages_last_lines)
 
 
 def load_pdf(
@@ -522,26 +648,79 @@ def load_pdf(
     figure_id = 0
 
     with pdfplumber.open(path) as pdf:
+        # First pass: every page's own lines (cheap -- no table/image work
+        # yet), collected once so header/footer recurrence can be checked
+        # across the WHOLE document before the real per-page build below
+        # decides what to keep. See _detect_boilerplate_templates' own
+        # docstring for why this must be a first pass, not decided
+        # page-by-page (a header/footer's own defining property is that it
+        # recurs ACROSS pages -- no single page's content can prove that).
+        all_pages_lines: list[list[dict]] = [page.extract_text_lines() for page in pdf.pages]
+        pages_first_lines = [lines[0]["text"] if lines else "" for lines in all_pages_lines]
+        pages_last_lines = [lines[-1]["text"] if lines else "" for lines in all_pages_lines]
+        header_templates, footer_templates = _detect_boilerplate_templates(pages_first_lines, pages_last_lines)
+
         for page_number, page in enumerate(pdf.pages, start=1):
             # §12/§13: table bboxes (page.find_tables()) drive BOTH fixes at
-            # once -- (a) filtering table-region chars out before
-            # extract_text() stops table cell text ALSO becoming a duplicate
-            # paragraph block (previously page.extract_text() and
+            # once -- (a) filtering table-region lines out before merging
+            # back into paragraphs stops table cell text ALSO becoming a
+            # duplicate paragraph block (previously page.extract_text() and
             # page.extract_tables() both read the same page unfiltered); (b)
             # each table's bbox top, merged by position against each
-            # paragraph's own top (_paragraph_tops), gives tables a real
-            # document-order slot instead of the previous (0,0) placeholder.
-            # text_only skips this (pdfplumber's dominant per-page cost) --
-            # see load_pdf's own docstring. found_tables/table_bboxes empty
-            # means filtered_page falls back to the unfiltered page below,
-            # same as a page with no tables at all.
+            # paragraph's own top (from _lines_to_paragraphs), gives tables a
+            # real document-order slot instead of the previous (0,0)
+            # placeholder. text_only skips this (pdfplumber's dominant
+            # per-page cost) -- see load_pdf's own docstring. found_tables/
+            # table_bboxes empty means every line on the page is kept, same
+            # as a page with no tables at all.
             found_tables = [] if text_only else page.find_tables()
             table_bboxes = [t.bbox for t in found_tables]
-            filtered_page = page.filter(lambda obj: not _inside_any_bbox(obj, table_bboxes)) if table_bboxes else page
 
-            text = filtered_page.extract_text() or ""
-            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-            tops = _paragraph_tops(filtered_page, paragraphs)
+            page_lines = all_pages_lines[page_number - 1]
+            if table_bboxes:
+                page_lines = [
+                    line
+                    for line in page_lines
+                    if not _inside_any_bbox(
+                        {"x0": line["x0"], "top": line["top"], "x1": line["x1"], "bottom": line["bottom"]}, table_bboxes
+                    )
+                ]
+
+            # Drop a line that's a confirmed recurring header (first line
+            # of the page) or footer (last line) template -- checked by
+            # POSITION (first/last of THIS page's own line list, matching
+            # how the recurrence pass above characterized candidates), not
+            # by re-scanning every line against both template sets. Without
+            # this, real per-line segmentation alone would make branching
+            # WORSE than before: a footer like "2 | Page" parses as a
+            # numbered heading via parse_numbering, becoming a spurious
+            # top-level branch boundary on every page (see this module's
+            # own header/footer suppression design notes).
+            #
+            # The margin check (_HEADER_FOOTER_MARGIN_POINTS) is a required
+            # second gate, not a redundant one: digit-normalized text
+            # recurrence alone cannot tell a genuine running header/footer
+            # apart from unique body content that happens to differ only by
+            # an embedded page-correlated digit (see that constant's own
+            # docstring). A real header/footer is by definition anchored in
+            # the page's own margin; real body content is not.
+            filtered_lines = list(page_lines)
+            if (
+                filtered_lines
+                and filtered_lines[0]["top"] <= _HEADER_FOOTER_MARGIN_POINTS
+                and _normalize_digits(filtered_lines[0]["text"]) in header_templates
+            ):
+                filtered_lines = filtered_lines[1:]
+            if (
+                filtered_lines
+                and filtered_lines[-1]["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS
+                and _normalize_digits(filtered_lines[-1]["text"]) in footer_templates
+            ):
+                filtered_lines = filtered_lines[:-1]
+
+            paragraphs_with_tops = _lines_to_paragraphs(filtered_lines)
+            paragraphs = [p for p, _ in paragraphs_with_tops]
+            tops = [t for _, t in paragraphs_with_tops]
 
             page_tables: list[Table] = []
             for found_table in found_tables:
