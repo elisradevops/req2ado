@@ -1,24 +1,82 @@
 from __future__ import annotations
 
 import base64
+import json
+from typing import NamedTuple
 
 import httpx
+from json_repair import repair_json
 
 _VISION_REQUEST_TIMEOUT_SECONDS = 300.0
 
-# A fixed, literal sentinel the model must return verbatim (nothing else)
-# when a figure has no real technical content -- lets the dropped-block
-# coverage check (llm_leveling.py) reliably skip these figures via an exact
-# string match instead of pattern-matching whichever free-form "nothing
-# here" sentence the model happens to produce. main.py translates this back
-# to human-readable copy before it reaches narration/the UI.
-NO_TECHNICAL_CONTENT_SENTINEL = "NO_TECHNICAL_CONTENT"
-_DESCRIBE_FIGURE_PROMPT = (
-    "Describe this figure or diagram in one or two sentences, focusing on any "
-    "technical content (components, connections, values, labeled parts). If "
-    f"the image contains no discernible technical content, respond with "
-    f"exactly the single word {NO_TECHNICAL_CONTENT_SENTINEL} and nothing else."
-)
+
+class FigureVisionResult(NamedTuple):
+    """Structured result of describe_figure -- replaces the old free-text
+    caption + hoped-for NO_TECHNICAL_CONTENT sentinel with schema-constrained
+    output. `significant=False` means "don't show this figure to the model
+    at all" (main.py's caller sets Figure.caption=None in that case, reusing
+    the existing caption=None -> omitted-from-context convention unchanged)."""
+
+    significant: bool
+    description: str
+
+
+_FIGURE_SIGNIFICANCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "significant": {
+            "type": "boolean",
+            "description": "True if this figure has real technical/informational content relevant to understanding the document; false for decorative images, logos, or blank/placeholder graphics.",
+        },
+        "description": {
+            "type": "string",
+            "description": "One or two sentences describing the figure's technical content (components, connections, values, labeled parts). Empty or minimal if not significant.",
+        },
+    },
+    "required": ["significant", "description"],
+}
+
+
+def _build_prompt(document_context: str | None) -> str:
+    base = (
+        "Describe this figure or diagram, focusing on any technical content "
+        "(components, connections, values, labeled parts). Judge whether it "
+        "has genuine informational content worth including, or whether it is "
+        "decorative (a logo, a colored placeholder block, a blank divider)."
+    )
+    if not document_context:
+        return base
+    return (
+        f"{base}\n\nContext about the document this figure appears in: "
+        f"{document_context}\n\nJudge significance relative to THIS document -- "
+        "a figure that's decorative in isolation but happens to be labeled "
+        "with document-relevant terminology should still be judged on its "
+        "own visual content, not on the surrounding context alone."
+    )
+
+
+def _parse_figure_response(raw: str) -> FigureVisionResult | None:
+    """Fail-open: any parse failure (malformed JSON, missing fields, wrong
+    types) returns None rather than raising -- a bad figure description
+    must never fail the whole SURVEY job. None is a DISTINCT outcome from a
+    genuinely parsed FigureVisionResult(significant=False, ...): the caller
+    (main.py's _describe_figure) must not cache a None result (unknown/
+    glitchy, self-heals on retry -- the exact protection the pre-existing
+    "never cache a blank result" test already guards), but SHOULD cache a
+    real significant=False verdict (a confident, deliberate answer, not an
+    ambiguous blank). Mirrors orchestrator_llm_client.py's own defensive
+    parse/repair convention (raw_decode first, json_repair as the last
+    resort) without importing that module's narrower, analyze_section-
+    specific positional tolerances."""
+    for attempt in (raw, None):
+        try:
+            parsed = json.loads(raw) if attempt is not None else repair_json(raw, return_objects=True)
+        except Exception:
+            continue
+        if isinstance(parsed, dict) and isinstance(parsed.get("significant"), bool):
+            description = parsed.get("description")
+            return FigureVisionResult(significant=parsed["significant"], description=description if isinstance(description, str) else "")
+    return None
 
 
 class OrchestratorVisionClient:
@@ -32,22 +90,26 @@ class OrchestratorVisionClient:
         self._bearer_token = bearer_token
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
+    def describe_figure(
+        self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None
+    ) -> FigureVisionResult | None:
         """`mime_type` (e.g. 'image/jpeg'), when supplied, tells the
         orchestrator's real content-type instead of its pre-existing
-        hardcoded 'image/png' default -- harmless for a docx-embedded PNG
-        figure (every existing caller omits it, unchanged behavior), but
-        needed for a directly-uploaded non-PNG image (see
-        app/loaders/image_loader.py)."""
+        hardcoded 'image/png' default. `document_context` (the whole-
+        document AI primer, see pipeline.worker.ts) lets significance be
+        judged relative to THIS document, not just in visual isolation --
+        omitted (None) produces a figure-only prompt, unchanged from before
+        this parameter existed."""
         with httpx.Client(transport=self._transport, timeout=_VISION_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/vision",
                 json={
-                    "prompt": _DESCRIBE_FIGURE_PROMPT,
+                    "prompt": _build_prompt(document_context),
                     "images": [base64.b64encode(image_bytes).decode("ascii")],
+                    "responseSchema": {"name": "figure_significance", "schema": _FIGURE_SIGNIFICANCE_SCHEMA},
                     **({"mimeType": mime_type} if mime_type else {}),
                 },
                 headers={"Authorization": f"Bearer {self._bearer_token}"},
             )
         response.raise_for_status()
-        return response.json()["description"]
+        return _parse_figure_response(response.json()["description"])
