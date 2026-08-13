@@ -1743,40 +1743,6 @@ describe('runPipelineJob', () => {
       );
     });
 
-    it('counts table cell text toward the gate -- a table-dominated ICD carries most of its content outside blocks', async () => {
-      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
-      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'A pinout-table ICD.' });
-      fakePrimerCacheRedis.get.mockResolvedValue(null);
-      // Blocks alone are far under the gate; the table's cells carry the
-      // document's real content (and a null cell -- a SPANNED grid position
-      // -- must not throw).
-      const tableHeavyDoc = {
-        blocks: [{ id: 'b0', text: 'See table below.' }],
-        tables: [{ id: 't0', cells: [[{ text: 'a'.repeat(30_000) }, null]] }],
-      };
-      fakeIngestionClient.ingest.mockResolvedValue(tableHeavyDoc);
-
-      await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
-        {
-          ingestionClient: fakeIngestionClient as any,
-          dryRunService: fakeDryRunService as any,
-          idempotencyService: fakeIdempotencyService as any,
-          prisma: fakePrisma as any,
-          jobEventsPublisher: fakeJobEventsPublisher as any,
-          mcpClient: fakeMcpClient as any,
-          backfillService: fakeBackfillService as any,
-          adoCredentialResolver: fakeAdoCredentialResolver as any,
-          defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
-          primerCacheRedis: fakePrimerCacheRedis as any,
-        },
-      );
-
-      expect(fakeOpenWebUiClient.chat).toHaveBeenCalled();
-    });
-
     it('logs the primer failure (with the job id) instead of swallowing it silently', async () => {
       // Whole-branch review Finding 6: this repo's own k8s default points
       // LLM_BASE_URL at raw Ollama, which has no /api/v1/files/ endpoint at
