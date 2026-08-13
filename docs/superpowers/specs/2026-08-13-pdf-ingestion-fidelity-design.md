@@ -11,10 +11,12 @@ Research against pdfplumber 0.11.10/pypdf 6.14.2 and six real public-domain
 documents (NASA SOHO ICD, NASA LVC Gateway ICD, a CubeSat ICD, NASA Systems
 Engineering Handbook, an IRS AcroForm, plus a synthetic reportlab fixture)
 surfaced a root-cause bug that invalidates naive fixes, several downstream
-consequences of that bug, and independently a genuine security/architecture
-violation in an early proposal for a second, unrelated capability (a
-whole-document AI context primer). Both are recorded here: the PDF fixes as
-committed work, the primer as a documented, explicitly contingent follow-on.
+consequences of that bug, and a security/architecture question in an early
+proposal for a second, unrelated capability (a whole-document AI context
+primer) that was resolved once the deployment's actual trust boundary was
+confirmed (fully on-prem, `LLM_TRUSTED_LOCAL=true`). All of it — PDF loader
+fixes, multi-column detection, and the AI context primer — is committed
+work in this spec.
 
 ## Root cause: PDF text never gets segmented past one block per page
 
@@ -82,21 +84,14 @@ and under a correct fix — this is why the bug shipped unnoticed.
 
 ## Non-goals
 
-- **Full multi-column support.** A synthetic reportlab 2-column PDF proved
-  the *technique* (x0-gap clustering + per-column crop) works, but 0 of 9
-  real sampled documents needed it, and a wrong column split interleaves
-  unrelated requirements into one block — worse than today's garbling. See
-  "Deferred: multi-column" below.
 - **Rotated pages.** Verified in pdfplumber's own source
   (`page.py`'s `_normalize_box`/`rotate_point`) that page rotation is
   already corrected internally before any bbox reaches a consumer. Not a
   gap; no task exists for it.
 - **AcroForm field extraction as body content.** Scoped down to a
   fail-loud marker only (see Phase 4) — see rationale there.
-- **The whole-document AI context primer as committed work.** Documented
-  below as a contingent follow-on, explicitly sequenced *after* this
-  spec's phases land and get re-measured — not built in this pass.
-- Any change to non-PDF loaders.
+- Any change to non-PDF loaders (except Phase 6's `build_survey_tree`
+  threading, which is format-agnostic by design — see Phase 6).
 
 This spec **reverses two non-goals** from the 2026-08-11 analyze-context-fidelity
 design ("header/footer text extraction — low value," "any change to
@@ -260,93 +255,74 @@ docx-loader precedent for "flag, don't silently drop, and don't
 over-engineer position for a rare case" (`altChunk`/OLE markers). Not
 woven into body reading order.
 
-## Deferred: multi-column
+## Phase 5: Multi-column detection
 
-Not built in this pass. The x0-coordinate gap-clustering + per-column
-crop technique is verified working on a synthetic 2-column fixture
-(correctly recovers left-column-then-right-column reading order), but has
-zero validation against a real document — 0 of 9 real public-domain
-documents sampled for this spec turned out to be genuinely multi-column.
-A false-positive column split is worse than today's garbling (it
-interleaves unrelated requirements' content into one block rather than
-merely reordering words within a still-recoverable line).
+**File:** `ingestion/app/loaders/pdf_loader.py`
 
-If picked up later: gate per-page, not per-document (a document can mix
-single- and multi-column pages); require a clean vertical whitespace band
-spanning most of the page's text height with zero words crossing it, not
-just the largest x0 gap; and carve out full-width elements (a table or
-figure spanning the "gutter" x-range is not a column boundary). Until a
-real multi-column corpus sample exists, consider having the detector only
-*flag* a suspected multi-column page (a `NOTE`/warning) rather than
-attempting an automatic split.
+The x0-coordinate gap-clustering + per-column crop technique is verified
+working on a synthetic 2-column fixture (correctly recovers
+left-column-then-right-column reading order), but has zero validation
+against a real document — 0 of 9 real public-domain documents sampled for
+this spec turned out to be genuinely multi-column. A false-positive column
+split is a real, worse-than-today failure mode: it interleaves unrelated
+requirements' content into one block, rather than merely reordering words
+within a still-recoverable line the way today's plain garbling does.
 
-## Testing
+Given no real corpus exists to validate an automatic split against, this
+phase ships the **conservative, flag-only** version, not automatic
+splitting:
 
-- Phase 0's own test must pin block *count* against a real multi-line,
-  multi-paragraph fixture (the exact gap that let the "\n\n" bug ship
-  silently — `len(doc.blocks) >= 1` proves nothing).
-- Real-excerpt fixtures from the documents already downloaded and verified
-  during this design's research (all public-domain/US-Government works,
-  freely redistributable): NASA SOHO ICD (SECTION-numbered headings,
-  running-header-free page-splitting also worth a fixture, cross-page
-  Table 3.4 continuation), NASA LVC Gateway ICD (digit-numbered headings,
-  running header on 33/35 pages, digit-varying footer), NASA Systems
-  Engineering Handbook (real outline/bookmarks, 41 entries), IRS SF-1199-A
-  (real AcroForm, 71 fields), a CubeSat ICD (ruling-line pinout tables, a
-  different real table style than the two ICDs above).
-- Golden-fixture regression check required: Phase 0/1's segmentation and
-  header/footer removal change per-block token counts, which can flip
-  `fits_whole_document` for borderline documents and change which
-  `build_survey_tree` code path fires. Run existing golden-fixture tests
-  (`tests/test_survey_golden.py`-equivalent) against the real-excerpt
-  fixtures above, not just the existing synthetic ones.
-- Verify `docx_pagination.py`'s `load_pdf(text_only=True)` consumer
-  (joins per-page block texts with `" "` in `_build_page_index`) against
-  header/footer removal specifically — LibreOffice-converted docx-to-PDF
-  carries the docx's own headers, so removal is likely a net alignment
-  improvement, but must be verified rather than assumed; `docx_pagination`
-  already has its own synthetic multi-block-page tests to extend, and
-  `settings.docx_page_alignment_enabled` is the existing kill switch if a
-  regression is found.
-- Fix the two independently-found bugs (`ocr.py`'s missing `figures=`,
-  `border_style="grid"` hardcoding) with their own regression tests,
-  each landing in the phase that would otherwise be blocked by or newly
-  expose them (OCR-figures fix stands alone; `border_style` fix lands in
-  Phase 3 alongside text-strategy tables).
+- Gate per-page, not per-document — a document can mix single- and
+  multi-column pages.
+- Require a clean vertical whitespace band spanning most of the page's
+  text height with zero words crossing it (not just the largest x0 gap —
+  a wide table column or a title page's label/value layout can produce a
+  large gap with no real column boundary, both confirmed as real false
+  candidates during this spec's research).
+- Carve out full-width elements explicitly — a table or figure spanning
+  the gutter x-range is not a column boundary and must not gate the
+  page as multi-column.
+- On a page that passes all three checks, emit a `BlockKind.NOTE` marker
+  flagging it as suspected multi-column (page number + the detected gap
+  band), rather than attempting an automatic split. Leave the page's
+  existing (garbled) extraction in place alongside the marker — the flag
+  is additive, not a replacement extraction path.
 
-## Contingent follow-on: whole-document AI context primer (not committed)
+Automatic column-splitting (actually reflowing left-then-right into
+correct reading order, not just flagging) is a natural second iteration
+once real flagged pages accumulate into an actual validation corpus — not
+built in this phase.
 
-Raised mid-design: read the whole document once, up front, to build
-richer "initial context" than deterministic heuristics alone can produce,
-feeding every branch's later analysis. The underlying need is real and
-already has a deterministic precedent in this codebase
+## Phase 6: Whole-document AI context primer
+
+Read the whole document once, up front, to build richer "initial context"
+than deterministic heuristics alone can produce, feeding every branch's
+later analysis. The underlying need is real and already has a
+deterministic precedent in this codebase
 (`_find_glossary_sections`/`_combine_global_context`, Task 11) — this
-section documents how an AI-authored version of that same idea should be
-shaped IF pursued, and why it is not scheduled as part of this spec's
-committed work.
+phase is an AI-authored version of that same idea, format-agnostic (all
+loaders, not PDF-specific), landing last so its measured value is judged
+against the Phase 0-5 baseline, not today's broken one.
 
-**Why not now**: this spec's Phase 0 fix alone means PDF's deterministic
-outline goes from `"1. (section 1)"` (today, real, verified) to a
-correctly-numbered real heading list — for free, no LLM call, no new
-failure surface. Evaluating an AI primer's added value against today's
-broken baseline would inflate its apparent benefit and credit an LLM for
-what is actually a data-pipeline bug fix. **Ship Phase 0+1 first,
-re-measure real documents, then decide whether a primer still earns its
-cost.**
+**Sequencing**: ship Phase 0+1 first and re-measure real documents before
+building this phase. This spec's Phase 0 fix alone means PDF's
+deterministic outline goes from `"1. (section 1)"` (today, real, verified)
+to a correctly-numbered real heading list — for free, no LLM call, no new
+failure surface. Building the primer against today's broken baseline
+would inflate its apparent value and credit an LLM for what is actually a
+data-pipeline bug fix.
 
-**If pursued, the shape must be:**
+**Shape:**
 
-- **Raw file upload to Open WebUI is an accepted, deliberate choice for
-  this deployment — not a policy violation.** `docs/architecture.md`'s
-  locked "redact-first" decision exists as defense against egress to a
-  third-party-hosted LLM backend. This system is not yet in production;
-  confirmed the intended posture is Open WebUI running fully within the
-  same trusted on-prem network as everything else (`LLM_TRUSTED_LOCAL=true`
-  for this deployment specifically — the template/k8s-configmap default of
-  `false` is a generic starting point, not this deployment's actual
-  value). Under that trust boundary, `POST /api/v1/files/` +
-  "Using Entire Document" mode is the mechanism, as originally proposed —
-  this closes the earlier objection.
+- **Raw file upload to Open WebUI is the mechanism.**
+  `docs/architecture.md`'s locked "redact-first" decision exists as
+  defense against egress to a third-party-hosted LLM backend. This system
+  is not yet in production; confirmed the intended posture is Open WebUI
+  running fully within the same trusted on-prem network as everything
+  else (`LLM_TRUSTED_LOCAL=true` for this deployment specifically — the
+  template/k8s-configmap default of `false` is a generic starting point,
+  not this deployment's actual value). Under that trust boundary,
+  `POST /api/v1/files/` + "Using Entire Document" mode is the mechanism.
   - Still required for hygiene, independent of trust boundary: explicitly
     `DELETE /api/v1/files/{id}` after the grounding chat completion
     returns, on every code path including error paths — Open WebUI does
@@ -382,7 +358,7 @@ cost.**
   system" refers to, requirement-phrasing style, intended readership — a
   short, capped addition to `global_context`, not a replacement for any
   of it.
-- **Cache by content hash.** The primer now runs in the orchestrator
+- **Cache by content hash.** The primer runs in the orchestrator
   (TypeScript), not `ingestion` (Python) — `llm_cache.py`'s Redis-backed,
   fail-open, 24h-TTL cache (keyed on `(operation, model, num_ctx, top_k,
   min_p, *parts)`) is a different service's module and can't be called
@@ -403,3 +379,54 @@ cost.**
   triggers a fail-open error path, since nothing raised. Requires an
   explicit check (`num_ctx >= estimated_tokens`, skip and return `None`
   otherwise) before firing, not just a try/except around the call.
+
+## Testing
+
+- Phase 0's own test must pin block *count* against a real multi-line,
+  multi-paragraph fixture (the exact gap that let the "\n\n" bug ship
+  silently — `len(doc.blocks) >= 1` proves nothing).
+- Real-excerpt fixtures from the documents already downloaded and verified
+  during this design's research (all public-domain/US-Government works,
+  freely redistributable): NASA SOHO ICD (SECTION-numbered headings,
+  running-header-free page-splitting also worth a fixture, cross-page
+  Table 3.4 continuation), NASA LVC Gateway ICD (digit-numbered headings,
+  running header on 33/35 pages, digit-varying footer), NASA Systems
+  Engineering Handbook (real outline/bookmarks, 41 entries), IRS SF-1199-A
+  (real AcroForm, 71 fields), a CubeSat ICD (ruling-line pinout tables, a
+  different real table style than the two ICDs above).
+- Golden-fixture regression check required: Phase 0/1's segmentation and
+  header/footer removal change per-block token counts, which can flip
+  `fits_whole_document` for borderline documents and change which
+  `build_survey_tree` code path fires. Run existing golden-fixture tests
+  (`tests/test_survey_golden.py`-equivalent) against the real-excerpt
+  fixtures above, not just the existing synthetic ones.
+- Verify `docx_pagination.py`'s `load_pdf(text_only=True)` consumer
+  (joins per-page block texts with `" "` in `_build_page_index`) against
+  header/footer removal specifically — LibreOffice-converted docx-to-PDF
+  carries the docx's own headers, so removal is likely a net alignment
+  improvement, but must be verified rather than assumed; `docx_pagination`
+  already has its own synthetic multi-block-page tests to extend, and
+  `settings.docx_page_alignment_enabled` is the existing kill switch if a
+  regression is found.
+- Fix the two independently-found bugs (`ocr.py`'s missing `figures=`,
+  `border_style="grid"` hardcoding) with their own regression tests,
+  each landing in the phase that would otherwise be blocked by or newly
+  expose them (OCR-figures fix stands alone; `border_style` fix lands in
+  Phase 3 alongside text-strategy tables).
+- Phase 5's flag-only detector needs both a positive fixture (a real
+  vertical-whitespace-band page → one `NOTE` marker) and negative
+  fixtures proving the two confirmed false-candidate shapes are excluded
+  (a wide table column, a title-page label/value layout) — a test that
+  only exercises the positive case would pass a detector that's still
+  wrong on the exact cases already found to be dangerous.
+- Phase 6 is orchestrator-side (TypeScript) — its tests belong with
+  `openwebui.client.spec.ts`'s existing conventions, not `ingestion`'s
+  pytest suite: mock the upload/status/chat-completion HTTP calls, and
+  explicitly test every fail-open path (upload failure, `failed` status,
+  status-poll timeout, malformed/unparseable primer response, missing
+  `num_ctx` guard tripping) resolves to `primer_context: None` reaching
+  `/level` — never an exception propagating out of the primer call itself.
+  Also test that `DELETE /api/v1/files/{id}` fires on the error paths,
+  not only the success path — a `try`/`finally` around the upload, not a
+  bare `try`/`except` that skips cleanup on a thrown error.
+
