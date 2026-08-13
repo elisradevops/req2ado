@@ -634,102 +634,118 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
     # position. Sharing one monotonically increasing `offset` counter across
     # blocks, tables, AND inline figures (see below) gives every element a
     # real, comparable order position.
-    for child in docx_doc.element.body.iterchildren():
-        if child.tag == qn("w:p"):
-            paragraph = DocxParagraph(child, docx_doc)
-            content = paragraph.text.strip()
-            # Inline drawings (a pasted image, or a converted EMF/WMF
-            # diagram) embedded directly in this paragraph -- resolved via
-            # the DrawingML <a:blip r:embed="..."> reference to the actual
-            # image part. Previously EVERY image rel on the whole document
-            # was collected in one pass AFTER this body walk finished, each
-            # given a (0, 0) placeholder SourceRef -- so every figure folded
-            # into whichever node happened to be open LAST, not its real
-            # parent (see tree_builder.py's depth=None fold). Resolving
-            # inline, at the paragraph's own position, gives each figure the
-            # same real-position treatment tables already got.
-            blip_elements = child.findall(f".//{qn('a:blip')}")
-            embed_ids = [embed_id for b in blip_elements if (embed_id := b.get(qn("r:embed")))]
 
-            if not content and not embed_ids:
-                continue
+    def _walk_body_elements(elements) -> None:
+        for child in elements:
+            if child.tag == qn("w:p"):
+                _handle_paragraph(child)
+            elif child.tag == qn("w:tbl"):
+                _handle_table(child)
+            elif child.tag == qn("w:sdt"):
+                sdt_content = child.find(qn("w:sdtContent"))
+                if sdt_content is not None:
+                    _walk_body_elements(sdt_content.iterchildren())
 
-            if content:
-                start = offset
-                end = start + len(content)
-                offset = end + 1
+    def _handle_paragraph(child) -> None:
+        nonlocal block_id, figure_index, offset
+        paragraph = DocxParagraph(child, docx_doc)
+        content = paragraph.text.strip()
+        # Inline drawings (a pasted image, or a converted EMF/WMF
+        # diagram) embedded directly in this paragraph -- resolved via
+        # the DrawingML <a:blip r:embed="..."> reference to the actual
+        # image part. Previously EVERY image rel on the whole document
+        # was collected in one pass AFTER this body walk finished, each
+        # given a (0, 0) placeholder SourceRef -- so every figure folded
+        # into whichever node happened to be open LAST, not its real
+        # parent (see tree_builder.py's depth=None fold). Resolving
+        # inline, at the paragraph's own position, gives each figure the
+        # same real-position treatment tables already got.
+        blip_elements = child.findall(f".//{qn('a:blip')}")
+        embed_ids = [embed_id for b in blip_elements if (embed_id := b.get(qn("r:embed")))]
 
-                style_name = paragraph.style.name if paragraph.style else ""
-                if style_name.startswith(_STYLE_HEADING_PREFIX):
-                    level = int(style_name.removeprefix(_STYLE_HEADING_PREFIX))
-                    blocks.append(
-                        Block(
-                            id=f"b{block_id}",
-                            kind=BlockKind.HEADING,
-                            text=content,
-                            heading_level=level,
-                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
-                        )
-                    )
-                else:
-                    blocks.append(
-                        Block(
-                            id=f"b{block_id}",
-                            kind=BlockKind.PARAGRAPH,
-                            text=content,
-                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
-                        )
-                    )
-                block_id += 1
+        if not content and not embed_ids:
+            return
 
-            for embed_id in embed_ids:
-                rel = docx_doc.part.rels.get(embed_id)
-                if rel is None or _IMAGE_RELTYPE_MARKER not in rel.reltype:
-                    continue
-                consumed_rel_ids.add(embed_id)
-                caption = _describe_one_figure(rel, describe_figure)
-                start = offset
-                end = start + 1
-                offset = end
-                figures.append(
-                    Figure(
-                        id=f"f{figure_index}",
-                        caption=caption,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
-                    )
-                )
+        if content:
+            start = offset
+            end = start + len(content)
+            offset = end + 1
+
+            style_name = paragraph.style.name if paragraph.style else ""
+            if style_name.startswith(_STYLE_HEADING_PREFIX):
+                level = int(style_name.removeprefix(_STYLE_HEADING_PREFIX))
                 blocks.append(
                     Block(
                         id=f"b{block_id}",
-                        kind=BlockKind.FIGURE,
-                        text=f"[FIGURE: {caption or 'none'}]",
+                        kind=BlockKind.HEADING,
+                        text=content,
+                        heading_level=level,
                         source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                     )
                 )
-                block_id += 1
-                figure_index += 1
-        elif child.tag == qn("w:tbl"):
-            docx_table = DocxTable(child, docx_doc)
-            cells = _extract_table_cells(docx_table)
+            else:
+                blocks.append(
+                    Block(
+                        id=f"b{block_id}",
+                        kind=BlockKind.PARAGRAPH,
+                        text=content,
+                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                    )
+                )
+            block_id += 1
+
+        for embed_id in embed_ids:
+            rel = docx_doc.part.rels.get(embed_id)
+            if rel is None or _IMAGE_RELTYPE_MARKER not in rel.reltype:
+                continue
+            consumed_rel_ids.add(embed_id)
+            caption = _describe_one_figure(rel, describe_figure)
             start = offset
             end = start + 1
             offset = end
-            # Real per-cell colspan/rowspan/is_header/align/bold/
-            # background_color/text_color -- see _extract_table_cells' own
-            # docstring. column_widths/border_style are TABLE-level (not
-            # per-cell), computed here via _column_widths/
-            # _table_border_style per Phase 2 of
-            # docs/superpowers/specs/2026-08-12-table-fidelity-design.md.
-            tables.append(
-                Table(
-                    id=f"t{table_index}",
-                    cells=cells,
-                    column_widths=_column_widths(docx_table),
-                    border_style=_table_border_style(docx_table),
+            figures.append(
+                Figure(
+                    id=f"f{figure_index}",
+                    caption=caption,
                     source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                 )
             )
-            table_index += 1
+            blocks.append(
+                Block(
+                    id=f"b{block_id}",
+                    kind=BlockKind.FIGURE,
+                    text=f"[FIGURE: {caption or 'none'}]",
+                    source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+                )
+            )
+            block_id += 1
+            figure_index += 1
+
+    def _handle_table(child) -> None:
+        nonlocal table_index, offset
+        docx_table = DocxTable(child, docx_doc)
+        cells = _extract_table_cells(docx_table)
+        start = offset
+        end = start + 1
+        offset = end
+        # Real per-cell colspan/rowspan/is_header/align/bold/
+        # background_color/text_color -- see _extract_table_cells' own
+        # docstring. column_widths/border_style are TABLE-level (not
+        # per-cell), computed here via _column_widths/
+        # _table_border_style per Phase 2 of
+        # docs/superpowers/specs/2026-08-12-table-fidelity-design.md.
+        tables.append(
+            Table(
+                id=f"t{table_index}",
+                cells=cells,
+                column_widths=_column_widths(docx_table),
+                border_style=_table_border_style(docx_table),
+                source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+            )
+        )
+        table_index += 1
+
+    _walk_body_elements(docx_doc.element.body.iterchildren())
 
     # Fallback: any image rel NOT consumed above (a floating/anchored
     # drawing rather than an inline one, a header/footer image, or any

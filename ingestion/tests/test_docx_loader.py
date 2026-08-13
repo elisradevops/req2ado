@@ -941,3 +941,38 @@ def test_load_docx_end_to_end_folds_each_figure_into_its_own_section() -> None:
     # Each section's own figure did NOT leak into the other section.
     assert section_one.description.count("> Figure:") == 1
     assert section_two.description.count("> Figure:") == 1
+
+
+def test_load_docx_unwraps_content_control_wrapped_heading_and_paragraph() -> None:
+    # Regression: a w:sdt (content control) subtree was previously skipped
+    # whole by the body walk (it matches neither w:p nor w:tbl at the top
+    # level) -- any heading/paragraph a template wraps in one (common for
+    # locked/protected sections) vanished with no trace.
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    doc = DocxDocument()
+    doc.add_paragraph("Before the content control.")
+    sdt_xml = (
+        f'<w:sdt {nsdecls("w")}>'
+        "<w:sdtContent>"
+        '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
+        "<w:r><w:t>Hidden Heading</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>Hidden paragraph text.</w:t></w:r></w:p>"
+        "</w:sdtContent></w:sdt>"
+    )
+    doc.element.body.append(parse_xml(sdt_xml))
+    doc.add_paragraph("After the content control.")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "sdt.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    texts = [b.text for b in result.blocks]
+    assert "Hidden Heading" in texts
+    assert "Hidden paragraph text." in texts
+    heading_block = next(b for b in result.blocks if b.text == "Hidden Heading")
+    assert heading_block.kind == BlockKind.HEADING
+    assert heading_block.heading_level == 1
