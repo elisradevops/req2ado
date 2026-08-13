@@ -4672,3 +4672,25 @@ def test_ensure_root_features_have_epic_parent_is_a_noop_without_orphan_features
     _ensure_root_features_have_epic_parent(nodes, "regroup_", warnings)
     assert warnings == []
     assert not any(n.local_id == "regroup_synth_root_epic" for n in nodes)
+
+
+# ---------------------------------------------------------------------------
+# Primer context threading -- Phase 6a capability
+# ---------------------------------------------------------------------------
+
+
+def test_build_survey_tree_threads_primer_context_into_every_branch(monkeypatch) -> None:
+    _force_multi_branch(monkeypatch)
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(_two_branch_doc(), fake, primer_context="This document specifies an avionics interface.")
+    assert len(fake.calls) == 2
+    for call in fake.calls:
+        assert "This document specifies an avionics interface." in call["section_text"]
+
+
+def test_build_survey_tree_defaults_primer_context_to_none_byte_identical() -> None:
+    # None (the default) must be byte-identical to before this capability
+    # existed -- same convention as every other optional *_client param.
+    tree_without = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
+    tree_with_none = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), primer_context=None)
+    assert tree_without.nodes == tree_with_none.nodes

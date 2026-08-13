@@ -722,12 +722,12 @@ def _glossary_context_for_branch(
 
 
 def _combine_global_context(
-    base: str | None, branch_index: int, glossary_sections: list[tuple[int, str, str]]
+    base: str | None, branch_index: int, glossary_sections: list[tuple[int, str, str]],
+    primer_context: str | None = None,
 ) -> str | None:
     extra = _glossary_context_for_branch(branch_index, glossary_sections)
-    if extra is None:
-        return base
-    return f"{base}\n\n{extra}" if base else extra
+    parts = [part for part in (base, extra, primer_context) if part]
+    return "\n\n".join(parts) if parts else None
 
 
 def _table_to_markdown(table: Table) -> str | None:
@@ -1230,6 +1230,11 @@ def build_survey_tree(
     # byte-identical to before this capability existed: branches are
     # processed one at a time, in document order, exactly as before.
     branch_concurrency: int = 1,
+    # Optional AI context primer for the whole document (Phase 6a) -- a
+    # format-agnostic string that threads into every branch's global_context.
+    # None (the default) is byte-identical to before this capability
+    # existed: no primer is used.
+    primer_context: str | None = None,
 ) -> WorkItemTree:
     """SURVEY-mode leveling entry point. Splits the document into top-level
     branches (_split_into_branches, the same depth-1-heading split
@@ -1776,7 +1781,7 @@ def build_survey_tree(
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
                 supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
                 list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
-                global_context=_combine_global_context(global_context, branch_index, glossary_sections),
+                global_context=_combine_global_context(global_context, branch_index, glossary_sections, primer_context),
                 read_other_section_fn=read_other_section_fn,
                 topic_count=branch_heading_count + len(branch_table_groups),
                 table_groups=branch_table_groups,

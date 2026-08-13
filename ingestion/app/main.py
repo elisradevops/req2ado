@@ -374,6 +374,7 @@ def _build_survey_tree_with_scoring(
     link_type_catalog: list[dict] | None,
     job_id: str | None,
     model: str | None = None,
+    primer_context: str | None = None,
 ) -> WorkItemTree:
     """Wraps build_survey_tree so BOTH the (possibly network-calling)
     CriteriaRetriever construction above AND the tree-building itself run
@@ -460,6 +461,7 @@ def _build_survey_tree_with_scoring(
             # own docstring) into a coherent hierarchy, structure-only.
             grouping_client=client,
             branch_concurrency=settings.survey_branch_concurrency,
+            primer_context=primer_context,
         )
 
 
@@ -860,6 +862,7 @@ async def level(
     link_type_catalog: str | None = None,
     model: str | None = None,
     job_id: str | None = None,
+    primer_context: str | None = None,
 ) -> WorkItemTree:
     if mode == "survey":
         # One real client instance satisfies SectionAnalysisClient (and every
@@ -911,7 +914,7 @@ async def level(
         )
         catalog = json.loads(link_type_catalog) if link_type_catalog else None
         return await run_in_threadpool(
-            _build_survey_tree_with_scoring, doc, client, customer_id, user_id, catalog, job_id, model
+            _build_survey_tree_with_scoring, doc, client, customer_id, user_id, catalog, job_id, model, primer_context
         )
     return build_baseline_tree(doc, customer_id=customer_id)
 
