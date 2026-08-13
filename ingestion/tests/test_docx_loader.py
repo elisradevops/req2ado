@@ -1467,3 +1467,122 @@ def test_load_docx_does_not_double_number_a_heading_that_already_has_its_own_num
     heading = next(b for b in result.blocks if b.kind == BlockKind.HEADING)
     assert heading.text == "3.2 Backplane Power"
     assert heading.number_label is None
+
+
+def test_load_docx_treats_outline_lvl_9_as_body_text_not_heading_level_10() -> None:
+    # Regression: w:outlineLvl values are 0-8 for heading levels 1-9 per
+    # ECMA-376; val=9 means "body text, no outline level applied" -- NOT
+    # heading level 10. _outline_level_from_ppr previously did
+    # `int(val) + 1` unconditionally, so val=9 became 10, misclassifying a
+    # paragraph as a phantom level-10 heading. Word's own built-in "TOC
+    # Heading" style carries exactly this val=9 (so a TOC's own title
+    # never appears inside the TOC it generates) -- the most realistic
+    # real-world trigger for this bug.
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    paragraph = doc.add_paragraph("Table of Contents")
+    paragraph.style = doc.styles["TOC Heading"]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "toc_heading.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    block = next(b for b in result.blocks if b.text == "Table of Contents")
+    assert block.kind == BlockKind.PARAGRAPH
+
+
+def test_load_docx_does_not_crash_on_a_negative_outline_lvl_val() -> None:
+    # Regression: w:outlineLvl val="-1" -> int("-1") + 1 == 0, which is
+    # `not None`, so the heading branch fired with heading_level=0. Then
+    # `while len(heading_counters) < 0` no-ops, `del heading_counters[0:]`
+    # empties the list, and `heading_counters[heading_level - 1] += 1` ==
+    # `heading_counters[-1] += 1` on an EMPTY list raised IndexError,
+    # aborting the WHOLE document load -- a direct violation of this
+    # module's never-abort invariant. A negative val is outside the valid
+    # 0-8 range and must fall through to the next detection tier instead.
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    doc = DocxDocument()
+    p_xml = (
+        f'<w:p {nsdecls("w")}>'
+        f'<w:pPr><w:outlineLvl w:val="-1"/></w:pPr>'
+        f"<w:r><w:t>Negative outline level.</w:t></w:r></w:p>"
+    )
+    doc.element.body.append(parse_xml(p_xml))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "negative_outline_lvl.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))  # must not raise
+
+    block = next(b for b in result.blocks if b.text == "Negative outline level.")
+    assert block.kind == BlockKind.PARAGRAPH
+
+
+def test_load_docx_synthesizes_correct_numbers_for_mixed_numbered_and_unnumbered_headings() -> None:
+    # Regression: the counter stack was previously only extended/incremented
+    # INSIDE the "unnumbered" branch, so a self-numbered parent heading
+    # never advanced the counter -- an unnumbered child under it synthesized
+    # "0.1" instead of "1.1". Mix of self-numbered H1s with unnumbered H2
+    # children under each.
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_heading("1 Power", level=1)
+    doc.add_heading("Overview", level=2)
+    doc.add_heading("Limits", level=2)
+    doc.add_heading("2 Cooling", level=1)
+    doc.add_heading("Fans", level=2)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "mixed_numbering.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    headings = {b.text: b.number_label for b in result.blocks if b.kind == BlockKind.HEADING}
+    assert headings["1 Power"] is None  # self-numbered -- no synthesis needed
+    assert headings["Overview"] == "1.1"
+    assert headings["Limits"] == "1.2"
+    assert headings["2 Cooling"] is None  # self-numbered -- no synthesis needed
+    assert headings["Fans"] == "2.1"
+
+
+def test_load_docx_adopts_self_numbered_label_so_later_unnumbered_siblings_do_not_collide() -> None:
+    # Regression: unnumbered front matter synthesized "1", "2" from a
+    # counter that started at zero, with no awareness of a LATER
+    # self-numbered heading -- a real collision risk (e.g. a synthesized
+    # "2 Scope" vs. an author-typed "2 Appendix A"). The fix adopts a
+    # self-numbered heading's own label into the counter state so later
+    # unnumbered siblings continue counting from the author's own numbers,
+    # not from wherever the (unrelated) internal counter happened to be.
+    #
+    # "5 Appendix A" (not "2") is deliberately chosen so this test can't
+    # coincidentally pass under the pre-fix code: with only 2 prior
+    # unnumbered headings, the OLD counter would independently reach 2 by
+    # the time "Appendix A" is seen, so a literal "2 Appendix A" would
+    # accidentally leave the post-fix and pre-fix counter state identical
+    # (both [2]) and mask this exact defect. Jumping to "5" forces the
+    # counter to visibly diverge (fixed: adopts to 5; buggy: stays at 2)
+    # so "Appendix B" only gets the correct "6" once adoption is real.
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_heading("Introduction", level=1)
+    doc.add_heading("Scope", level=1)
+    doc.add_heading("5 Appendix A", level=1)
+    doc.add_heading("Appendix B", level=1)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "adopted_counter.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    headings = {b.text: b.number_label for b in result.blocks if b.kind == BlockKind.HEADING}
+    assert headings["Introduction"] == "1"
+    assert headings["Scope"] == "2"
+    assert headings["5 Appendix A"] is None  # self-numbered -- no synthesis needed
+    assert headings["Appendix B"] == "6"  # counter adopted "5" from "5 Appendix A", not left at 2

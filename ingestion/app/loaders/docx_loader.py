@@ -639,9 +639,18 @@ def _outline_level_from_ppr(ppr) -> int | None:
     if val is None:
         return None
     try:
-        return int(val) + 1
+        level = int(val)
     except ValueError:
         return None
+    # ECMA-376: 0-8 are heading levels 1-9; 9 means "body text, no outline
+    # level applied" (Word's own stock "TOC Heading" style carries val=9,
+    # since a TOC's own title must not appear in the generated TOC) --
+    # anything outside 0-8 is not a real heading-level signal. Also guards
+    # against a negative val (e.g. "-1") which would otherwise resolve to
+    # heading_level=0 downstream and crash the heading-counter synthesis.
+    if not 0 <= level <= 8:
+        return None
+    return level + 1
 
 
 def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:
@@ -800,13 +809,35 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
             else:
                 heading_level = _heading_level_for_paragraph(paragraph)
                 if heading_level is not None:
+                    # The counter stack is extended/truncated for EVERY
+                    # heading regardless of whether it carries its own
+                    # (author-typed) number -- not just unnumbered ones.
+                    # Otherwise a self-numbered parent (e.g. "1 Power")
+                    # never advances the counter, so an unnumbered child
+                    # under it synthesizes "0.1" instead of "1.1". And when
+                    # a heading IS self-numbered, its own label is adopted
+                    # into the counter state so later unnumbered siblings
+                    # keep counting from the author's own numbers instead
+                    # of restarting from zero -- otherwise unnumbered front
+                    # matter ("Introduction" -> "1", "Scope" -> "2") can
+                    # collide with a later self-numbered heading ("Appendix
+                    # A" literally numbered "2").
+                    existing_label = parse_numbering(content)[0]
+                    while len(heading_counters) < heading_level:
+                        heading_counters.append(0)
+                    del heading_counters[heading_level:]
                     number_label = None
-                    if parse_numbering(content)[0] is None:
-                        while len(heading_counters) < heading_level:
-                            heading_counters.append(0)
-                        del heading_counters[heading_level:]
+                    if existing_label is None:
                         heading_counters[heading_level - 1] += 1
                         number_label = ".".join(str(n) for n in heading_counters)
+                    else:
+                        parts = existing_label.split(".")
+                        if len(parts) == heading_level and all(p.isdigit() for p in parts):
+                            heading_counters[:] = [int(p) for p in parts]
+                        # else: malformed/non-numeric self-numbering (e.g.
+                        # "A.1") or a label whose depth doesn't match this
+                        # heading's own level -- leave heading_counters as
+                        # truncated above, don't attempt to parse it in.
                     blocks.append(
                         Block(
                             id=f"b{block_id}",
