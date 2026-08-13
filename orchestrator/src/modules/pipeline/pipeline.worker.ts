@@ -1,5 +1,7 @@
+import crypto from 'crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
+import type { OpenWebUiClient } from '../llm/openwebui.client';
 import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
@@ -17,6 +19,24 @@ import type { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 // workflow, short enough that a stale scan self-heals within a day with
 // zero manual action.
 const AREA_PATH_BACKFILL_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+// Below this size, a document already comfortably fits within any model's
+// per-call token budget in one shot -- the whole-document primer (see the
+// primer wiring block in runPipelineJob below) exists to orient the model
+// inside content it CAN'T see in one call, so paying the upload+poll+chat
+// cost here is pure waste for a document this small. Ingestion's own
+// fits_whole_document gate (llm_leveling.py) is the real, token-budget-aware
+// version of this check, but it isn't available here -- job.fileBuffer
+// hasn't been through /ingest yet at this point in runPipelineJob. Byte size
+// is a coarse but cheap proxy, not the same gate ingestion itself applies.
+const PRIMER_CONTEXT_MIN_DOCUMENT_BYTES = 20_000;
+
+// How long a computed primer stays cached in Redis by content hash -- long
+// enough that a resubmitted/duplicate document within the same day never
+// re-pays the real upload+chat cost, short enough that a stale cache entry
+// self-heals within a day with zero manual action. Mirrors
+// AREA_PATH_BACKFILL_STALE_AFTER_MS's own "throttle, don't disable" shape.
+const PRIMER_CONTEXT_CACHE_TTL_SECONDS = 86_400;
 
 /**
  * Closes the "manually-created ADO items are invisible to dedup" gap for
@@ -80,6 +100,16 @@ export interface PipelineJobInput {
   model?: string;
 }
 
+// Minimal shape the primer wiring block below actually needs from a Redis
+// client -- deliberately NOT the full ioredis `Redis` type (whose `set`
+// overloads carry a lot of surface this call site never touches), same
+// "only the methods this consumer actually uses" spirit as every other
+// narrowly-typed dep on PipelineWorkerDeps below.
+interface PrimerCacheRedis {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, mode: 'EX', seconds: number): Promise<unknown>;
+}
+
 export interface PipelineWorkerDeps {
   ingestionClient: IngestionHttpClient;
   dryRunService: DryRunService;
@@ -97,6 +127,15 @@ export interface PipelineWorkerDeps {
   // falling back to an empty/seed catalog. The vault is what makes a
   // per-user credential available here at all.
   adoCredentialResolver: AdoCredentialResolver;
+  // Phase 6c: whole-document AI context primer (see the primer wiring block
+  // in runPipelineJob below). Both optional -- an older/mocked deps object
+  // predating this field (every pre-existing test, the concurrency load
+  // test) simply never computes a primer; primerContext stays undefined and
+  // /level's own behavior is exactly what it always was before this field
+  // existed. Also skipped whenever either is absent even for a real SURVEY
+  // job, so a deployment can opt out entirely by just not wiring these two.
+  openWebUiClient?: OpenWebUiClient;
+  primerCacheRedis?: PrimerCacheRedis;
   // The orchestrator's own configured LLM_CHAT_MODEL -- when job.model is
   // unset (the wizard's "Default" option), this worker previously sent
   // `undefined` straight through to ingestion's /level route, and
@@ -385,6 +424,73 @@ export async function runPipelineJob(
       (t) => t.referenceName !== 'System.LinkTypes.Hierarchy-Forward' && t.referenceName !== 'System.LinkTypes.Hierarchy-Reverse',
     );
 
+    // Whole-document AI context primer (Phase 6c): gives leveling a short,
+    // model-authored orientation (document type/purpose, the system it
+    // specifies, its domain phrasing conventions) before infer_hierarchy/
+    // generate_requirements ever run, so per-branch analysis isn't starting
+    // cold on an unfamiliar document. SURVEY-only -- BASELINE never calls an
+    // LLM at all (see defaultLlmModel's own doc comment above), so computing
+    // this for a BASELINE job would only pay real upload/poll/chat cost for
+    // a result ingestion's own baseline branch (main.py's /level route)
+    // never reads. Gated on PRIMER_CONTEXT_MIN_DOCUMENT_BYTES (see its own
+    // comment) and on both deps actually being wired -- either gate missing
+    // just means primerContext stays undefined, /level's exact pre-Phase-6c
+    // behavior. Cached by content hash (model included in the key: the same
+    // document primed under a different model could read differently) so a
+    // resubmitted/duplicate document never re-pays the upload+chat cost.
+    // Fail-open, same convention as linkTypeCatalog just above -- a primer
+    // failure (upload down, stuck/failed processing, malformed chat
+    // response) must never block or fail the job; it only means leveling
+    // proceeds without this one optional orientation hint, same as it
+    // always has.
+    let primerContext: string | undefined;
+    if (
+      job.mode === 'survey' &&
+      job.fileBuffer.byteLength >= PRIMER_CONTEXT_MIN_DOCUMENT_BYTES &&
+      deps.openWebUiClient &&
+      deps.primerCacheRedis
+    ) {
+      const openWebUiClient = deps.openWebUiClient;
+      const primerCacheRedis = deps.primerCacheRedis;
+      try {
+        const contentHash = crypto.createHash('sha256').update(job.fileBuffer).digest('hex');
+        const cacheKey = `primer:${model}:${contentHash}`;
+        const cached = await primerCacheRedis.get(cacheKey);
+        if (cached !== null) {
+          primerContext = cached;
+        } else {
+          const fileId = await openWebUiClient.uploadFile(job.fileBuffer, job.filename);
+          try {
+            const processed = await openWebUiClient.pollFileProcessed(fileId, 60_000);
+            if (processed) {
+              const result = await openWebUiClient.chat(
+                [
+                  {
+                    role: 'user',
+                    content:
+                      'Read the attached document in full. In 2-3 short sentences, describe: the ' +
+                      'document type and purpose, the system it specifies (if any), and the domain ' +
+                      "conventions or phrasing style it uses. Do not list sections or definitions.",
+                  },
+                ],
+                { files: [{ type: 'file', id: fileId }] },
+              );
+              primerContext = result.content?.trim() || undefined;
+              if (primerContext) {
+                await primerCacheRedis.set(cacheKey, primerContext, 'EX', PRIMER_CONTEXT_CACHE_TTL_SECONDS);
+              }
+            }
+          } finally {
+            await openWebUiClient.deleteFile(fileId);
+          }
+        }
+      } catch {
+        // Fail-open, same convention as linkTypeCatalog above -- a primer
+        // failure must never block or fail the job.
+        primerContext = undefined;
+      }
+    }
+
     await deps.jobEventsPublisher.publish(job.id, 'infer_hierarchy_start');
     // job.userId (KB scope), NOT job.areaPath (ADO write-back destination --
     // see diffInputs[].areaPath and checkDuplicate below, both correctly
@@ -394,7 +500,7 @@ export async function runPipelineJob(
     // _resolve_caps can resolve real caps/tool-support instead of silently
     // falling back to the conservative unknown-model default for the
     // (common) "Default" wizard selection.
-    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id)) as {
+    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext)) as {
       nodes: LeveledNode[];
       warnings?: LeveledWarning[];
       kb_citations?: { source_file: string; similarity: number; relevance: string }[];

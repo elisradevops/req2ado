@@ -182,6 +182,26 @@ import { AuthModule } from '../auth/auth.module';
       useFactory: (prisma: PrismaClient, config: ConfigService) => new EtaService(prisma, config.get<string>('LLM_CHAT_MODEL')!),
     },
     {
+      // Dedicated connection for the whole-document AI context primer's
+      // content-hash cache (Phase 6c, pipeline.worker.ts's own primer wiring
+      // block) -- same "erased-runtime-type" reason JobEventsPublisher's own
+      // Redis provider above needs an explicit factory rather than a bare
+      // `new Redis(...)` constructor param, and same "no shared instance
+      // exists to reuse" rationale (a plain GET/SET connection has none of
+      // JobEventsPublisher's/REDIS_SUBSCRIBER_FACTORY's own
+      // subscribe-blocks-the-connection constraint, but there's still no
+      // existing general-purpose Redis command client in this module to
+      // reuse instead of a new one).
+      provide: 'PRIMER_CACHE_REDIS',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redis = new Redis(config.get<string>('REDIS_URL')!);
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        redis.on('error', (err) => console.error('PrimerCache Redis error:', err));
+        return redis;
+      },
+    },
+    {
       // BackfillService's constructor params are declared via `import type`
       // (see backfill.service.ts) -- same erased-runtime-type DI issue this
       // module already documents for IdempotencyService above, so it needs

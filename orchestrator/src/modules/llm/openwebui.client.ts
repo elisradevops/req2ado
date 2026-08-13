@@ -100,6 +100,10 @@ export class OpenWebUiClient implements LlmClient {
       ...(opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
+      // Open WebUI-native passthrough (see LlmChatOptions.files' own doc
+      // comment) -- not part of the OpenAI SDK's own ChatCompletionCreateParams
+      // type, hence the untyped object literal spread rather than a typed field.
+      ...(opts?.files !== undefined ? { files: opts.files } : {}),
     });
     const toResult = (response: OpenAI.Chat.ChatCompletion): LlmChatResult => ({
       content: response.choices[0]?.message?.content ?? '',

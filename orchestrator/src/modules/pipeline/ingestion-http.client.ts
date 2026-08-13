@@ -135,12 +135,20 @@ export class IngestionHttpClient {
     linkTypeCatalog?: { referenceName: string; name: string; semanticHint?: string }[],
     model?: string,
     jobId?: string,
+    // Whole-document AI context primer (Phase 6c, pipeline.worker.ts's own
+    // primer wiring block) -- a short, model-authored orientation covering
+    // document type/purpose/domain phrasing, computed once per job (ingestion
+    // already accepts and forwards this to build_survey_tree, see main.py's
+    // /level route). Optional/omitted for every call site predating this
+    // field, matching model/jobId's own backward-compat convention above.
+    primerContext?: string,
   ): Promise<WorkItemTree> {
     const params = new URLSearchParams({ mode });
     if (customerId) params.set('customer_id', customerId);
     if (userId) params.set('user_id', userId);
     if (model) params.set('model', model);
     if (jobId) params.set('job_id', jobId);
+    if (primerContext) params.set('primer_context', primerContext);
     if (linkTypeCatalog) {
       // ingestion (Python) expects snake_case keys (reference_name/name/
       // semantic_hint) -- AdoLinkType on this side is camelCase. Map at the

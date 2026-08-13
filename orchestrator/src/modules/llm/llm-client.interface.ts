@@ -95,6 +95,15 @@ export interface LlmChatOptions {
   // an opt-out, not a blanket setting, so callers that DO want reasoning
   // (e.g. a user-facing chat turn) are unaffected.
   think?: boolean;
+  // Open WebUI's native "reference an already-uploaded file/collection in
+  // this chat turn" extension -- NOT part of the OpenAI spec, forwarded
+  // verbatim as the request's top-level `files` field. Backs the
+  // whole-document AI context primer (Phase 6c, pipeline.worker.ts): the
+  // caller uploads the source document via OpenWebUiClient.uploadFile
+  // first, then references it here by id so this ONE chat call can read
+  // the whole document rather than whatever fits in the prompt text.
+  // Ignored by a genuine OpenAI-compat backend that doesn't recognize it.
+  files?: { type: 'file' | 'collection'; id: string }[];
 }
 
 /**

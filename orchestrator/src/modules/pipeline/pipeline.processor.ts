@@ -11,6 +11,7 @@ import { McpClient } from './mcp.client';
 import { runPipelineJob, type PipelineJobInput } from './pipeline.worker';
 import { CredentialVaultService } from '../auth/credential-vault.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
+import { OpenWebUiClient } from '../llm/openwebui.client';
 
 /**
  * BullMQ sandboxed processor: runs in its OWN child process, spawned/pooled
@@ -53,6 +54,37 @@ const mcpClient = new McpClient(`${config.MCP_URL}/api/ado`, config.MCP_BEARER, 
 const backfillService = new BackfillService(mcpClient, ingestionClient, idempotencyService);
 const credentialVault = new CredentialVaultService(prisma, config.CREDENTIAL_ENC_KEY, config.CREDENTIAL_ENC_KEY_PREVIOUS);
 const adoCredentialResolver = new AdoCredentialResolver(credentialVault);
+// Phase 6c: whole-document AI context primer (see pipeline.worker.ts's own
+// primer wiring block). Same config fields llm.module.ts's OpenWebUiClient
+// factory already uses -- this child process has no NestJS DI container of
+// its own (see this file's own doc comment above), so it's constructed
+// directly here, same as every other client above.
+const openWebUiClient = new OpenWebUiClient({
+  LLM_BASE_URL: config.LLM_BASE_URL,
+  LLM_API_KEY: config.LLM_API_KEY,
+  LLM_CHAT_MODEL: config.LLM_CHAT_MODEL,
+  LLM_VISION_MODEL: config.LLM_VISION_MODEL,
+  LLM_TRUSTED_LOCAL: config.LLM_TRUSTED_LOCAL,
+  EMBED_TRANSPORT: config.EMBED_TRANSPORT,
+  EMBED_BASE_URL: config.EMBED_BASE_URL,
+  EMBED_MODEL: config.EMBED_MODEL,
+  EMBED_PATH: config.EMBED_PATH,
+  SHOW_PATH: config.SHOW_PATH,
+  FILES_UPLOAD_PATH: config.FILES_UPLOAD_PATH,
+  FILES_STATUS_PATH: config.FILES_STATUS_PATH,
+  LLM_REQUEST_TIMEOUT_MS: config.LLM_REQUEST_TIMEOUT_MS,
+});
+// Dedicated connection, same "subscribed connections aside, there's still no
+// existing general-purpose Redis command client to reuse" rationale as
+// jobs.module.ts's own PRIMER_CACHE_REDIS provider (this child process has
+// no Nest DI container to source that provider from, hence a second direct
+// `new Redis(...)` here, same pattern jobEventsPublisherRedis above already
+// uses).
+const primerCacheRedis = new Redis(config.REDIS_URL);
+primerCacheRedis.on('error', (err) => {
+  // eslint-disable-next-line no-console -- worker process logging, not app logging
+  console.error('PrimerCache Redis error:', err);
+});
 
 type QueuedJobData = Omit<PipelineJobInput, 'fileBuffer'> & { fileBufferBase64: string };
 
@@ -69,5 +101,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     backfillService,
     adoCredentialResolver,
     defaultLlmModel: config.LLM_CHAT_MODEL,
+    openWebUiClient,
+    primerCacheRedis: primerCacheRedis as any,
   });
 }

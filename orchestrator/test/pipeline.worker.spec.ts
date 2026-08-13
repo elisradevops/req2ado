@@ -31,6 +31,12 @@ describe('runPipelineJob', () => {
   };
   const fakeBackfillService = { backfillAreaPath: jest.fn().mockResolvedValue({ scanned: 0, seeded: 0, skipped: 0, skippedReasons: {} }) };
   const fakeAdoCredentialResolver = { resolve: jest.fn().mockResolvedValue(undefined) };
+  // Phase 6c primer deps -- both optional on PipelineWorkerDeps, so every
+  // existing test above/below that omits them entirely is unaffected
+  // (primerContext just stays undefined, /level's exact pre-Phase-6c
+  // behavior). Only the dedicated describe block below wires them in.
+  const fakeOpenWebUiClient = { uploadFile: jest.fn(), pollFileProcessed: jest.fn(), chat: jest.fn(), deleteFile: jest.fn() };
+  const fakePrimerCacheRedis = { get: jest.fn(), set: jest.fn() };
 
   afterEach(() => {
     jest.clearAllMocks();
@@ -59,7 +65,7 @@ describe('runPipelineJob', () => {
     );
 
     expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1');
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline', undefined, [], 'gemma4:12b', 'job-1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'CUST-1', 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
   });
 
@@ -116,7 +122,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined);
   });
 
   it('filters Hierarchy-Forward/Reverse out of the trace-link catalog but keeps every other real link type', async () => {
@@ -164,6 +170,7 @@ describe('runPipelineJob', () => {
       ],
       'gemma4:12b',
       'job-1',
+      undefined,
     );
   });
 
@@ -1041,7 +1048,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', 'user-descriptor-1', [], 'gemma4:12b', 'job-1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', 'user-descriptor-1', [], 'gemma4:12b', 'job-1', undefined);
   });
 
   it('passes undefined (not null) to ingestionClient.level when job.userId is null', async () => {
@@ -1064,7 +1071,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined);
   });
 
   it("passes job.model through to ingestionClient.level as the 6th argument", async () => {
@@ -1087,7 +1094,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', undefined, [], 'qwen2.5:1.5b', 'job-1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', undefined, [], 'qwen2.5:1.5b', 'job-1', undefined);
   });
 
   it('passes job.id through to ingestionClient.level as the 7th argument (SURVEY narration threading)', async () => {
@@ -1110,7 +1117,7 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-xyz');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-xyz', undefined);
   });
 
   it("persists the tree's kb_citations onto the Job row alongside dryRunDiff, mapped to camelCase", async () => {
@@ -1539,6 +1546,154 @@ describe('runPipelineJob', () => {
         expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }),
       );
       expect(fakePrisma.areaPathBackfill.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('whole-document primer (Phase 6c)', () => {
+    // Large enough to clear PRIMER_CONTEXT_MIN_DOCUMENT_BYTES's gate --
+    // real content doesn't matter, only byte length.
+    const bigFileBuffer = Buffer.alloc(30_000, 'a');
+
+    beforeEach(() => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+    });
+
+    it('threads primerContext from a successful upload+chat into the level() call', async () => {
+      fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
+      fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
+      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'This is an avionics ICD.' });
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+        { blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
+      );
+      expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf');
+      expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
+        expect.any(Array),
+        { files: [{ type: 'file', id: 'file-1' }] },
+      );
+      expect(fakeOpenWebUiClient.deleteFile).toHaveBeenCalledWith('file-1');
+      expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(
+        expect.stringContaining('primer:gemma4:12b:'), 'This is an avionics ICD.', 'EX', 86_400,
+      );
+    });
+
+    it('fails open to undefined primerContext when upload throws', async () => {
+      fakeOpenWebUiClient.uploadFile.mockRejectedValue(new Error('network error'));
+      fakePrimerCacheRedis.get.mockResolvedValue(null);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+        { blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
+      );
+    });
+
+    it('reads from the primer cache instead of re-uploading on a cache hit', async () => {
+      fakePrimerCacheRedis.get.mockResolvedValue('cached primer text');
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
+      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+        { blocks: [] }, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'cached primer text',
+      );
+    });
+
+    it('never attempts the primer for a BASELINE job, even with primer deps wired and a large document -- BASELINE never calls an LLM', async () => {
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakePrimerCacheRedis.get).not.toHaveBeenCalled();
+      expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
+      expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+        { blocks: [] }, null, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined,
+      );
+    });
+
+    it('never attempts the primer for a document under PRIMER_CONTEXT_MIN_DOCUMENT_BYTES, even in SURVEY mode with primer deps wired', async () => {
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from('short'), filename: 'x.pdf' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+          openWebUiClient: fakeOpenWebUiClient as any,
+          primerCacheRedis: fakePrimerCacheRedis as any,
+        },
+      );
+
+      expect(fakePrimerCacheRedis.get).not.toHaveBeenCalled();
+      expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
     });
   });
 });
