@@ -771,3 +771,122 @@ def test_load_pdf_merges_a_table_continuing_across_a_page_break() -> None:
     all_rows = plain_text_rows(result.tables[0])
     assert len(all_rows) == 61  # header + 60 rows, all in ONE table, not split
     assert all_rows[-1] == ["59", "Reason 59"]
+
+
+# --- Review fix-round tests (Task 5 code review, 2026-08-13): Critical +
+# Important 1/2/4 findings below all exercise `_tables_continue`/
+# `_merge_continued_tables` directly with synthetic Table/TableCell/
+# SourceRef objects rather than a real reportlab-generated PDF -- these
+# are testing the MERGE LOGIC's own edge cases (empty structural signal,
+# unrelated-but-same-shape tables, 3+ page chaining), not pdfplumber's
+# geometry extraction, so a real PDF fixture would only add layout
+# fragility without exercising anything the direct call doesn't already
+# cover precisely.
+
+
+def test_tables_continue_rejects_empty_xs_even_when_positionally_adjacent() -> None:
+    """Critical fix: an empty `xs` list on either side (e.g. both tables
+    hit `_build_pdf_table_grid`'s outer exception fallback, which sets
+    xs=[]) must NOT vacuously pass the structural gate just because
+    `len([]) == len([])` and `all(...)` over an empty `zip` is trivially
+    True. Both tables sit well within the page-edge bands here (positional
+    signal alone would pass) -- only the missing structural signal must
+    reject the match."""
+    from app.loaders.pdf_loader import _tables_continue
+
+    page_height = 800.0
+    assert _tables_continue([], 750.0, page_height, [], 50.0) is False
+
+
+def test_merge_continued_tables_does_not_merge_unrelated_same_shape_tables() -> None:
+    """Important 4a: two unrelated 2-column tables on consecutive pages,
+    both positioned near their respective page edges (positional signal
+    matches), but with clearly different column x-edges (structural signal
+    does NOT match) -- must NOT merge. This is the exact risk the brief
+    calls out: column COUNT alone is not a sufficient continuation
+    signal."""
+    from app.canonical.model import SourceRef, Table, TableCell
+    from app.loaders.pdf_loader import _merge_continued_tables
+
+    page_height = 800.0
+    t0 = Table(
+        id="t0",
+        cells=[[TableCell(text="A"), TableCell(text="B")]],
+        source_ref=SourceRef(document_path="doc.pdf", start_offset=0, end_offset=1, page=1),
+    )
+    t1 = Table(
+        id="t1",
+        cells=[[TableCell(text="X"), TableCell(text="Y")]],
+        source_ref=SourceRef(document_path="doc.pdf", start_offset=0, end_offset=1, page=2),
+    )
+    table_xs_by_id = {"t0": [10.0, 100.0], "t1": [50.0, 140.0]}  # same count, clearly different positions
+    table_bbox_by_id = {"t0": (0.0, 0.0, 200.0, 750.0), "t1": (0.0, 40.0, 200.0, 100.0)}
+
+    merged = _merge_continued_tables([t0, t1], table_xs_by_id, table_bbox_by_id, page_height)
+
+    assert [t.id for t in merged] == ["t0", "t1"]
+
+
+def test_merge_continued_tables_chains_a_three_page_continuation_into_one_table() -> None:
+    """Important 1: a table continuing across THREE pages must chain
+    through two successive pairwise merges into ONE final table, not stop
+    after the first merge. `Table.model_copy` never updates `source_ref`,
+    so the merged table's own page stays page 1 forever -- without tracking
+    the accumulating group's real tail page separately, the page-3 table's
+    `this_page == prev_page + 1` check (3 == 1 + 1) would wrongly fail."""
+    from app.canonical.model import SourceRef, Table, TableCell, plain_text_rows
+    from app.loaders.pdf_loader import _merge_continued_tables
+
+    page_height = 800.0
+    xs = [10.0, 100.0]
+
+    def _row(a: str, b: str, is_header: bool = False) -> list[TableCell]:
+        return [TableCell(text=a, is_header=is_header), TableCell(text=b, is_header=is_header)]
+
+    t0 = Table(
+        id="t0",
+        cells=[_row("h1", "h2", is_header=True), _row("r1", "r2")],
+        source_ref=SourceRef(document_path="doc.pdf", start_offset=0, end_offset=1, page=1),
+    )
+    # Continuation tables carry `is_header=True` on their own first row too
+    # -- `_build_pdf_table_grid` stamps every table's row 0 as a header
+    # purely because it's row 0 of ITS OWN single-page extraction. Real
+    # continuation rows, not headers -- see the Important 2 assertion below.
+    t1 = Table(
+        id="t1",
+        cells=[_row("r3", "r4", is_header=True)],
+        source_ref=SourceRef(document_path="doc.pdf", start_offset=0, end_offset=1, page=2),
+    )
+    t2 = Table(
+        id="t2",
+        cells=[_row("r5", "r6", is_header=True)],
+        source_ref=SourceRef(document_path="doc.pdf", start_offset=0, end_offset=1, page=3),
+    )
+    table_xs_by_id = {"t0": xs, "t1": xs, "t2": xs}
+    table_bbox_by_id = {
+        "t0": (0.0, 0.0, 200.0, 750.0),  # bottom near page bottom
+        "t1": (0.0, 40.0, 200.0, 750.0),  # top near page top AND bottom near page bottom
+        "t2": (0.0, 40.0, 200.0, 200.0),  # top near page top
+    }
+
+    merged = _merge_continued_tables([t0, t1, t2], table_xs_by_id, table_bbox_by_id, page_height)
+
+    assert len(merged) == 1
+    rows = plain_text_rows(merged[0])
+    assert rows == [["h1", "h2"], ["r1", "r2"], ["r3", "r4"], ["r5", "r6"]]
+    # Important 2: only the FIRST table's real header row keeps
+    # is_header=True -- both continuation tables' own (formerly row-0)
+    # rows must be cleared, since they now sit mid-table.
+    assert merged[0].cells[0][0].is_header is True
+    assert all(cell.is_header is False for row in merged[0].cells[1:] for cell in row)
+
+
+def test_load_pdf_survives_a_continuation_merge_failure() -> None:
+    """Important 3: the `_merge_continued_tables` call site in `load_pdf`
+    must be wrapped in try/except -- a malformed bbox/xs entry or any other
+    unexpected error there must degrade to the unmerged per-page tables,
+    never abort the whole document load (same 'never fail the ingest'
+    guarantee every other risky path in this file already honors)."""
+    with patch("app.loaders.pdf_loader._merge_continued_tables", side_effect=RuntimeError("boom")):
+        doc = load_pdf(str(FIXTURES / "sample.pdf"))
+    assert len(doc.tables) >= 1

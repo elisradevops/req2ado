@@ -546,6 +546,17 @@ def _tables_continue(
     near_top = next_top <= prev_page_height * _TABLE_CONTINUATION_EDGE_BAND_FRACTION
     if not (near_bottom and near_top):
         return False
+    # An empty xs list (e.g. `_build_pdf_table_grid` hit its outer
+    # exception fallback for that table, which sets xs=[] -- see its call
+    # site) carries NO structural signal at all. Without this guard,
+    # `len([]) == len([])` is True and `all(...)` over an empty `zip` is
+    # vacuously True, so two unrelated degraded-extraction tables would
+    # pass the structural gate on positional signal alone -- exactly the
+    # weaker "column count only" rule this function's own docstring
+    # rejects. Reject explicitly rather than let an absent signal count as
+    # a match.
+    if not prev_table_xs or not next_table_xs:
+        return False
     if len(prev_table_xs) != len(next_table_xs):
         return False
     return all(abs(a - b) <= _TABLE_CONTINUATION_X_TOLERANCE for a, b in zip(prev_table_xs, next_table_xs))
@@ -563,13 +574,25 @@ def _merge_continued_tables(
     Only ever merges a table into the ONE immediately preceding it in
     document order -- a three-page continuation chains through two
     successive merges, not a single three-way merge, which keeps this
-    function's own logic to a single pairwise rule applied repeatedly."""
+    function's own logic to a single pairwise rule applied repeatedly.
+
+    `tail_page`/`table_bbox_by_id`/`table_xs_by_id` are updated to the just-
+    absorbed continuation's own page/bbox/xs after every merge -- `Table.
+    model_copy` does NOT touch `source_ref` (the merged table keeps the
+    FIRST page's own `source_ref.page` forever), so a 3+ page continuation
+    that re-read `prev.source_ref.page` directly would only ever match
+    `page N + 1` once and silently stop chaining on page N+2. Tracking the
+    accumulating group's own tail separately (keyed by the stable merged-
+    table id, which `model_copy` also never changes) is what lets each
+    successive pairwise merge see the REAL immediately-preceding page.
+    """
     if len(tables) < 2:
         return tables
     merged: list[Table] = [tables[0]]
+    tail_page: dict[str, int | None] = {t.id: t.source_ref.page for t in tables}
     for table in tables[1:]:
         prev = merged[-1]
-        prev_page = prev.source_ref.page
+        prev_page = tail_page.get(prev.id)
         this_page = table.source_ref.page
         prev_bottom = table_bbox_by_id.get(prev.id, (0, 0, 0, 0))[3]
         this_top = table_bbox_by_id.get(table.id, (0, 0, 0, 0))[1]
@@ -577,7 +600,20 @@ def _merge_continued_tables(
             prev_page is not None and this_page is not None and this_page == prev_page + 1
             and _tables_continue(table_xs_by_id.get(prev.id, []), prev_bottom, page_height, table_xs_by_id.get(table.id, []), this_top)
         ):
-            merged[-1] = prev.model_copy(update={"cells": prev.cells + table.cells})
+            # The continuation's own first row sits mid-table after the
+            # merge -- `_build_pdf_table_grid` stamped it `is_header=True`
+            # purely because it was row 0 of ITS OWN (single-page) table,
+            # which is no longer true once it's appended here. Only the
+            # very first table's real header row should ever carry
+            # `is_header=True`.
+            continuation_cells = [
+                [cell.model_copy(update={"is_header": False}) if cell is not None else None for cell in row]
+                for row in table.cells
+            ]
+            merged[-1] = prev.model_copy(update={"cells": prev.cells + continuation_cells})
+            tail_page[prev.id] = this_page
+            table_bbox_by_id[prev.id] = table_bbox_by_id.get(table.id, table_bbox_by_id.get(prev.id, (0, 0, 0, 0)))
+            table_xs_by_id[prev.id] = table_xs_by_id.get(table.id, table_xs_by_id.get(prev.id, []))
         else:
             merged.append(table)
     return merged
@@ -1162,7 +1198,15 @@ def load_pdf(
     # Phase 3a (Task 5): cross-page table continuation merge -- must run
     # AFTER the full per-page loop above finishes (needs every table's real
     # page number to know which tables are on ADJACENT pages at all). See
-    # `_merge_continued_tables`'s own docstring for the merge rule.
-    tables = _merge_continued_tables(tables, table_xs_by_id, table_bbox_by_id, page_height)
+    # `_merge_continued_tables`'s own docstring for the merge rule. Wrapped
+    # like every other risky path in this file (per-field try/except in
+    # `_build_pdf_table_grid`, the table-grid-level fallback in the main
+    # loop) -- a malformed bbox/xs entry or any unexpected error here must
+    # degrade to the unmerged per-page tables, never abort the whole
+    # document load.
+    try:
+        tables = _merge_continued_tables(tables, table_xs_by_id, table_bbox_by_id, page_height)
+    except Exception:  # noqa: BLE001 -- a continuation-merge failure degrades to unmerged per-page tables, never aborts the document
+        pass
 
     return CanonicalDoc(document=document, blocks=blocks, tables=tables, figures=figures)
