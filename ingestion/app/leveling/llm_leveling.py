@@ -63,7 +63,6 @@ from app.leveling.tree_builder import (
 )
 from app.leveling.tree_builder import figure_id_by_block_id as _build_figure_id_by_block_id
 from app.quality.criteria_retrieval import CriteriaRetriever
-from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL
 from app.leveling.warnings_finalize import finalize_warnings
 from app.workitem.model import (
     IntegrityWarning,
@@ -1122,7 +1121,7 @@ def _detect_deterministic_subtrees(
                 else None
             )
             if span_text is None:
-                # No real caption (vision disabled/failed/NO_TECHNICAL_CONTENT --
+                # No real caption (vision disabled/failed/judged insignificant --
                 # see _figure_line's own docstring) -- the figure still exists
                 # in the source though, so it's recorded as uncaptioned on
                 # whatever node its span belongs to rather than vanishing
@@ -2512,7 +2511,7 @@ def _build_survey_tree_for_branch(
     dropped_blocks = [
         i
         for i, block in enumerate(blocks)
-        if not (block.kind == BlockKind.FIGURE and NO_TECHNICAL_CONTENT_SENTINEL in block.text)
+        if not (block.kind == BlockKind.FIGURE and _figure_line(block) is None)
         and not _block_content_appears_in_generated_output(resolved_block_texts[i], combined_words)
         and not _REFERENCED_ATTACHMENT_PATTERN.search(resolved_block_texts[i])
     ]

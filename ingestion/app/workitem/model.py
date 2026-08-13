@@ -180,7 +180,7 @@ class WorkItemNode(BaseModel):
     table_ids: list[str] = Field(default_factory=list)
     # Figures that folded into this node's span but produced NO caption --
     # vision disabled, the vision call failed/errored, or the model itself
-    # returned the NO_TECHNICAL_CONTENT sentinel (_figure_line returns None
+    # judged the figure insignificant (_figure_line returns None
     # in all three cases, so nothing about the figure reaches `description`
     # and it would otherwise be invisible to a reviewer). Disjoint from
     # figure_ids: a figure id appears in exactly one of the two lists, never

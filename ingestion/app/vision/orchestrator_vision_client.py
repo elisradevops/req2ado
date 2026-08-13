@@ -12,7 +12,7 @@ _VISION_REQUEST_TIMEOUT_SECONDS = 300.0
 
 class FigureVisionResult(NamedTuple):
     """Structured result of describe_figure -- replaces the old free-text
-    caption + hoped-for NO_TECHNICAL_CONTENT sentinel with schema-constrained
+    caption + hoped-for magic-string sentinel with schema-constrained
     output. `significant=False` means "don't show this figure to the model
     at all" (main.py's caller sets Figure.caption=None in that case, reusing
     the existing caption=None -> omitted-from-context convention unchanged)."""

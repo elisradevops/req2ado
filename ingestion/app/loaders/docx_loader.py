@@ -600,7 +600,7 @@ def _extract_table_cells(docx_table: DocxTable) -> list[list[TableCell | None]]:
 
 
 def _describe_one_figure(
-    rel, describe_figure: Callable[[bytes], str] | None
+    rel, describe_figure: Callable[[bytes], str | None] | None
 ) -> str | None:
     """Shared per-image describe_figure call + failure handling, used by
     both the inline (real document-order) and fallback (floating/unmatched
@@ -691,7 +691,7 @@ def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:
     return None
 
 
-def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) -> CanonicalDoc:
+def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None = None) -> CanonicalDoc:
     """`describe_figure`, when provided, is called with each embedded
     image's raw bytes and must return a short text description -- used to
     replace the `[FIGURE: none]` placeholder with real content (see

@@ -832,7 +832,7 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     figure_line = _figure_line(block)
                     if figure_line is None:
                         # Caption failed / vision disabled / the vision call
-                        # returned NO_TECHNICAL_CONTENT (_figure_line returns
+                        # judged the figure insignificant (_figure_line returns
                         # None in all three cases -- see its own docstring):
                         # the literal placeholder must never reach
                         # `description`, same as before this field existed.

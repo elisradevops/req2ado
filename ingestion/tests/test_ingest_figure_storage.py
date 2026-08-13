@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.vision.orchestrator_vision_client import FigureVisionResult
 
 client = TestClient(app)
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -21,8 +22,8 @@ def _upload(filename: str, path: Path, **extra_params: object) -> dict:
 
 
 class _FakeVisionClient:
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> str:
-        return "a real caption"
+    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        return FigureVisionResult(significant=True, description="a real caption")
 
 
 def test_ingest_stores_a_compressed_figure_file_when_job_id_is_given(monkeypatch) -> None:

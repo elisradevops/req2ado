@@ -1147,7 +1147,7 @@ def _detect_boilerplate_templates(pages_first_lines: list[str], pages_last_lines
 
 
 def load_pdf(
-    path: str, describe_figure: Callable[[bytes], str] | None = None, text_only: bool = False
+    path: str, describe_figure: Callable[[bytes], str | None] | None = None, text_only: bool = False
 ) -> CanonicalDoc:
     """`describe_figure`, when provided, is called with each embedded
     image's raw bytes and must return a short text description -- used to

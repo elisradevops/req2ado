@@ -41,7 +41,7 @@ from app.redaction.redactor import redact_canonical_doc
 from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
-from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL, OrchestratorVisionClient
+from app.vision.orchestrator_vision_client import OrchestratorVisionClient
 from app.vision.figure_storage_client import OrchestratorFigureFileClient, compress_figure_for_storage
 from app.workitem.model import WorkItemTree
 
@@ -248,16 +248,17 @@ def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
 _FIGURE_CAPTION_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7
 
 
-def _figure_caption_cache_key(original_image_bytes: bytes) -> str:
+def _figure_caption_cache_key(original_image_bytes: bytes, document_context: str | None) -> str:
     # Keyed on the ORIGINAL bytes handed to _describe_figure, before any
     # EMF/WMF->PNG conversion below -- two callers with byte-identical
     # source images must hit the same cache entry regardless of which
-    # conversion path either happened to take.
-    # No model name in the key: /llm/vision has no per-call model override
-    # (LLM_VISION_MODEL is a single fixed orchestrator-side config), so the
-    # vision model is already effectively constant across every caller of
-    # this cache. If that ever changes, this key needs a model component.
-    return f"figcap:{hashlib.sha256(original_image_bytes).hexdigest()}"
+    # conversion path either happened to take. document_context is now part
+    # of the key -- see _describe_figure's own comment for why the same
+    # image across two different documents can legitimately produce two
+    # different significance verdicts once document context is a real
+    # input to that judgment.
+    context_hash = hashlib.sha256((document_context or "").encode("utf-8")).hexdigest()[:16]
+    return f"figcap:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}"
 
 
 def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
@@ -285,58 +286,46 @@ def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
     return image_bytes, None
 
 
-def _describe_figure(image_bytes: bytes) -> str:
+def _describe_figure(image_bytes: bytes, document_context: str | None = None) -> str | None:
     # Confirmed real root cause of run-to-run SURVEY node-count variance
     # (74 vs ~120 nodes for the identical document): a figure's caption was
-    # previously freshly (re-)sampled on every single job run (no cache,
-    # and -- see OpenWebUiClient.vision's own doc comment -- no temperature/
-    # seed either), and caption text feeds directly into
-    # llm_leveling.py's token-budget branch splitter, so a differently
-    # worded caption on a re-run can shift branch boundaries and, with
-    # them, total node count. Memoizing by the image's own byte hash makes
-    # the SAME figure produce the SAME caption on every run, removing that
-    # source of drift entirely (on top of the vision call now also being
-    # temperature=0/seed=0 -- belt and suspenders, since a cache miss still
-    # goes through that deterministic call). Fails open on any Redis error
-    # in either direction -- a cache outage must degrade to "call the
-    # vision model live," never fail the whole SURVEY job.
-    cache_key = _figure_caption_cache_key(image_bytes)
+    # previously freshly (re-)sampled on every single job run. Memoizing by
+    # the image's own byte hash makes the SAME figure produce the SAME
+    # result on every run -- but the cache key must now also depend on
+    # document_context, since the SAME image embedded in two DIFFERENT
+    # documents can legitimately get two DIFFERENT significance verdicts
+    # once document context feeds the judgment (an image byte-identical
+    # cache key alone would silently leak document A's verdict onto
+    # document B). Fails open on any Redis error in either direction.
+    cache_key = _figure_caption_cache_key(image_bytes, document_context)
     try:
         cached = _narration_redis.get(cache_key)
-        # A blank cached value is treated as a MISS, not a hit -- confirmed
-        # live (AirPro document, all 39 figures): a vision call that once
-        # returned an empty string got cached unconditionally and then
-        # replayed that same empty caption on every subsequent resubmit for
-        # a full week (_FIGURE_CAPTION_CACHE_TTL_SECONDS), masking whatever
-        # caused the original empty response and making it look like every
-        # single figure in the document genuinely had no useful caption.
-        # The real NO_TECHNICAL_CONTENT_SENTINEL is a meaningful, non-blank
-        # answer and is NOT covered by this check -- only a truly empty/
-        # whitespace-only response is excluded.
-        if cached is not None and cached.decode("utf-8").strip():
-            return cached.decode("utf-8")
+        if cached is not None:
+            try:
+                cached_obj = json.loads(cached.decode("utf-8"))
+                return cached_obj["description"] if cached_obj["significant"] else None
+            except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
+                pass  # Treat an unparseable cache entry as a miss, same as a blank one below.
     except Exception:
         logger.warning("Figure-caption cache read failed -- falling through to a live vision call", exc_info=True)
 
-    # Sniffed from the actual bytes, not a filename extension -- every
-    # caller (docx/pptx-embedded figures, standalone image files) hands over
-    # raw bytes with no reliable filename/extension of their own, so this is
-    # the one place that can know the real type. Previously the orchestrator
-    # hardcoded image/png regardless of actual content (see
-    # OrchestratorVisionClient.describe_figure's docstring) -- harmless for
-    # an actual PNG, silently wrong for anything else.
     describe_bytes, mime_type = _rasterize_for_vision(image_bytes)
-    caption = _vision_client.describe_figure(describe_bytes, mime_type)
-    # Never cache a blank result -- see the read-side comment above for why.
-    # A blank caption is never useful to replay, and skipping the write lets
-    # a transient failure self-heal on the next call/run instead of being
-    # locked in for a full week.
-    if caption.strip():
-        try:
-            _narration_redis.set(cache_key, caption, ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS)
-        except Exception:
-            logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
-    return caption
+    result = _vision_client.describe_figure(describe_bytes, mime_type, document_context)
+    if result is None:
+        # Totally unparseable vision response -- same "don't memorize a
+        # glitch for a week" protection the old blank-caption guard
+        # provided (see FigureVisionResult's own doc comment). Not cached;
+        # self-heals on the next call/run instead of being locked in.
+        return None
+    try:
+        _narration_redis.set(
+            cache_key,
+            json.dumps({"significant": result.significant, "description": result.description}),
+            ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS,
+        )
+    except Exception:
+        logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
+    return result.description if result.significant else None
 
 
 # Lazily constructed (NOT at import time, unlike _vector_store above) --
@@ -606,6 +595,18 @@ async def ingest(
     # document..." UI showed zero detail for however many minutes the
     # figures' sequential vision-LLM calls took.
     job_id: str | None = None,
+    # Whole-document AI context primer (Phase 6/orchestrator's pipeline.worker.ts,
+    # now computed BEFORE this call, not after) -- threaded to every figure's
+    # describe_figure call during this document's own parse, so vision
+    # significance can be judged relative to the whole document. Optional;
+    # None produces byte-identical figure-only prompts to before this
+    # parameter existed (see _build_prompt in orchestrator_vision_client.py).
+    # Named `primer_context` (not `document_context`) to match the query key
+    # ingestion-http.client.ts sends and /level already uses -- only renamed
+    # to `document_context` internally, below, when passed into the
+    # figure-description closure (a plain in-process argument, never a wire
+    # key of its own).
+    primer_context: str | None = None,
 ) -> CanonicalDoc:
     # skip_vision: /jobs/preview (orchestrator) only needs blockCount/
     # sectionCount/fileType to show the user before they even pick a mode --
@@ -674,14 +675,10 @@ async def ingest(
         # concurrent or subsequent requests.
         figure_counter = {"n": 0}
 
-        def _describe_figure_with_progress(image_bytes: bytes) -> str:
+        def _describe_figure_with_progress(image_bytes: bytes) -> str | None:
             figure_counter["n"] += 1
             index = figure_counter["n"]
             if narration_publisher is not None:
-                # Published BEFORE the (potentially slow, sequential)
-                # vision call itself -- the whole point is showing which
-                # figure is in flight RIGHT NOW during a long wait, not
-                # reporting one that already finished.
                 narration_publisher.publish(
                     LevelingProgress(
                         phase="describe_figure",
@@ -690,22 +687,19 @@ async def ingest(
                         figure_index=index, figure_count=figure_total,
                     )
                 )
-            caption = _describe_figure(image_bytes)
+            # primer_context is the outer ingest() route param (closed over
+            # by this nested function); _describe_figure's OWN parameter is
+            # named document_context (see main.py's _describe_figure) since
+            # it's a plain in-process argument, never a URL query key of its
+            # own -- passing primer_context's value into it here is the one
+            # place that boundary rename happens.
+            caption = _describe_figure(image_bytes, primer_context)
             if narration_publisher is not None:
-                # Second event, same figure_index, now WITH the real caption
-                # -- answers "what did the model actually see" instead of
-                # leaving every figure's row in the activity log identical
-                # (confirmed live: 7 figures produced 7 indistinguishable
-                # "figure N so far" lines). The raw NO_TECHNICAL_CONTENT
-                # sentinel (see orchestrator_vision_client.py) is translated
-                # to human copy for narration ONLY -- the returned `caption`
-                # below keeps the raw sentinel so llm_leveling.py's coverage
-                # check can still detect it via an exact string match.
-                display_caption = (
-                    "this figure has no discernible technical content"
-                    if caption.strip() == NO_TECHNICAL_CONTENT_SENTINEL
-                    else caption
-                )
+                # caption is None exactly when the vision model judged this
+                # figure non-significant (or vision failed) -- both cases
+                # get the same honest "nothing here" narration copy, same
+                # spirit as the retired sentinel's display translation.
+                display_caption = caption if caption is not None else "this figure has no discernible technical content"
                 narration_publisher.publish(
                     LevelingProgress(
                         phase="describe_figure",

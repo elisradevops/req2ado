@@ -55,7 +55,7 @@ def ocr_page_to_text_filtered(
 
 
 def load_pdf_with_ocr_fallback(
-    path: str, languages: str = "eng", describe_figure: Callable[[bytes], str] | None = None
+    path: str, languages: str = "eng", describe_figure: Callable[[bytes], str | None] | None = None
 ) -> CanonicalDoc:
     reader = PdfReader(path)
     num_pages = len(reader.pages)

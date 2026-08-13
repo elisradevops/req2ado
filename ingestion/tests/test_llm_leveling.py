@@ -335,19 +335,17 @@ def test_build_survey_tree_does_not_flag_a_short_label_block_as_dropped() -> Non
     assert tree.warnings == []
 
 
-def test_build_survey_tree_skips_a_figure_the_vision_model_flagged_as_no_content() -> None:
-    # §10.2a fix: a figure whose caption is exactly the NO_TECHNICAL_CONTENT
-    # sentinel (the vision model correctly saying there was nothing to
-    # describe) must not be flagged as a "dropped" block -- there was
-    # nothing to lose.
-    from app.vision.orchestrator_vision_client import NO_TECHNICAL_CONTENT_SENTINEL
-
+def test_build_survey_tree_does_not_flag_an_uncaptioned_figure_as_a_dropped_block() -> None:
+    # A figure with no caption (vision judged it insignificant, OR vision
+    # failed/was disabled -- both cases render identically as "[FIGURE: none]")
+    # must not be flagged as a "dropped" block -- there was nothing to lose
+    # either way.
     path = "empty_figure.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="The unit shall boot within ten seconds.", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.FIGURE, text=f"[FIGURE: {NO_TECHNICAL_CONTENT_SENTINEL}]", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
         ],
     )
     fake = FakeSectionAnalysisClient(

@@ -7,7 +7,7 @@ from typing import Callable
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef
 
 
-def load_image(path: str, describe_figure: Callable[[bytes], str] | None = None) -> CanonicalDoc:
+def load_image(path: str, describe_figure: Callable[[bytes], str | None] | None = None) -> CanonicalDoc:
     """A standalone image file (not embedded in a docx/pptx) is treated as
     ONE Figure + ONE FIGURE-kind Block spanning the whole document -- there
     is no other content to extract. `describe_figure` uses the SAME

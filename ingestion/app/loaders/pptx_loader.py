@@ -235,7 +235,7 @@ def _extract_pptx_table_cells(pptx_table: PptxTable) -> list[list[TableCell | No
     return grid
 
 
-def load_pptx(path: str, describe_figure: Callable[[bytes], str] | None = None) -> CanonicalDoc:
+def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None = None) -> CanonicalDoc:
     """One slide -> one HEADING block (its title placeholder, if present) +
     one PARAGRAPH block per other text-frame paragraph (bullets), in slide
     order, then one NOTE block for the slide's speaker notes (if any), one
