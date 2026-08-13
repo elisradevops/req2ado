@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -16,7 +17,7 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, Docume
 
 logger = logging.getLogger(__name__)
 
-_STYLE_HEADING_PREFIX = "Heading "
+_HEADING_STYLE_PATTERN = re.compile(r"^Heading\s*(\d+)$")
 _IMAGE_RELTYPE_MARKER = "image"
 
 # w:jc/@w:val -> TableCell.align. Deliberately a plain dict, not python-docx's
@@ -601,6 +602,56 @@ def _describe_one_figure(
         return None
 
 
+def _outline_level_from_ppr(ppr) -> int | None:
+    """w:outlineLvl is 0-based per the OOXML spec; this file's Block.
+    heading_level is 1-based, matching every existing loader/test."""
+    outline_lvl = ppr.find(qn("w:outlineLvl"))
+    if outline_lvl is None:
+        return None
+    val = outline_lvl.get(qn("w:val"))
+    if val is None:
+        return None
+    return int(val) + 1
+
+
+def _heading_level_for_paragraph(paragraph: DocxParagraph) -> int | None:
+    """Heading level via whichever signal is present, in order of
+    reliability: (1) an explicit outlineLvl override on THIS paragraph's
+    own pPr -- rare, but the most authoritative signal when present; (2)
+    outlineLvl on the paragraph's STYLE definition -- what Word's own
+    built-in Heading 1-9 styles actually carry (confirmed live: a
+    "Heading 1"-styled paragraph has NO outlineLvl on its own pPr, only
+    on the style's pPr), so this is what fires for the common case,
+    template-independent of the style's NAME; (3) style-name regex
+    fallback ("Heading" + optional space + digits, or "Title") for a
+    template that defines neither outlineLvl location -- allows both the
+    with-space Word convention ("Heading 1") and the no-space convention
+    docgen-json-to-word emits ("Heading3"). Returns None (falls through to
+    PARAGRAPH) for a style regex can't parse, e.g. a custom style like
+    "Heading Body" -- never raises."""
+    own_ppr = paragraph._p.pPr
+    if own_ppr is not None:
+        level = _outline_level_from_ppr(own_ppr)
+        if level is not None:
+            return level
+
+    style = paragraph.style
+    if style is not None:
+        style_ppr = style.element.find(qn("w:pPr"))
+        if style_ppr is not None:
+            level = _outline_level_from_ppr(style_ppr)
+            if level is not None:
+                return level
+
+    style_name = style.name if style else ""
+    if style_name == "Title":
+        return 1
+    match = _HEADING_STYLE_PATTERN.match(style_name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) -> CanonicalDoc:
     """`describe_figure`, when provided, is called with each embedded
     image's raw bytes and must return a short text description -- used to
@@ -671,15 +722,14 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str] | None = None) 
             end = start + len(content)
             offset = end + 1
 
-            style_name = paragraph.style.name if paragraph.style else ""
-            if style_name.startswith(_STYLE_HEADING_PREFIX):
-                level = int(style_name.removeprefix(_STYLE_HEADING_PREFIX))
+            heading_level = _heading_level_for_paragraph(paragraph)
+            if heading_level is not None:
                 blocks.append(
                     Block(
                         id=f"b{block_id}",
                         kind=BlockKind.HEADING,
                         text=content,
-                        heading_level=level,
+                        heading_level=heading_level,
                         source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
                     )
                 )

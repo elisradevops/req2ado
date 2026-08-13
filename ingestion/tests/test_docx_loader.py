@@ -976,3 +976,67 @@ def test_load_docx_unwraps_content_control_wrapped_heading_and_paragraph() -> No
     heading_block = next(b for b in result.blocks if b.text == "Hidden Heading")
     assert heading_block.kind == BlockKind.HEADING
     assert heading_block.heading_level == 1
+
+
+def test_load_docx_detects_heading_via_style_level_outline_lvl_with_no_space_in_style_name() -> None:
+    # Regression: docgen-json-to-word (the sibling repo that GENERATES real
+    # .docx files) emits style ids like "Heading3" with NO space
+    # (ParagraphService.cs), which the old startswith("Heading ") check
+    # never matched -- silently downgraded to PARAGRAPH. Word's own
+    # built-in Heading N styles carry their outlineLvl on the STYLE
+    # definition (not the paragraph's own pPr), so this exercises that path.
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    paragraph = doc.add_paragraph("Backplane Power")
+    paragraph.style = doc.styles["Heading 3"]  # style_id "Heading3", name "Heading 3"
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "heading3.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    heading = next(b for b in result.blocks if b.text == "Backplane Power")
+    assert heading.kind == BlockKind.HEADING
+    assert heading.heading_level == 3
+
+
+def test_load_docx_treats_title_style_as_a_heading() -> None:
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    paragraph = doc.add_paragraph("AirPro Interface Control Document")
+    paragraph.style = doc.styles["Title"]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "title.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    heading = next(b for b in result.blocks if "Interface Control" in b.text)
+    assert heading.kind == BlockKind.HEADING
+    assert heading.heading_level == 1
+
+
+def test_load_docx_does_not_crash_on_a_custom_heading_style_with_non_numeric_suffix() -> None:
+    # Regression: a custom style named "Heading Body" (starts with "Heading "
+    # but has no trailing digit) previously crashed the WHOLE document load
+    # via int("Body") -- one malformed style aborted every other block too.
+    from docx import Document as DocxDocument
+    from docx.enum.style import WD_STYLE_TYPE
+
+    doc = DocxDocument()
+    doc.styles.add_style("Heading Body", WD_STYLE_TYPE.PARAGRAPH)
+    paragraph = doc.add_paragraph("Not a real numbered heading.")
+    paragraph.style = doc.styles["Heading Body"]
+    doc.add_paragraph("A normal paragraph after it.")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "custom_style.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))  # must not raise
+
+    custom = next(b for b in result.blocks if b.text == "Not a real numbered heading.")
+    assert custom.kind == BlockKind.PARAGRAPH  # no reliable level signal -- falls through, not a crash
+    normal = next(b for b in result.blocks if b.text == "A normal paragraph after it.")
+    assert normal.kind == BlockKind.PARAGRAPH
