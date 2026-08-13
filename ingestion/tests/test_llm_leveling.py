@@ -518,6 +518,17 @@ def test_build_document_outline_lists_every_heading_in_a_merged_branch(monkeypat
     # _derive_section_label, which returns only a branch's FIRST heading --
     # a branch merged from multiple original sections (the common case)
     # lost every heading after the first.
+    #
+    # A second top-level heading ("Audio") is required so
+    # _split_into_branches itself produces >=2 real branches -- with only
+    # one top-level heading (as an earlier version of this fixture had),
+    # build_survey_tree takes the single-branch windowing fallback (§4),
+    # which re-chunks per-block under _force_multi_branch's blanket
+    # huge-token mock and always yields one block per branch -- "Display"
+    # and "Picture Modes" would then never actually land in the SAME
+    # branch, and this test would not exercise a genuinely merged branch
+    # at all (see test_topic_count_counts_numbered_pseudo_headings_on_the_
+    # multi_branch_path's own comment for the same root cause).
     _force_multi_branch(monkeypatch)
     path = "outline_doc.txt"
     doc = CanonicalDoc(
@@ -527,12 +538,26 @@ def test_build_document_outline_lists_every_heading_in_a_merged_branch(monkeypat
             Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
             Block(id="b2", kind=BlockKind.HEADING, heading_level=2, text="Picture Modes", source_ref=_sr(path)),
             Block(id="b3", kind=BlockKind.PARAGRAPH, text="Three presets are supported.", source_ref=_sr(path)),
+            Block(id="b4", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
+            Block(id="b5", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
         ],
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert "Display" in fake.calls[0]["section_text"]
-    assert "Picture Modes" in fake.calls[0]["section_text"]
+    # Branch 1 ("Display" + "Picture Modes", genuinely merged under one
+    # top-level heading) is analyzed first; branch 2 ("Audio") second.
+    # Assert against branch 2's OWN call: its own raw section text never
+    # mentions "Display" or "Picture Modes" at all, so the only way either
+    # string can appear in its section_text is via the shared outline
+    # (global_context) that _build_document_outline built from BOTH
+    # branches -- this proves the outline itself lists every heading from
+    # the merged first branch, not just coincidental raw-block-text
+    # presence in a branch's own call (which calls[0] alone could not
+    # distinguish, since branch 1's own rendered text trivially contains
+    # both heading strings regardless of the outline).
+    outline_bearing_section_text = fake.calls[1]["section_text"]
+    assert "Display" in outline_bearing_section_text
+    assert "Picture Modes" in outline_bearing_section_text
 
 
 def test_build_document_outline_lists_a_numbered_pseudo_heading(monkeypatch) -> None:
