@@ -1163,3 +1163,34 @@ def test_load_docx_detects_a_numbered_list_item_as_list_item_kind() -> None:
     assert bullet.kind == BlockKind.LIST_ITEM
     normal = next(b for b in result.blocks if b.text == "A normal paragraph, not a list item.")
     assert normal.kind == BlockKind.PARAGRAPH
+
+
+def test_load_docx_heading_detection_takes_precedence_over_list_item_detection() -> None:
+    # Constraint: heading detection must always win over list-item detection.
+    # A paragraph that has BOTH a heading style AND w:numPr (both signals
+    # present) must be emitted as HEADING, not LIST_ITEM -- the if/else
+    # structure ensures heading is checked first, but this test provides
+    # direct evidence of the precedence rule.
+    from docx import Document as DocxDocument
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    doc = DocxDocument()
+    # Create a heading with an embedded heading style
+    heading = doc.add_paragraph("Numbered Heading", style="Heading 1")
+    # Then manually add w:numPr to the same paragraph
+    pPr = heading._p.get_or_add_pPr()
+    num_pr = parse_xml(
+        f'<w:numPr {nsdecls("w")}><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'
+    )
+    pPr.append(num_pr)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "heading_with_numpr.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    block = next(b for b in result.blocks if b.text == "Numbered Heading")
+    # Heading detection must take precedence: this is HEADING, never LIST_ITEM
+    assert block.kind == BlockKind.HEADING
+    assert block.heading_level == 1
