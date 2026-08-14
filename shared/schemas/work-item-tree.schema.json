@@ -163,7 +163,8 @@
             "dropped_blocks", "missing_table_group_coverage", "external_reference",
             "scoring_failed", "scoring_missing", "scoring_inconsistent_categories",
             "enhancement_call_failed", "enhancement_response_incomplete", "dropped_row",
-            "front_matter_folded", "trace_link_inference_failed", "heading_id_offset_mismatch"
+            "front_matter_folded", "trace_link_inference_failed", "heading_id_offset_mismatch",
+            "unsupported_content_note", "empty_table_content", "degraded_table_structure"
           ]
         },
         "severity": {

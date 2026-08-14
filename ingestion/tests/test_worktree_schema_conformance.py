@@ -8,6 +8,7 @@ import pytest
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.tree_builder import build_baseline_tree
+from app.workitem.model import IntegrityWarning, WarningKind
 
 SCHEMA_PATH = Path(__file__).parents[2] / "shared" / "schemas" / "work-item-tree.schema.json"
 
@@ -103,6 +104,39 @@ def test_survey_tree_with_a_real_warning_matches_work_item_tree_schema(schema) -
     )
     tree = build_survey_tree(_survey_doc(), fake)
     assert len(tree.warnings) >= 1
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_unsupported_content_note_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.UNSUPPORTED_CONTENT_NOTE,
+            "Unsupported content note found in document.",
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_empty_table_content_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.EMPTY_TABLE_CONTENT,
+            "Empty table content encountered.",
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_degraded_table_structure_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.DEGRADED_TABLE_STRUCTURE,
+            "Table structure degradation detected.",
+        )
+    ]
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
