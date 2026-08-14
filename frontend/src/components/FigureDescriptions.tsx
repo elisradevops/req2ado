@@ -65,7 +65,19 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
                     referenced only as "Figure: This diagram illustrates..."
                     had no way to be seen, only read about. */}
                 <FigureImage jobId={jobId} figureId={item.figureId} active={hasExpandedOnce} alt={`Figure ${item.figureIndex}`} />
-                <div className="min-w-0 flex-1 !text-ink-2">
+                {/* Final whole-branch review finding: [&_p]:!text-ink-2 targets
+                    Markdown's own rendered <p> directly (an !important class
+                    on this ancestor div never wins against the <p>'s own
+                    explicit classes -- importance only competes between
+                    declarations on the SAME element). text-sm needs no
+                    override here -- it already matches Markdown's own p
+                    default, unlike NodeDetailPanel's site which needs xs.
+                    [&_p]:inline keeps the "Figure N: " label and the caption
+                    on the same line -- Markdown's <p> is block-level by
+                    default, which (before this) pushed the caption onto its
+                    own line below the label, an unintended layout regression
+                    from the prior plain-text-in-<p> rendering. */}
+                <div className="min-w-0 flex-1 [&_p]:inline [&_p]:!text-ink-2">
                   <span className="font-medium text-ink-1">Figure {item.figureIndex}: </span>
                   <Markdown>{item.caption}</Markdown>
                 </div>

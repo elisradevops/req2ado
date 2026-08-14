@@ -530,12 +530,15 @@ describe('NodeDetailPanel', () => {
 
       const { default: userEvent } = await import('@testing-library/user-event');
       await userEvent.hover(chip);
-      // Narrowed (Task 4b sub-fix ii): the old copy's "(vision disabled,
-      // or...)" clause is now redundant with the tree-level warning, and
-      // ambiguous with the insignificant case below -- this chip's tooltip
-      // now names only the genuine-failure case.
+      // Final whole-branch review finding: the Task 4b narrowed copy asserted
+      // a specific failure ("failed or timed out") even in BASELINE/vision-off
+      // runs, where caption_status is always null because vision simply never
+      // ran -- restored to a disjunctive, honest phrasing that doesn't assert
+      // a cause this chip alone can't actually know.
       await waitFor(() =>
-        expect(screen.getByText(/description call failed or timed out/i)).toBeInTheDocument(),
+        expect(
+          screen.getByText(/description call failed, or vision captioning was off/i),
+        ).toBeInTheDocument(),
       );
     });
 
@@ -592,12 +595,28 @@ describe('NodeDetailPanel', () => {
       const em = screen.getByText('italic');
       expect(strong.tagName).toBe('STRONG');
       expect(em.tagName).toBe('EM');
-      // Verify styling is preserved: parent wrapper applies !text-xs !text-ink-2
-      // to override Markdown's default text-sm text-ink-1. The important modifier
-      // takes effect at CSS cascade level, so check the wrapper (not the child <p>).
-      const wrapper = screen.getByText('italic').closest('p')?.parentElement;
-      expect(wrapper).toHaveClass('!text-xs');
-      expect(wrapper).toHaveClass('!text-ink-2');
+      // Final whole-branch review finding: a bare `!text-xs !text-ink-2` on
+      // the wrapper <div> never actually overrides Markdown's own
+      // `text-sm text-ink-1` classes on the rendered <p> -- !important only
+      // wins between declarations on the SAME element, so the <p>'s own
+      // explicit classes always apply directly to itself regardless of what
+      // an ancestor declares. The real fix is `[&_p]:` arbitrary-variant
+      // classes, which Tailwind necessarily compiles onto this SAME ancestor
+      // <div> (compiled to `... p { ... !important }` descendant-selector
+      // rules -- verified directly against the built CSS output, not
+      // assumed), so asserting the class here is correct, but the class
+      // names themselves now prove they target the <p>, unlike the old
+      // self-referential-looking `!text-xs !text-ink-2`.
+      const p = screen.getByText('italic').closest('p');
+      const wrapper = p?.parentElement;
+      expect(wrapper).toHaveClass('[&_p]:!text-xs');
+      expect(wrapper).toHaveClass('[&_p]:!text-ink-2');
+      // The <p> itself keeps Markdown's own text-sm/text-ink-1 classes in the
+      // DOM (the override happens via CSS cascade, not by removing them) --
+      // jsdom has no CSS engine to assert the winning size/color directly, so
+      // this pins the actual DOM shape the compiled selector depends on.
+      expect(p).toHaveClass('text-sm');
+      expect(p).toHaveClass('text-ink-1');
     });
   });
 

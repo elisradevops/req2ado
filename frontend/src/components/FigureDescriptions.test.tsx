@@ -87,10 +87,39 @@ describe('FigureDescriptions', () => {
     const em = screen.getByText('italic');
     expect(strong.tagName).toBe('STRONG');
     expect(em.tagName).toBe('EM');
-    // Verify styling is preserved: parent wrapper applies !text-ink-2 to override
-    // Markdown's default text-ink-1. Check the wrapper element for the override class.
-    const wrapper = screen.getByText('italic').closest('p')?.parentElement;
-    expect(wrapper).toHaveClass('!text-ink-2');
+    // Final whole-branch review finding: a bare `!text-ink-2` on the wrapper
+    // <div> never actually overrides Markdown's own `text-ink-1` class on
+    // the rendered <p> -- CSS !important only wins between declarations on
+    // the SAME element, and the <p>'s own explicit class always applies
+    // directly to itself regardless of what an ancestor declares. The real
+    // fix is a `[&_p]:` arbitrary-variant class, which Tailwind necessarily
+    // compiles onto this SAME ancestor <div> (compiled to a `... p { ...
+    // !important }` descendant-selector rule -- verified directly against
+    // the built CSS output, not assumed) -- so asserting the class here is
+    // correct, but the class name itself now proves it targets the <p>,
+    // unlike the old self-referential-looking `!text-ink-2`.
+    const p = screen.getByText('italic').closest('p');
+    const wrapper = p?.parentElement;
+    expect(wrapper).toHaveClass('[&_p]:!text-ink-2');
+    // The <p> itself keeps Markdown's own text-ink-1 class in the DOM (the
+    // override happens via CSS cascade, not by removing this class) -- jsdom
+    // has no CSS engine to assert the winning color directly, so this pins
+    // the actual DOM shape the compiled selector depends on.
+    expect(p).toHaveClass('text-ink-1');
+  });
+
+  it('keeps the "Figure N: " label and caption on the same line -- Markdown renders a block-level <p>', () => {
+    // Regression (final whole-branch review finding): replacing the original
+    // plain-text `<p><span>Figure N: </span>{caption}</p>` with a `<div>`
+    // wrapping the label span plus a `<Markdown>`-rendered (block-level) <p>
+    // pushed the caption onto its own line below the label -- an unintended
+    // layout regression from the markdown-rendering fix. [&_p]:inline forces
+    // Markdown's <p> back to inline flow so the label and caption render on
+    // the same line, matching the original layout.
+    const items: FigureDescriptionEntry[] = [{ figureIndex: 1, caption: 'A caption', figureId: 'f0' }];
+    render(<FigureDescriptions jobId="job-1" items={items} />);
+    const wrapper = screen.getByText('A caption').closest('p')?.parentElement;
+    expect(wrapper).toHaveClass('[&_p]:inline');
   });
 
   it('renders markdown list items in captions as real list elements', () => {

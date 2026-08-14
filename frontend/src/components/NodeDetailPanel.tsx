@@ -522,7 +522,15 @@ export function NodeDetailPanel({
                     <FigureImage jobId={jobId} figureId={figureId} active alt={`Figure referenced by ${entry.title}`} />
                     <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                       {captionByFigureId?.[figureId] && (
-                        <div className="!text-xs !text-ink-2">
+                        // Final whole-branch review finding: Markdown's own
+                        // `p` renderer sets its own `text-sm text-ink-1`
+                        // classes directly on the rendered <p> -- an
+                        // !important class on THIS wrapper <div> never wins
+                        // against that (CSS specificity/importance only
+                        // competes between declarations on the SAME element,
+                        // not ancestor vs. descendant). `[&_p]:` targets the
+                        // rendered <p> itself so the override actually lands.
+                        <div className="[&_p]:!text-xs [&_p]:!text-ink-2">
                           <Markdown>{captionByFigureId[figureId]}</Markdown>
                         </div>
                       )}
@@ -592,7 +600,15 @@ export function NodeDetailPanel({
                 return (
                   <Tooltip
                     key={figureId}
-                    content="This figure's image was captured, but the description call failed or timed out."
+                    // Final whole-branch review finding: in BASELINE mode (and
+                    // any SURVEY run with vision explicitly off), caption_status
+                    // is ALWAYS null -- nothing "failed or timed out", vision
+                    // simply never ran for this figure. There is no
+                    // visionActive-equivalent threaded down to this per-figure
+                    // chip (only the tree-level warnings panel knows that), so
+                    // this stays a disjunctive, honest phrasing rather than
+                    // asserting a specific failure occurred.
+                    content="This figure's image was captured, but no description was produced -- the description call failed, or vision captioning was off for this run (see this job's warnings)."
                   >
                     {/* Same warning-band treatment QualityGauge's "Needs
                         review" chip uses (bg-warning-soft + border-warning-
