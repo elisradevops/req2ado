@@ -1515,6 +1515,16 @@ def build_survey_tree(
     # the existing SURVEY branch path (still keyed by this SAME dict,
     # further down) is entirely unaffected by moving this earlier.
     figure_id_by_block_id: dict[str, str] = _build_figure_id_by_block_id(doc)
+    # Task 4b sub-fix (ii) regression fix: whole-document Figure.id ->
+    # Figure.caption_status map, built ONCE here (same "over the FULL,
+    # ORIGINAL doc" reasoning as figure_id_by_block_id directly above) and
+    # threaded to _build_survey_tree_for_branch's own
+    # figure_caption_status_by_id param at BOTH call sites below -- see that
+    # param's own docstring for why this is a separate, narrow dict rather
+    # than widening the multi-branch call site's `figures` argument.
+    figure_caption_status_by_id: dict[str, str] = {
+        f.id: f.caption_status for f in doc.figures if f.caption_status is not None
+    }
 
     # Deterministic hierarchy detection (table-row / ID-bearing-heading /
     # structural-heading conventions -- see _detect_deterministic_subtrees's
@@ -1881,6 +1891,7 @@ def build_survey_tree(
             branch_index=0, branch_count=1, blocks_done_before=0, blocks_total=blocks_total,
             progress_callback=progress_callback,
             figure_id_by_block_id=figure_id_by_block_id,
+            figure_caption_status_by_id=figure_caption_status_by_id,
         )
         branch_tree = branch_result.tree
         all_nodes.extend(branch_tree.nodes)
@@ -1952,6 +1963,7 @@ def build_survey_tree(
                 blocks_done_before=blocks_done_before_by_branch[branch_index],
                 blocks_total=blocks_total, progress_callback=_fire_progress,
                 figure_id_by_block_id=figure_id_by_block_id,
+                figure_caption_status_by_id=figure_caption_status_by_id,
             )
 
         if branch_concurrency <= 1:
@@ -2158,6 +2170,25 @@ def _build_survey_tree_for_branch(
     # carry real ids the model can name in a node's figure_ids. None is
     # byte-identical to before this param existed (id-less figure lines).
     figure_id_by_block_id: dict[str, str] | None = None,
+    # Task 4b sub-fix (ii) regression fix: whole-document Figure.id ->
+    # Figure.caption_status map, built ONCE over the full doc.figures (see
+    # build_survey_tree's own call site comment) and threaded to BOTH of
+    # this function's call sites -- mirrors figure_id_by_block_id's own
+    # whole-document convention directly above, deliberately a NARROW
+    # id->status dict rather than widening the `figures` param above to
+    # always carry the whole document's figures. `figures` above already
+    # feeds render_section/_derive_section_label/representative_source_ref/
+    # _widen_branch_page_range for THIS branch specifically -- passing the
+    # whole document's figures there on the multi-branch path would change
+    # LLM prompt content and branch source-ref widening, an unrelated and
+    # unintended side effect. This param exists ONLY for the insignificant-
+    # figure lookup below. Confirmed real gap this fixes: the multi-branch
+    # path (_run_branch, build_survey_tree) never passed `figures=` at all
+    # (only `tables=`), so insignificant_figure_ids was silently never
+    # populated for any multi-branch SURVEY document -- exactly the large,
+    # multi-branch documents this whole task's figure-significance
+    # disambiguation exists for.
+    figure_caption_status_by_id: dict[str, str] | None = None,
 ) -> WorkItemTree:
     """Does the actual per-branch (or, for a single-branch document, whole-
     document) SURVEY leveling via ONE holistic analyze_section /
@@ -2638,7 +2669,6 @@ def _build_survey_tree_for_branch(
     # -- silently skipped, consistent with every other content this branch
     # would also be unable to place.
     if nodes:
-        fig_map = figures_by_id(figures or [])
         for i, block in enumerate(blocks):
             if block.kind != BlockKind.FIGURE or _figure_line(block) is not None:
                 continue  # non-figure, or captioned (already handled via the model's own figure_ids)
@@ -2647,8 +2677,13 @@ def _build_survey_tree_for_branch(
                 continue
             bracket_index = min(len(nodes) - 1, i * len(nodes) // len(blocks))
             nodes[bracket_index].uncaptioned_figure_ids.append(figure_id)
-            figure = fig_map.get(figure_id)
-            if figure is not None and figure.caption_status == "insignificant":
+            # Uses the whole-document figure_caption_status_by_id param, NOT
+            # the `figures` param above -- see that param's own docstring for
+            # why: `figures` is scoped to THIS branch (or None on the
+            # multi-branch path, see build_survey_tree's _run_branch), so a
+            # lookup against it silently found nothing for every multi-branch
+            # document (the real bug this fixes).
+            if (figure_caption_status_by_id or {}).get(figure_id) == "insignificant":
                 nodes[bracket_index].insignificant_figure_ids.append(figure_id)
 
     # §CMMI hierarchy repair (task confirmed real bug: the prompt alone is a

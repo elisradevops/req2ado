@@ -4659,6 +4659,45 @@ def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insi
     assert set(all_insignificant_ids) <= set(all_uncaptioned_ids)
 
 
+def test_build_survey_tree_multi_branch_path_also_populates_insignificant_figure_ids(monkeypatch) -> None:
+    # Regression guard (review finding on commit 839532a): the multi-branch
+    # loop's own _build_survey_tree_for_branch call site (build_survey_tree's
+    # _run_branch, distinct from the single-call/whole-document call site the
+    # test above exercises) never passed `figures=` at all -- only `tables=`
+    # -- so on any document that actually splits into multiple branches,
+    # insignificant_figure_ids silently stayed [] for every uncaptioned
+    # figure, regardless of its real caption_status. The fix threads a
+    # separate whole-document figure_caption_status_by_id map (mirroring
+    # figure_id_by_block_id's own existing whole-document convention) to
+    # BOTH call sites instead of widening the multi-branch site's `figures`
+    # argument (which also feeds render_section/section labeling/source-ref
+    # widening for that branch specifically, and must stay branch-scoped).
+    #
+    # fig0 sits in the SECOND branch ("Audio", non-first -- the exact case
+    # the bug hid) via _two_branch_doc's own structure, extended with a
+    # trailing FIGURE block.
+    _force_multi_branch(monkeypatch)
+    path = "two_branch_survey_input.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(id="b4", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+        ],
+        figures=[Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path))],
+    )
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+    assert len(fake.calls) == 2  # confirms the multi-branch path (not the single-call path) actually ran
+    all_uncaptioned_ids = [fid for n in tree.nodes for fid in n.uncaptioned_figure_ids]
+    all_insignificant_ids = [fid for n in tree.nodes for fid in n.insignificant_figure_ids]
+    assert all_uncaptioned_ids == ["fig0"]
+    assert all_insignificant_ids == ["fig0"]  # the field this bug left permanently empty on this path
+
+
 def test_build_survey_tree_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> None:
     # Whole-pipeline version of tree_builder.py's/id_tree_builder.py's own
     # identical invariant tests -- section_path is additive provenance
