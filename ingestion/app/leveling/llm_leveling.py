@@ -1183,6 +1183,25 @@ def _detect_deterministic_subtrees(
             if current_target is None or block.id in claimed_heading_block_ids:
                 continue
             claimed_heading_block_ids.add(block.id)
+            if _is_unsupported_content_note(block):
+                # A loader diagnostic placeholder (e.g. pdf_loader.py's
+                # multi-column false-positive note) must never be folded into
+                # a node's description as if it were real content -- see
+                # _is_unsupported_content_note's own docstring. The block was
+                # already claimed above (must not fall through to the
+                # residual/LLM path and get double-warned there), so this is
+                # the only place left to catch it -- same convention as
+                # tree_builder.py's identical `depth is None` branch guard.
+                det_warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.UNSUPPORTED_CONTENT_NOTE,
+                        f'A loader diagnostic note ("{block.text}") was stripped instead of '
+                        "leaking into the proposed tree as if it were real content.",
+                        node_ids=[current_target.local_id],
+                        detail={"kind": "block", "sourceId": block.id, "text": block.text},
+                    )
+                )
+                continue
             # A FIGURE-kind block's raw text is the literal
             # "[FIGURE: {caption or 'none'}]" wire format (see
             # docx_loader.py/pdf_loader.py) -- folding it in unfiltered

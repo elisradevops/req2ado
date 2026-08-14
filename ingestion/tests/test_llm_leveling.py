@@ -4317,6 +4317,37 @@ def test_build_survey_tree_drops_a_placeholder_figure_caption_deterministically(
     assert "none" not in last_leaf.description.lower()
 
 
+def test_build_survey_tree_deterministic_span_fold_strips_an_unsupported_content_note() -> None:
+    # 5th leak site for the "[UNSUPPORTED: ...]" diagnostic-text bug (final
+    # whole-branch review finding): _detect_deterministic_subtrees's own
+    # heading-span-claiming fold loop (span_text = block.text) never went
+    # through _render_block_line/_is_unsupported_content_note like every
+    # other fold site, so a NOTE block claimed into a heading's span leaked
+    # straight into `description` (bound for ADO) with ZERO warning -- the
+    # block was already removed from residual_blocks by
+    # claimed_heading_block_ids.add(block.id), so it never reached the
+    # LLM/residual path's own UNSUPPORTED_CONTENT_NOTE handling either. This
+    # uses _structural_heading_doc() (pure heading nesting, no IDs) so the
+    # NOTE block is folded via the deterministic span-fold loop, NOT the
+    # headingless-LLM-branch path the two tests above already cover.
+    path = "structural_survey_input.txt"
+    note_text = "[UNSUPPORTED: page 1 appears multi-column; extraction may misorder text]"
+    doc = _structural_heading_doc().model_copy(
+        update={
+            "blocks": [
+                *_structural_heading_doc().blocks,
+                Block(id="note0", kind=BlockKind.NOTE, text=note_text, source_ref=_sr(path)),
+            ],
+        }
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+
+    for node in tree.nodes:
+        assert note_text not in (node.description or "")
+        assert "[UNSUPPORTED:" not in (node.description or "")
+    assert any(w.kind == WarningKind.UNSUPPORTED_CONTENT_NOTE for w in tree.warnings)
+
+
 def test_build_survey_tree_deterministic_block_span_fold_widens_page_end() -> None:
     # Real page numbers (see app/loaders/docx_pagination.py) only ever
     # arrive on a document's own blocks/tables AFTER page alignment has
