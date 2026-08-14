@@ -541,6 +541,20 @@ describe('NodeDetailPanel', () => {
       renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: [] })} />);
       expect(screen.queryByText(/no description/)).not.toBeInTheDocument();
     });
+
+    it('renders caption markdown as real elements -- bold and italic text render as <strong> and <em>, not literal ** or _', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ figureIds: ['f0'], action: 'reuse', existingAdoId: 42 })}
+          jobId="job-1"
+          captionByFigureId={{ f0: 'A **bold** term and _italic_ text' }}
+        />,
+      );
+      const strong = screen.getByText('bold');
+      const em = screen.getByText('italic');
+      expect(strong.tagName).toBe('STRONG');
+      expect(em.tagName).toBe('EM');
+    });
   });
 
   it('does not show an Edit button for a reuse entry, and explains why instead of rendering nothing', () => {

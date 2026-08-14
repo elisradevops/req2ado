@@ -11,7 +11,7 @@ import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Chip } from '../ui/Chip';
 import { Tooltip } from '../ui/Tooltip';
-import { DescriptionMarkdown } from '../ui/Markdown';
+import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
@@ -521,7 +521,11 @@ export function NodeDetailPanel({
                   >
                     <FigureImage jobId={jobId} figureId={figureId} active alt={`Figure referenced by ${entry.title}`} />
                     <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                      {captionByFigureId?.[figureId] && <p className="text-xs text-ink-2">{captionByFigureId[figureId]}</p>}
+                      {captionByFigureId?.[figureId] && (
+                        <div className="text-xs text-ink-2">
+                          <Markdown>{captionByFigureId[figureId]}</Markdown>
+                        </div>
+                      )}
                       {onAttachFigure &&
                         (canAttach ? (
                           <Button

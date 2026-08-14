@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Image } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { Markdown } from '../ui/Markdown';
 import { FigureImage } from './FigureImage';
 
 export interface FigureDescriptionEntry {
@@ -64,10 +65,10 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
                     referenced only as "Figure: This diagram illustrates..."
                     had no way to be seen, only read about. */}
                 <FigureImage jobId={jobId} figureId={item.figureId} active={hasExpandedOnce} alt={`Figure ${item.figureIndex}`} />
-                <p className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1">
                   <span className="font-medium text-ink-1">Figure {item.figureIndex}: </span>
-                  {item.caption}
-                </p>
+                  <Markdown>{item.caption}</Markdown>
+                </div>
               </li>
             ))}
           </ul>
