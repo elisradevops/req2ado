@@ -261,27 +261,6 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards files as-is when provided (Open WebUI-native whole-document primer reference, Phase 6c)', async () => {
-    const client = new OpenWebUiClient(config);
-    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
-    // @ts-expect-error -- reaching into the private SDK client for a test double
-    client.openai.chat.completions.create = fakeCreate;
-
-    await client.chat([{ role: 'user', content: 'hi' }], { files: [{ type: 'file', id: 'file-1' }] });
-
-    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ files: [{ type: 'file', id: 'file-1' }] }));
-  });
-
-  it('omits files when not provided', async () => {
-    const client = new OpenWebUiClient(config);
-    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
-    // @ts-expect-error -- reaching into the private SDK client for a test double
-    client.openai.chat.completions.create = fakeCreate;
-
-    await client.chat([{ role: 'user', content: 'hi' }]);
-    expect(fakeCreate.mock.calls[0][0]).not.toHaveProperty('files');
-  });
-
   it('forwards tools as-is and omits tool_choice when not provided', async () => {
     const client = new OpenWebUiClient(config);
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
@@ -943,5 +922,132 @@ describe('OpenWebUiClient.deleteFile', () => {
     (global.fetch as jest.Mock).mockRejectedValue(new Error('network error'));
     const client = new OpenWebUiClient(config);
     await expect(client.deleteFile('file-123')).resolves.not.toThrow();
+  });
+});
+
+describe('OpenWebUiClient.chatWithFullFileContext', () => {
+  const config: OpenWebUiClientConfig = {
+    LLM_BASE_URL: 'http://localhost:3000/v1',
+    LLM_API_KEY: 'test-key',
+    LLM_CHAT_MODEL: 'test-model',
+    LLM_TRUSTED_LOCAL: true,
+    EMBED_TRANSPORT: 'ollama' as const,
+    EMBED_MODEL: 'test-embed',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 5000,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it('POSTs to the NATIVE /api/chat/completions endpoint (not the OpenAI-compat surface chat() uses)', async () => {
+    // Regression: chat() goes through the OpenAI SDK, whose
+    // chat.completions.create() always POSTs to {baseURL}/chat/completions
+    // -- with LLM_BASE_URL routed through Open WebUI's Ollama-compat proxy,
+    // that path never runs the file-context middleware at all (confirmed
+    // live against a real deployment and against Open WebUI v0.8.12
+    // source). Only the native /api/chat/completions route honors a
+    // file's `context: "full"` flag.
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'A summary.' } }] }) });
+    const client = new OpenWebUiClient(config);
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://localhost:3000/api/chat/completions');
+  });
+
+  it('sends the file with context: "full" -- the flag that actually bypasses chunked RAG on the native endpoint', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient(config);
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.files).toEqual([{ type: 'file', id: 'file-123', context: 'full' }]);
+  });
+
+  it('sends the Authorization bearer header using LLM_API_KEY, the real Open WebUI auth this native endpoint requires', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient(config);
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(options.headers.Authorization).toBe('Bearer test-key');
+  });
+
+  it('omits the Authorization header when LLM_API_KEY is unset', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient({ ...config, LLM_API_KEY: undefined });
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(options.headers).not.toHaveProperty('Authorization');
+  });
+
+  it('sends temperature 0 and a fixed seed unconditionally -- this primer text feeds a deterministic figure-caption cache key, same reasoning as vision()', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient(config);
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.temperature).toBe(0);
+    expect(body.seed).toBe(0);
+  });
+
+  it('forwards maxTokens as max_tokens and numCtx as options.num_ctx when provided', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient(config);
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', { maxTokens: 300, numCtx: 16_384 });
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.max_tokens).toBe(300);
+    expect(body.options).toEqual({ num_ctx: 16_384 });
+  });
+
+  it('omits max_tokens/options when maxTokens/numCtx are not provided', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient(config);
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body).not.toHaveProperty('max_tokens');
+    expect(body).not.toHaveProperty('options');
+  });
+
+  it('returns the response content', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'This is an avionics ICD.' } }] }) });
+    const client = new OpenWebUiClient(config);
+    const result = await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    expect(result).toEqual({ content: 'This is an avionics ICD.' });
+  });
+
+  it('returns empty content when the response has no message content, rather than throwing', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [] }) });
+    const client = new OpenWebUiClient(config);
+    const result = await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    expect(result).toEqual({ content: '' });
+  });
+
+  it('throws when the response is not ok', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+    const client = new OpenWebUiClient(config);
+    await expect(client.chatWithFullFileContext('Describe this document.', 'file-123', {})).rejects.toThrow('500');
+  });
+
+  it('redacts the prompt content unless LLM_TRUSTED_LOCAL is true', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient({ ...config, LLM_TRUSTED_LOCAL: false });
+    await client.chatWithFullFileContext('Contact jane@example.com about this document.', 'file-123', {});
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.messages[0].content).toBe('Contact <redacted> about this document.');
+  });
+
+  it('strips the /ollama proxy sub-path, not just /v1, matching uploadFile\'s own routing fix', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient({ ...config, LLM_BASE_URL: 'http://host:3000/ollama/v1' });
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://host:3000/api/chat/completions');
   });
 });

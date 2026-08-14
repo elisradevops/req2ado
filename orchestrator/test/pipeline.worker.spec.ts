@@ -35,7 +35,12 @@ describe('runPipelineJob', () => {
   // existing test above/below that omits them entirely is unaffected
   // (primerContext just stays undefined, /level's exact pre-Phase-6c
   // behavior). Only the dedicated describe block below wires them in.
-  const fakeOpenWebUiClient = { uploadFile: jest.fn(), pollFileProcessed: jest.fn(), chat: jest.fn(), deleteFile: jest.fn() };
+  const fakeOpenWebUiClient = {
+    uploadFile: jest.fn(),
+    pollFileProcessed: jest.fn(),
+    chatWithFullFileContext: jest.fn(),
+    deleteFile: jest.fn(),
+  };
   const fakePrimerCacheRedis = { get: jest.fn(), set: jest.fn() };
 
   afterEach(() => {
@@ -1566,7 +1571,7 @@ describe('runPipelineJob', () => {
     it('threads primerContext from a successful upload+chat into the level() call', async () => {
       fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'This is an avionics ICD.' });
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: 'This is an avionics ICD.' });
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
@@ -1590,19 +1595,16 @@ describe('runPipelineJob', () => {
         bigDoc, null, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
       );
       expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf');
-      expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
-        expect.any(Array),
-        expect.objectContaining({ files: [{ type: 'file', id: 'file-1' }], maxTokens: 300, think: false }),
-      );
-      // Determinism guard: the primer's text is (a) threaded into every
-      // branch's analyze_section prompt, where sampled wording shifts node
-      // structure (the confirmed 74 vs ~120 node variance), and (b) part of
-      // ingestion's figure-caption cache KEY -- a re-sampled primer would
-      // invalidate every figure's 7-day cache entry for the SAME document.
-      // Same temperature/seed pinning vision() already hardcodes.
-      expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
-        expect.any(Array),
-        expect.objectContaining({ temperature: 0, seed: 0 }),
+      // chatWithFullFileContext, NOT chat() -- chat() goes through the
+      // OpenAI SDK, which can never reach Open WebUI's native file-context
+      // endpoint (see chatWithFullFileContext's own doc comment,
+      // openwebui.client.ts). temperature/seed determinism pinning now
+      // lives INSIDE that method (hardcoded, not passed as opts) since it
+      // has exactly one caller with exactly one determinism requirement.
+      expect(fakeOpenWebUiClient.chatWithFullFileContext).toHaveBeenCalledWith(
+        expect.any(String),
+        'file-1',
+        expect.objectContaining({ maxTokens: 300 }),
       );
       expect(fakeOpenWebUiClient.deleteFile).toHaveBeenCalledWith('file-1');
       expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(
@@ -1698,7 +1700,7 @@ describe('runPipelineJob', () => {
       const overlyLongReply = 'x'.repeat(5000);
       fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: overlyLongReply });
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: overlyLongReply });
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
@@ -1724,10 +1726,10 @@ describe('runPipelineJob', () => {
       expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(expect.any(String), clampedPrimerContext, 'EX', 86_400);
     });
 
-    it('passes maxTokens and think:false on the primer chat call -- bounds worst-case latency/output, same precedent as vision()\'s own caption cap', async () => {
+    it('passes maxTokens on the primer chat call -- bounds worst-case latency/output, same precedent as vision()\'s own caption cap', async () => {
       fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'A short primer.' });
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: 'A short primer.' });
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
@@ -1747,9 +1749,10 @@ describe('runPipelineJob', () => {
         },
       );
 
-      expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
-        expect.any(Array),
-        expect.objectContaining({ maxTokens: 300, think: false }),
+      expect(fakeOpenWebUiClient.chatWithFullFileContext).toHaveBeenCalledWith(
+        expect.any(String),
+        'file-1',
+        expect.objectContaining({ maxTokens: 300 }),
       );
     });
 
@@ -1808,7 +1811,7 @@ describe('runPipelineJob', () => {
       fakeDryRunService.diff.mockResolvedValue([]);
       fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'This is an avionics ICD.' });
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: 'This is an avionics ICD.' });
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
@@ -1838,7 +1841,7 @@ describe('runPipelineJob', () => {
       fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
       fakeDryRunService.diff.mockResolvedValue([]);
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'Primer text.' });
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: 'Primer text.' });
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       const callOrder: string[] = [];
@@ -1877,7 +1880,7 @@ describe('runPipelineJob', () => {
       fakeDryRunService.diff.mockResolvedValue([]);
       fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'Primer text.' });
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: 'Primer text.' });
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
@@ -1909,7 +1912,7 @@ describe('runPipelineJob', () => {
       fakeDryRunService.diff.mockResolvedValue([]);
       fakeOpenWebUiClient.uploadFile.mockResolvedValue('file-1');
       fakeOpenWebUiClient.pollFileProcessed.mockResolvedValue(true);
-      fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'Primer text.' });
+      fakeOpenWebUiClient.chatWithFullFileContext.mockResolvedValue({ content: 'Primer text.' });
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
@@ -1929,7 +1932,7 @@ describe('runPipelineJob', () => {
         },
       );
 
-      expect(fakeOpenWebUiClient.chat.mock.calls[0][1]).toEqual(expect.objectContaining({ numCtx: 32_768 }));
+      expect(fakeOpenWebUiClient.chatWithFullFileContext.mock.calls[0][2]).toEqual(expect.objectContaining({ numCtx: 32_768 }));
     });
   });
 });

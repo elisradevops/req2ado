@@ -431,56 +431,44 @@ export async function runPipelineJob(
           try {
             const processed = await openWebUiClient.pollFileProcessed(fileId, 60_000);
             if (processed) {
-              const result = await openWebUiClient.chat(
-                [
-                  {
-                    role: 'user',
-                    content:
-                      'Read the attached document in full. In 2-3 short sentences, describe: the ' +
-                      'document type and purpose, the system it specifies (if any), and the domain ' +
-                      "conventions or phrasing style it uses. Do not list sections or definitions.",
-                  },
-                ],
+              // chatWithFullFileContext, NOT chat() -- chat() goes through
+              // the OpenAI SDK, which always POSTs to
+              // {baseURL}/chat/completions; with LLM_BASE_URL routed
+              // through Open WebUI's Ollama-compat proxy, that path never
+              // runs the native file-context middleware at all (confirmed
+              // live and against Open WebUI v0.8.12 source -- see
+              // chatWithFullFileContext's own doc comment). temperature/
+              // seed are hardcoded inside that method to the same 0/0 this
+              // primer has always needed: this text is (a) threaded into
+              // every branch's analyze_section prompt, where sampled
+              // wording shifts branch/node structure (the confirmed 74 vs
+              // ~120 node variance), and (b) part of the figure-caption
+              // cache KEY (ingestion main.py's _figure_caption_cache_key),
+              // so a re-sampled primer after this primer cache's own TTL
+              // would invalidate every figure's 7-day cache entry for the
+              // SAME document.
+              const result = await openWebUiClient.chatWithFullFileContext(
+                'Read the attached document in full. In 2-3 short sentences, describe: the ' +
+                  'document type and purpose, the system it specifies (if any), and the domain ' +
+                  "conventions or phrasing style it uses. Do not list sections or definitions.",
+                fileId,
                 {
-                  files: [{ type: 'file', id: fileId }],
                   // Bounds worst-case latency AND output size -- same
                   // "structured extraction, not creative writing" reasoning
-                  // OpenWebUiClient.vision()'s own maxTokens/think:false
-                  // already applies to figure captions, here applied to a
-                  // one-shot document-orientation summary. Without this, a
-                  // reasoning-capable model can burn the whole call on
-                  // hidden chain-of-thought (vision()'s own confirmed live
-                  // failure mode) or simply ignore "2-3 short sentences" and
-                  // produce a reply large enough to blow past /level's own
-                  // query-string size limit (see PRIMER_CONTEXT_MAX_CHARS'
-                  // own comment) -- this cap plus that clamp are two
-                  // independent backstops against the same real risk.
+                  // OpenWebUiClient.vision()'s own maxTokens already applies
+                  // to figure captions, here applied to a one-shot
+                  // document-orientation summary. Without this, a model
+                  // ignoring "2-3 short sentences" could produce a reply
+                  // large enough to blow past /level's own query-string
+                  // size limit (see PRIMER_CONTEXT_MAX_CHARS' own comment)
+                  // -- this cap plus that clamp are two independent
+                  // backstops against the same real risk.
                   maxTokens: 300,
-                  think: false,
-                  // Same "structured extraction, not creative writing"
-                  // reasoning OpenWebUiClient.vision()'s own temperature/seed
-                  // comment states: this primer is a factual orientation
-                  // summary, not prose, so temperature 0 is correct on its own
-                  // merits and seed is defensive hygiene on top in case the
-                  // backend ever runs at a non-zero temperature. It matters
-                  // MORE here than for a one-off summary: this text is (a)
-                  // threaded into every branch's analyze_section prompt, where
-                  // sampled wording shifts branch/node structure (the confirmed
-                  // 74 vs ~120 node variance), and (b) part of the figure-
-                  // caption cache KEY (ingestion main.py's
-                  // _figure_caption_cache_key), so a re-sampled primer after
-                  // this primer cache's own TTL would invalidate every figure's
-                  // 7-day cache entry for the SAME document. Pinning the
-                  // sampling makes the same document produce the same primer
-                  // whenever it is resampled, which is what makes both caches
-                  // actually stable.
-                  temperature: 0,
-                  seed: 0,
                   // Fixed at PRIMER_FIXED_NUM_CTX (see its own comment
                   // above for why) -- passed explicitly because Ollama
                   // otherwise runs at its own small default window
-                  // regardless of prompt size (see LlmChatOptions.numCtx)
-                  // and truncates the input with no error at all.
+                  // regardless of prompt size and truncates the input with
+                  // no error at all.
                   numCtx: PRIMER_FIXED_NUM_CTX,
                 },
               );

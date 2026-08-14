@@ -104,10 +104,6 @@ export class OpenWebUiClient implements LlmClient {
       ...(opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
-      // Open WebUI-native passthrough (see LlmChatOptions.files' own doc
-      // comment) -- not part of the OpenAI SDK's own ChatCompletionCreateParams
-      // type, hence the untyped object literal spread rather than a typed field.
-      ...(opts?.files !== undefined ? { files: opts.files } : {}),
     });
     const toResult = (response: OpenAI.Chat.ChatCompletion): LlmChatResult => ({
       content: response.choices[0]?.message?.content ?? '',
@@ -384,6 +380,66 @@ export class OpenWebUiClient implements LlmClient {
   // same true app root.
   private openWebUiAppRoot(): string {
     return this.config.LLM_BASE_URL.replace(/\/(ollama\/)?v1\/?$/, '');
+  }
+
+  // The whole-document AI context primer (Phase 6c, pipeline.worker.ts)
+  // needs Open WebUI's NATIVE full-document file-context mode -- chat()
+  // cannot reach it. chat() goes through the OpenAI SDK, whose
+  // chat.completions.create() always POSTs to {baseURL}/chat/completions;
+  // with LLM_BASE_URL routed through Open WebUI's Ollama-compatibility
+  // proxy (.../ollama/v1, this deployment's real config), that lands on
+  // the Ollama-compat proxy route, a genuinely different backend code
+  // path that never runs the file-context middleware at all. Confirmed
+  // against Open WebUI v0.8.12 source
+  // (backend/open_webui/utils/middleware.py's process_chat_payload and
+  // chat_completion_files_handler, and retrieval/utils.py's
+  // get_sources_from_items): only the NATIVE route (POST
+  // /api/chat/completions) parses the top-level `files` array's
+  // per-item `context: "full"` flag and, when set, returns the file's
+  // full stored content instead of routing it into chunked RAG. This is
+  // a genuine per-request field any authenticated user's API key can
+  // set -- confirmed with a canary phrase embedded in a real uploaded
+  // file, returned correctly ONLY via this native-endpoint +
+  // `context: "full"` combination (the SDK path silently never saw the
+  // file at all -- "I cannot see an attached document..." -- despite
+  // accepting the old chat()-forwarded `files` field with no error,
+  // which is why that field is retired rather than fixed in place: it
+  // was never reachable through the right endpoint to begin with).
+  //
+  // Deliberately narrow (unlike chat()'s general-purpose surface) --
+  // this method exists for exactly one caller with exactly one shape:
+  // a single user-turn prompt against one already-uploaded, already-
+  // processed file. temperature/seed are hardcoded to 0, matching the
+  // primer's own existing determinism requirement (this text feeds both
+  // every branch's analyze_section prompt AND the figure-caption cache
+  // key -- see pipeline.worker.ts's own PRIMER_FIXED_NUM_CTX comment).
+  async chatWithFullFileContext(
+    content: string,
+    fileId: string,
+    opts: { maxTokens?: number; numCtx?: number },
+  ): Promise<LlmChatResult> {
+    const outboundContent = this.config.LLM_TRUSTED_LOCAL ? content : redactText(content);
+    const response = await fetch(`${this.openWebUiAppRoot()}/api/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {}),
+      },
+      body: JSON.stringify({
+        model: this.config.LLM_CHAT_MODEL,
+        messages: [{ role: 'user', content: outboundContent }],
+        files: [{ type: 'file', id: fileId, context: 'full' }],
+        temperature: 0,
+        seed: 0,
+        ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+        ...(opts.numCtx !== undefined ? { options: { num_ctx: opts.numCtx } } : {}),
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`OpenWebUiClient.chatWithFullFileContext failed: ${response.status}`);
+    }
+    const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+    return { content: data.choices?.[0]?.message?.content ?? '' };
   }
 
   // Uploads a source document to Open WebUI's native file API (not the
