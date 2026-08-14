@@ -4378,6 +4378,49 @@ def test_build_survey_tree_deterministic_table_span_fold_widens_page_end() -> No
     assert last_leaf.source_ref.page_end == 4
 
 
+def test_build_survey_tree_deterministic_table_span_fold_drops_a_blank_table_and_warns() -> None:
+    # Same invariant, same site as the widen test above, but for a table
+    # whose grid is genuinely blank (_table_to_html returns "" for it) --
+    # the span-fold used to record table.id in the target's table_ids
+    # unconditionally, with no emptiness guard at all (not even the
+    # `if table_html:` check the analyze_section post-processing loop had),
+    # leaving a table_ids entry with zero corresponding content in
+    # description. Mirrors test_build_survey_tree_drops_a_valid_table_id_
+    # with_no_extractable_content_and_warns, but for THIS deterministic
+    # span-fold site instead of the LLM analyze_section path.
+    path = "structural_survey_input.txt"
+    base_doc = _structural_heading_doc()
+    paged_blocks = [
+        b.model_copy(
+            update={
+                "source_ref": SourceRef(
+                    document_path=path, start_offset=i * 10, end_offset=i * 10 + 9, page=1, page_end=1,
+                )
+            }
+        )
+        for i, b in enumerate(base_doc.blocks)
+    ]
+    doc = base_doc.model_copy(
+        update={
+            "blocks": paged_blocks,
+            "tables": [
+                Table(
+                    id="t0", cells=[[TableCell(text=""), TableCell(text="")]],
+                    source_ref=SourceRef(document_path=path, start_offset=999, end_offset=1000, page=4, page_end=4),
+                ),
+            ],
+        }
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
+    assert last_leaf.table_ids == []
+    assert "<table>" not in last_leaf.description
+    assert "t0" not in last_leaf.description
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT)
+    assert warning.node_ids == [last_leaf.local_id]
+    assert warning.detail["tableId"] == "t0"
+
+
 # --- section_path / figure_ids / table_ids / uncaptioned_figure_ids (Phase 2) ---
 
 

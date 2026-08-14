@@ -1248,11 +1248,40 @@ def _detect_deterministic_subtrees(
             if target is None:
                 continue
             claimed_table_ids.add(table.id)
-            target.description = assemble_description(target.description, _table_to_html(table))
-            target.fidelity_hash = _hash_description(target.description)
-            target.identity_hash = _hash_identity(target.description, target.source_ref)
-            target.source_ref = _widen_page_end(target.source_ref, table.source_ref)
-            target.table_ids.append(table.id)
+            # Same table_ids/description pairing invariant as the
+            # analyze_section post-processing loop above (known-issues item
+            # 20/EMPTY_TABLE_CONTENT): a table whose span-fold position
+            # claims it for `target` can still have a genuinely blank grid
+            # (_table_to_html returns "" for it) -- folding nothing into
+            # description while still recording table.id in target.table_ids
+            # would leave the same content-less "Table tN" chip this warning
+            # exists to catch. table.id is claimed either way (it belongs to
+            # this span regardless of its own content -- nothing more for
+            # the residual LLM path to find in it either, see
+            # _table_to_markdown's own None-for-blank convention), but only
+            # folded into description/table_ids when it genuinely has
+            # content.
+            table_html = _table_to_html(table)
+            if table_html:
+                target.description = assemble_description(target.description, table_html)
+                target.fidelity_hash = _hash_description(target.description)
+                target.identity_hash = _hash_identity(target.description, target.source_ref)
+                target.source_ref = _widen_page_end(target.source_ref, table.source_ref)
+                target.table_ids.append(table.id)
+            else:
+                message = (
+                    f'"{target.title}" referenced table {table.id}, but it had no extractable content -- '
+                    "worth checking the source table manually."
+                )
+                logger.warning(message)
+                det_warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.EMPTY_TABLE_CONTENT,
+                        message,
+                        node_ids=[target.local_id],
+                        detail={"tableId": table.id},
+                    )
+                )
         del id_disambiguator_needed  # only used to document the branch above; both heading
         # adapters always pass id_disambiguator_needed=False, so span-fold hashing always
         # uses the plain _hash_identity, never the table-row disambiguated variant.
