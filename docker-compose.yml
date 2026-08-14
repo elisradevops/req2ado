@@ -18,12 +18,7 @@ services:
       POSTGRES_PASSWORD: req2ado
       POSTGRES_DB: req2ado
     ports:
-      # Host 5432 is occupied by a leftover container from a prior
-      # local-process golden-e2e run on this dev machine (see
-      # scripts/run-golden-e2e.sh's temp postgres container) — map to a free
-      # host port instead. Internal service-to-service traffic is unaffected
-      # (DATABASE_URL below uses the compose-internal `postgres:5432`).
-      - "5434:5432"
+      - "5432:5432"
     volumes:
       - req2ado_pg:/var/lib/postgresql/data
 
@@ -41,9 +36,7 @@ services:
     # without a deliberate decision.
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
-      # Same reasoning as postgres above — host 6379 is occupied by a
-      # leftover temp container; REDIS_URL below uses `redis:6379` internally.
-      - "6381:6379"
+      - "6379:6379"
 
   # Real, shared Chroma server -- ingestion connects to this via
   # chromadb.HttpClient (CHROMA_MODE=http below) instead of each replica

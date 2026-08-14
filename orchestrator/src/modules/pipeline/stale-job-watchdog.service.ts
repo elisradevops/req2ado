@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { JobsService } from './jobs.service';
 
@@ -30,7 +30,9 @@ import { JobsService } from './jobs.service';
 // JobsModule only ever loads in the orchestrator HTTP process
 // (pipeline-worker.main.ts is a standalone script, not a Nest application).
 @Injectable()
-export class StaleJobWatchdogService implements OnModuleInit {
+export class StaleJobWatchdogService implements OnModuleInit, OnModuleDestroy {
+  private intervalHandle?: NodeJS.Timeout;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly jobsService: JobsService,
@@ -39,9 +41,13 @@ export class StaleJobWatchdogService implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    setInterval(() => {
+    this.intervalHandle = setInterval(() => {
       void this.sweep();
     }, this.checkIntervalMs);
+  }
+
+  onModuleDestroy(): void {
+    clearInterval(this.intervalHandle);
   }
 
   async sweep(): Promise<void> {
