@@ -51,6 +51,18 @@ class Settings(BaseSettings):
     # call first, with real margin to the outer layer's own ceiling. Same
     # numeric default as before this was configurable (no behavior change).
     llm_request_timeout_seconds: float = 1800.0
+    # Confirmed real bug: this was hardcoded to 300s while the orchestrator's
+    # own LLM_REQUEST_TIMEOUT_MS defaults to 600s (600_000ms) -- a vision
+    # call that would have succeeded between 300-600s got aborted here
+    # first, permanently dropping that figure's caption (sequential
+    # captioning + zero retry by design means this compounds at scale). 590s
+    # is deliberately just under the orchestrator's 600s default so THIS
+    # layer times out first with an honest "vision call gave up" signal,
+    # rather than the orchestrator's own timeout firing and surfacing a
+    # generic connection reset instead. If either this value or the
+    # orchestrator's LLM_REQUEST_TIMEOUT_MS changes, reconsider the other --
+    # they're meant to stay in that relative order.
+    vision_request_timeout_seconds: float = 590.0
     # No logging config existed anywhere in this service before -- whatever
     # uvicorn's own defaults produced. Named so it's configurable without a
     # code change per deployment (e.g. DEBUG locally, INFO/WARNING in prod).

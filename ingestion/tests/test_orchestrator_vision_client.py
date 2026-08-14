@@ -5,7 +5,12 @@ import json
 import httpx
 import pytest
 
-from app.vision.orchestrator_vision_client import FigureVisionResult, OrchestratorVisionClient
+from app.config import settings
+from app.vision.orchestrator_vision_client import (
+    _VISION_REQUEST_TIMEOUT_SECONDS,
+    FigureVisionResult,
+    OrchestratorVisionClient,
+)
 
 
 def test_describe_figure_calls_the_orchestrator_vision_endpoint_with_bearer_auth() -> None:
@@ -163,6 +168,45 @@ def test_describe_figure_returns_none_for_a_significant_verdict_with_a_blank_des
     client._transport = httpx.MockTransport(handler)
 
     assert client.describe_figure(b"fake-bytes") is None
+
+
+def test_describe_figure_timeout_comes_from_settings_not_a_hardcoded_constant() -> None:
+    # Regression guard: this client used to hardcode
+    # _VISION_REQUEST_TIMEOUT_SECONDS = 300.0. It must instead read
+    # settings.vision_request_timeout_seconds (default 590s -- just under
+    # the orchestrator's own 600s LLM_REQUEST_TIMEOUT_MS default, see
+    # config.py's own doc comment) so it's configurable without a code
+    # change, and so the two timeouts can be kept in sync.
+    assert _VISION_REQUEST_TIMEOUT_SECONDS == settings.vision_request_timeout_seconds
+    assert _VISION_REQUEST_TIMEOUT_SECONDS == 590.0
+    assert _VISION_REQUEST_TIMEOUT_SECONDS != 300.0  # the old hardcoded value
+
+
+def test_describe_figure_uses_the_settings_sourced_timeout_on_the_real_httpx_call(monkeypatch) -> None:
+    # Mirrors OrchestratorEmbedClient's own
+    # test_embed_uses_a_real_timeout_not_httpxs_5_second_default: proves the
+    # timeout actually reaches httpx.Client, not just that the module
+    # constant has the right value in isolation.
+    captured_kwargs: dict = {}
+    real_client_cls = httpx.Client
+
+    class _CapturingClient(real_client_cls):
+        def __init__(self, *args, **kwargs):
+            captured_kwargs.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", _CapturingClient)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"description": json.dumps({"significant": True, "description": "ok"})})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.describe_figure(b"fake-bytes")
+
+    assert captured_kwargs.get("timeout") == _VISION_REQUEST_TIMEOUT_SECONDS
+    assert captured_kwargs.get("timeout") == settings.vision_request_timeout_seconds
 
 
 def test_describe_figure_still_parses_an_insignificant_verdict_with_an_empty_description() -> None:

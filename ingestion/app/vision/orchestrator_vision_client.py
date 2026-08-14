@@ -7,7 +7,12 @@ from typing import NamedTuple
 import httpx
 from json_repair import repair_json
 
-_VISION_REQUEST_TIMEOUT_SECONDS = 300.0
+from app.config import settings
+
+# Sourced from settings (config.py) rather than a bare literal so it can be
+# tuned per-deployment without a code change -- see config.py's own doc
+# comment for why 590s (just under the orchestrator's own 600s LLM timeout).
+_VISION_REQUEST_TIMEOUT_SECONDS = settings.vision_request_timeout_seconds
 
 
 class FigureVisionResult(NamedTuple):
