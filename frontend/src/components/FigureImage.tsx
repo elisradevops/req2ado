@@ -24,12 +24,14 @@ type FigureImageState =
 // call to orchestrator and get a real, honest 404 for a figure that WILL
 // exist a moment later -- previously cached as a terminal "missing" state
 // with no way to recover short of a full page refresh (which re-mounts the
-// component well after storage has caught up). A few retries with a short,
-// fixed delay absorbs this normal, bounded network race without turning a
-// GENUINELY missing figure (attached-then-deleted, or storage failed) into
-// an infinite retry loop.
-const _MISSING_RETRY_ATTEMPTS = 3;
-const _MISSING_RETRY_DELAY_MS = 1500;
+// component well after storage has caught up). A budget of 8 retries at
+// 2000ms intervals (~16s total) absorbs realistic queueing delays under
+// large jobs (900+ figures) without turning a GENUINELY missing figure
+// (attached-then-deleted, or storage failed) into an infinite retry loop.
+// Still bounded and non-proportional to load; avoids machinery needed for
+// a dynamic budget.
+const _MISSING_RETRY_ATTEMPTS = 8;
+const _MISSING_RETRY_DELAY_MS = 2000;
 
 function _delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

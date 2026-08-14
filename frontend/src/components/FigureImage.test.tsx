@@ -43,14 +43,14 @@ describe('FigureImage', () => {
       // with React's own effect scheduling under jsdom for a loop that
       // awaits both a real Promise (the mocked fetch) and a timer on every
       // iteration (confirmed by hand: advanceTimersByTimeAsync repeatedly
-      // left the component stuck mid-loop). 4 real attempts at ~1.5s apart
-      // is slow but simple and trustworthy; the per-test timeout below
-      // gives it enough real wall-clock room.
-      await waitFor(() => expect(screen.getByText(/image no longer available/i)).toBeInTheDocument(), { timeout: 8000 });
+      // left the component stuck mid-loop). 9 real attempts at ~2s apart
+      // (8 retries with 2000ms delay each) is slow but simple and trustworthy;
+      // the per-test timeout below gives it enough real wall-clock room.
+      await waitFor(() => expect(screen.getByText(/image no longer available/i)).toBeInTheDocument(), { timeout: 18000 });
       expect(screen.queryByAltText('Figure 1')).not.toBeInTheDocument();
-      expect(getFigureFile).toHaveBeenCalledTimes(4);
+      expect(getFigureFile).toHaveBeenCalledTimes(9);
     },
-    10000,
+    20000,
   );
 
   it(
@@ -80,6 +80,35 @@ describe('FigureImage', () => {
       expect(screen.queryByText(/image no longer available/i)).not.toBeInTheDocument();
     },
     7000,
+  );
+
+  it(
+    'recovers from a delayed storage response after several retries within the new budget',
+    async () => {
+      // With the increased retry budget (8 retries × 2000ms = ~16s total),
+      // we can tolerate longer queueing delays under large jobs (900+ figures).
+      // This test confirms that success arriving on a later attempt (not the
+      // immediate next one) is still within the retry budget.
+      const blob = new Blob(['png bytes'], { type: 'image/png' });
+      const getFigureFile = vi.spyOn(jobsApi, 'getFigureFile');
+      // Simulate storage queueing: fail for a few attempts, then succeed
+      // on the 5th attempt (well within the 9 total available).
+      for (let i = 0; i < 4; i++) {
+        getFigureFile.mockResolvedValueOnce(null);
+      }
+      getFigureFile.mockResolvedValueOnce(blob);
+
+      const createObjectURL = vi.fn().mockReturnValue('blob:mock-url');
+      vi.stubGlobal('URL', { ...URL, createObjectURL, revokeObjectURL: vi.fn() });
+
+      render(<FigureImage jobId="job-1" figureId="f0" active alt="Figure 1" />);
+
+      const img = await screen.findByAltText('Figure 1', {}, { timeout: 11000 });
+      expect(img).toHaveAttribute('src', 'blob:mock-url');
+      expect(getFigureFile).toHaveBeenCalledTimes(5);
+      expect(screen.queryByText(/image no longer available/i)).not.toBeInTheDocument();
+    },
+    12000,
   );
 
   it('renders a distinct error placeholder when the fetch itself rejects (no retry on a real error)', async () => {
