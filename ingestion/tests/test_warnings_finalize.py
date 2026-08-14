@@ -97,3 +97,33 @@ def test_finalize_warnings_groups_unsupported_content_note_across_the_whole_list
     assert result[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
     assert result[0].detail["mergedCount"] == 2
     assert "2 loader diagnostic note(s)" in result[0].raw
+
+
+def test_finalize_warnings_groups_empty_table_content_across_the_whole_list() -> None:
+    # EMPTY_TABLE_CONTENT (drifted from Task 1's own UNSUPPORTED_CONTENT_NOTE
+    # convention -- final whole-branch review finding) is also a flat/None
+    # group key -- a table-dense document with many blank tables must
+    # collapse into one summary record, not one warnings-panel row per blank
+    # table.
+    warnings = [
+        IntegrityWarning.make(
+            WarningKind.EMPTY_TABLE_CONTENT,
+            '"Section A" referenced table t0, but it had no extractable content -- worth checking '
+            "the source table manually.",
+            node_ids=["n0"],
+            detail={"tableId": "t0"},
+        ),
+        IntegrityWarning.make(
+            WarningKind.EMPTY_TABLE_CONTENT,
+            '"Section B" referenced table t1, but it had no extractable content -- worth checking '
+            "the source table manually.",
+            node_ids=["n1"],
+            detail={"tableId": "t1"},
+        ),
+    ]
+    result = finalize_warnings(warnings)
+    assert len(result) == 1
+    assert result[0].kind == WarningKind.EMPTY_TABLE_CONTENT
+    assert result[0].node_ids == ["n0", "n1"]
+    assert result[0].detail["mergedCount"] == 2
+    assert "2 table(s)" in result[0].raw
