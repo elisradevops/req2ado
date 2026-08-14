@@ -3705,6 +3705,40 @@ def test_build_survey_tree_drops_a_hallucinated_table_id_and_warns() -> None:
     assert any('"t" referenced 1 table(s) not offered in this section' in w.raw for w in tree.warnings)
 
 
+def test_build_survey_tree_drops_a_valid_table_id_with_no_extractable_content_and_warns() -> None:
+    # A model-named table_id can pass the hallucination filter (it's a REAL
+    # table this branch actually offered) yet still render empty HTML --
+    # _table_to_html returns "" for a grid with no non-blank cell anywhere.
+    # Previously the id was kept in table_ids unconditionally while the
+    # HTML was only appended to description `if table_html:`, leaving a
+    # table_ids entry with zero corresponding content in description --
+    # violating the orchestrator's own documented invariant that a
+    # non-empty table_ids list means that table's HTML is already embedded
+    # in description. The id must now be dropped from table_ids (together
+    # with skipping the description append) and reported via a dedicated
+    # EMPTY_TABLE_CONTENT warning instead of silently disappearing.
+    path = "table_only.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        tables=[Table(id="t0", cells=[[TableCell(text=""), TableCell(text="")]], source_ref=_sr(path))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[{
+            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+            "title": "t", "text": "The system shall do x.", "tags": [],
+            "table_ids": ["t0"],
+        }]
+    )
+    tree = build_survey_tree(doc, fake)
+    node = tree.nodes[0]
+    assert node.table_ids == []
+    assert "<table>" not in node.description
+    assert "t0" not in node.description
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT)
+    assert warning.node_ids == [node.local_id]
+    assert warning.detail["tableId"] == "t0"
+
+
 def test_build_survey_tree_records_figure_ids_named_by_the_model() -> None:
     path = "figure_only.txt"
     doc = CanonicalDoc(

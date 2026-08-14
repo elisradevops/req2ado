@@ -2421,9 +2421,9 @@ def _build_survey_tree_for_branch(
                 )
             )
         raw_table_ids = entry.get("table_ids") or []
-        table_ids = sorted({tid for tid in raw_table_ids if isinstance(tid, str) and tid in valid_table_ids})
-        if len(table_ids) < len(raw_table_ids):
-            dropped_table_count = len(raw_table_ids) - len(table_ids)
+        table_ids_requested = sorted({tid for tid in raw_table_ids if isinstance(tid, str) and tid in valid_table_ids})
+        if len(table_ids_requested) < len(raw_table_ids):
+            dropped_table_count = len(raw_table_ids) - len(table_ids_requested)
             message = (
                 f'"{title}" referenced {dropped_table_count} table(s) not offered in this section -- '
                 "the invalid reference(s) were dropped."
@@ -2434,7 +2434,7 @@ def _build_survey_tree_for_branch(
                     WarningKind.INVALID_TABLE_IDS,
                     message,
                     node_ids=[f"{node_id_prefix}{temp_id}"],
-                    detail={"requested": raw_table_ids, "kept": table_ids},
+                    detail={"requested": raw_table_ids, "kept": table_ids_requested},
                 )
             )
 
@@ -2446,14 +2446,44 @@ def _build_survey_tree_for_branch(
         # orchestrator's toAdoDescriptionHtml already has a TABLE_BLOCK_PATTERN
         # carve-out that passes this exact `<table>...</table>` shape through
         # untouched to ADO.
+        #
+        # table_id is only KEPT in table_ids when its HTML is genuinely
+        # non-empty -- computed together, not separately: a valid
+        # (non-hallucinated, already filtered above) reference whose
+        # extracted grid has no content anywhere (_table_to_html returns ""
+        # for it) is dropped here instead of ending up in table_ids with
+        # nothing in description to back it. The orchestrator's own
+        # dry-run.service.ts documents an invariant that a non-empty
+        # table_ids entry always means that table's HTML is already
+        # embedded in description -- silently keeping the id here would
+        # violate that invariant and ship a UI chip pointing at zero
+        # content. Reported instead of just dropped, same "under-trigger
+        # silently, surface loudly" convention as every other warning in
+        # this loop.
         description = text
-        for table_id in table_ids:
+        table_ids: list[str] = []
+        for table_id in table_ids_requested:
             table = tables_by_id.get(table_id)
             if table is None:
                 continue
             table_html = _table_to_html(table)
             if table_html:
                 description = assemble_description(description, table_html)
+                table_ids.append(table_id)
+            else:
+                message = (
+                    f'"{title}" referenced table {table_id}, but it had no extractable content -- '
+                    "worth checking the source table manually."
+                )
+                logger.warning(message)
+                warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.EMPTY_TABLE_CONTENT,
+                        message,
+                        node_ids=[f"{node_id_prefix}{temp_id}"],
+                        detail={"tableId": table_id},
+                    )
+                )
         try:
             node_type = WorkItemType(entry.get("type"))
         except ValueError:
