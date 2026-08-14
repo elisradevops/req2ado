@@ -9,6 +9,7 @@ from app.leveling.llm_leveling import (
     _group_label_became_a_node,
     _regroup_disconnected_roots,
     _repair_group_attachment,
+    _widen_branch_page_range,
     build_survey_tree,
     render_section,
 )
@@ -4286,6 +4287,66 @@ def test_build_survey_tree_llm_branch_section_path_is_the_sections_own_label() -
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     for node in tree.nodes:
         assert node.source_ref.section_path == ["Display"]
+
+
+def test_build_survey_tree_llm_branch_representative_source_ref_reflects_branch_page_range() -> None:
+    # Task 1b: representative_source_ref used to pass blocks[0]'s own
+    # page/page_end through VERBATIM (see _build_survey_tree_for_branch's
+    # docstring) -- every node synthesized from this branch shared that one
+    # first block's page even though the branch's real content spans many
+    # more pages. _widen_branch_page_range now computes page/page_end as
+    # min/max over ALL the branch's blocks (mirrors tree_builder.py's
+    # _widen_page_end max-page_end pattern, applied once per branch here
+    # instead of per fold) -- a real range, not a single coarse page.
+    path = "survey_input.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(
+                id="b0", kind=BlockKind.PARAGRAPH, text="Display",
+                source_ref=SourceRef(document_path=path, start_offset=0, end_offset=10, page=3, page_end=3),
+            ),
+            Block(
+                id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.",
+                source_ref=SourceRef(document_path=path, start_offset=10, end_offset=20, page=5, page_end=5),
+            ),
+            Block(
+                id="b2", kind=BlockKind.PARAGRAPH, text="Additional clarifying detail.",
+                source_ref=SourceRef(document_path=path, start_offset=20, end_offset=30, page=8, page_end=8),
+            ),
+        ],
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    assert tree.nodes
+    for node in tree.nodes:
+        assert node.source_ref.page == 3  # the branch's real minimum page (blocks[0]'s own here)
+        assert node.source_ref.page_end == 8  # widened to the branch's real maximum page, not blocks[0]'s
+
+
+def test_widen_branch_page_range_finds_the_minimum_page_even_when_blocks_0_is_not_earliest() -> None:
+    # Companion to the build_survey_tree-level test above, which (following
+    # the plan's own worked example) happens to use an already-sorted
+    # blocks[0]-is-earliest fixture -- that alone can't distinguish "real
+    # min over all blocks" from "still just blocks[0]'s page" by coincidence.
+    # This exercises _widen_branch_page_range directly with an OUT-OF-ORDER
+    # page sequence to confirm the min is genuinely computed over every
+    # block, not just inherited from whichever happens to be first.
+    path = "survey_input.txt"
+    representative = SourceRef(document_path=path, start_offset=0, end_offset=10, page=5, page_end=5)
+    blocks = [
+        Block(id="b0", kind=BlockKind.PARAGRAPH, text="first", source_ref=representative),
+        Block(
+            id="b1", kind=BlockKind.PARAGRAPH, text="second",
+            source_ref=SourceRef(document_path=path, start_offset=10, end_offset=20, page=3, page_end=3),
+        ),
+        Block(
+            id="b2", kind=BlockKind.PARAGRAPH, text="third",
+            source_ref=SourceRef(document_path=path, start_offset=20, end_offset=30, page=8, page_end=8),
+        ),
+    ]
+    widened = _widen_branch_page_range(representative, blocks, None, None)
+    assert widened.page == 3  # real minimum across all blocks, not blocks[0]'s page=5
+    assert widened.page_end == 8  # real maximum across all blocks
 
 
 def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positionally_and_stays_disjoint() -> None:

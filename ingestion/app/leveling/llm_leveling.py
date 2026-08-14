@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import logging
 import re
 import threading
@@ -10,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, Table, plain_text_rows
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, plain_text_rows
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_CHUNKS
@@ -2012,6 +2013,43 @@ class _BranchAnalysisResult(NamedTuple):
     scoring_kb_context: str | None
 
 
+def _widen_branch_page_range(
+    representative: SourceRef, blocks: list[Block], tables: list[Table] | None, figures: list[Figure] | None
+) -> SourceRef:
+    """Per-BRANCH counterpart to tree_builder.py's _widen_page_end (same
+    max-page_end pattern, proven there for the deterministic path), plus a
+    matching min-page widen -- `representative` (blocks[0]'s/tables[0]'s/
+    figures[0]'s source_ref, see this function's only call site) otherwise
+    passes its page/page_end through verbatim even though every OTHER
+    node synthesized from this branch shares this same ref regardless of
+    which of the branch's many blocks/tables/figures it actually came from.
+    Not full per-node accuracy (out of scope -- see
+    _build_survey_tree_for_branch's own docstring): this only widens the
+    ONE representative ref's range to cover the branch's real min page /
+    max page_end, turning "wrong single page for the whole branch" into
+    "correct range for the whole branch". A no-op (mirrors _widen_page_end)
+    when `representative` itself has no page at all."""
+    if representative.page is None:
+        return representative
+    min_page = representative.page
+    max_page_end = representative.page_end if representative.page_end is not None else representative.page
+    for ref in itertools.chain(
+        (b.source_ref for b in blocks),
+        (t.source_ref for t in (tables or [])),
+        (f.source_ref for f in (figures or [])),
+    ):
+        if ref.page is None:
+            continue
+        min_page = min(min_page, ref.page)
+        max_page_end = max(max_page_end, ref.page_end if ref.page_end is not None else ref.page)
+    updates: dict[str, int] = {}
+    if min_page != representative.page:
+        updates["page"] = min_page
+    if max_page_end != (representative.page_end if representative.page_end is not None else representative.page):
+        updates["page_end"] = max_page_end
+    return representative.model_copy(update=updates) if updates else representative
+
+
 def _build_survey_tree_for_branch(
     blocks: list[Block],
     analysis_client: SectionAnalysisClient,
@@ -2250,6 +2288,11 @@ def _build_survey_tree_for_branch(
         blocks[0].source_ref if blocks else (tables[0].source_ref if tables else (figures[0].source_ref if figures else None))
     )
     if representative_source_ref is not None:
+        # Widens page/page_end to the branch's real min/max BEFORE the
+        # section_path copy below -- see _widen_branch_page_range's own
+        # docstring (mirrors tree_builder.py's _widen_page_end pattern,
+        # applied once per branch here rather than per fold).
+        representative_source_ref = _widen_branch_page_range(representative_source_ref, blocks, tables, figures)
         # section_label (computed above, right next to where this ref is
         # built) is this branch's own heading/excerpt label -- see
         # _derive_section_label's own docstring. A single-element path, not
