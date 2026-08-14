@@ -1007,6 +1007,26 @@ def test_load_pdf_survives_a_continuation_merge_failure() -> None:
     assert len(doc.tables) >= 1
 
 
+def test_load_pdf_table_structural_failure_emits_unsupported_note() -> None:
+    """Task 6: when `_build_pdf_table_grid`'s structural walk throws, the
+    table-level fallback (same call site as
+    test_load_pdf_survives_a_continuation_merge_failure's precedent, one
+    layer down) still degrades to a flat bare-cells grid -- but must ALSO
+    emit an "[UNSUPPORTED: ...]" NOTE block, so downstream leveling (Task 1's
+    `_is_unsupported_content_note` machinery) surfaces this as a reviewable
+    IntegrityWarning instead of silently losing the span/gap information."""
+    with patch("app.loaders.pdf_loader._build_pdf_table_grid", side_effect=RuntimeError("boom")):
+        doc = load_pdf(str(FIXTURES / "sample.pdf"))
+    # The degraded-grid fallback itself must still succeed (table extraction
+    # doesn't fail outright).
+    assert len(doc.tables) >= 1
+    note_blocks = [b for b in doc.blocks if b.kind == BlockKind.NOTE]
+    assert any(
+        b.text.startswith("[UNSUPPORTED: table extraction degraded structure")
+        for b in note_blocks
+    )
+
+
 # ---------------------------------------------------------------------------
 # Phase 3c (Task 7, docs/superpowers/sdd/2026-08-13-pdf-ingestion-fidelity):
 # borderless (text-strategy) table detection + chopped-word-boundary

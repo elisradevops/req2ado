@@ -392,6 +392,36 @@ def test_build_survey_tree_never_lets_an_unsupported_content_note_reach_section_
     assert not any(w.kind == WarningKind.DROPPED_BLOCKS for w in tree.warnings)
 
 
+def test_build_survey_tree_never_lets_a_degraded_table_note_leak_as_content() -> None:
+    # Task 6 end-to-end pin: pdf_loader.py's table-structural-failure NOTE
+    # (emitted when `_build_pdf_table_grid`'s structural walk throws --
+    # test_load_pdf_table_structural_failure_emits_unsupported_note in
+    # test_pdf_loader.py) must go through the exact same Task 1 machinery as
+    # the multi-column NOTE above: surface as an UNSUPPORTED_CONTENT_NOTE
+    # warning, never as fake section/description content.
+    path = "sample.pdf"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.PDF, sha256="h"),
+        blocks=[
+            Block(
+                id="b0", kind=BlockKind.NOTE,
+                text="[UNSUPPORTED: table extraction degraded structure (span/gap information lost) for a table on page 1]",
+                source_ref=_sr(path),
+            ),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="Power Budget", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="The board shall draw no more than 3.3V.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+
+    assert len(tree.nodes) > 0
+    for node in tree.nodes:
+        assert not any("[UNSUPPORTED:" in part for part in node.source_ref.section_path)
+        assert "[UNSUPPORTED:" not in node.description
+    assert any(w.kind == WarningKind.UNSUPPORTED_CONTENT_NOTE for w in tree.warnings)
+
+
 def test_build_survey_tree_falls_back_dangling_parent_temp_id_to_root_and_warns() -> None:
     # Regression (§2c step 5): the model can reference a parent_temp_id that
     # doesn't exist in its own returned node set -- previously this had no

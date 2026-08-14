@@ -1357,6 +1357,19 @@ def load_pdf(
                     cells = [[TableCell(text=cell or "") for cell in row] for row in found_table.extract()]
                     column_widths = None
                     xs = []
+                    # Task 6: surface this degradation as an UNSUPPORTED NOTE
+                    # (Task 1's machinery converts any such NOTE into an
+                    # IntegrityWarning rather than letting it leak into
+                    # section labels/descriptions) -- same convention as the
+                    # multi-column-gap and AcroForm NOTE blocks in this file.
+                    blocks.append(
+                        Block(
+                            id=f"b{block_id}", kind=BlockKind.NOTE,
+                            text=f"[UNSUPPORTED: table extraction degraded structure (span/gap information lost) for a table on page {page_number}]",
+                            source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0, page=page_number),
+                        )
+                    )
+                    block_id += 1
                 page_tables.append(
                     Table(
                         id=f"t{table_id}",
