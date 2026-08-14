@@ -929,7 +929,9 @@ _SURVEY_TOP_K = 50
 _SURVEY_MIN_P = 0.05
 
 
-def _append_vision_disabled_warning(tree: WorkItemTree, doc: CanonicalDoc) -> WorkItemTree:
+def _append_vision_disabled_warning(
+    tree: WorkItemTree, doc: CanonicalDoc, mode: str,
+) -> WorkItemTree:
     """Sub-fix (i) of issue 4(b): a single TREE-level warning (never one per
     figure) explaining every one of this tree's uncaptioned_figure_ids at
     once, whenever vision never even ran for this document (doc.vision_active
@@ -942,8 +944,18 @@ def _append_vision_disabled_warning(tree: WorkItemTree, doc: CanonicalDoc) -> Wo
     have several internal return points each (headingless/flat-list/
     structured for BASELINE); wrapping the route's own return value here
     guarantees exactly one emission per request regardless of which internal
-    path produced the tree."""
-    if not doc.vision_active and doc.figures:
+    path produced the tree.
+
+    Gated to `mode == "survey"` only (final whole-branch review finding):
+    BASELINE mode never activates vision by design (see the `vision_active`
+    computation above, which requires `mode == "survey"`), so `doc.
+    vision_active` is unconditionally False for every BASELINE job with at
+    least one figure -- this is an expected, permanent, non-actionable fact
+    for that mode, not something worth flagging on literally every BASELINE
+    run. SURVEY jobs where vision was explicitly turned off still get the
+    warning, since there it reflects a real per-job configuration choice
+    worth surfacing."""
+    if mode == "survey" and not doc.vision_active and doc.figures:
         tree.warnings.append(
             IntegrityWarning.make(
                 WarningKind.VISION_CAPTIONING_DISABLED,
@@ -1016,8 +1028,10 @@ async def level(
         tree = await run_in_threadpool(
             _build_survey_tree_with_scoring, doc, client, customer_id, user_id, catalog, job_id, model, primer_context
         )
-        return _append_vision_disabled_warning(tree, doc)
-    return _append_vision_disabled_warning(build_baseline_tree(doc, customer_id=customer_id), doc)
+        return _append_vision_disabled_warning(tree, doc, mode)
+    return _append_vision_disabled_warning(
+        build_baseline_tree(doc, customer_id=customer_id), doc, mode,
+    )
 
 
 class ScoreItemRequest(BaseModel):
