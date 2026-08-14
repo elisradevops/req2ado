@@ -732,6 +732,47 @@ def _find_front_matter_branches(branches: list[list[Block]]) -> set[int]:
     return indices
 
 
+def _front_matter_guard_for_whole_document(blocks: list[Block]) -> str | None:
+    """The same advisory front-matter guard `_combine_global_context` injects
+    per-branch, adapted for the SINGLE-call path (build_survey_tree's
+    whole-document gate, or a document whose branches collapsed back into
+    one). That path previously got no guard at all -- yet a short document
+    that fits in one call is just as likely to open with an "Introduction" as
+    a long one.
+
+    Why not simply reuse _FRONT_MATTER_GUARD_TEXT here: that text says "THIS
+    section's heading matches typical front-matter", which is true of a branch
+    but false of a whole document -- one call covering an Introduction AND
+    real requirement sections would be told the entire input is front matter,
+    risking suppression of the whole document. This variant names the matching
+    headings instead and states explicitly that every other section is
+    unaffected.
+
+    Deliberately avoids the words 'appendix'/'annex'/'attached' in its own
+    prose: this string is prepended to section_text, which
+    _referenced_attachment_warnings scans -- an example list containing those
+    words would manufacture a spurious EXTERNAL_REFERENCE warning out of the
+    guard itself. The document's own matching headings ARE named, which adds
+    no new match (they already appear in the rendered section text).
+
+    Returns None when no heading matches -- byte-identical prompt to before
+    this guard existed. Purely advisory, exactly like the per-branch guard:
+    nothing is ever skipped, merged, or suppressed."""
+    labels = [label for label in _branch_heading_labels(blocks) if _FRONT_MATTER_HEADING_PATTERN.search(label)]
+    if not labels:
+        return None
+    named = "; ".join(f'"{label}"' for label in dict.fromkeys(labels))
+    return (
+        "Some heading(s) in this document match typical front-matter "
+        f"(introductory, table-of-contents, revision-history or reference-list "
+        f"sections): {named}. Only emit work items for those sections if "
+        "genuine testable/actionable content exists in their text -- do not "
+        "fabricate an Epic/Feature/Requirement merely to represent such a "
+        "section's existence. Every other section of this document is "
+        "unaffected by this note."
+    )
+
+
 def _glossary_context_for_branch(
     branch_index: int, glossary_sections: list[tuple[int, str, str]]
 ) -> str | None:
@@ -1737,12 +1778,22 @@ def build_survey_tree(
         # is also the single home for ANY single-branch document's tables
         # (not just xlsx) -- a multi-branch document's tables are a separate,
         # not-yet-solved placement question (see §12, unaffected by this fix).
+        # Front-matter guard on the single-call path (the multi-branch loop
+        # below injects it per-branch via _combine_global_context). Without
+        # this, a document short enough to fit in ONE call -- plausibly the
+        # most common real input -- got no front-matter protection at all.
+        # Computed from doc.blocks, exactly the blocks this call analyzes.
+        # Advisory only, and NOT folded into the outer `global_context`
+        # variable: that variable's None-ness is what `whole_document` below
+        # is derived from, and a guard string must not flip that flag.
+        single_call_front_matter_guard = _front_matter_guard_for_whole_document(doc.blocks)
         branch_result = _build_survey_tree_for_branch(
             doc.blocks, analysis_client,
             node_id_prefix="", customer_id=customer_id,
             tables=doc.tables, figures=doc.figures,
             supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
             list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
+            global_context=single_call_front_matter_guard,
             # True precisely when the entire document was analyzed in one
             # pass with no compact outline built (global_context is None) --
             # even a "single branch" can have global_context set if

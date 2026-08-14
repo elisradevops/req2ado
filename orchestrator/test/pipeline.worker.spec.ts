@@ -1594,6 +1594,16 @@ describe('runPipelineJob', () => {
         expect.any(Array),
         expect.objectContaining({ files: [{ type: 'file', id: 'file-1' }], maxTokens: 300, think: false }),
       );
+      // Determinism guard: the primer's text is (a) threaded into every
+      // branch's analyze_section prompt, where sampled wording shifts node
+      // structure (the confirmed 74 vs ~120 node variance), and (b) part of
+      // ingestion's figure-caption cache KEY -- a re-sampled primer would
+      // invalidate every figure's 7-day cache entry for the SAME document.
+      // Same temperature/seed pinning vision() already hardcodes.
+      expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.objectContaining({ temperature: 0, seed: 0 }),
+      );
       expect(fakeOpenWebUiClient.deleteFile).toHaveBeenCalledWith('file-1');
       expect(fakePrimerCacheRedis.set).toHaveBeenCalledWith(
         expect.stringContaining('primer:gemma4:12b:'), 'This is an avionics ICD.', 'EX', 86_400,

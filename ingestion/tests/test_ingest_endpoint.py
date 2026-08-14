@@ -378,6 +378,38 @@ def test_describe_figure_never_caches_a_blank_result(monkeypatch) -> None:
     assert fake_client.calls == 2
 
 
+def test_describe_figure_caches_a_genuine_insignificant_verdict(monkeypatch) -> None:
+    # The mirror image of the never-cache-a-blank test above, and the reason
+    # the "ambiguous" cases (unparseable response, or significant=True with a
+    # blank description) are collapsed into None rather than into a
+    # significant=False result: a REAL significant=False verdict is a
+    # confident, deliberate answer and MUST be cached like any other, so a
+    # re-run of the same document doesn't re-pay a vision call per decorative
+    # figure. Both calls use identical image bytes AND identical
+    # document_context, so they share one cache key.
+    import app.main as main_module
+    from app.vision.orchestrator_vision_client import FigureVisionResult
+
+    class _FakeVisionClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+            self.calls += 1
+            return FigureVisionResult(significant=False, description="")
+
+    fake_client = _FakeVisionClient()
+    monkeypatch.setattr(main_module, "_vision_client", fake_client)
+    monkeypatch.setattr(main_module, "_narration_redis", _FakeRedis())
+
+    first = main_module._describe_figure(b"decorative-image-bytes", document_context="An avionics ICD.")
+    second = main_module._describe_figure(b"decorative-image-bytes", document_context="An avionics ICD.")
+
+    assert first is None
+    assert second is None
+    assert fake_client.calls == 1  # second call served from cache, no live re-query
+
+
 def test_describe_figure_returns_none_when_vision_model_judges_figure_insignificant(monkeypatch) -> None:
     import app.main as main_module
     from app.vision.orchestrator_vision_client import FigureVisionResult

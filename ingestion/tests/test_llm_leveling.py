@@ -816,6 +816,76 @@ def test_build_survey_tree_front_matter_branch_still_allows_a_real_requirement_t
     assert any("Boot time" in n.title for n in tree.nodes)
 
 
+def test_front_matter_guard_for_whole_document_names_matching_headings_and_is_none_without_any() -> None:
+    from app.leveling.llm_leveling import _front_matter_guard_for_whole_document
+
+    path = "doc.txt"
+    blocks = [
+        Block(id="b0", kind=BlockKind.HEADING, text="Introduction", number_label="1", heading_level=1, source_ref=_sr(path)),
+        Block(id="b1", kind=BlockKind.PARAGRAPH, text="This document describes...", source_ref=_sr(path)),
+        Block(id="b2", kind=BlockKind.HEADING, text="Interface Requirements", number_label="2", heading_level=1, source_ref=_sr(path)),
+    ]
+    guard = _front_matter_guard_for_whole_document(blocks)
+    assert guard is not None
+    assert "1 Introduction" in guard
+    assert "Interface Requirements" not in guard
+
+    no_front_matter = [b for b in blocks if b.id != "b0"]
+    assert _front_matter_guard_for_whole_document(no_front_matter) is None
+
+
+def test_front_matter_guard_for_whole_document_text_does_not_trip_the_external_reference_warning() -> None:
+    # The guard string is prepended to section_text, which
+    # _referenced_attachment_warnings scans -- if the guard's own prose named
+    # "appendix"/"annex"/"attached" as examples, every guarded document would
+    # gain a spurious EXTERNAL_REFERENCE warning manufactured out of the
+    # instruction text itself. Pins the deliberate wording choice.
+    from app.leveling.llm_leveling import _REFERENCED_ATTACHMENT_PATTERN, _front_matter_guard_for_whole_document
+
+    path = "doc.txt"
+    guard = _front_matter_guard_for_whole_document(
+        [Block(id="b0", kind=BlockKind.HEADING, text="Introduction", heading_level=1, source_ref=_sr(path))]
+    )
+    assert guard is not None
+    assert not _REFERENCED_ATTACHMENT_PATTERN.search(guard)
+
+
+def test_build_survey_tree_applies_the_front_matter_guard_on_the_single_call_path() -> None:
+    # A document short enough to fit in ONE call (the most common real input)
+    # previously got no front-matter guard at all -- it was only wired into
+    # the multi-branch loop's per-branch global_context.
+    path = "doc.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, text="Introduction", number_label="1", heading_level=1, source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="This document describes the display unit.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, text="Display Requirements", number_label="2", heading_level=1, source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+
+    assert len(fake.calls) == 1  # genuinely the single-call path, not a multi-branch run
+    assert fake.calls[0]["whole_document"] is True  # the guard must NOT flip this flag
+    assert "typical front-matter" in fake.calls[0]["section_text"]
+    assert "1 Introduction" in fake.calls[0]["section_text"]
+    # Advisory only -- the model's nodes still reach the tree unchanged.
+    assert len(tree.nodes) >= 1
+
+
+def test_build_survey_tree_single_call_section_text_is_unchanged_without_front_matter() -> None:
+    # Byte-identical to pre-fix behavior for a document with no front-matter
+    # heading: no guard string, nothing prepended.
+    doc = _small_doc()
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+
+    assert "typical front-matter" not in fake.calls[0]["section_text"]
+    assert not fake.calls[0]["section_text"].startswith("Some heading")
+
+
 def _table_with_group(rows: list[list[str]], path: str = "survey_input.txt", offset: int = 0) -> Table:
     return Table(
         id="t0", cells=[[TableCell(text=c) for c in row] for row in rows],

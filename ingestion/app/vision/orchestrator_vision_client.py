@@ -64,9 +64,11 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
     glitchy, self-heals on retry -- the exact protection the pre-existing
     "never cache a blank result" test already guards), but SHOULD cache a
     real significant=False verdict (a confident, deliberate answer, not an
-    ambiguous blank). Mirrors orchestrator_llm_client.py's own defensive
-    parse/repair convention (raw_decode first, json_repair as the last
-    resort) without importing that module's narrower, analyze_section-
+    ambiguous blank). A significant=True verdict with a BLANK description is
+    treated as the same ambiguous outcome as an unparseable response (None) --
+    see the inline comment below. Mirrors orchestrator_llm_client.py's own
+    defensive parse/repair convention (raw_decode first, json_repair as the
+    last resort) without importing that module's narrower, analyze_section-
     specific positional tolerances."""
     for attempt in (raw, None):
         try:
@@ -74,8 +76,26 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
         except Exception:
             continue
         if isinstance(parsed, dict) and isinstance(parsed.get("significant"), bool):
-            description = parsed.get("description")
-            return FigureVisionResult(significant=parsed["significant"], description=description if isinstance(description, str) else "")
+            raw_description = parsed.get("description")
+            description = raw_description if isinstance(raw_description, str) else ""
+            if parsed["significant"] and not description.strip():
+                # significant=True with a blank/whitespace-only description is
+                # the exact cache-poisoning state a confirmed live incident
+                # produced (an AirPro document whose 39 figures were all blank
+                # for a week): well-formed enough to parse, useless as a
+                # caption, indistinguishable from a model glitch -- and the
+                # `"description": null` -> "" coercion just above manufactures
+                # it from a partially-compliant response. Folded into the SAME
+                # None outcome as a totally unparseable response so the single
+                # "don't cache an ambiguous result" rule in main.py's
+                # _describe_figure covers both cases -- one code path, one
+                # place that rule lives, instead of a second parallel guard.
+                # A significant=False verdict with a blank description is NOT
+                # ambiguous (the schema's own `description` field says it may
+                # be empty when not significant) and is returned -- and cached
+                # -- normally.
+                return None
+            return FigureVisionResult(significant=parsed["significant"], description=description)
     return None
 
 

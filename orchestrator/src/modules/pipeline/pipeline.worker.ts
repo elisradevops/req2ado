@@ -457,6 +457,25 @@ export async function runPipelineJob(
                   // independent backstops against the same real risk.
                   maxTokens: 300,
                   think: false,
+                  // Same "structured extraction, not creative writing"
+                  // reasoning OpenWebUiClient.vision()'s own temperature/seed
+                  // comment states: this primer is a factual orientation
+                  // summary, not prose, so temperature 0 is correct on its own
+                  // merits and seed is defensive hygiene on top in case the
+                  // backend ever runs at a non-zero temperature. It matters
+                  // MORE here than for a one-off summary: this text is (a)
+                  // threaded into every branch's analyze_section prompt, where
+                  // sampled wording shifts branch/node structure (the confirmed
+                  // 74 vs ~120 node variance), and (b) part of the figure-
+                  // caption cache KEY (ingestion main.py's
+                  // _figure_caption_cache_key), so a re-sampled primer after
+                  // this primer cache's own TTL would invalidate every figure's
+                  // 7-day cache entry for the SAME document. Pinning the
+                  // sampling makes the same document produce the same primer
+                  // whenever it is resampled, which is what makes both caches
+                  // actually stable.
+                  temperature: 0,
+                  seed: 0,
                   // Fixed at PRIMER_FIXED_NUM_CTX (see its own comment
                   // above for why) -- passed explicitly because Ollama
                   // otherwise runs at its own small default window

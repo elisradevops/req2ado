@@ -49,6 +49,15 @@ export interface LlmChatResult {
 export interface LlmChatOptions {
   model?: string;
   temperature?: number;
+  // Pins the sampler's RNG (forwarded as OpenAI-compat `seed`, honored by
+  // Ollama and by the production proxy alike). Defensive/hygiene on top of
+  // `temperature: 0` for a structured-extraction call whose OUTPUT feeds
+  // downstream deterministic logic -- exactly the pairing vision() already
+  // hardcodes for figure captions (see openwebui.client.ts's own temperature/
+  // seed comment and the run-to-run SURVEY node-count variance it fixed).
+  // Omitted leaves the backend's own default sampling untouched, so a
+  // user-facing chat turn is unaffected.
+  seed?: number;
   responseSchema?: LlmResponseSchema;
   // Caps output length (forwarded as OpenAI-compat `max_tokens`, which
   // Ollama maps to its own `num_predict`). Bounds worst-case latency for a

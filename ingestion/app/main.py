@@ -287,6 +287,21 @@ def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
 
 
 def _describe_figure(image_bytes: bytes, document_context: str | None = None) -> str | None:
+    # SCOPE NOTE (KB ingestion): this function is shared by SURVEY-mode
+    # /ingest AND the three KB-ingestion routes below (/kb/ingest-url,
+    # /kb/ingest-folder-url, /kb/ingest-item), so KB-indexed documents' figures
+    # ALSO go through the vision significance filter -- with
+    # document_context=None there, since KB ingestion has no whole-document AI
+    # primer. Consequence, stated plainly: a figure the vision model judges
+    # insignificant (decorative logo, placeholder block) gets caption=None and
+    # is therefore NOT part of the indexed text, so it will not be retrievable
+    # via KB search. This is an accepted side effect of routing every
+    # describe_figure caller through one significance-aware implementation, not
+    # an original requirement of the content-significance-filtering plan (whose
+    # Global Constraints scoped both mechanisms to SURVEY mode) -- documented
+    # rather than bypassed because a per-caller bypass flag is a larger,
+    # separately-reviewable change.
+    #
     # Confirmed real root cause of run-to-run SURVEY node-count variance
     # (74 vs ~120 nodes for the identical document): a figure's caption was
     # previously freshly (re-)sampled on every single job run. Memoizing by
@@ -305,17 +320,22 @@ def _describe_figure(image_bytes: bytes, document_context: str | None = None) ->
                 cached_obj = json.loads(cached.decode("utf-8"))
                 return cached_obj["description"] if cached_obj["significant"] else None
             except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
-                pass  # Treat an unparseable cache entry as a miss, same as a blank one below.
+                pass  # Treat an unparseable cache entry as a miss -- fall through to a live vision call.
     except Exception:
         logger.warning("Figure-caption cache read failed -- falling through to a live vision call", exc_info=True)
 
     describe_bytes, mime_type = _rasterize_for_vision(image_bytes)
     result = _vision_client.describe_figure(describe_bytes, mime_type, document_context)
     if result is None:
-        # Totally unparseable vision response -- same "don't memorize a
-        # glitch for a week" protection the old blank-caption guard
-        # provided (see FigureVisionResult's own doc comment). Not cached;
-        # self-heals on the next call/run instead of being locked in.
+        # The vision client's single "ambiguous result" outcome: a totally
+        # unparseable response OR a well-formed significant=True whose
+        # description came back blank (see _parse_figure_response's own
+        # comment -- the blank-caption cache-poisoning case a confirmed live
+        # incident produced is folded into this same None so there is exactly
+        # ONE place the "don't memorize a glitch for a week" rule lives).
+        # Not cached; self-heals on the next call/run instead of being locked
+        # in. A genuine significant=False verdict is NOT ambiguous and falls
+        # through to the cache write below.
         return None
     try:
         _narration_redis.set(
@@ -1034,6 +1054,9 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
             graph_client,
             _embed_client,
             _kb_vector_store,
+            # KB ingestion shares SURVEY's figure-significance filter (with no
+            # document_context) -- an insignificant figure is dropped and will
+            # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
             describe_figure=_describe_figure if _vision_client is not None else None,
             checklist_client=_checklist_client,
             retrieval_mode=body.retrieval_mode,
@@ -1065,6 +1088,9 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
             _embed_client,
             _kb_vector_store,
             body.recursive,
+            # KB ingestion shares SURVEY's figure-significance filter (with no
+            # document_context) -- an insignificant figure is dropped and will
+            # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
             describe_figure=_describe_figure if _vision_client is not None else None,
             checklist_client=_checklist_client,
         )
@@ -1098,6 +1124,9 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
             graph_client,
             _embed_client,
             _kb_vector_store,
+            # KB ingestion shares SURVEY's figure-significance filter (with no
+            # document_context) -- an insignificant figure is dropped and will
+            # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
             describe_figure=_describe_figure if _vision_client is not None else None,
             checklist_client=_checklist_client,
             retrieval_mode=body.retrieval_mode,

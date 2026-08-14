@@ -78,6 +78,22 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ temperature: 0 }));
   });
 
+  it('forwards seed when provided, and omits it otherwise (pinned sampling is opt-in per call)', async () => {
+    // Backs the primer call's temperature/seed pinning (pipeline.worker.ts):
+    // without this passthrough, `seed: 0` on a chat() call would be silently
+    // dropped and the primer would keep re-sampling.
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.chat([{ role: 'user', content: 'hi' }], { seed: 0 });
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ seed: 0 }));
+
+    await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
+  });
+
   it('forwards maxTokens as max_tokens when provided (bounds worst-case latency)', async () => {
     const client = new OpenWebUiClient(config);
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });

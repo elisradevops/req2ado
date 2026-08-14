@@ -77,6 +77,10 @@ export class OpenWebUiClient implements LlmClient {
       model: opts?.model ?? this.config.LLM_CHAT_MODEL,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      // See LlmChatOptions.seed's doc comment -- only sent when a caller
+      // explicitly asks for pinned sampling, so every other caller's default
+      // behavior is unchanged.
+      ...(opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
       // Ollama maps OpenAI-compat max_tokens -> its own num_predict. Bounds
       // worst-case latency for a reasoning model's otherwise-unbounded

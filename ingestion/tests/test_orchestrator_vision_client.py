@@ -138,3 +138,42 @@ def test_describe_figure_recovers_a_slightly_malformed_json_reply_via_repair() -
 
     result = client.describe_figure(b"fake-bytes")
     assert result == FigureVisionResult(significant=True, description="A block diagram.")
+
+
+@pytest.mark.parametrize(
+    "blank_description",
+    [None, "", "   "],
+    ids=["null-description", "empty-description", "whitespace-only-description"],
+)
+def test_describe_figure_returns_none_for_a_significant_verdict_with_a_blank_description(blank_description) -> None:
+    # Cache-poisoning guard (confirmed live incident: an AirPro document whose
+    # 39 figures were all blank for a week). significant=True with a blank
+    # description is well-formed enough to parse but useless as a caption --
+    # if it were returned as a FigureVisionResult, main.py's _describe_figure
+    # would write it to Redis with the 7-day TTL and replay the blank for a
+    # week. Folded into the SAME None outcome as a totally unparseable
+    # response so the existing "don't cache None" rule covers it, rather than
+    # a second parallel guard in the caller. The `null` case is the one this
+    # module itself used to manufacture (null -> "" coercion + significant
+    # true).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"description": json.dumps({"significant": True, "description": blank_description})})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    assert client.describe_figure(b"fake-bytes") is None
+
+
+def test_describe_figure_still_parses_an_insignificant_verdict_with_an_empty_description() -> None:
+    # The blank-description guard above must NOT swallow this: the schema's
+    # own `description` field says it may be empty when the figure is not
+    # significant, so this is a confident, deliberate verdict -- a real result
+    # the caller SHOULD cache, not an ambiguous blank.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"description": json.dumps({"significant": False, "description": ""})})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    assert client.describe_figure(b"fake-bytes") == FigureVisionResult(significant=False, description="")
