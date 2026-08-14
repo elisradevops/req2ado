@@ -65,7 +65,7 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
                     referenced only as "Figure: This diagram illustrates..."
                     had no way to be seen, only read about. */}
                 <FigureImage jobId={jobId} figureId={item.figureId} active={hasExpandedOnce} alt={`Figure ${item.figureIndex}`} />
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 !text-ink-2">
                   <span className="font-medium text-ink-1">Figure {item.figureIndex}: </span>
                   <Markdown>{item.caption}</Markdown>
                 </div>

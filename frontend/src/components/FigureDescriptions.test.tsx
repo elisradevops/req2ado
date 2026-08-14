@@ -87,6 +87,10 @@ describe('FigureDescriptions', () => {
     const em = screen.getByText('italic');
     expect(strong.tagName).toBe('STRONG');
     expect(em.tagName).toBe('EM');
+    // Verify styling is preserved: parent wrapper applies !text-ink-2 to override
+    // Markdown's default text-ink-1. Check the wrapper element for the override class.
+    const wrapper = screen.getByText('italic').closest('p')?.parentElement;
+    expect(wrapper).toHaveClass('!text-ink-2');
   });
 
   it('renders markdown list items in captions as real list elements', () => {

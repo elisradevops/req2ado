@@ -554,6 +554,12 @@ describe('NodeDetailPanel', () => {
       const em = screen.getByText('italic');
       expect(strong.tagName).toBe('STRONG');
       expect(em.tagName).toBe('EM');
+      // Verify styling is preserved: parent wrapper applies !text-xs !text-ink-2
+      // to override Markdown's default text-sm text-ink-1. The important modifier
+      // takes effect at CSS cascade level, so check the wrapper (not the child <p>).
+      const wrapper = screen.getByText('italic').closest('p')?.parentElement;
+      expect(wrapper).toHaveClass('!text-xs');
+      expect(wrapper).toHaveClass('!text-ink-2');
     });
   });
 

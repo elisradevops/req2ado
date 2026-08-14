@@ -522,7 +522,7 @@ export function NodeDetailPanel({
                     <FigureImage jobId={jobId} figureId={figureId} active alt={`Figure referenced by ${entry.title}`} />
                     <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                       {captionByFigureId?.[figureId] && (
-                        <div className="text-xs text-ink-2">
+                        <div className="!text-xs !text-ink-2">
                           <Markdown>{captionByFigureId[figureId]}</Markdown>
                         </div>
                       )}
