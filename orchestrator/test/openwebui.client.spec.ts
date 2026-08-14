@@ -851,6 +851,20 @@ describe('OpenWebUiClient.uploadFile', () => {
     const client = new OpenWebUiClient(config);
     await expect(client.uploadFile(Buffer.from('x'), 'x.pdf')).rejects.toThrow();
   });
+
+  it('strips the /ollama proxy sub-path, not just /v1, when LLM_BASE_URL points through Open WebUI\'s Ollama-compat proxy', async () => {
+    // Regression: confirmed live against a real deployment
+    // (LLM_BASE_URL=http://host:3000/ollama/v1, the actual production
+    // config) that the old bare `.replace(/\/v1\/?$/, '')` left /ollama in
+    // place, producing http://host:3000/ollama/api/v1/files/ -- a URL that
+    // returns a real 405 (a route exists, just not this one), not the
+    // native file API at all. The primer's fail-open design swallowed this
+    // into "primer just never works," with zero job failure to surface it.
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ id: 'file-123' }) });
+    const client = new OpenWebUiClient({ ...config, LLM_BASE_URL: 'http://host:3000/ollama/v1' });
+    await client.uploadFile(Buffer.from('pdf bytes'), 'doc.pdf');
+    expect(global.fetch).toHaveBeenCalledWith('http://host:3000/api/v1/files/', expect.objectContaining({ method: 'POST' }));
+  });
 });
 
 describe('OpenWebUiClient.pollFileProcessed', () => {

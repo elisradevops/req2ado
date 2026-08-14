@@ -363,13 +363,36 @@ export class OpenWebUiClient implements LlmClient {
     }
   }
 
+  // Derives Open WebUI's true app root from LLM_BASE_URL for its NATIVE
+  // (non-OpenAI-compat) file API -- uploadFile/pollFileProcessed/deleteFile
+  // all need this, unlike chat()/embed(), which correctly go through
+  // whichever OpenAI-compat surface LLM_BASE_URL points at (including
+  // Open WebUI's own Ollama-compatibility proxy sub-path, .../ollama/v1,
+  // which legitimately serves chat/embeddings). The native file API
+  // (/api/v1/files/...) lives ONLY at the app root and is never mirrored
+  // under that /ollama/ proxy prefix. Confirmed live: with
+  // LLM_BASE_URL=http://host:3000/ollama/v1 (this deployment's real
+  // config), the old bare `.replace(/\/v1\/?$/, '')` left `/ollama` in
+  // place, producing http://host:3000/ollama/api/v1/files/ -- a real route
+  // that exists but rejects POST (405), not the files endpoint at all
+  // (the true endpoint, http://host:3000/api/v1/files/, returned 401
+  // unauthenticated -- i.e. genuinely reachable). The primer's fail-open
+  // design meant this never surfaced as a job failure, only as "the
+  // primer silently never works," confirmed via docker logs during a real
+  // SURVEY run. Strips an optional `ollama/` segment immediately before
+  // the trailing `v1` so both `.../v1` and `.../ollama/v1` resolve to the
+  // same true app root.
+  private openWebUiAppRoot(): string {
+    return this.config.LLM_BASE_URL.replace(/\/(ollama\/)?v1\/?$/, '');
+  }
+
   // Uploads a source document to Open WebUI's native file API (not the
   // OpenAI-compat surface -- same reason embed()/showModel() bypass
   // this.openai) so a later call can generate the whole-document AI context
   // primer (Phase 6) from it. FormData/Blob are global in Node 18+, no
   // import needed.
   async uploadFile(buffer: Buffer, filename: string): Promise<string> {
-    const baseUrl = this.config.LLM_BASE_URL.replace(/\/v1\/?$/, '');
+    const baseUrl = this.openWebUiAppRoot();
     const form = new FormData();
     form.append('file', new Blob([buffer]), filename);
     const response = await fetch(`${baseUrl}${this.config.FILES_UPLOAD_PATH}`, {
@@ -396,7 +419,7 @@ export class OpenWebUiClient implements LlmClient {
   // work out, proceed without it" being the only two real outcomes callers
   // need to distinguish (succeeded vs. didn't).
   async pollFileProcessed(fileId: string, timeoutMs: number): Promise<boolean> {
-    const baseUrl = this.config.LLM_BASE_URL.replace(/\/v1\/?$/, '');
+    const baseUrl = this.openWebUiAppRoot();
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
@@ -427,7 +450,7 @@ export class OpenWebUiClient implements LlmClient {
   // already-resolved result or throw past the caller, so this swallows its
   // own errors entirely rather than surfacing them.
   async deleteFile(fileId: string): Promise<void> {
-    const baseUrl = this.config.LLM_BASE_URL.replace(/\/v1\/?$/, '');
+    const baseUrl = this.openWebUiAppRoot();
     try {
       await fetch(`${baseUrl}${this.config.FILES_STATUS_PATH}/${fileId}`, {
         method: 'DELETE',
