@@ -152,7 +152,6 @@ export interface IntegrityWarning {
     | 'heading_id_offset_mismatch'
     | 'unsupported_content_note'
     | 'empty_table_content'
-    | 'degraded_table_structure'
     | 'vision_captioning_disabled';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.

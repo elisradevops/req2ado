@@ -313,7 +313,6 @@ class WarningKind(str, Enum):
     HEADING_ID_OFFSET_MISMATCH = "heading_id_offset_mismatch"
     UNSUPPORTED_CONTENT_NOTE = "unsupported_content_note"
     EMPTY_TABLE_CONTENT = "empty_table_content"
-    DEGRADED_TABLE_STRUCTURE = "degraded_table_structure"
     # Tree-level (never per-figure) warning: vision was off for this WHOLE
     # run (doc.vision_active is False) while the document has at least one
     # figure -- explains every one of that document's uncaptioned_figure_ids
@@ -355,7 +354,6 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.HEADING_ID_OFFSET_MISMATCH: WarningSeverity.NEEDS_REVIEW,
     WarningKind.UNSUPPORTED_CONTENT_NOTE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.EMPTY_TABLE_CONTENT: WarningSeverity.NEEDS_REVIEW,
-    WarningKind.DEGRADED_TABLE_STRUCTURE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.VISION_CAPTIONING_DISABLED: WarningSeverity.NEEDS_REVIEW,
 }
 

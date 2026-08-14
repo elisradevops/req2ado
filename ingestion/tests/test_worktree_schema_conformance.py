@@ -147,17 +147,6 @@ def test_insignificant_figure_ids_matches_work_item_tree_schema(schema) -> None:
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
-def test_degraded_table_structure_warning_matches_work_item_tree_schema(schema) -> None:
-    tree = build_baseline_tree(_baseline_doc())
-    tree.warnings = [
-        IntegrityWarning.make(
-            WarningKind.DEGRADED_TABLE_STRUCTURE,
-            "Table structure degradation detected.",
-        )
-    ]
-    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
-
-
 def test_schema_rejects_a_stray_field_on_a_node(schema) -> None:
     # Regression: before additionalProperties:false, this schema was nearly
     # vacuous -- it validated any node shape, stray fields included, so a
