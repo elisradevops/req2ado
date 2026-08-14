@@ -301,12 +301,12 @@ describe('runPipelineJob', () => {
         {
           localId: 'n0', sourceHash: 'hashA', legacySourceHash: 'hashA', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [], traceLinks: [], figureIds: [],
-          tableIds: [], uncaptionedFigureIds: [],
+          tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [],
         },
         {
           localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [], traceLinks: [], figureIds: [],
-          tableIds: [], uncaptionedFigureIds: [],
+          tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [],
         },
       ],
       fakeIdempotencyService,
@@ -373,7 +373,7 @@ describe('runPipelineJob', () => {
           tags: [],
           traceLinks: [],
           figureIds: [],
-          tableIds: [], uncaptionedFigureIds: [],
+          tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [],
         },
         {
           localId: 'n1',
@@ -390,7 +390,7 @@ describe('runPipelineJob', () => {
           tags: [],
           traceLinks: [],
           figureIds: [],
-          tableIds: [], uncaptionedFigureIds: [],
+          tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [],
         },
       ],
       fakeIdempotencyService,
@@ -444,14 +444,14 @@ describe('runPipelineJob', () => {
           qualityScore: 72, qualityIssues: ['vague_term'],
           qualityCategoryScores: { clarity: 40, testability: 80, atomicity: 90, style: 60, rationale: 20 },
           childType: 'Requirement', traceLinks: [], figureIds: [],
-          tableIds: [], uncaptionedFigureIds: [],
+          tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [],
         },
         {
           localId: 'n1', sourceHash: 'hashB', legacySourceHash: 'hashB', customerId: 'CUST-1', areaPath: 'Project\\Area1',
           groundingScore: null, sourceRef: null, tags: [],
           qualityScore: undefined, qualityIssues: undefined, qualityCategoryScores: undefined,
           childType: undefined, traceLinks: [], figureIds: [],
-          tableIds: [], uncaptionedFigureIds: [],
+          tableIds: [], uncaptionedFigureIds: [], insignificantFigureIds: [],
         },
       ],
       fakeIdempotencyService,
@@ -825,6 +825,58 @@ describe('runPipelineJob', () => {
           uncaptionedFigureIds: ['f9'],
         }),
         expect.objectContaining({ localId: 'n1', tableIds: [], uncaptionedFigureIds: [] }),
+      ],
+      fakeIdempotencyService,
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  // Task 4b sub-fix (ii): insignificant_figure_ids is a SUBSET of
+  // uncaptioned_figure_ids -- carried through the same raw-node ->
+  // DryRunTreeNode mapping figureIds/uncaptionedFigureIds already take (see
+  // pipeline.worker.ts's diffInputs map).
+  it('carries insignificant_figure_ids through to the dry-run diff input, as a subset of uncaptioned_figure_ids', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [
+        {
+          local_id: 'n0',
+          fidelity_hash: 'hashA',
+          customer_id: 'CUST-1',
+          uncaptioned_figure_ids: ['f9', 'f10'],
+          insignificant_figure_ids: ['f9'],
+        },
+        // Omits insignificant_figure_ids entirely -- must default to [],
+        // same convention as every other optional array field here.
+        { local_id: 'n1', fidelity_hash: 'hashB', customer_id: 'CUST-1', uncaptioned_figure_ids: ['f11'] },
+      ],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakeDryRunService.diff).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          localId: 'n0',
+          uncaptionedFigureIds: ['f9', 'f10'],
+          insignificantFigureIds: ['f9'],
+        }),
+        expect.objectContaining({ localId: 'n1', uncaptionedFigureIds: ['f11'], insignificantFigureIds: [] }),
       ],
       fakeIdempotencyService,
       expect.any(Function),

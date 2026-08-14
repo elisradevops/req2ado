@@ -86,3 +86,43 @@ def test_schema_rejects_a_non_string_failed_figure_storage_id(schema) -> None:
     doc["failed_figure_storage_ids"] = [123]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_accepts_vision_active_true_and_false(schema) -> None:
+    # Task 4b sub-fix (i): CanonicalDoc.vision_active, set once by /ingest
+    # and round-tripped through /level's request body (see main.py's
+    # _append_vision_disabled_warning).
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["vision_active"] = True
+    jsonschema.validate(instance=doc, schema=schema)
+    doc["vision_active"] = False
+    jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_rejects_a_non_boolean_vision_active(schema) -> None:
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["vision_active"] = "yes"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_accepts_each_real_figure_caption_status_value(schema) -> None:
+    # Task 4b sub-fix (ii): Figure.caption_status, closed to "insignificant"/
+    # "vision_failed"/null (additionalProperties: false on Figure, so this
+    # also proves the schema actually recognizes the field).
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["figures"] = [
+        {"id": "f0", "caption": None, "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1}, "caption_status": "insignificant"},
+        {"id": "f1", "caption": None, "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1}, "caption_status": "vision_failed"},
+        {"id": "f2", "caption": "real caption", "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1}, "caption_status": None},
+    ]
+    jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_rejects_an_out_of_vocabulary_figure_caption_status(schema) -> None:
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["figures"] = [
+        {"id": "f0", "caption": None, "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1}, "caption_status": "vision_disabled"},
+    ]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=doc, schema=schema)

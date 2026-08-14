@@ -190,6 +190,23 @@ class Figure(BaseModel):
     id: str
     caption: str | None = None
     source_ref: SourceRef
+    # Why `caption` is None, when it is -- disambiguates the two independent
+    # causes that previously both collapsed into the same signal (see
+    # WorkItemNode.uncaptioned_figure_ids's own docstring, tree-level
+    # WarningKind.VISION_CAPTIONING_DISABLED covers the third cause, vision
+    # being off for the whole run). "insignificant": the vision model judged
+    # the figure decorative/non-technical (result.significant is False, live
+    # or cached). "vision_failed": the vision call itself errored/timed out
+    # or returned an unparseable response (main.py's _describe_figure
+    # ambiguous-result branch). None/absent both when a real caption was
+    # produced AND when vision never ran for this figure at all (disabled
+    # for the whole run, or BASELINE mode) -- the latter is deliberately NOT
+    # distinguished here, that's what the tree-level warning is for. Set by
+    # main.py's _describe_figure_with_progress after the loader returns, via
+    # a per-request figure_id-keyed side channel (describe_figure's own
+    # signature is shared with every loader and KB-ingestion caller, so it
+    # can't grow a new required return shape without touching all of them).
+    caption_status: str | None = None
 
 
 class CanonicalDoc(BaseModel):
@@ -206,3 +223,17 @@ class CanonicalDoc(BaseModel):
     # ado_verification_failed's precedent, see workitem/model.py's
     # WarningKind docstring).
     failed_figure_storage_ids: list[str] = Field(default_factory=list)
+    # Whether main.py's /ingest actually opened the vision-LLM gate for this
+    # document (see ingest()'s own `vision_active = _vision_client is not
+    # None and not skip_vision and mode == "survey"`) -- False for every
+    # BASELINE doc (vision never runs there), a preview call (skip_vision),
+    # or when no LLM_VISION_MODEL is configured at all. Round-tripped through
+    # here (not a new /level query param) because /level's own `doc` request
+    # body IS this same CanonicalDoc, already flowing unchanged from
+    # /ingest's response through the orchestrator's ingestionClient.level()
+    # call -- the only way this signal can reach /level's response_model=
+    # CanonicalDoc-filtered /ingest boundary at all. Consumed by /level to
+    # emit exactly one tree-level WarningKind.VISION_CAPTIONING_DISABLED
+    # warning (never a per-figure one) when this is False and doc.figures is
+    # non-empty -- see main.py's _append_vision_disabled_warning.
+    vision_active: bool = False

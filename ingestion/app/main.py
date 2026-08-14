@@ -43,7 +43,7 @@ from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
 from app.vision.orchestrator_vision_client import OrchestratorVisionClient
 from app.vision.figure_storage_client import OrchestratorFigureFileClient, compress_figure_for_storage
-from app.workitem.model import WorkItemTree
+from app.workitem.model import IntegrityWarning, WarningKind, WorkItemTree
 
 logging.basicConfig(
     level=settings.log_level,
@@ -286,7 +286,21 @@ def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
     return image_bytes, None
 
 
-def _describe_figure(image_bytes: bytes, document_context: str | None = None) -> str | None:
+def _describe_figure(
+    image_bytes: bytes,
+    document_context: str | None = None,
+    # Optional out-param: a single-entry dict this function sets
+    # caption_status_out["status"] on to "insignificant" or "vision_failed"
+    # -- the 2 of its 3 internal outcomes (see this function's own return
+    # points below) that collapse to caption=None, so a caller that needs to
+    # know WHY (main.py's _describe_figure_with_progress, for
+    # Figure.caption_status) can tell them apart without this function's
+    # return type changing. Left unset (never a required 3rd positional arg)
+    # so every existing 1-arg caller -- every loader passing this function
+    # itself as its describe_figure callback (docx_loader.py etc., and the
+    # 3 KB-ingestion routes below) -- stays byte-identical.
+    caption_status_out: dict[str, str] | None = None,
+) -> str | None:
     # SCOPE NOTE (KB ingestion): this function is shared by SURVEY-mode
     # /ingest AND the three KB-ingestion routes below (/kb/ingest-url,
     # /kb/ingest-folder-url, /kb/ingest-item), so KB-indexed documents' figures
@@ -318,6 +332,8 @@ def _describe_figure(image_bytes: bytes, document_context: str | None = None) ->
         if cached is not None:
             try:
                 cached_obj = json.loads(cached.decode("utf-8"))
+                if not cached_obj["significant"] and caption_status_out is not None:
+                    caption_status_out["status"] = "insignificant"
                 return cached_obj["description"] if cached_obj["significant"] else None
             except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
                 pass  # Treat an unparseable cache entry as a miss -- fall through to a live vision call.
@@ -336,6 +352,8 @@ def _describe_figure(image_bytes: bytes, document_context: str | None = None) ->
         # Not cached; self-heals on the next call/run instead of being locked
         # in. A genuine significant=False verdict is NOT ambiguous and falls
         # through to the cache write below.
+        if caption_status_out is not None:
+            caption_status_out["status"] = "vision_failed"
         return None
     try:
         _narration_redis.set(
@@ -345,6 +363,8 @@ def _describe_figure(image_bytes: bytes, document_context: str | None = None) ->
         )
     except Exception:
         logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
+    if not result.significant and caption_status_out is not None:
+        caption_status_out["status"] = "insignificant"
     return result.description if result.significant else None
 
 
@@ -697,6 +717,14 @@ async def ingest(
     # its own synthesized WarningRecord (mirrors ado_verification_failed's
     # precedent -- see pipeline.worker.ts).
     failed_figure_ids: list[str] = []
+    # figure_id -> "insignificant"|"vision_failed", populated below (only
+    # while vision_active) via _describe_figure's caption_status_out
+    # side-channel -- patched onto doc.figures[i].caption_status once `doc`
+    # exists (see below), since a Figure model isn't constructed until the
+    # loader returns. Empty (and doc.figures[*].caption_status left at its
+    # None default) whenever vision_active is False, matching sub-fix (i)'s
+    # "never disambiguate insignificant/failed when vision never ran" rule.
+    figure_caption_status: dict[str, str] = {}
     if vision_active:
         # Closed over per-request (not module-level) -- figure_counter must
         # start at 0 for every new /ingest call, not accumulate across
@@ -721,7 +749,17 @@ async def ingest(
             # it's a plain in-process argument, never a URL query key of its
             # own -- passing primer_context's value into it here is the one
             # place that boundary rename happens.
-            caption = _describe_figure(image_bytes, primer_context)
+            caption_status_out: dict[str, str] = {}
+            caption = _describe_figure(image_bytes, primer_context, caption_status_out)
+            # index-1 matches the loader's own f"f{figure_index}" id scheme --
+            # see the fuller invariant comment on the figure-file-storage use
+            # of this same computation below. Computed unconditionally (not
+            # only inside the job_id/_figure_file_client gate below) since
+            # Figure.caption_status must be populated whenever vision ran at
+            # all, independent of whether figure-file storage is configured.
+            figure_id = f"f{index - 1}"
+            if "status" in caption_status_out:
+                figure_caption_status[figure_id] = caption_status_out["status"]
             if narration_publisher is not None:
                 # caption is None exactly when the vision model judged this
                 # figure non-significant (or vision failed) -- both cases
@@ -757,7 +795,6 @@ async def ingest(
             # support) silently failed on the un-converted original bytes,
             # so a real, successfully-described figure was never storable.
             if job_id is not None and _figure_file_client is not None:
-                figure_id = f"f{index - 1}"
                 try:
                     rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
                     compressed = compress_figure_for_storage(rasterized_bytes)
@@ -829,6 +866,20 @@ async def ingest(
         Path(tmp_path).unlink(missing_ok=True)
 
     doc.failed_figure_storage_ids = failed_figure_ids
+    doc.vision_active = vision_active
+    # Patch each figure's caption_status from the per-request side channel
+    # populated above -- can't be set until now since the Figure objects
+    # themselves don't exist until dispatch_by_extension returns `doc`.
+    # Empty (no-op loop) whenever vision_active is False, so caption_status
+    # stays at its None default for every figure in that case (sub-fix (i)'s
+    # tree-level warning covers that case instead -- see main.py's /level
+    # route and _append_vision_disabled_warning below).
+    if figure_caption_status:
+        _figures_by_id = {figure.id: figure for figure in doc.figures}
+        for _figure_id, _status in figure_caption_status.items():
+            _figure = _figures_by_id.get(_figure_id)
+            if _figure is not None:
+                _figure.caption_status = _status
 
     if narration_publisher is not None:
         narration_publisher.publish(
@@ -876,6 +927,30 @@ async def ingest(
 # passthrough options field (see LlmChatOptions.topK/minP's own docstring).
 _SURVEY_TOP_K = 50
 _SURVEY_MIN_P = 0.05
+
+
+def _append_vision_disabled_warning(tree: WorkItemTree, doc: CanonicalDoc) -> WorkItemTree:
+    """Sub-fix (i) of issue 4(b): a single TREE-level warning (never one per
+    figure) explaining every one of this tree's uncaptioned_figure_ids at
+    once, whenever vision never even ran for this document (doc.vision_active
+    is False, set once by /ingest -- see CanonicalDoc.vision_active's own
+    docstring for why this is carried on `doc` rather than a new /level query
+    param) AND the document actually has at least one figure (a figure-less
+    document has nothing this warning would explain). Applied uniformly to
+    BOTH mode's builders from this one call site in /level, rather than
+    threaded into build_survey_tree/build_baseline_tree separately -- those
+    have several internal return points each (headingless/flat-list/
+    structured for BASELINE); wrapping the route's own return value here
+    guarantees exactly one emission per request regardless of which internal
+    path produced the tree."""
+    if not doc.vision_active and doc.figures:
+        tree.warnings.append(
+            IntegrityWarning.make(
+                WarningKind.VISION_CAPTIONING_DISABLED,
+                f"Vision captioning was disabled for this run -- {len(doc.figures)} figure(s) have no description as a result.",
+            )
+        )
+    return tree
 
 
 @app.post("/level", response_model=WorkItemTree)
@@ -938,10 +1013,11 @@ async def level(
             top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
         )
         catalog = json.loads(link_type_catalog) if link_type_catalog else None
-        return await run_in_threadpool(
+        tree = await run_in_threadpool(
             _build_survey_tree_with_scoring, doc, client, customer_id, user_id, catalog, job_id, model, primer_context
         )
-    return build_baseline_tree(doc, customer_id=customer_id)
+        return _append_vision_disabled_warning(tree, doc)
+    return _append_vision_disabled_warning(build_baseline_tree(doc, customer_id=customer_id), doc)
 
 
 class ScoreItemRequest(BaseModel):

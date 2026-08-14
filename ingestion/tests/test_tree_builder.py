@@ -1438,6 +1438,33 @@ def test_baseline_structured_tree_figure_fold_populates_figure_ids_and_uncaption
     assert set(parent.figure_ids).isdisjoint(parent.uncaptioned_figure_ids)
 
 
+def test_baseline_structured_tree_populates_insignificant_figure_ids_as_a_subset_of_uncaptioned() -> None:
+    # Task 4b sub-fix (ii), call site 3/5 (build_baseline_tree's own
+    # structured path). f1 (caption_status="insignificant") must appear in
+    # BOTH uncaptioned_figure_ids and insignificant_figure_ids; f2
+    # (caption_status="vision_failed") must appear in uncaptioned_figure_ids
+    # but NOT in insignificant_figure_ids -- proving the subset relationship
+    # actually discriminates, not just always mirrors the parent list.
+    path = "figures.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 20, 40)),
+            Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 41, 55)),
+        ],
+        figures=[
+            Figure(id="f1", caption=None, caption_status="insignificant", source_ref=_sr(path, 20, 40)),
+            Figure(id="f2", caption=None, caption_status="vision_failed", source_ref=_sr(path, 41, 55)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    parent = next(n for n in tree.nodes if n.title == "Power Distribution")
+    assert parent.uncaptioned_figure_ids == ["f1", "f2"]
+    assert parent.insignificant_figure_ids == ["f1"]
+    assert set(parent.insignificant_figure_ids) <= set(parent.uncaptioned_figure_ids)
+
+
 def test_baseline_structured_tree_table_fold_populates_table_ids() -> None:
     path = "mixed.docx"
     doc = CanonicalDoc(
@@ -1511,6 +1538,29 @@ def test_headingless_tree_populates_figure_and_table_ids_with_section_path_empty
     assert all(n.source_ref.section_path == [] for n in tree.nodes)
 
 
+def test_headingless_tree_populates_insignificant_figure_ids_as_a_subset_of_uncaptioned() -> None:
+    # Task 4b sub-fix (ii), call site 1/5 (_build_headingless_tree).
+    path = "flat_with_figure.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="f0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 0, 21)),
+            Block(id="f1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 22, 43)),
+        ],
+        figures=[
+            Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path, 0, 21)),
+            Figure(id="fig1", caption=None, caption_status="vision_failed", source_ref=_sr(path, 22, 43)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    insignificant_node = next(n for n in tree.nodes if n.local_id == "n2")  # fig0 -> index 0 -> n{0+2}
+    failed_node = next(n for n in tree.nodes if n.local_id == "n3")  # fig1 -> index 1 -> n{1+2}
+    assert insignificant_node.uncaptioned_figure_ids == ["fig0"]
+    assert insignificant_node.insignificant_figure_ids == ["fig0"]
+    assert failed_node.uncaptioned_figure_ids == ["fig1"]
+    assert failed_node.insignificant_figure_ids == []
+
+
 def test_headingless_table_only_tree_sets_table_ids_to_its_own_table() -> None:
     doc = CanonicalDoc(
         document=Document(path="sheet.xlsx", format=DocumentFormat.XLSX, sha256="h"),
@@ -1540,6 +1590,25 @@ def test_flat_list_tree_direct_call_populates_figure_ids_when_a_branch_root_is_a
     requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
     assert requirement_node.figure_ids == ["fig0"]
     assert requirement_node.uncaptioned_figure_ids == []
+
+
+def test_flat_list_tree_direct_call_populates_insignificant_figure_ids_as_a_subset_of_uncaptioned() -> None:
+    # Task 4b sub-fix (ii), call site 2/5 (_build_flat_list_tree). Same
+    # direct-invocation rationale as the figure_ids test above -- a
+    # FIGURE-kind block can't reach this path via build_baseline_tree's own
+    # routing today.
+    path = "flat_list.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path, 0, 20)),
+        ],
+        figures=[Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path, 0, 20))],
+    )
+    tree = _build_flat_list_tree(doc, [[doc.blocks[0]]], customer_id=None)
+    requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
+    assert requirement_node.uncaptioned_figure_ids == ["fig0"]
+    assert requirement_node.insignificant_figure_ids == ["fig0"]
 
 
 # --- _widen_page_end (Phase 6 -- real docx page numbers, see

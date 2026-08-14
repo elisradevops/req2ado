@@ -85,6 +85,11 @@
           "items": { "type": "string" },
           "description": "Figures that folded into this node's span but produced no caption (vision disabled, the vision call failed, or the model returned the no-technical-content sentinel) -- disjoint from figure_ids, a figure id appears in exactly one of the two lists."
         },
+        "insignificant_figure_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "SUBSET of uncaptioned_figure_ids -- the figures among that list whose Figure.caption_status is 'insignificant' (the vision model judged them decorative/non-technical, not a failed vision call). Only meaningful when vision was actually active for this run; an id present in uncaptioned_figure_ids but absent here is a genuine vision_failed case (or vision was off for the whole run -- see WarningKind.vision_captioning_disabled for that case instead)."
+        },
         "mode": { "type": "string", "enum": ["BASELINE", "SURVEY"] },
         "child_type": {
           "type": ["string", "null"],
@@ -164,7 +169,8 @@
             "scoring_failed", "scoring_missing", "scoring_inconsistent_categories",
             "enhancement_call_failed", "enhancement_response_incomplete", "dropped_row",
             "front_matter_folded", "trace_link_inference_failed", "heading_id_offset_mismatch",
-            "unsupported_content_note", "empty_table_content", "degraded_table_structure"
+            "unsupported_content_note", "empty_table_content", "degraded_table_structure",
+            "vision_captioning_disabled"
           ]
         },
         "severity": {

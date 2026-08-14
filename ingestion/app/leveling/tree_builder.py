@@ -5,7 +5,7 @@ import html
 import re
 from pathlib import Path
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, SourceRef, Table, TableCell
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, TableCell
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
@@ -261,6 +261,16 @@ def figure_id_by_block_id(doc: CanonicalDoc) -> dict[str, str]:
             (f.id for f in doc.figures),
         )
     )
+
+
+def figures_by_id(figures: list[Figure]) -> dict[str, Figure]:
+    """Figure.id -> Figure map -- built once per call site (mirrors
+    figure_id_by_block_id's own "build once, reuse" convention) wherever a
+    caller already has a figure_id (via figure_id_by_block_id above, or a
+    branch's own `figures` list) and needs to look up that Figure's
+    caption_status to decide whether an uncaptioned figure is also
+    insignificant (see WorkItemNode.insignificant_figure_ids)."""
+    return {f.id: f for f in figures}
 
 
 def _row_is_header(row: list[TableCell | None]) -> bool:
@@ -549,6 +559,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
     # model_copy is needed anywhere in this function purely for that field.
     if doc.blocks:
         figure_map = figure_id_by_block_id(doc)
+        fig_map = figures_by_id(doc.figures)
         for index, block in enumerate(doc.blocks):
             if _is_unsupported_content_note(block):
                 # A loader diagnostic placeholder (e.g. pdf_loader.py's
@@ -578,6 +589,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
             # the new id lists are populated here.
             figure_ids: list[str] = []
             uncaptioned_figure_ids: list[str] = []
+            insignificant_figure_ids: list[str] = []
             if block.kind == BlockKind.FIGURE:
                 figure_id = figure_map.get(block.id)
                 if figure_id is not None:
@@ -585,6 +597,9 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                         figure_ids = [figure_id]
                     else:
                         uncaptioned_figure_ids = [figure_id]
+                        figure = fig_map.get(figure_id)
+                        if figure is not None and figure.caption_status == "insignificant":
+                            insignificant_figure_ids = [figure_id]
             nodes.append(
                 WorkItemNode(
                     local_id=f"n{index + 2}",
@@ -599,6 +614,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     tags=[],
                     figure_ids=figure_ids,
                     uncaptioned_figure_ids=uncaptioned_figure_ids,
+                    insignificant_figure_ids=insignificant_figure_ids,
                     mode=WorkItemMode.BASELINE,
                     child_type=WorkItemType.REQUIREMENT,
                 )
@@ -670,6 +686,7 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
     # has no heading ancestry to record, and [] is already
     # SourceRef.section_path's own default.
     figure_map = figure_id_by_block_id(doc)
+    fig_map = figures_by_id(doc.figures)
     nodes: list[WorkItemNode] = [epic, feature]
     for index, branch in enumerate(branches):
         block = branch[0]
@@ -685,6 +702,7 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
         # _build_headingless_tree's if that invariant ever changes.
         figure_ids: list[str] = []
         uncaptioned_figure_ids: list[str] = []
+        insignificant_figure_ids: list[str] = []
         if block.kind == BlockKind.FIGURE:
             figure_id = figure_map.get(block.id)
             if figure_id is not None:
@@ -692,6 +710,9 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
                     figure_ids = [figure_id]
                 else:
                     uncaptioned_figure_ids = [figure_id]
+                    figure = fig_map.get(figure_id)
+                    if figure is not None and figure.caption_status == "insignificant":
+                        insignificant_figure_ids = [figure_id]
         nodes.append(
             WorkItemNode(
                 local_id=f"n{index + 2}", type=WorkItemType.REQUIREMENT, parent_local_id=feature.local_id,
@@ -699,6 +720,7 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
                 source_ref=block.source_ref, fidelity_hash=_hash_description(display_text),
                 identity_hash=_hash_identity(display_text, block.source_ref),
                 tags=[], figure_ids=figure_ids, uncaptioned_figure_ids=uncaptioned_figure_ids,
+                insignificant_figure_ids=insignificant_figure_ids,
                 mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
             )
         )
@@ -776,6 +798,7 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     # figure's block can never move between branches after
     # _split_into_branches (branches are a partition of doc.blocks).
     figure_map = figure_id_by_block_id(doc)
+    fig_map = figures_by_id(doc.figures)
 
     nodes: list[WorkItemNode] = []
     nodes_by_id: dict[str, WorkItemNode] = {}
@@ -886,6 +909,9 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                         # heading/numbering.
                         if stack and figure_id is not None:
                             nodes_by_id[stack[-1][1]].uncaptioned_figure_ids.append(figure_id)
+                            figure = fig_map.get(figure_id)
+                            if figure is not None and figure.caption_status == "insignificant":
+                                nodes_by_id[stack[-1][1]].insignificant_figure_ids.append(figure_id)
                         continue
                     display_text = figure_line
 

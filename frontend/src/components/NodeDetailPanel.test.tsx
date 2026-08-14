@@ -517,7 +517,10 @@ describe('NodeDetailPanel', () => {
       expect(screen.queryByText('Tables')).not.toBeInTheDocument();
     });
 
-    it('renders an amber, distinctly-labeled chip for an uncaptioned figure, with an explanatory tooltip', async () => {
+    it('renders an amber, distinctly-labeled chip for a genuinely-failed uncaptioned figure, with a narrowed tooltip', async () => {
+      // f5 is uncaptioned but NOT in insignificantFigureIds -- a genuine
+      // vision_failed case (or vision-off-for-the-whole-run, covered
+      // separately by the tree-level vision_captioning_disabled warning).
       renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f5'] })} />);
       const chip = screen.getByText('Figure f5 · no description');
       expect(chip).toBeInTheDocument();
@@ -527,9 +530,44 @@ describe('NodeDetailPanel', () => {
 
       const { default: userEvent } = await import('@testing-library/user-event');
       await userEvent.hover(chip);
+      // Narrowed (Task 4b sub-fix ii): the old copy's "(vision disabled,
+      // or...)" clause is now redundant with the tree-level warning, and
+      // ambiguous with the insignificant case below -- this chip's tooltip
+      // now names only the genuine-failure case.
       await waitFor(() =>
-        expect(screen.getByText(/no description was produced/i)).toBeInTheDocument(),
+        expect(screen.getByText(/description call failed or timed out/i)).toBeInTheDocument(),
       );
+    });
+
+    it('renders a neutral, distinctly-labeled chip for an insignificant uncaptioned figure, with a softer tooltip', async () => {
+      // f6 is uncaptioned AND in insignificantFigureIds -- the vision model
+      // correctly judged it decorative/non-technical, not a failure.
+      renderPanel(
+        <NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f6'], insignificantFigureIds: ['f6'] })} />,
+      );
+      const chip = screen.getByText('Figure f6 · not significant');
+      expect(chip).toBeInTheDocument();
+      // Distinct styling from the amber "genuine failure" chip -- reuses the
+      // same neutral treatment the Tables chip below already uses, not a new
+      // color.
+      expect(chip.className).not.toContain('warning');
+      expect(chip.className).toContain('surface-alt');
+
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.hover(chip);
+      await waitFor(() =>
+        expect(screen.getByText(/judged this figure decorative\/non-technical/i)).toBeInTheDocument(),
+      );
+    });
+
+    it('renders both chip treatments together when uncaptionedFigureIds has a mix of insignificant and genuinely-failed figures', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'], insignificantFigureIds: ['f6'] })}
+        />,
+      );
+      expect(screen.getByText('Figure f5 · no description')).toBeInTheDocument();
+      expect(screen.getByText('Figure f6 · not significant')).toBeInTheDocument();
     });
 
     it('renders the "Figures" section for an uncaptioned figure even with no jobId/figureIds supplied', () => {

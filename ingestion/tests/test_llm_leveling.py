@@ -4449,6 +4449,32 @@ def test_build_survey_tree_deterministic_span_fold_records_figure_ids_and_uncapt
     assert set(last_leaf.figure_ids).isdisjoint(last_leaf.uncaptioned_figure_ids)
 
 
+def test_build_survey_tree_deterministic_span_fold_populates_insignificant_figure_ids_as_a_subset() -> None:
+    # Task 4b sub-fix (ii), call site 4/5 (_detect_deterministic_subtrees).
+    # f1 (caption_status="insignificant") must land in BOTH
+    # uncaptioned_figure_ids and insignificant_figure_ids; f2
+    # (caption_status="vision_failed") must land in uncaptioned_figure_ids
+    # only.
+    path = "structural_survey_input.txt"
+    doc = _structural_heading_doc().model_copy(
+        update={
+            "blocks": [
+                *_structural_heading_doc().blocks,
+                Block(id="fig1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+                Block(id="fig2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+            ],
+            "figures": [
+                Figure(id="f1", caption=None, caption_status="insignificant", source_ref=_sr(path)),
+                Figure(id="f2", caption=None, caption_status="vision_failed", source_ref=_sr(path)),
+            ],
+        }
+    )
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient())
+    last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
+    assert last_leaf.uncaptioned_figure_ids == ["f1", "f2"]
+    assert last_leaf.insignificant_figure_ids == ["f1"]
+
+
 def test_build_survey_tree_structural_heading_subtree_sets_section_path() -> None:
     tree = build_survey_tree(_structural_heading_doc(), FakeSectionAnalysisClient())
     root = next(n for n in tree.nodes if n.title == "System Domain")
@@ -4592,6 +4618,45 @@ def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positiona
     assert "fig0" not in all_figure_ids  # the hallucinated claim was dropped, never trusted
     assert all_uncaptioned_ids == ["fig0"]  # attributed exactly once, positionally
     assert set(all_figure_ids).isdisjoint(all_uncaptioned_ids)
+
+
+def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insignificant_figure_ids() -> None:
+    # Task 4b sub-fix (ii), call site 5/5 (_build_survey_tree_for_branch's
+    # own positional-bracketing fallback). fig0 (caption_status=
+    # "insignificant") lands in both lists; fig1 (caption_status=
+    # "vision_failed") lands in uncaptioned_figure_ids only.
+    path = "survey_input.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+        ],
+        figures=[
+            Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path)),
+            Figure(id="fig1", caption=None, caption_status="vision_failed", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Feature", "parent_temp_id": None,
+                "title": "Display", "text": "The system shall handle: Display", "tags": [],
+            },
+            {
+                "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0",
+                "title": "HDR support", "text": "The system shall handle: HDR.", "tags": [],
+            },
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    all_uncaptioned_ids = [fid for n in tree.nodes for fid in n.uncaptioned_figure_ids]
+    all_insignificant_ids = [fid for n in tree.nodes for fid in n.insignificant_figure_ids]
+    assert set(all_uncaptioned_ids) == {"fig0", "fig1"}
+    assert all_insignificant_ids == ["fig0"]
+    assert set(all_insignificant_ids) <= set(all_uncaptioned_ids)
 
 
 def test_build_survey_tree_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> None:

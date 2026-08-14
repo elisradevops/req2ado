@@ -836,7 +836,7 @@ describe('DryRunService', () => {
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
           sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
-          sourceRef, tableIds: ['t0'], uncaptionedFigureIds: ['f9'],
+          sourceRef, tableIds: ['t0'], uncaptionedFigureIds: ['f9'], insignificantFigureIds: ['f9'],
         },
       ],
       fakeIdempotencyService,
@@ -845,6 +845,7 @@ describe('DryRunService', () => {
     expect(result[0].sourceRef).toEqual(sourceRef);
     expect(result[0].tableIds).toEqual(['t0']);
     expect(result[0].uncaptionedFigureIds).toEqual(['f9']);
+    expect(result[0].insignificantFigureIds).toEqual(['f9']);
   });
 
   it('carries tableIds/uncaptionedFigureIds/sectionPath/pageEnd/pageProvenance through on the "reuse" branch', async () => {
@@ -859,7 +860,7 @@ describe('DryRunService', () => {
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
           sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
-          sourceRef, tableIds: ['t1'], uncaptionedFigureIds: ['f8'],
+          sourceRef, tableIds: ['t1'], uncaptionedFigureIds: ['f8'], insignificantFigureIds: ['f8'],
         },
       ],
       fakeIdempotencyService,
@@ -868,6 +869,7 @@ describe('DryRunService', () => {
     expect(result[0].sourceRef).toEqual(sourceRef);
     expect(result[0].tableIds).toEqual(['t1']);
     expect(result[0].uncaptionedFigureIds).toEqual(['f8']);
+    expect(result[0].insignificantFigureIds).toEqual(['f8']);
   });
 
   it('carries tableIds/uncaptionedFigureIds/sectionPath/pageEnd/pageProvenance through on the "dedup_skip" branch', async () => {
@@ -883,7 +885,7 @@ describe('DryRunService', () => {
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
           sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
-          sourceRef, tableIds: ['t2'], uncaptionedFigureIds: ['f7'],
+          sourceRef, tableIds: ['t2'], uncaptionedFigureIds: ['f7'], insignificantFigureIds: ['f7'],
         },
       ],
       fakeIdempotencyService,
@@ -893,6 +895,7 @@ describe('DryRunService', () => {
     expect(result[0].sourceRef).toEqual(sourceRef);
     expect(result[0].tableIds).toEqual(['t2']);
     expect(result[0].uncaptionedFigureIds).toEqual(['f7']);
+    expect(result[0].insignificantFigureIds).toEqual(['f7']);
   });
 
   it('calls onProgress once per node with a monotonically-increasing completed count, final call at the total', async () => {

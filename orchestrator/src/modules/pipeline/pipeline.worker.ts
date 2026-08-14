@@ -301,6 +301,12 @@ interface LeveledNode {
   // lists (see ingestion's WorkItemNode.uncaptioned_figure_ids docstring).
   // Optional for the same backward-compat reason as figure_ids above.
   uncaptioned_figure_ids?: string[];
+  // SUBSET of uncaptioned_figure_ids -- the figures among that list the
+  // vision model judged insignificant/decorative rather than a genuine
+  // vision_failed case (see ingestion's WorkItemNode.insignificant_figure_ids
+  // docstring). Optional for the same backward-compat reason as figure_ids
+  // above.
+  insignificant_figure_ids?: string[];
 }
 
 interface LeveledTraceLink {
@@ -673,6 +679,7 @@ export async function runPipelineJob(
         figureIds: node.figure_ids ?? [],
         tableIds: node.table_ids ?? [],
         uncaptionedFigureIds: node.uncaptioned_figure_ids ?? [],
+        insignificantFigureIds: node.insignificant_figure_ids ?? [],
       };
     });
 

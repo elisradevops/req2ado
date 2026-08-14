@@ -64,6 +64,7 @@ from app.leveling.tree_builder import (
     _widen_page_end,
 )
 from app.leveling.tree_builder import figure_id_by_block_id as _build_figure_id_by_block_id
+from app.leveling.tree_builder import figures_by_id
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.leveling.warnings_finalize import finalize_warnings
 from app.workitem.model import (
@@ -1162,6 +1163,7 @@ def _detect_deterministic_subtrees(
             i for i, b in enumerate(doc.blocks)
             if b.kind == BlockKind.HEADING and b.heading_level is not None
         ]
+        fig_map = figures_by_id(doc.figures)
         current_target: WorkItemNode | None = None
         boundary_ptr = 0
         for i, block in enumerate(doc.blocks):
@@ -1211,6 +1213,9 @@ def _detect_deterministic_subtrees(
                 # fold-site fix.
                 if figure_id is not None:
                     current_target.uncaptioned_figure_ids.append(figure_id)
+                    figure = fig_map.get(figure_id)
+                    if figure is not None and figure.caption_status == "insignificant":
+                        current_target.insignificant_figure_ids.append(figure_id)
                 continue
             current_target.description = assemble_description(
                 current_target.description, span_text,
@@ -2633,6 +2638,7 @@ def _build_survey_tree_for_branch(
     # -- silently skipped, consistent with every other content this branch
     # would also be unable to place.
     if nodes:
+        fig_map = figures_by_id(figures or [])
         for i, block in enumerate(blocks):
             if block.kind != BlockKind.FIGURE or _figure_line(block) is not None:
                 continue  # non-figure, or captioned (already handled via the model's own figure_ids)
@@ -2641,6 +2647,9 @@ def _build_survey_tree_for_branch(
                 continue
             bracket_index = min(len(nodes) - 1, i * len(nodes) // len(blocks))
             nodes[bracket_index].uncaptioned_figure_ids.append(figure_id)
+            figure = fig_map.get(figure_id)
+            if figure is not None and figure.caption_status == "insignificant":
+                nodes[bracket_index].insignificant_figure_ids.append(figure_id)
 
     # §CMMI hierarchy repair (task confirmed real bug: the prompt alone is a
     # soft LLM instruction with no backstop -- a model still occasionally

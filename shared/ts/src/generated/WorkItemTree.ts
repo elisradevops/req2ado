@@ -74,6 +74,10 @@ export interface WorkItemNode {
    * Figures that folded into this node's span but produced no caption (vision disabled, the vision call failed, or the model returned the no-technical-content sentinel) -- disjoint from figure_ids, a figure id appears in exactly one of the two lists.
    */
   uncaptioned_figure_ids?: string[];
+  /**
+   * SUBSET of uncaptioned_figure_ids -- the figures among that list whose Figure.caption_status is 'insignificant' (the vision model judged them decorative/non-technical, not a failed vision call). Only meaningful when vision was actually active for this run; an id present in uncaptioned_figure_ids but absent here is a genuine vision_failed case (or vision was off for the whole run -- see WarningKind.vision_captioning_disabled for that case instead).
+   */
+  insignificant_figure_ids?: string[];
   mode: 'BASELINE' | 'SURVEY';
   /**
    * Default work-item type for a new manual child added under this node. Null when ineligible or unresolvable.
@@ -148,7 +152,8 @@ export interface IntegrityWarning {
     | 'heading_id_offset_mismatch'
     | 'unsupported_content_note'
     | 'empty_table_content'
-    | 'degraded_table_structure';
+    | 'degraded_table_structure'
+    | 'vision_captioning_disabled';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

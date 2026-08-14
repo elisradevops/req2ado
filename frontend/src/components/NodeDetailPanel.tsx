@@ -562,21 +562,49 @@ export function NodeDetailPanel({
               output worth rendering beyond "this exists and got nothing". */}
           {entry.uncaptionedFigureIds && entry.uncaptionedFigureIds.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {entry.uncaptionedFigureIds.map((figureId) => (
-                <Tooltip
-                  key={figureId}
-                  content="This figure's image was captured, but no description was produced (vision disabled, or the description call failed) -- nothing about this figure reached this item's description."
-                >
-                  {/* Same warning-band treatment QualityGauge's "Needs
-                      review" chip uses (bg-warning-soft + border-warning-
-                      border + text-warning-ink) -- reused, not a new color,
-                      so "amber" means the same thing everywhere in this
-                      app. */}
-                  <Chip className="border border-warning-border bg-warning-soft text-warning-ink">
-                    Figure {figureId} · no description
-                  </Chip>
-                </Tooltip>
-              ))}
+              {entry.uncaptionedFigureIds.map((figureId) => {
+                // Task 4b sub-fix (ii): a figure id in insignificantFigureIds
+                // (a SUBSET of uncaptionedFigureIds) is the vision model
+                // CORRECTLY judging it decorative/non-technical, not a
+                // failure -- rendered as a neutral/low-emphasis chip (same
+                // treatment the Tables chip below already uses -- reused, not
+                // a new color) instead of the amber "something's wrong"
+                // treatment, so a reviewer doesn't chase a non-issue. Every
+                // other uncaptioned id (not in this subset) is a genuine
+                // vision_failed case -- or, when the whole run had vision
+                // disabled, already explained once at the tree level by the
+                // vision_captioning_disabled warning (see JobDetail's
+                // warnings panel) -- so this chip's own tooltip is narrowed
+                // to only the genuine-failure wording.
+                const isInsignificant = (entry.insignificantFigureIds ?? []).includes(figureId);
+                if (isInsignificant) {
+                  return (
+                    <Tooltip
+                      key={figureId}
+                      content="The vision model judged this figure decorative/non-technical -- nothing about it reached this item's description."
+                    >
+                      <Chip className="border border-hairline-strong bg-surface-alt text-ink-2">
+                        Figure {figureId} · not significant
+                      </Chip>
+                    </Tooltip>
+                  );
+                }
+                return (
+                  <Tooltip
+                    key={figureId}
+                    content="This figure's image was captured, but the description call failed or timed out."
+                  >
+                    {/* Same warning-band treatment QualityGauge's "Needs
+                        review" chip uses (bg-warning-soft + border-warning-
+                        border + text-warning-ink) -- reused, not a new color,
+                        so "amber" means the same thing everywhere in this
+                        app. */}
+                    <Chip className="border border-warning-border bg-warning-soft text-warning-ink">
+                      Figure {figureId} · no description
+                    </Chip>
+                  </Tooltip>
+                );
+              })}
             </div>
           )}
         </div>

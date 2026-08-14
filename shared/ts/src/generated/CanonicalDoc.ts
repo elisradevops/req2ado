@@ -20,6 +20,10 @@ export interface CanonicalDoc {
    * Figure ids whose storage (during /ingest) failed -- still captioned, but not viewable/attachable later. Never populated by /level; ado_verification_failed's own WarningKind precedent applies -- the orchestrator, not ingestion, turns a non-empty list here into its own synthesized WarningRecord.
    */
   failed_figure_storage_ids?: string[];
+  /**
+   * Whether /ingest actually opened the vision-LLM gate for this document (False for BASELINE, a preview call, or no vision model configured). Round-tripped from /ingest's response through /level's own `doc` request body -- consumed there to emit a single tree-level WarningKind.vision_captioning_disabled warning when False and figures is non-empty.
+   */
+  vision_active?: boolean;
 }
 export interface Block {
   id: string;
@@ -91,4 +95,8 @@ export interface Figure {
   id: string;
   caption?: string | null;
   source_ref: SourceRef;
+  /**
+   * Why `caption` is null, when it is. 'insignificant': the vision model judged the figure decorative/non-technical. 'vision_failed': the vision call itself errored/timed out or returned an unparseable response. Null both when a real caption was produced AND when vision never ran for this figure at all (disabled for the whole run, or BASELINE mode) -- the latter is deliberately not distinguished here; see CanonicalDoc.vision_active and WarningKind.vision_captioning_disabled for that case instead.
+   */
+  caption_status?: 'insignificant' | 'vision_failed' | null;
 }

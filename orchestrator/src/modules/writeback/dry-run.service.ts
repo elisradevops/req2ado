@@ -109,6 +109,12 @@ export interface DryRunTreeNode {
   // (see its own doc comment) since an uncaptioned figure might still get
   // manually captioned/reviewed later.
   uncaptionedFigureIds?: string[];
+  // SUBSET of uncaptionedFigureIds -- the figures among that list the vision
+  // model judged insignificant/decorative rather than a genuine vision-call
+  // failure (see ingestion's WorkItemNode.insignificant_figure_ids doc
+  // comment). Carried through to DryRunDiffEntry at all 3 diffOneNode return
+  // branches below, same requirement as uncaptionedFigureIds itself.
+  insignificantFigureIds?: string[];
 }
 
 // Mirrors ingestion's IntegrityWarning (app.workitem.model) -- structured
@@ -176,6 +182,7 @@ export interface DryRunDiffEntry {
   // against.
   tableIds?: string[];
   uncaptionedFigureIds?: string[];
+  insignificantFigureIds?: string[];
   excluded?: boolean;
   isManual?: boolean;
   // CR-7d rescore: set by JobsService.editDiffEntry whenever a patch
@@ -369,6 +376,7 @@ export class DryRunService {
           sourceRef: node.sourceRef, childType: node.childType,
           traceLinks: node.traceLinks, figureIds: node.figureIds,
           tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
+          insignificantFigureIds: node.insignificantFigureIds,
         };
       }
       if (dedupCheck) {
@@ -407,6 +415,7 @@ export class DryRunService {
               sourceRef: node.sourceRef, childType: node.childType, traceLinks: node.traceLinks,
               figureIds: node.figureIds,
               tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
+              insignificantFigureIds: node.insignificantFigureIds,
             };
           }
         } catch (error) {
@@ -424,6 +433,7 @@ export class DryRunService {
         sourceRef: node.sourceRef, childType: node.childType,
         traceLinks: node.traceLinks, figureIds: node.figureIds,
         tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
+        insignificantFigureIds: node.insignificantFigureIds,
       };
     }
   }

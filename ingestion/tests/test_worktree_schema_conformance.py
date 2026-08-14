@@ -129,6 +129,24 @@ def test_empty_table_content_warning_matches_work_item_tree_schema(schema) -> No
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
+def test_vision_captioning_disabled_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.VISION_CAPTIONING_DISABLED,
+            "Vision captioning was disabled for this run -- 2 figure(s) have no description as a result.",
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_insignificant_figure_ids_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.nodes[0].uncaptioned_figure_ids = ["f0", "f1"]
+    tree.nodes[0].insignificant_figure_ids = ["f0"]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
 def test_degraded_table_structure_warning_matches_work_item_tree_schema(schema) -> None:
     tree = build_baseline_tree(_baseline_doc())
     tree.warnings = [

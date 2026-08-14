@@ -189,6 +189,21 @@ class WorkItemNode(BaseModel):
     # since a silently-dropped figure is exactly the kind of pipeline
     # correctness issue a reviewer needs to catch.
     uncaptioned_figure_ids: list[str] = Field(default_factory=list)
+    # SUBSET of uncaptioned_figure_ids (never disjoint from it, every id here
+    # also appears there) -- the figures among that list whose Figure.
+    # caption_status == "insignificant" (the vision model judged them
+    # decorative/non-technical, not a failed vision call). Only meaningful
+    # when vision was actually active for this run; deliberately NOT
+    # populated to distinguish "vision disabled" from a genuine failure --
+    # that whole-run case is covered once, at the tree level, by
+    # WarningKind.VISION_CAPTIONING_DISABLED instead. An uncaptioned figure
+    # id absent from this list (but present in uncaptioned_figure_ids) is a
+    # genuine vision_failed case (or vision was off for the whole run).
+    # Populated at every one of uncaptioned_figure_ids' own append/assignment
+    # sites (tree_builder.py x3, llm_leveling.py x2) -- see that field's own
+    # docstring for the disjoint-from-figure_ids guarantee this list doesn't
+    # change.
+    insignificant_figure_ids: list[str] = Field(default_factory=list)
     mode: WorkItemMode
     # The work-item type a NEW manual child entry added under this node
     # should default to (see orchestrator's JobsService.addDiffEntry) —
@@ -299,6 +314,15 @@ class WarningKind(str, Enum):
     UNSUPPORTED_CONTENT_NOTE = "unsupported_content_note"
     EMPTY_TABLE_CONTENT = "empty_table_content"
     DEGRADED_TABLE_STRUCTURE = "degraded_table_structure"
+    # Tree-level (never per-figure) warning: vision was off for this WHOLE
+    # run (doc.vision_active is False) while the document has at least one
+    # figure -- explains every one of that document's uncaptioned_figure_ids
+    # at once, disambiguating "vision was never even attempted" from a
+    # genuine per-figure vision_failed/insignificant verdict (see Figure.
+    # caption_status and WorkItemNode.insignificant_figure_ids). Emitted by
+    # main.py's /level route, not build_survey_tree/build_baseline_tree
+    # themselves, so it fires exactly once regardless of BASELINE/SURVEY mode.
+    VISION_CAPTIONING_DISABLED = "vision_captioning_disabled"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -332,6 +356,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.UNSUPPORTED_CONTENT_NOTE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.EMPTY_TABLE_CONTENT: WarningSeverity.NEEDS_REVIEW,
     WarningKind.DEGRADED_TABLE_STRUCTURE: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.VISION_CAPTIONING_DISABLED: WarningSeverity.NEEDS_REVIEW,
 }
 
 

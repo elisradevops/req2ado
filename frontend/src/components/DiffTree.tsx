@@ -135,6 +135,12 @@ export interface DryRunDiffEntry {
   // captured but silently contributed nothing to this item's description,
   // instead of that gap being invisible.
   uncaptionedFigureIds?: string[];
+  // SUBSET of uncaptionedFigureIds -- the figures among that list the vision
+  // model judged insignificant/decorative rather than a genuine vision-call
+  // failure (see orchestrator's DryRunDiffEntry.insignificantFigureIds doc
+  // comment). NodeDetailPanel uses this to split the uncaptioned-figure chip
+  // rendering into two distinct treatments.
+  insignificantFigureIds?: string[];
 }
 
 interface FlatRow {
