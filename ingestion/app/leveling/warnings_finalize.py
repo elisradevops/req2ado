@@ -44,6 +44,7 @@ _GROUP_KEY_FIELD: dict[WarningKind, str | None] = {
     WarningKind.LOW_GROUNDING: None,
     WarningKind.FRONT_MATTER_FOLDED: None,
     WarningKind.DROPPED_ROW: None,
+    WarningKind.UNSUPPORTED_CONTENT_NOTE: None,
 }
 
 
@@ -140,6 +141,14 @@ def _dropped_row(members: list[IntegrityWarning], node_ids: list[str]) -> str:
     )
 
 
+def _unsupported_content_note(members: list[IntegrityWarning], node_ids: list[str]) -> str:
+    count = len(members)
+    return (
+        f"{count} loader diagnostic note(s) (e.g. a multi-column layout detection placeholder) "
+        "were stripped instead of being treated as document content."
+    )
+
+
 _SUMMARY_BUILDERS: dict[WarningKind, Callable[[list[IntegrityWarning], list[str]], str]] = {
     WarningKind.REPARENTED_TO_FEATURE: _reparented_to_feature,
     WarningKind.GROUP_REPARENTED: _group_reparented,
@@ -153,6 +162,7 @@ _SUMMARY_BUILDERS: dict[WarningKind, Callable[[list[IntegrityWarning], list[str]
     WarningKind.LOW_GROUNDING: _low_grounding,
     WarningKind.FRONT_MATTER_FOLDED: _front_matter_folded,
     WarningKind.DROPPED_ROW: _dropped_row,
+    WarningKind.UNSUPPORTED_CONTENT_NOTE: _unsupported_content_note,
 }
 
 # Sentinel distinct from a real `None` group-key-field value (which means

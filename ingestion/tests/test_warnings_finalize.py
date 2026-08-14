@@ -72,3 +72,28 @@ def test_finalize_warnings_groups_a_none_key_kind_across_the_whole_list() -> Non
     assert len(result) == 1
     assert result[0].node_ids == ["n0", "n1"]
     assert result[0].detail["mergedCount"] == 2
+
+
+def test_finalize_warnings_groups_unsupported_content_note_across_the_whole_list() -> None:
+    # UNSUPPORTED_CONTENT_NOTE (a loader diagnostic placeholder, e.g.
+    # pdf_loader.py's multi-column false-positive note) is also a flat/None
+    # group key -- a page-heavy document with many false-positive
+    # occurrences must collapse into one summary record, not spam the
+    # warnings panel with one entry per occurrence.
+    warnings = [
+        IntegrityWarning.make(
+            WarningKind.UNSUPPORTED_CONTENT_NOTE,
+            'The "Intro" section contained a loader diagnostic note (\'[UNSUPPORTED: page 1 ...]\')',
+            detail={"section": "Intro", "text": "[UNSUPPORTED: page 1 appears multi-column]"},
+        ),
+        IntegrityWarning.make(
+            WarningKind.UNSUPPORTED_CONTENT_NOTE,
+            'The "Specs" section contained a loader diagnostic note (\'[UNSUPPORTED: page 9 ...]\')',
+            detail={"section": "Specs", "text": "[UNSUPPORTED: page 9 appears multi-column]"},
+        ),
+    ]
+    result = finalize_warnings(warnings)
+    assert len(result) == 1
+    assert result[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
+    assert result[0].detail["mergedCount"] == 2
+    assert "2 loader diagnostic note(s)" in result[0].raw

@@ -3,12 +3,15 @@ import time
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
+    _derive_section_label,
     _detect_conflicting_duplicates,
     _ensure_root_features_have_epic_parent,
     _grounding_score,
     _group_label_became_a_node,
     _regroup_disconnected_roots,
+    _render_block_line,
     _repair_group_attachment,
+    _unsupported_content_warnings,
     _widen_branch_page_range,
     build_survey_tree,
     render_section,
@@ -16,7 +19,7 @@ from app.leveling.llm_leveling import (
 from app.leveling.narration_publisher import LevelingProgress
 from app.leveling.table_groups import TableGroupInfo
 from app.workitem.model import KbCitationRelevance
-from app.workitem.model import RequirementQualityIssue, RequirementTag, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import RequirementQualityIssue, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
 
 def _sr(path: str) -> SourceRef:
@@ -354,6 +357,39 @@ def test_build_survey_tree_does_not_flag_an_uncaptioned_figure_as_a_dropped_bloc
     )
     tree = build_survey_tree(doc, fake)
     assert tree.warnings == []
+
+
+def test_build_survey_tree_never_lets_an_unsupported_content_note_reach_section_path() -> None:
+    # End-to-end regression for the "[UNSUPPORTED: ...]" diagnostic-text leak
+    # (pdf_loader.py's multi-column false-positive heuristic firing on a
+    # cover page): the diagnostic NOTE block is this headingless branch's
+    # very first block, which is exactly the shape that previously became
+    # section_path (via _derive_section_label's blocks[0] fallback) and
+    # tainted every node's Section field. It must never reach section_path,
+    # and must not silently vanish -- only surface as a warning instead.
+    path = "scanned.pdf"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.PDF, sha256="h"),
+        blocks=[
+            Block(
+                id="b0", kind=BlockKind.NOTE,
+                text="[UNSUPPORTED: page 1 appears multi-column; extraction may misorder text]",
+                source_ref=_sr(path),
+            ),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="Display", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    tree = build_survey_tree(doc, fake)
+
+    assert len(tree.nodes) > 0
+    for node in tree.nodes:
+        assert not any("[UNSUPPORTED:" in part for part in node.source_ref.section_path)
+    assert any(w.kind == WarningKind.UNSUPPORTED_CONTENT_NOTE for w in tree.warnings)
+    # The diagnostic must not ALSO surface as a generic DROPPED_BLOCKS entry
+    # -- it already has its own, more specific warning.
+    assert not any(w.kind == WarningKind.DROPPED_BLOCKS for w in tree.warnings)
 
 
 def test_build_survey_tree_falls_back_dangling_parent_temp_id_to_root_and_warns() -> None:
@@ -849,6 +885,69 @@ def test_front_matter_guard_for_whole_document_text_does_not_trip_the_external_r
     )
     assert guard is not None
     assert not _REFERENCED_ATTACHMENT_PATTERN.search(guard)
+
+
+# --- [UNSUPPORTED: ...] diagnostic-note leak fix (pdf_loader.py's
+# multi-column false-positive note must never leak as real content -- see
+# _is_unsupported_content_note in tree_builder.py) ---
+
+
+def test_derive_section_label_skips_an_unsupported_content_note_block() -> None:
+    path = "doc.txt"
+    blocks = [
+        Block(id="b0", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 3 appears multi-column]", source_ref=_sr(path)),
+        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+    ]
+    label = _derive_section_label(blocks, tables=None, figures=None)
+    assert label == "The display shall support HDR."
+
+
+def test_derive_section_label_does_not_skip_a_note_block_without_the_unsupported_prefix() -> None:
+    # Pins prefix-based (not BlockKind.NOTE-based) filtering: pptx_loader.py
+    # legitimately uses NOTE for real speaker-notes content, which must NOT
+    # be treated the same as a loader diagnostic placeholder.
+    path = "deck.pptx"
+    blocks = [
+        Block(id="b0", kind=BlockKind.NOTE, text="Remember to emphasize the roadmap slide.", source_ref=_sr(path)),
+    ]
+    label = _derive_section_label(blocks, tables=None, figures=None)
+    assert label == "Remember to emphasize the roadmap slide."
+
+
+def test_render_block_line_omits_an_unsupported_content_note_block() -> None:
+    path = "doc.txt"
+    block = Block(id="b0", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 7 appears multi-column]", source_ref=_sr(path))
+    assert _render_block_line(block) is None
+
+
+def test_render_block_line_does_not_omit_a_note_block_without_the_unsupported_prefix() -> None:
+    path = "deck.pptx"
+    block = Block(id="b0", kind=BlockKind.NOTE, text="Speaker note: mention Q3 roadmap.", source_ref=_sr(path))
+    assert _render_block_line(block) == "Speaker note: mention Q3 roadmap."
+
+
+def test_unsupported_content_warnings_emits_one_warning_per_distinct_diagnostic_note() -> None:
+    path = "doc.txt"
+    blocks = [
+        Block(id="b0", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 3 appears multi-column]", source_ref=_sr(path)),
+        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+        # Same diagnostic text repeated -- must be deduped, not double-warned.
+        Block(id="b2", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 3 appears multi-column]", source_ref=_sr(path)),
+        Block(id="b3", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 9 appears multi-column]", source_ref=_sr(path)),
+    ]
+    warnings = _unsupported_content_warnings(blocks, section_label="Display")
+    assert len(warnings) == 2
+    assert all(w.kind == WarningKind.UNSUPPORTED_CONTENT_NOTE for w in warnings)
+    assert {w.detail["text"] for w in warnings} == {
+        "[UNSUPPORTED: page 3 appears multi-column]",
+        "[UNSUPPORTED: page 9 appears multi-column]",
+    }
+
+
+def test_unsupported_content_warnings_is_empty_without_any_matching_note() -> None:
+    path = "doc.txt"
+    blocks = [Block(id="b0", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path))]
+    assert _unsupported_content_warnings(blocks, section_label="Display") == []
 
 
 def test_build_survey_tree_applies_the_front_matter_guard_on_the_single_call_path() -> None:

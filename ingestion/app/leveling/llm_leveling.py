@@ -56,6 +56,7 @@ from app.leveling.tree_builder import (
     _hash_description,
     _hash_identity,
     _hash_identity_for_synthesized_node,
+    _is_unsupported_content_note,
     _order_key,
     _partition_tables_by_branch,
     _split_into_branches,
@@ -611,6 +612,31 @@ def _referenced_attachment_warnings(section_text: str, section_label: str | None
     ]
 
 
+def _unsupported_content_warnings(blocks: list[Block], section_label: str | None) -> list[IntegrityWarning]:
+    """One warning per distinct loader diagnostic NOTE block (see
+    _is_unsupported_content_note) in this branch, deduped by exact text (so a
+    diagnostic repeated verbatim across several blocks in one section doesn't
+    spam the warnings list) -- mirrors _referenced_attachment_warnings just
+    above. These blocks are already omitted from section_label
+    (_derive_section_label) and rendered section text (_render_block_line);
+    this converts every drop into a visible, reviewable signal instead of
+    letting it silently vanish."""
+    seen: dict[str, None] = {}
+    for block in blocks:
+        if _is_unsupported_content_note(block):
+            seen.setdefault(block.text, None)
+    section_ref = f'The "{section_label}" section' if section_label else "This section"
+    return [
+        IntegrityWarning.make(
+            WarningKind.UNSUPPORTED_CONTENT_NOTE,
+            f"{section_ref} contained a loader diagnostic note ({text!r}) that was stripped "
+            "instead of being treated as document content.",
+            detail={"section": section_label or "(root)", "text": text},
+        )
+        for text in seen
+    ]
+
+
 _SECTION_LABEL_EXCERPT_CHARS = 60
 
 
@@ -628,8 +654,15 @@ def _derive_section_label(blocks: list[Block], tables: list[Table] | None, figur
     for block in blocks:
         if block.kind == BlockKind.HEADING:
             return block.text
-    if blocks:
-        text = blocks[0].text.strip()
+    for block in blocks:
+        # A loader diagnostic placeholder (e.g. pdf_loader.py's multi-column
+        # false-positive note) must never become the section's own label --
+        # see _is_unsupported_content_note's own docstring. Falls through to
+        # the next block instead, same fallback cascade as before this check
+        # existed.
+        if _is_unsupported_content_note(block):
+            continue
+        text = block.text.strip()
         if len(text) > _SECTION_LABEL_EXCERPT_CHARS:
             return text[:_SECTION_LABEL_EXCERPT_CHARS] + "…"
         return text or None
@@ -827,9 +860,10 @@ def _table_to_markdown(table: Table) -> str | None:
 
 def _render_block_line(block: Block, figure_id_by_block_id: dict[str, str] | None = None) -> str | None:
     """One block rendered as a markdown-ish line for render_section, or None
-    to omit it entirely (a 'none'-caption figure placeholder, or a
+    to omit it entirely (a 'none'-caption figure placeholder, a
     never-actually-emitted TABLE-kind block -- tables live in the separate
-    `tables` list render_section merges in by document order).
+    `tables` list render_section merges in by document order -- or a loader
+    diagnostic placeholder NOTE block, see _is_unsupported_content_note).
 
     `figure_id_by_block_id` (known-issues item 20): when this FIGURE-kind
     block has a known Figure.id (see render_section's own docstring for how
@@ -853,6 +887,12 @@ def _render_block_line(block: Block, figure_id_by_block_id: dict[str, str] | Non
         return line
     if block.kind == BlockKind.TABLE:
         return None  # never actually emitted by any loader today
+    if _is_unsupported_content_note(block):
+        # A loader diagnostic placeholder (e.g. pdf_loader.py's multi-column
+        # false-positive note) must never reach the model/output as if it
+        # were real content -- see _is_unsupported_content_note's own
+        # docstring.
+        return None
     return block.text  # PARAGRAPH, NOTE, OPEN_TBD -- plain content lines
 
 
@@ -2606,6 +2646,13 @@ def _build_survey_tree_for_branch(
         i
         for i, block in enumerate(blocks)
         if not (block.kind == BlockKind.FIGURE and _figure_line(block) is None)
+        # A loader diagnostic NOTE block gets its own, far more actionable
+        # UNSUPPORTED_CONTENT_NOTE warning (see _unsupported_content_warnings)
+        # -- reporting it a second time here as a generic dropped block would
+        # double-report the same root cause under two different messages,
+        # same reasoning as the FIGURE-none and external-reference exclusions
+        # on this same line.
+        and not _is_unsupported_content_note(block)
         and not _block_content_appears_in_generated_output(resolved_block_texts[i], combined_words)
         and not _REFERENCED_ATTACHMENT_PATTERN.search(resolved_block_texts[i])
     ]
@@ -2665,6 +2712,7 @@ def _build_survey_tree_for_branch(
         )
 
     warnings.extend(_referenced_attachment_warnings(section_text, section_label))
+    warnings.extend(_unsupported_content_warnings(blocks, section_label))
 
     # Quality scoring moved to whole-document scope (see
     # _score_all_requirements, called once from build_survey_tree after

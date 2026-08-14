@@ -218,6 +218,24 @@ def _figure_line(block: Block) -> str | None:
     return f"> Figure: {caption}"
 
 
+_UNSUPPORTED_NOTE_PREFIX = "[UNSUPPORTED:"
+
+
+def _is_unsupported_content_note(block: Block) -> bool:
+    """True for a NOTE-kind block whose text is a loader-emitted diagnostic
+    placeholder (e.g. pdf_loader.py's multi-column-layout heuristic firing on
+    a cover page) -- never real document content, and must never reach the
+    model/output and be mistaken for a genuine note, the same class of bug
+    _figure_line's "[FIGURE: none]" handling above fixes for figures. Filters
+    by TEXT PREFIX, not `BlockKind.NOTE` alone: pptx_loader.py legitimately
+    uses NOTE for real speaker-notes content -- a kind-only filter would
+    delete real reviewer content. Shared by both BASELINE (this module) and
+    SURVEY (llm_leveling.py, imported from here) so the diagnostic never
+    leaks into a work item's section label, description, or rendered section
+    text in either mode."""
+    return block.kind == BlockKind.NOTE and block.text.startswith(_UNSUPPORTED_NOTE_PREFIX)
+
+
 def figure_id_by_block_id(doc: CanonicalDoc) -> dict[str, str]:
     """block.id -> Figure.id map, built once over a document (or residual
     document) by pairing every FIGURE-kind Block in `doc.blocks` with
@@ -518,6 +536,12 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
         child_type=WorkItemType.REQUIREMENT,
     )
     nodes: list[WorkItemNode] = [epic, feature]
+    # No "open node" concept exists in this function (every block gets its
+    # own node, never folded into a prior one) -- so an unsupported-content
+    # diagnostic here always has node_ids=[], unlike the structured path's
+    # depth-is-None branch, which can attribute the same warning to a
+    # currently-open node.
+    warnings: list[IntegrityWarning] = []
     # section_path=[] is correct for every node this function builds (both
     # the two synthetic wrapper nodes above and every block/table node
     # below) -- there is no real heading ancestry in a headingless document,
@@ -526,6 +550,22 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
     if doc.blocks:
         figure_map = figure_id_by_block_id(doc)
         for index, block in enumerate(doc.blocks):
+            if _is_unsupported_content_note(block):
+                # A loader diagnostic placeholder (e.g. pdf_loader.py's
+                # multi-column false-positive note) must never become its
+                # own work item -- see _is_unsupported_content_note's own
+                # docstring. Dropped, not silently: recorded as a warning
+                # instead (no node is ever "open" in this function, so
+                # node_ids is always empty here).
+                warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.UNSUPPORTED_CONTENT_NOTE,
+                        f'A loader diagnostic note ("{block.text}") was stripped instead of '
+                        "leaking into the proposed tree as if it were real content.",
+                        detail={"kind": "block", "sourceId": block.id, "text": block.text},
+                    )
+                )
+                continue
             description = block.text
             # This function gives every block its own node (no folding into
             # a prior "open" node the way build_baseline_tree's structured
@@ -586,7 +626,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     child_type=WorkItemType.REQUIREMENT,
                 )
             )
-    return WorkItemTree(nodes=nodes)
+    return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))
 
 
 def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], customer_id: str | None) -> WorkItemTree:
@@ -848,6 +888,25 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                             nodes_by_id[stack[-1][1]].uncaptioned_figure_ids.append(figure_id)
                         continue
                     display_text = figure_line
+
+                if _is_unsupported_content_note(block):
+                    # A loader diagnostic placeholder (e.g. pdf_loader.py's
+                    # multi-column false-positive note) must never be folded
+                    # into a node's description as if it were real content --
+                    # see _is_unsupported_content_note's own docstring.
+                    # Attributed to whatever node is currently open (if any),
+                    # same convention as the FIGURE-uncaptioned branch above.
+                    node_ids = [stack[-1][1]] if stack else []
+                    warnings.append(
+                        IntegrityWarning.make(
+                            WarningKind.UNSUPPORTED_CONTENT_NOTE,
+                            f'A loader diagnostic note ("{block.text}") was stripped instead of '
+                            "leaking into the proposed tree as if it were real content.",
+                            node_ids=node_ids,
+                            detail={"kind": "block", "sourceId": block.id, "text": block.text},
+                        )
+                    )
+                    continue
 
                 if stack:
                     open_node = nodes_by_id[stack[-1][1]]

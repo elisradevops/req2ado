@@ -8,7 +8,7 @@ from app.leveling.tree_builder import (
     _widen_page_end,
     build_baseline_tree,
 )
-from app.workitem.model import WorkItemType
+from app.workitem.model import WarningKind, WorkItemType
 
 
 def _sr(path: str, start: int, end: int) -> SourceRef:
@@ -170,6 +170,80 @@ def test_a_document_with_a_recognized_heading_first_produces_no_warnings() -> No
     # about an orphaned depth=None block, not a general "always warn" change
     # in behavior for BASELINE.
     tree = build_baseline_tree(_tv_style_doc())
+    assert tree.warnings == []
+
+
+def test_structured_walk_drops_an_unsupported_content_note_into_the_open_node() -> None:
+    # A loader diagnostic placeholder (e.g. pdf_loader.py's multi-column
+    # false-positive note) reached with a node already open must be dropped,
+    # not folded into that node's description -- see
+    # _is_unsupported_content_note in tree_builder.py. A warning fires
+    # instead, attributed to the currently-open node.
+    path = "backplane_icd.md"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.MD, sha256="h"),
+        blocks=[
+            Block(id="c0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(id="c1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
+            Block(
+                id="c2", kind=BlockKind.NOTE,
+                text="[UNSUPPORTED: page 4 appears multi-column; extraction may misorder text]",
+                source_ref=_sr(path, 44, 96),
+            ),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    requirement_node = tree.nodes[1]
+    assert "[UNSUPPORTED:" not in requirement_node.description
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
+    assert tree.warnings[0].node_ids == [requirement_node.local_id]
+
+
+def test_structured_walk_drops_an_unsupported_content_note_with_no_open_node_yet() -> None:
+    # Same predicate, but the diagnostic precedes any heading/numbering in
+    # its branch -- no node is open yet. Must still be dropped+warned (never
+    # folded into a synthetic front-matter node the way a normal orphan
+    # block/table is -- unlike FRONT_MATTER_FOLDED, this is loader noise, not
+    # real content worth preserving).
+    path = "orphan_note.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(
+                id="b0", kind=BlockKind.NOTE,
+                text="[UNSUPPORTED: page 1 appears multi-column; extraction may misorder text]",
+                source_ref=_sr(path, 0, 60),
+            ),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr(path, 61, 71)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr(path, 72, 94)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    assert not any("[UNSUPPORTED:" in n.description for n in tree.nodes)
+    assert not any(n.title.startswith("Front Matter:") for n in tree.nodes)
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
+    assert tree.warnings[0].node_ids == []
+
+
+def test_structured_walk_folds_a_note_block_without_the_unsupported_prefix_normally() -> None:
+    # Pins prefix-based (not BlockKind.NOTE-based) filtering: pptx_loader.py
+    # legitimately uses NOTE for real speaker-notes content, which must still
+    # fold into the open node's description normally, same as an OPEN_TBD
+    # block already does (test_description_assembly_is_used_for_unleveled_block_folding).
+    path = "deck_notes.pptx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.PPTX, sha256="h"),
+        blocks=[
+            Block(id="c0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(id="c1", kind=BlockKind.HEADING, heading_level=2, text="3.3V Rail Requirements", source_ref=_sr(path, 20, 43)),
+            Block(id="c2", kind=BlockKind.NOTE, text="Remember to emphasize the roadmap slide.", source_ref=_sr(path, 44, 85)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    requirement_node = tree.nodes[1]
+    assert "Remember to emphasize the roadmap slide." in requirement_node.description
     assert tree.warnings == []
 
 
@@ -469,6 +543,52 @@ def test_headingless_document_nodes_pass_fidelity_verification() -> None:
     tree = build_baseline_tree(_headingless_doc())
     for node in tree.nodes:
         assert verify_fidelity(node)
+
+
+def test_headingless_document_drops_an_unsupported_content_note_and_warns() -> None:
+    # A loader diagnostic placeholder (e.g. pdf_loader.py's multi-column
+    # false-positive note) must never become its own work item in this
+    # headingless-fallback loop -- see _is_unsupported_content_note in
+    # tree_builder.py. Dropped, not silent: a warning fires instead.
+    path = "scanned.pdf"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.PDF, sha256="h"),
+        blocks=[
+            Block(
+                id="f0", kind=BlockKind.NOTE,
+                text="[UNSUPPORTED: page 2 appears multi-column; extraction may misorder text]",
+                source_ref=_sr(path, 0, 60),
+            ),
+            Block(
+                id="f1", kind=BlockKind.PARAGRAPH,
+                text="The system shall support at least four simultaneous audio channels.",
+                source_ref=_sr(path, 61, 129),
+            ),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+
+    assert not any("[UNSUPPORTED:" in n.description for n in tree.nodes)
+    assert len(tree.nodes) == 3  # Epic + Feature + 1 Requirement (the NOTE never becomes its own node)
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
+
+
+def test_headingless_document_does_not_drop_a_note_block_without_the_unsupported_prefix() -> None:
+    # Pins prefix-based (not BlockKind.NOTE-based) filtering: pptx_loader.py
+    # legitimately uses NOTE for real speaker-notes content, which must still
+    # become its own work item here, same as any other paragraph-shaped block.
+    path = "deck.pptx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.PPTX, sha256="h"),
+        blocks=[
+            Block(id="f0", kind=BlockKind.NOTE, text="Remember to emphasize the roadmap slide.", source_ref=_sr(path, 0, 41)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+
+    assert any("Remember to emphasize the roadmap slide." in n.description for n in tree.nodes)
+    assert tree.warnings == []
 
 
 def test_structured_document_is_unaffected_by_the_headingless_fallback() -> None:
