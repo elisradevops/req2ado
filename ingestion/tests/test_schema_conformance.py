@@ -69,3 +69,20 @@ def test_schema_rejects_a_stray_field_on_a_block(schema) -> None:
     doc["blocks"][0]["extra_field"] = "unexpected"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_accepts_a_populated_failed_figure_storage_ids(schema) -> None:
+    # Populated on a real /ingest response only when main.py's store() call
+    # raises for one or more figures (see test_ingest_figure_storage.py) --
+    # asserted here so the schema (additionalProperties: false) actually
+    # recognizes the field rather than only ever seeing it as [].
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["failed_figure_storage_ids"] = ["f0", "f3"]
+    jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_rejects_a_non_string_failed_figure_storage_id(schema) -> None:
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["failed_figure_storage_ids"] = [123]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=doc, schema=schema)

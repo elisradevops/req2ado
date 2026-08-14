@@ -689,6 +689,14 @@ async def ingest(
         figure_total = len(precount_doc.figures)
 
     describe_figure_fn = None
+    # Populated below on a store() failure (figure captioned fine, but its
+    # bytes never made it to storage) -- surfaced on the response as
+    # CanonicalDoc.failed_figure_storage_ids since storage happens here, in
+    # /ingest, not in /level, so it can never become a WorkItemTree
+    # IntegrityWarning; the orchestrator turns a non-empty list here into
+    # its own synthesized WarningRecord (mirrors ado_verification_failed's
+    # precedent -- see pipeline.worker.ts).
+    failed_figure_ids: list[str] = []
     if vision_active:
         # Closed over per-request (not module-level) -- figure_counter must
         # start at 0 for every new /ingest call, not accumulate across
@@ -759,6 +767,7 @@ async def ingest(
                     logger.warning(
                         "Figure-file storage failed for %s -- it will not be attachable in ADO", figure_id, exc_info=True
                     )
+                    failed_figure_ids.append(figure_id)
             return caption
 
         describe_figure_fn = _describe_figure_with_progress
@@ -818,6 +827,8 @@ async def ingest(
                 )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+    doc.failed_figure_storage_ids = failed_figure_ids
 
     if narration_publisher is not None:
         narration_publisher.publish(

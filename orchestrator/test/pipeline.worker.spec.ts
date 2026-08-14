@@ -1349,6 +1349,47 @@ describe('runPipelineJob', () => {
     );
   });
 
+  it('persists a structured figure_storage_failed WarningRecord when /ingest reports failed_figure_storage_ids', async () => {
+    // Storage happens during /ingest, not /level -- a failed figureId can
+    // never come back as one of tree.warnings (those only ever originate
+    // from /level's response), so this is the orchestrator's own synthesis,
+    // mirroring ado_verification_failed's precedent above.
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [], failed_figure_storage_ids: ['f12', 'f45'] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.job.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warnings: [
+            expect.objectContaining({
+              kind: 'figure_storage_failed',
+              severity: 'pipeline_issue',
+              nodeIds: [],
+              detail: { figureIds: ['f12', 'f45'] },
+              raw: expect.stringContaining('f12'),
+            }),
+          ],
+        }),
+      }),
+    );
+  });
+
   it('never fails the job when the stale-mapping cleanup call itself throws', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({ nodes: [] });

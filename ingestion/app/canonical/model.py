@@ -197,3 +197,12 @@ class CanonicalDoc(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
     tables: list[Table] = Field(default_factory=list)
     figures: list[Figure] = Field(default_factory=list)
+    # Figure ids whose store() call (main.py's _describe_figure_with_progress)
+    # raised during this /ingest -- the figure was still captioned, but its
+    # bytes never made it to storage, so it won't be viewable/attachable
+    # later. Storage happens here, in /ingest, not in /level, so this can
+    # never surface as a WorkItemTree IntegrityWarning; the orchestrator
+    # turns a non-empty list into its own synthesized WarningRecord (mirrors
+    # ado_verification_failed's precedent, see workitem/model.py's
+    # WarningKind docstring).
+    failed_figure_storage_ids: list[str] = Field(default_factory=list)

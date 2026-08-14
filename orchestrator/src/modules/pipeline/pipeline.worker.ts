@@ -506,6 +506,28 @@ export async function runPipelineJob(
       deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id, primerContext),
       maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential),
     ]);
+
+    // Figure storage happens during /ingest, not /level -- a store()
+    // failure there (main.py's _describe_figure_with_progress) can never
+    // surface as a WorkItemTree IntegrityWarning (those only ever come from
+    // /level's response), so it travels back via CanonicalDoc.
+    // failed_figure_storage_ids instead and is synthesized into a
+    // WarningRecord here, mirroring verificationWarnings' own
+    // ado_verification_failed precedent further below (both are kinds the
+    // orchestrator adds post-hoc, never present in ingestion's own closed
+    // WarningKind vocabulary).
+    const figureStorageWarnings: WarningRecord[] = [];
+    if ((doc.failed_figure_storage_ids ?? []).length > 0) {
+      const failedFigureIds = doc.failed_figure_storage_ids as string[];
+      figureStorageWarnings.push({
+        kind: 'figure_storage_failed',
+        severity: 'pipeline_issue',
+        nodeIds: [],
+        detail: { figureIds: failedFigureIds },
+        raw: `${failedFigureIds.length} figure(s) failed to store and will not be viewable/attachable: ${failedFigureIds.join(', ')}`,
+      });
+    }
+
     // Captions are already here -- no ingestion/`/level` change needed.
     // 1-based index by array position matches the sequential order
     // main.py's per-request vision-call counter narrates figures with
@@ -822,6 +844,7 @@ export async function runPipelineJob(
             (w): WarningRecord => ({ kind: w.kind, severity: w.severity, nodeIds: w.node_ids, detail: w.detail, raw: w.raw }),
           ),
           ...verificationWarnings,
+          ...figureStorageWarnings,
         ] as any,
         kbCitations: (tree.kb_citations ?? []).map((c) => ({
           sourceFile: c.source_file,

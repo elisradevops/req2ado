@@ -16,6 +16,10 @@ export interface CanonicalDoc {
   blocks: Block[];
   tables: Table[];
   figures: Figure[];
+  /**
+   * Figure ids whose storage (during /ingest) failed -- still captioned, but not viewable/attachable later. Never populated by /level; ado_verification_failed's own WarningKind precedent applies -- the orchestrator, not ingestion, turns a non-empty list here into its own synthesized WarningRecord.
+   */
+  failed_figure_storage_ids?: string[];
 }
 export interface Block {
   id: string;

@@ -80,3 +80,26 @@ def test_ingest_still_returns_the_caption_when_figure_file_storage_fails(monkeyp
     result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-fail-test")
 
     assert result["figures"][0]["caption"] == "a real caption"
+    # sample.docx's single figure is "f0" (see the 0-based id comment
+    # above) -- surfaced so the orchestrator can synthesize a
+    # figure_storage_failed WarningRecord from it (storage happens here, in
+    # /ingest, so a failure here can never reach /level's own warnings).
+    assert result["failed_figure_storage_ids"] == ["f0"]
+
+
+def test_ingest_reports_no_failed_figure_storage_ids_when_storage_succeeds(monkeypatch) -> None:
+    import app.main as main_module
+
+    stored: list[tuple[str, str, bytes, str]] = []
+
+    class _FakeFigureFileClient:
+        def store(self, job_id: str, figure_id: str, image_bytes: bytes, mime_type: str) -> None:
+            stored.append((job_id, figure_id, image_bytes, mime_type))
+
+    monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
+    monkeypatch.setattr(main_module, "_figure_file_client", _FakeFigureFileClient())
+
+    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-ok-test")
+
+    assert len(stored) == 1
+    assert result["failed_figure_storage_ids"] == []

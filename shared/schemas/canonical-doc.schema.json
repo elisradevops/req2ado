@@ -31,6 +31,11 @@
     "figures": {
       "type": "array",
       "items": { "$ref": "#/definitions/Figure" }
+    },
+    "failed_figure_storage_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Figure ids whose storage (during /ingest) failed -- still captioned, but not viewable/attachable later. Never populated by /level; ado_verification_failed's own WarningKind precedent applies -- the orchestrator, not ingestion, turns a non-empty list here into its own synthesized WarningRecord."
     }
   },
   "definitions": {
