@@ -145,7 +145,10 @@ export interface IntegrityWarning {
     | 'dropped_row'
     | 'front_matter_folded'
     | 'trace_link_inference_failed'
-    | 'heading_id_offset_mismatch';
+    | 'heading_id_offset_mismatch'
+    | 'unsupported_content_note'
+    | 'empty_table_content'
+    | 'degraded_table_structure';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */
