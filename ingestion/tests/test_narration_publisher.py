@@ -1,6 +1,12 @@
 import json
+from typing import get_args
 
-from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher
+from app.leveling.narration_publisher import (
+    _PHASE_MESSAGES,
+    LevelingProgress,
+    NarrationPublisher,
+    Phase,
+)
 
 
 class _FakeRedis:
@@ -423,6 +429,61 @@ def test_publish_detect_conflicts_and_regroup_roots_carry_a_real_message() -> No
     payload = json.loads(redis_client.publish_calls[1][1])
     assert payload["phase"] == "regroup_roots"
     assert "topic" in payload["message"].lower()
+
+
+def test_every_phase_has_a_message_template() -> None:
+    # Permanent exhaustiveness guard. `_PHASE_MESSAGES` is a plain dict
+    # literal, so -- unlike the frontend's `Record<Phase, ...>` maps, which
+    # the TypeScript compiler refuses to build with a member missing -- adding
+    # a member to the `Phase` Literal above and forgetting the matching entry
+    # here type-checks, imports and passes every other test in this file
+    # cleanly, then throws KeyError at `_format_message`'s unguarded subscript
+    # the first time that phase actually fires in a real job. That is exactly
+    # what happened to 'build_skeleton'/'map_scope': the subscript runs inside
+    # publish()'s json.dumps(...) argument, i.e. BEFORE the try/except that
+    # guarantees "narration must never fail a SURVEY job", so the KeyError
+    # propagated out of the very first branch's very first narration event and
+    # failed every SURVEY job outright.
+    #
+    # 'chunk_warning' is the ONE legitimate exclusion: _format_message
+    # early-returns the caller's own already-complete warning string for it,
+    # before reaching this dict at all.
+    assert set(get_args(Phase)) - {"chunk_warning"} <= set(_PHASE_MESSAGES)
+
+
+def test_publish_build_skeleton_carries_a_real_message() -> None:
+    # Goes through the REAL publisher (not a raw progress_callback lambda) on
+    # purpose: B5 added 'build_skeleton' to the Phase Literal and wired all
+    # three frontend Records, but never added a _PHASE_MESSAGES entry, and its
+    # own tests only ever collected LevelingProgress objects from a lambda --
+    # which never formats a message, so the KeyError this asserts against
+    # stayed invisible through three green suites.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(phase="build_skeleton"))
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["phase"] == "build_skeleton"
+    assert payload["message"] == (
+        "Deciding this section's work-item structure (section 1 of 3) -- 10 of 50 blocks"
+    )
+
+
+def test_publish_map_scope_carries_a_real_message() -> None:
+    # Same real-publisher reasoning as build_skeleton above. map_scope is a
+    # whole-document phase (branch_index=None, same convention
+    # detect_conflicts/regroup_roots/infer_trace_links use), so its message
+    # carries no "(section N of M)" prefix -- just the block tally every other
+    # whole-document tail phase reports.
+    redis_client = _FakeRedis()
+    publisher = NarrationPublisher(redis_client, "job-1")
+
+    publisher.publish(_progress(phase="map_scope", branch_index=None, blocks_done=50))
+
+    payload = json.loads(redis_client.publish_calls[0][1])
+    assert payload["phase"] == "map_scope"
+    assert payload["message"] == "Mapping figures and tables to their work items -- 50 of 50 blocks"
 
 
 def test_publish_deterministic_subtree_carries_index_count_and_label() -> None:
