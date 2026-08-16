@@ -5,8 +5,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.main import _rasterize_for_vision, _sniff_image_mime_type, app
-from app.vision.orchestrator_vision_client import FigureVisionResult
+from app.main import _figure_caption_cache_key, _rasterize_for_vision, _sniff_image_mime_type, app
+from app.vision.orchestrator_vision_client import PROMPT_VERSION, FigureVisionResult
 
 client = TestClient(app)
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -263,6 +263,20 @@ def test_describe_figure_calls_the_vision_client_again_for_genuinely_different_i
     assert first == "caption #1"
     assert second == "caption #2"
     assert fake_client.calls == 2
+
+
+def test_figure_caption_cache_key_includes_prompt_version() -> None:
+    # Real gap found during review: a prompt wording change (which happened
+    # twice in one real debugging session already) must invalidate old
+    # cache entries -- otherwise a real deployment would keep serving
+    # captions generated under the OLD prompt for up to the full 1-week
+    # TTL, with the fix looking shipped but not observably active. Asserts
+    # the key genuinely contains PROMPT_VERSION, not just that changing it
+    # would change the key (which the property test in
+    # test_orchestrator_vision_client.py already covers for PROMPT_VERSION
+    # itself).
+    key = _figure_caption_cache_key(b"some-image-bytes", "some document context")
+    assert PROMPT_VERSION in key
 
 
 def test_describe_figure_cache_key_does_not_collide_across_different_document_contexts(monkeypatch) -> None:

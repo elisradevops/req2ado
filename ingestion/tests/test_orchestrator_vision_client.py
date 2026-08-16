@@ -8,9 +8,38 @@ import pytest
 from app.config import settings
 from app.vision.orchestrator_vision_client import (
     _VISION_REQUEST_TIMEOUT_SECONDS,
+    PROMPT_VERSION,
     FigureVisionResult,
     OrchestratorVisionClient,
+    _build_prompt,
+    _FIGURE_SIGNIFICANCE_SCHEMA,
 )
+
+
+def test_prompt_version_is_derived_from_the_actual_prompt_and_schema_text() -> None:
+    # Real gap this guards against: main.py's figure-caption Redis cache
+    # (1-week TTL) has no way to tell "the prompt changed" apart from "the
+    # same image, same context" unless PROMPT_VERSION is derived from the
+    # actual prompt/schema text -- confirmed live, this prompt's own wording
+    # changed twice in one real debugging session, each requiring a manual
+    # `redis-cli DEL figcap:*` to observe the fix, since the old key scheme
+    # had nothing that would have changed. Asserts PROMPT_VERSION is
+    # genuinely computed from the live prompt/schema, not a hardcoded
+    # literal that happens to look like a hash -- if either changes without
+    # this derivation also changing, this test fails.
+    import hashlib
+
+    expected = hashlib.sha256(
+        (_build_prompt(None) + json.dumps(_FIGURE_SIGNIFICANCE_SCHEMA, sort_keys=True)).encode("utf-8")
+    ).hexdigest()[:12]
+    assert PROMPT_VERSION == expected
+
+    # And the derivation itself is sensitive to the prompt text changing --
+    # the actual property that makes cache invalidation work.
+    changed = hashlib.sha256(
+        (_build_prompt(None) + "extra" + json.dumps(_FIGURE_SIGNIFICANCE_SCHEMA, sort_keys=True)).encode("utf-8")
+    ).hexdigest()[:12]
+    assert PROMPT_VERSION != changed
 
 
 def test_describe_figure_calls_the_orchestrator_vision_endpoint_with_bearer_auth() -> None:

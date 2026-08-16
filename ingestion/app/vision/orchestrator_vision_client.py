@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from typing import NamedTuple
 
@@ -95,6 +96,27 @@ def _build_prompt(document_context: str | None) -> str:
         "with document-relevant terminology should still be judged on its "
         "own visual content, not on the surrounding context alone."
     )
+
+
+# Real gap this closes, found during review (not live-reproduced, but
+# structurally certain): main.py's figure-caption cache has NO prompt-
+# version component in its key at all -- keyed only on image bytes +
+# document_context. This prompt's OWN wording changed twice in one real
+# debugging session (once for truncation, once for over-corrected
+# brevity), and each time required a manual `redis-cli DEL figcap:*`
+# before re-testing, or the 1-week TTL would have silently kept serving
+# captions generated under the OLD wording. In a real deployment (no one
+# manually flushing Redis), shipping a prompt fix would not actually take
+# effect on a previously-ingested document until either its cache entries
+# individually expire or the whole week elapses -- exactly the kind of
+# "the fix looks deployed but isn't observably active" gap this session's
+# other bugs kept turning out to be. Derived from the actual prompt/schema
+# TEXT (hashed), not a manually-bumped literal -- so the NEXT prompt
+# wording change invalidates old cache entries automatically, with no
+# separate version-bump step to remember or forget.
+PROMPT_VERSION = hashlib.sha256(
+    (_build_prompt(None) + json.dumps(_FIGURE_SIGNIFICANCE_SCHEMA, sort_keys=True)).encode("utf-8")
+).hexdigest()[:12]
 
 
 def _parse_figure_response(raw: str) -> FigureVisionResult | None:

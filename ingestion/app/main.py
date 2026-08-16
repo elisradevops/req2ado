@@ -41,7 +41,7 @@ from app.redaction.redactor import redact_canonical_doc
 from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
-from app.vision.orchestrator_vision_client import OrchestratorVisionClient
+from app.vision.orchestrator_vision_client import PROMPT_VERSION, OrchestratorVisionClient
 from app.vision.figure_storage_client import OrchestratorFigureFileClient, compress_figure_for_storage
 from app.workitem.model import IntegrityWarning, WarningKind, WorkItemTree
 
@@ -256,9 +256,13 @@ def _figure_caption_cache_key(original_image_bytes: bytes, document_context: str
     # of the key -- see _describe_figure's own comment for why the same
     # image across two different documents can legitimately produce two
     # different significance verdicts once document context is a real
-    # input to that judgment.
+    # input to that judgment. PROMPT_VERSION is also part of the key --
+    # see its own docstring in orchestrator_vision_client.py: without this,
+    # a prompt wording change (which has happened twice in one real
+    # debugging session already) would silently keep serving captions
+    # generated under the OLD wording for up to the full 1-week TTL.
     context_hash = hashlib.sha256((document_context or "").encode("utf-8")).hexdigest()[:16]
-    return f"figcap:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}"
+    return f"figcap:{PROMPT_VERSION}:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}"
 
 
 def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
