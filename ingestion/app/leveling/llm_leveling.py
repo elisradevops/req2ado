@@ -2134,7 +2134,11 @@ def build_survey_tree(
     # FigureTableMappingClient's own docstring): a client without the method
     # skips this stage entirely and behaves exactly as it did before stage 2
     # existed -- no attachment, and (correctly) nothing marked excluded
-    # either, since nothing was ever judged.
+    # either, since nothing was ever judged. Runs at the SAME parallelism as
+    # the two stages either side of it -- a serial stage in between would
+    # insert one sequential LLM round-trip per branch into the middle of the
+    # pipeline (and, with no narration of its own yet, a silent window
+    # exactly as long).
     figure_table_ids_by_local_id: dict[str, dict[str, list[str]]] = {}
     excluded_figure_ids: list[str] = []
     excluded_table_ids: list[str] = []
@@ -2144,7 +2148,7 @@ def build_survey_tree(
             figure_table_ids_by_local_id, excluded_figure_ids, excluded_table_ids
         ) = _map_figures_tables_to_nodes(
             branch_skeletons, map_fn, figures_by_id(doc.figures),
-            figure_id_by_block_id, all_warnings,
+            figure_id_by_block_id, all_warnings, branch_concurrency,
         )
         # Stage 3's hallucination guard (see _author_branch_content) checks a
         # node's assigned ids against what was OFFERED for it -- per branch
@@ -2984,15 +2988,24 @@ def _build_survey_skeleton_for_branch(
 # (the motivating document has 918 figures; a per-figure call would double
 # the already-dominant sequential vision-captioning cost).
 #
-# Escalation chunk size: derived the same way _SCORING_CHUNK_NODE_COUNT is
-# (see its own docstring) rather than picked as a round number -- a mapping
-# response entry ({'node_id', 'escalate'} plus its item-id key) runs ~25
-# tokens, so 200 items is ~5k of _MAX_OUTPUT_TOKENS' 20k, leaving ample room
-# for JSON structural overhead. Deliberately smaller than the ~300 the
-# candidate list would also allow: tier 2 offers the WHOLE document's node
-# titles as candidates, so its INPUT is the side under pressure, not its
-# output.
-_MAPPING_ESCALATION_CHUNK_ITEM_COUNT = 200
+# Chunk size, applied to BOTH tiers: derived the same way
+# _SCORING_CHUNK_NODE_COUNT is (see its own docstring) rather than picked as a
+# round number -- a mapping response entry ({'node_id', 'escalate'} plus its
+# item-id key) runs ~25 tokens, so 200 items is ~5k of _MAX_OUTPUT_TOKENS'
+# 20k, leaving ample room for JSON structural overhead. Deliberately smaller
+# than the ~300 the candidate list would also allow: tier 2 offers the WHOLE
+# document's node titles as candidates, so its INPUT is the side under
+# pressure, not its output.
+#
+# Tier 1 is chunked by this too, not just tier 2 -- a branch is normally far
+# smaller than one chunk, but _bound_branch_size can legitimately hand back an
+# oversized branch (a flat, figure-dense appendix with no heading structure to
+# split on: exactly the 918-figure document shape this stage exists for), and
+# an over-long tier-1 response would silently escalate that WHOLE branch into
+# tier 2 -- unplanned call volume against this stage's own cost constraint.
+# Safe to add because a branch's candidate set is identical across every chunk
+# of that same branch: chunking changes only how many items each call carries.
+_MAPPING_CHUNK_ITEM_COUNT = 200
 # A vision-generated figure caption can run to a full paragraph. Mapping only
 # needs enough of it to recognize the SUBJECT, so each caption is previewed,
 # not sent whole -- at branch-batched scale (an entire branch's figures in
@@ -3106,12 +3119,160 @@ def _mapping_candidates(nodes: list[WorkItemNode]) -> dict[str, dict]:
     }
 
 
+class _MappingBatch(NamedTuple):
+    """One mapping LLM call's complete input, plus the bookkeeping its own
+    failure/incompleteness warning needs. Built up front, all of them, so the
+    calls can run concurrently and be merged back in a fixed order -- see
+    _map_figures_tables_to_nodes."""
+
+    candidates: dict[str, dict]
+    items: dict[str, dict]
+    # False for the escalation tier: there is no third tier, so an item this
+    # call leaves unplaced has nowhere further to go.
+    allow_escalation: bool
+    # Human phrase naming this batch in its own warning message ("the
+    # \"Power\" section", "the whole document").
+    scope: str
+    # Structured companion to `scope` for the warning's detail payload.
+    detail: dict
+
+
+class _MappingBatchResult(NamedTuple):
+    """One mapping call's outcome as PLAIN DATA -- deliberately not a set of
+    in-place appends to shared lists. Batches run concurrently (see
+    _map_figures_tables_to_nodes), and while an individual list.append is
+    GIL-atomic, the ORDER appends from different threads land in is not
+    deterministic. Returning each batch's own contribution and merging them in
+    batch order afterwards makes the whole stage's output byte-identical
+    whatever the concurrency setting or completion order."""
+
+    # (node_id, item_id, kind) triples, in this call's own item order.
+    attached: list[tuple[str, str, str]]
+    # (item_id, kind) pairs -- judged irrelevant, hallucinated-target, or
+    # degraded by this batch's own failure.
+    excluded: list[tuple[str, str]]
+    escalated: list[str]
+    warnings: list[IntegrityWarning]
+
+
+def _run_mapping_batch(
+    batch: _MappingBatch,
+    map_fn: Callable[[dict[str, dict], dict[str, dict]], dict[str, dict]],
+) -> _MappingBatchResult:
+    """Makes ONE mapping call and classifies its verdicts. Pure with respect to
+    everything outside it (reads only its `batch`, writes only its returned
+    result), which is what makes running several of these concurrently safe.
+
+    Every returned node_id is validated against the REAL candidate set THIS
+    call was offered; one outside it is a hallucination, dropped with
+    WarningKind.INVALID_MAPPING_TARGET, exactly as _author_branch_content
+    already treats a hallucinated figure/table id. A dropped verdict is NOT
+    re-escalated: the item is excluded instead, keeping this stage's call count
+    bounded and predictable (a model that hallucinates once tends to do so
+    again, and one bad verdict must never be able to trigger an
+    otherwise-unneeded escalation call).
+
+    Fail-open, deliberately -- see _map_figures_tables_to_nodes' docstring for
+    why this is the one stage of the three that degrades instead of raising."""
+    attached: list[tuple[str, str, str]] = []
+    excluded: list[tuple[str, str]] = []
+    escalated: list[str] = []
+    warnings: list[IntegrityWarning] = []
+
+    def _degraded(reason: str, explanation: str, degraded_items: dict[str, dict]) -> None:
+        """One warning for a whole batch's worth of items this call could not
+        answer for -- either because it raised, or because it came back
+        without them. Both share WarningKind.MAPPING_CALL_FAILED (told apart
+        by detail['reason']): the failure is at CALL level either way, not a
+        per-item judgment, and the reviewer's reading is identical -- these
+        items were never judged, so seeing them among the excluded does NOT
+        mean they were found decorative."""
+        figure_count = sum(1 for item in degraded_items.values() if item.get("kind") == "figure")
+        message = (
+            f"Figure/table mapping {explanation} for {batch.scope} -- "
+            f"{figure_count} figure(s)/{len(degraded_items) - figure_count} table(s) are listed "
+            "as excluded rather than attached to any work item."
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.MAPPING_CALL_FAILED,
+                message,
+                detail={
+                    **batch.detail, "reason": reason, "figureCount": figure_count,
+                    "tableCount": len(degraded_items) - figure_count,
+                },
+            )
+        )
+        for item_id, item in degraded_items.items():
+            excluded.append((item_id, item.get("kind", "figure")))
+
+    try:
+        verdicts = map_fn(batch.candidates, batch.items)
+    except Exception as exc:  # noqa: BLE001 - stage 2 is deliberately fail-open, see _map_figures_tables_to_nodes
+        _degraded("call_error", f"failed ({exc})", batch.items)
+        return _MappingBatchResult(attached, excluded, escalated, warnings)
+
+    # Defensive, not decorative: this stage's fail-open promise covers a client
+    # returning something unexpected just as much as one raising. The real
+    # client already coerces a non-object response to {}; a different
+    # implementation must not be able to turn a wrong-shaped answer into an
+    # AttributeError that fails the whole job.
+    verdicts = verdicts if isinstance(verdicts, dict) else {}
+    unanswered: dict[str, dict] = {}
+    for item_id, item in batch.items.items():
+        kind = item.get("kind", "figure")
+        entry = verdicts.get(item_id)
+        entry = entry if isinstance(entry, dict) else {}
+        node_id = entry.get("node_id")
+        node_id = node_id if isinstance(node_id, str) and node_id else None
+        if node_id is not None:
+            if node_id in batch.candidates:
+                attached.append((node_id, item_id, kind))
+                continue
+            message = (
+                f"{kind.capitalize()} {item_id} was mapped to a work item that isn't in this "
+                f"document ({node_id}) -- the mapping was dropped and the {kind} is listed as "
+                "excluded instead."
+            )
+            logger.warning(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.INVALID_MAPPING_TARGET,
+                    message,
+                    detail={"itemId": item_id, "itemKind": kind, "requested": node_id},
+                )
+            )
+            excluded.append((item_id, kind))
+            continue
+        if not entry:
+            # No verdict at all for this item -- the model declining to answer
+            # (or an over-long response cut short) is not evidence the item
+            # belongs anywhere. It gets the next tier's wider candidate set
+            # while one is still available; once none is, it is REPORTED as an
+            # unanswered item rather than quietly counted as decorative.
+            if batch.allow_escalation:
+                escalated.append(item_id)
+            else:
+                unanswered[item_id] = item
+            continue
+        if batch.allow_escalation and bool(entry.get("escalate")):
+            escalated.append(item_id)
+            continue
+        excluded.append((item_id, kind))
+
+    if unanswered:
+        _degraded("incomplete_response", "returned no answer", unanswered)
+    return _MappingBatchResult(attached, excluded, escalated, warnings)
+
+
 def _map_figures_tables_to_nodes(
     branch_skeletons: list[_BranchSkeleton],
     map_fn: Callable[[dict[str, dict], dict[str, dict]], dict[str, dict]],
     figures_by_figure_id: dict[str, Figure],
     figure_id_by_block_id: dict[str, str] | None,
     warnings: list[IntegrityWarning],
+    branch_concurrency: int = 1,
 ) -> tuple[dict[str, dict[str, list[str]]], list[str], list[str]]:
     """STAGE 2 of SURVEY's generation: binds every figure/table in the
     document to ONE exact node id, run AFTER stage 1's skeleton and the
@@ -3120,35 +3281,38 @@ def _map_figures_tables_to_nodes(
 
     Two tiers, both BATCHED -- zero per-figure LLM calls at any point:
 
-    - TIER 1, one call per BRANCH, carrying that branch's entire figure+table
-      set at once, against that branch's own nodes as candidates. This is
-      where the overwhelming majority of items resolve, because a figure
-      overwhelmingly documents something in the section it physically sits
-      in. Cost scales with branch count, not figure count.
+    - TIER 1, one call per BRANCH (chunked only if a single branch somehow
+      exceeds _MAPPING_CHUNK_ITEM_COUNT items), carrying that branch's entire
+      figure+table set at once, against that branch's own nodes as candidates.
+      This is where the overwhelming majority of items resolve, because a
+      figure overwhelmingly documents something in the section it physically
+      sits in. Cost scales with branch count, not figure count.
     - TIER 2, only for items tier 1 explicitly ESCALATED (its "this is real
-      but its home isn't among these candidates" verdict), chunked by
-      _MAPPING_ESCALATION_CHUNK_ITEM_COUNT, against the WHOLE document's
-      nodes as candidates. This is what makes cross-branch mapping possible
-      at all -- a figure printed in an appendix documenting a requirement
-      stated in chapter 3 -- without paying whole-document candidate cost for
-      every item.
+      but its home isn't among these candidates" verdict), chunked the same
+      way, against the WHOLE document's nodes as candidates. This is what
+      makes cross-branch mapping possible at all -- a figure printed in an
+      appendix documenting a requirement stated in chapter 3 -- without paying
+      whole-document candidate cost for every item.
 
-    Every returned node_id is validated against the REAL candidate set THAT
-    call was offered; one outside it is a hallucination, dropped with
-    WarningKind.INVALID_MAPPING_TARGET, exactly as
-    _author_branch_content already treats a hallucinated figure/table id.
-    A dropped verdict is NOT re-escalated: the item lands in the excluded
-    list instead, keeping this stage's call count bounded and predictable
-    (a model that hallucinates once tends to do so again, and one bad verdict
-    must never be able to trigger an otherwise-unneeded tier-2 call).
+    Both tiers' calls run concurrently up to `branch_concurrency`, the SAME
+    parallelism stages 1 and 3 already use (a serial stage between two
+    parallel ones would insert one sequential LLM round-trip per branch into
+    the middle of the pipeline, with no narration during it). Determinism is
+    preserved structurally, not by luck: each call's outcome comes back as
+    plain data (_MappingBatchResult) and is merged in fixed batch order, so
+    the attachment order and both excluded lists are byte-identical to a
+    serial run. Tier 2 still runs strictly AFTER tier 1 -- it exists to
+    consume tier 1's leftovers.
 
     This is deliberately the ONE fail-OPEN stage of the three (stages 1 and 3
     both still fail hard, matching this module's existing no-try/except
-    convention around analyze_section): any batch whose call raises degrades
-    every item in it to the excluded lists with a
-    WarningKind.MAPPING_CALL_FAILED warning, and the job continues. A
-    document losing figure attachment is a degraded result; a document losing
-    the whole job is not a result at all.
+    convention around analyze_section): any batch whose call raises, or which
+    comes back without an answer for an item, degrades the affected items to
+    the excluded lists with a WarningKind.MAPPING_CALL_FAILED warning, and the
+    job continues. A document losing figure attachment is a degraded result; a
+    document losing the whole job is not a result at all. The warning is what
+    keeps that degradation honest -- without it those items would be
+    indistinguishable from genuinely decorative ones in the same list.
 
     Returns (figure_table_ids_by_local_id, excluded_figure_ids,
     excluded_table_ids): the first is _author_branch_content's own stage-2
@@ -3162,89 +3326,41 @@ def _map_figures_tables_to_nodes(
     mapping: dict[str, dict[str, list[str]]] = {}
     excluded_figure_ids: list[str] = []
     excluded_table_ids: list[str] = []
+    items_by_id: dict[str, dict] = {}
 
-    def _exclude(item_id: str, item: dict) -> None:
-        target = excluded_figure_ids if item.get("kind") == "figure" else excluded_table_ids
-        target.append(item_id)
-
-    def _attach(node_id: str, item_id: str, item: dict) -> None:
-        entry = mapping.setdefault(node_id, {"figure_ids": [], "table_ids": []})
-        entry["figure_ids" if item.get("kind") == "figure" else "table_ids"].append(item_id)
-
-    def _apply(
-        verdicts: dict[str, dict],
-        items: dict[str, dict],
-        candidate_ids: set[str],
-        allow_escalation: bool,
-    ) -> list[str]:
-        """Applies one call's verdicts to `items`, returning the item ids that
-        still need the next tier. An item whose verdict is missing or
-        malformed is treated as an escalation while one is still available,
-        and as a NONE (excluded) once it isn't -- the model declining to
-        answer is not evidence the item belongs anywhere."""
-        # Defensive, not decorative: this stage's fail-open promise covers a
-        # client returning something unexpected just as much as one raising.
-        # The real client already coerces a non-object response to {}; a
-        # different implementation must not be able to turn a wrong-shaped
-        # answer into an AttributeError that fails the whole job.
-        verdicts = verdicts if isinstance(verdicts, dict) else {}
+    def _merge(results: list[_MappingBatchResult]) -> list[str]:
+        """Folds every batch's plain-data outcome into this stage's shared
+        state, in BATCH ORDER -- the single place any of it is mutated."""
         escalated: list[str] = []
-        for item_id, item in items.items():
-            entry = verdicts.get(item_id)
-            entry = entry if isinstance(entry, dict) else {}
-            node_id = entry.get("node_id")
-            node_id = node_id if isinstance(node_id, str) and node_id else None
-            if node_id is not None:
-                if node_id in candidate_ids:
-                    _attach(node_id, item_id, item)
-                    continue
-                kind = item.get("kind", "figure")
-                message = (
-                    f"{kind.capitalize()} {item_id} was mapped to a work item that isn't in this "
-                    f"document ({node_id}) -- the mapping was dropped and the {kind} is listed as "
-                    "excluded instead."
-                )
-                logger.warning(message)
-                warnings.append(
-                    IntegrityWarning.make(
-                        WarningKind.INVALID_MAPPING_TARGET,
-                        message,
-                        detail={"itemId": item_id, "itemKind": kind, "requested": node_id},
-                    )
-                )
-                _exclude(item_id, item)
-                continue
-            if allow_escalation and (bool(entry.get("escalate")) or not entry):
-                escalated.append(item_id)
-                continue
-            _exclude(item_id, item)
+        for result in results:
+            for node_id, item_id, kind in result.attached:
+                entry = mapping.setdefault(node_id, {"figure_ids": [], "table_ids": []})
+                entry["figure_ids" if kind == "figure" else "table_ids"].append(item_id)
+            for item_id, kind in result.excluded:
+                (excluded_figure_ids if kind == "figure" else excluded_table_ids).append(item_id)
+            escalated.extend(result.escalated)
+            warnings.extend(result.warnings)
         return escalated
 
-    def _fail_open(items: dict[str, dict], exc: Exception, scope: str, detail: dict) -> None:
-        figure_count = sum(1 for item in items.values() if item.get("kind") == "figure")
-        message = (
-            f"Figure/table mapping failed for {scope}: {exc} -- "
-            f"{figure_count} figure(s)/{len(items) - figure_count} table(s) are listed as "
-            "excluded rather than attached to any work item."
-        )
-        logger.warning(message)
-        warnings.append(
-            IntegrityWarning.make(
-                WarningKind.MAPPING_CALL_FAILED,
-                message,
-                detail={
-                    **detail, "figureCount": figure_count,
-                    "tableCount": len(items) - figure_count,
-                },
-            )
-        )
-        for item_id, item in items.items():
-            _exclude(item_id, item)
+    def _run(batches: list[_MappingBatch]) -> list[_MappingBatchResult]:
+        """Same submission/collect-by-index pattern stages 1 and 3 use --
+        results are gathered by INDEX, never by completion order."""
+        if branch_concurrency <= 1 or len(batches) <= 1:
+            return [_run_mapping_batch(batch, map_fn) for batch in batches]
+        with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
+            futures = [executor.submit(_run_mapping_batch, batch, map_fn) for batch in batches]
+            return [future.result() for future in futures]
+
+    def _chunks(item_ids: list[str]) -> list[list[str]]:
+        return [
+            item_ids[start : start + _MAPPING_CHUNK_ITEM_COUNT]
+            for start in range(0, len(item_ids), _MAPPING_CHUNK_ITEM_COUNT)
+        ]
 
     # TIER 1 -- one call per branch, that branch's whole figure/table set
     # against that branch's own nodes.
-    items_by_id: dict[str, dict] = {}
-    escalated_ids: list[str] = []
+    tier1_batches: list[_MappingBatch] = []
+    pre_escalated: list[str] = []
     for skeleton in branch_skeletons:
         branch_items = _mapping_items_for_branch(
             skeleton, figures_by_figure_id, figure_id_by_block_id,
@@ -3258,20 +3374,26 @@ def _map_figures_tables_to_nodes(
             # authorable node at all -- already warned about separately by
             # stage 1's ZERO_NODES check). Straight to tier 2 rather than a
             # guaranteed-empty call.
-            escalated_ids.extend(branch_items)
+            pre_escalated.extend(branch_items)
             continue
-        try:
-            verdicts = map_fn(candidates, branch_items)
-        except Exception as exc:  # noqa: BLE001 - stage 2 is deliberately fail-open, see this function's docstring
-            _fail_open(
-                branch_items, exc,
-                f'the "{skeleton.section_label}" section'
-                if skeleton.section_label else "one section",
-                {"tier": 1, "branch": skeleton.node_id_prefix or "(root)"},
+        scope = (
+            f'the "{skeleton.section_label}" section' if skeleton.section_label else "one section"
+        )
+        for chunk_index, chunk_ids in enumerate(_chunks(list(branch_items))):
+            tier1_batches.append(
+                _MappingBatch(
+                    candidates=candidates,
+                    items={item_id: branch_items[item_id] for item_id in chunk_ids},
+                    allow_escalation=True,
+                    scope=scope,
+                    detail={
+                        "tier": 1, "branch": skeleton.node_id_prefix or "(root)",
+                        "chunkIndex": chunk_index,
+                    },
+                )
             )
-            continue
-        escalated_ids.extend(_apply(verdicts, branch_items, set(candidates), allow_escalation=True))
 
+    escalated_ids = pre_escalated + _merge(_run(tier1_batches))
     if not escalated_ids:
         return mapping, excluded_figure_ids, excluded_table_ids
 
@@ -3281,27 +3403,25 @@ def _map_figures_tables_to_nodes(
     doc_candidates = _mapping_candidates(
         [node for skeleton in branch_skeletons for node in skeleton.nodes]
     )
-    doc_candidate_ids = set(doc_candidates)
-    for start in range(0, len(escalated_ids), _MAPPING_ESCALATION_CHUNK_ITEM_COUNT):
-        chunk_ids = escalated_ids[start : start + _MAPPING_ESCALATION_CHUNK_ITEM_COUNT]
-        chunk_items = {item_id: items_by_id[item_id] for item_id in chunk_ids}
-        if not doc_candidates:
-            for item_id, item in chunk_items.items():
-                _exclude(item_id, item)
-            continue
-        try:
-            verdicts = map_fn(doc_candidates, chunk_items)
-        except Exception as exc:  # noqa: BLE001 - stage 2 is deliberately fail-open, see this function's docstring
-            _fail_open(
-                chunk_items, exc, "the whole document",
-                {"tier": 2, "chunkIndex": start // _MAPPING_ESCALATION_CHUNK_ITEM_COUNT},
-            )
-            continue
-        # allow_escalation=False: there is no third tier -- an item still
-        # unplaced after being offered every node in the document has no
-        # home, which is exactly what the excluded lists mean.
-        _apply(verdicts, chunk_items, doc_candidate_ids, allow_escalation=False)
+    if not doc_candidates:
+        for item_id in escalated_ids:
+            kind = items_by_id[item_id].get("kind", "figure")
+            (excluded_figure_ids if kind == "figure" else excluded_table_ids).append(item_id)
+        return mapping, excluded_figure_ids, excluded_table_ids
 
+    # allow_escalation=False: there is no third tier -- an item still unplaced
+    # after being offered every node in the document has no home, which is
+    # exactly what the excluded lists mean.
+    _merge(_run([
+        _MappingBatch(
+            candidates=doc_candidates,
+            items={item_id: items_by_id[item_id] for item_id in chunk_ids},
+            allow_escalation=False,
+            scope="the whole document",
+            detail={"tier": 2, "chunkIndex": chunk_index},
+        )
+        for chunk_index, chunk_ids in enumerate(_chunks(escalated_ids))
+    ]))
     return mapping, excluded_figure_ids, excluded_table_ids
 
 

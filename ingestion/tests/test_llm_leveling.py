@@ -1,4 +1,5 @@
 import re
+import threading
 import time
 
 import pytest
@@ -6034,16 +6035,15 @@ def test_mapping_escalation_tier_failure_also_degrades_to_excluded(monkeypatch) 
     assert warning.detail["chunkIndex"] == 0
 
 
-def test_mapping_chunks_the_escalation_tier_by_item_count() -> None:
-    # Tier 2's leftovers are chunked so one call's output can't be truncated
-    # by the model's own output cap -- same reasoning (and derivation) as
-    # scoring's own _SCORING_CHUNK_NODE_COUNT.
+def _chunk_size() -> int:
     import app.leveling.llm_leveling as llm_leveling_module
 
-    chunk_size = llm_leveling_module._MAPPING_ESCALATION_CHUNK_ITEM_COUNT
-    item_count = chunk_size + 1
+    return llm_leveling_module._MAPPING_CHUNK_ITEM_COUNT
+
+
+def _many_figures_doc(item_count: int) -> CanonicalDoc:
     path = "many_figures.txt"
-    doc = CanonicalDoc(
+    return CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id=f"b{i}", kind=BlockKind.FIGURE, text=f"[FIGURE: diagram {i}]", source_ref=_sr(path))
@@ -6051,6 +6051,14 @@ def test_mapping_chunks_the_escalation_tier_by_item_count() -> None:
         ],
         figures=[Figure(id=f"f{i}", caption=f"diagram {i}", source_ref=_sr(path)) for i in range(item_count)],
     )
+
+
+def test_mapping_chunks_the_escalation_tier_by_item_count() -> None:
+    # Tier 2's leftovers are chunked so one call's output can't be truncated
+    # by the model's own output cap -- same reasoning (and derivation) as
+    # scoring's own _SCORING_CHUNK_NODE_COUNT.
+    chunk_size = _chunk_size()
+    item_count = chunk_size + 1
     fake = FakeMappingClient(
         nodes=[_MAPPING_NODE],
         verdict_fn=lambda candidates, items: {
@@ -6058,11 +6066,125 @@ def test_mapping_chunks_the_escalation_tier_by_item_count() -> None:
         },
     )
 
-    tree = build_survey_tree(doc, fake)
+    tree = build_survey_tree(_many_figures_doc(item_count), fake)
 
-    tier2_calls = fake.mapping_calls[1:]  # call 0 is the single branch's tier 1
+    tier2_calls = [c for c in fake.mapping_calls if len(c["candidates"]) == 1][2:]
     assert [len(call["items"]) for call in tier2_calls] == [chunk_size, 1]
     assert len(tree.excluded_figure_ids) == item_count
+
+
+def test_mapping_chunks_tier1_too_when_one_branch_exceeds_the_chunk_size() -> None:
+    # _bound_branch_size can legitimately hand back an oversized branch (a
+    # flat, figure-dense appendix with no heading structure to split on --
+    # exactly the document shape this stage exists for). An unchunked tier-1
+    # response over-running the output cap would silently escalate that WHOLE
+    # branch into tier 2: unplanned call volume against this stage's own cost
+    # constraint. Every chunk of one branch is offered that branch's SAME
+    # candidate set, which is what makes chunking safe here.
+    chunk_size = _chunk_size()
+    item_count = chunk_size + 1
+    fake = FakeMappingClient(
+        nodes=[_MAPPING_NODE],
+        verdict_fn=lambda candidates, items: {
+            item_id: {"node_id": "n0", "escalate": False} for item_id in items
+        },
+    )
+
+    tree = build_survey_tree(_many_figures_doc(item_count), fake)
+
+    assert [len(call["items"]) for call in fake.mapping_calls] == [chunk_size, 1]
+    assert fake.mapping_calls[0]["candidates"] == fake.mapping_calls[1]["candidates"]
+    assert len(tree.nodes[0].figure_ids) == item_count  # nothing escalated, nothing lost
+    assert tree.excluded_figure_ids == []
+
+
+def test_mapping_reports_an_unanswered_item_instead_of_silently_excluding_it() -> None:
+    # An item the escalation tier never answered for is NOT a decorative
+    # verdict -- it was never judged at all. Silently landing it in
+    # excluded_figure_ids would have it rendered as "excluded as decorative",
+    # which is actively wrong. Reported as a call-level degradation instead
+    # (same kind as an outright failure, told apart by detail['reason']).
+    fake = FakeMappingClient(
+        nodes=[_MAPPING_NODE],
+        verdict_fn=lambda candidates, items: (
+            {}  # tier 2 answers nothing
+            if any(item.get("kind") == "figure" for item in items.values()) and len(items) == 1
+            else {item_id: {"node_id": None, "escalate": True} for item_id in items}
+        ),
+    )
+
+    tree = build_survey_tree(_figure_doc(), fake)
+
+    assert tree.excluded_figure_ids == ["f0"]
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.MAPPING_CALL_FAILED)
+    assert warning.detail["reason"] == "incomplete_response"
+    assert warning.detail["tier"] == 2
+    assert warning.detail["figureCount"] == 1
+    assert "returned no answer" in warning.raw
+
+
+def test_mapping_does_not_report_an_unanswered_tier1_item_it_can_still_escalate(monkeypatch) -> None:
+    # The mirror image: in tier 1 an unanswered item loses nothing -- it gets
+    # the wider candidate set -- so it must NOT be reported as degraded there.
+    _force_multi_branch(monkeypatch)
+
+    def verdict_fn(candidates, items):
+        if len(candidates) > 2:  # tier 2, whole document
+            return {item_id: {"node_id": "br1_n1", "escalate": False} for item_id in items}
+        return {}  # tier 1 answers nothing
+
+    fake = FakeMappingClient(verdict_fn=verdict_fn)
+    tree = build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert next(n for n in tree.nodes if n.local_id == "br1_n1").figure_ids == ["f0", "f1"]
+    assert tree.excluded_figure_ids == []
+    assert not any(w.kind == WarningKind.MAPPING_CALL_FAILED for w in tree.warnings)
+
+
+def test_mapping_runs_branches_concurrently_at_the_same_parallelism_as_its_neighbours(monkeypatch) -> None:
+    # Stages 1 and 3 are both parallelized via branch_concurrency; a serial
+    # stage 2 between them would insert one sequential LLM round-trip per
+    # branch into the middle of the pipeline.
+    _force_multi_branch(monkeypatch)
+    threads: set[str] = set()
+    lock = threading.Lock()
+
+    def verdict_fn(candidates, items):
+        with lock:
+            threads.add(threading.current_thread().name)
+        time.sleep(0.05)  # long enough for a serial run to use one thread only
+        return {item_id: {"node_id": None, "escalate": False} for item_id in items}
+
+    build_survey_tree(_two_branch_figure_doc(), FakeMappingClient(verdict_fn=verdict_fn), branch_concurrency=2)
+
+    assert len(threads) == 2  # both branch batches genuinely ran in parallel
+
+
+def test_mapping_concurrent_branches_produce_the_same_result_as_sequential(monkeypatch) -> None:
+    # Concurrency must never change WHAT this stage decides, only how long it
+    # takes -- including the ORDER of both excluded lists, which B4 renders
+    # and a re-run must reproduce. Batch results are merged in batch order,
+    # never in completion order, so branch 0 finishing LAST changes nothing.
+    _force_multi_branch(monkeypatch)
+
+    def verdict_fn(candidates, items):
+        # Branch 0 (the "Display" branch, whose figure is f0) is deliberately
+        # slowed so branch 1 genuinely completes first.
+        if "f0" in items:
+            time.sleep(0.2)
+        return {item_id: {"node_id": None, "escalate": False} for item_id in items}
+
+    sequential = build_survey_tree(
+        _two_branch_figure_doc(), FakeMappingClient(verdict_fn=verdict_fn), branch_concurrency=1,
+    )
+    concurrent = build_survey_tree(
+        _two_branch_figure_doc(), FakeMappingClient(verdict_fn=verdict_fn), branch_concurrency=2,
+    )
+
+    assert sequential.excluded_figure_ids == concurrent.excluded_figure_ids == ["f0", "f1"]
+    assert [(n.local_id, n.figure_ids) for n in sequential.nodes] == [
+        (n.local_id, n.figure_ids) for n in concurrent.nodes
+    ]
 
 
 def test_mapping_never_offers_an_uncaptioned_figure_as_an_item() -> None:

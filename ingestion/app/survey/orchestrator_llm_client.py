@@ -2061,10 +2061,15 @@ class OrchestratorLlmClient:
         Response-cached on the same terms as author_content/analyze_section
         (see this class's `cache` param) -- deterministic given the same
         candidates and the same items, and re-running a document is exactly
-        when paying for a third per-branch call again would hurt most. No
-        truncation flag to guard here (unlike author_content): a missing
-        entry is already the caller's own escalate/exclude decision, not a
-        separately-signalled degraded state."""
+        when paying for a third per-branch call again would hurt most. An
+        INCOMPLETE answer is never cached, same guard those two apply to a
+        truncated one and for a sharper reason: an unanswered item silently
+        becomes an exclusion downstream, so caching a partial answer would
+        make that loss permanent across every re-run. No truncation flag is
+        returned, unlike author_content -- the caller can already see exactly
+        WHICH items went unanswered (they are simply absent from this dict),
+        which is strictly more actionable than a boolean, and is how it
+        decides between escalating them and reporting them."""
         key = None
         if self._cache is not None:
             key = cache_key(
@@ -2102,15 +2107,26 @@ class OrchestratorLlmClient:
             span.set_attribute("gen_ai.request.item_count", len(items))
             response = self._post_chat(payload)
             response.raise_for_status()
-            content = _strip_json_fence(response.json()["content"])
+            body = response.json()
+            content = _strip_json_fence(body["content"])
             parsed = _parse_json_object(content)
             result = parsed if isinstance(parsed, dict) else {}
             span.set_attribute("gen_ai.response.item_count", len(result))
-        logger.info(
-            "map_figures_tables result: candidates=%d requested=%d returned=%d",
-            len(candidates), len(items), len(result),
+        # An item this response never answered for costs that item its home
+        # (in the escalation tier there is no further tier to fall through
+        # to), so an incomplete answer must never be reused: cached, it would
+        # reproduce the SAME silent loss on every re-run of this document
+        # instead of getting a real answer on retry. Both causes are treated
+        # identically -- the model's own output cap (finishReason, the same
+        # signal analyze_section/author_content guard their caches with) and
+        # a response that simply came back short of what was asked.
+        incomplete = body.get("finishReason") == "length" or len(result) < len(items)
+        logger.warning(
+            "map_figures_tables result: candidates=%d requested=%d returned=%d "
+            "finishReason=%r incomplete=%s",
+            len(candidates), len(items), len(result), body.get("finishReason"), incomplete,
         )
-        if key is not None:
+        if key is not None and not incomplete:
             self._cache.set(key, result)
         return result
 

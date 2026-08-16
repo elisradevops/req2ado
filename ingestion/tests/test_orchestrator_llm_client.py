@@ -2741,7 +2741,12 @@ def test_map_figures_tables_cache_miss_then_hit_skips_the_second_llm_call() -> N
     from app.survey.llm_cache import LlmResponseCache
 
     call_count = 0
-    verdicts = {"f0": {"node_id": "n1", "escalate": False}}
+    # A COMPLETE answer (one verdict per offered item) -- an incomplete one is
+    # deliberately never cached, see the two tests below.
+    verdicts = {
+        "f0": {"node_id": "n1", "escalate": False},
+        "t0": {"node_id": None, "escalate": False},
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
@@ -2761,6 +2766,60 @@ def test_map_figures_tables_cache_miss_then_hit_skips_the_second_llm_call() -> N
     assert first == second == verdicts
 
 
+def test_map_figures_tables_never_caches_a_truncated_response() -> None:
+    # An unanswered item silently becomes an exclusion downstream -- caching
+    # a truncated answer would make that loss permanent across every re-run
+    # of the same document instead of getting a real answer on retry.
+    from app.survey.llm_cache import LlmResponseCache
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={
+            "content": json.dumps({"f0": {"node_id": "n1", "escalate": False}}),
+            "finishReason": "length",
+        })
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        cache=LlmResponseCache(_CountingFakeRedis()),
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    client.map_figures_tables(_MAPPING_CANDIDATES, {"f0": _MAPPING_ITEMS["f0"]})
+    client.map_figures_tables(_MAPPING_CANDIDATES, {"f0": _MAPPING_ITEMS["f0"]})
+
+    assert call_count == 2
+
+
+def test_map_figures_tables_never_caches_a_response_missing_items() -> None:
+    # The other half of "incomplete": a response that came back short of what
+    # was asked, with no finishReason to signal it.
+    from app.survey.llm_cache import LlmResponseCache
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={
+            "content": json.dumps({"f0": {"node_id": "n1", "escalate": False}}),  # t0 unanswered
+        })
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        cache=LlmResponseCache(_CountingFakeRedis()),
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
+    client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
+
+    assert call_count == 2
+
+
 def test_map_figures_tables_cache_key_covers_the_candidates_not_just_the_items() -> None:
     # The SAME items against a DIFFERENT candidate set is a genuinely
     # different request -- tier 1 (this branch's nodes) and tier 2 (the whole
@@ -2768,9 +2827,10 @@ def test_map_figures_tables_cache_key_covers_the_candidates_not_just_the_items()
     from app.survey.llm_cache import LlmResponseCache
 
     def handler(request: httpx.Request) -> httpx.Response:
-        candidates = json.loads(json.loads(request.content)["messages"][1]["content"])["candidates"]
+        body = json.loads(json.loads(request.content)["messages"][1]["content"])
+        winner = sorted(body["candidates"])[0]
         return httpx.Response(200, json={"content": json.dumps(
-            {"f0": {"node_id": sorted(candidates)[0], "escalate": False}}
+            {item_id: {"node_id": winner, "escalate": False} for item_id in body["items"]}
         )})
 
     client = OrchestratorLlmClient(
