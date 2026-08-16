@@ -156,6 +156,46 @@ which table to spot-check against the source PDF.
 - Confidence-threshold tuning beyond mirroring `ocr_page_to_text_filtered`'s
   existing default (30) — not re-litigated here.
 
+## Regression safety — this must not touch figure processing
+
+Figure analysis (vision captioning, significance filtering, degenerate-
+image filtering, decorative-figure display, caption brevity/repetition —
+all 10 fixes landed earlier today) is currently correct end-to-end,
+confirmed on a real completed job. This spec's change must not risk any of
+it. Concretely:
+
+- **Touches only table code.** The new logic lives entirely inside/adjacent
+  to `_build_pdf_table_grid` and writes only to `TableCell.text`. It never
+  calls `describe_figure`, never touches `_is_degenerate_pdf_image`,
+  `Figure` construction, `orchestrator_vision_client.py`,
+  `narration_publisher.py`, or `main.py`'s figure-caption Redis cache
+  (`_figure_caption_cache_key`/`PROMPT_VERSION`) — none of today's 10 fixes
+  live in or near `_build_pdf_table_grid`, and this spec adds no call from
+  the new code into any of that machinery.
+- **New cache is separate from the existing one.** The per-page rendered-
+  image cache this spec introduces is a NEW cache (keyed by
+  `(path, page_index)`, storing a `PIL.Image` from `pdf2image`) —
+  independent from `cached_pdf_reader`'s existing `@lru_cache` (keyed by
+  `path`, storing a `pypdf.PdfReader`), which figure extraction also reads
+  (`pypdf_page.images`). The new cache must not wrap, invalidate, or share
+  storage with `cached_pdf_reader` — implemented as a second, distinctly-
+  named cache, not a parameter added to the existing one.
+- **The "table" and "image" branches in `load_pdf`'s per-page merged loop
+  stay structurally separate** (unchanged from today): this spec only adds
+  code inside the existing `if kind == "table":` branch's own table-
+  building call, never inside the `else:` (image/figure) branch.
+- **Full-suite regression gate, not just new tests passing.** Before this
+  work is considered done: run the complete `ingestion/tests/` suite (not
+  a subset) and diff the pass/fail count against today's known baseline
+  (1436 passed, 1 pre-existing/order-dependent-flaky unrelated failure —
+  `test_ingest_survey_mode_still_captions_when_vision_is_configured`).
+  Specifically confirm zero changed assertions/behavior in every figure-
+  and vision-related test file (`test_orchestrator_vision_client.py`,
+  `test_ingest_caption_status.py`, and every figure-specific test in
+  `test_pdf_loader.py`/`test_docx_loader.py`/`test_pptx_loader.py`) — the
+  implementation plan must include this as an explicit, named verification
+  step, not leave it implicit in "run the tests."
+
 ## Testing
 
 - **Unit tests** for the new bbox-scale/crop/pre-check/OCR-recovery
