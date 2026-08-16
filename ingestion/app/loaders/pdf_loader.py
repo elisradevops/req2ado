@@ -530,7 +530,9 @@ def _cell_ocr_recovery(
     return ocr_image_to_text_filtered(crop, languages=languages).strip()
 
 
-def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None]], list[float] | None, list[float]]:
+def _build_pdf_table_grid(
+    page, found_table, path: str, page_index: int, languages: str, page_image_cache: dict[int, Image.Image]
+) -> tuple[list[list[TableCell | None]], list[float] | None, list[float]]:
     """Builds the real per-cell styled grid for one `pdfplumber`-detected
     table, replacing the old Phase-1 bare-`TableCell(text=cell or "")`
     compat shim (which discarded the bbox-presence signal entirely -- see
@@ -570,6 +572,15 @@ def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None
     detected row only (no font-weight/other secondary signal is combined
     in -- an honest single-signal heuristic, not a claim of a stronger one
     this loader doesn't actually have).
+
+    `path`/`page_index`/`languages`/`page_image_cache` exist solely to
+    support table-cell OCR recovery (_cell_ocr_recovery) for a grid
+    position whose extracted text comes back empty -- see that function's
+    own docstring. This never changes this function's return SHAPE (still
+    the same 3-tuple as before this parameter existed); a recovered cell's
+    text simply lands in the same TableCell.text field a real pdfplumber
+    extraction would have, with TableCell.ocr_recovered=True marking it as
+    such.
     """
     rows = found_table.rows
     xs = sorted({c[0] for c in found_table.cells})
@@ -593,6 +604,13 @@ def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None
 
             text = extracted[row_index][col_index]
             text = text if text is not None else ""
+
+            ocr_recovered = False
+            if not text.strip():
+                recovered_text = _cell_ocr_recovery(path, page_index, bbox, languages, page_image_cache)
+                if recovered_text:
+                    text = recovered_text
+                    ocr_recovered = True
 
             try:
                 colspan, rowspan = _colspan_rowspan(bbox, xs, ys)
@@ -634,6 +652,7 @@ def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None
                     background_color=background_color,
                     text_color=text_color,
                     align=align,
+                    ocr_recovered=ocr_recovered,
                 )
             )
         grid.append(row_out)
@@ -1339,6 +1358,16 @@ def load_pdf(
     # `table_id += 1` in the main loop below, keyed by each table's own id.
     table_xs_by_id: dict[str, list[float]] = {}
     table_bbox_by_id: dict[str, tuple[float, float, float, float]] = {}
+    # Rendered-page cache for table-cell OCR recovery (_cell_ocr_recovery)
+    # -- lives only for this one load_pdf call (a plain dict, never
+    # cleared but also never reused across calls since it's a fresh local
+    # here), keyed by page_index (path is fixed for the whole call).
+    # Deliberately separate from cached_pdf_reader's own @lru_cache (keyed
+    # by path, storing a pypdf.PdfReader, reused ACROSS calls) -- this
+    # stores a pdf2image-rendered PIL.Image per page and must never share
+    # storage or eviction with that cache (see this plan's Global
+    # Constraints / the design spec's Regression Safety section).
+    page_image_cache: dict[int, Image.Image] = {}
 
     with pdfplumber.open(path) as pdf:
         # Document-level page height, NOT per-page -- `_merge_continued_tables`
@@ -1512,7 +1541,14 @@ def load_pdf(
                 # document -- the same "never fail the ingest" guarantee,
                 # one layer up.
                 try:
-                    cells, column_widths, xs = _build_pdf_table_grid(page, found_table)
+                    cells, column_widths, xs = _build_pdf_table_grid(
+                        page,
+                        found_table,
+                        path=path,
+                        page_index=page_number - 1,
+                        languages=languages,
+                        page_image_cache=page_image_cache,
+                    )
                 except Exception:  # noqa: BLE001 -- a structural extraction failure degrades to Phase-1-shaped bare cells, never aborts the document
                     cells = [[TableCell(text=cell or "") for cell in row] for row in found_table.extract()]
                     column_widths = None

@@ -1498,3 +1498,25 @@ def test_cell_ocr_recovery_renders_the_page_once_and_caches_it() -> None:
         _cell_ocr_recovery("some.pdf", 2, (110.0, 10.0, 200.0, 40.0), "eng", cache)
     mock_convert.assert_called_once_with("some.pdf", first_page=3, last_page=3)
     assert 2 in cache
+
+
+@pytest.mark.skip(reason="fixture added in Task 8")
+def test_build_pdf_table_grid_calls_ocr_recovery_only_for_empty_text_cells() -> None:
+    from unittest.mock import patch
+
+    calls: list[tuple[float, float, float, float]] = []
+
+    def fake_recovery(path, page_index, bbox, languages, cache):
+        calls.append(bbox)
+        return "RECOVERED" if bbox == (281.0, 78.0, 431.0, 96.0) else ""
+
+    with patch("app.loaders.pdf_loader._cell_ocr_recovery", side_effect=fake_recovery):
+        doc = load_pdf(str(FIXTURES / "table_with_blank_cell.pdf"))
+
+    # Exactly one call: the single genuinely-empty-text grid position in
+    # this fixture (row 2, col 1) -- every other cell already has real
+    # pdfplumber-extracted text and must never reach OCR recovery at all.
+    assert len(calls) == 1
+    flat = [cell for row in doc.tables[0].cells for cell in row]
+    recovered_cells = [c for c in flat if c is not None and c.text == "RECOVERED"]
+    assert recovered_cells == []  # this fixture's one empty cell is genuinely blank, fake_recovery returns "" for it
