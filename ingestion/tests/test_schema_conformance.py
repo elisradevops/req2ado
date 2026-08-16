@@ -126,3 +126,28 @@ def test_schema_rejects_an_out_of_vocabulary_figure_caption_status(schema) -> No
     ]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_accepts_an_ocr_recovered_table_cell(schema) -> None:
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["tables"] = [
+        {
+            "id": "t0",
+            "cells": [[{"text": "Label", "ocr_recovered": True}, {"text": "Alpha", "ocr_recovered": False}]],
+            "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
+        }
+    ]
+    jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_rejects_a_non_boolean_ocr_recovered(schema) -> None:
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["tables"] = [
+        {
+            "id": "t0",
+            "cells": [[{"text": "Label", "ocr_recovered": "yes"}]],
+            "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
+        }
+    ]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=doc, schema=schema)

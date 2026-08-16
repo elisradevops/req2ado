@@ -86,7 +86,12 @@
         "bold": { "type": "boolean", "default": false },
         "background_color": { "type": ["string", "null"], "description": "Normalized #rrggbb, contrast-adapted for dual light/dark theme safety. 'No fill' (auto/white/near-white) is normalized to null, not a literal white." },
         "text_color": { "type": ["string", "null"], "description": "Normalized #rrggbb, contrast-adapted -- see background_color." },
-        "align": { "type": ["string", "null"], "enum": ["left", "center", "right", "justify", null] }
+        "align": { "type": ["string", "null"], "enum": ["left", "center", "right", "justify", null] },
+        "ocr_recovered": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set when this cell's text could not be extracted directly and was recovered via OCR on a rendered crop -- see TableCell.ocr_recovered's own docstring in canonical/model.py."
+        }
       }
     },
     "Table": {

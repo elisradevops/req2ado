@@ -123,6 +123,19 @@ class TableCell(BaseModel):
     background_color: str | None = None
     text_color: str | None = None
     align: Literal["left", "center", "right", "justify"] | None = None
+    # Set by pdf_loader.py's _cell_ocr_recovery when this cell's text could
+    # not be extracted directly (pdfplumber found zero real characters at
+    # this grid position) and was instead reconstructed by rendering the
+    # page to pixels and OCR-ing this cell's own cropped region -- see
+    # docs/superpowers/specs/2026-08-16-pdf-table-header-ocr-recovery-design.md.
+    # PDF-only (that spec's Decision 4); never True for a spanned (None)
+    # grid position, which has no TableCell at all. This field itself
+    # carries no reviewer-facing text -- it's the bridge value CanonicalDoc
+    # needs since it has no warnings concept of its own (same bridging
+    # convention as Figure.caption_status, see that field's own docstring);
+    # tree_builder.py/llm_leveling.py turn a table with any True cell into
+    # one IntegrityWarning(WarningKind.OCR_RECOVERED_TABLE_TEXT).
+    ocr_recovered: bool = False
 
 
 class Table(BaseModel):
