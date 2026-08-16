@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import pdfplumber
+import pytesseract
+from pdf2image import convert_from_path
+from PIL import Image, ImageStat
 from pypdf import PdfReader
+from pytesseract import Output
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
 from app.leveling.numbering import parse_numbering, numbering_depth
@@ -421,6 +425,29 @@ def _pdf_column_widths(found_table, xs: list[float]) -> list[float] | None:
         return [w / total for w in widths]
     except Exception:  # noqa: BLE001 -- column widths are a nice-to-have layout hint, not worth aborting a table over
         return None
+
+
+def ocr_image_to_text_filtered(
+    image: Image.Image, languages: str = "eng", confidence_threshold: int = 30
+) -> str:
+    """Confidence-filtered OCR over an already-in-memory PIL image -- the
+    shared body both app/loaders/ocr.py's ocr_page_to_text_filtered
+    (whole-page: renders then delegates here) and _cell_ocr_recovery below
+    (crops a rendered page then delegates here) use, so the confidence-
+    filtering rule (drop any word below confidence_threshold on
+    Tesseract's 0-100 scale; -1, a non-text region, always dropped) exists
+    in exactly one place. Lives here rather than in ocr.py because ocr.py
+    already imports load_pdf/page_has_extractable_text FROM this module --
+    defining this helper in ocr.py and importing it back here (needed for
+    _cell_ocr_recovery) would be a circular import.
+    """
+    data = pytesseract.image_to_data(image, lang=languages, output_type=Output.DICT)
+    kept_words = [
+        word
+        for word, conf in zip(data["text"], data["conf"])
+        if word.strip() and int(conf) >= confidence_threshold
+    ]
+    return " ".join(kept_words)
 
 
 def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None]], list[float] | None, list[float]]:

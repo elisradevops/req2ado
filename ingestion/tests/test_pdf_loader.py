@@ -12,6 +12,7 @@ from app.loaders.pdf_loader import (
     _pdf_color_to_hex,
     cached_pdf_reader,
     load_pdf,
+    ocr_image_to_text_filtered,
     page_has_extractable_text,
 )
 
@@ -56,6 +57,17 @@ def test_page_has_extractable_text_reuses_one_cached_reader_across_repeated_call
         page_has_extractable_text(path, 0)
         page_has_extractable_text(path, 0)
     assert spy.call_count == 1
+
+
+def test_ocr_image_to_text_filtered_drops_low_confidence_words() -> None:
+    from unittest.mock import patch
+
+    fake_data = {"text": ["Real", "watermark", ""], "conf": ["90", "5", "-1"]}
+    with patch("app.loaders.pdf_loader.pytesseract.image_to_data", return_value=fake_data):
+        from PIL import Image
+
+        result = ocr_image_to_text_filtered(Image.new("RGB", (10, 10)), languages="eng", confidence_threshold=30)
+    assert result == "Real"
 
 
 def test_load_pdf_extracts_a_figure_placeholder_block() -> None:

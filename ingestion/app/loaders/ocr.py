@@ -11,7 +11,7 @@ from pypdf import PdfReader
 from pytesseract import Output
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
-from app.loaders.pdf_loader import load_pdf, page_has_extractable_text
+from app.loaders.pdf_loader import load_pdf, ocr_image_to_text_filtered, page_has_extractable_text
 
 _OPEN_TBD_PATTERN = re.compile(r"\b(OPEN|TBD)\b[:\s]", re.IGNORECASE)
 
@@ -44,14 +44,7 @@ def ocr_page_to_text_filtered(
     Full watermark detection (image-processing based) is out of scope for
     this function."""
     images = convert_from_path(path, first_page=page_index + 1, last_page=page_index + 1)
-    data = pytesseract.image_to_data(images[0], lang=languages, output_type=Output.DICT)
-
-    kept_words = [
-        word
-        for word, conf in zip(data["text"], data["conf"])
-        if word.strip() and int(conf) >= confidence_threshold
-    ]
-    return " ".join(kept_words)
+    return ocr_image_to_text_filtered(images[0], languages=languages, confidence_threshold=confidence_threshold)
 
 
 def load_pdf_with_ocr_fallback(
