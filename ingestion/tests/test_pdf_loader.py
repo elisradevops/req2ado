@@ -1500,7 +1500,6 @@ def test_cell_ocr_recovery_renders_the_page_once_and_caches_it() -> None:
     assert 2 in cache
 
 
-@pytest.mark.skip(reason="fixture added in Task 8")
 def test_build_pdf_table_grid_calls_ocr_recovery_only_for_empty_text_cells() -> None:
     from unittest.mock import patch
 
@@ -1520,3 +1519,44 @@ def test_build_pdf_table_grid_calls_ocr_recovery_only_for_empty_text_cells() -> 
     flat = [cell for row in doc.tables[0].cells for cell in row]
     recovered_cells = [c for c in flat if c is not None and c.text == "RECOVERED"]
     assert recovered_cells == []  # this fixture's one empty cell is genuinely blank, fake_recovery returns "" for it
+
+
+def test_table_ocr_recovery_recovers_an_image_only_header_cell_end_to_end() -> None:
+    # Real pytesseract call, no mocking -- proves the whole path (render,
+    # inset crop, pre-check, OCR, confidence filter, write-back,
+    # ocr_recovered flag) works together against a real PDF, the way
+    # cubeadcs_icd.pdf's real header cells needed it to.
+    doc = load_pdf(str(FIXTURES / "table_with_image_header.pdf"))
+    assert len(doc.tables) == 1
+    header_cell = doc.tables[0].cells[0][1]
+    assert header_cell is not None
+    assert "Label" in header_cell.text
+    assert header_cell.ocr_recovered is True
+
+    # The same fixture's other empty-text cell (row 2, col 1) has no image
+    # behind it at all -- genuinely blank, must be left alone even though
+    # it hit the identical "empty extracted text" code path as the
+    # recovered cell above.
+    blank_cell = doc.tables[0].cells[2][1]
+    assert blank_cell is not None
+    assert blank_cell.text == ""
+    assert blank_cell.ocr_recovered is False
+
+
+def test_table_ocr_recovery_never_calls_ocr_for_a_genuinely_blank_cell() -> None:
+    from unittest.mock import patch
+
+    # A dedicated fixture with ONLY a genuinely blank cell (no embedded
+    # image anywhere) -- the mock raises if the pre-check ever lets a real
+    # OCR call through for it, proving the inset+stddev pre-check (Task 5)
+    # actually skips real blank cells rather than merely returning "" after
+    # a wasted real OCR attempt.
+    with patch(
+        "app.loaders.pdf_loader.pytesseract.image_to_data",
+        side_effect=AssertionError("OCR must never be called for a genuinely blank cell"),
+    ):
+        doc = load_pdf(str(FIXTURES / "table_with_blank_cell.pdf"))
+    blank_cell = doc.tables[0].cells[2][1]
+    assert blank_cell is not None
+    assert blank_cell.text == ""
+    assert blank_cell.ocr_recovered is False

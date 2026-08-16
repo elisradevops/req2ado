@@ -1750,3 +1750,18 @@ def test_an_orphaned_table_with_an_ocr_recovered_cell_emits_a_warning_with_no_no
     ocr_warnings = [w for w in tree.warnings if w.kind == WarningKind.OCR_RECOVERED_TABLE_TEXT]
     assert len(ocr_warnings) == 1
     assert ocr_warnings[0].node_ids == []
+
+
+def test_a_real_ocr_recovered_pdf_table_produces_the_expected_warning_end_to_end() -> None:
+    from pathlib import Path
+
+    from app.leveling.tree_builder import build_baseline_tree
+    from app.loaders.pdf_loader import load_pdf
+
+    fixtures_dir = Path(__file__).parent / "fixtures"
+    doc = load_pdf(str(fixtures_dir / "table_with_image_header.pdf"))
+    tree = build_baseline_tree(doc)
+    ocr_warnings = [w for w in tree.warnings if w.kind == WarningKind.OCR_RECOVERED_TABLE_TEXT]
+    assert len(ocr_warnings) == 1
+    assert ocr_warnings[0].detail["tableId"] == doc.tables[0].id
+    assert ocr_warnings[0].detail["recoveredCellCount"] == 1
