@@ -137,6 +137,7 @@ export function ProgressBanner({
   startedAt,
   mode,
   narrations,
+  completedSectionIndices,
 }: {
   stage: JobStage;
   startedAt: string;
@@ -145,6 +146,12 @@ export function ProgressBanner({
   // empty falls back to the coarse stage-only display below, matching
   // pre-narration behavior exactly (BASELINE never produces these at all).
   narrations?: NarrationEvent[];
+  // Branch indices with a durable, uncapped section_complete record (see
+  // JobDetail's sectionResultsByIndex) -- union'd into SectionStepList's
+  // completedSections below so a row survives the 50-event narration cap on
+  // documents with enough branches. See that Set's own comment for why
+  // `narrations` alone isn't enough on its own past ~25 sections.
+  completedSectionIndices?: number[];
 }): React.ReactElement {
   const latest = narrations && narrations.length > 0 ? narrations[narrations.length - 1] : null;
 
@@ -476,7 +483,12 @@ export function ProgressBanner({
         <p className='mt-3 text-xs text-ink-3'>
           You can close this page and come back — the run keeps going server-side.
         </p>
-        <RunDetail latest={latest} narrations={narrations ?? []} activeSectionProgress={clampedProgress} />
+        <RunDetail
+          latest={latest}
+          narrations={narrations ?? []}
+          activeSectionProgress={clampedProgress}
+          completedSectionIndices={completedSectionIndices}
+        />
         {/* DESIGN.md §11.3's own audit note: the raw scrolling activity log
             this used to render here is explicitly superseded -- "do not
             build it." SectionStepList (rendered by RunDetail above) answers
@@ -500,14 +512,23 @@ function RunDetail({
   latest,
   narrations,
   activeSectionProgress,
+  completedSectionIndices,
 }: {
   latest: NarrationEvent | null;
   narrations: NarrationEvent[];
   activeSectionProgress?: number;
+  completedSectionIndices?: number[];
 }): React.ReactElement | null {
   if (!latest) return null;
   if (latest.branchCount > 0) {
-    return <SectionStepList latest={latest} narrations={narrations} activeSectionProgress={activeSectionProgress} />;
+    return (
+      <SectionStepList
+        latest={latest}
+        narrations={narrations}
+        activeSectionProgress={activeSectionProgress}
+        completedSectionIndices={completedSectionIndices}
+      />
+    );
   }
   if (latest.phase === 'describe_figure') {
     return (
@@ -597,6 +618,7 @@ function SectionStepList({
   latest,
   narrations,
   activeSectionProgress,
+  completedSectionIndices,
 }: {
   latest: NarrationEvent;
   narrations: NarrationEvent[];
@@ -605,6 +627,10 @@ function SectionStepList({
   // its own real progress inline, not just a spinner with no sense of how
   // far along it actually is.
   activeSectionProgress?: number;
+  // Branch indices with a durable, uncapped section_complete record (see
+  // JobDetail's sectionResultsByIndex) -- union'd into completedSections
+  // below. See that Set's own comment for why.
+  completedSectionIndices?: number[];
 }): React.ReactElement {
   const sections = Array.from({ length: latest.branchCount }, (_, i) => i);
   // §2c: quality scoring moved to whole-document scope (one pass AFTER
@@ -650,15 +676,20 @@ function SectionStepList({
   // boundary later. map_scope remains a tail phase for the top-level bar
   // (see isTailPhase above), which is a separate concern.
   //
-  // Known bound: `narrations` is capped (JobDetail keeps the last 50 live
-  // events, merged with the durable history fetch), so on a document with
-  // enough branches the earliest section_complete events can age out and
-  // their rows revert. Same cap `labelsByIndex` below already lives with.
-  const completedSections = new Set(
-    narrations
+  // `narrations` alone is capped (JobDetail keeps the last 50 live events,
+  // merged with the durable history fetch), so on a document with enough
+  // branches the earliest section_complete events could age out of it while
+  // the job is still running and their rows would revert. completedSectionIndices
+  // (JobDetail's uncapped sectionResultsByIndex, keyed the same way) covers
+  // exactly that gap -- union both rather than relying on either alone.
+  // labelsByIndex below still lives with the cap; a stale/missing section
+  // label on an old row is cosmetic, not a completion regression.
+  const completedSections = new Set([
+    ...(completedSectionIndices ?? []),
+    ...narrations
       .filter((event) => event.phase === 'section_complete' && event.branchIndex !== null)
       .map((event) => event.branchIndex as number),
-  );
+  ]);
 
   // Accumulated from EVERY narration event seen so far, not just the
   // latest -- without this, once a section finishes and a later section's

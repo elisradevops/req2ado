@@ -406,6 +406,16 @@ export function JobDetail(): React.ReactElement {
     [sectionResultsByIndex],
   );
 
+  // Uncapped completion signal for ProgressBanner's SectionStepList -- unlike
+  // the 50-event-capped `narrations` list, sectionResultsByIndex keeps every
+  // section_complete ever seen for the job's lifetime, so a section's
+  // checkmark can't revert once its narration event ages out of the live
+  // window on a document with enough branches.
+  const completedSectionIndices = useMemo<number[]>(
+    () => Object.keys(sectionResultsByIndex).map(Number),
+    [sectionResultsByIndex],
+  );
+
   // While running: only liveWarnings has content (warnings is still []
   // from the one-time getJob fetch). Once terminal, warnings becomes the
   // real, authoritative post-completion list -- deduped against
@@ -988,7 +998,13 @@ export function JobDetail(): React.ReactElement {
         </Alert>
       )}
       {isRunDetailStatus(status) && stage && mode && startedAt && (
-        <ProgressBanner stage={stage} startedAt={startedAt} mode={mode as 'baseline' | 'survey'} narrations={mergedNarrations} />
+        <ProgressBanner
+          stage={stage}
+          startedAt={startedAt}
+          mode={mode as 'baseline' | 'survey'}
+          narrations={mergedNarrations}
+          completedSectionIndices={completedSectionIndices}
+        />
       )}
       <FigureDescriptions jobId={id!} items={figureDescriptions} />
       <SectionResults items={sectionResults} />

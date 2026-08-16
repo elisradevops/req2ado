@@ -249,9 +249,15 @@ describe('ProgressBanner', () => {
         });
         expect(contentPercent).toBeLessThanOrEqual(sectionDonePercent);
 
-        // Still genuinely advancing during stage 1 -- the fix discounts and
+        // Still genuinely nonzero during stage 1 -- the fix discounts and
         // clamps the cross-branch credit, it does not freeze the bar at zero
-        // for the whole skeleton sweep.
+        // for the whole skeleton sweep. Note this clamp is deliberately tight:
+        // the bar plateaus at SKELETON_STAGE_SHARE/branchCount for branches 1
+        // through N-1 (the "advances monotonically" test below only asserts
+        // non-decreasing, so a flat plateau also satisfies it) -- this is the
+        // necessary cost of keeping stage 1's ceiling at or under stage 3's
+        // real floor (analyze_section, branch 0) at every branch count; see
+        // the Part B final fix wave's report for the full tradeoff.
         expect(skeletonPercent).toBeGreaterThan(0);
       });
 
@@ -411,6 +417,38 @@ describe('ProgressBanner', () => {
     // Sections 1 and 2 checked; section 3 is the active one, not a checkmark.
     expect(screen.getAllByTestId('section-check-icon')).toHaveLength(2);
     expect(screen.getByText(/Section 3 of 3.*Analyzing and synthesizing requirements/)).toBeInTheDocument();
+  });
+
+  it('keeps a section checked via completedSectionIndices once its section_complete event ages out of the capped narrations window', () => {
+    // On a document with enough branches, JobDetail's live `narrations` list
+    // is capped at the last 50 events -- an early branch's section_complete
+    // can age out mid-run while the job is still going. completedSectionIndices
+    // (JobDetail's uncapped sectionResultsByIndex) is the durable signal that
+    // covers exactly that gap; simulate the cap having already evicted branch
+    // 0 and 1's section_complete events from `narrations`.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[stage3Event('analyze_section', 2)]}
+        completedSectionIndices={[0, 1]}
+      />,
+    );
+    expect(screen.getAllByTestId('section-check-icon')).toHaveLength(2);
+    expect(screen.getByText(/Section 3 of 3.*Analyzing and synthesizing requirements/)).toBeInTheDocument();
+  });
+
+  it('does not check a section via completedSectionIndices alone without the prop -- confirms the fixture above is real, not incidental', () => {
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[stage3Event('analyze_section', 2)]}
+      />,
+    );
+    expect(screen.queryAllByTestId('section-check-icon')).toHaveLength(0);
   });
 
   it('shows each section\'s real name (its own heading) instead of an anonymous index', () => {
