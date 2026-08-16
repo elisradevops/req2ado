@@ -437,18 +437,40 @@ class KbRelevanceClient(Protocol):
 
 
 class SectionAnalysisClient(Protocol):
-    """Interface for the holistic SURVEY redesign's one-call-per-branch
-    analysis, replacing the LlmLevelingClient + BatchedRequirementClient pair
-    above (kept, unchanged, for any caller not yet migrated). Given ONE
-    coherent, structure-preserving rendering of a whole section (see
-    render_section), returns the COMPLETE node set the model decides the
-    section contains -- however many, not one per input block.
+    """Interface for the holistic SURVEY redesign's per-branch analysis,
+    replacing the LlmLevelingClient + BatchedRequirementClient pair above
+    (kept, unchanged, for any caller not yet migrated). Given ONE coherent,
+    structure-preserving rendering of a whole section (see render_section),
+    returns the COMPLETE node set the model decides the section contains --
+    however many, not one per input block.
 
-    `analyze_section` is the fallback path for models without tool-calling
-    support: `kb_context` is a pre-computed once-per-document string (see
-    §5c's capability gate in _build_survey_tree_for_branch).
+    That work is now split across TWO calls per branch rather than one (see
+    _build_survey_skeleton_for_branch / _author_branch_content):
 
-    `analyze_section_agentic` is the tool-capable path: the model actively
+    - STAGE 1, `analyze_section_skeleton` / `analyze_section_skeleton_agentic`
+      -- STRUCTURE only: which nodes exist, what type each is, how they nest,
+      what each is titled. No requirement text, no tags, no figure/table ids.
+    - STAGE 3, `author_content` -- CONTENT only: each node's description and
+      tags, authored against the section text AND the already-decided,
+      already-repaired, already-regrouped skeleton. This call may not change
+      the tree, only fill it in.
+
+    (Stage 2, whole-document figure/table mapping, slots BETWEEN the two and
+    is not part of this Protocol yet -- until it lands, every node's
+    figure_ids/table_ids simply stay empty, their WorkItemNode default.)
+
+    `analyze_section`/`analyze_section_agentic` are the pre-split single call
+    that did all of the above at once. They are no longer called by this
+    module, and are retained on the Protocol only because
+    `analyze_section_skeleton_agentic`'s own degraded path falls back through
+    the same client -- a caller supplying a client for build_survey_tree must
+    still satisfy them.
+
+    The non-agentic methods are the fallback path for models without
+    tool-calling support: `kb_context` is a pre-computed once-per-document
+    string (see §5c's capability gate in _build_survey_skeleton_for_branch).
+
+    The `_agentic` variants are the tool-capable path: the model actively
     pulls KB context via a query_kb tool call during analysis instead of a
     pre-computed kb_context. `retrieve_fn` is injected by the caller (closing
     over user_id/embed_client/vector_store -> retrieve_context) so this
@@ -461,7 +483,10 @@ class SectionAnalysisClient(Protocol):
     `read_other_section_fn` (§3.3) is the same injected-closure convention for
     reading a specific OTHER SECTION of the CURRENT document (not the KB) on
     demand -- only populated on the compact-outline path (build_survey_tree's
-    whole-doc gate found the document too large for one call).
+    whole-doc gate found the document too large for one call). Only STAGE 1
+    is agentic: whatever the model pulls there is handed to `author_content`
+    as a plain pre-computed kb_context, so both stages end up grounded in the
+    same real material for the price of ONE agentic loop rather than two.
     Returns (nodes, citations)."""
 
     def analyze_section(
@@ -497,6 +522,47 @@ class SectionAnalysisClient(Protocol):
         table_group_hints: list[tuple[str, str]] | None = None,
         expected_root_count: int | None = None,
     ) -> tuple[list[dict], list[dict], bool]: ...
+
+    # STAGE 1 -- same parameters as analyze_section/analyze_section_agentic
+    # above, every one of which steers a structural decision (node-count
+    # floors, which table groups must each get their own node and with what
+    # type, whether a real multi-root document is expected). Returns
+    # skeleton entries {temp_id, type, parent_temp_id, title} -- no text, no
+    # tags, no ids.
+    def analyze_section_skeleton(
+        self,
+        section_text: str,
+        kb_context: str | None = None,
+        whole_document: bool = False,
+        topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
+    ) -> tuple[list[dict], bool]: ...
+
+    def analyze_section_skeleton_agentic(
+        self,
+        section_text: str,
+        retrieve_fn: Callable[[str], tuple[str | None, list[dict]]],
+        list_documents_fn: Callable[[], list[str]] | None = None,
+        read_document_fn: Callable[[str], str | None] | None = None,
+        read_other_section_fn: Callable[[str], str | None] | None = None,
+        whole_document: bool = False,
+        topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
+    ) -> tuple[list[dict], list[dict], bool]: ...
+
+    # STAGE 3 -- `skeleton_nodes` maps each node's own local_id to
+    # {'type', 'title', 'parent_id'}; returns {local_id: {'description',
+    # 'tags'}} plus the same output-truncation signal stage 1 reports. There
+    # is no agentic variant deliberately: stage 1 already did the retrieval
+    # (see this Protocol's own docstring).
+    def author_content(
+        self,
+        section_text: str,
+        skeleton_nodes: dict[str, dict],
+        kb_context: str | None = None,
+    ) -> tuple[dict[str, dict], bool]: ...
 
 
 def _resolve_kb_citations(
@@ -1408,21 +1474,39 @@ def build_survey_tree(
     """SURVEY-mode leveling entry point. Splits the document into top-level
     branches (_split_into_branches, the same depth-1-heading split
     BASELINE's build_baseline_tree already uses) and processes each branch
-    through ONE holistic analyze_section (or analyze_section_agentic) call,
-    replacing the old per-branch infer_hierarchy + generate_requirements_for_document
-    call pair -- see SectionAnalysisClient's docstring and the redesign plan's
-    §1/§2 for why: the old pair mechanically atomized structure (one input
-    Block -> exactly one output node), while analyze_section lets the model
-    return however many nodes a section actually contains.
+    holistically -- the model decides how many nodes a section contains,
+    rather than the old per-branch infer_hierarchy +
+    generate_requirements_for_document pair mechanically atomizing it (one
+    input Block -> exactly one output node); see SectionAnalysisClient's
+    docstring and the redesign plan's §1/§2.
+
+    That holistic per-branch work runs as TWO calls, in three ordered stages
+    across the whole document:
+
+    1. STRUCTURE, per branch, in parallel up to `branch_concurrency`
+       (_build_survey_skeleton_for_branch) -- types, nesting and titles only,
+       no requirement text anywhere yet.
+    2. Whole-document structural repair, once, over every branch's structure
+       at once (_regroup_disconnected_roots /
+       _ensure_root_features_have_epic_parent). These used to run at the very
+       END of this function, reshaping a tree whose full text had already
+       been written against the shape they were about to change.
+    3. CONTENT, per branch, same parallelism (_author_branch_content) --
+       each node's requirement text and tags, authored against the section
+       AND the now-final tree, which this stage may not alter.
+
+    (A figure/table mapping pass belongs between 1 and 2; until it lands,
+    every node's figure_ids/table_ids simply stay empty.)
 
     `model` (the per-job model override, same value threaded from main.py's
     /level route) resolves via `_resolve_caps` to this document's branch-size
     cap AND whether the model supports tool-calling (§5c): tool-capable
-    models drive KB retrieval AGENTICALLY per-branch via analyze_section_agentic
-    (a query_kb tool call during analysis); other models get a single
-    pre-computed, once-per-document KB context threaded into every branch's
-    plain analyze_section call (the ORIGINAL, pre-agentic KB design, kept as
-    the fallback). Splitting the ENTIRE document into one call previously
+    models drive KB retrieval AGENTICALLY per-branch via stage 1's
+    analyze_section_skeleton_agentic (a query_kb tool call during analysis),
+    whose retrieved material then also grounds stage 3; other models get a
+    single pre-computed, once-per-document KB context threaded into every
+    branch's plain skeleton call (the ORIGINAL, pre-agentic KB design, kept
+    as the fallback). Splitting the ENTIRE document into one call previously
     risked overflowing the LLM's context window in a single whole-document
     call, producing truncated/malformed JSON that aborted the whole job
     rather than a partial/degraded result.
@@ -1432,7 +1516,7 @@ def build_survey_tree(
     change — same single call pair, same unprefixed node_ids ("0", "1", ...)
     — chunking is invisible unless a document genuinely has multiple
     top-level branches. Only a genuinely multi-branch document gets
-    per-branch node_id namespacing (see _build_survey_tree_for_branch); each
+    per-branch node_id namespacing (see _build_survey_skeleton_for_branch); each
     branch's own hierarchy is entirely self-contained (a branch's node_ids
     only ever reference other node_ids within that SAME branch/outline, so
     there is no cross-branch parent-reference case to reconcile).
@@ -1537,7 +1621,7 @@ def build_survey_tree(
     # Task 4b sub-fix (ii) regression fix: whole-document Figure.id ->
     # Figure.caption_status map, built ONCE here (same "over the FULL,
     # ORIGINAL doc" reasoning as figure_id_by_block_id directly above) and
-    # threaded to _build_survey_tree_for_branch's own
+    # threaded to _build_survey_skeleton_for_branch's own
     # figure_caption_status_by_id param at BOTH call sites below -- see that
     # param's own docstring for why this is a separate, narrow dict rather
     # than widening the multi-branch call site's `figures` argument.
@@ -1848,7 +1932,7 @@ def build_survey_tree(
     all_nodes: list[WorkItemNode] = list(det_nodes)
     all_warnings: list[IntegrityWarning] = list(det_warnings)
     all_kb_citations: list[KbCitation] = list(doc_kb_citations)
-    # Every branch's own scoring-grounding text (see _BranchAnalysisResult's
+    # Every branch's own scoring-grounding text (see _BranchContentResult's
     # docstring) -- collected here so the single whole-document scoring pass
     # below (_score_all_requirements) stays grounded exactly as well as the
     # old per-branch design was, instead of losing agentic-path grounding
@@ -1891,7 +1975,7 @@ def build_survey_tree(
         # variable: that variable's None-ness is what `whole_document` below
         # is derived from, and a guard string must not flip that flag.
         single_call_front_matter_guard = _front_matter_guard_for_whole_document(doc.blocks)
-        branch_result = _build_survey_tree_for_branch(
+        branch_skeletons = [_build_survey_skeleton_for_branch(
             doc.blocks, analysis_client,
             node_id_prefix="", customer_id=customer_id,
             tables=doc.tables, figures=doc.figures,
@@ -1911,13 +1995,7 @@ def build_survey_tree(
             progress_callback=progress_callback,
             figure_id_by_block_id=figure_id_by_block_id,
             figure_caption_status_by_id=figure_caption_status_by_id,
-        )
-        branch_tree = branch_result.tree
-        all_nodes.extend(branch_tree.nodes)
-        all_warnings.extend(branch_tree.warnings)
-        all_kb_citations.extend(branch_tree.kb_citations)
-        if branch_result.scoring_kb_context:
-            branch_scoring_kb_contexts.append(branch_result.scoring_kb_context)
+        )]
     else:
         # blocks_done_before is precomputed per branch (each branch's own
         # fixed offset into the document, from branch sizes known upfront)
@@ -1949,7 +2027,7 @@ def build_survey_tree(
             with callback_lock:
                 progress_callback(progress)
 
-        def _run_branch(branch_index: int, branch_blocks: list[Block]) -> _BranchAnalysisResult:
+        def _run_branch(branch_index: int, branch_blocks: list[Block]) -> _BranchSkeleton:
             # Per-BRANCH heading count (not the whole-document heading_count
             # above, which only applies on the single-branch/whole-doc path)
             # -- generalizes the confirmed-live "concrete, countable floor
@@ -1966,7 +2044,7 @@ def build_survey_tree(
             branch_table_groups = qualifying_table_groups(
                 branch_tables[branch_index] if branch_tables is not None else None
             )
-            return _build_survey_tree_for_branch(
+            return _build_survey_skeleton_for_branch(
                 branch_blocks, analysis_client,
                 node_id_prefix=f"br{branch_index}_", customer_id=customer_id,
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
@@ -1990,7 +2068,7 @@ def build_survey_tree(
             # branch at a time, in document order. No ThreadPoolExecutor
             # involved at all -- zero new risk for every deployment that
             # hasn't opted into concurrency.
-            branch_results: list[_BranchAnalysisResult] = [
+            branch_skeletons = [
                 _run_branch(i, branch_blocks) for i, branch_blocks in enumerate(branches)
             ]
         else:
@@ -2001,16 +2079,65 @@ def build_survey_tree(
             # LLM call happens to come back first.
             with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
                 futures = [executor.submit(_run_branch, i, branch_blocks) for i, branch_blocks in enumerate(branches)]
-                branch_results = [future.result() for future in futures]
-
-        for branch_result in branch_results:
-            branch_tree = branch_result.tree
-            all_nodes.extend(branch_tree.nodes)
-            all_warnings.extend(branch_tree.warnings)
-            all_kb_citations.extend(branch_tree.kb_citations)
-            if branch_result.scoring_kb_context:
-                branch_scoring_kb_contexts.append(branch_result.scoring_kb_context)
+                branch_skeletons = [future.result() for future in futures]
         blocks_done = running_total
+
+    # Every branch's STRUCTURE now exists, document-wide, and not one word of
+    # requirement text has been written yet -- which is the entire point of
+    # splitting generation in two. The two whole-document structural repair
+    # passes below therefore run HERE, between the stages, instead of at the
+    # very end of this function where they used to: they reshape the tree
+    # (regrouping disconnected roots under synthesized topical parents,
+    # wrapping bare root Features under a catch-all Epic) while it is still
+    # cheap, titles-only structure, so every node is authored against the
+    # ancestry it will actually ship with rather than against one that was
+    # about to change underneath it. Both operate purely on titles/types/
+    # parent links (see root_regrouping.py) and needed no change of their own
+    # to move -- they never read a description.
+    #
+    # Their synthesized nodes are appended to `all_nodes` only, never to any
+    # branch's own node list, so stage 3 never offers one for authoring: each
+    # keeps the canned "structure only, no content invented" description its
+    # own pass wrote, exactly as before.
+    for skeleton in branch_skeletons:
+        all_nodes.extend(skeleton.nodes)
+    # progress_callback is deliberately NOT threaded through here, unlike the
+    # deterministic-only path's own call further up (which still runs at the
+    # end of its pipeline and still narrates normally). The 'regroup_roots'
+    # phase is defined FRONTEND-side as a post-scoring tail phase
+    # (JobLifecycleSteps.tsx maps it to the "Score" step precisely so the
+    # stepper doesn't regress backwards during the tail passes) -- firing it
+    # here, mid-analysis, would advance the stepper to Score and then bounce
+    # it back to Analyze as soon as the next section_complete arrives, the
+    # exact user-visible regression that mapping exists to prevent. Silence
+    # for one informational event beats a visibly wrong stepper; re-narrating
+    # this pass needs the frontend's phase mapping revisited alongside, which
+    # belongs with the rest of the orchestrator/frontend wiring for the new
+    # staging, not here.
+    _regroup_disconnected_roots(all_nodes, "regroup_", grouping_client, all_warnings)
+    _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
+
+    # STAGE 3: content authoring, per branch, same parallelism model as
+    # stage 1 -- each call fills in the very same WorkItemNode objects
+    # already collected into `all_nodes` above, so nothing here re-adds a
+    # node; only warnings/citations/grounding text come back.
+    if branch_concurrency <= 1 or len(branch_skeletons) <= 1:
+        branch_results: list[_BranchContentResult] = [
+            _author_branch_content(skeleton, analysis_client) for skeleton in branch_skeletons
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
+            content_futures = [
+                executor.submit(_author_branch_content, skeleton, analysis_client)
+                for skeleton in branch_skeletons
+            ]
+            branch_results = [future.result() for future in content_futures]
+
+    for branch_result in branch_results:
+        all_warnings.extend(branch_result.warnings)
+        all_kb_citations.extend(branch_result.kb_citations)
+        if branch_result.scoring_kb_context:
+            branch_scoring_kb_contexts.append(branch_result.scoring_kb_context)
 
     # kb_citations deduped across branches by source_file, keeping the
     # highest-similarity hit -- on the fallback path every branch shares the
@@ -2029,7 +2156,7 @@ def build_survey_tree(
     # extra LLM call per branch. Deduping every branch's own real grounding
     # text (agentic path) or reusing the single fallback-path doc_kb_context
     # preserves the exact same grounding correctness the old per-branch
-    # design had -- see _BranchAnalysisResult's docstring.
+    # design had -- see _BranchContentResult's docstring.
     if scoring_client is not None:
         model_name = getattr(analysis_client, "model", None)
         requirement_nodes = [node for node in all_nodes if node.type == WorkItemType.REQUIREMENT]
@@ -2081,11 +2208,14 @@ def build_survey_tree(
         all_nodes, embed_client, conflict_client, all_warnings,
         progress_callback, blocks_total, len(branches),
     )
-    _regroup_disconnected_roots(
-        all_nodes, "regroup_", grouping_client, all_warnings,
-        progress_callback, blocks_total, len(branches),
-    )
-    _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
+    # _regroup_disconnected_roots/_ensure_root_features_have_epic_parent used
+    # to run right here, after every branch's full text had already been
+    # written against a structure they were about to change. They now run
+    # BETWEEN the two generation stages instead (see their new call site
+    # above); the deterministic-only guard path further up keeps its own
+    # end-of-pipeline call, since it has no two-stage generation to sit
+    # between. Conflict detection stays here, after content exists: it
+    # embeds Requirement DESCRIPTIONS, so it genuinely cannot move earlier.
     recompute_child_types(all_nodes)
 
     trace_links: list[TraceLink] = []
@@ -2103,19 +2233,68 @@ def build_survey_tree(
 
 
 
-class _BranchAnalysisResult(NamedTuple):
-    """Internal (build_survey_tree <-> _build_survey_tree_for_branch) carrier
-    -- not part of the module's external WorkItemTree contract. `tree` is
-    this branch's normal result; `scoring_kb_context` is the SAME grounding
-    text this branch would have scored against under the old per-branch
-    design (None on the fallback path unless doc_kb_context was set, or the
-    real assembled query_kb hit text on the agentic path) -- now surfaced so
-    build_survey_tree can aggregate every branch's real grounding text into
-    ONE whole-document scoring call (see _score_all_requirements) instead of
-    losing per-branch agentic grounding entirely."""
+class _BranchContentResult(NamedTuple):
+    """Internal (build_survey_tree <-> _author_branch_content) carrier -- not
+    part of the module's external WorkItemTree contract. Deliberately carries
+    NO node list: stage 3 fills in the SAME WorkItemNode objects stage 1
+    already handed back (see _BranchSkeleton), which build_survey_tree has
+    already collected into `all_nodes` by the time this runs -- returning
+    them a second time would only invite double-counting.
 
-    tree: WorkItemTree
+    `scoring_kb_context` is the SAME grounding text this branch would have
+    scored against under the old per-branch design (None on the fallback path
+    unless doc_kb_context was set, or the real assembled query_kb hit text on
+    the agentic path) -- surfaced so build_survey_tree can aggregate every
+    branch's real grounding text into ONE whole-document scoring call (see
+    _score_all_requirements) instead of losing per-branch agentic grounding
+    entirely."""
+
+    warnings: list[IntegrityWarning]
+    kb_citations: list[KbCitation]
     scoring_kb_context: str | None
+
+
+class _BranchSkeleton(NamedTuple):
+    """Internal carrier between SURVEY generation's two per-branch stages
+    (_build_survey_skeleton_for_branch -> _author_branch_content), with the
+    whole-document structural repair passes running in between (see
+    build_survey_tree).
+
+    `nodes` are this branch's real WorkItemNodes, already fully STRUCTURED
+    (type/parent/title decided, hierarchy repaired) but with an EMPTY
+    `description` -- that emptiness is exactly what marks a node as still
+    awaiting authoring, and is what distinguishes them from the synthesized
+    bridge/grouping nodes the repair passes may have appended to this same
+    list, which carry their own canned description and are never authored.
+    Stage 3 fills these same objects in place, so build_survey_tree can
+    safely collect them into the document-wide node list BEFORE authoring
+    runs -- which is the whole point of the split: whole-document regrouping
+    gets to reshape the tree while it is still cheap, titles-only structure.
+
+    Everything else here is the branch context stage 3 needs to author
+    against and to run its own content-dependent checks: the rendered
+    `section_text` the model must stay grounded in, the branch's own
+    candidate figure/table ids (for the whole-document mapping pass that
+    will eventually land between the two stages), and the narration/warning
+    bookkeeping stage 1 already started."""
+
+    nodes: list[WorkItemNode]
+    warnings: list[IntegrityWarning]
+    kb_citations: list[KbCitation]
+    scoring_kb_context: str | None
+    section_text: str
+    section_label: str | None
+    blocks: list[Block]
+    tables_by_id: dict[str, Table]
+    valid_figure_ids: set[str]
+    valid_table_ids: set[str]
+    node_id_prefix: str
+    # This branch's own progress firer, built once in stage 1 (closing over
+    # branch_index/branch_count/blocks_done_before/blocks_total/section_label/
+    # model) and carried across so stage 3's section_complete event reports
+    # the identical branch coordinates stage 1's analyze_section event did,
+    # with no second copy of that parameter list threaded through.
+    fire: Callable[..., None]
 
 
 def _widen_branch_page_range(
@@ -2129,7 +2308,7 @@ def _widen_branch_page_range(
     node synthesized from this branch shares this same ref regardless of
     which of the branch's many blocks/tables/figures it actually came from.
     Not full per-node accuracy (out of scope -- see
-    _build_survey_tree_for_branch's own docstring): this only widens the
+    _build_survey_skeleton_for_branch's own docstring): this only widens the
     ONE representative ref's range to cover the branch's real min page /
     max page_end, turning "wrong single page for the whole branch" into
     "correct range for the whole branch". A no-op (mirrors _widen_page_end)
@@ -2155,7 +2334,7 @@ def _widen_branch_page_range(
     return representative.model_copy(update=updates) if updates else representative
 
 
-def _build_survey_tree_for_branch(
+def _build_survey_skeleton_for_branch(
     blocks: list[Block],
     analysis_client: SectionAnalysisClient,
     node_id_prefix: str,
@@ -2208,32 +2387,42 @@ def _build_survey_tree_for_branch(
     # multi-branch documents this whole task's figure-significance
     # disambiguation exists for.
     figure_caption_status_by_id: dict[str, str] | None = None,
-) -> WorkItemTree:
-    """Does the actual per-branch (or, for a single-branch document, whole-
-    document) SURVEY leveling via ONE holistic analyze_section /
-    analyze_section_agentic call (see SectionAnalysisClient's docstring),
-    replacing the old infer_hierarchy + generate_requirements_for_document
-    pair -- the model returns the COMPLETE node set it decides this section
-    contains, not one node per input Block. Title comes from the model's own
-    'title' field on each node (a short, distinct label -- see
-    _SECTION_ANALYSIS_SYSTEM_PROMPT), clamped to 256 chars via
-    extract_baseline_title; a model response that omits it (schema
-    non-compliance) falls back to extract_baseline_title(text) instead, same
-    as before this capability existed, with a warning noting the fallback.
-    fidelity_hash is computed over the description, since that's the
-    content actually written to ADO and the idempotency map's key must match
-    what a re-run would produce — but note this is a WEAKER guarantee than
-    BASELINE's verbatim-source-span hash: temperature=0 is
-    mostly-but-not-guaranteed deterministic, so a model or prompt change can
-    shift this hash and produce a duplicate create on re-run. Embedding dedup
-    partially backstops this; it is not a substitute.
+) -> _BranchSkeleton:
+    """STAGE 1 of SURVEY's two-stage per-branch generation: does the actual
+    per-branch (or, for a single-branch document, whole-document) leveling
+    of STRUCTURE via ONE holistic analyze_section_skeleton /
+    analyze_section_skeleton_agentic call (see SectionAnalysisClient's
+    docstring). The model returns the COMPLETE node set it decides this
+    section contains -- not one node per input Block -- as bare
+    {temp_id, type, parent_temp_id, title} entries with no requirement text
+    at all. Every node this builds therefore leaves here with an EMPTY
+    description; _author_branch_content (stage 3) fills it in afterwards,
+    against the tree as it stands once whole-document structural repair has
+    also run.
+
+    Why the split: hierarchy decisions and requirement wording were
+    previously entangled in one response, so the whole-document repair
+    passes (_regroup_disconnected_roots / _ensure_root_features_have_epic_parent)
+    could only ever run after every branch's full text had already been
+    written against a structure that was about to change underneath it.
+    Structure is now settled first, cheaply, across the whole document, and
+    only then is content authored against the structure that actually
+    survives.
+
+    Title comes from the model's own 'title' field on each node (a short,
+    distinct label -- see the section_skeleton prompt), clamped to 256 chars
+    via extract_baseline_title. A model response that omits it (schema
+    non-compliance) now has nothing left to fall back to -- 'title' is the
+    ONLY human-readable content a skeleton entry carries -- so that node is
+    dropped with a warning, the structural counterpart of the old single
+    call's "a node with no text at all is skipped" rule.
 
     `node_id_prefix`: "" for a single-branch document (byte-identical
     node_ids to pre-chunking behavior); "br{N}_" for one of several
     branches in a multi-branch document. Applied to both a node's own
     local_id and its parent_local_id (never to the model-facing temp_id used
-    in the analyze_section call itself — the model only ever sees this
-    branch's own local temp_ids).
+    in the skeleton call itself — the model only ever sees this branch's own
+    local temp_ids).
 
     **Accepted trade-off, not a silent regression:** with the old 1:1
     block<->node mapping gone, `source_ref` and `grounding_score` both
@@ -2248,9 +2437,12 @@ def _build_survey_tree_for_branch(
 
     `supports_tools`/`retrieve_fn`/`kb_context` (§5c's capability gate):
     when `supports_tools` is True and `retrieve_fn` is supplied, this branch
-    is analyzed via analyze_section_agentic (the model pulls KB context
-    itself via query_kb); otherwise via plain analyze_section using the
-    pre-computed `kb_context` (None when KB isn't configured at all).
+    is analyzed via analyze_section_skeleton_agentic (the model pulls KB
+    context itself via query_kb); otherwise via the plain skeleton call using
+    the pre-computed `kb_context` (None when KB isn't configured at all).
+    Either way the resulting grounding text is carried forward on the
+    returned _BranchSkeleton, so stage 3 authors against the SAME real
+    material for the price of one agentic loop rather than two.
 
     `global_context` (§3.3): a COMPACT document outline (headings + a short
     per-section synopsis, NOT the raw full document) prepended to this
@@ -2274,7 +2466,12 @@ def _build_survey_tree_for_branch(
     quantitative -- confirmed live across 3 separate real runs that a
     qualitative-only hint does not change model behavior (node count stayed
     floored at 12-16 with no coverage improvement); see
-    orchestrator_llm_client._whole_document_hint's own docstring."""
+    orchestrator_llm_client._whole_document_hint's own docstring.
+
+    Fails hard, deliberately: the skeleton call has NO try/except around it,
+    exactly like the single analyze_section call it replaces. Core
+    generation failing must fail the job, not silently produce a structureless
+    document; only clearly-optional enhancement passes fail open."""
     section_text = render_section(blocks, tables, figures, figure_id_by_block_id)
     if global_context:
         section_text = f"{global_context}\n\n---\n\n{section_text}"
@@ -2308,7 +2505,7 @@ def _build_survey_tree_for_branch(
             )
         )
 
-    # Scoring (_apply_quality_scores, below) needs an actual kb_context
+    # Scoring (_score_all_requirements, later) needs an actual kb_context
     # STRING, not just kb_citations metadata -- on the agentic path the
     # outer `kb_context` parameter stays None (only the fallback path
     # populates it upfront), so without this, scoring ran completely
@@ -2318,7 +2515,9 @@ def _build_survey_tree_for_branch(
     # where `hits` comes straight from retrieve_context) -- this was already
     # in hand, just never assembled into a context string and threaded to
     # scoring. Defaults to the outer `kb_context` param (fallback path, or
-    # None when no query_kb calls happened / no KB deps at all).
+    # None when no query_kb calls happened / no KB deps at all). Since the
+    # split, this same string is ALSO what grounds stage 3's authoring call,
+    # so a branch's one agentic retrieval loop now pays for both stages.
     scoring_kb_context = kb_context
     # (label, suggested_type) pairs cross into the client -- child_count/
     # id_text are this function's own bookkeeping for the coverage-check
@@ -2342,7 +2541,7 @@ def _build_survey_tree_for_branch(
     expected_root_count = top_level_group_count if top_level_group_count >= 2 else None
     if supports_tools and retrieve_fn is not None:
         _fire("analyze_section", kb_grounded=False, kb_citations_raw=[])
-        raw_nodes, raw_hits, truncated = analysis_client.analyze_section_agentic(
+        raw_nodes, raw_hits, truncated = analysis_client.analyze_section_skeleton_agentic(
             section_text, retrieve_fn, list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
             read_other_section_fn=read_other_section_fn, whole_document=whole_document, topic_count=topic_count,
             table_group_hints=table_group_hints, expected_root_count=expected_root_count,
@@ -2387,7 +2586,7 @@ def _build_survey_tree_for_branch(
             [{"source_file": "(document-level)", "similarity": 1.0}] if kb_context else []
         )
         _fire("analyze_section", kb_grounded=bool(kb_context), kb_citations_raw=kb_citations_raw_dicts)
-        raw_nodes, truncated = analysis_client.analyze_section(
+        raw_nodes, truncated = analysis_client.analyze_section_skeleton(
             section_text, kb_context=kb_context, whole_document=whole_document,
             topic_count=topic_count, table_group_hints=table_group_hints,
             expected_root_count=expected_root_count,
@@ -2395,15 +2594,15 @@ def _build_survey_tree_for_branch(
         kb_citations = []  # doc-level citations are collected once in build_survey_tree, not per-branch
 
     by_temp_id = {n["temp_id"]: n for n in raw_nodes if isinstance(n, dict) and n.get("temp_id")}
-    valid_tag_values = {t.value for t in RequirementTag}
     warnings: list[IntegrityWarning] = []
     if truncated:
         warnings.append(
             IntegrityWarning.make(
                 WarningKind.OUTPUT_TRUNCATED,
-                "Model output was truncated by the token limit -- results may be incomplete; "
-                "consider raising the model's output cap.",
-                detail={"branch": node_id_prefix or "(root)"},
+                "Model output was truncated by the token limit while deciding this section's "
+                "structure -- some work items may be missing entirely; consider raising the "
+                "model's output cap.",
+                detail={"branch": node_id_prefix or "(root)", "stage": "skeleton"},
             )
         )
     nodes: list[WorkItemNode] = []
@@ -2437,23 +2636,26 @@ def _build_survey_tree_for_branch(
 
     # known-issues item 20: the real candidate ids THIS branch's own
     # rendered section_text actually offered the model (see render_section's
-    # figure/table id injection) -- a model-returned figure_ids/table_ids
-    # entry outside this set is a hallucination (an id that doesn't exist,
-    # or belongs to a DIFFERENT branch/section the model never saw) and is
-    # dropped, never trusted verbatim. valid_table_ids comes straight from
-    # this branch's own `tables` param; valid_figure_ids is derived from
-    # this branch's own `blocks` via the whole-document figure_id_by_block_id
-    # map (branch-scoped implicitly, since only this branch's own FIGURE-kind
+    # figure/table id injection) -- carried forward on the returned
+    # _BranchSkeleton so the eventual whole-document figure/table MAPPING
+    # pass's verdicts can still be validated against what this branch really
+    # offered, exactly as the model's own inline figure_ids/table_ids used
+    # to be. An id outside this set is a hallucination (an id that doesn't
+    # exist, or belongs to a DIFFERENT branch/section) and is dropped, never
+    # trusted verbatim. valid_table_ids comes straight from this branch's
+    # own `tables` param; valid_figure_ids is derived from this branch's own
+    # `blocks` via the whole-document figure_id_by_block_id map
+    # (branch-scoped implicitly, since only this branch's own FIGURE-kind
     # blocks are in `blocks`) -- restricted to CAPTIONED figures only
     # (`_figure_line(b) is not None`): an uncaptioned figure's id is never
     # rendered into section_text at all (_render_block_line returns None for
     # it, so its id-injection branch never runs -- see that function's own
     # docstring), and is attributed separately, POSITIONALLY, into
     # uncaptioned_figure_ids below. Excluding it here keeps figure_ids and
-    # uncaptioned_figure_ids provably disjoint regardless of what the model
-    # returns (e.g. a hallucinated id that happens to collide with a real
-    # uncaptioned figure's id), not just in the common case where the model
-    # never sees the id to begin with.
+    # uncaptioned_figure_ids provably disjoint regardless of what any later
+    # mapping pass returns (e.g. a hallucinated id that happens to collide
+    # with a real uncaptioned figure's id), not just in the common case
+    # where the model never sees the id to begin with.
     valid_table_ids = {t.id for t in (tables or [])}
     valid_figure_ids = {
         figure_id_by_block_id[b.id]
@@ -2466,108 +2668,31 @@ def _build_survey_tree_for_branch(
     tables_by_id = {t.id: t for t in (tables or [])}
 
     for temp_id, entry in by_temp_id.items():
-        text = entry.get("text")
-        if not text:
-            continue
         raw_title = entry.get("title")
-        if raw_title:
-            title = extract_baseline_title(raw_title)
-        else:
-            # Tolerant of LLM non-compliance: the schema marks 'title'
-            # required, but a model can still omit it -- degrade to the
-            # pre-title-distillation behavior (derive from the full
-            # description text) rather than crashing the branch.
-            message = f"An item near {_truncate_for_preview(text)} had no model title -- derived from its description text."
-            logger.warning(message)
-            warnings.append(
-                IntegrityWarning.make(WarningKind.NO_MODEL_TITLE, message, node_ids=[f"{node_id_prefix}{temp_id}"])
-            )
-            title = extract_baseline_title(text)
-        tags = sorted(
-            {RequirementTag(tag) for tag in entry.get("tags", []) if tag in valid_tag_values},
-            key=lambda t: t.value,
-        )
-        raw_figure_ids = entry.get("figure_ids") or []
-        figure_ids = sorted({fid for fid in raw_figure_ids if isinstance(fid, str) and fid in valid_figure_ids})
-        if len(figure_ids) < len(raw_figure_ids):
-            dropped_figure_count = len(raw_figure_ids) - len(figure_ids)
+        if not raw_title or not isinstance(raw_title, str):
+            # The skeleton's 'title' is the ONLY human-readable content a
+            # stage-1 entry carries, and the schema marks it required -- a
+            # model that omits it anyway has produced a node with no
+            # identity for the authoring stage to write against and no label
+            # for a reviewer to recognize. Dropped rather than kept as an
+            # untitled placeholder: the structural counterpart of the old
+            # single call's "a node with no text at all is skipped" rule
+            # (there, a missing title could still be derived from the text;
+            # here there is no text yet to derive one from).
             message = (
-                f'"{title}" referenced {dropped_figure_count} figure(s) not offered in this section -- '
-                "the invalid reference(s) were dropped."
+                f"A {entry.get('type') or 'work'} item in this section had no title from "
+                "structure analysis -- it was dropped, since a skeleton node carries nothing "
+                "else to identify it by."
             )
             logger.warning(message)
             warnings.append(
                 IntegrityWarning.make(
-                    WarningKind.INVALID_FIGURE_IDS,
-                    message,
-                    node_ids=[f"{node_id_prefix}{temp_id}"],
-                    detail={"requested": raw_figure_ids, "kept": figure_ids},
+                    WarningKind.NO_MODEL_TITLE, message, node_ids=[f"{node_id_prefix}{temp_id}"]
                 )
             )
-        raw_table_ids = entry.get("table_ids") or []
-        table_ids_requested = sorted({tid for tid in raw_table_ids if isinstance(tid, str) and tid in valid_table_ids})
-        if len(table_ids_requested) < len(raw_table_ids):
-            dropped_table_count = len(raw_table_ids) - len(table_ids_requested)
-            message = (
-                f'"{title}" referenced {dropped_table_count} table(s) not offered in this section -- '
-                "the invalid reference(s) were dropped."
-            )
-            logger.warning(message)
-            warnings.append(
-                IntegrityWarning.make(
-                    WarningKind.INVALID_TABLE_IDS,
-                    message,
-                    node_ids=[f"{node_id_prefix}{temp_id}"],
-                    detail={"requested": raw_table_ids, "kept": table_ids_requested},
-                )
-            )
+            continue
+        title = extract_baseline_title(raw_title)
 
-        # Embeds each named table's real HTML into the description (§ known
-        # issues item 20, "the easy half" -- tables need no new ADO write
-        # capability, unlike figures, see WorkItemNode.table_ids' own
-        # docstring). Same assemble_description join-with-newline convention
-        # BASELINE's own table fold-in uses (tree_builder.py) -- the
-        # orchestrator's toAdoDescriptionHtml already has a TABLE_BLOCK_PATTERN
-        # carve-out that passes this exact `<table>...</table>` shape through
-        # untouched to ADO.
-        #
-        # table_id is only KEPT in table_ids when its HTML is genuinely
-        # non-empty -- computed together, not separately: a valid
-        # (non-hallucinated, already filtered above) reference whose
-        # extracted grid has no content anywhere (_table_to_html returns ""
-        # for it) is dropped here instead of ending up in table_ids with
-        # nothing in description to back it. The orchestrator's own
-        # dry-run.service.ts documents an invariant that a non-empty
-        # table_ids entry always means that table's HTML is already
-        # embedded in description -- silently keeping the id here would
-        # violate that invariant and ship a UI chip pointing at zero
-        # content. Reported instead of just dropped, same "under-trigger
-        # silently, surface loudly" convention as every other warning in
-        # this loop.
-        description = text
-        table_ids: list[str] = []
-        for table_id in table_ids_requested:
-            table = tables_by_id.get(table_id)
-            if table is None:
-                continue
-            table_html = _table_to_html(table)
-            if table_html:
-                description = assemble_description(description, table_html)
-                table_ids.append(table_id)
-            else:
-                message = (
-                    f'"{title}" referenced table {table_id}, but it had no extractable content -- '
-                    "worth checking the source table manually."
-                )
-                logger.warning(message)
-                warnings.append(
-                    IntegrityWarning.make(
-                        WarningKind.EMPTY_TABLE_CONTENT,
-                        message,
-                        node_ids=[f"{node_id_prefix}{temp_id}"],
-                        detail={"tableId": table_id},
-                    )
-                )
         try:
             node_type = WorkItemType(entry.get("type"))
         except ValueError:
@@ -2606,23 +2731,6 @@ def _build_survey_tree_for_branch(
             )
             parent_temp_id = None
 
-        grounding_score = _grounding_score(text, section_text)
-        if grounding_score < _LOW_GROUNDING_THRESHOLD:
-            message = (
-                f'"{title}"\'s generated description has low grounding '
-                f"({grounding_score:.0%} of its vocabulary traces back to the source section) -- "
-                "worth reviewing for possible fabrication."
-            )
-            logger.warning(message)
-            warnings.append(
-                IntegrityWarning.make(
-                    WarningKind.LOW_GROUNDING,
-                    message,
-                    node_ids=[f"{node_id_prefix}{temp_id}"],
-                    detail={"groundingScore": grounding_score, "threshold": _LOW_GROUNDING_THRESHOLD},
-                )
-            )
-
         local_id = f"{node_id_prefix}{temp_id}"
         nodes.append(
             WorkItemNode(
@@ -2630,67 +2738,69 @@ def _build_survey_tree_for_branch(
                 type=node_type,
                 parent_local_id=f"{node_id_prefix}{parent_temp_id}" if parent_temp_id is not None else None,
                 title=title,
-                description=description,
+                # Empty until _author_branch_content runs -- and that
+                # emptiness is load-bearing, not a placeholder: it is
+                # precisely what marks a node as still awaiting authoring,
+                # distinguishing it from the synthesized bridge/grouping
+                # nodes the repair passes below append with their own canned
+                # description. fidelity_hash (a hash OF the description) and
+                # grounding_score (measured against the description) are
+                # likewise deferred to that same stage -- there is nothing
+                # yet to hash or to score.
+                description="",
                 customer_id=customer_id,
                 source_ref=representative_source_ref,
-                # Hashes the FINAL description (text plus any embedded table
-                # HTML), not just `text` -- fidelity_hash exists to detect
-                # drift in the actual persisted field; hashing `text` alone
-                # would never notice a change to the embedded table half.
-                fidelity_hash=hashlib.sha256(description.encode()).hexdigest(),
                 # Confirmed real bug (live, via golden-e2e's BASELINE re-run
                 # assertion, which surfaced the same class of issue this
                 # SURVEY path has too): plain _hash_identity(text, ...) hashed
                 # the LLM-GENERATED `text` -- unstable run-to-run wording for
                 # the SAME semantic content -- combined with
                 # representative_source_ref, which every node in THIS
-                # section shares (analyze_section has no per-node source
+                # section shares (section analysis has no per-node source
                 # attribution, only a whole-section one). Re-keyed on
                 # local_id instead: still deterministic given the SAME
                 # section producing the SAME node count/order, and no longer
-                # poisoned by wording drift. Residual, known limitation: if
-                # the model's OWN node count/ordering for a section varies
-                # between runs (not just wording), local_id-based identity
-                # can't fully paper over that -- fixing it for real needs
-                # per-node source offsets from the model, a bigger schema/
-                # prompt change tracked separately, not this hash function.
+                # poisoned by wording drift -- which is also why it can be
+                # computed HERE, before any content exists at all. Residual,
+                # known limitation: if the model's OWN node count/ordering
+                # for a section varies between runs (not just wording),
+                # local_id-based identity can't fully paper over that --
+                # fixing it for real needs per-node source offsets from the
+                # model, a bigger schema/prompt change tracked separately,
+                # not this hash function.
                 identity_hash=_hash_identity_for_synthesized_node(local_id, representative_source_ref),
-                tags=tags,
-                figure_ids=figure_ids,
-                table_ids=table_ids,
                 mode=WorkItemMode.SURVEY,
-                grounding_score=grounding_score,
             )
         )
 
     # known-issues item 20 extension: an UNCAPTIONED figure's id is never
     # rendered into section_text at all (_render_block_line returns None
     # for it -- see that function's own docstring), so the model never sees
-    # it and can never name it in a node's own figure_ids the way a
-    # captioned figure can. Unlike BASELINE/the deterministic path, which
-    # walk blocks sequentially and always have a real currently-"open" node
-    # to attach an uncaptioned figure to, SURVEY nodes carry no individual
-    # per-node source position at all (see representative_source_ref's own
-    # trade-off comment above -- every node in this branch shares ONE
-    # coarse, section-level source_ref). With no true per-node offset to
-    # bracket against, the best available deterministic proxy is `nodes`'
-    # own list order: by_temp_id preserves the model's own raw_nodes
-    # response order, which in practice tracks the section's top-to-bottom
-    # structure closely enough to stand in for real document order. Each
-    # uncaptioned figure's own block-order position (within this branch's
-    # `blocks`) is mapped proportionally onto that same node ordering --
-    # same "bucket by document-order position" spirit as
-    # _partition_tables_by_branch's forward-scan bucketing and
+    # it and can never name it the way a captioned figure can. Unlike
+    # BASELINE/the deterministic path, which walk blocks sequentially and
+    # always have a real currently-"open" node to attach an uncaptioned
+    # figure to, SURVEY nodes carry no individual per-node source position
+    # at all (see representative_source_ref's own trade-off comment above --
+    # every node in this branch shares ONE coarse, section-level
+    # source_ref). With no true per-node offset to bracket against, the best
+    # available deterministic proxy is `nodes`' own list order: by_temp_id
+    # preserves the model's own raw_nodes response order, which in practice
+    # tracks the section's top-to-bottom structure closely enough to stand
+    # in for real document order. Each uncaptioned figure's own block-order
+    # position (within this branch's `blocks`) is mapped proportionally onto
+    # that same node ordering -- same "bucket by document-order position"
+    # spirit as _partition_tables_by_branch's forward-scan bucketing and
     # _detect_deterministic_subtrees's heading-boundary bracketing, just
     # applied at node-LIST granularity instead of an offset/boundary
     # comparison, since a node-list index is all a SURVEY node actually
-    # carries. A branch that produced zero nodes has nowhere to attach one
-    # -- silently skipped, consistent with every other content this branch
-    # would also be unable to place.
+    # carries. Purely positional, so it belongs to this structural stage --
+    # it never reads a description. A branch that produced zero nodes has
+    # nowhere to attach one -- silently skipped, consistent with every other
+    # content this branch would also be unable to place.
     if nodes:
         for i, block in enumerate(blocks):
             if block.kind != BlockKind.FIGURE or _figure_line(block) is not None:
-                continue  # non-figure, or captioned (already handled via the model's own figure_ids)
+                continue  # non-figure, or captioned (handled via the figure/table mapping pass)
             figure_id = (figure_id_by_block_id or {}).get(block.id)
             if figure_id is None:
                 continue
@@ -2710,28 +2820,31 @@ def _build_survey_tree_for_branch(
     # emits a Requirement directly under an Epic, chained under another
     # Requirement, or orphaned with no parent at all despite Epic/Feature
     # nodes existing elsewhere in the same branch). Runs AFTER every node in
-    # this branch already exists, so it can walk the real parent chain.
+    # this branch already exists, so it can walk the real parent chain --
+    # and now also strictly BEFORE any content is authored, so a node that
+    # gets re-parented here is authored against the parent it actually ends
+    # up with rather than the one the model first guessed. Operates purely
+    # on type/parent/title, so it needs no description to do its job.
     _repair_requirement_hierarchy(nodes, node_id_prefix, warnings)
 
     # Correct known-wrong ATTACHMENT for a group that otherwise generated
-    # correctly (right type, right content, right children) -- see
-    # _repair_group_attachment's own docstring for why this runs as a
-    # deterministic post-hoc repair instead of more prompt tuning. Runs
-    # after _repair_requirement_hierarchy so a node that was JUST re-parented
-    # onto a real Feature (type-repair) can still be corrected to the
-    # SPECIFIC right Feature/Epic here if the table's own ID hierarchy says
-    # otherwise.
+    # correctly (right type, right children) -- see _repair_group_attachment's
+    # own docstring for why this runs as a deterministic post-hoc repair
+    # instead of more prompt tuning. Runs after _repair_requirement_hierarchy
+    # so a node that was JUST re-parented onto a real Feature (type-repair)
+    # can still be corrected to the SPECIFIC right Feature/Epic here if the
+    # table's own ID hierarchy says otherwise. Title-driven, like the
+    # coverage check below -- also unaffected by content not existing yet.
     _repair_group_attachment(nodes, table_groups, node_id_prefix, warnings)
 
     if not nodes and (blocks or tables or figures):
         # A non-empty branch contributing exactly 0 nodes was previously
-        # silent (only a debug-level logger.warning inside
-        # analyze_section_agentic, never surfaced to the reviewer) -- this
-        # is a real, user-visible gap (confirmed real cause of a branch
-        # silently missing from the proposed tree entirely, not just a
-        # dropped-block coverage note) distinct from the dropped_blocks
-        # check below, which assumes at least SOME nodes exist to compare
-        # source blocks against.
+        # silent (only a debug-level logger.warning inside the agentic call,
+        # never surfaced to the reviewer) -- this is a real, user-visible gap
+        # (confirmed real cause of a branch silently missing from the
+        # proposed tree entirely, not just a dropped-block coverage note)
+        # distinct from the dropped_blocks check in stage 3, which assumes at
+        # least SOME nodes exist to compare source blocks against.
         section_ref = f'The "{section_label}" section' if section_label else "This section"
         message = (
             f"{section_ref} produced 0 work items from {len(blocks)} block(s)/"
@@ -2748,22 +2861,314 @@ def _build_survey_tree_for_branch(
             )
         )
 
-    # Coverage check: since analyze_section can merge N input blocks into
+    # Table-group coverage check -- the "catch" half of this fix, pairing
+    # with the generation-time floor (topic_count + _table_group_hint)
+    # threaded in above, which is the "steer" half. Steering can still fail
+    # even with a good hint (confirmed live: the floor alone doesn't
+    # guarantee every named group gets used) -- this gives a human-visible
+    # signal when it does, the same complementary relationship
+    # topic_count/_whole_document_hint (steer) and the dropped_blocks check
+    # (catch) already have for paragraph blocks. A missing table group
+    # previously produced ZERO warning of any kind (the dropped_blocks check
+    # only ever scans `blocks`, never table rows). Checked against node
+    # TITLES specifically (see _group_label_became_a_node's own docstring),
+    # so it belongs to this structural stage.
+    missing_groups = [
+        g for g in (table_groups or []) if not _group_label_became_a_node(g.label, nodes)
+    ]
+    if missing_groups:
+        group_previews = "; ".join(
+            f"'{g.label}' (row {g.id_text}, {g.child_count} children)" for g in missing_groups[:10]
+        )
+        message = (
+            f"{len(missing_groups)} source table group(s) with 2+ child items of their own did not "
+            "produce a distinctly-titled node in SURVEY analysis (their children may have been "
+            f"folded into a broader ancestor instead): {group_previews}"
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.MISSING_TABLE_GROUP_COVERAGE,
+                message,
+                detail={"branch": node_id_prefix or "(root)", "groupLabels": [g.label for g in missing_groups[:10]]},
+            )
+        )
+
+    warnings.extend(_referenced_attachment_warnings(section_text, section_label))
+    warnings.extend(_unsupported_content_warnings(blocks, section_label))
+
+    return _BranchSkeleton(
+        nodes=nodes,
+        warnings=warnings,
+        kb_citations=kb_citations,
+        scoring_kb_context=scoring_kb_context,
+        section_text=section_text,
+        section_label=section_label,
+        blocks=blocks,
+        tables_by_id=tables_by_id,
+        valid_figure_ids=valid_figure_ids,
+        valid_table_ids=valid_table_ids,
+        node_id_prefix=node_id_prefix,
+        fire=_fire,
+    )
+
+
+def _author_branch_content(
+    skeleton: _BranchSkeleton,
+    analysis_client: SectionAnalysisClient,
+    # STAGE 2 seam: the whole-document figure/table MAPPING pass's verdicts
+    # for this branch, {local_id: {"figure_ids": [...], "table_ids": [...]}}.
+    # That pass does not exist yet, so this stays None and every node simply
+    # keeps WorkItemNode's own empty-list defaults -- the correct, expected
+    # state until it lands. The validation/embedding machinery below is
+    # nonetheless driven entirely off this parameter (rather than deleted and
+    # rebuilt later), so mapping verdicts get exactly the same
+    # hallucinated-id filtering and table-HTML fold-in the model's own inline
+    # figure_ids/table_ids used to get.
+    figure_table_ids_by_local_id: dict[str, dict[str, list[str]]] | None = None,
+) -> _BranchContentResult:
+    """STAGE 3 of SURVEY's two-stage per-branch generation: authors each
+    node's requirement/description text and tags via ONE author_content call
+    per branch, GIVEN the tree stage 1 decided and the whole-document repair
+    passes then finalized. The model is told the hierarchy is FIXED -- this
+    call may not add, drop, re-type, re-parent or rename a node, only fill in
+    the ones already there (see the author_content prompt).
+
+    Only nodes stage 1 left with an EMPTY description are offered for
+    authoring. Everything else in `skeleton.nodes` is a node one of the
+    repair passes synthesized (a bridge Feature, a topical grouping) whose
+    canned "structure only, no content invented" description is deliberate
+    and must survive untouched -- the same never-invent-content discipline
+    those passes already document for themselves.
+
+    A node the response omits, or answers with a blank description, keeps
+    its own title as its description instead: honest, already grounded in
+    the source (stage 1 derived it from this same section), and far better
+    than shipping an empty work item or dropping a node the structural
+    stage already committed to. Reported, never silent.
+
+    fidelity_hash is computed here rather than in stage 1, over the FINAL
+    description, since that's the content actually written to ADO and the
+    idempotency map's key must match what a re-run would produce — but note
+    this is a WEAKER guarantee than BASELINE's verbatim-source-span hash:
+    temperature=0 is mostly-but-not-guaranteed deterministic, so a model or
+    prompt change can shift this hash and produce a duplicate create on
+    re-run. Embedding dedup partially backstops this; it is not a substitute.
+
+    Fails hard, deliberately -- no try/except around the authoring call, the
+    same convention stage 1 and the single analyze_section call before it
+    both follow."""
+    nodes = skeleton.nodes
+    warnings = skeleton.warnings
+    section_text = skeleton.section_text
+    valid_tag_values = {t.value for t in RequirementTag}
+
+    # An empty description is exactly the "still awaiting authoring" marker
+    # stage 1 leaves behind -- see _BranchSkeleton's own docstring.
+    authorable = [node for node in nodes if not node.description]
+    if authorable:
+        skeleton_payload = {
+            node.local_id: {
+                "type": node.type.value,
+                "title": node.title,
+                # Informational context for authoring, never something this
+                # call may change. May legitimately name a node OUTSIDE this
+                # payload -- a synthesized grouping node, or (after
+                # whole-document regrouping) a node belonging to no branch at
+                # all; the prompt asks only that the tree be respected, never
+                # that every parent_id resolve within the payload.
+                "parent_id": node.parent_local_id,
+            }
+            for node in authorable
+        }
+        content, truncated = analysis_client.author_content(
+            section_text, skeleton_payload, kb_context=skeleton.scoring_kb_context,
+        )
+        if truncated:
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.OUTPUT_TRUNCATED,
+                    "Model output was truncated by the token limit while writing this section's "
+                    "requirement text -- some items may have fallen back to their title; "
+                    "consider raising the model's output cap.",
+                    detail={"branch": skeleton.node_id_prefix or "(root)", "stage": "content"},
+                )
+            )
+    else:
+        content = {}
+
+    unauthored: list[WorkItemNode] = []
+    for node in authorable:
+        entry = content.get(node.local_id)
+        entry = entry if isinstance(entry, dict) else {}
+        text = entry.get("description")
+        if not isinstance(text, str) or not text.strip():
+            # See this function's own docstring: degrade to the title stage 1
+            # already derived from this same section rather than shipping an
+            # empty work item or silently dropping a node the structural
+            # stage committed to.
+            unauthored.append(node)
+            text = node.title
+        node.tags = sorted(
+            {RequirementTag(tag) for tag in (entry.get("tags") or []) if tag in valid_tag_values},
+            key=lambda t: t.value,
+        )
+
+        # known-issues item 20: a figure/table id outside what THIS branch's
+        # own rendered section_text actually offered is a hallucination (an
+        # id that doesn't exist, or belongs to a different section) and is
+        # dropped, never trusted verbatim. Empty on both sides today -- the
+        # mapping pass that populates figure_table_ids_by_local_id hasn't
+        # landed yet, so these loops are no-ops and no warning can fire.
+        mapping = (figure_table_ids_by_local_id or {}).get(node.local_id) or {}
+        raw_figure_ids = mapping.get("figure_ids") or []
+        figure_ids = sorted({fid for fid in raw_figure_ids if isinstance(fid, str) and fid in skeleton.valid_figure_ids})
+        if len(figure_ids) < len(raw_figure_ids):
+            dropped_figure_count = len(raw_figure_ids) - len(figure_ids)
+            message = (
+                f'"{node.title}" referenced {dropped_figure_count} figure(s) not offered in this section -- '
+                "the invalid reference(s) were dropped."
+            )
+            logger.warning(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.INVALID_FIGURE_IDS,
+                    message,
+                    node_ids=[node.local_id],
+                    detail={"requested": raw_figure_ids, "kept": figure_ids},
+                )
+            )
+        raw_table_ids = mapping.get("table_ids") or []
+        table_ids_requested = sorted({tid for tid in raw_table_ids if isinstance(tid, str) and tid in skeleton.valid_table_ids})
+        if len(table_ids_requested) < len(raw_table_ids):
+            dropped_table_count = len(raw_table_ids) - len(table_ids_requested)
+            message = (
+                f'"{node.title}" referenced {dropped_table_count} table(s) not offered in this section -- '
+                "the invalid reference(s) were dropped."
+            )
+            logger.warning(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.INVALID_TABLE_IDS,
+                    message,
+                    node_ids=[node.local_id],
+                    detail={"requested": raw_table_ids, "kept": table_ids_requested},
+                )
+            )
+
+        # Embeds each named table's real HTML into the description (§ known
+        # issues item 20, "the easy half" -- tables need no new ADO write
+        # capability, unlike figures, see WorkItemNode.table_ids' own
+        # docstring). Same assemble_description join-with-newline convention
+        # BASELINE's own table fold-in uses (tree_builder.py) -- the
+        # orchestrator's toAdoDescriptionHtml already has a TABLE_BLOCK_PATTERN
+        # carve-out that passes this exact `<table>...</table>` shape through
+        # untouched to ADO.
+        #
+        # table_id is only KEPT in table_ids when its HTML is genuinely
+        # non-empty -- computed together, not separately: a valid
+        # (non-hallucinated, already filtered above) reference whose
+        # extracted grid has no content anywhere (_table_to_html returns ""
+        # for it) is dropped here instead of ending up in table_ids with
+        # nothing in description to back it. The orchestrator's own
+        # dry-run.service.ts documents an invariant that a non-empty
+        # table_ids entry always means that table's HTML is already
+        # embedded in description -- silently keeping the id here would
+        # violate that invariant and ship a UI chip pointing at zero
+        # content. Reported instead of just dropped, same "under-trigger
+        # silently, surface loudly" convention as every other warning in
+        # this loop.
+        description = text
+        table_ids: list[str] = []
+        for table_id in table_ids_requested:
+            table = skeleton.tables_by_id.get(table_id)
+            if table is None:
+                continue
+            table_html = _table_to_html(table)
+            if table_html:
+                description = assemble_description(description, table_html)
+                table_ids.append(table_id)
+            else:
+                message = (
+                    f'"{node.title}" referenced table {table_id}, but it had no extractable content -- '
+                    "worth checking the source table manually."
+                )
+                logger.warning(message)
+                warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.EMPTY_TABLE_CONTENT,
+                        message,
+                        node_ids=[node.local_id],
+                        detail={"tableId": table_id},
+                    )
+                )
+        node.figure_ids = figure_ids
+        node.table_ids = table_ids
+        node.description = description
+        # Hashes the FINAL description (text plus any embedded table HTML),
+        # not just `text` -- fidelity_hash exists to detect drift in the
+        # actual persisted field; hashing `text` alone would never notice a
+        # change to the embedded table half.
+        node.fidelity_hash = hashlib.sha256(description.encode()).hexdigest()
+
+        grounding_score = _grounding_score(text, section_text)
+        node.grounding_score = grounding_score
+        if grounding_score < _LOW_GROUNDING_THRESHOLD:
+            message = (
+                f'"{node.title}"\'s generated description has low grounding '
+                f"({grounding_score:.0%} of its vocabulary traces back to the source section) -- "
+                "worth reviewing for possible fabrication."
+            )
+            logger.warning(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.LOW_GROUNDING,
+                    message,
+                    node_ids=[node.local_id],
+                    detail={"groundingScore": grounding_score, "threshold": _LOW_GROUNDING_THRESHOLD},
+                )
+            )
+
+    if unauthored:
+        previews = ", ".join(f'"{node.title}"' for node in unauthored[:10])
+        message = (
+            f"Content authoring returned no requirement text for {len(unauthored)} of "
+            f"{len(authorable)} work item(s) in this section -- each fell back to its own title "
+            f"as its description: {previews}"
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE,
+                message,
+                node_ids=[node.local_id for node in unauthored[:10]],
+                detail={
+                    "pass": "content_authoring",
+                    "branch": skeleton.node_id_prefix or "(root)",
+                    "missing": len(unauthored),
+                    "requested": len(authorable),
+                },
+            )
+        )
+
+    # Coverage check: since section analysis can merge N input blocks into
     # M != N nodes, there is no 1:1 node<->block mapping left to check
     # per-block coverage against -- instead, run each INPUT block's own text
     # against the combined generated node texts as a whole (same helper the
     # old two-call design used for its own "merged, not dropped" signal).
     # Computed once, not per block -- see _block_content_appears_in_generated_output's
     # own docstring for why recomputing this inside the loop was O(blocks * chars).
+    blocks = skeleton.blocks
     combined_words = _significant_words(" ".join(node.description for node in nodes))
     # resolve_block_depth(block)[1] was previously called 2x per block below
     # (once per boolean check in the comprehension) plus again for the
     # preview line -- resolved once per block here instead.
     resolved_block_texts = [resolve_block_depth(block)[1] for block in blocks]
     # A block that references an external artifact (e.g. "ReqID XXXX") gets
-    # its own, far more actionable warning below -- reporting it a second
-    # time as a generic "dropped block" would double-report the same root
-    # cause under two different messages for the same block.
+    # its own, far more actionable warning (see
+    # _referenced_attachment_warnings, fired in stage 1) -- reporting it a
+    # second time as a generic "dropped block" would double-report the same
+    # root cause under two different messages for the same block.
     dropped_blocks = [
         i
         for i, block in enumerate(blocks)
@@ -2798,62 +3203,27 @@ def _build_survey_tree_for_branch(
             IntegrityWarning.make(
                 WarningKind.DROPPED_BLOCKS,
                 message,
-                detail={"branch": node_id_prefix or "(root)", "droppedIndices": dropped_blocks[:10], "totalBlocks": len(blocks)},
+                detail={"branch": skeleton.node_id_prefix or "(root)", "droppedIndices": dropped_blocks[:10], "totalBlocks": len(blocks)},
             )
         )
 
-    # Table-group coverage check -- the "catch" half of this fix, pairing
-    # with the generation-time floor (topic_count + _table_group_hint)
-    # threaded in above, which is the "steer" half. Steering can still fail
-    # even with a good hint (confirmed live: the floor alone doesn't
-    # guarantee every named group gets used) -- this gives a human-visible
-    # signal when it does, the same complementary relationship
-    # topic_count/_whole_document_hint (steer) and the dropped_blocks check
-    # above (catch) already have for paragraph blocks. A missing table
-    # group previously produced ZERO warning of any kind (the dropped_blocks
-    # check above only ever scans `blocks`, never table rows).
-    missing_groups = [
-        g for g in (table_groups or []) if not _group_label_became_a_node(g.label, nodes)
-    ]
-    if missing_groups:
-        group_previews = "; ".join(
-            f"'{g.label}' (row {g.id_text}, {g.child_count} children)" for g in missing_groups[:10]
-        )
-        message = (
-            f"{len(missing_groups)} source table group(s) with 2+ child items of their own did not "
-            "produce a distinctly-titled node in SURVEY analysis (their children may have been "
-            f"folded into a broader ancestor instead): {group_previews}"
-        )
-        logger.warning(message)
-        warnings.append(
-            IntegrityWarning.make(
-                WarningKind.MISSING_TABLE_GROUP_COVERAGE,
-                message,
-                detail={"branch": node_id_prefix or "(root)", "groupLabels": [g.label for g in missing_groups[:10]]},
-            )
-        )
-
-    warnings.extend(_referenced_attachment_warnings(section_text, section_label))
-    warnings.extend(_unsupported_content_warnings(blocks, section_label))
-
-    # Quality scoring moved to whole-document scope (see
-    # _score_all_requirements, called once from build_survey_tree after
-    # every branch has been analyzed) -- this branch's Requirement-type
-    # nodes are still unscored (quality_score=None) at this point; scoring
-    # runs in a later pass and mutates them in place. See build_survey_tree's
-    # docstring for why (fewer, larger scoring calls instead of one per
-    # branch -- same token-efficiency motivation as this module's other
-    # batching decisions).
+    # Quality scoring is whole-document scope (see _score_all_requirements,
+    # called once from build_survey_tree after every branch has been
+    # authored) -- this branch's Requirement-type nodes are still unscored
+    # (quality_score=None) at this point; scoring runs in a later pass and
+    # mutates them in place. See build_survey_tree's docstring for why
+    # (fewer, larger scoring calls instead of one per branch -- same
+    # token-efficiency motivation as this module's other batching decisions).
 
     # The real "parsed and formatted response" for this section -- fired
-    # once per branch, right after analysis, rather than waiting for the
-    # whole job to reach diff_ready before a reviewer can see what THIS
-    # section actually produced. quality_score is always None here now
+    # once per branch, right after its content exists, rather than waiting
+    # for the whole job to reach diff_ready before a reviewer can see what
+    # THIS section actually produced. quality_score is always None here
     # (scoring is a later, whole-document pass -- see the comment above) --
     # the frontend patches it in once score_requirements_done fires.
     #
     # kb_grounded/kb_citations_raw use THIS branch's own `kb_citations` (built
-    # above from either the agentic path's real query_kb hits, or the
+    # in stage 1 from either the agentic path's real query_kb hits, or the
     # fallback path's precomputed doc-level context) -- NOT `bool(kb_context)`.
     # `kb_context` is only ever non-None on the fallback (non-tool-capable
     # model) path; on the agentic path it stays None even when the model DID
@@ -2861,18 +3231,18 @@ def _build_survey_tree_for_branch(
     # narration event report "not grounded" regardless of what the model
     # actually did. Confirmed live once a genuinely tool-capable local model
     # (gemma4:12b) started actually taking the agentic path.
-    _fire(
+    skeleton.fire(
         "section_complete",
-        kb_grounded=bool(kb_citations),
-        kb_citations_raw=[{"source_file": c.source_file, "similarity": c.similarity} for c in kb_citations],
+        kb_grounded=bool(skeleton.kb_citations),
+        kb_citations_raw=[{"source_file": c.source_file, "similarity": c.similarity} for c in skeleton.kb_citations],
         section_nodes=[
             {"type": node.type.value, "title": node.title, "text": node.description, "quality_score": node.quality_score}
             for node in nodes
         ],
     )
 
-    return _BranchAnalysisResult(
-        tree=WorkItemTree(nodes=nodes, warnings=warnings, kb_citations=kb_citations),
-        scoring_kb_context=scoring_kb_context,
+    return _BranchContentResult(
+        warnings=warnings,
+        kb_citations=skeleton.kb_citations,
+        scoring_kb_context=skeleton.scoring_kb_context,
     )
-

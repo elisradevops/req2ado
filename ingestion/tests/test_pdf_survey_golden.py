@@ -37,7 +37,7 @@ class FakeSectionAnalysisClient:
         self._nodes = nodes
         self.calls: list[dict] = []
 
-    def analyze_section(
+    def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
         topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
         expected_root_count: int | None = None,
@@ -52,9 +52,27 @@ class FakeSectionAnalysisClient:
                 "expected_root_count": expected_root_count,
             }
         )
-        return self._nodes, False
+        # STAGE 1 sees structure only -- see llm_leveling's
+        # _build_survey_skeleton_for_branch.
+        return [
+            {k: v for k, v in node.items() if k in {"temp_id", "type", "parent_temp_id", "title"}}
+            for node in self._nodes
+        ], False
 
-    def analyze_section_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
+    def author_content(
+        self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+    ) -> tuple[dict[str, dict], bool]:
+        by_title = {node["title"]: node for node in self._nodes}
+        return {
+            local_id: {
+                "description": by_title[info["title"]]["text"],
+                "tags": by_title[info["title"]].get("tags", []),
+            }
+            for local_id, info in skeleton_nodes.items()
+            if info["title"] in by_title
+        }, False
+
+    def analyze_section_skeleton_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
         raise AssertionError("not exercised by this test -- default model is not tool-capable")
 
 

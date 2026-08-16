@@ -258,7 +258,7 @@ QUERY_KB_TOOL = {
 # enough and the model needs a whole previously-ingested KB document's
 # content (e.g. a referenced ICD or spec the section only mentions by name).
 # Reuses this same agentic loop -- both are only wired in when the caller
-# (llm_leveling._build_survey_tree_for_branch) supplies the corresponding
+# (llm_leveling._build_survey_skeleton_for_branch) supplies the corresponding
 # list_documents_fn/read_document_fn closures (KB deps + tool-capable model).
 LIST_KB_DOCUMENTS_TOOL = {
     "type": "function",
@@ -1707,7 +1707,7 @@ class OrchestratorLlmClient:
         a query_kb tool call DURING analysis instead of us pre-computing
         relevance once per document. `retrieve_fn` is injected by the caller
         (closing over area_path/embed_client/vector_store -> retrieve_context,
-        see llm_leveling._build_survey_tree_for_branch) so this client stays
+        see llm_leveling._build_survey_skeleton_for_branch) so this client stays
         free of KB dependencies -- it only executes tool calls the model asks
         for. Bounded to _MAX_TOOL_ROUNDS turns so a model that keeps calling
         the tool can't loop forever. Returns (nodes, citations, truncated) --

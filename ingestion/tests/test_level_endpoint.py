@@ -19,6 +19,27 @@ client = TestClient(app)
 # on it (see test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call).
 _ANALYZE_SECTION_MARKER = "analyzing one section"
 
+# Substring unique to the author_content prompt -- SURVEY generation runs as
+# TWO calls per branch now (STAGE 1 structure, STAGE 3 content), so every
+# survey-mode handler below has to answer both or its nodes come back with
+# their own titles standing in for missing descriptions.
+_AUTHOR_CONTENT_MARKER = "authoring the requirement text"
+
+
+def _authored_content(nodes: list[dict], request: httpx.Request) -> httpx.Response:
+    """Answers a STAGE 3 author_content call from the same node fixture the
+    STAGE 1 handler served. The caller keys each node by its local_id, which
+    for these single-branch fixtures is exactly the temp_id STAGE 1
+    returned (no "br{N}_" namespacing -- see build_survey_tree's
+    node_id_prefix)."""
+    requested = json.loads(json.loads(request.content)["messages"][1]["content"])["nodes"]
+    by_temp_id = {node["temp_id"]: node for node in nodes}
+    return httpx.Response(200, json={"content": json.dumps({
+        local_id: {"description": by_temp_id[local_id]["text"], "tags": by_temp_id[local_id].get("tags", [])}
+        for local_id in requested
+        if local_id in by_temp_id
+    })})
+
 
 def _sr(path: str) -> SourceRef:
     return SourceRef(document_path=path, start_offset=0, end_offset=10)
@@ -104,7 +125,10 @@ def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> No
 
 def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch) -> None:
     nodes = [
-        {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on within 5 seconds.", "tags": ["functional"]}
+        {
+            "temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on",
+            "text": "The system shall power on within 5 seconds.", "tags": ["functional"],
+        }
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -113,6 +137,8 @@ def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch) -> 
         system_prompt = body["messages"][0]["content"]
         if _ANALYZE_SECTION_MARKER in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        if _AUTHOR_CONTENT_MARKER in system_prompt:
+            return _authored_content(nodes, request)
         return httpx.Response(200, json={"content": "{}"})  # scoring call -- degrades harmlessly, not asserted here
 
     original_init = OrchestratorLlmClient.__init__
@@ -144,9 +170,11 @@ def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatc
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
         captured_system_prompts.append(system_prompt)
+        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
         if _ANALYZE_SECTION_MARKER in system_prompt:
-            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        if _AUTHOR_CONTENT_MARKER in system_prompt:
+            return _authored_content(nodes, request)
         return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
@@ -210,9 +238,11 @@ def test_level_endpoint_survey_mode_without_area_path_skips_kb_retrieval(monkeyp
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
+        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
         if _ANALYZE_SECTION_MARKER in system_prompt:
-            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        if _AUTHOR_CONTENT_MARKER in system_prompt:
+            return _authored_content(nodes, request)
         return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
@@ -253,9 +283,11 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
+        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
         if _ANALYZE_SECTION_MARKER in system_prompt:
-            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        if _AUTHOR_CONTENT_MARKER in system_prompt:
+            return _authored_content(nodes, request)
         return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
@@ -303,9 +335,11 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
+        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
         if _ANALYZE_SECTION_MARKER in system_prompt:
-            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        if _AUTHOR_CONTENT_MARKER in system_prompt:
+            return _authored_content(nodes, request)
         return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__
@@ -334,14 +368,16 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
 def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(monkeypatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
+        # Requirement, not Epic -- quality scoring is scoped to
+        # Requirement-type nodes only (EARS/INCOSE/ISO criteria describe
+        # atomic testable statements, not Epic/Feature groupings), so an
+        # Epic node here would never reach the scoring call this test
+        # means to exercise.
+        nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
         if _ANALYZE_SECTION_MARKER in system_prompt:
-            # Requirement, not Epic -- quality scoring is scoped to
-            # Requirement-type nodes only (EARS/INCOSE/ISO criteria describe
-            # atomic testable statements, not Epic/Feature groupings), so an
-            # Epic node here would never reach the scoring call this test
-            # means to exercise.
-            nodes = [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        if _AUTHOR_CONTENT_MARKER in system_prompt:
+            return _authored_content(nodes, request)
         if "score" in system_prompt.lower() and "EARS" in system_prompt:
             return httpx.Response(200, json={"content": json.dumps({"n0": {"score": 72, "issues": ["vague_term"]}})})
         return httpx.Response(200, json={"content": "{}"})
@@ -370,9 +406,11 @@ def test_level_endpoint_survey_mode_without_area_path_has_empty_kb_citations(mon
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         system_prompt = body["messages"][0]["content"]
+        nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on", "text": "The system shall power on.", "tags": ["functional"]}]
         if _ANALYZE_SECTION_MARKER in system_prompt:
-            nodes = [{"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "text": "The system shall power on.", "tags": ["functional"]}]
             return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        if _AUTHOR_CONTENT_MARKER in system_prompt:
+            return _authored_content(nodes, request)
         return httpx.Response(200, json={"content": "{}"})
 
     original_init = OrchestratorLlmClient.__init__

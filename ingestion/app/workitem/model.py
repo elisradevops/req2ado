@@ -166,10 +166,12 @@ class WorkItemNode(BaseModel):
     # history. For SURVEY, these are which of a section's candidate
     # figures/tables the LLM judged relevant to this specific node (see
     # llm_leveling.render_section's figure/table id injection and
-    # _build_survey_tree_for_branch's figure_ids/table_ids validation
-    # against the section's real candidate ids -- a model-hallucinated id
-    # that doesn't match any real Figure/Table in scope is dropped, never
-    # trusted verbatim). For the deterministic paths, these are simply every
+    # _author_branch_content's figure_ids/table_ids validation against the
+    # section's real candidate ids, which _build_survey_skeleton_for_branch
+    # collected -- a model-hallucinated id that doesn't match any real
+    # Figure/Table in scope is dropped, never trusted verbatim; both stay
+    # empty until the whole-document mapping pass that decides them lands).
+    # For the deterministic paths, these are simply every
     # figure/table whose block/span folded into this node -- no LLM
     # judgment involved. []/[] for a node with no associated figures/tables.
     # table_ids additionally drives embedding that table's HTML into

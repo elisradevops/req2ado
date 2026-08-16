@@ -1,8 +1,13 @@
+import re
 import time
+
+import pytest
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
+    _author_branch_content,
+    _build_survey_skeleton_for_branch,
     _derive_section_label,
     _detect_conflicting_duplicates,
     _ensure_root_features_have_epic_parent,
@@ -106,13 +111,58 @@ _SIBLING_NODES = [
 ]
 
 
+def _skeleton_of(nodes: list[dict]) -> list[dict]:
+    """The STRUCTURE half of a fixture node dict -- exactly the four fields
+    stage 1's real response schema allows, with every content field
+    (text/tags/figure_ids/table_ids) stripped. Fixtures throughout this file
+    are written in the old single-call shape (structure AND content in one
+    dict) and are split back apart here, so one fixture keeps driving both
+    stages the way one model used to drive one call.
+
+    A fixture that states no 'title' of its own falls back to its `text` --
+    stage 1's schema marks title required, so a real skeleton response
+    always carries one, and this reproduces exactly the title such a
+    fixture used to end up with (the pre-split call derived a missing title
+    from the node's own text). A fixture deliberately exercising a genuinely
+    title-less skeleton entry states an explicit empty title instead."""
+    return [
+        {
+            "temp_id": node.get("temp_id"),
+            "type": node.get("type"),
+            "parent_temp_id": node.get("parent_temp_id"),
+            "title": node.get("title", node.get("text", "")),
+        }
+        for node in nodes
+    ]
+
+
+def _strip_branch_prefix(local_id: str) -> str:
+    """local_id -> the temp_id the client itself returned for that node.
+    build_survey_tree namespaces a multi-branch document's node ids as
+    "br{N}_{temp_id}" (see _build_survey_skeleton_for_branch's node_id_prefix)
+    -- a test double is entitled to know that convention, since it is the
+    same double that produced the temp_ids being prefixed."""
+    return re.sub(r"^br\d+_", "", local_id)
+
+
 class FakeSectionAnalysisClient:
-    """Test double for SectionAnalysisClient -- the one-call holistic SURVEY
-    redesign replacing the old LlmLevelingClient + BatchedRequirementClient
+    """Test double for SectionAnalysisClient -- SURVEY's holistic per-branch
+    generation, replacing the old LlmLevelingClient + BatchedRequirementClient
     pair. Records every call for call-count/threading assertions.
-    `analyze_section` (fallback path) and `analyze_section_agentic`
-    (tool-capable path, see _resolve_caps) are tracked separately so tests
-    can assert build_survey_tree's §5c gate picked the right one."""
+
+    Fixtures are given in the pre-split single-call shape ({temp_id, type,
+    parent_temp_id, title, text, tags}) and this double serves each half to
+    the stage that now asks for it: the skeleton call gets structure only,
+    the authoring call gets text/tags back for whichever nodes it is handed.
+
+    `calls` records the STAGE 1 (skeleton) fallback-path call and
+    `agentic_calls` the STAGE 1 tool-capable one -- tracked separately so
+    tests can assert build_survey_tree's §5c gate picked the right one.
+    Stage 1 is where every steering parameter (whole_document/topic_count/
+    table_group_hints/expected_root_count) now lands, since every one of them
+    steers a structural decision. `author_calls` records STAGE 3 separately.
+    `legacy_calls` covers the pre-split analyze_section/analyze_section_agentic
+    methods, which build_survey_tree no longer calls at all."""
 
     def __init__(
         self,
@@ -120,15 +170,36 @@ class FakeSectionAnalysisClient:
         agentic_nodes: list[dict] | None = None,
         agentic_citations: list[dict] | None = None,
         truncated: bool = False,
+        content_truncated: bool = False,
     ) -> None:
         self._nodes = nodes if nodes is not None else _DEFAULT_NODES
         self._agentic_nodes = agentic_nodes if agentic_nodes is not None else self._nodes
         self._agentic_citations = agentic_citations if agentic_citations is not None else []
         self._truncated = truncated
+        self._content_truncated = content_truncated
         self.calls: list[dict] = []
         self.agentic_calls: list[dict] = []
+        self.author_calls: list[dict] = []
+        self.legacy_calls: list[dict] = []
 
     def analyze_section(
+        self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
+        topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
+    ) -> tuple[list[dict], bool]:
+        self.legacy_calls.append({"section_text": section_text})
+        return self._nodes, self._truncated
+
+    def analyze_section_agentic(
+        self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
+        read_other_section_fn=None, whole_document: bool = False, topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
+    ) -> tuple[list[dict], list[dict], bool]:
+        self.legacy_calls.append({"section_text": section_text})
+        return self._agentic_nodes, self._agentic_citations, self._truncated
+
+    def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
         topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
         expected_root_count: int | None = None,
@@ -139,9 +210,9 @@ class FakeSectionAnalysisClient:
             "table_group_hints": table_group_hints,
             "expected_root_count": expected_root_count,
         })
-        return self._nodes, self._truncated
+        return _skeleton_of(self._nodes), self._truncated
 
-    def analyze_section_agentic(
+    def analyze_section_skeleton_agentic(
         self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
         read_other_section_fn=None, whole_document: bool = False, topic_count: int | None = None,
         table_group_hints: list[tuple[str, str]] | None = None,
@@ -160,7 +231,23 @@ class FakeSectionAnalysisClient:
                 "expected_root_count": expected_root_count,
             }
         )
-        return self._agentic_nodes, self._agentic_citations, self._truncated
+        return _skeleton_of(self._agentic_nodes), self._agentic_citations, self._truncated
+
+    def author_content(
+        self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+    ) -> tuple[dict[str, dict], bool]:
+        self.author_calls.append({
+            "section_text": section_text, "skeleton_nodes": skeleton_nodes, "kb_context": kb_context,
+        })
+        source = self._agentic_nodes if self.agentic_calls else self._nodes
+        by_temp_id = {n.get("temp_id"): n for n in source}
+        content: dict[str, dict] = {}
+        for local_id in skeleton_nodes:
+            entry = by_temp_id.get(_strip_branch_prefix(local_id))
+            if entry is None:
+                continue
+            content[local_id] = {"description": entry.get("text", ""), "tags": entry.get("tags", [])}
+        return content, self._content_truncated
 
 
 def test_build_survey_tree_uses_injected_analysis_client() -> None:
@@ -184,7 +271,7 @@ def test_build_survey_tree_stamps_customer_id_on_every_node() -> None:
 
 
 def test_build_survey_tree_stamps_customer_id_across_multiple_branches(monkeypatch) -> None:
-    # Same as above, but for the multi-branch path (_build_survey_tree_for_branch
+    # Same as above, but for the multi-branch path (_build_survey_skeleton_for_branch
     # called once per branch) -- customer_id must reach every branch's nodes.
     _force_multi_branch(monkeypatch)
     tree = build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), customer_id="CUST-042")
@@ -481,16 +568,24 @@ def test_build_survey_tree_uses_the_models_own_title_not_the_full_description() 
     assert tree.nodes[1].title != tree.nodes[1].description
 
 
-def test_build_survey_tree_falls_back_to_description_derived_title_when_model_omits_title() -> None:
-    # Tolerant of LLM non-compliance: schema marks 'title' required, but a
-    # model can still omit it -- must degrade to the pre-distillation
-    # behavior (title derived from the full text) with a warning, not crash.
+def test_build_survey_tree_drops_a_skeleton_node_with_no_title_and_warns() -> None:
+    # Tolerant of LLM non-compliance: the skeleton schema marks 'title'
+    # required, but a model can still omit it. Before generation was split,
+    # a missing title degraded to one derived from the node's own full text
+    # -- there IS no text at that point any more, and a skeleton entry
+    # carries nothing else to identify a node by, so the node is dropped
+    # with a warning instead of crashing or shipping an anonymous item.
     fake = FakeSectionAnalysisClient(
-        nodes=[{"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "text": "The system shall power on.", "tags": []}]
+        nodes=[
+            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "", "text": "The system shall power on.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "title": "Real", "text": "The system shall self-test.", "tags": []},
+        ]
     )
     tree = build_survey_tree(_small_doc(), fake)
-    assert tree.nodes[0].title == "The system shall power on."
-    assert any("had no model title" in w.raw for w in tree.warnings)
+    assert [n.local_id for n in tree.nodes] == ["n1"]
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.NO_MODEL_TITLE)
+    assert "had no title from structure analysis" in warning.raw
+    assert warning.node_ids == ["n0"]
 
 
 def test_build_survey_tree_truncates_an_overlong_model_title() -> None:
@@ -1688,7 +1783,7 @@ def test_build_survey_tree_does_not_warn_about_zero_nodes_when_a_branch_genuinel
 
 def test_build_survey_tree_does_not_warn_about_tables_on_the_single_branch_path() -> None:
     # Single-branch path DOES place tables/figures correctly (passed
-    # directly to _build_survey_tree_for_branch) -- no warning expected.
+    # directly to _build_survey_skeleton_for_branch) -- no warning expected.
     path = "table_only.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
@@ -1729,38 +1824,49 @@ def test_build_survey_tree_single_branch_document_keeps_unprefixed_node_ids() ->
 
 
 class _PerSectionSectionAnalysisClient:
-    """Test double whose analyze_section response depends on the section
-    TEXT it receives (branch 0's "Display" section vs branch 1's "Audio"
-    section), unlike FakeSectionAnalysisClient's fixed response -- needed
-    to prove the final tree's node order reflects DOCUMENT order, not
-    completion order, once branches run concurrently. `delay_by_keyword`
-    (keyword -> seconds) optionally sleeps before returning, so a test can
-    force branch 1 to finish before branch 0 despite branch 0 being
-    submitted first."""
+    """Test double whose response depends on the section TEXT it receives
+    (branch 0's "Display" section vs branch 1's "Audio" section), unlike
+    FakeSectionAnalysisClient's fixed response -- needed to prove the final
+    tree's node order reflects DOCUMENT order, not completion order, once
+    branches run concurrently. `delay_by_keyword` (keyword -> seconds)
+    optionally sleeps before returning, so a test can force branch 1 to
+    finish before branch 0 despite branch 0 being submitted first. The delay
+    is applied on the STAGE 1 call, the one branch ordering is decided by."""
 
     def __init__(self, delay_by_keyword: dict[str, float] | None = None) -> None:
         self.calls: list[str] = []
         self._delay_by_keyword = delay_by_keyword or {}
 
-    def analyze_section(self, section_text: str, **_kwargs) -> tuple[list[dict], bool]:
-        self.calls.append(section_text)
+    @staticmethod
+    def _keyword_for(section_text: str) -> str:
         # "5.1 surround" is branch 1 (Audio)-only content -- the doesn't-fit
         # path's compact document outline (see build_survey_tree's §3.3)
         # prepends EVERY section's heading name to every branch's own call,
         # so a bare "Display"/"Audio" substring check would false-match on
         # both branches; this fragment only ever appears in branch 1's own
         # detail text.
-        keyword = "Audio" if "5.1 surround" in section_text else "Display"
+        return "Audio" if "5.1 surround" in section_text else "Display"
+
+    def analyze_section_skeleton(self, section_text: str, **_kwargs) -> tuple[list[dict], bool]:
+        self.calls.append(section_text)
+        keyword = self._keyword_for(section_text)
         for delay_keyword, seconds in self._delay_by_keyword.items():
             if delay_keyword == keyword:
                 time.sleep(seconds)
         return (
-            [
-                {
-                    "temp_id": "n0", "type": "Feature", "parent_temp_id": None,
-                    "title": keyword, "text": f"The system shall handle: {keyword}", "tags": [],
-                },
-            ],
+            [{"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": keyword}],
+            False,
+        )
+
+    def author_content(
+        self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+    ) -> tuple[dict[str, dict], bool]:
+        keyword = self._keyword_for(section_text)
+        return (
+            {
+                local_id: {"description": f"The system shall handle: {keyword}", "tags": []}
+                for local_id in skeleton_nodes
+            },
             False,
         )
 
@@ -1850,7 +1956,7 @@ def test_build_survey_tree_flags_a_generated_description_unrelated_to_its_source
 def test_build_survey_tree_grounds_against_the_whole_rendered_section() -> None:
     # Grounding is measured against render_section's WHOLE output for the
     # branch, not one input block -- an inherent, accepted trade-off of
-    # holistic synthesis (see _build_survey_tree_for_branch's docstring).
+    # holistic synthesis (see _build_survey_skeleton_for_branch's docstring).
     doc = _small_doc()
     fake = FakeSectionAnalysisClient(
         nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The system shall support HDR display.", "tags": []}]
@@ -3430,23 +3536,35 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
         def __init__(self) -> None:
             self.call_count = 0
 
-        def analyze_section(
+        @staticmethod
+        def _lines_of(section_text: str) -> list[str]:
+            # §3.3: doesn't-fit branches get the compact document outline
+            # prepended, separated by "---" -- only count lines from this
+            # branch's OWN section text, not the shared outline's lines.
+            own_text = section_text.rsplit("\n\n---\n\n", 1)[-1]
+            return [line for line in own_text.strip().split("\n") if line]
+
+        def analyze_section_skeleton(
             self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
             topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
             expected_root_count: int | None = None,
         ) -> tuple[list[dict], bool]:
             self.call_count += 1
-            # §3.3: doesn't-fit branches get the compact document outline
-            # prepended, separated by "---" -- only count lines from this
-            # branch's OWN section text, not the shared outline's lines.
-            own_text = section_text.rsplit("\n\n---\n\n", 1)[-1]
-            lines = [line for line in own_text.strip().split("\n") if line]
             return [
-                {"temp_id": str(i), "type": "Requirement", "parent_temp_id": None, "title": line[:80], "text": line, "tags": []}
-                for i, line in enumerate(lines)
+                {"temp_id": str(i), "type": "Requirement", "parent_temp_id": None, "title": line[:80]}
+                for i, line in enumerate(self._lines_of(section_text))
             ], False
 
-        def analyze_section_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
+        def author_content(
+            self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        ) -> tuple[dict[str, dict], bool]:
+            lines_by_index = dict(enumerate(self._lines_of(section_text)))
+            return {
+                local_id: {"description": lines_by_index[int(_strip_branch_prefix(local_id))], "tags": []}
+                for local_id in skeleton_nodes
+            }, False
+
+        def analyze_section_skeleton_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
             raise AssertionError("model default is not tool-capable -- agentic path must not be used")
 
     fake = _CountingSectionAnalysisClient()
@@ -3578,7 +3696,7 @@ def test_build_survey_tree_progress_callback_carries_the_sections_finished_nodes
 def test_build_survey_tree_progress_callback_carries_model_draft_count_and_issues_found() -> None:
     # FakeSectionAnalysisClient (the usual double) has no `.model` attribute
     # at all -- confirms the real getattr(client, 'model', None) lookup in
-    # _build_survey_tree_for_branch's _fire is truly optional, not a
+    # _build_survey_skeleton_for_branch's _fire is truly optional, not a
     # required Protocol member every test double must implement.
     class _AnalysisClientWithModel(FakeSectionAnalysisClient):
         model = "qwen2.5:32b"
@@ -3686,58 +3804,75 @@ def test_render_section_prefixes_each_table_with_its_own_id_marker() -> None:
     assert text.index("[TABLE t2]") < text.index("| h1 | h2 |")
 
 
-def test_build_survey_tree_embeds_a_named_tables_html_and_records_table_ids() -> None:
-    # known-issues item 20, piece (c): once a node names a real table_id,
-    # that table's HTML is embedded into its description -- no new ADO
-    # write capability needed, unlike figures (see WorkItemNode.table_ids'
+# --- STAGE 2 seam: figure/table mapping ------------------------------------
+# Deciding WHICH figures/tables belong to which node is a whole-document
+# mapping pass that runs BETWEEN skeleton generation and content authoring.
+# That pass does not exist yet, so nothing populates figure_ids/table_ids end
+# to end through build_survey_tree today (empty is the correct, expected
+# state) -- but the validation and table-HTML-embedding machinery its verdicts
+# feed into is real and already in place, so these tests drive it through the
+# very same parameter that pass will use.
+
+_MAPPING_NODE = {
+    "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+    "title": "t", "text": "The system shall do x.", "tags": [],
+}
+
+
+def _branch_with_mapping(
+    blocks: list[Block],
+    client: FakeSectionAnalysisClient,
+    mapping: dict[str, dict[str, list[str]]] | None,
+    tables: list[Table] | None = None,
+    figures: list[Figure] | None = None,
+    figure_id_by_block_id: dict[str, str] | None = None,
+    node_id_prefix: str = "",
+) -> tuple[list[WorkItemNode], list]:
+    """Runs one branch through both generation stages back to back with the
+    mapping seam filled in by hand, returning (nodes, warnings)."""
+    skeleton = _build_survey_skeleton_for_branch(
+        blocks, client, node_id_prefix=node_id_prefix, tables=tables, figures=figures,
+        figure_id_by_block_id=figure_id_by_block_id,
+    )
+    result = _author_branch_content(skeleton, client, figure_table_ids_by_local_id=mapping)
+    return skeleton.nodes, result.warnings
+
+
+def test_author_branch_content_embeds_a_mapped_tables_html_and_records_table_ids() -> None:
+    # known-issues item 20, piece (c): once a node is mapped to a real
+    # table_id, that table's HTML is embedded into its description -- no new
+    # ADO write capability needed, unlike figures (see WorkItemNode.table_ids'
     # own docstring).
-    path = "table_only.txt"
-    doc = CanonicalDoc(
-        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
-    )
-    fake = FakeSectionAnalysisClient(
-        nodes=[{
-            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-            "title": "t", "text": "The system shall do x.", "tags": [],
-            "table_ids": ["t0"],
-        }]
-    )
-    tree = build_survey_tree(doc, fake)
-    assert len(tree.nodes) == 1
-    node = tree.nodes[0]
+    table = Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr("table_only.txt"))
+    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+
+    nodes, _ = _branch_with_mapping([], fake, {"n0": {"table_ids": ["t0"]}}, tables=[table])
+
+    assert len(nodes) == 1
+    node = nodes[0]
     assert node.table_ids == ["t0"]
     assert node.description.startswith("The system shall do x.")
     assert "<table>" in node.description
     assert "<td>a</td>" in node.description
 
 
-def test_build_survey_tree_drops_a_hallucinated_table_id_and_warns() -> None:
-    # A model-returned id that doesn't match any real table this section
-    # actually offered must never be trusted verbatim -- dropped, with a
-    # warning surfaced for review, not silently accepted.
-    path = "table_only.txt"
-    doc = CanonicalDoc(
-        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
-    )
-    fake = FakeSectionAnalysisClient(
-        nodes=[{
-            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-            "title": "t", "text": "The system shall do x.", "tags": [],
-            "table_ids": ["t99"],
-        }]
-    )
-    tree = build_survey_tree(doc, fake)
-    node = tree.nodes[0]
-    assert node.table_ids == []
-    assert "<table>" not in node.description
-    assert any('"t" referenced 1 table(s) not offered in this section' in w.raw for w in tree.warnings)
+def test_author_branch_content_drops_a_hallucinated_table_id_and_warns() -> None:
+    # A mapped id that doesn't match any real table this section actually
+    # offered must never be trusted verbatim -- dropped, with a warning
+    # surfaced for review, not silently accepted.
+    table = Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr("table_only.txt"))
+    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+
+    nodes, warnings = _branch_with_mapping([], fake, {"n0": {"table_ids": ["t99"]}}, tables=[table])
+
+    assert nodes[0].table_ids == []
+    assert "<table>" not in nodes[0].description
+    assert any('"t" referenced 1 table(s) not offered in this section' in w.raw for w in warnings)
 
 
-def test_build_survey_tree_drops_a_valid_table_id_with_no_extractable_content_and_warns() -> None:
-    # A model-named table_id can pass the hallucination filter (it's a REAL
-    # table this branch actually offered) yet still render empty HTML --
+def test_author_branch_content_drops_a_valid_table_id_with_no_extractable_content_and_warns() -> None:
+    # A mapped table_id can pass the hallucination filter (it's a REAL table
+    # this branch actually offered) yet still render empty HTML --
     # _table_to_html returns "" for a grid with no non-blank cell anywhere.
     # Previously the id was kept in table_ids unconditionally while the
     # HTML was only appended to description `if table_html:`, leaving a
@@ -3747,128 +3882,113 @@ def test_build_survey_tree_drops_a_valid_table_id_with_no_extractable_content_an
     # in description. The id must now be dropped from table_ids (together
     # with skipping the description append) and reported via a dedicated
     # EMPTY_TABLE_CONTENT warning instead of silently disappearing.
-    path = "table_only.txt"
-    doc = CanonicalDoc(
-        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        tables=[Table(id="t0", cells=[[TableCell(text=""), TableCell(text="")]], source_ref=_sr(path))],
-    )
-    fake = FakeSectionAnalysisClient(
-        nodes=[{
-            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-            "title": "t", "text": "The system shall do x.", "tags": [],
-            "table_ids": ["t0"],
-        }]
-    )
-    tree = build_survey_tree(doc, fake)
-    node = tree.nodes[0]
+    table = Table(id="t0", cells=[[TableCell(text=""), TableCell(text="")]], source_ref=_sr("table_only.txt"))
+    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+
+    nodes, warnings = _branch_with_mapping([], fake, {"n0": {"table_ids": ["t0"]}}, tables=[table])
+
+    node = nodes[0]
     assert node.table_ids == []
     assert "<table>" not in node.description
     assert "t0" not in node.description
-    warning = next(w for w in tree.warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT)
+    warning = next(w for w in warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT)
     assert warning.node_ids == [node.local_id]
     assert warning.detail["tableId"] == "t0"
 
 
-def test_build_survey_tree_records_figure_ids_named_by_the_model() -> None:
+def test_author_branch_content_records_mapped_figure_ids() -> None:
     path = "figure_only.txt"
-    doc = CanonicalDoc(
-        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+    blocks = [Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))]
+    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+
+    nodes, _ = _branch_with_mapping(
+        blocks, fake, {"n0": {"figure_ids": ["f0"]}},
         figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
+        figure_id_by_block_id={"b0": "f0"},
     )
-    fake = FakeSectionAnalysisClient(
-        nodes=[{
-            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-            "title": "t", "text": "The system shall do x.", "tags": [],
-            "figure_ids": ["f0"],
-        }]
-    )
-    tree = build_survey_tree(doc, fake)
-    assert tree.nodes[0].figure_ids == ["f0"]
+
+    assert nodes[0].figure_ids == ["f0"]
 
 
-def test_build_survey_tree_drops_a_hallucinated_figure_id_and_warns() -> None:
+def test_author_branch_content_drops_a_hallucinated_figure_id_and_warns() -> None:
     path = "figure_only.txt"
-    doc = CanonicalDoc(
-        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+    blocks = [Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))]
+    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+
+    nodes, warnings = _branch_with_mapping(
+        blocks, fake, {"n0": {"figure_ids": ["f99"]}},
         figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
+        figure_id_by_block_id={"b0": "f0"},
     )
-    fake = FakeSectionAnalysisClient(
-        nodes=[{
-            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-            "title": "t", "text": "The system shall do x.", "tags": [],
-            "figure_ids": ["f99"],
-        }]
-    )
-    tree = build_survey_tree(doc, fake)
-    assert tree.nodes[0].figure_ids == []
-    assert any('"t" referenced 1 figure(s) not offered in this section' in w.raw for w in tree.warnings)
+
+    assert nodes[0].figure_ids == []
+    assert any('"t" referenced 1 figure(s) not offered in this section' in w.raw for w in warnings)
 
 
-def test_build_survey_tree_scopes_table_ids_validation_per_branch(monkeypatch) -> None:
-    # The multi-branch path never passes `figures=`/a per-branch table list
-    # to _build_survey_tree_for_branch the same simple way the single-branch
-    # path does (see _run_branch) -- this proves table_ids validation still
-    # correctly scopes to EACH branch's own real tables (via
-    # _partition_tables_by_branch), not the whole document's. Both branches
-    # get the identical FakeSectionAnalysisClient node claiming "t0", but
-    # only branch 2 ("Audio") actually has that table in its own section.
-    _force_multi_branch(monkeypatch)
-    doc = _two_branch_doc()
-    doc = doc.model_copy(
-        update={
-            "tables": [
-                Table(
-                    id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
-                    source_ref=SourceRef(document_path=doc.document.path, start_offset=20, end_offset=30),
-                )
-            ]
-        }
+def test_author_branch_content_scopes_table_ids_validation_per_branch() -> None:
+    # valid_table_ids is derived per branch, from that branch's OWN `tables`
+    # (see _partition_tables_by_branch, which routes each table to exactly
+    # one branch) -- never the whole document's. Both branches here are
+    # mapped to the identical "t0", but only the second actually has it.
+    path = "two_branch_survey_input.txt"
+    table = Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))
+    mapping = {"br0_n0": {"table_ids": ["t0"]}, "br1_n0": {"table_ids": ["t0"]}}
+
+    display_nodes, _ = _branch_with_mapping(
+        [Block(id="b0", kind=BlockKind.PARAGRAPH, text="Display.", source_ref=_sr(path))],
+        FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]), mapping, node_id_prefix="br0_",
     )
-    fake = FakeSectionAnalysisClient(
-        nodes=[{
-            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-            "title": "t", "text": "The system shall do x.", "tags": [], "table_ids": ["t0"],
-        }]
+    audio_nodes, _ = _branch_with_mapping(
+        [Block(id="b1", kind=BlockKind.PARAGRAPH, text="Audio.", source_ref=_sr(path))],
+        FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]), mapping, tables=[table], node_id_prefix="br1_",
     )
-    tree = build_survey_tree(doc, fake)
-    display_node = next(n for n in tree.nodes if n.local_id == "br0_n0")
-    audio_node = next(n for n in tree.nodes if n.local_id == "br1_n0")
-    assert display_node.table_ids == []
-    assert "<table>" not in display_node.description
-    assert audio_node.table_ids == ["t0"]
-    assert "<table>" in audio_node.description
+
+    assert display_nodes[0].table_ids == []
+    assert "<table>" not in display_nodes[0].description
+    assert audio_nodes[0].table_ids == ["t0"]
+    assert "<table>" in audio_nodes[0].description
 
 
-def test_build_survey_tree_scopes_figure_ids_validation_per_branch(monkeypatch) -> None:
+def test_author_branch_content_scopes_figure_ids_validation_per_branch() -> None:
     # Same guarantee as the table test above, for figures -- the global
     # figure_id_by_block_id map is whole-document, but valid_figure_ids is
     # derived from each branch's OWN `blocks`, so a figure belonging to a
     # DIFFERENT branch is correctly rejected here too.
-    _force_multi_branch(monkeypatch)
     path = "two_branch_survey_input.txt"
+    figure_id_by_block_id = {"b1": "f0"}
+    mapping = {"br0_n0": {"figure_ids": ["f0"]}, "br1_n0": {"figure_ids": ["f0"]}}
+
+    display_nodes, _ = _branch_with_mapping(
+        [Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: A display wiring diagram]", source_ref=_sr(path))],
+        FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]), mapping,
+        figure_id_by_block_id=figure_id_by_block_id, node_id_prefix="br0_",
+    )
+    audio_nodes, _ = _branch_with_mapping(
+        [Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path))],
+        FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]), mapping,
+        figure_id_by_block_id=figure_id_by_block_id, node_id_prefix="br1_",
+    )
+
+    assert display_nodes[0].figure_ids == ["f0"]
+    assert audio_nodes[0].figure_ids == []
+
+
+def test_build_survey_tree_leaves_figure_and_table_ids_empty_until_the_mapping_pass_lands() -> None:
+    # The end-to-end counterpart to the seam tests above: with no mapping
+    # pass wired in, a full build produces nodes with empty figure_ids/
+    # table_ids -- the correct, expected state, not a silent regression.
+    path = "figure_and_table.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
-        blocks=[
-            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
-            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: A display wiring diagram]", source_ref=_sr(path)),
-            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
-            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
-        ],
-        figures=[Figure(id="f0", caption="A display wiring diagram", source_ref=_sr(path))],
+        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+        figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
     )
-    fake = FakeSectionAnalysisClient(
-        nodes=[{
-            "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
-            "title": "t", "text": "The system shall do x.", "tags": [], "figure_ids": ["f0"],
-        }]
-    )
-    tree = build_survey_tree(doc, fake)
-    display_node = next(n for n in tree.nodes if n.local_id == "br0_n0")
-    audio_node = next(n for n in tree.nodes if n.local_id == "br1_n0")
-    assert display_node.figure_ids == ["f0"]
-    assert audio_node.figure_ids == []
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
+
+    assert [n.figure_ids for n in tree.nodes] == [[]]
+    assert [n.table_ids for n in tree.nodes] == [[]]
+    assert "<table>" not in tree.nodes[0].description
 
 
 def test_build_survey_tree_warns_on_a_referenced_attachment_it_did_not_ingest() -> None:
@@ -3942,7 +4062,7 @@ def test_build_survey_tree_does_not_double_report_a_block_as_both_dropped_and_re
 def test_build_survey_tree_produces_a_non_empty_tree_for_a_table_only_xlsx_doc() -> None:
     # §4: load_xlsx returns blocks=[], tables=[one per sheet] -- with no
     # headings at all, _split_into_branches yields [] (the single/zero-branch
-    # path). Before this fix, that path called _build_survey_tree_for_branch
+    # path). Before this fix, that path called _build_survey_skeleton_for_branch
     # WITHOUT tables/figures, so render_section([]) == "" and an xlsx-only
     # upload silently produced an empty SURVEY tree.
     path = "sheet.xlsx"
@@ -4543,7 +4663,7 @@ def test_build_survey_tree_table_row_subtree_sets_table_ids_and_section_path() -
 
 def test_build_survey_tree_llm_branch_section_path_is_the_sections_own_label() -> None:
     # SURVEY nodes share one coarse, section-level source_ref (see
-    # _build_survey_tree_for_branch's own representative_source_ref
+    # _build_survey_skeleton_for_branch's own representative_source_ref
     # docstring) -- section_path is a single-element path here (the
     # branch's own _derive_section_label), not a multi-level ancestor
     # chain the way BASELINE/the deterministic path can produce.
@@ -4554,7 +4674,7 @@ def test_build_survey_tree_llm_branch_section_path_is_the_sections_own_label() -
 
 def test_build_survey_tree_llm_branch_representative_source_ref_reflects_branch_page_range() -> None:
     # Task 1b: representative_source_ref used to pass blocks[0]'s own
-    # page/page_end through VERBATIM (see _build_survey_tree_for_branch's
+    # page/page_end through VERBATIM (see _build_survey_skeleton_for_branch's
     # docstring) -- every node synthesized from this branch shared that one
     # first block's page even though the branch's real content spans many
     # more pages. _widen_branch_page_range now computes page/page_end as
@@ -4652,7 +4772,7 @@ def test_build_survey_tree_llm_branch_attributes_an_uncaptioned_figure_positiona
 
 
 def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insignificant_figure_ids() -> None:
-    # Task 4b sub-fix (ii), call site 5/5 (_build_survey_tree_for_branch's
+    # Task 4b sub-fix (ii), call site 5/5 (_build_survey_skeleton_for_branch's
     # own positional-bracketing fallback). fig0 (caption_status=
     # "insignificant") lands in both lists; fig1 (caption_status=
     # "vision_failed") lands in uncaptioned_figure_ids only.
@@ -4692,7 +4812,7 @@ def test_build_survey_tree_llm_branch_positional_attribution_also_populates_insi
 
 def test_build_survey_tree_multi_branch_path_also_populates_insignificant_figure_ids(monkeypatch) -> None:
     # Regression guard (review finding on commit 839532a): the multi-branch
-    # loop's own _build_survey_tree_for_branch call site (build_survey_tree's
+    # loop's own _build_survey_skeleton_for_branch call site (build_survey_tree's
     # _run_branch, distinct from the single-call/whole-document call site the
     # test above exercises) never passed `figures=` at all -- only `tables=`
     # -- so on any document that actually splits into multiple branches,
@@ -5245,3 +5365,269 @@ def test_build_survey_tree_defaults_primer_context_to_none_byte_identical() -> N
     tree_without = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     tree_with_none = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), primer_context=None)
     assert tree_without.nodes == tree_with_none.nodes
+
+
+# ---------------------------------------------------------------------------
+# Part B: the skeleton (stage 1) / content-authoring (stage 3) generation split
+#
+# One call per branch used to decide structure AND write every requirement at
+# once. It is now two, with whole-document structural repair running between
+# them -- so a node is authored against the ancestry it actually ships with,
+# not one that was about to change underneath it.
+# ---------------------------------------------------------------------------
+
+
+def _skeleton_for(blocks: list[Block], client, **kwargs):
+    return _build_survey_skeleton_for_branch(blocks, client, node_id_prefix="", **kwargs)
+
+
+def test_skeleton_stage_produces_structure_with_no_content_at_all() -> None:
+    fake = FakeSectionAnalysisClient()
+
+    skeleton = _skeleton_for(_small_doc().blocks, fake)
+
+    assert [(n.local_id, n.type, n.parent_local_id, n.title) for n in skeleton.nodes] == [
+        ("n0", WorkItemType.FEATURE, None, "Display"),
+        ("n1", WorkItemType.REQUIREMENT, "n0", "HDR support"),
+    ]
+    # Nothing content-shaped exists yet -- not the text, not the tags, not
+    # the ids, and not the two fields DERIVED from the text either.
+    for node in skeleton.nodes:
+        assert node.description == ""
+        assert node.tags == []
+        assert node.figure_ids == []
+        assert node.table_ids == []
+        assert node.fidelity_hash is None
+        assert node.grounding_score is None
+    # Structure only -- the authoring call has not happened at this point.
+    assert fake.author_calls == []
+
+
+def test_skeleton_stage_carries_every_structural_steering_parameter() -> None:
+    # Each of these steers a STRUCTURAL decision (how many nodes, which
+    # groups get their own node and of what type, whether multiple roots are
+    # legitimate), so all of them belong to stage 1 and none to stage 3.
+    fake = FakeSectionAnalysisClient()
+
+    build_survey_tree(_small_doc(), fake)
+
+    assert len(fake.calls) == 1
+    assert set(fake.calls[0]) == {
+        "section_text", "kb_context", "whole_document", "topic_count",
+        "table_group_hints", "expected_root_count",
+    }
+    assert set(fake.author_calls[0]) == {"section_text", "skeleton_nodes", "kb_context"}
+
+
+def test_content_stage_is_given_the_already_decided_skeleton() -> None:
+    fake = FakeSectionAnalysisClient()
+
+    build_survey_tree(_small_doc(), fake)
+
+    assert fake.author_calls[0]["skeleton_nodes"] == {
+        "n0": {"type": "Feature", "title": "Display", "parent_id": None},
+        "n1": {"type": "Requirement", "title": "HDR support", "parent_id": "n0"},
+    }
+    # Same section text both stages -- authoring is grounded in exactly what
+    # the structure was decided from.
+    assert fake.author_calls[0]["section_text"] == fake.calls[0]["section_text"]
+
+
+def test_content_stage_cannot_change_the_hierarchy_it_was_given() -> None:
+    # The prompt states the tree is FIXED; this is the code-level backstop.
+    # A response that re-types a node, re-parents it, renames it, or invents
+    # an id outright changes nothing structural -- only descriptions land.
+    class _MeddlingClient(FakeSectionAnalysisClient):
+        def author_content(self, section_text, skeleton_nodes, kb_context=None):
+            self.author_calls.append({"skeleton_nodes": skeleton_nodes})
+            return {
+                "n0": {"description": "Root feature text.", "type": "Requirement", "title": "Renamed", "parent_id": "n1", "tags": []},
+                "n1": {"description": "Child requirement text.", "tags": ["safety"]},
+                "invented": {"description": "A node nobody asked for.", "tags": []},
+            }, False
+
+    tree = build_survey_tree(_small_doc(), _MeddlingClient())
+
+    assert [(n.local_id, n.type, n.parent_local_id, n.title) for n in tree.nodes] == [
+        ("n0", WorkItemType.FEATURE, None, "Display"),
+        ("n1", WorkItemType.REQUIREMENT, "n0", "HDR support"),
+    ]
+    assert [n.description for n in tree.nodes] == ["Root feature text.", "Child requirement text."]
+    assert tree.nodes[1].tags == [RequirementTag.SAFETY]
+
+
+def test_content_stage_falls_back_to_the_title_for_an_omitted_node_and_warns() -> None:
+    class _PartialClient(FakeSectionAnalysisClient):
+        def author_content(self, section_text, skeleton_nodes, kb_context=None):
+            return {"n1": {"description": "The display shall support HDR.", "tags": []}}, False
+
+    tree = build_survey_tree(_small_doc(), _PartialClient())
+
+    unauthored = next(n for n in tree.nodes if n.local_id == "n0")
+    # Honest, already source-derived, and never an empty work item.
+    assert unauthored.description == "Display"
+    assert unauthored.fidelity_hash is not None
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE)
+    assert warning.detail["pass"] == "content_authoring"
+    assert warning.detail["missing"] == 1
+    assert warning.node_ids == ["n0"]
+
+
+def test_content_stage_truncation_is_reported_separately_from_skeleton_truncation() -> None:
+    skeleton_truncated = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(truncated=True))
+    content_truncated = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(content_truncated=True))
+
+    assert [w.detail["stage"] for w in skeleton_truncated.warnings if w.kind == WarningKind.OUTPUT_TRUNCATED] == ["skeleton"]
+    assert [w.detail["stage"] for w in content_truncated.warnings if w.kind == WarningKind.OUTPUT_TRUNCATED] == ["content"]
+
+
+def test_both_generation_stages_fail_hard() -> None:
+    # Core generation failing must fail the job -- neither stage is wrapped
+    # in a try/except that would degrade a document to a structureless or
+    # textless tree. Only clearly-optional enhancement passes fail open.
+    class _FailingSkeletonClient(FakeSectionAnalysisClient):
+        def analyze_section_skeleton(self, *args, **kwargs):
+            raise RuntimeError("skeleton call failed")
+
+    class _FailingAuthorClient(FakeSectionAnalysisClient):
+        def author_content(self, *args, **kwargs):
+            raise RuntimeError("authoring call failed")
+
+    with pytest.raises(RuntimeError, match="skeleton call failed"):
+        build_survey_tree(_small_doc(), _FailingSkeletonClient())
+    with pytest.raises(RuntimeError, match="authoring call failed"):
+        build_survey_tree(_small_doc(), _FailingAuthorClient())
+
+
+def test_repair_requirement_hierarchy_runs_on_the_skeleton_before_authoring() -> None:
+    # A Requirement emitted directly under an Epic is repaired while the
+    # tree is still titles-only structure -- and the bridge Feature that
+    # repair synthesizes is never offered for authoring, keeping its own
+    # "no content invented" description.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Receiver", "text": "Receiver epic.", "tags": []},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Channel scan", "text": "The receiver shall scan channels.", "tags": []},
+        ]
+    )
+
+    tree = build_survey_tree(_small_doc(), fake)
+
+    bridge = next(n for n in tree.nodes if "synth_feature" in n.local_id)
+    requirement = next(n for n in tree.nodes if n.local_id == "n1")
+    assert requirement.parent_local_id == bridge.local_id
+    # The repair had already happened by the time authoring was asked for
+    # anything -- the payload names the bridge as the Requirement's parent.
+    assert fake.author_calls[0]["skeleton_nodes"]["n1"]["parent_id"] == bridge.local_id
+    assert bridge.local_id not in fake.author_calls[0]["skeleton_nodes"]
+    assert bridge.description.startswith("Auto-inserted grouping Feature")
+
+
+def test_root_regrouping_runs_between_the_two_stages(monkeypatch) -> None:
+    # The reorder this whole split exists to enable: whole-document topical
+    # regrouping reshapes the tree while it is still cheap structure, so
+    # every branch's content is authored against the ancestry it ends up
+    # with. Proven by the authoring payload itself naming the synthesized
+    # group as each regrouped root's parent.
+    _force_multi_branch(monkeypatch)
+
+    class _FakeGroupingClient:
+        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+            return {"groups": [{"title": "Media Subsystems", "member_ids": list(titles_by_id)}]}
+
+    fake = FakeSectionAnalysisClient(
+        nodes=[{"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Section", "text": "Section text.", "tags": []}]
+    )
+    tree = build_survey_tree(_two_branch_doc(), fake, grouping_client=_FakeGroupingClient())
+
+    group = next(n for n in tree.nodes if n.local_id == "regroup_synth_group_0")
+    assert {n.parent_local_id for n in tree.nodes if n.local_id.startswith("br")} == {group.local_id}
+    assert len(fake.author_calls) == 2
+    for call in fake.author_calls:
+        assert [entry["parent_id"] for entry in call["skeleton_nodes"].values()] == [group.local_id]
+        # A synthesized grouping node is structure only -- never authored.
+        assert group.local_id not in call["skeleton_nodes"]
+    assert group.description.startswith("Auto-inserted topical grouping")
+
+
+def test_catchall_epic_wrap_runs_between_the_two_stages(monkeypatch) -> None:
+    # _ensure_root_features_have_epic_parent's own move, same guarantee.
+    _force_multi_branch(monkeypatch)
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Root epic", "text": "Root epic text.", "tags": []},
+            {"temp_id": "n1", "type": "Feature", "parent_temp_id": None, "title": "Bare feature", "text": "Bare feature text.", "tags": []},
+        ]
+    )
+
+    tree = build_survey_tree(_two_branch_doc(), fake, grouping_client=None)
+
+    catchall = next(n for n in tree.nodes if n.local_id == "regroup_synth_root_epic")
+    assert {n.local_id for n in tree.nodes if n.parent_local_id == catchall.local_id} == {"br0_n1", "br1_n1"}
+    authored_parents = {
+        local_id: entry["parent_id"]
+        for call in fake.author_calls
+        for local_id, entry in call["skeleton_nodes"].items()
+    }
+    assert authored_parents["br0_n1"] == catchall.local_id
+    assert authored_parents["br1_n1"] == catchall.local_id
+    assert catchall.local_id not in authored_parents  # structure only, never authored
+    assert catchall.description.startswith("Auto-inserted catch-all Epic")
+
+
+def test_agentic_retrieval_grounds_the_authoring_call_too(monkeypatch) -> None:
+    # Only stage 1 is agentic -- what the model pulls there is handed to
+    # stage 3 as a plain pre-computed kb_context, so one retrieval loop
+    # grounds both calls rather than paying for two.
+    import app.leveling.llm_leveling as llm_leveling_module
+
+    monkeypatch.setattr(
+        llm_leveling_module, "_resolve_caps",
+        lambda model, caps_client=None: (100, 100_000, 100_000, True),
+    )
+    monkeypatch.setattr(
+        llm_leveling_module, "retrieve_context",
+        lambda user_id, query, embed_client, vector_store, **_: (
+            "Snippet text.", [{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}]
+        ),
+    )
+    fake = FakeSectionAnalysisClient(agentic_citations=[{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}])
+
+    build_survey_tree(_small_doc(), fake, user_id="u1", embed_client=object(), vector_store=object())
+
+    assert len(fake.agentic_calls) == 1
+    assert fake.author_calls[0]["kb_context"] == "Snippet text."
+
+
+def test_full_two_stage_pipeline_produces_a_coherent_multi_branch_tree(monkeypatch) -> None:
+    # Integration-style end-to-end guard for the whole reordered pipeline:
+    # skeleton per branch -> whole-document repair -> content per branch.
+    # Every invariant the downstream orchestrator relies on must still hold.
+    _force_multi_branch(monkeypatch)
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Subsystem", "text": "The subsystem covers the section's obligations.", "tags": []},
+            {"temp_id": "n1", "type": "Feature", "parent_temp_id": "n0", "title": "Capability", "text": "The capability groups the section's requirements.", "tags": []},
+            {"temp_id": "n2", "type": "Requirement", "parent_temp_id": "n1", "title": "Obligation", "text": "The system shall satisfy the stated obligation.", "tags": ["functional"]},
+        ]
+    )
+
+    tree = build_survey_tree(_two_branch_doc(), fake, customer_id="CUST-1")
+
+    assert len(fake.calls) == 2 and len(fake.author_calls) == 2  # one of each, per branch
+    assert len(tree.nodes) == 6
+    by_id = {n.local_id: n for n in tree.nodes}
+    for node in tree.nodes:
+        assert node.description, f"{node.local_id} shipped with no description"
+        assert node.fidelity_hash and node.identity_hash
+        assert node.mode == WorkItemMode.SURVEY
+        assert node.customer_id == "CUST-1"
+        assert node.grounding_score is not None
+        if node.parent_local_id is not None:
+            assert node.parent_local_id in by_id, f"{node.local_id} has a dangling parent"
+    # Branch namespacing intact, document order preserved, no Requirement
+    # left hanging directly off an Epic.
+    assert [n.local_id for n in tree.nodes] == ["br0_n0", "br0_n1", "br0_n2", "br1_n0", "br1_n1", "br1_n2"]
+    for node in tree.nodes:
+        if node.type == WorkItemType.REQUIREMENT:
+            assert by_id[node.parent_local_id].type in (WorkItemType.FEATURE, WorkItemType.REQUIREMENT)

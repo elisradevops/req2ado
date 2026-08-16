@@ -65,7 +65,7 @@ def test_build_survey_tree_warning_carries_job_id_through_run_in_threadpool() ->
     from app.leveling.llm_leveling import build_survey_tree
 
     class _EmptyResultClient:
-        def analyze_section(self, *args, **kwargs):
+        def analyze_section_skeleton(self, *args, **kwargs):
             return [], False
 
     doc = CanonicalDoc(

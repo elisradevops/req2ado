@@ -52,27 +52,34 @@ def _survey_doc() -> CanonicalDoc:
 class FakeSectionAnalysisClient:
     """Hand-written test double for SectionAnalysisClient — mirrors the fake
     used in tests/test_llm_leveling.py to prove SURVEY-mode output (via the
-    one-call holistic analyze_section redesign) also conforms to the shared
-    work-item-tree schema."""
+    two-stage skeleton + content-authoring generation split) also conforms to
+    the shared work-item-tree schema."""
 
-    def analyze_section(
+    _CONTENT = {
+        "n0": {"description": "The system shall handle: Display", "tags": []},
+        "n1": {"description": "The system shall handle: The display shall support HDR.", "tags": []},
+    }
+
+    def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
         topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
         expected_root_count: int | None = None,
     ) -> tuple[list[dict], bool]:
         return [
-            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display", "text": "The system shall handle: Display", "tags": []},
-            {
-                "temp_id": "n1",
-                "type": "Requirement",
-                "parent_temp_id": "n0",
-                "title": "HDR support",
-                "text": "The system shall handle: The display shall support HDR.",
-                "tags": [],
-            },
+            {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display"},
+            {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "HDR support"},
         ], False
 
-    def analyze_section_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
+    def author_content(
+        self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+    ) -> tuple[dict[str, dict], bool]:
+        return {
+            local_id: self._CONTENT[local_id]
+            for local_id in skeleton_nodes
+            if local_id in self._CONTENT
+        }, False
+
+    def analyze_section_skeleton_agentic(self, section_text: str, retrieve_fn, **kwargs) -> tuple[list[dict], list[dict], bool]:
         raise AssertionError("not exercised by this test -- default model is not tool-capable")
 
 
@@ -93,13 +100,13 @@ def test_survey_tree_with_a_real_warning_matches_work_item_tree_schema(schema) -
     # output -- an empty array trivially satisfies any `items` schema
     # regardless of whether that schema is even correct.
     fake = FakeSectionAnalysisClient()
-    # No "title" key at all -- triggers the NO_MODEL_TITLE warning
-    # regardless of hierarchy shape (a lone root Requirement with no
-    # Feature/Epic anywhere is otherwise a legitimate no-op, see
+    # An empty "title" -- triggers the NO_MODEL_TITLE warning regardless of
+    # hierarchy shape (a lone root Requirement with no Feature/Epic anywhere
+    # is otherwise a legitimate no-op, see
     # test_build_survey_tree_does_not_touch_a_genuinely_sole_root_requirement
     # in test_llm_leveling.py).
-    fake.analyze_section = lambda *a, **k: (
-        [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "Shall do X.", "tags": []}],
+    fake.analyze_section_skeleton = lambda *a, **k: (
+        [{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": ""}],
         False,
     )
     tree = build_survey_tree(_survey_doc(), fake)
