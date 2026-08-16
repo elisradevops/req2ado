@@ -180,7 +180,8 @@
             "enhancement_call_failed", "enhancement_response_incomplete", "dropped_row",
             "front_matter_folded", "trace_link_inference_failed", "heading_id_offset_mismatch",
             "unsupported_content_note", "empty_table_content",
-            "vision_captioning_disabled", "invalid_mapping_target", "mapping_call_failed"
+            "vision_captioning_disabled", "invalid_mapping_target", "mapping_call_failed",
+            "ocr_recovered_table_text"
           ]
         },
         "severity": {

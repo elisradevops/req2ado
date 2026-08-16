@@ -338,6 +338,13 @@ class WarningKind(str, Enum):
     # main.py's /level route, not build_survey_tree/build_baseline_tree
     # themselves, so it fires exactly once regardless of BASELINE/SURVEY mode.
     VISION_CAPTIONING_DISABLED = "vision_captioning_disabled"
+    # PDF-only (docs/superpowers/specs/2026-08-16-pdf-table-header-ocr-recovery-design.md):
+    # a table had 1+ grid position whose text could not be extracted
+    # directly and was instead reconstructed via OCR on a rendered crop
+    # (see TableCell.ocr_recovered, pdf_loader.py's _cell_ocr_recovery).
+    # One warning per TABLE with any such cell, not per cell -- matches
+    # this codebase's established table/section-level dedup convention.
+    OCR_RECOVERED_TABLE_TEXT = "ocr_recovered_table_text"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -373,6 +380,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.VISION_CAPTIONING_DISABLED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.INVALID_MAPPING_TARGET: WarningSeverity.NEEDS_REVIEW,
     WarningKind.MAPPING_CALL_FAILED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.OCR_RECOVERED_TABLE_TEXT: WarningSeverity.NEEDS_REVIEW,
 }
 
 

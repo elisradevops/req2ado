@@ -162,7 +162,8 @@ export interface IntegrityWarning {
     | 'empty_table_content'
     | 'vision_captioning_disabled'
     | 'invalid_mapping_target'
-    | 'mapping_call_failed';
+    | 'mapping_call_failed'
+    | 'ocr_recovered_table_text';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

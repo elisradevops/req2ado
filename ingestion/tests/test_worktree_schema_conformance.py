@@ -178,6 +178,18 @@ def test_mapping_call_failed_warning_matches_work_item_tree_schema(schema) -> No
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
+def test_ocr_recovered_table_text_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.OCR_RECOVERED_TABLE_TEXT,
+            "Table t0 had 3 cell(s) recovered via OCR -- please spot-check against the source document.",
+            detail={"tableId": "t0", "recoveredCellCount": 3},
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
 def test_excluded_figure_and_table_ids_match_work_item_tree_schema(schema) -> None:
     tree = build_baseline_tree(_baseline_doc())
     tree.excluded_figure_ids = ["f0", "f1"]

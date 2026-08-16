@@ -90,6 +90,10 @@ export interface TableCell {
    */
   text_color?: string | null;
   align?: 'left' | 'center' | 'right' | 'justify' | null;
+  /**
+   * Set when this cell's text could not be extracted directly and was recovered via OCR on a rendered crop -- see TableCell.ocr_recovered's own docstring in canonical/model.py.
+   */
+  ocr_recovered?: boolean;
 }
 export interface Figure {
   id: string;
