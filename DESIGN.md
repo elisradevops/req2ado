@@ -1357,10 +1357,13 @@ and the failure modes are predictable enough to name:
    cannot mean less time; a negative intercept is a fit extrapolating through
    the floor. This is the specific pathology small samples produce, and it must
    never reach a user. Fall back to a **two**-parameter fit on a single work
-   term: let `u_i = b_i + 4·f_i` (borrowing the 4:1 figure-to-block ratio from
-   the bootstrap below as a prior, since that *ratio* claim — a figure is a
-   separate vision call, a whole round trip on a slower modality — survives the
-   reversal of the *scale*), and fit `y ≈ a + μ·u`. A 2×2 solve is far more
+   term: let `u_i = b_i + r·f_i`, where `r` is the figure-to-block ratio the
+   bootstrap below itself asserts (`BOOTSTRAP_FIGURE_BLOCK_RATIO`, derived from
+   the two constants rather than written out as a literal — Part B moved the
+   block weight and deliberately left the figure weight alone, so `r` is no
+   longer the 4 this section used to spell out). The *ratio* claim — a figure is
+   a separate vision call, a whole round trip on a slower modality — survives
+   the reversal of the *scale*. Fit `y ≈ a + μ·u`. A 2×2 solve is far more
    stable under collinearity and is still entirely data-driven.
 3. **The 2-parameter fit also degenerate** (`μ ≤ 0`, or fewer than 2 distinct
    `u` values). Then there is no usable fit at all: treat the effective sample
@@ -1378,11 +1381,12 @@ bootstrap(b, f) = BOOTSTRAP_BASE_MINUTES
 | Constant | Value | Why |
 |---|---|---|
 | `BOOTSTRAP_BASE_MINUTES` | `10` | Fixed per-run overhead that does not scale with the document: upload, parse, the area-path backfill check, the work-item-type catalog fetch. |
-| `BOOTSTRAP_MINUTES_PER_BLOCK` | `0.10` | Calibrated so the one document whose real duration is known lands near it. |
-| `BOOTSTRAP_MINUTES_PER_FIGURE` | `0.40` | `4×` the block weight. The **ratio** is the surviving claim from the previous revision: a text block is one span of an already-batched text pass, a figure is a separate vision-model call. |
+| `BOOTSTRAP_MINUTES_PER_BLOCK` | `0.175` | Calibrated so the one document whose real duration is known lands near it (`0.10`), then re-derived ×1.75 for Part B's three-stage per-branch generation — see the recalibration paragraph below. |
+| `BOOTSTRAP_MINUTES_PER_FIGURE` | `0.40` | ~`2.3×` the block weight (it was `4×` before Part B raised the block side alone). The **ratio** is the surviving claim from the previous revision: a text block is one span of an already-batched text pass, a figure is a separate vision-model call. Its current value is *derived* from these two constants, never re-typed. |
 
 Calibration, shown in full so the next session can check it rather than trust
-it — the 682-block / 39-figure document that really ran in **~90 minutes**:
+it — the 682-block / 39-figure document that really ran in **~90 minutes**,
+under the pre-Part-B pipeline it was measured on:
 
 ```
 10 + 682×0.10 + 39×0.40  =  10 + 68.2 + 15.6  =  93.8 min
@@ -1390,6 +1394,30 @@ it — the 682-block / 39-figure document that really ran in **~90 minutes**:
 
 93.8 against a real 90 — **4% high**, which is the correct direction to be wrong
 (§0.1: underselling is worse than overselling).
+
+**Part B recalibration.** Part B split SURVEY's per-branch generation from one
+LLM call into three ordered stages (skeleton → whole-document figure/table
+mapping → content authoring), so that same document now costs meaningfully more.
+Not 3× more, though: decode — the dominant term — is *split* between stages
+rather than repeated, while prefill is paid ~3× and two new document-wide
+barriers replace what used to be end-to-end branch parallelism. That works out
+to ~1.6×, rounded up to **1.75×** for the barrier effect and for §0.1's
+direction-to-be-wrong-in. Hence `0.10 → 0.175`, and the same document projected
+forward:
+
+```
+10 + 682×0.175 + 39×0.40  =  10 + 119.35 + 15.6  =  145.0 min
+```
+
+`BOOTSTRAP_MINUTES_PER_FIGURE` deliberately does **not** move: the per-figure
+cost is vision captioning, which happens during parse and which Part B never
+touched, and the new mapping stage batches per *branch*, not per figure. That
+145 is a projection, not a measurement — the self-tuning fit is what replaces it
+with real numbers. No pipeline-version column was added to discriminate pre- and
+post-Part-B samples: the 90-day / 50-row window already exists for exactly this
+class of regime change, and while post-Part-B samples are few the shrinkage
+holds most of the weight on this (now higher) bootstrap, so the transient errs
+high rather than low.
 
 **These three constants are explicitly not knowledge.** They are one document's
 worth of calibration, wearing the shape of a formula. They must be commented as
@@ -1475,9 +1503,9 @@ Both return the same object:
 ```jsonc
 {
   "mode": "survey",
-  "estimateMinutes": 93.8,     // E, uncapped
-  "lowerMinutes": 70.4,        // E × 0.75, server-applied
-  "upperMinutes": 117.3,       // E × 1.25, server-applied
+  "estimateMinutes": 145.0,    // E, uncapped
+  "lowerMinutes": 108.8,       // E × 0.75, server-applied
+  "upperMinutes": 181.3,       // E × 1.25, server-applied
   "basis": "bootstrap",        // "bootstrap" | "blended" | "fitted"
   "sampleCount": 0,            // n, after the §11.2.3.c guards
   "modelSampleCount": 0,       // n_m for the requested model
@@ -1627,9 +1655,10 @@ skips the aggregate entirely.
   dominate, because each is a separate vision call") and let the computed range
   carry the number. Grep for `15-40`, `15–40` and `3–5` before closing this.
 - Any **illustrative number copied out of the mockup or out of this section.**
-  `93.8 min` → `1h 10m – 1h 57m` is what the *bootstrap* gives for the
+  `145 min` → `1h 49m – 3h 1m` is what the *bootstrap* gives for the
   682-block / 39-figure document, and it stops being the answer the moment the
-  first real SURVEY run finishes. The computation is the specification; every
+  first real SURVEY run finishes. (It read `93.8 min` → `1h 10m – 1h 57m` until
+  Part B's recalibration above — which is the point.) The computation is the specification; every
   number rendered anywhere comes out of it at runtime.
 
 **Tests.** `utils/eta.test.ts` shrinks: `computeEtaMinutes` no longer exists

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ProgressBanner } from './ProgressBanner';
+import type { NarrationEvent } from '../api/events';
 
 describe('ProgressBanner', () => {
   it('shows no ETA chip before any narration has arrived', () => {
@@ -164,50 +165,91 @@ describe('ProgressBanner', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
   });
 
-  it('never runs the bar further during stage 1 than stage 3 will later report for the same branch', () => {
-    // B6: build_skeleton's blocksDone is "blocks in the branches BEFORE
-    // this one", which only meant "those branches are DONE" back when a
-    // branch was one LLM call. Post-Part-B, stage 1 sweeps every branch's
-    // skeleton before any content exists, so taking blocksDone at face
-    // value ran the bar to ~(N-1)/N during stage 1 and then dropped it back
-    // to ~1/N on stage 3's first section_complete -- a visibly backward
-    // bar. The last stage-1 event must therefore sit BELOW the first
-    // stage-3 completion, not far above it.
-    const lastSkeleton = render(
-      <ProgressBanner
-        stage="infer_hierarchy_start"
-        startedAt="2026-07-09T10:00:00Z"
-        mode="survey"
-        narrations={[
-          { phase: 'build_skeleton', branchIndex: 3, branchCount: 4, blocksDone: 300, blocksTotal: 400, kbGrounded: false, kbCitations: [], message: 'x' },
-        ]}
-      />,
-    );
-    const skeletonPercent = Number(
-      lastSkeleton.getByRole('progressbar').getAttribute('aria-valuenow'),
-    );
-    lastSkeleton.unmount();
+  // B6: build_skeleton's blocksDone is "blocks in the branches BEFORE this
+  // one", which only meant "those branches are DONE" back when a branch was
+  // one LLM call. Post-Part-B, stage 1 sweeps every branch's skeleton before
+  // any content exists, so taking blocksDone at face value ran the bar to
+  // ~(N-1)/N during stage 1 and then dropped it back to ~1/N on stage 3's
+  // first section_complete -- a visibly backward bar.
+  //
+  // Parameterized over branch count deliberately. A plain
+  // SKELETON_STAGE_SHARE discount happens to hold at N=4 and FAILS for every
+  // larger document (N=6: 25% -> 16.7%; N=10: 27% -> 10%), so testing the
+  // single N=4 case would have pinned exactly the boundary where the bug
+  // hides. N=6 is not hypothetical -- the build_skeleton sublabel test above
+  // already uses branchCount 6.
+  const BLOCKS_PER_BRANCH = 100;
+  describe.each([4, 6, 10])(
+    'stage-1 -> stage-3 progress continuity across %i branches',
+    (branchCount) => {
+      const blocksTotal = branchCount * BLOCKS_PER_BRANCH;
 
-    const firstContentDone = render(
-      <ProgressBanner
-        stage="infer_hierarchy_start"
-        startedAt="2026-07-09T10:00:00Z"
-        mode="survey"
-        narrations={[
-          { phase: 'section_complete', branchIndex: 0, branchCount: 4, blocksDone: 0, blocksTotal: 400, kbGrounded: false, kbCitations: [], message: 'x' },
-        ]}
-      />,
-    );
-    const contentPercent = Number(
-      firstContentDone.getByRole('progressbar').getAttribute('aria-valuenow'),
-    );
+      const percentFor = (narration: NarrationEvent): number => {
+        const view = render(
+          <ProgressBanner
+            stage="infer_hierarchy_start"
+            startedAt="2026-07-09T10:00:00Z"
+            mode="survey"
+            narrations={[narration]}
+          />,
+        );
+        const percent = Number(view.getByRole('progressbar').getAttribute('aria-valuenow'));
+        view.unmount();
+        return percent;
+      };
 
-    expect(skeletonPercent).toBeLessThanOrEqual(contentPercent);
-    // Still genuinely advancing during stage 1 -- the fix discounts the
-    // cross-branch credit, it does not freeze the bar at zero for the whole
-    // skeleton sweep.
-    expect(skeletonPercent).toBeGreaterThan(0);
-  });
+      it('never runs the bar further during stage 1 than stage 3 will report for its very first branch', () => {
+        // Last stage-1 event: the final branch's skeleton starts, so every
+        // OTHER branch has finished stage 1 of three.
+        const skeletonPercent = percentFor({
+          phase: 'build_skeleton',
+          branchIndex: branchCount - 1,
+          branchCount,
+          blocksDone: (branchCount - 1) * BLOCKS_PER_BRANCH,
+          blocksTotal,
+          kbGrounded: false,
+          kbCitations: [],
+          message: 'x',
+        });
+
+        // First stage-3 event: branch 0's content is done. This is the
+        // smallest number section_complete can ever report.
+        const contentPercent = percentFor({
+          phase: 'section_complete',
+          branchIndex: 0,
+          branchCount,
+          blocksDone: 0,
+          blocksTotal,
+          kbGrounded: false,
+          kbCitations: [],
+          message: 'x',
+        });
+
+        expect(skeletonPercent).toBeLessThanOrEqual(contentPercent);
+        // Still genuinely advancing during stage 1 -- the fix discounts and
+        // clamps the cross-branch credit, it does not freeze the bar at zero
+        // for the whole skeleton sweep.
+        expect(skeletonPercent).toBeGreaterThan(0);
+      });
+
+      it('advances monotonically across the whole stage-1 sweep, never stepping backward', () => {
+        const sweep = Array.from({ length: branchCount }, (_, branchIndex) =>
+          percentFor({
+            phase: 'build_skeleton',
+            branchIndex,
+            branchCount,
+            blocksDone: branchIndex * BLOCKS_PER_BRANCH,
+            blocksTotal,
+            kbGrounded: false,
+            kbCitations: [],
+            message: 'x',
+          }),
+        );
+        const sorted = [...sweep].sort((a, b) => a - b);
+        expect(sweep).toEqual(sorted);
+      });
+    },
+  );
 
   it('treats the new map_scope phase as a whole-document tail phase -- "Finishing up…", no fabricated ETA, no crash', () => {
     // B5: STAGE 2 (figure/table mapping) previously fired no narration at

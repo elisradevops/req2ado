@@ -198,12 +198,24 @@ export function ProgressBanner({
     // Taking blocksDone at face value here ran the bar up to ~(N-1)/N
     // during stage 1 alone and then dropped it back to ~1/N on stage 3's
     // first section_complete -- a visibly backward bar, the same regression
-    // class as the stepper un-checking B5 fixed. Discounting the
-    // cross-branch term (and ONLY for build_skeleton -- section_complete's
-    // blocksDone still means exactly what it always did) keeps the sequence
-    // monotonic and honest in the pessimistic direction.
+    // class as the stepper un-checking B5 fixed.
+    //
+    // Discounting by SKELETON_STAGE_SHARE alone does NOT fix that: it only
+    // holds while 0.3*(N-1)/N <= 1/N, i.e. N <= 4. At N=6 stage 1 still
+    // ends at 25% against stage 3's first 16.7%, at N=10 at 27% against
+    // 10% -- smaller than the un-discounted jump, still backward, and this
+    // suite's own fixtures already use branchCount 6. So the discounted
+    // value is additionally CLAMPED to averageSectionShare, the smallest
+    // credit stage 3 can ever report (section_complete for the first
+    // branch: blocksDone 0 + one full section's share). Stage 1 therefore
+    // cannot outrun what comes next at any branch count. ONLY build_skeleton
+    // is touched -- section_complete's blocksDone still means exactly what
+    // it always did -- and the result stays honest in the pessimistic
+    // direction.
     const priorBranchCredit =
-      latest.phase === 'build_skeleton' ? latest.blocksDone * SKELETON_STAGE_SHARE : latest.blocksDone;
+      latest.phase === 'build_skeleton'
+        ? Math.min(latest.blocksDone * SKELETON_STAGE_SHARE, averageSectionShare)
+        : latest.blocksDone;
     completedUnits = priorBranchCredit + withinSectionCredit;
   }
   const progressValue =
