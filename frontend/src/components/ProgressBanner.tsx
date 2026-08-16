@@ -569,7 +569,18 @@ function SectionStepList({
   const conflictsActive = latest.phase === 'detect_conflicts';
   const regroupActive = latest.phase === 'regroup_roots';
   const traceLinksActive = latest.phase === 'infer_trace_links';
-  const allSectionsDone = scoringActive || conflictsActive || regroupActive || traceLinksActive;
+  // map_scope is the SAME whole-document, branch_index=null shape the four
+  // phases above already are (see isTailPhase above this component) -- it
+  // runs AFTER every branch's own build_skeleton event, so every section row
+  // is already real "done" work by the time it fires. Without this, every
+  // section that had already flipped to a checkmark (having finished
+  // build_skeleton) visibly REVERTED to a plain pending circle for the
+  // whole map_scope window -- the exact "stepper regresses backward" bug
+  // class this narration phase itself exists to avoid (see
+  // build_survey_tree's own regroup_roots call-site comment for the
+  // sibling case this mirrors).
+  const mapScopeActive = latest.phase === 'map_scope';
+  const allSectionsDone = scoringActive || conflictsActive || regroupActive || traceLinksActive || mapScopeActive;
 
   // Accumulated from EVERY narration event seen so far, not just the
   // latest -- without this, once a section finishes and a later section's
@@ -605,6 +616,12 @@ function SectionStepList({
   // section list in isolation -- directly answers "what's left to do".
   const sectionsDone = allSectionsDone ? latest.branchCount : Math.max(0, latest.branchIndex ?? 0);
   const totalSteps = latest.branchCount + 4; // + scoring + detect-conflicts + regroup-roots + trace links
+  // map_scope is deliberately NOT a 5th counted step here -- it runs BEFORE
+  // scoring, so its own "done-ness" is already folded into sectionsDone
+  // above (allSectionsDone) exactly the way scoringActive's own moment
+  // already falls through to 0 below (0 of the 4 LATER named steps done
+  // yet). Matches wholeDocStepsDone's existing convention: only counts
+  // steps that come AFTER the currently active one.
   const wholeDocStepsDone = regroupActive
     ? 2
     : conflictsActive

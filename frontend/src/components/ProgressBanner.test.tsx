@@ -185,6 +185,35 @@ describe('ProgressBanner', () => {
     expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
   });
 
+  it('does not un-check already-completed sections when map_scope becomes the latest phase', () => {
+    // Regression guard for the exact "stepper regresses backward" bug class
+    // this whole task (build_skeleton/map_scope) exists to prevent. Before
+    // this fix, map_scope's own branch_index=null left SectionStepList's
+    // `allSectionsDone` false (map_scope was only wired into the separate
+    // top-level isTailPhase, not this component's own allSectionsDone), so
+    // `isDone = allSectionsDone || i < (latest.branchIndex ?? -1)` evaluated
+    // to false for EVERY section the moment map_scope became latest --
+    // sections that already showed a checkmark visibly reverted to a plain
+    // pending circle for the whole mapping window, even though every
+    // section had, in fact, already finished its own analysis pass.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          // Sections 0 and 1 already finished (only section 2, the last
+          // one, is still "active" at this point).
+          { phase: 'analyze_section', branchIndex: 2, branchCount: 3, blocksDone: 20, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x' },
+          // Whole-document mapping starts next -- branchIndex is null.
+          { phase: 'map_scope', branchIndex: null, branchCount: 3, blocksDone: 30, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    // All 3 sections must show a checkmark -- none may revert to pending.
+    expect(screen.getAllByTestId('section-check-icon')).toHaveLength(3);
+  });
+
   it('shows each section\'s real name (its own heading) instead of an anonymous index', () => {
     // Without sectionLabel, the step list could only ever show "Section N
     // of M" -- no way to tell WHICH real content the job analyzed or
