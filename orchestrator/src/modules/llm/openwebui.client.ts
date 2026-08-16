@@ -322,12 +322,31 @@ export class OpenWebUiClient implements LlmClient {
       seed: 0,
       // No output cap previously existed here at all -- the prompt asks
       // for "one or two sentences" (orchestrator_vision_client.py's
-      // _DESCRIBE_FIGURE_PROMPT), so a real caption is short, but nothing
-      // bounded the worst case (a reasoning-capable vision model going
-      // off the rails on a pathological image). Bounds latency risk only;
-      // the byte-hash cache (main.py's figure-caption memoization) already
-      // removes the repeat cost of a slow caption on re-runs.
-      max_tokens: 200,
+      // _build_prompt), so a real caption is SUPPOSED to be short, but
+      // nothing bounded the worst case (a reasoning-capable vision model
+      // going off the rails on a pathological image). Bounds latency risk
+      // only; the byte-hash cache (main.py's figure-caption memoization)
+      // already removes the repeat cost of a slow caption on re-runs.
+      //
+      // Second live incident (confirmed via a real SURVEY run's figure
+      // descriptions): the deployed vision model, for a genuinely complex
+      // multi-view engineering drawing, ignored the prior soft "one or two
+      // sentences" wording and produced a markdown breakdown per view (a
+      // header + several full sentences each), long enough to get cut off
+      // mid-JSON by this 200-token cap -- orchestrator_vision_client.py's
+      // repair_json fallback then "repairs" the truncated JSON into
+      // schema-valid (parseable, significant=True) but content-truncated
+      // output, worse than the reasoning-exhaustion incident below (empty
+      // content) because it looks like a normal, complete caption instead
+      // of failing loudly. The real fix is enforcing brevity at the
+      // source (the prompt + schema field description in
+      // orchestrator_vision_client.py now spell it out explicitly and
+      // structurally, not just as a soft ask) -- raising this cap to
+      // chase an unbounded worst case would only make a genuinely
+      // non-compliant response MORE expensive per call, not prevent it.
+      // 300 is a defensive backstop a few times wider than a real
+      // one-or-two-sentence caption ever needs, not the primary defense.
+      max_tokens: 300,
       // Real, 100%-reproducible root cause (confirmed live: every single
       // figure in a real document came back "no useful caption returned"
       // on a genuinely fresh, uncached run): unlike chat()'s own

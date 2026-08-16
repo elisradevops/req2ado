@@ -436,7 +436,7 @@ describe('OpenWebUiClient', () => {
       ],
       temperature: 0,
       seed: 0,
-      max_tokens: 200,
+      max_tokens: 300,
       reasoning_effort: 'none',
     });
   });
@@ -495,7 +495,7 @@ describe('OpenWebUiClient', () => {
 
     await client.vision('describe', [Buffer.from('img')]);
 
-    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 200 }));
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 300 }));
   });
 
   it('vision() defaults to image/png in the data URI when opts.mimeType is not supplied', async () => {
@@ -568,7 +568,7 @@ describe('OpenWebUiClient', () => {
       ],
       temperature: 0,
       seed: 0,
-      max_tokens: 200,
+      max_tokens: 300,
       reasoning_effort: 'none',
     });
   });

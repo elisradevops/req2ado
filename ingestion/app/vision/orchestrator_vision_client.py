@@ -35,7 +35,15 @@ _FIGURE_SIGNIFICANCE_SCHEMA = {
         },
         "description": {
             "type": "string",
-            "description": "One or two sentences describing the figure's technical content (components, connections, values, labeled parts). Empty or minimal if not significant.",
+            "description": (
+                "STRICT LIMIT: exactly one or two plain sentences, plain "
+                "prose only. State only the single most important technical "
+                "fact (the one key dimension, connection, or labeled value "
+                "that matters most) -- do not attempt to enumerate every "
+                "view, dimension, or connector in a multi-view drawing. No "
+                "markdown (no headers, no bold, no bullet/numbered lists), "
+                "no LaTeX/math notation. Empty if not significant."
+            ),
         },
     },
     "required": ["significant", "description"],
@@ -43,11 +51,31 @@ _FIGURE_SIGNIFICANCE_SCHEMA = {
 
 
 def _build_prompt(document_context: str | None) -> str:
+    # Real live incident this wording fixes: the deployed vision model,
+    # when shown a multi-view engineering drawing, routinely ignored a
+    # softer "one or two sentences" instruction and produced a markdown
+    # breakdown per view (a header + several full sentences each) -- long
+    # enough to get cut off mid-JSON by the orchestrator's own max_tokens
+    # cap, producing a schema-valid but content-truncated caption (e.g.
+    # ending mid-word with a dangling, unclosed markdown list item). The
+    # fix is enforcing brevity here, at the source, rather than raising the
+    # token cap to chase an unbounded worst case -- a compliant one-or-two-
+    # sentence caption never approaches any reasonable cap, costs less per
+    # call, and can't truncate mid-sentence in the first place. Explicit,
+    # repeated, and structural (spelled out in the prompt AND the schema's
+    # own field description above) because a single soft mention was not
+    # enough to change this model's actual behavior.
     base = (
-        "Describe this figure or diagram, focusing on any technical content "
-        "(components, connections, values, labeled parts). Judge whether it "
-        "has genuine informational content worth including, or whether it is "
-        "decorative (a logo, a colored placeholder block, a blank divider)."
+        "Describe this figure or diagram in EXACTLY ONE OR TWO PLAIN "
+        "SENTENCES -- no more. Pick only the single most important "
+        "technical fact (one key dimension, connection, or labeled value); "
+        "do NOT describe every view, every dimension, or every connector "
+        "if this is a multi-view drawing -- summarize, don't enumerate. Do "
+        "NOT use markdown formatting (no headers, no bold, no bullet or "
+        "numbered lists) and do NOT use LaTeX/math notation -- plain prose "
+        "only. Judge whether the figure has genuine informational content "
+        "worth including, or whether it is decorative (a logo, a colored "
+        "placeholder block, a blank divider)."
     )
     if not document_context:
         return base
