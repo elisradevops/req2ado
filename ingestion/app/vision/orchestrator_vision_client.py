@@ -36,13 +36,17 @@ _FIGURE_SIGNIFICANCE_SCHEMA = {
         "description": {
             "type": "string",
             "description": (
-                "STRICT LIMIT: exactly one or two plain sentences, plain "
-                "prose only. State only the single most important technical "
-                "fact (the one key dimension, connection, or labeled value "
-                "that matters most) -- do not attempt to enumerate every "
-                "view, dimension, or connector in a multi-view drawing. No "
-                "markdown (no headers, no bold, no bullet/numbered lists), "
-                "no LaTeX/math notation. Empty if not significant."
+                "2-4 plain sentences of flowing prose (not a hard cap on "
+                "content, a cap on FORMAT). Be concrete and specific to THIS "
+                "figure: name the actual labeled parts, real dimensions/"
+                "values, and real connector/pin counts visible in the image "
+                "-- do not fall back to a generic template description that "
+                "could apply to any similar-looking drawing. For a "
+                "multi-view drawing, summarize what the views collectively "
+                "show in prose -- do NOT enumerate each view as its own "
+                "labeled section. No markdown (no headers, no bold, no "
+                "bullet/numbered lists), no LaTeX/math notation. Empty if "
+                "not significant."
             ),
         },
     },
@@ -51,26 +55,31 @@ _FIGURE_SIGNIFICANCE_SCHEMA = {
 
 
 def _build_prompt(document_context: str | None) -> str:
-    # Real live incident this wording fixes: the deployed vision model,
-    # when shown a multi-view engineering drawing, routinely ignored a
-    # softer "one or two sentences" instruction and produced a markdown
-    # breakdown per view (a header + several full sentences each) -- long
-    # enough to get cut off mid-JSON by the orchestrator's own max_tokens
-    # cap, producing a schema-valid but content-truncated caption (e.g.
-    # ending mid-word with a dangling, unclosed markdown list item). The
-    # fix is enforcing brevity here, at the source, rather than raising the
-    # token cap to chase an unbounded worst case -- a compliant one-or-two-
-    # sentence caption never approaches any reasonable cap, costs less per
-    # call, and can't truncate mid-sentence in the first place. Explicit,
-    # repeated, and structural (spelled out in the prompt AND the schema's
-    # own field description above) because a single soft mention was not
-    # enough to change this model's actual behavior.
+    # Real live incident history behind this exact wording (2 rounds):
+    # (1) the deployed vision model, for a multi-view engineering drawing,
+    # ignored a soft "one or two sentences" instruction and produced a
+    # markdown breakdown per view (a header + several full sentences each)
+    # -- long enough to get cut off mid-JSON by the orchestrator's own
+    # max_tokens cap, producing a schema-valid but content-truncated
+    # caption. (2) The first fix over-corrected: forcing "EXACTLY ONE OR
+    # TWO sentences" + "the SINGLE most important fact" pushed the model
+    # into a narrow, repetitive template ("The drawing depicts an
+    # enclosure featuring..." reused near-verbatim across unrelated
+    # figures) instead of describing each figure's own actual content --
+    # confirmed live across a real 110-figure run. The fix is bounding
+    # FORMAT (no markdown/lists/per-view enumeration -- the actual source
+    # of the truncation-causing length), not sentence COUNT -- a few
+    # sentences of concrete, specific plain prose stays well short of any
+    # reasonable token cap on its own; forcing it shorter just made it
+    # generic instead of forcing it complete.
     base = (
-        "Describe this figure or diagram in EXACTLY ONE OR TWO PLAIN "
-        "SENTENCES -- no more. Pick only the single most important "
-        "technical fact (one key dimension, connection, or labeled value); "
-        "do NOT describe every view, every dimension, or every connector "
-        "if this is a multi-view drawing -- summarize, don't enumerate. Do "
+        "Describe this figure or diagram in 2-4 sentences of plain prose. "
+        "Be concrete and specific: name the actual labeled parts, real "
+        "dimensions/values, and real connector/pin counts visible in THIS "
+        "image -- do not reuse a generic description that could equally "
+        "apply to any similar-looking drawing. For a multi-view drawing, "
+        "summarize what the views collectively show in flowing prose -- do "
+        "NOT enumerate each view as its own labeled section or list. Do "
         "NOT use markdown formatting (no headers, no bold, no bullet or "
         "numbered lists) and do NOT use LaTeX/math notation -- plain prose "
         "only. Judge whether the figure has genuine informational content "
