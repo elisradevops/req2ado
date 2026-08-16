@@ -3154,7 +3154,11 @@ def _map_figures_tables_to_nodes(
     excluded_table_ids): the first is _author_branch_content's own stage-2
     seam ({local_id: {'figure_ids': [...], 'table_ids': [...]}}), the other
     two are WorkItemTree's doc-wide excluded lists -- every item this stage
-    saw ends up in exactly one of the two, never silently nowhere."""
+    sees ends up in exactly one of the two, never silently nowhere. (One
+    downstream exception, unchanged by this stage and already reported on its
+    own: stage 3 still drops a mapped table whose extracted grid turns out to
+    have no content at all, with WarningKind.EMPTY_TABLE_CONTENT, rather than
+    shipping a table_ids entry with nothing behind it.)"""
     mapping: dict[str, dict[str, list[str]]] = {}
     excluded_figure_ids: list[str] = []
     excluded_table_ids: list[str] = []
@@ -3178,6 +3182,12 @@ def _map_figures_tables_to_nodes(
         malformed is treated as an escalation while one is still available,
         and as a NONE (excluded) once it isn't -- the model declining to
         answer is not evidence the item belongs anywhere."""
+        # Defensive, not decorative: this stage's fail-open promise covers a
+        # client returning something unexpected just as much as one raising.
+        # The real client already coerces a non-object response to {}; a
+        # different implementation must not be able to turn a wrong-shaped
+        # answer into an AttributeError that fails the whole job.
+        verdicts = verdicts if isinstance(verdicts, dict) else {}
         escalated: list[str] = []
         for item_id, item in items.items():
             entry = verdicts.get(item_id)

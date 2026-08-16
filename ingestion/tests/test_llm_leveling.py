@@ -6116,3 +6116,16 @@ def test_mapping_never_offers_a_synthesized_structural_node_as_a_candidate(monke
     offered = set(fake.mapping_calls[0]["candidates"])
     assert offered == {"br0_n0", "br0_n1"}
     assert offered.isdisjoint(synthesized)
+
+
+def test_mapping_tolerates_a_wrong_shaped_response_without_failing_the_job(monkeypatch) -> None:
+    # Fail-open covers a client answering with the wrong SHAPE just as much
+    # as one raising -- a wrong-shaped answer must degrade to exclusions, not
+    # become an AttributeError that aborts the job.
+    _force_multi_branch(monkeypatch)
+    fake = FakeMappingClient(verdict_fn=lambda candidates, items: ["not", "a", "dict"])
+
+    tree = build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert len(tree.nodes) > 0
+    assert sorted(tree.excluded_figure_ids) == ["f0", "f1"]
