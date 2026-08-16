@@ -305,7 +305,22 @@ export function JobDetail(): React.ReactElement {
             // the duration of the whole job.
             setNarrations((current) => [...current, narration].slice(-50));
           }
-          if (narration.phase === 'describe_figure' && narration.figureIndex != null && narration.figureCaption) {
+          // figureCaptionStatus (non-null) means the model judged this
+          // figure insignificant/failed -- figureCaption is STILL truthy in
+          // that case (ingestion substitutes an honest placeholder so the
+          // ProgressBanner ticker line is never blank), so the truthy check
+          // alone is not enough here. Excluding on figureCaptionStatus
+          // matches pipeline.worker.ts's own Boolean(caption) rule for the
+          // PERSISTED Job.figureDescriptions column -- without this, a
+          // logo/warning-icon correctly judged decorative during a live run
+          // still showed up as a full entry in this panel, then vanished on
+          // reload once the persisted, already-correct data took over.
+          if (
+            narration.phase === 'describe_figure' &&
+            narration.figureIndex != null &&
+            narration.figureCaption &&
+            !narration.figureCaptionStatus
+          ) {
             const { figureIndex, figureCaption } = narration;
             setFigureCaptionsByIndex((current) => ({ ...current, [figureIndex]: figureCaption }));
           }

@@ -772,6 +772,16 @@ async def ingest(
                         branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
                         kb_grounded=False, kb_citations=[],
                         figure_index=index, figure_caption=display_caption, figure_count=figure_total,
+                        # Distinct from display_caption above: lets the
+                        # frontend's FigureDescriptions panel (unlike the
+                        # one-line activity ticker, which legitimately wants
+                        # display_caption's placeholder text so it's never
+                        # blank) apply the SAME "no real caption -> don't
+                        # keep it" rule pipeline.worker.ts's persisted-job
+                        # path already applies via Boolean(caption) -- see
+                        # LevelingProgress.figure_caption_status's own
+                        # docstring for the live-confirmed bug this closes.
+                        figure_caption_status=caption_status_out.get("status"),
                     )
                 )
             # Captured for every figure regardless of relevance -- figure_ids

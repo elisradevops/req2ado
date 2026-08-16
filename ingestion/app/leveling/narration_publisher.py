@@ -205,6 +205,26 @@ class LevelingProgress:
     # per-figure debugging (which figure failed to parse, what did the model
     # actually think it was) impossible.
     figure_caption: str | None = None
+    # describe_figure only: mirrors Figure.caption_status ("insignificant" |
+    # "vision_failed" | None) for the SAME figure figure_caption describes.
+    # Real live bug this fixes: figure_caption is never blank even when the
+    # vision model judged the figure decorative/failed -- main.py's own
+    # narration substitutes an honest placeholder ("this figure has no
+    # discernible technical content") so the ONE-LINE activity ticker is
+    # never blank. But the frontend's separate FigureDescriptions PANEL (a
+    # persistent, growing list, not a one-line ticker) used to read that
+    # same non-empty placeholder as "a real caption to keep showing" --
+    # confirmed live: a document's own logo and warning-triangle icon,
+    # correctly judged insignificant by the vision model, still appeared as
+    # full entries in that panel during a live run with the placeholder
+    # text, even though the SAME figures are correctly excluded once the
+    # job completes and JobDetail.tsx reads from the persisted
+    # Job.figureDescriptions column instead (pipeline.worker.ts explicitly
+    # drops any figure whose real `caption` is null). This field lets the
+    # frontend apply that SAME "no real caption -> don't show it" rule
+    # during a live run too, without changing figure_caption/the ticker's
+    # own text at all.
+    figure_caption_status: str | None = None
     # section_complete only: this branch's finished nodes (type/title/text/
     # quality_score, in generation order) -- the real "parsed and formatted
     # response" a reviewer can inspect live, per section, instead of only
@@ -525,6 +545,7 @@ class NarrationPublisher:
                 "pageAlignPageCount": progress.page_align_page_count,
                 "pageAlignAnchoredRatio": progress.page_align_anchored_ratio,
                 "figureCaption": progress.figure_caption,
+                "figureCaptionStatus": progress.figure_caption_status,
                 "sectionNodes": (
                     [
                         {

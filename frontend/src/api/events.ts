@@ -150,6 +150,17 @@ export interface NarrationEvent {
   // Already folded (truncated) into `message`; kept here in full in case a
   // caller wants the untruncated text.
   figureCaption?: string | null;
+  // describe_figure only: mirrors ingestion's Figure.caption_status
+  // ("insignificant" | "vision_failed" | null) for the SAME figure
+  // figureCaption describes. figureCaption is NEVER empty even when the
+  // model judged the figure decorative/failed (ingestion substitutes an
+  // honest placeholder so the activity ticker's one-line status is never
+  // blank) -- this field is what actually distinguishes "a real caption"
+  // from "a placeholder for a figure with no real caption", the same
+  // Boolean(caption) rule pipeline.worker.ts's persisted-job path already
+  // applies when building Job.figureDescriptions. null on the real-caption
+  // case (mirrors caption_status's own None default).
+  figureCaptionStatus?: string | null;
   // section_complete only: this branch's finished nodes, in generation
   // order -- null on every other phase.
   sectionNodes?: { type: string; title: string; text: string; qualityScore: number | null }[] | null;

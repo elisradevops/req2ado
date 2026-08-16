@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { JobDetail } from './JobDetail';
 import { ToastProvider } from '../components/ToastProvider';
@@ -250,6 +250,52 @@ describe('JobDetail', () => {
     const userEvent = (await import('@testing-library/user-event')).default;
     await userEvent.click(screen.getByText(/1 figure description/i));
     expect(screen.getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
+  });
+
+  it('does not add a figure to the live FigureDescriptions panel when figureCaptionStatus marks it insignificant/failed', async () => {
+    // Real live bug this guards against: figureCaption is NEVER empty even
+    // when the vision model judged the figure decorative/failed --
+    // ingestion substitutes an honest placeholder ("this figure has no
+    // discernible technical content") so the ProgressBanner ticker's
+    // one-line status is never blank. A plain truthy check on figureCaption
+    // alone can't tell that apart from a real caption -- confirmed live: a
+    // document's own logo and warning-triangle icon, correctly judged
+    // insignificant, still appeared as full entries in this panel during a
+    // live run. figureCaptionStatus is the field that actually distinguishes
+    // the two; only a null status should ever populate the panel.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-27', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
+    } as any);
+    const events = await import('../api/events');
+    vi.mocked(events.subscribeToJobEvents).mockImplementation((_id, _base, onStage, onNarration) => {
+      onStage('infer_hierarchy_start');
+      onNarration?.({
+        phase: 'describe_figure', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+        kbGrounded: false, kbCitations: [], message: 'Figure 1: A block diagram showing power distribution.',
+        figureIndex: 1, figureCaption: 'A block diagram showing power distribution.', figureCaptionStatus: null,
+      } as any);
+      onNarration?.({
+        phase: 'describe_figure', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+        kbGrounded: false, kbCitations: [], message: 'Figure 2: this figure has no discernible technical content',
+        figureIndex: 2, figureCaption: 'this figure has no discernible technical content', figureCaptionStatus: 'insignificant',
+      } as any);
+      return () => {};
+    });
+
+    renderAt('job-27');
+
+    await waitFor(() => expect(screen.getByText(/1 figure description/i)).toBeInTheDocument());
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const panelToggle = screen.getByText(/1 figure description/i);
+    await userEvent.click(panelToggle);
+    // Scoped to the panel itself (a sibling ProgressBanner ticker
+    // legitimately still shows the placeholder text once, by design -- see
+    // figureCaptionStatus's own docstring) -- only the panel's OWN list must
+    // exclude the insignificant figure.
+    const panel = panelToggle.closest('button')!.parentElement as HTMLElement;
+    expect(within(panel).getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
+    expect(within(panel).queryByText(/this figure has no discernible technical content/i)).not.toBeInTheDocument();
   });
 
   it('shows an excluded-as-decorative summary line when excludedFigureIds/excludedTableIds are non-empty', async () => {
