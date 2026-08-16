@@ -8,6 +8,7 @@ from app.canonical.model import BlockKind, plain_text_rows
 from app.loaders.pdf_loader import (
     _cell_background_color,
     _fontname_is_bold,
+    _is_degenerate_pdf_image,
     _pdf_color_to_hex,
     cached_pdf_reader,
     load_pdf,
@@ -96,6 +97,124 @@ def test_load_pdf_falls_back_to_placeholder_when_describe_figure_raises() -> Non
     assert doc.figures[0].caption is None
     figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
     assert figure_blocks[0].text == "[FIGURE: none]"
+
+
+class _StubPypdfImage:
+    """Minimal stand-in for a pypdf ImageFile -- only the `.image.size`
+    attribute chain `_is_degenerate_pdf_image` reads."""
+
+    def __init__(self, size: tuple[int, int] | None) -> None:
+        self.image = None if size is None else _StubPilImage(size)
+
+
+class _StubPilImage:
+    def __init__(self, size: tuple[int, int]) -> None:
+        self.size = size
+
+
+def test_is_degenerate_pdf_image_true_for_a_2x2_pixel_image() -> None:
+    # Live-confirmed real-world shape: a PDF rendering-trick color-fill/
+    # gradient-mask XObject, not a real figure -- see the constant's own
+    # comment for the 808/918 real-document measurement this fixes.
+    assert _is_degenerate_pdf_image(_StubPypdfImage((2, 2))) is True
+
+
+def test_is_degenerate_pdf_image_false_for_a_realistic_figure_size() -> None:
+    # Matches this test file's own pdf_with_figure.pdf fixture (10x10) --
+    # must stay on the "keep it" side of the threshold.
+    assert _is_degenerate_pdf_image(_StubPypdfImage((10, 10))) is False
+    assert _is_degenerate_pdf_image(_StubPypdfImage((646, 602))) is False
+
+
+def test_is_degenerate_pdf_image_false_when_only_one_dimension_is_tiny() -> None:
+    # Deliberately not an area check -- a real thin decorative strip is left
+    # to the vision significance filter, not silently dropped here.
+    assert _is_degenerate_pdf_image(_StubPypdfImage((2, 400))) is False
+
+
+def test_is_degenerate_pdf_image_fails_open_when_size_cannot_be_read() -> None:
+    # None `.image` (a format pypdf couldn't decode at all) and a raising
+    # `.image.size` must both default to "keep it" -- this is a cheap
+    # pre-filter for a KNOWN degenerate shape, not a content-integrity
+    # check, and dropping a real figure over a decode hiccup would be
+    # strictly worse than an occasional wasted vision call.
+    assert _is_degenerate_pdf_image(_StubPypdfImage(None)) is False
+
+    class _RaisingImage:
+        @property
+        def size(self) -> tuple[int, int]:
+            raise RuntimeError("corrupt image data")
+
+    class _RaisingPypdfImage:
+        image = _RaisingImage()
+
+    assert _is_degenerate_pdf_image(_RaisingPypdfImage()) is False
+
+
+def test_load_pdf_skips_a_degenerate_2x2_image_without_calling_describe_figure(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Integration-level regression for the real bug: injects one real
+    # (10x10, kept) and one synthetic degenerate (2x2, skipped) image into
+    # the same page's pypdf image list, via the same "kind == 'image'"
+    # merged-entry path load_pdf's own main loop consumes -- proves the
+    # degenerate one contributes neither a Figure, a [FIGURE: ...] block,
+    # nor a describe_figure call, while the real one is unaffected.
+    import app.loaders.pdf_loader as pdf_loader_module
+
+    real_reader = cached_pdf_reader(str(FIXTURES / "pdf_with_figure.pdf"))
+    real_page = real_reader.pages[0]
+    real_image = next(iter(real_page.images))
+
+    degenerate_image = _StubPypdfImage((2, 2))
+    degenerate_image.data = b"\x00" * 4  # only read if describe_figure is (wrongly) called on it
+
+    class _PageWithExtraImage:
+        def __init__(self, wrapped) -> None:
+            self._wrapped = wrapped
+
+        @property
+        def images(self):
+            return [real_image, degenerate_image]
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+    class _ReaderWithExtraImage:
+        # Forwards everything except page 0's own `.images` to the REAL
+        # reader (via __getattr__) -- so any other `cached_pdf_reader(path)`
+        # call site in load_pdf (outline positions, page count, etc.) keeps
+        # seeing genuine data; only the one image-extraction call site this
+        # test targets sees the injected degenerate entry.
+        def __init__(self, wrapped) -> None:
+            self._wrapped = wrapped
+            self._patched_pages = [_PageWithExtraImage(wrapped.pages[0])] + list(wrapped.pages[1:])
+
+        @property
+        def pages(self):
+            return self._patched_pages
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+    monkeypatch.setattr(
+        pdf_loader_module,
+        "cached_pdf_reader",
+        lambda path: _ReaderWithExtraImage(cached_pdf_reader(path)),
+    )
+
+    describe_calls: list[bytes] = []
+
+    def spy_describe(image_bytes: bytes) -> str:
+        describe_calls.append(image_bytes)
+        return "A schematic diagram."
+
+    doc = load_pdf(str(FIXTURES / "pdf_with_figure.pdf"), describe_figure=spy_describe)
+
+    assert len(doc.figures) == 1  # the degenerate image contributed nothing
+    assert doc.figures[0].caption == "A schematic diagram."
+    assert len(describe_calls) == 1  # never called on the 2x2 stub
+    assert describe_calls[0] != degenerate_image.data
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 1
 
 
 def test_load_pdf_flags_filled_acroform_fields_with_a_note() -> None:

@@ -1146,6 +1146,50 @@ def _detect_boilerplate_templates(pages_first_lines: list[str], pages_last_lines
     return _templates(pages_first_lines), _templates(pages_last_lines)
 
 
+# A real content figure in this tool's fixtures/documents is never smaller
+# than ~50px in either dimension (a small badge/icon at worst); the existing
+# test fixture pdf_with_figure.pdf's own figure is 10x10, so 8 leaves it a
+# 2px margin. Confirmed live: on a real 918-figure ICD (cubeadcs_icd.pdf),
+# 808 of the 918 (88%) were EXACTLY 2x2 pixels -- not real figures at all,
+# but PDF rendering-trick color-fill/gradient-mask XObjects (pypdf's own
+# "image and mask size not matching" warning fires on every one). A 2x2
+# pixel image cannot encode any distinguishable visual content -- it is
+# mathematically indistinguishable from a solid color swatch -- so asking
+# the vision-significance model to judge one is both wasted cost (a real
+# API round-trip per instance) and produces an inherently unreliable verdict
+# (an upscaled 2x2 render looks like a "black square" to a human reviewer
+# and confuses the model too, matching the exact live-review complaint this
+# constant fixes: decorative squares/logos being inconsistently judged
+# "significant" and cluttering the figure count). Filtering these out HERE,
+# before a Figure/vision-call is ever created, is strictly more reliable
+# than relying on the vision model's own judgment for genuinely degenerate
+# input -- the vision significance filter (main.py's _describe_figure)
+# still runs, unchanged, for every image that passes this size floor (e.g.
+# a real logo at realistic pixel dimensions, which IS meaningful input for
+# that judgment).
+_DEGENERATE_IMAGE_MAX_DIMENSION_PX = 8
+
+
+def _is_degenerate_pdf_image(pypdf_image: object) -> bool:
+    """True only when BOTH dimensions are tiny -- deliberately not an area
+    check, so a real thin-but-tall/wide decorative strip (which at least
+    carries a visible color/shape on the page) is left to the vision
+    significance filter rather than silently dropped here. Fails open
+    (returns False, i.e. "keep it") on any error decoding the image's own
+    dimensions -- this is a cheap pre-filter for a KNOWN degenerate case,
+    not a load-bearing content-integrity check, and dropping a real figure
+    because pypdf couldn't report its size would be strictly worse than an
+    occasional wasted vision call."""
+    try:
+        image = pypdf_image.image  # type: ignore[attr-defined]
+        if image is None:
+            return False
+        width, height = image.size
+    except Exception:  # noqa: BLE001 -- see docstring: fail open, never drop a real figure over a decode hiccup
+        return False
+    return width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+
+
 def load_pdf(
     path: str, describe_figure: Callable[[bytes], str | None] | None = None, text_only: bool = False
 ) -> CanonicalDoc:
@@ -1593,10 +1637,18 @@ def load_pdf(
                         )
                     )
                 else:
+                    pypdf_image = item
+                    if _is_degenerate_pdf_image(pypdf_image):
+                        # Not a real figure -- see _is_degenerate_pdf_image's
+                        # own docstring/constant comment. Skipped before
+                        # touching `offset`/`block_id`/`figure_id` (as if
+                        # this merged entry never existed), so no vision
+                        # call, no Figure, no [FIGURE: ...] placeholder
+                        # block, and no gap in the remaining figure ids.
+                        continue
                     start = offset
                     end = start + 1
                     offset = end
-                    pypdf_image = item
                     caption = None
                     if describe_figure is not None:
                         try:
