@@ -107,6 +107,44 @@ def test_load_pptx_captions_embedded_pictures(tmp_path: Path) -> None:
     assert doc.figures[0].source_ref.page == 1
 
 
+def test_load_pptx_skips_a_degenerate_2x2_image_without_calling_describe_figure(tmp_path: Path) -> None:
+    # Mirrors pdf_loader.py's and docx_loader.py's own regression test for
+    # the same real bug class: a pptx can embed a tiny rendering-trick
+    # color-fill image the same way a PDF/docx can -- must never become a
+    # Figure, never get a vision call, and never leave a gap in the
+    # remaining figure ids.
+    from io import BytesIO
+
+    from PIL import Image
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])  # blank layout
+    degenerate_buffer = BytesIO()
+    Image.new("RGB", (2, 2), color="black").save(degenerate_buffer, format="PNG")
+    degenerate_buffer.seek(0)
+    slide.shapes.add_picture(degenerate_buffer, Inches(1), Inches(1))
+    real_buffer = BytesIO()
+    Image.new("RGB", (20, 20), color="red").save(real_buffer, format="PNG")
+    real_buffer.seek(0)
+    slide.shapes.add_picture(real_buffer, Inches(2), Inches(2))
+    path = tmp_path / "mixed_figures.pptx"
+    presentation.save(str(path))
+
+    calls: list[bytes] = []
+
+    def spy_describe_figure(image_bytes: bytes) -> str:
+        calls.append(image_bytes)
+        return "A real diagram."
+
+    doc = load_pptx(str(path), describe_figure=spy_describe_figure)
+
+    assert len(doc.figures) == 1  # the degenerate image contributed nothing
+    assert doc.figures[0].caption == "A real diagram."
+    assert len(calls) == 1  # never called on the 2x2 image
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 1
+
+
 def _order_key(source_ref) -> tuple[int, int]:
     """Local stand-in for tree_builder._order_key (owned by other in-flight
     work, not imported here): document-order sort key of (page or 0,

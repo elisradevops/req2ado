@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import re
 from pathlib import Path
@@ -12,6 +13,7 @@ from docx.oxml.table import CT_Row, CT_Tc
 from docx.table import Table as DocxTable
 from docx.table import _Cell as DocxCell
 from docx.text.paragraph import Paragraph as DocxParagraph
+from PIL import Image, UnidentifiedImageError
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
 from app.leveling.numbering import parse_numbering
@@ -599,6 +601,35 @@ def _extract_table_cells(docx_table: DocxTable) -> list[list[TableCell | None]]:
     return grid
 
 
+# Mirrors pdf_loader.py's _DEGENERATE_IMAGE_MAX_DIMENSION_PX/
+# _is_degenerate_pdf_image exactly (same threshold, same both-dimensions-
+# tiny check, same fail-open-on-decode-failure rule) -- the underlying
+# problem (a rendering-trick color-fill/gradient-mask image getting a full
+# vision call and an unreliable significance verdict) is loader-agnostic,
+# confirmed the SAME class of bug is possible here: docx/pptx embed
+# arbitrary raster images with no size floor at all. Not shared as a
+# common utility across loaders (pypdf's ImageFile wrapper here vs plain
+# blob bytes here) -- reimplemented at the same threshold rather than
+# introducing a cross-loader dependency for one small predicate.
+_DEGENERATE_IMAGE_MAX_DIMENSION_PX = 8
+
+
+def _is_degenerate_image_bytes(image_bytes: bytes) -> bool:
+    """True only when BOTH dimensions are tiny -- deliberately not an area
+    check (see pdf_loader.py's own docstring for why). Fails open (False,
+    i.e. "keep it") when Pillow can't decode the format at all (e.g. a
+    docx-embedded EMF/WMF vector image, which _rasterize_for_vision-style
+    conversion happens separately, later, for captioning) -- this is a
+    cheap pre-filter for a KNOWN degenerate raster shape, not a content-
+    integrity check."""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            width, height = image.size
+    except (UnidentifiedImageError, OSError, ValueError):
+        return False
+    return width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+
+
 def _describe_one_figure(
     rel, describe_figure: Callable[[bytes], str | None] | None
 ) -> str | None:
@@ -866,6 +897,13 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
             if rel is None or _IMAGE_RELTYPE_MARKER not in rel.reltype:
                 continue
             consumed_rel_ids.add(embed_id)
+            if _is_degenerate_image_bytes(rel.target_part.blob):
+                # Not a real figure -- see _is_degenerate_image_bytes's own
+                # docstring. Skipped before touching `offset`/`block_id`/
+                # `figure_index` (as if this rel was never an image at
+                # all), so no vision call, no Figure, no [FIGURE: ...]
+                # placeholder block, and no gap in the remaining figure ids.
+                continue
             caption = _describe_one_figure(rel, describe_figure)
             start = offset
             end = start + 1
@@ -957,6 +995,8 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
     # approximation for the cases this walk can't place, not silent loss.
     for rel_id, rel in docx_doc.part.rels.items():
         if rel_id in consumed_rel_ids or _IMAGE_RELTYPE_MARKER not in rel.reltype:
+            continue
+        if _is_degenerate_image_bytes(rel.target_part.blob):
             continue
         caption = _describe_one_figure(rel, describe_figure)
         figures.append(

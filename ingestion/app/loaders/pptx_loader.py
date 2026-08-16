@@ -15,6 +15,27 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, Docume
 
 _PLACEHOLDER_TITLE_IDX = 0  # pptx.enum.shapes placeholder idx for the title placeholder
 
+# Mirrors pdf_loader.py's _DEGENERATE_IMAGE_MAX_DIMENSION_PX/
+# _is_degenerate_pdf_image and docx_loader.py's _is_degenerate_image_bytes
+# exactly (same threshold, same both-dimensions-tiny check) -- the
+# underlying problem (a rendering-trick color-fill/gradient-mask image
+# getting a full vision call and an unreliable significance verdict) is
+# loader-agnostic. python-pptx's own Image.size already reports pixel
+# dimensions directly (no Pillow decode needed here, unlike docx_loader.py's
+# raw blob bytes).
+_DEGENERATE_IMAGE_MAX_DIMENSION_PX = 8
+
+
+def _is_degenerate_pptx_image(shape) -> bool:
+    """Fails open (False, i.e. "keep it") if `.image.size` can't be read at
+    all -- a cheap pre-filter for a KNOWN degenerate shape, not a content-
+    integrity check."""
+    try:
+        width, height = shape.image.size
+    except Exception:  # noqa: BLE001 -- see docstring: fail open, never drop a real figure over a decode hiccup
+        return False
+    return width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
+
 # PP_ALIGN -> TableCell.align, same "only the values with an exact semantic
 # match get mapped, everything else falls through to None" convention
 # docx_loader.py's _JC_TO_ALIGN already established. DISTRIBUTE/JUSTIFY_LOW/
@@ -271,6 +292,14 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
         title_shape = slide.shapes.title
         for shape in slide.shapes:
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                if _is_degenerate_pptx_image(shape):
+                    # Not a real figure -- see _is_degenerate_pptx_image's
+                    # own docstring. Skipped before touching `offset`/
+                    # `block_id`/`figure_index` (as if this shape was never
+                    # a picture at all), so no vision call, no Figure, no
+                    # [FIGURE: ...] placeholder block, and no gap in the
+                    # remaining figure ids.
+                    continue
                 caption = None
                 if describe_figure is not None:
                     try:

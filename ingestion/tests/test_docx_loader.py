@@ -27,12 +27,12 @@ def _build_two_section_docx_with_inline_images(tmp_path: Path) -> Path:
     doc.add_heading("Section One", level=1)
     doc.add_paragraph("First section body text.")
     image_one = tmp_path / "one.png"
-    Image.new("RGB", (4, 4), color="red").save(image_one)
+    Image.new("RGB", (20, 20), color="red").save(image_one)
     doc.add_picture(str(image_one))
     doc.add_heading("Section Two", level=1)
     doc.add_paragraph("Second section body text.")
     image_two = tmp_path / "two.png"
-    Image.new("RGB", (4, 4), color="blue").save(image_two)
+    Image.new("RGB", (20, 20), color="blue").save(image_two)
     doc.add_picture(str(image_two))
 
     out_path = tmp_path / "two_sections.docx"
@@ -1210,7 +1210,7 @@ def test_load_docx_links_a_caption_styled_paragraph_to_the_preceding_figure() ->
         tmp_path = Path(tmp_dir)
         doc = DocxDocument()
         image_path = tmp_path / "diagram.png"
-        Image.new("RGB", (4, 4), color="green").save(image_path)
+        Image.new("RGB", (20, 20), color="green").save(image_path)
         doc.add_picture(str(image_path))
         caption_paragraph = doc.add_paragraph("Figure 1: Power distribution diagram.")
         caption_paragraph.style = doc.styles["Caption"]
@@ -1236,7 +1236,7 @@ def test_load_docx_caption_overrides_a_vision_generated_caption() -> None:
         tmp_path = Path(tmp_dir)
         doc = DocxDocument()
         image_path = tmp_path / "diagram.png"
-        Image.new("RGB", (4, 4), color="green").save(image_path)
+        Image.new("RGB", (20, 20), color="green").save(image_path)
         doc.add_picture(str(image_path))
         caption_paragraph = doc.add_paragraph("Figure 1: Power distribution diagram.")
         caption_paragraph.style = doc.styles["Caption"]
@@ -1586,3 +1586,39 @@ def test_load_docx_adopts_self_numbered_label_so_later_unnumbered_siblings_do_no
     assert headings["Scope"] == "2"
     assert headings["5 Appendix A"] is None  # self-numbered -- no synthesis needed
     assert headings["Appendix B"] == "6"  # counter adopted "5" from "5 Appendix A", not left at 2
+
+
+def test_load_docx_skips_a_degenerate_2x2_image_without_calling_describe_figure() -> None:
+    # Mirrors pdf_loader.py's own regression test for the same real bug
+    # class: a docx can embed a tiny rendering-trick color-fill image the
+    # same way a PDF can (confirmed the underlying mechanism is loader-
+    # agnostic, not PDF-specific) -- must never become a Figure, never get
+    # a vision call, and never leave a gap in the remaining figure ids.
+    from docx import Document as DocxDocument
+    from PIL import Image
+
+    describe_calls: list[bytes] = []
+
+    def spy_describe(image_bytes: bytes) -> str:
+        describe_calls.append(image_bytes)
+        return "A real diagram."
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        doc = DocxDocument()
+        degenerate_path = tmp_path / "degenerate.png"
+        Image.new("RGB", (2, 2), color="black").save(degenerate_path)
+        doc.add_picture(str(degenerate_path))
+        real_path = tmp_path / "real.png"
+        Image.new("RGB", (20, 20), color="green").save(real_path)
+        doc.add_picture(str(real_path))
+
+        out_path = tmp_path / "mixed_figures.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path), describe_figure=spy_describe)
+
+    assert len(result.figures) == 1  # the degenerate image contributed nothing
+    assert result.figures[0].caption == "A real diagram."
+    assert len(describe_calls) == 1  # never called on the 2x2 image
+    figure_blocks = [b for b in result.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 1
