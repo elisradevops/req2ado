@@ -135,3 +135,14 @@ for the product context and `phase1-spec.md` for the build detail.
   mcp-ado-server this session is **dev-machine-only** — the user's local corporate network proxy.
   It is not a product or deployment concern and must not be baked into app config, Dockerfiles, or
   the general design.
+  - It goes stale (Cato rotates its intercepting cert, or the network path stops/starts
+    intercepting). Symptom: real ADO calls fail with "unable to get local issuer certificate"
+    (visible as an `ADO wit/fields api-version probe failed` error in orchestrator's logs, or a
+    500 from `GET /ado/projects` in the browser). Fix by running
+    `scripts/refresh-cato-ca-bundle.sh`, then `docker compose restart mcp-ado-server orchestrator
+    pipeline-worker`.
+- When rebuilding docker images after a change touching `orchestrator/prisma/`, always rebuild
+  via `scripts/rebuild-app-services.sh` rather than listing services by hand — `migrate` shares
+  `orchestrator/Dockerfile` with `orchestrator`/`pipeline-worker` but is a separate cached image;
+  forgetting it silently skips the new migration (migrate reports "no pending migrations" against
+  its own stale image) and the freshly-rebuilt orchestrator then crashes on the missing column.
