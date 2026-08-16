@@ -265,6 +265,56 @@ def test_describe_figure_calls_the_vision_client_again_for_genuinely_different_i
     assert fake_client.calls == 2
 
 
+def test_describe_figure_strips_a_degenerate_continuation_from_an_already_cached_entry(monkeypatch) -> None:
+    # Real gap found during review, on top of the repetition-loop fix
+    # itself: a garbled cache entry written BEFORE this fix landed (same
+    # PROMPT_VERSION -- this fix changed parsing logic, not the prompt/
+    # schema text PROMPT_VERSION is derived from, so the cache key alone
+    # would NOT invalidate it) must still self-heal on the very next read,
+    # not silently keep serving broken text for the rest of its 1-week TTL.
+    # A vision client that fails the test if called proves this is
+    # genuinely served from the cache HIT path, not a fresh call.
+    import json
+
+    import app.main as main_module
+
+    class _FailIfCalledVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None):
+            raise AssertionError("must be served from cache, not a fresh vision call")
+
+    class _FakeRedis:
+        def __init__(self, store: dict[str, bytes]) -> None:
+            self._store = store
+
+        def get(self, key):
+            return self._store.get(key)
+
+        def set(self, key, value, ex=None):
+            raise AssertionError("a cache HIT must never re-write the entry")
+
+        def publish(self, channel, payload):
+            pass
+
+    real_caption = "This drawing shows a rectangular panel measuring 46.43 by 40.72 units."
+    garbled = real_caption + ".} } " + real_caption + " } } ```json {\"broken"
+    cache_key = main_module._figure_caption_cache_key(b"already-cached-image", None)
+    store = {cache_key: json.dumps({"significant": True, "description": garbled}).encode("utf-8")}
+
+    monkeypatch.setattr(main_module, "_vision_client", _FailIfCalledVisionClient())
+    monkeypatch.setattr(main_module, "_narration_redis", _FakeRedis(store))
+
+    result = main_module._describe_figure(b"already-cached-image")
+
+    assert result is not None
+    assert "```" not in result
+    # Everything up to (not including) the code fence survives -- this
+    # backstop targets the unambiguous fence artifact specifically, not
+    # full duplicate-content dedup (see _strip_degenerate_continuation's
+    # own docstring for why: frequency_penalty is the actual root-cause
+    # mitigation for milder in-content repetition).
+    assert result == real_caption + ".} } " + real_caption + " } }"
+
+
 def test_figure_caption_cache_key_includes_prompt_version() -> None:
     # Real gap found during review: a prompt wording change (which happened
     # twice in one real debugging session already) must invalidate old

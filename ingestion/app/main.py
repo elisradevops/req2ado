@@ -41,7 +41,7 @@ from app.redaction.redactor import redact_canonical_doc
 from app.survey.llm_cache import LlmResponseCache
 from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
-from app.vision.orchestrator_vision_client import PROMPT_VERSION, OrchestratorVisionClient
+from app.vision.orchestrator_vision_client import PROMPT_VERSION, OrchestratorVisionClient, _strip_degenerate_continuation
 from app.vision.figure_storage_client import OrchestratorFigureFileClient, compress_figure_for_storage
 from app.workitem.model import IntegrityWarning, WarningKind, WorkItemTree
 
@@ -338,7 +338,19 @@ def _describe_figure(
                 cached_obj = json.loads(cached.decode("utf-8"))
                 if not cached_obj["significant"] and caption_status_out is not None:
                     caption_status_out["status"] = "insignificant"
-                return cached_obj["description"] if cached_obj["significant"] else None
+                if not cached_obj["significant"]:
+                    return None
+                # Applied on read, not just at write time -- see
+                # _strip_degenerate_continuation's own docstring for the
+                # real bug this closes. A cache entry written by an
+                # OLDER version of this same PROMPT_VERSION's parsing
+                # logic (this repetition-strip fix landed after the
+                # prompt/schema text it's keyed on last changed, so the
+                # cache key alone would NOT have invalidated an already-
+                # garbled entry) must still self-heal on the very next
+                # read, not silently keep serving broken text for the
+                # rest of its TTL.
+                return _strip_degenerate_continuation(cached_obj["description"])
             except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
                 pass  # Treat an unparseable cache entry as a miss -- fall through to a live vision call.
     except Exception:
