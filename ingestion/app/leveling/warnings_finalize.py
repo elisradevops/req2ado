@@ -46,6 +46,13 @@ _GROUP_KEY_FIELD: dict[WarningKind, str | None] = {
     WarningKind.DROPPED_ROW: None,
     WarningKind.UNSUPPORTED_CONTENT_NOTE: None,
     WarningKind.EMPTY_TABLE_CONTENT: None,
+    # Per-ITEM, not per-node (a hallucinated mapping target names no real
+    # node at all, so these records carry empty node_ids) -- one flat bucket,
+    # same as every other "N of the same thing happened" kind above.
+    # MAPPING_CALL_FAILED is deliberately absent: it already batches itself at
+    # its emission site (one record per failed branch/chunk call, carrying
+    # that batch's own counts), exactly like SCORING_FAILED.
+    WarningKind.INVALID_MAPPING_TARGET: None,
 }
 
 
@@ -150,6 +157,14 @@ def _unsupported_content_note(members: list[IntegrityWarning], node_ids: list[st
     )
 
 
+def _invalid_mapping_target(members: list[IntegrityWarning], node_ids: list[str]) -> str:
+    count = len(members)
+    return (
+        f"{count} figure/table mapping(s) named a work item that isn't in this document -- "
+        "those items were dropped from mapping and are listed as excluded instead."
+    )
+
+
 def _empty_table_content(members: list[IntegrityWarning], node_ids: list[str]) -> str:
     count = len(members)
     return (
@@ -173,6 +188,7 @@ _SUMMARY_BUILDERS: dict[WarningKind, Callable[[list[IntegrityWarning], list[str]
     WarningKind.DROPPED_ROW: _dropped_row,
     WarningKind.UNSUPPORTED_CONTENT_NOTE: _unsupported_content_note,
     WarningKind.EMPTY_TABLE_CONTENT: _empty_table_content,
+    WarningKind.INVALID_MAPPING_TARGET: _invalid_mapping_target,
 }
 
 # Sentinel distinct from a real `None` group-key-field value (which means

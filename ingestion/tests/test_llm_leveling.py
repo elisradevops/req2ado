@@ -3805,15 +3805,13 @@ def test_render_section_prefixes_each_table_with_its_own_id_marker() -> None:
 
 # --- STAGE 2 seam: figure/table mapping ------------------------------------
 # Deciding WHICH figures/tables belong to which node is a whole-document
-# mapping pass that runs BETWEEN skeleton generation and content authoring.
-# That pass does not exist yet, so in production nothing populates
-# figure_ids/table_ids end to end today (empty is the correct, expected state
-# -- see
-# test_build_survey_tree_leaves_figure_and_table_ids_empty_until_the_mapping_pass_lands).
-# The validation and table-HTML-embedding machinery its verdicts feed into is
-# real and already in place, though, so the tests below run the FULL
-# build_survey_tree pipeline and inject only the verdicts that pass will
-# supply, at the very call site it will supply them from.
+# mapping pass that runs BETWEEN skeleton generation and content authoring
+# (_map_figures_tables_to_nodes -- see the "STAGE 2" section further down for
+# that pass's own end-to-end tests). The tests here exercise the SEAM it
+# feeds: they run the FULL build_survey_tree pipeline and inject verdicts
+# directly at the very call site the pass supplies them from, so the
+# validation/table-HTML-embedding machinery is pinned independently of how a
+# verdict was reached.
 
 _MAPPING_NODE = {
     "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
@@ -4000,10 +3998,12 @@ def test_build_survey_tree_scopes_figure_ids_validation_per_branch(monkeypatch) 
     assert audio_node.figure_ids == []
 
 
-def test_build_survey_tree_leaves_figure_and_table_ids_empty_until_the_mapping_pass_lands() -> None:
-    # The end-to-end counterpart to the seam tests above: with no mapping
-    # pass wired in, a full build produces nodes with empty figure_ids/
-    # table_ids -- the correct, expected state, not a silent regression.
+def test_build_survey_tree_leaves_figure_and_table_ids_empty_without_a_mapping_client() -> None:
+    # The end-to-end counterpart to the seam tests above: an analysis client
+    # that doesn't implement map_figures_tables at all skips stage 2
+    # entirely, producing nodes with empty figure_ids/table_ids AND empty
+    # excluded lists -- nothing attached because nothing was ever judged,
+    # which is the correct, expected state, not a silent regression.
     path = "figure_and_table.txt"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
@@ -4016,6 +4016,8 @@ def test_build_survey_tree_leaves_figure_and_table_ids_empty_until_the_mapping_p
     assert [n.figure_ids for n in tree.nodes] == [[]]
     assert [n.table_ids for n in tree.nodes] == [[]]
     assert "<table>" not in tree.nodes[0].description
+    assert tree.excluded_figure_ids == []
+    assert tree.excluded_table_ids == []
 
 
 def test_build_survey_tree_warns_on_a_referenced_attachment_it_did_not_ingest() -> None:
@@ -5702,3 +5704,415 @@ def test_full_two_stage_pipeline_produces_a_coherent_multi_branch_tree(monkeypat
     for node in tree.nodes:
         if node.type == WorkItemType.REQUIREMENT:
             assert by_id[node.parent_local_id].type in (WorkItemType.FEATURE, WorkItemType.REQUIREMENT)
+
+
+# --- STAGE 2: whole-document figure/table -> exact-node mapping -------------
+# The pass that produces the verdicts the seam tests above inject by hand:
+# tier 1 batches one call per BRANCH (that branch's whole figure+table set,
+# against that branch's own nodes), tier 2 batches only the escalated
+# leftovers against the WHOLE document's nodes. Never one call per figure --
+# at the 918-figure scale this exists for, that would double the job's
+# dominant cost.
+
+
+class FakeMappingClient(FakeSectionAnalysisClient):
+    """FakeSectionAnalysisClient plus the OPTIONAL map_figures_tables method
+    build_survey_tree resolves by duck-typing (see FigureTableMappingClient).
+    The plain FakeSectionAnalysisClient deliberately does NOT have it, so
+    every pre-stage-2 test keeps proving the no-mapping-client path.
+
+    `verdicts` maps an item id to the verdict to return for it whenever it is
+    offered; an item with no entry gets the explicit "belongs nowhere" answer
+    (node_id=None, escalate=False), so a test only has to state the items it
+    actually cares about. `verdict_fn` takes over entirely when a test needs
+    the answer to depend on which candidates were offered (i.e. to tell tier 1
+    and tier 2 apart). `raises` forces a real call failure, for the fail-open
+    guarantee."""
+
+    def __init__(self, verdicts=None, verdict_fn=None, raises: bool = False, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._verdicts = verdicts or {}
+        self._verdict_fn = verdict_fn
+        self._raises = raises
+        self.mapping_calls: list[dict] = []
+
+    def map_figures_tables(self, candidates: dict[str, dict], items: dict[str, dict]) -> dict[str, dict]:
+        self.mapping_calls.append({"candidates": candidates, "items": items})
+        if self._raises:
+            raise RuntimeError("mapping backend exploded")
+        if self._verdict_fn is not None:
+            return self._verdict_fn(candidates, items)
+        return {
+            item_id: self._verdicts.get(item_id, {"node_id": None, "escalate": False})
+            for item_id in items
+        }
+
+
+def _mapping_doc() -> CanonicalDoc:
+    """One branch, one captioned figure, one table."""
+    path = "mapping_input.txt"
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: an HDR tone-mapping curve]", source_ref=_sr(path)),
+        ],
+        figures=[Figure(id="f0", caption="an HDR tone-mapping curve", source_ref=_sr(path))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["Signal", "Pin"], ["VCC", "1"]]],
+                source_ref=_sr(path),
+            )
+        ],
+    )
+
+
+def _two_branch_figure_doc() -> CanonicalDoc:
+    """Two top-level branches, each with its own captioned figure -- the
+    fixture for everything cross-branch (tier-1 scoping, tier-2 escalation)."""
+    path = "two_branch_figures.txt"
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.FIGURE, text="[FIGURE: a display wiring diagram]", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
+            Block(id="b4", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+            Block(id="b5", kind=BlockKind.FIGURE, text="[FIGURE: a speaker wiring diagram]", source_ref=_sr(path)),
+        ],
+        figures=[
+            Figure(id="f0", caption="a display wiring diagram", source_ref=_sr(path)),
+            Figure(id="f1", caption="a speaker wiring diagram", source_ref=_sr(path)),
+        ],
+    )
+
+
+def test_mapping_attaches_a_figure_and_a_table_to_their_mapped_node() -> None:
+    # The end-to-end payoff: a mapped figure lands in that node's figure_ids,
+    # a mapped table lands in its table_ids AND has its HTML embedded.
+    fake = FakeMappingClient(
+        nodes=[_MAPPING_NODE],
+        verdicts={
+            "f0": {"node_id": "n0", "escalate": False},
+            "t0": {"node_id": "n0", "escalate": False},
+        },
+    )
+
+    tree = build_survey_tree(_mapping_doc(), fake)
+
+    node = tree.nodes[0]
+    assert node.figure_ids == ["f0"]
+    assert node.table_ids == ["t0"]
+    assert "<table>" in node.description
+    assert tree.excluded_figure_ids == []
+    assert tree.excluded_table_ids == []
+
+
+def test_mapping_batches_a_whole_branch_into_one_call_never_one_per_item() -> None:
+    # The single hardest cost constraint on this stage: one call carries a
+    # branch's figures AND tables together. A per-figure call at 918-figure
+    # scale would double the job's dominant cost.
+    fake = FakeMappingClient(nodes=[_MAPPING_NODE])
+
+    build_survey_tree(_mapping_doc(), fake)
+
+    assert len(fake.mapping_calls) == 1
+    assert set(fake.mapping_calls[0]["items"]) == {"f0", "t0"}
+
+
+def test_mapping_sends_the_items_own_identifying_info_and_titles_only_candidates() -> None:
+    fake = FakeMappingClient(nodes=[_MAPPING_NODE])
+
+    build_survey_tree(_mapping_doc(), fake)
+
+    call = fake.mapping_calls[0]
+    assert call["items"]["f0"]["kind"] == "figure"
+    assert call["items"]["f0"]["caption"] == "an HDR tone-mapping curve"
+    assert call["items"]["t0"]["kind"] == "table"
+    assert call["items"]["t0"]["columns"] == ["Signal", "Pin"]
+    # Titles only -- descriptions don't exist yet at this point in the
+    # pipeline, which is exactly what makes a whole-document candidate list
+    # affordable in tier 2.
+    assert set(call["candidates"]["n0"]) == {"type", "title"}
+
+
+def test_mapping_tier1_scopes_candidates_to_each_branchs_own_nodes(monkeypatch) -> None:
+    # Tier 1's whole cost argument rests on offering only the branch's OWN
+    # nodes -- a whole-document candidate list on every branch call would be
+    # the expensive design this two-tier split exists to avoid.
+    _force_multi_branch(monkeypatch)
+    fake = FakeMappingClient()
+
+    build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert len(fake.mapping_calls) == 2  # one per branch, no escalation tier
+    assert set(fake.mapping_calls[0]["items"]) == {"f0"}
+    assert set(fake.mapping_calls[0]["candidates"]) == {"br0_n0", "br0_n1"}
+    assert set(fake.mapping_calls[1]["items"]) == {"f1"}
+    assert set(fake.mapping_calls[1]["candidates"]) == {"br1_n0", "br1_n1"}
+
+
+def test_mapping_escalates_only_the_escalated_items_to_the_whole_document_tier(monkeypatch) -> None:
+    # Tier 2 must fire for the escalated item ONLY, and must offer the whole
+    # document's nodes -- that cross-branch reach is the entire reason it
+    # exists (a figure printed in one section documenting another's
+    # requirement).
+    _force_multi_branch(monkeypatch)
+
+    def verdict_fn(candidates, items):
+        if "br1_n1" in candidates and "br0_n1" in candidates:  # tier 2: whole document
+            return {item_id: {"node_id": "br1_n1", "escalate": False} for item_id in items}
+        return {
+            item_id: ({"node_id": None, "escalate": True} if item_id == "f0"
+                      else {"node_id": "br1_n1", "escalate": False})
+            for item_id in items
+        }
+
+    fake = FakeMappingClient(verdict_fn=verdict_fn)
+    tree = build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert len(fake.mapping_calls) == 3  # 2 tier-1 branch calls + 1 tier-2 chunk
+    escalation_call = fake.mapping_calls[-1]
+    assert set(escalation_call["items"]) == {"f0"}  # f1 resolved in tier 1, never re-offered
+    assert set(escalation_call["candidates"]) == {"br0_n0", "br0_n1", "br1_n0", "br1_n1"}
+    # Branch 0's figure attached to a branch 1 node -- the cross-branch case.
+    audio_leaf = next(n for n in tree.nodes if n.local_id == "br1_n1")
+    assert audio_leaf.figure_ids == ["f0", "f1"]
+    assert tree.excluded_figure_ids == []
+
+
+def test_mapping_makes_no_escalation_call_when_nothing_escalates(monkeypatch) -> None:
+    _force_multi_branch(monkeypatch)
+    fake = FakeMappingClient(verdicts={
+        "f0": {"node_id": "br0_n1", "escalate": False},
+        "f1": {"node_id": "br1_n1", "escalate": False},
+    })
+
+    build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert len(fake.mapping_calls) == 2  # tier 1 only
+
+
+def test_mapping_treats_an_omitted_verdict_as_an_escalation_then_as_an_exclusion(monkeypatch) -> None:
+    # A model declining to answer is not evidence the item belongs anywhere:
+    # it gets the next tier's wider candidate set, and only once no tier is
+    # left does it become an exclusion.
+    _force_multi_branch(monkeypatch)
+    fake = FakeMappingClient(verdict_fn=lambda candidates, items: {})
+
+    tree = build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert len(fake.mapping_calls) == 3  # 2 tier-1 + 1 tier-2 for both leftovers
+    assert set(fake.mapping_calls[-1]["items"]) == {"f0", "f1"}
+    assert tree.excluded_figure_ids == ["f0", "f1"]
+    assert all(n.figure_ids == [] for n in tree.nodes)
+
+
+def test_mapping_excludes_a_none_judged_item_from_every_node() -> None:
+    # User decision 4: a decorative item is neither silently dropped nor left
+    # attached-but-de-emphasized -- it is excluded from every node and
+    # counted doc-wide.
+    fake = FakeMappingClient(
+        nodes=[_MAPPING_NODE],
+        verdicts={
+            "f0": {"node_id": None, "escalate": False},
+            "t0": {"node_id": "n0", "escalate": False},
+        },
+    )
+
+    tree = build_survey_tree(_mapping_doc(), fake)
+
+    assert tree.excluded_figure_ids == ["f0"]
+    assert tree.excluded_table_ids == []
+    assert all("f0" not in node.figure_ids for node in tree.nodes)
+    assert tree.nodes[0].table_ids == ["t0"]
+
+
+def test_mapping_drops_a_hallucinated_node_id_and_warns() -> None:
+    # Same "never trusted verbatim" convention INVALID_FIGURE_IDS/
+    # INVALID_TABLE_IDS already apply one level down, applied to the NODE id
+    # a mapping call returns.
+    fake = FakeMappingClient(
+        nodes=[_MAPPING_NODE],
+        verdicts={"f0": {"node_id": "nope", "escalate": False}},
+    )
+
+    tree = build_survey_tree(_mapping_doc(), fake)
+
+    assert all(node.figure_ids == [] for node in tree.nodes)
+    assert tree.excluded_figure_ids == ["f0"]
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.INVALID_MAPPING_TARGET)
+    assert warning.detail == {"itemId": "f0", "itemKind": "figure", "requested": "nope"}
+    assert "isn't in this document" in warning.raw
+
+
+def test_mapping_does_not_re_escalate_a_hallucinated_node_id(monkeypatch) -> None:
+    # A dropped verdict must not be able to trigger an otherwise-unneeded
+    # tier-2 call: one bad answer must never change this stage's call count.
+    _force_multi_branch(monkeypatch)
+    fake = FakeMappingClient(verdicts={
+        "f0": {"node_id": "does_not_exist", "escalate": False},
+        "f1": {"node_id": "br1_n1", "escalate": False},
+    })
+
+    build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert len(fake.mapping_calls) == 2  # tier 1 only
+
+
+def test_mapping_rejects_a_node_id_from_a_different_branch_in_tier1(monkeypatch) -> None:
+    # Tier 1 offered THIS branch's nodes only, so another branch's real node
+    # id is still outside the candidate set that call was given -- validation
+    # is against what was actually offered, not against "any node anywhere".
+    _force_multi_branch(monkeypatch)
+    fake = FakeMappingClient(verdicts={
+        "f0": {"node_id": "br1_n1", "escalate": False},
+        "f1": {"node_id": "br1_n1", "escalate": False},
+    })
+
+    tree = build_survey_tree(_two_branch_figure_doc(), fake)
+
+    audio_leaf = next(n for n in tree.nodes if n.local_id == "br1_n1")
+    assert audio_leaf.figure_ids == ["f1"]  # its own branch's figure only
+    assert tree.excluded_figure_ids == ["f0"]
+    assert any(w.kind == WarningKind.INVALID_MAPPING_TARGET for w in tree.warnings)
+
+
+def test_mapping_call_failure_degrades_to_excluded_without_failing_the_job() -> None:
+    # THE fail-open guarantee: stage 2 is deliberately the one stage of the
+    # three whose failure must not abort a SURVEY job. Stages 1 and 3 stay
+    # fail-hard.
+    fake = FakeMappingClient(nodes=[_MAPPING_NODE], raises=True)
+
+    tree = build_survey_tree(_mapping_doc(), fake)
+
+    assert len(tree.nodes) == 1  # the job completed
+    assert tree.nodes[0].description.startswith("The system shall do x.")
+    assert tree.excluded_figure_ids == ["f0"]
+    assert tree.excluded_table_ids == ["t0"]
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.MAPPING_CALL_FAILED)
+    assert warning.detail["tier"] == 1
+    assert warning.detail["figureCount"] == 1 and warning.detail["tableCount"] == 1
+    assert "mapping backend exploded" in warning.raw
+
+
+def test_mapping_call_failure_in_one_branch_does_not_affect_another(monkeypatch) -> None:
+    # Fail-open is per BATCH, not per job: a branch whose call blew up loses
+    # only its own items.
+    _force_multi_branch(monkeypatch)
+    calls = {"n": 0}
+
+    def verdict_fn(candidates, items):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("first branch exploded")
+        return {item_id: {"node_id": "br1_n1", "escalate": False} for item_id in items}
+
+    fake = FakeMappingClient(verdict_fn=verdict_fn)
+    tree = build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert tree.excluded_figure_ids == ["f0"]
+    assert next(n for n in tree.nodes if n.local_id == "br1_n1").figure_ids == ["f1"]
+
+
+def test_mapping_escalation_tier_failure_also_degrades_to_excluded(monkeypatch) -> None:
+    _force_multi_branch(monkeypatch)
+
+    def verdict_fn(candidates, items):
+        if len(candidates) > 2:  # tier 2, whole document
+            raise RuntimeError("escalation chunk exploded")
+        return {item_id: {"node_id": None, "escalate": True} for item_id in items}
+
+    fake = FakeMappingClient(verdict_fn=verdict_fn)
+    tree = build_survey_tree(_two_branch_figure_doc(), fake)
+
+    assert sorted(tree.excluded_figure_ids) == ["f0", "f1"]
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.MAPPING_CALL_FAILED)
+    assert warning.detail["tier"] == 2
+    assert warning.detail["chunkIndex"] == 0
+
+
+def test_mapping_chunks_the_escalation_tier_by_item_count() -> None:
+    # Tier 2's leftovers are chunked so one call's output can't be truncated
+    # by the model's own output cap -- same reasoning (and derivation) as
+    # scoring's own _SCORING_CHUNK_NODE_COUNT.
+    import app.leveling.llm_leveling as llm_leveling_module
+
+    chunk_size = llm_leveling_module._MAPPING_ESCALATION_CHUNK_ITEM_COUNT
+    item_count = chunk_size + 1
+    path = "many_figures.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id=f"b{i}", kind=BlockKind.FIGURE, text=f"[FIGURE: diagram {i}]", source_ref=_sr(path))
+            for i in range(item_count)
+        ],
+        figures=[Figure(id=f"f{i}", caption=f"diagram {i}", source_ref=_sr(path)) for i in range(item_count)],
+    )
+    fake = FakeMappingClient(
+        nodes=[_MAPPING_NODE],
+        verdict_fn=lambda candidates, items: {
+            item_id: {"node_id": None, "escalate": True} for item_id in items
+        },
+    )
+
+    tree = build_survey_tree(doc, fake)
+
+    tier2_calls = fake.mapping_calls[1:]  # call 0 is the single branch's tier 1
+    assert [len(call["items"]) for call in tier2_calls] == [chunk_size, 1]
+    assert len(tree.excluded_figure_ids) == item_count
+
+
+def test_mapping_never_offers_an_uncaptioned_figure_as_an_item() -> None:
+    # An uncaptioned figure was never rendered into section_text and carries
+    # nothing to reason about scope from -- it keeps today's unchanged
+    # positional-bracket heuristic (uncaptioned_figure_ids) and must never be
+    # mapped, excluded, or charged for.
+    path = "mixed_figures.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: a real diagram]", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+        ],
+        figures=[
+            Figure(id="f0", caption="a real diagram", source_ref=_sr(path)),
+            Figure(id="f1", caption=None, source_ref=_sr(path)),
+        ],
+    )
+    fake = FakeMappingClient(nodes=[_MAPPING_NODE], verdicts={"f0": {"node_id": "n0", "escalate": False}})
+
+    tree = build_survey_tree(doc, fake)
+
+    assert set(fake.mapping_calls[0]["items"]) == {"f0"}
+    assert tree.excluded_figure_ids == []
+    node = tree.nodes[0]
+    assert node.figure_ids == ["f0"]
+    assert node.uncaptioned_figure_ids == ["f1"]
+    assert set(node.figure_ids).isdisjoint(node.uncaptioned_figure_ids)
+
+
+def test_mapping_never_offers_a_synthesized_structural_node_as_a_candidate(monkeypatch) -> None:
+    # A bridge/grouping node carries a canned "structure only, no content
+    # invented" description its own repair pass wrote, and stage 3 never
+    # touches it -- so a figure mapped there could never be attached, and
+    # attaching real content to a structural placeholder would contradict
+    # what those passes document about themselves.
+    _force_multi_branch(monkeypatch)
+    # A Requirement directly under an Epic makes _repair_requirement_hierarchy
+    # synthesize a bridge Feature into the branch's own node list.
+    fake = FakeMappingClient(nodes=[
+        {"temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Root", "text": "Root epic.", "tags": []},
+        {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Leaf", "text": "The leaf shall x.", "tags": []},
+    ])
+
+    tree = build_survey_tree(_two_branch_figure_doc(), fake)
+
+    # Guard against a vacuous assertion: a bridge node must genuinely exist.
+    synthesized = [n.local_id for n in tree.nodes if "synth_" in n.local_id]
+    assert synthesized, "fixture no longer synthesizes a structural node"
+    offered = set(fake.mapping_calls[0]["candidates"])
+    assert offered == {"br0_n0", "br0_n1"}
+    assert offered.isdisjoint(synthesized)

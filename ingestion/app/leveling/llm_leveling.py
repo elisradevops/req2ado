@@ -455,9 +455,11 @@ class SectionAnalysisClient(Protocol):
       already-repaired, already-regrouped skeleton. This call may not change
       the tree, only fill it in.
 
-    (Stage 2, whole-document figure/table mapping, slots BETWEEN the two and
-    is not part of this Protocol yet -- until it lands, every node's
-    figure_ids/table_ids simply stay empty, their WorkItemNode default.)
+    (Stage 2, whole-document figure/table mapping, slots BETWEEN the two --
+    it is deliberately NOT part of this Protocol, since it is optional and
+    resolved by duck-typing; see FigureTableMappingClient's own docstring.
+    Without it, every node's figure_ids/table_ids simply stay empty, their
+    WorkItemNode default.)
 
     `analyze_section`/`analyze_section_agentic` are the pre-split single call
     that did all of the above at once. They are no longer called by this
@@ -1495,8 +1497,12 @@ def build_survey_tree(
        each node's requirement text and tags, authored against the section
        AND the now-final tree, which this stage may not alter.
 
-    (A figure/table mapping pass belongs between 1 and 2; until it lands,
-    every node's figure_ids/table_ids simply stay empty.)
+    2b. STAGE 2, whole-document figure/table -> EXACT node mapping, once,
+        over every branch's figures/tables at once and against the now-final
+        node ids (_map_figures_tables_to_nodes) -- batched per branch, with a
+        whole-document escalation tier for the items a branch can't place.
+        Optional (see FigureTableMappingClient); without it every node's
+        figure_ids/table_ids simply stay empty.
 
     `model` (the per-job model override, same value threaded from main.py's
     /level route) resolves via `_resolve_caps` to this document's branch-size
@@ -2117,18 +2123,75 @@ def build_survey_tree(
     _regroup_disconnected_roots(all_nodes, "regroup_", grouping_client, all_warnings)
     _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
 
+    # STAGE 2: whole-document figure/table -> EXACT node mapping, run here
+    # and only here -- exact-node binding is impossible before stage 1 built
+    # the nodes and the two repair passes above froze their ids, and
+    # pointless after stage 3 has already written every description against a
+    # figure/table set nobody decided. See _map_figures_tables_to_nodes for
+    # the two-tier batching and the fail-open contract.
+    #
+    # Resolved by duck-typing off the analysis client (see
+    # FigureTableMappingClient's own docstring): a client without the method
+    # skips this stage entirely and behaves exactly as it did before stage 2
+    # existed -- no attachment, and (correctly) nothing marked excluded
+    # either, since nothing was ever judged.
+    figure_table_ids_by_local_id: dict[str, dict[str, list[str]]] = {}
+    excluded_figure_ids: list[str] = []
+    excluded_table_ids: list[str] = []
+    map_fn = getattr(analysis_client, "map_figures_tables", None)
+    if map_fn is not None:
+        (
+            figure_table_ids_by_local_id, excluded_figure_ids, excluded_table_ids
+        ) = _map_figures_tables_to_nodes(
+            branch_skeletons, map_fn, figures_by_id(doc.figures),
+            figure_id_by_block_id, all_warnings,
+        )
+        # Stage 3's hallucination guard (see _author_branch_content) checks a
+        # node's assigned ids against what was OFFERED for it -- per branch
+        # before this stage existed, since a branch's own call was the only
+        # thing that could name an id. Mapping offers document-wide (tier 2
+        # can legitimately place an appendix figure onto a chapter-3
+        # requirement in another branch), so the honest guard set is now the
+        # union of every branch's offered ids, not one branch's. Still a real
+        # guard, not a widening to "anything": it is exactly the set of
+        # captioned figures/tables this stage offered, so an uncaptioned
+        # figure's id remains un-attachable and figure_ids/uncaptioned_figure_ids
+        # stay provably disjoint. tables_by_id is widened for the same reason
+        # -- a cross-branch table's HTML must be resolvable by whichever
+        # branch's node it landed on.
+        doc_valid_figure_ids = {fid for s in branch_skeletons for fid in s.valid_figure_ids}
+        doc_valid_table_ids = {tid for s in branch_skeletons for tid in s.valid_table_ids}
+        doc_tables_by_id = {
+            tid: table for s in branch_skeletons for tid, table in s.tables_by_id.items()
+        }
+        branch_skeletons = [
+            skeleton._replace(
+                valid_figure_ids=doc_valid_figure_ids,
+                valid_table_ids=doc_valid_table_ids,
+                tables_by_id=doc_tables_by_id,
+            )
+            for skeleton in branch_skeletons
+        ]
+
     # STAGE 3: content authoring, per branch, same parallelism model as
     # stage 1 -- each call fills in the very same WorkItemNode objects
     # already collected into `all_nodes` above, so nothing here re-adds a
-    # node; only warnings/citations/grounding text come back.
+    # node; only warnings/citations/grounding text come back. The whole
+    # mapping dict is passed to every branch unfiltered: each branch only
+    # ever looks up its OWN nodes' local_ids in it (see
+    # _author_branch_content's per-node lookup), so a cross-branch verdict
+    # reaches exactly the branch that owns its target node.
     if branch_concurrency <= 1 or len(branch_skeletons) <= 1:
         branch_results: list[_BranchContentResult] = [
-            _author_branch_content(skeleton, analysis_client) for skeleton in branch_skeletons
+            _author_branch_content(skeleton, analysis_client, figure_table_ids_by_local_id)
+            for skeleton in branch_skeletons
         ]
     else:
         with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
             content_futures = [
-                executor.submit(_author_branch_content, skeleton, analysis_client)
+                executor.submit(
+                    _author_branch_content, skeleton, analysis_client, figure_table_ids_by_local_id,
+                )
                 for skeleton in branch_skeletons
             ]
             branch_results = [future.result() for future in content_futures]
@@ -2228,6 +2291,7 @@ def build_survey_tree(
     return WorkItemTree(
         nodes=all_nodes, warnings=finalize_warnings(all_warnings),
         kb_citations=deduped_citations, trace_links=trace_links,
+        excluded_figure_ids=excluded_figure_ids, excluded_table_ids=excluded_table_ids,
     )
 
 
@@ -2274,9 +2338,10 @@ class _BranchSkeleton(NamedTuple):
     Everything else here is the branch context stage 3 needs to author
     against and to run its own content-dependent checks: the rendered
     `section_text` the model must stay grounded in, the branch's own
-    candidate figure/table ids (for the whole-document mapping pass that
-    will eventually land between the two stages), and the narration/warning
-    bookkeeping stage 1 already started."""
+    candidate figure/table ids (what stage 2's whole-document mapping pass
+    offers for this branch, and what stage 3 then validates its verdicts
+    against), and the narration/warning bookkeeping stage 1 already
+    started."""
 
     nodes: list[WorkItemNode]
     warnings: list[IntegrityWarning]
@@ -2913,18 +2978,337 @@ def _build_survey_skeleton_for_branch(
     )
 
 
+# STAGE 2 (whole-document figure/table -> exact-node mapping) tuning
+# constants. All three exist to keep this stage's cost a function of BRANCH
+# count, never figure count -- the single hardest constraint on this stage
+# (the motivating document has 918 figures; a per-figure call would double
+# the already-dominant sequential vision-captioning cost).
+#
+# Escalation chunk size: derived the same way _SCORING_CHUNK_NODE_COUNT is
+# (see its own docstring) rather than picked as a round number -- a mapping
+# response entry ({'node_id', 'escalate'} plus its item-id key) runs ~25
+# tokens, so 200 items is ~5k of _MAX_OUTPUT_TOKENS' 20k, leaving ample room
+# for JSON structural overhead. Deliberately smaller than the ~300 the
+# candidate list would also allow: tier 2 offers the WHOLE document's node
+# titles as candidates, so its INPUT is the side under pressure, not its
+# output.
+_MAPPING_ESCALATION_CHUNK_ITEM_COUNT = 200
+# A vision-generated figure caption can run to a full paragraph. Mapping only
+# needs enough of it to recognize the SUBJECT, so each caption is previewed,
+# not sent whole -- at branch-batched scale (an entire branch's figures in
+# one call) the difference between a preview and a full caption is the
+# difference between a comfortable prompt and an overflowing one.
+_MAPPING_CAPTION_PREVIEW_CHARS = 240
+_MAPPING_TABLE_COLUMN_COUNT = 8
+_MAPPING_TABLE_COLUMN_PREVIEW_CHARS = 60
+
+
+class FigureTableMappingClient(Protocol):
+    """STAGE 2 of SURVEY's generation split: maps each figure/table to the
+    EXACT node it belongs to, whole-document, between stage 1 (structure) and
+    stage 3 (content). See OrchestratorLlmClient.map_figures_tables for the
+    call's own contract.
+
+    Deliberately a SEPARATE, optional Protocol rather than a fourth method on
+    SectionAnalysisClient: it is resolved off the analysis client by
+    duck-typing at the call site (`getattr(analysis_client,
+    "map_figures_tables", None)`, the same convention _score_epics_and_features
+    already uses for its own late-added method), so a client that predates
+    this stage keeps working unchanged -- it simply gets no mapping, which is
+    byte-identical to the state stage 2 was introduced to replace (every
+    node's figure_ids/table_ids empty, nothing excluded)."""
+
+    def map_figures_tables(
+        self, candidates: dict[str, dict], items: dict[str, dict]
+    ) -> dict[str, dict]: ...
+
+
+def _mapping_preview(text: str | None, limit: int) -> str | None:
+    """Bounded single-line preview of a caption/cell for a mapping payload --
+    see _MAPPING_CAPTION_PREVIEW_CHARS. None/blank stays None (an absent
+    caption is a real signal to the model; an empty string reads as one that
+    exists and says nothing)."""
+    if text is None:
+        return None
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return None
+    return collapsed if len(collapsed) <= limit else collapsed[:limit].rstrip() + "..."
+
+
+def _mapping_items_for_branch(
+    skeleton: _BranchSkeleton,
+    figures_by_figure_id: dict[str, Figure],
+    figure_id_by_block_id: dict[str, str] | None,
+) -> dict[str, dict]:
+    """This branch's own figures AND tables as ONE mapping payload, keyed by
+    item id -- the whole point of tier 1 being per-branch rather than
+    per-item. Figures are walked via `skeleton.blocks` (document order, the
+    order the model already saw them in section_text) and restricted to
+    `skeleton.valid_figure_ids`, which is exactly the CAPTIONED set: an
+    uncaptioned figure was never rendered into section_text, has nothing
+    informational to reason about scope from, and keeps today's unchanged
+    positional-bracket heuristic (uncaptioned_figure_ids) instead.
+
+    Nothing is fetched here that the pipeline doesn't already hold -- the
+    caption a figure was given by vision, a table's own caption and
+    header-row labels, and the branch's section label for physical
+    where-does-this-live context."""
+    items: dict[str, dict] = {}
+    for block in skeleton.blocks:
+        if block.kind != BlockKind.FIGURE:
+            continue
+        figure_id = (figure_id_by_block_id or {}).get(block.id)
+        if figure_id is None or figure_id not in skeleton.valid_figure_ids or figure_id in items:
+            continue
+        figure = figures_by_figure_id.get(figure_id)
+        items[figure_id] = {
+            "kind": "figure",
+            "section": skeleton.section_label,
+            "caption": _mapping_preview(
+                figure.caption if figure is not None else None, _MAPPING_CAPTION_PREVIEW_CHARS
+            ),
+        }
+    for table_id, table in skeleton.tables_by_id.items():
+        header_row = plain_text_rows(table)[0] if table.cells else []
+        columns = [
+            preview
+            for cell in header_row[:_MAPPING_TABLE_COLUMN_COUNT]
+            if (preview := _mapping_preview(cell, _MAPPING_TABLE_COLUMN_PREVIEW_CHARS)) is not None
+        ]
+        items[table_id] = {
+            "kind": "table",
+            "section": skeleton.section_label,
+            "caption": _mapping_preview(table.caption, _MAPPING_CAPTION_PREVIEW_CHARS),
+            "columns": columns,
+        }
+    return items
+
+
+def _mapping_candidates(nodes: list[WorkItemNode]) -> dict[str, dict]:
+    """Titles only (never descriptions -- there are none yet at this point in
+    the pipeline, which is precisely what makes a whole-document candidate
+    list affordable), restricted to the nodes stage 3 will actually author.
+
+    An already-described node in a branch's list is one a repair pass
+    SYNTHESIZED (a bridge Feature, a topical grouping, a catch-all root
+    Epic); each carries a canned "structure only, no content invented"
+    description its own pass deliberately wrote, and stage 3 never touches
+    it -- so a figure mapped there could never be attached, and attaching
+    real document content to a purely structural placeholder would
+    contradict what those passes document about themselves. Offering only
+    authorable nodes keeps the candidate set exactly equal to the set of
+    nodes an accepted verdict can actually reach."""
+    return {
+        node.local_id: {"type": node.type.value, "title": node.title}
+        for node in nodes
+        if not node.description
+    }
+
+
+def _map_figures_tables_to_nodes(
+    branch_skeletons: list[_BranchSkeleton],
+    map_fn: Callable[[dict[str, dict], dict[str, dict]], dict[str, dict]],
+    figures_by_figure_id: dict[str, Figure],
+    figure_id_by_block_id: dict[str, str] | None,
+    warnings: list[IntegrityWarning],
+) -> tuple[dict[str, dict[str, list[str]]], list[str], list[str]]:
+    """STAGE 2 of SURVEY's generation: binds every figure/table in the
+    document to ONE exact node id, run AFTER stage 1's skeleton and the
+    whole-document structural repair passes have made every node id final,
+    and BEFORE stage 3 authors any content against them.
+
+    Two tiers, both BATCHED -- zero per-figure LLM calls at any point:
+
+    - TIER 1, one call per BRANCH, carrying that branch's entire figure+table
+      set at once, against that branch's own nodes as candidates. This is
+      where the overwhelming majority of items resolve, because a figure
+      overwhelmingly documents something in the section it physically sits
+      in. Cost scales with branch count, not figure count.
+    - TIER 2, only for items tier 1 explicitly ESCALATED (its "this is real
+      but its home isn't among these candidates" verdict), chunked by
+      _MAPPING_ESCALATION_CHUNK_ITEM_COUNT, against the WHOLE document's
+      nodes as candidates. This is what makes cross-branch mapping possible
+      at all -- a figure printed in an appendix documenting a requirement
+      stated in chapter 3 -- without paying whole-document candidate cost for
+      every item.
+
+    Every returned node_id is validated against the REAL candidate set THAT
+    call was offered; one outside it is a hallucination, dropped with
+    WarningKind.INVALID_MAPPING_TARGET, exactly as
+    _author_branch_content already treats a hallucinated figure/table id.
+    A dropped verdict is NOT re-escalated: the item lands in the excluded
+    list instead, keeping this stage's call count bounded and predictable
+    (a model that hallucinates once tends to do so again, and one bad verdict
+    must never be able to trigger an otherwise-unneeded tier-2 call).
+
+    This is deliberately the ONE fail-OPEN stage of the three (stages 1 and 3
+    both still fail hard, matching this module's existing no-try/except
+    convention around analyze_section): any batch whose call raises degrades
+    every item in it to the excluded lists with a
+    WarningKind.MAPPING_CALL_FAILED warning, and the job continues. A
+    document losing figure attachment is a degraded result; a document losing
+    the whole job is not a result at all.
+
+    Returns (figure_table_ids_by_local_id, excluded_figure_ids,
+    excluded_table_ids): the first is _author_branch_content's own stage-2
+    seam ({local_id: {'figure_ids': [...], 'table_ids': [...]}}), the other
+    two are WorkItemTree's doc-wide excluded lists -- every item this stage
+    saw ends up in exactly one of the two, never silently nowhere."""
+    mapping: dict[str, dict[str, list[str]]] = {}
+    excluded_figure_ids: list[str] = []
+    excluded_table_ids: list[str] = []
+
+    def _exclude(item_id: str, item: dict) -> None:
+        target = excluded_figure_ids if item.get("kind") == "figure" else excluded_table_ids
+        target.append(item_id)
+
+    def _attach(node_id: str, item_id: str, item: dict) -> None:
+        entry = mapping.setdefault(node_id, {"figure_ids": [], "table_ids": []})
+        entry["figure_ids" if item.get("kind") == "figure" else "table_ids"].append(item_id)
+
+    def _apply(
+        verdicts: dict[str, dict],
+        items: dict[str, dict],
+        candidate_ids: set[str],
+        allow_escalation: bool,
+    ) -> list[str]:
+        """Applies one call's verdicts to `items`, returning the item ids that
+        still need the next tier. An item whose verdict is missing or
+        malformed is treated as an escalation while one is still available,
+        and as a NONE (excluded) once it isn't -- the model declining to
+        answer is not evidence the item belongs anywhere."""
+        escalated: list[str] = []
+        for item_id, item in items.items():
+            entry = verdicts.get(item_id)
+            entry = entry if isinstance(entry, dict) else {}
+            node_id = entry.get("node_id")
+            node_id = node_id if isinstance(node_id, str) and node_id else None
+            if node_id is not None:
+                if node_id in candidate_ids:
+                    _attach(node_id, item_id, item)
+                    continue
+                kind = item.get("kind", "figure")
+                message = (
+                    f"{kind.capitalize()} {item_id} was mapped to a work item that isn't in this "
+                    f"document ({node_id}) -- the mapping was dropped and the {kind} is listed as "
+                    "excluded instead."
+                )
+                logger.warning(message)
+                warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.INVALID_MAPPING_TARGET,
+                        message,
+                        detail={"itemId": item_id, "itemKind": kind, "requested": node_id},
+                    )
+                )
+                _exclude(item_id, item)
+                continue
+            if allow_escalation and (bool(entry.get("escalate")) or not entry):
+                escalated.append(item_id)
+                continue
+            _exclude(item_id, item)
+        return escalated
+
+    def _fail_open(items: dict[str, dict], exc: Exception, scope: str, detail: dict) -> None:
+        figure_count = sum(1 for item in items.values() if item.get("kind") == "figure")
+        message = (
+            f"Figure/table mapping failed for {scope}: {exc} -- "
+            f"{figure_count} figure(s)/{len(items) - figure_count} table(s) are listed as "
+            "excluded rather than attached to any work item."
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.MAPPING_CALL_FAILED,
+                message,
+                detail={
+                    **detail, "figureCount": figure_count,
+                    "tableCount": len(items) - figure_count,
+                },
+            )
+        )
+        for item_id, item in items.items():
+            _exclude(item_id, item)
+
+    # TIER 1 -- one call per branch, that branch's whole figure/table set
+    # against that branch's own nodes.
+    items_by_id: dict[str, dict] = {}
+    escalated_ids: list[str] = []
+    for skeleton in branch_skeletons:
+        branch_items = _mapping_items_for_branch(
+            skeleton, figures_by_figure_id, figure_id_by_block_id,
+        )
+        if not branch_items:
+            continue
+        items_by_id.update(branch_items)
+        candidates = _mapping_candidates(skeleton.nodes)
+        if not candidates:
+            # Nothing in this branch to attach to (a branch that produced no
+            # authorable node at all -- already warned about separately by
+            # stage 1's ZERO_NODES check). Straight to tier 2 rather than a
+            # guaranteed-empty call.
+            escalated_ids.extend(branch_items)
+            continue
+        try:
+            verdicts = map_fn(candidates, branch_items)
+        except Exception as exc:  # noqa: BLE001 - stage 2 is deliberately fail-open, see this function's docstring
+            _fail_open(
+                branch_items, exc,
+                f'the "{skeleton.section_label}" section'
+                if skeleton.section_label else "one section",
+                {"tier": 1, "branch": skeleton.node_id_prefix or "(root)"},
+            )
+            continue
+        escalated_ids.extend(_apply(verdicts, branch_items, set(candidates), allow_escalation=True))
+
+    if not escalated_ids:
+        return mapping, excluded_figure_ids, excluded_table_ids
+
+    # TIER 2 -- only the genuinely-escalated leftovers, against the WHOLE
+    # document's authorable nodes (titles only), chunked so one call's output
+    # can't be truncated by the model's own output cap.
+    doc_candidates = _mapping_candidates(
+        [node for skeleton in branch_skeletons for node in skeleton.nodes]
+    )
+    doc_candidate_ids = set(doc_candidates)
+    for start in range(0, len(escalated_ids), _MAPPING_ESCALATION_CHUNK_ITEM_COUNT):
+        chunk_ids = escalated_ids[start : start + _MAPPING_ESCALATION_CHUNK_ITEM_COUNT]
+        chunk_items = {item_id: items_by_id[item_id] for item_id in chunk_ids}
+        if not doc_candidates:
+            for item_id, item in chunk_items.items():
+                _exclude(item_id, item)
+            continue
+        try:
+            verdicts = map_fn(doc_candidates, chunk_items)
+        except Exception as exc:  # noqa: BLE001 - stage 2 is deliberately fail-open, see this function's docstring
+            _fail_open(
+                chunk_items, exc, "the whole document",
+                {"tier": 2, "chunkIndex": start // _MAPPING_ESCALATION_CHUNK_ITEM_COUNT},
+            )
+            continue
+        # allow_escalation=False: there is no third tier -- an item still
+        # unplaced after being offered every node in the document has no
+        # home, which is exactly what the excluded lists mean.
+        _apply(verdicts, chunk_items, doc_candidate_ids, allow_escalation=False)
+
+    return mapping, excluded_figure_ids, excluded_table_ids
+
+
 def _author_branch_content(
     skeleton: _BranchSkeleton,
     analysis_client: SectionAnalysisClient,
-    # STAGE 2 seam: the whole-document figure/table MAPPING pass's verdicts
-    # for this branch, {local_id: {"figure_ids": [...], "table_ids": [...]}}.
-    # That pass does not exist yet, so this stays None and every node simply
-    # keeps WorkItemNode's own empty-list defaults -- the correct, expected
-    # state until it lands. The validation/embedding machinery below is
-    # nonetheless driven entirely off this parameter (rather than deleted and
-    # rebuilt later), so mapping verdicts get exactly the same
-    # hallucinated-id filtering and table-HTML fold-in the model's own inline
-    # figure_ids/table_ids used to get.
+    # STAGE 2 seam: the whole-document figure/table MAPPING pass's verdicts,
+    # {local_id: {"figure_ids": [...], "table_ids": [...]}} -- see
+    # _map_figures_tables_to_nodes. Passed WHOLE, not pre-filtered to this
+    # branch: the per-node lookup below only ever reads this branch's own
+    # local_ids, so a cross-branch verdict (tier 2 placing an appendix figure
+    # onto a chapter-3 requirement) reaches exactly the branch owning its
+    # target node. None when no mapping client was available at all, in which
+    # case every node simply keeps WorkItemNode's own empty-list defaults.
+    # Mapping verdicts get exactly the same hallucinated-id filtering and
+    # table-HTML fold-in the model's own inline figure_ids/table_ids used to
+    # get.
     figure_table_ids_by_local_id: dict[str, dict[str, list[str]]] | None = None,
 ) -> _BranchContentResult:
     """STAGE 3 of SURVEY's two-stage per-branch generation: authors each
@@ -3014,12 +3398,13 @@ def _author_branch_content(
             key=lambda t: t.value,
         )
 
-        # known-issues item 20: a figure/table id outside what THIS branch's
-        # own rendered section_text actually offered is a hallucination (an
-        # id that doesn't exist, or belongs to a different section) and is
-        # dropped, never trusted verbatim. Empty on both sides today -- the
-        # mapping pass that populates figure_table_ids_by_local_id hasn't
-        # landed yet, so these loops are no-ops and no warning can fire.
+        # known-issues item 20: a figure/table id outside what stage 2
+        # actually OFFERED (see build_survey_tree's own comment on why that
+        # set is document-wide once mapping has run, and branch-scoped
+        # otherwise) is a hallucination -- an id that doesn't exist, or one
+        # belonging to an uncaptioned figure that was never a mapping
+        # candidate -- and is dropped, never trusted verbatim. A no-op when
+        # no mapping ran at all: both sides are then empty.
         mapping = (figure_table_ids_by_local_id or {}).get(node.local_id) or {}
         raw_figure_ids = mapping.get("figure_ids") or []
         figure_ids = sorted({fid for fid in raw_figure_ids if isinstance(fid, str) and fid in skeleton.valid_figure_ids})
