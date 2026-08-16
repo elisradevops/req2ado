@@ -444,6 +444,25 @@ def _table_to_html(table: Table) -> str:
     return f"<table{table_attrs}>{colgroup}{caption_html}{thead_html}{tbody_html}</table>"
 
 
+def _ocr_recovered_table_warning(table: Table, node_ids: list[str]) -> IntegrityWarning | None:
+    """One warning for this table if it has any OCR-recovered cell
+    (TableCell.ocr_recovered, set by pdf_loader.py's _cell_ocr_recovery),
+    None otherwise -- called once per table at its single BASELINE fold
+    site below (each table is only ever folded once, unlike SURVEY's
+    _ocr_recovered_table_warnings, which scans a whole branch's table list
+    at once; see that function's own docstring for why the shapes differ)."""
+    recovered_count = sum(1 for row in table.cells for cell in row if cell is not None and cell.ocr_recovered)
+    if recovered_count == 0:
+        return None
+    return IntegrityWarning.make(
+        WarningKind.OCR_RECOVERED_TABLE_TEXT,
+        f"Table {table.id} had {recovered_count} cell(s) whose text could not be extracted directly "
+        "and was recovered via OCR -- please spot-check against the source document.",
+        node_ids=node_ids,
+        detail={"tableId": table.id, "recoveredCellCount": recovered_count},
+    )
+
+
 def _order_key(ref: SourceRef) -> tuple[int, int]:
     """Document-order sort key comparable across a Block and a Table within
     the SAME loader run. Offsets are NOT globally comparable on their own --
@@ -867,6 +886,7 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
                     open_node.source_ref = _widen_page_end(open_node.source_ref, table.source_ref)
                     open_node.table_ids.append(table.id)
+                    ocr_warning = _ocr_recovered_table_warning(table, node_ids=[open_node.local_id])
                 else:
                     if orphan_source_ref is None:
                         orphan_source_ref = table.source_ref
@@ -880,6 +900,9 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                             detail={"kind": "table", "sourceId": table.id, "preview": title_preview},
                         )
                     )
+                    ocr_warning = _ocr_recovered_table_warning(table, node_ids=[])
+                if ocr_warning is not None:
+                    warnings.append(ocr_warning)
                 continue
 
             assert block is not None

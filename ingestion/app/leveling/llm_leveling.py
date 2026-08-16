@@ -706,6 +706,36 @@ def _unsupported_content_warnings(blocks: list[Block], section_label: str | None
     ]
 
 
+def _ocr_recovered_table_warnings(tables: list[Table] | None, section_label: str | None) -> list[IntegrityWarning]:
+    """One warning per table in this branch with 1+ OCR-recovered cell
+    (TableCell.ocr_recovered, set by pdf_loader.py's _cell_ocr_recovery) --
+    one warning per TABLE, not per cell, same "don't spam the warnings
+    list" convention as _unsupported_content_warnings/
+    _referenced_attachment_warnings just above. Scans the whole branch's
+    table list at once (unlike tree_builder.py's BASELINE counterpart,
+    _ocr_recovered_table_warning, which checks one table at a time inline
+    at its single table-fold site) because this function is called once
+    per branch at the very end of branch analysis, mirroring where
+    _unsupported_content_warnings/_referenced_attachment_warnings are
+    already called (see this function's own call site)."""
+    section_ref = f'The "{section_label}" section' if section_label else "This section"
+    out: list[IntegrityWarning] = []
+    for table in tables or []:
+        recovered_count = sum(1 for row in table.cells for cell in row if cell is not None and cell.ocr_recovered)
+        if recovered_count == 0:
+            continue
+        out.append(
+            IntegrityWarning.make(
+                WarningKind.OCR_RECOVERED_TABLE_TEXT,
+                f"{section_ref} contains a table ({table.id}) with {recovered_count} cell(s) whose text "
+                "could not be extracted directly and was recovered via OCR -- please spot-check against "
+                "the source document.",
+                detail={"section": section_label or "(root)", "tableId": table.id, "recoveredCellCount": recovered_count},
+            )
+        )
+    return out
+
+
 _SECTION_LABEL_EXCERPT_CHARS = 60
 
 
@@ -2986,6 +3016,7 @@ def _build_survey_skeleton_for_branch(
 
     warnings.extend(_referenced_attachment_warnings(section_text, section_label))
     warnings.extend(_unsupported_content_warnings(blocks, section_label))
+    warnings.extend(_ocr_recovered_table_warnings(tables, section_label))
 
     return _BranchSkeleton(
         nodes=nodes,

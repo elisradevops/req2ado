@@ -13,6 +13,7 @@ from app.leveling.llm_leveling import (
     _ensure_root_features_have_epic_parent,
     _grounding_score,
     _group_label_became_a_node,
+    _ocr_recovered_table_warnings,
     _regroup_disconnected_roots,
     _render_block_line,
     _repair_group_attachment,
@@ -1116,6 +1117,30 @@ def test_unsupported_content_warnings_is_empty_without_any_matching_note() -> No
     path = "doc.txt"
     blocks = [Block(id="b0", kind=BlockKind.PARAGRAPH, text="The display shall support HDR.", source_ref=_sr(path))]
     assert _unsupported_content_warnings(blocks, section_label="Display") == []
+
+
+def test_ocr_recovered_table_warnings_emits_one_warning_per_table_with_a_recovered_cell() -> None:
+    tables = [
+        Table(id="t0", cells=[[TableCell(text="Label", ocr_recovered=True), TableCell(text="Alpha")]], source_ref=_sr("x")),
+        Table(id="t1", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x")),
+        Table(
+            id="t2",
+            cells=[[TableCell(text="A", ocr_recovered=True), TableCell(text="B", ocr_recovered=True)]],
+            source_ref=_sr("x"),
+        ),
+    ]
+    warnings = _ocr_recovered_table_warnings(tables, section_label="Variants")
+    assert len(warnings) == 2
+    by_table_id = {w.detail["tableId"]: w for w in warnings}
+    assert by_table_id["t0"].kind == WarningKind.OCR_RECOVERED_TABLE_TEXT
+    assert by_table_id["t0"].detail["recoveredCellCount"] == 1
+    assert by_table_id["t2"].detail["recoveredCellCount"] == 2
+    assert "t1" not in by_table_id
+
+
+def test_ocr_recovered_table_warnings_is_empty_without_any_recovered_cell() -> None:
+    tables = [Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x"))]
+    assert _ocr_recovered_table_warnings(tables, section_label=None) == []
 
 
 def test_build_survey_tree_applies_the_front_matter_guard_on_the_single_call_path() -> None:
