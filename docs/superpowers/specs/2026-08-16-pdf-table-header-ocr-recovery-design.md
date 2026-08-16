@@ -116,6 +116,20 @@ separate constant that would need its own justification). A cell's bbox
 pixel coordinates via `pixels = points * dpi / 72` before cropping with
 `PIL.Image.crop`.
 
+**Crop inset (discovered during implementation planning, empirically confirmed,
+not in the original design):** the crop must be inset ~2pt from each raw
+cell-bbox edge before computing the pre-check stddev (and before the OCR
+call itself, reusing the same inset crop) -- pdfplumber's own cell bbox
+extends to the ruled grid border line itself. Verified directly against a
+real reportlab-built bordered table: an intentionally BLANK cell's un-inset
+crop measured grayscale stddev ~50 (extrema 0-255) purely from its own
+border pixels sitting on the bbox edge -- comfortably clearing the
+pre-check threshold and misfiring into a wasted OCR attempt on every blank
+cell in every bordered table. The same cell inset 2pt past its border
+measured stddev 0.0. See the implementation plan's Task 5 for the exact
+constant and guard against an inset producing an inverted (too-small-cell)
+crop box.
+
 **Rejected alternative:** correlating pdfplumber/pypdf's own embedded-image
 objects (`page.images`/`pypdf_page.images`, the same objects `load_pdf`'s
 existing figure-extraction loop already reads) with each blank cell's bbox,
