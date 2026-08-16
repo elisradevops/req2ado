@@ -438,6 +438,7 @@ describe('OpenWebUiClient', () => {
       seed: 0,
       max_tokens: 300,
       reasoning_effort: 'none',
+      frequency_penalty: 0.4,
     });
   });
 
@@ -496,6 +497,24 @@ describe('OpenWebUiClient', () => {
     await client.vision('describe', [Buffer.from('img')]);
 
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 300 }));
+  });
+
+  it('vision() applies a frequency penalty to discourage repetition-loop degenerate output', async () => {
+    // Real live incident, confirmed via a completed job's actual captions
+    // (not a synthetic test): the model repeated the same content
+    // near-verbatim within one response, trailed by a broken continuation
+    // fragment -- genuinely inside the JSON string's own content, since
+    // response_format's schema enforcement constrains structure, not
+    // content quality. A structured-extraction call has no legitimate use
+    // for repeating itself.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('img')]);
+
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ frequency_penalty: 0.4 }));
   });
 
   it('vision() defaults to image/png in the data URI when opts.mimeType is not supplied', async () => {
@@ -570,6 +589,7 @@ describe('OpenWebUiClient', () => {
       seed: 0,
       max_tokens: 300,
       reasoning_effort: 'none',
+      frequency_penalty: 0.4,
     });
   });
 

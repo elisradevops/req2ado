@@ -42,6 +42,56 @@ def test_prompt_version_is_derived_from_the_actual_prompt_and_schema_text() -> N
     assert PROMPT_VERSION != changed
 
 
+def test_describe_figure_strips_a_degenerate_continuation_fragment_leaking_into_the_description() -> None:
+    # Real live incident, confirmed via a completed job's actual captions
+    # (not a synthetic guess): 2 of 42 real figure descriptions came back
+    # with their own genuine content repeated near-verbatim, trailed by a
+    # broken continuation fragment starting with a markdown code fence --
+    # this is a near-verbatim reproduction of the actual observed pattern,
+    # not an invented worst case. The real caption (before the fence) must
+    # survive; only the degenerate tail is cut.
+    real_caption = (
+        "This drawing provides multiple orthogonal views detailing the electrical and mechanical "
+        "interface of a CubeADCS unit. The top view shows a rectangular panel measuring 46.43 by "
+        "40.72 units."
+    )
+    degenerate_tail = (
+        ".} } " + real_caption + " } } This figure contains genuine informational content "
+        "worth including because it specifies critical physical dimensions. } } ```json {\""
+    )
+    raw = json.dumps({"significant": True, "description": real_caption + degenerate_tail})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"description": raw})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.describe_figure(b"fake-png-bytes")
+
+    assert result is not None
+    assert result.significant is True
+    assert "```" not in result.description
+    assert result.description.startswith(real_caption)
+
+
+def test_describe_figure_treats_a_fence_only_description_as_the_same_ambiguous_none_outcome() -> None:
+    # Edge case of the fix above: if the code fence appears at the START of
+    # the description (nothing real before it survives stripping), this
+    # must fall into the SAME "ambiguous, don't cache" None outcome a blank
+    # significant=True description already gets -- not a confidently
+    # returned empty string.
+    raw = json.dumps({"significant": True, "description": "```json {\"broken"})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"description": raw})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    assert client.describe_figure(b"fake-png-bytes") is None
+
+
 def test_describe_figure_calls_the_orchestrator_vision_endpoint_with_bearer_auth() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-bearer"

@@ -119,6 +119,26 @@ PROMPT_VERSION = hashlib.sha256(
 ).hexdigest()[:12]
 
 
+def _strip_degenerate_continuation(description: str) -> str:
+    """Truncates at the first markdown code-fence marker ("```") -- real
+    live incident this closes: 2 of 42 real captions in a completed job
+    came back with their genuine content repeated near-verbatim, trailed
+    by a broken continuation fragment like "```json {" -- all of it
+    INSIDE the JSON string's own content (response_format's schema
+    enforcement constrains structure, not what a model chooses to put in a
+    string field, so this is a content-quality/repetition-loop problem,
+    not a parsing bug). A real caption can never legitimately contain a
+    code fence -- the prompt explicitly forbids markdown -- so any
+    occurrence is unambiguous evidence of degenerate continuation, safe to
+    cut at deterministically. This is a backstop for the WORST visible
+    symptom (a broken, half-written fragment leaking into user-facing
+    text), not a guarantee against milder in-content repetition -- see
+    OpenWebUiClient.vision()'s frequency_penalty for the actual root-cause
+    mitigation."""
+    fence_index = description.find("```")
+    return description if fence_index == -1 else description[:fence_index].rstrip()
+
+
 def _parse_figure_response(raw: str) -> FigureVisionResult | None:
     """Fail-open: any parse failure (malformed JSON, missing fields, wrong
     types) returns None rather than raising -- a bad figure description
@@ -141,7 +161,7 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
             continue
         if isinstance(parsed, dict) and isinstance(parsed.get("significant"), bool):
             raw_description = parsed.get("description")
-            description = raw_description if isinstance(raw_description, str) else ""
+            description = _strip_degenerate_continuation(raw_description if isinstance(raw_description, str) else "")
             if parsed["significant"] and not description.strip():
                 # significant=True with a blank/whitespace-only description is
                 # the exact cache-poisoning state a confirmed live incident

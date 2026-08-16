@@ -364,6 +364,25 @@ export class OpenWebUiClient implements LlmClient {
       // just unconditional here since no caller ever wants a captioned
       // reasoning trace.
       reasoning_effort: 'none' as OpenAI.ReasoningEffort,
+      // Third live incident, confirmed via a real completed job's actual
+      // figure descriptions (not a synthetic test): 2 of 42 real captions
+      // came back with the SAME content repeated near-verbatim within one
+      // response, trailed by a stray, broken continuation fragment
+      // ("```json {") -- confirmed this is genuinely inside the JSON
+      // string's own content, not a parsing bug on ingestion's side (the
+      // JSON envelope itself is syntactically valid; response_format's
+      // schema enforcement constrains STRUCTURE, not content quality, so
+      // it cannot prevent a model from writing degenerate/looping text
+      // inside a valid string field). A schema-constrained, structured-
+      // extraction call like this one has no legitimate use for repeating
+      // itself -- frequency_penalty is the standard OpenAI-compatible
+      // decoding knob for discouraging exact-phrase repetition, same
+      // "structured extraction, not creative writing" reasoning
+      // temperature=0 above already applies, now to the repetition-loop
+      // problem specifically. A mitigation, not a guarantee -- repetition-
+      // loop behavior is probabilistic, not a deterministic bug this
+      // parameter can promise to eliminate.
+      frequency_penalty: 0.4,
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
     });
     try {
