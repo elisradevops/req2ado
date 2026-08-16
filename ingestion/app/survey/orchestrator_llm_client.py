@@ -16,6 +16,7 @@ from app.prompts import load_prompt
 from app.survey._response_schemas import (
     checklist_definitions_schema,
     checklist_extraction_schema,
+    content_authoring_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
     epic_feature_scores_schema,
@@ -24,6 +25,7 @@ from app.survey._response_schemas import (
     root_grouping_schema,
     scores_schema,
     section_analysis_schema,
+    section_skeleton_schema,
     synthesis_schema,
     title_tags_schema,
 )
@@ -375,6 +377,21 @@ def _section_analysis_system_prompt(expected_root_count: int | None = None) -> s
     )
 
 
+_SECTION_SKELETON_SYSTEM_PROMPT = load_prompt("section_skeleton")
+
+
+def _section_skeleton_system_prompt(expected_root_count: int | None = None) -> str:
+    """Stage-1 (structure-only) counterpart to
+    _section_analysis_system_prompt -- same __ROOT_COUNT_CLAUSE__ marker,
+    filled by the same _root_count_clause, since the multi-root question is
+    a purely STRUCTURAL one and belongs to exactly this stage now. Same
+    marker + str.replace rather than str.format, same reason (the template
+    contains literal JSON braces)."""
+    return _SECTION_SKELETON_SYSTEM_PROMPT.replace(
+        "__ROOT_COUNT_CLAUSE__", _root_count_clause(expected_root_count)
+    )
+
+
 _SECTION_ANALYSIS_TOOL_HINT = (
     "\n\nYou may call the query_kb tool zero or more times first if additional "
     "reference material would help you formalize this section's requirements. "
@@ -560,6 +577,32 @@ def _table_group_hint(table_group_hints: list[tuple[str, str]] | None) -> str:
         "Requirement itself; the parent's own text should state the general "
         "behavior only, with each specific sub-case as a separate child."
     )
+
+
+def _agentic_tools_and_hint(
+    list_documents_fn: Callable[[], list[str]] | None,
+    read_document_fn: Callable[[str], str | None] | None,
+    read_other_section_fn: Callable[[str], str | None] | None,
+) -> tuple[list[dict], str]:
+    """Which tools an agentic section call offers, and the matching prompt
+    hint describing them -- extracted verbatim from analyze_section_agentic
+    when the skeleton-stage agentic path became a second caller of the
+    identical gate. Each capability is opt-in by whether its closure was
+    injected at all (see analyze_section_agentic's own docstring for the
+    convention), and the full-document pair is all-or-nothing: offering
+    list_kb_documents without read_kb_document would let the model name a
+    document it then cannot open."""
+    full_document_tools_enabled = list_documents_fn is not None and read_document_fn is not None
+    other_section_tool_enabled = read_other_section_fn is not None
+    tools = [QUERY_KB_TOOL]
+    tool_hint = _SECTION_ANALYSIS_TOOL_HINT
+    if full_document_tools_enabled:
+        tools += [LIST_KB_DOCUMENTS_TOOL, READ_KB_DOCUMENT_TOOL]
+        tool_hint += _SECTION_ANALYSIS_FULL_DOCUMENT_TOOL_HINT
+    if other_section_tool_enabled:
+        tools.append(READ_OTHER_SECTION_TOOL)
+        tool_hint += _SECTION_ANALYSIS_OTHER_SECTION_TOOL_HINT
+    return tools, tool_hint
 
 
 def _nodes_from_parsed(parsed: object) -> list[dict]:
@@ -1694,27 +1737,301 @@ class OrchestratorLlmClient:
         client with no outline built) offers no read_other_section tool.
 
         `whole_document`/`topic_count` -- see analyze_section's own docstring."""
-        full_document_tools_enabled = list_documents_fn is not None and read_document_fn is not None
-        other_section_tool_enabled = read_other_section_fn is not None
-        tools = [QUERY_KB_TOOL]
-        tool_hint = _SECTION_ANALYSIS_TOOL_HINT
-        if full_document_tools_enabled:
-            tools += [LIST_KB_DOCUMENTS_TOOL, READ_KB_DOCUMENT_TOOL]
-            tool_hint += _SECTION_ANALYSIS_FULL_DOCUMENT_TOOL_HINT
-        if other_section_tool_enabled:
-            tools.append(READ_OTHER_SECTION_TOOL)
-            tool_hint += _SECTION_ANALYSIS_OTHER_SECTION_TOOL_HINT
+        tools, tool_hint = _agentic_tools_and_hint(list_documents_fn, read_document_fn, read_other_section_fn)
         system_prompt = _section_analysis_system_prompt(expected_root_count) + tool_hint
         if whole_document:
             system_prompt += _whole_document_hint(topic_count)
         elif topic_count is not None:
             system_prompt += _branch_topic_hint(topic_count)
         system_prompt += _table_group_hint(table_group_hints)
+        citations: list[dict] = []
+        content, truncated, rounds_exhausted = self._run_agentic_rounds(
+            system_prompt, section_text, section_analysis_schema(), tools,
+            retrieve_fn, list_documents_fn, read_document_fn, read_other_section_fn,
+            citations, "analyze_section_agentic",
+        )
+        if content:
+            nodes = _nodes_from_parsed(_parse_json_object(content))
+            logger.warning(
+                "analyze_section_agentic result: node_count=%d truncated=%s query_kb_calls=%d topic_count=%r",
+                len(nodes), truncated, len(citations), topic_count,
+            )
+            return nodes, citations, truncated
+        if rounds_exhausted:
+            # Exceeded _MAX_TOOL_ROUNDS without a final answer -- degrade to no
+            # nodes for this branch rather than looping forever; the branch's
+            # existing coverage/completeness warnings surface the gap. Not a
+            # length-cap truncation (no final answer was ever reached to check
+            # finishReason on) -- reported as truncated=False, a distinct
+            # failure mode from analyze_section's own truncation signal.
+            logger.warning("analyze_section_agentic: exceeded _MAX_TOOL_ROUNDS=%d without a final answer -- 0 nodes", _MAX_TOOL_ROUNDS)
+            return [], citations, False
+        # A round contradicted toolChoice:'none' (or returned neither
+        # tool_calls nor content) -- extremely unlikely per the API contract,
+        # but fall back to a single non-agentic analyze_section call over the
+        # same section text rather than silently returning 0 nodes.
+        fallback_nodes, fallback_truncated = self.analyze_section(
+            section_text, kb_context=None, whole_document=whole_document, topic_count=topic_count
+        )
+        return fallback_nodes, citations, fallback_truncated
+
+    def analyze_section_skeleton(
+        self,
+        section_text: str,
+        kb_context: str | None = None,
+        whole_document: bool = False,
+        topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
+    ) -> tuple[list[dict], bool]:
+        """STAGE 1 of the two-stage SURVEY generation split: the STRUCTURE
+        half of what analyze_section used to decide in one call. Given the
+        same single coherent rendering of a whole section, returns the
+        complete node SKELETON -- [{temp_id, type, parent_temp_id, title}]
+        -- with no requirement text, no tags, and no figure/table ids at
+        all (see section_skeleton_schema and the section_skeleton prompt).
+        The content half is authored separately, against this
+        already-decided skeleton, by author_content; figure/table
+        attachment is a separate whole-document mapping pass between the
+        two.
+
+        Every steering parameter analyze_section takes is kept and means
+        exactly the same thing here, because every one of them steers a
+        STRUCTURAL decision: `whole_document`/`topic_count` are node-COUNT
+        floors, `table_group_hints` names which groups must each become
+        their own node AND with which type, `expected_root_count` is the
+        multi-root permission. `kb_context` (the non-tool-capable path's
+        pre-computed once-per-document string) is threaded in with the same
+        soft framing analyze_section uses -- domain material can genuinely
+        inform where a node boundary belongs, not just how a requirement is
+        worded.
+
+        This is the FALLBACK path for models without tool-calling support;
+        tool-capable models use analyze_section_skeleton_agentic instead.
+        Returns (nodes, truncated) -- same contract as analyze_section's own
+        return, see its docstring for what `truncated` means and why the
+        caller surfaces it rather than swallowing it."""
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "analyze_section_skeleton", self._model, self._num_ctx, self._top_k, self._min_p,
+                section_text, kb_context, whole_document, topic_count, table_group_hints, expected_root_count,
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                logger.info("analyze_section_skeleton: cache hit, skipping LLM call")
+                return cached["nodes"], cached["truncated"]
+        system_prompt = _with_kb_context(
+            _section_skeleton_system_prompt(expected_root_count), kb_context
+        )
+        if whole_document:
+            system_prompt += _whole_document_hint(topic_count)
+        elif topic_count is not None:
+            system_prompt += _branch_topic_hint(topic_count)
+        system_prompt += _table_group_hint(table_group_hints)
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": section_text},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": section_skeleton_schema(),
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            # Same confirmed-live finding as analyze_section's identical doc
+            # comment -- this call inherits that finding directly, being the
+            # same holistic-JSON-extraction work minus the content half.
+            "think": False,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"topK": self._top_k} if self._top_k else {}),
+            **({"minP": self._min_p} if self._min_p else {}),
+        }
+        with _tracer.start_as_current_span("analyze_section_skeleton") as span:
+            span.set_attribute("gen_ai.request.model", self._model or "default")
+            span.set_attribute("gen_ai.operation.name", "chat")
+            response = self._post_chat(payload)
+            response.raise_for_status()
+            body = response.json()
+            content = _strip_json_fence(body["content"])
+            nodes = _nodes_from_parsed(_parse_json_object(content))
+            span.set_attribute("gen_ai.response.node_count", len(nodes))
+        truncated = body.get("finishReason") == "length"
+        logger.warning(
+            "analyze_section_skeleton result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
+            len(nodes), body.get("finishReason"), truncated, topic_count,
+        )
+        # Never cache a truncated result -- same reasoning as analyze_section's
+        # own identical guard.
+        if key is not None and not truncated:
+            self._cache.set(key, {"nodes": nodes, "truncated": truncated})
+        return nodes, truncated
+
+    def analyze_section_skeleton_agentic(
+        self,
+        section_text: str,
+        retrieve_fn: Callable[[str], tuple[str | None, list[dict]]],
+        list_documents_fn: Callable[[], list[str]] | None = None,
+        read_document_fn: Callable[[str], str | None] | None = None,
+        read_other_section_fn: Callable[[str], str | None] | None = None,
+        whole_document: bool = False,
+        topic_count: int | None = None,
+        table_group_hints: list[tuple[str, str]] | None = None,
+        expected_root_count: int | None = None,
+    ) -> tuple[list[dict], list[dict], bool]:
+        """Tool-calling variant of analyze_section_skeleton, standing in the
+        same relation to it that analyze_section_agentic does to
+        analyze_section (see that method's docstring for the tool set, the
+        injected-closure convention, the _MAX_TOOL_ROUNDS bound and what
+        `truncated` does and does not mean).
+
+        The tool-calling round trip stays on THIS stage, not on
+        author_content, deliberately: the KB/other-section material a model
+        pulls here is retrieved ONCE per branch and then handed to
+        author_content as a plain pre-computed kb_context (see
+        llm_leveling._author_branch_content), so both stages end up grounded
+        in the same real material for the price of one agentic loop rather
+        than two.
+
+        Returns (nodes, citations, truncated) -- skeleton nodes, every
+        query_kb hit actually retrieved across all rounds, and the same
+        final-round length-cap signal analyze_section_agentic reports."""
+        tools, tool_hint = _agentic_tools_and_hint(list_documents_fn, read_document_fn, read_other_section_fn)
+        system_prompt = _section_skeleton_system_prompt(expected_root_count) + tool_hint
+        if whole_document:
+            system_prompt += _whole_document_hint(topic_count)
+        elif topic_count is not None:
+            system_prompt += _branch_topic_hint(topic_count)
+        system_prompt += _table_group_hint(table_group_hints)
+        citations: list[dict] = []
+        content, truncated, rounds_exhausted = self._run_agentic_rounds(
+            system_prompt, section_text, section_skeleton_schema(), tools,
+            retrieve_fn, list_documents_fn, read_document_fn, read_other_section_fn,
+            citations, "analyze_section_skeleton_agentic",
+        )
+        if content:
+            nodes = _nodes_from_parsed(_parse_json_object(content))
+            logger.warning(
+                "analyze_section_skeleton_agentic result: node_count=%d truncated=%s query_kb_calls=%d topic_count=%r",
+                len(nodes), truncated, len(citations), topic_count,
+            )
+            return nodes, citations, truncated
+        if rounds_exhausted:
+            logger.warning(
+                "analyze_section_skeleton_agentic: exceeded _MAX_TOOL_ROUNDS=%d without a final answer -- 0 nodes",
+                _MAX_TOOL_ROUNDS,
+            )
+            return [], citations, False
+        fallback_nodes, fallback_truncated = self.analyze_section_skeleton(
+            section_text, kb_context=None, whole_document=whole_document, topic_count=topic_count,
+            table_group_hints=table_group_hints, expected_root_count=expected_root_count,
+        )
+        return fallback_nodes, citations, fallback_truncated
+
+    def author_content(
+        self,
+        section_text: str,
+        skeleton_nodes: dict[str, dict],
+        kb_context: str | None = None,
+    ) -> tuple[dict[str, dict], bool]:
+        """STAGE 3 of the two-stage SURVEY generation split: the CONTENT
+        half of what analyze_section used to decide in one call. Given the
+        same section text AND the tree that stage 1 already decided for it,
+        returns each node's authored content -- and nothing else.
+
+        `skeleton_nodes` maps each node's own id to {'type', 'title',
+        'parent_id'} (the same real-node-id-keyed convention
+        summarize_parent_nodes/score_epics_and_features_for_document already
+        use, rather than a second temp-id space): 'parent_id' is
+        informational context for authoring, NOT something this call may
+        change. The prompt states the hierarchy is FIXED -- no node may be
+        added, dropped, re-typed, re-parented or renamed here, because those
+        decisions were already made, already repaired
+        (_repair_requirement_hierarchy), and already regrouped
+        whole-document (_regroup_disconnected_roots) before this call runs.
+
+        Returns ({node_id: {'description', 'tags'}}, truncated). `truncated`
+        matters at least as much here as it did on the old single call -- a
+        long branch's full requirement text is exactly the payload most
+        likely to hit the output-token cap -- so it is surfaced the same way
+        rather than swallowed; a node the response omits is the CALLER's
+        problem to degrade gracefully (see llm_leveling._author_branch_content),
+        never silently dropped here."""
+        system_prompt = _with_kb_context(
+            load_prompt(
+                "author_content",
+                tag_vocabulary=", ".join(t.value for t in RequirementTag),
+                node_count=str(len(skeleton_nodes)),
+            ),
+            kb_context,
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps({"section": section_text, "nodes": skeleton_nodes}),
+                },
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": content_authoring_schema(),
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            # Same confirmed-live finding as the two section-analysis paths
+            # this call was split out of -- structured extraction over text
+            # already in the prompt, not open-ended reasoning.
+            "think": False,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"topK": self._top_k} if self._top_k else {}),
+            **({"minP": self._min_p} if self._min_p else {}),
+        }
+        with _tracer.start_as_current_span("author_content") as span:
+            span.set_attribute("gen_ai.request.model", self._model or "default")
+            span.set_attribute("gen_ai.operation.name", "chat")
+            response = self._post_chat(payload)
+            response.raise_for_status()
+            body = response.json()
+            content = _strip_json_fence(body["content"])
+            parsed = _parse_json_object(content)
+            result = parsed if isinstance(parsed, dict) else {}
+            span.set_attribute("gen_ai.response.node_count", len(result))
+        truncated = body.get("finishReason") == "length"
+        logger.warning(
+            "author_content result: requested=%d returned=%d finishReason=%r truncated=%s",
+            len(skeleton_nodes), len(result), body.get("finishReason"), truncated,
+        )
+        return result, truncated
+
+    def _run_agentic_rounds(
+        self,
+        system_prompt: str,
+        user_content: str,
+        response_schema: dict,
+        tools: list[dict],
+        retrieve_fn: Callable[[str], tuple[str | None, list[dict]]],
+        list_documents_fn: Callable[[], list[str]] | None,
+        read_document_fn: Callable[[str], str | None] | None,
+        read_other_section_fn: Callable[[str], str | None] | None,
+        citations: list[dict],
+        label: str,
+    ) -> tuple[str | None, bool, bool]:
+        """The bounded tool-calling round loop shared by every agentic
+        SURVEY call (analyze_section_agentic and its skeleton counterpart) --
+        extracted verbatim from analyze_section_agentic when the second
+        caller appeared, deliberately preserving every decision documented at
+        its original call site (see the inline comments below). Appends every
+        query_kb hit to `citations` in place, exactly as before.
+
+        Returns (final_content, truncated, rounds_exhausted): a non-None
+        `final_content` is the model's raw final answer string for the
+        caller to parse with its own schema's shape in mind. `rounds_exhausted`
+        distinguishes the two no-answer outcomes the callers degrade
+        differently for -- True when _MAX_TOOL_ROUNDS ran out with no final
+        answer (degrade to nothing), False when a round returned neither
+        tool_calls nor content (fall back to the non-agentic call)."""
         messages: list[dict] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": section_text},
+            {"role": "user", "content": user_content},
         ]
-        citations: list[dict] = []
         for round_index in range(_MAX_TOOL_ROUNDS):
             # On the last permitted round, force a final answer instead of
             # allowing yet another tool call -- confirmed real cause of a
@@ -1748,8 +2065,11 @@ class OrchestratorLlmClient:
                 # forced into the schema shape), and that a final-answer
                 # round stays syntactically valid JSON once the schema is
                 # present -- restoring the same real constraint
-                # analyze_section already had all along.
-                "responseSchema": section_analysis_schema(),
+                # analyze_section already had all along. Passed IN by the
+                # caller (rather than hardcoded to section_analysis_schema)
+                # since the skeleton stage constrains the same loop to its
+                # own, much lighter shape.
+                "responseSchema": response_schema,
                 "maxTokens": _MAX_OUTPUT_TOKENS,
                 # See analyze_section's identical doc comment -- same
                 # confirmed-live finding, same two SURVEY call sites.
@@ -1778,34 +2098,24 @@ class OrchestratorLlmClient:
                 continue
             content = _strip_json_fence(body.get("content", ""))
             if content:
-                nodes = _nodes_from_parsed(_parse_json_object(content))
-                truncated = body.get("finishReason") == "length"
-                logger.warning(
-                    "analyze_section_agentic result: node_count=%d finishReason=%r truncated=%s query_kb_calls=%d topic_count=%r",
-                    len(nodes), body.get("finishReason"), truncated, len(citations), topic_count,
-                )
-                return nodes, citations, truncated
+                return content, body.get("finishReason") == "length", False
             # Contradicts toolChoice:'none' on the last round (or the model
             # returned neither tool_calls nor content on an earlier round) --
-            # extremely unlikely per the API contract, but fall back to a
-            # single non-agentic analyze_section call over the same section
+            # extremely unlikely per the API contract, but the CALLER falls
+            # back to its own single non-agentic call over the same section
             # text rather than silently returning 0 nodes for this branch.
             logger.warning(
-                "analyze_section_agentic: round %d produced neither tool_calls nor content -- falling back to analyze_section",
-                round_index,
+                "%s: round %d produced neither tool_calls nor content -- falling back to the non-agentic call",
+                label, round_index,
             )
-            fallback_nodes, fallback_truncated = self.analyze_section(
-                section_text, kb_context=None, whole_document=whole_document, topic_count=topic_count
-            )
-            return fallback_nodes, citations, fallback_truncated
-        # Exceeded _MAX_TOOL_ROUNDS without a final answer -- degrade to no
-        # nodes for this branch rather than looping forever; the branch's
-        # existing coverage/completeness warnings surface the gap. Not a
-        # length-cap truncation (no final answer was ever reached to check
-        # finishReason on) -- reported as truncated=False, a distinct
-        # failure mode from analyze_section's own truncation signal.
-        logger.warning("analyze_section_agentic: exceeded _MAX_TOOL_ROUNDS=%d without a final answer -- 0 nodes", _MAX_TOOL_ROUNDS)
-        return [], citations, False
+            return None, False, False
+        # Exceeded _MAX_TOOL_ROUNDS without a final answer -- the caller
+        # degrades to no nodes for this branch rather than looping forever;
+        # the branch's existing coverage/completeness warnings surface the
+        # gap. Not a length-cap truncation (no final answer was ever reached
+        # to check finishReason on) -- reported as truncated=False, a
+        # distinct failure mode from analyze_section's own truncation signal.
+        return None, False, True
 
     @staticmethod
     def _execute_agentic_tool_call(

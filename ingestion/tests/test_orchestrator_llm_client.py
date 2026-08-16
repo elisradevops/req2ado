@@ -2323,6 +2323,254 @@ def test_analyze_section_agentic_read_other_section_handles_a_missing_section_gr
     assert nodes == []
 
 
+# --- Part B stage 1 (skeleton) / stage 3 (content authoring) -----------------
+# The two-call replacement for analyze_section's single do-everything call:
+# structure first (no text, no ids), content afterwards against that already
+# fixed structure. See llm_leveling._build_survey_skeleton_for_branch /
+# _author_branch_content for the pipeline side of the same split.
+
+
+def _skeleton_nodes() -> list[dict]:
+    return [
+        {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display"},
+        {"temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "HDR support"},
+    ]
+
+
+def test_analyze_section_skeleton_returns_structure_only_nodes() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"nodes": _skeleton_nodes()})})
+
+    nodes, truncated = client.analyze_section_skeleton("Display\nThe display shall support HDR.")
+
+    assert nodes == _skeleton_nodes()
+    assert truncated is False
+    # The whole point of the split: nothing content-shaped comes back here.
+    assert all(not (set(n) & {"text", "description", "tags", "figure_ids", "table_ids"}) for n in nodes)
+
+
+def test_analyze_section_skeleton_response_schema_asks_for_no_content_fields() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton("Some section text.")
+
+    item_properties = captured["body"]["responseSchema"]["schema"]["properties"]["nodes"]["items"]["properties"]
+    assert set(item_properties) == {"temp_id", "type", "parent_temp_id", "title"}
+    # Same deliberately-unbounded array as section_analysis_schema -- a
+    # maxItems bound is the expensive case for Ollama's GBNF grammar.
+    assert "maxItems" not in captured["body"]["responseSchema"]["schema"]["properties"]["nodes"]
+
+
+def test_analyze_section_skeleton_reports_truncated_on_finish_reason_length() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(
+        {"content": json.dumps({"nodes": _skeleton_nodes()}), "finishReason": "length"}
+    )
+
+    _, truncated = client.analyze_section_skeleton("Some section text.")
+    assert truncated is True
+
+
+def test_analyze_section_skeleton_prompt_carries_the_structural_steering_parameters() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton(
+        "Some section text.", kb_context="Reference material.", whole_document=True, topic_count=7,
+        table_group_hints=[("Media Buttons", "Feature")], expected_root_count=2,
+    )
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "Reference material." in system_prompt
+    assert "7" in system_prompt
+    assert "Media Buttons" in system_prompt
+    # Multi-root permission is a purely STRUCTURAL decision, so it belongs
+    # to this stage rather than to content authoring.
+    assert "2" in system_prompt
+
+
+def test_analyze_section_skeleton_raises_on_non_200_response() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "{}"}, expected_status=500)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.analyze_section_skeleton("Some section text.")
+
+
+def test_analyze_section_skeleton_agentic_calls_retrieve_fn_then_returns_skeleton() -> None:
+    call_count = {"n": 0}
+    retrieved: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "toolCalls": [
+                        {"id": "call-1", "function": {"name": "query_kb", "arguments": json.dumps({"query": "HDR"})}}
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"content": json.dumps({"nodes": _skeleton_nodes()})})
+
+    def retrieve_fn(query: str) -> tuple[str | None, list[dict]]:
+        retrieved.append(query)
+        return "HDR reference material.", [{"source_file": "hdr.pdf", "similarity": 0.9, "text": "HDR."}]
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, citations, truncated = client.analyze_section_skeleton_agentic("Some section text.", retrieve_fn)
+
+    assert retrieved == ["HDR"]
+    assert nodes == _skeleton_nodes()
+    assert citations == [{"source_file": "hdr.pdf", "similarity": 0.9, "text": "HDR."}]
+    assert truncated is False
+
+
+def test_analyze_section_skeleton_agentic_sends_the_skeleton_schema_not_the_analysis_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton_agentic("Some section text.", lambda query: (None, []))
+
+    assert "tools" in captured["body"]
+    assert captured["body"]["responseSchema"]["name"] == "section_skeleton"
+
+
+def test_analyze_section_skeleton_agentic_falls_back_to_the_non_agentic_skeleton_call() -> None:
+    # Same degrade analyze_section_agentic has: a round that returns neither
+    # tool_calls nor content falls back to one plain call, never to 0 nodes.
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={"content": json.dumps({"nodes": _skeleton_nodes()})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    nodes, _, _ = client.analyze_section_skeleton_agentic("Some section text.", lambda query: (None, []))
+    assert nodes == _skeleton_nodes()
+    assert call_count["n"] == 2
+
+
+def test_author_content_returns_description_and_tags_per_node() -> None:
+    captured: dict = {}
+    content = {
+        "n0": {"description": "The display subsystem delivers picture output.", "tags": []},
+        "n1": {"description": "The display shall support HDR.", "tags": ["functional"]},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps(content)})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    skeleton = {
+        "n0": {"type": "Feature", "title": "Display", "parent_id": None},
+        "n1": {"type": "Requirement", "title": "HDR support", "parent_id": "n0"},
+    }
+    result, truncated = client.author_content("Display\nThe display shall support HDR.", skeleton)
+
+    assert result == content
+    assert truncated is False
+    # The already-decided skeleton crosses the wire alongside the section
+    # text -- this call is given the tree, it does not re-derive one.
+    user_payload = json.loads(captured["body"]["messages"][1]["content"])
+    assert user_payload["nodes"] == skeleton
+    assert user_payload["section"] == "Display\nThe display shall support HDR."
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "FIXED" in system_prompt
+    assert "2 node(s)" in system_prompt
+
+
+def test_author_content_response_schema_asks_for_no_structural_fields() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
+
+    value_schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
+    assert set(value_schema["properties"]) == {"description", "tags"}
+
+
+def test_author_content_prepends_kb_context_when_supplied() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.author_content(
+        "Some section text.",
+        {"n0": {"type": "Requirement", "title": "T", "parent_id": None}},
+        kb_context="Grounding material the skeleton stage already pulled.",
+    )
+
+    assert "Grounding material the skeleton stage already pulled." in captured["body"]["messages"][0]["content"]
+
+
+def test_author_content_reports_truncated_on_finish_reason_length() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "{}", "finishReason": "length"})
+
+    _, truncated = client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
+    assert truncated is True
+
+
+def test_author_content_tolerates_a_non_object_response() -> None:
+    # An omitted/degraded node is the CALLER's problem to degrade around
+    # (see llm_leveling._author_branch_content) -- this method never
+    # invents an entry, it just reports what came back.
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "[]"})
+
+    result, _ = client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
+    assert result == {}
+
+
+def test_author_content_raises_on_non_200_response() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "{}"}, expected_status=500)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
+
+
 def test_post_chat_retries_a_500_then_succeeds(monkeypatch) -> None:
     # Regression: a real job lost 45+ minutes of prior work to a single
     # transient 500 from the LLM backend with zero retry anywhere in the

@@ -146,6 +146,68 @@ def section_analysis_schema() -> dict:
     }
 
 
+def section_skeleton_schema() -> dict:
+    """analyze_section_skeleton / analyze_section_skeleton_agentic: STAGE 1
+    of the two-stage SURVEY generation split -- the structure half of what
+    section_analysis_schema above used to ask for in one call. Same
+    object-wrapped, deliberately unbounded 'nodes' array (see that schema's
+    own docstring and this module's header for why a maxItems-bounded array
+    is the expensive case for Ollama's GBNF grammar), minus every content
+    field: no 'text', no 'tags', no 'figure_ids'/'table_ids'. A node here is
+    purely 'which node exists, what type is it, whose child is it, what is
+    it called' -- the content half is authored separately against this
+    already-fixed skeleton (see content_authoring_schema below), and
+    figure/table attachment is a separate whole-document mapping pass that
+    runs between the two."""
+    return {
+        "name": "section_skeleton",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "nodes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "temp_id": {"type": "string"},
+                            "type": {"type": "string", "enum": _TYPES},
+                            "parent_temp_id": {"type": ["string", "null"]},
+                            "title": {"type": "string"},
+                        },
+                        "required": ["temp_id", "type", "parent_temp_id", "title"],
+                    },
+                }
+            },
+            "required": ["nodes"],
+        },
+    }
+
+
+def content_authoring_schema() -> dict:
+    """author_content: STAGE 3 of the two-stage SURVEY generation split --
+    the content half. A dynamic node-id-keyed object (additionalProperties,
+    not properties -- keys are the skeleton's own runtime node ids), same
+    shape family as parent_summary_schema/title_tags_schema, since the node
+    SET is already fixed by stage 1 and this call only fills each one in.
+    'tags' is constrained to the closed RequirementTag vocabulary exactly as
+    section_analysis_schema constrained it on the old single call; the
+    caller's own tag filtering stays as defense-in-depth."""
+    return {
+        "name": "content_by_node",
+        "schema": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string", "enum": _TAGS}},
+                },
+                "required": ["description", "tags"],
+            },
+        },
+    }
+
+
 def requirements_by_node_schema() -> dict:
     """generate_requirements_for_document: a dynamic node_id-keyed object,
     same additionalProperties shape as scores_schema, each value a list of
