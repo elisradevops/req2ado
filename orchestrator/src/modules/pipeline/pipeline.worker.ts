@@ -875,7 +875,13 @@ export async function runPipelineJob(
         // figureDescriptions.length (already filtered to captioned-only
         // figures above) -- must match the same quantity
         // jobs.controller.ts's preview() counts, or the ETA fit trains on
-        // a different quantity than it predicts against.
+        // a different quantity than it predicts against. Part B's
+        // excludedFigureIds/excludedTableIds above do NOT belong in this
+        // subtraction either, for the same reason: an excluded figure was
+        // still parsed, still captioned by the vision model, and still
+        // carried through the mapping call that excluded it, so it cost
+        // what every other figure cost. Netting it out here would make
+        // figureCount mean something preview() cannot compute.
         blockCount: (doc.blocks ?? []).length,
         figureCount: (doc.figures ?? []).length,
         diffReadyAt: new Date(),

@@ -109,6 +109,15 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   chunk_warning: 0,
 };
 
+// Fraction of a branch's OWN total work that stage 1 (its skeleton call)
+// accounts for, used to discount the cross-branch credit build_skeleton
+// carries -- see the priorBranchCredit comment below for why that discount
+// is needed at all. ~0.3 is the same stage-cost split
+// orchestrator/src/modules/pipeline/eta.service.ts's Part B recalibration
+// note derives (skeleton ~0.52 of ~1.63 total per-branch units); it is not
+// a free-floating fudge factor, and the two should move together.
+const SKELETON_STAGE_SHARE = 0.3;
+
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -179,7 +188,23 @@ export function ProgressBanner({
   } else if (latest && latest.blocksTotal > 0 && !isTailPhase) {
     const averageSectionShare = latest.branchCount > 0 ? latest.blocksTotal / latest.branchCount : 0;
     const withinSectionCredit = averageSectionShare * PHASE_START_WEIGHT[latest.phase];
-    completedUnits = latest.blocksDone + withinSectionCredit;
+    // blocksDone is "every block in the branches BEFORE this one"
+    // (llm_leveling's blocks_done_before_by_branch). Before Part B that
+    // genuinely meant those branches were FINISHED -- one call per branch,
+    // so a later branch starting implied every earlier one was done. It no
+    // longer does: stage 1 sweeps EVERY branch's skeleton call before the
+    // mapping pass or a single word of content exists, so at build_skeleton
+    // time the prior branches are one stage of three in, not complete.
+    // Taking blocksDone at face value here ran the bar up to ~(N-1)/N
+    // during stage 1 alone and then dropped it back to ~1/N on stage 3's
+    // first section_complete -- a visibly backward bar, the same regression
+    // class as the stepper un-checking B5 fixed. Discounting the
+    // cross-branch term (and ONLY for build_skeleton -- section_complete's
+    // blocksDone still means exactly what it always did) keeps the sequence
+    // monotonic and honest in the pessimistic direction.
+    const priorBranchCredit =
+      latest.phase === 'build_skeleton' ? latest.blocksDone * SKELETON_STAGE_SHARE : latest.blocksDone;
+    completedUnits = priorBranchCredit + withinSectionCredit;
   }
   const progressValue =
     completedUnits !== undefined && latest ? (100 * completedUnits) / latest.blocksTotal : undefined;

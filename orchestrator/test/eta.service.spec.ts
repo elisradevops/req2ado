@@ -7,6 +7,8 @@ import {
   BOOTSTRAP_BASE_MINUTES,
   BOOTSTRAP_MINUTES_PER_BLOCK,
   BOOTSTRAP_MINUTES_PER_FIGURE,
+  BOOTSTRAP_FIGURE_BLOCK_RATIO,
+  combinedUnit,
   SURVEY_MIN_MINUTES,
   BASELINE_FLAT_MINUTES,
   ETA_SHRINKAGE_K,
@@ -14,19 +16,54 @@ import {
 } from '../src/modules/pipeline/eta.service';
 
 // Real AirPro_BP_ICD_Revision_0.3.docx observation (DESIGN.md §18's ledger):
-// 682 blocks, 39 figures, SURVEY, ~90 real minutes. The bootstrap is
-// calibrated to land close to this -- not exact, deliberately (one data
-// point calibrates scale, not the formula's shape).
+// 682 blocks, 39 figures, SURVEY, ~90 real minutes -- measured BEFORE Part
+// B split per-branch generation into three stages. The bootstrap is
+// calibrated off that observation, but no longer equal to it: task B6
+// re-derived the block coefficient for the post-Part-B pipeline (see the
+// recalibration note in eta.service.ts).
+const PRE_PART_B_OBSERVED_MINUTES = 90;
+
 describe('bootstrapMinutes', () => {
-  it('lands within ~5% of the one real observation available', () => {
+  it('is exactly the documented base + per-block + per-figure formula', () => {
     const minutes = bootstrapMinutes(682, 39);
     expect(minutes).toBeCloseTo(BOOTSTRAP_BASE_MINUTES + 682 * BOOTSTRAP_MINUTES_PER_BLOCK + 39 * BOOTSTRAP_MINUTES_PER_FIGURE, 5);
-    expect(minutes).toBeGreaterThan(85);
-    expect(minutes).toBeLessThan(100);
+  });
+
+  it('projects the one real observation forward through Part B rather than still predicting its pre-Part-B duration', () => {
+    // B6: the same document is now expected to cost meaningfully MORE than
+    // the ~90 min it took under the single-call-per-branch architecture --
+    // but well short of the naive 3x a raw call count would imply, because
+    // decode (the dominant term) is split between stages rather than
+    // repeated. This is the guard against someone silently reverting the
+    // per-block coefficient to its pre-Part-B 0.10.
+    const minutes = bootstrapMinutes(682, 39);
+    expect(minutes).toBeGreaterThan(PRE_PART_B_OBSERVED_MINUTES * 1.3);
+    expect(minutes).toBeLessThan(PRE_PART_B_OBSERVED_MINUTES * 2);
+  });
+
+  it('raises the block cost for Part B without touching the figure cost, which Part B never made more expensive', () => {
+    // The mapping stage is batched per BRANCH, and vision captioning (the
+    // real per-figure cost) happens during parse, untouched. Encoding this
+    // asymmetry is the point: an "obvious" symmetric bump of both
+    // coefficients would double-charge every figure-heavy document.
+    expect(BOOTSTRAP_MINUTES_PER_BLOCK).toBeCloseTo(0.175, 5);
+    expect(BOOTSTRAP_MINUTES_PER_FIGURE).toBeCloseTo(0.4, 5);
   });
 
   it('never returns something absurd for a tiny document', () => {
     expect(bootstrapMinutes(0, 0)).toBe(BOOTSTRAP_BASE_MINUTES);
+  });
+});
+
+describe('combinedUnit / BOOTSTRAP_FIGURE_BLOCK_RATIO', () => {
+  it('derives the fallback fit\'s figure weight from the bootstrap constants, never from a hardcoded literal', () => {
+    // Part B moved the block coefficient and deliberately left the figure
+    // one alone, so the ratio is no longer the 4:1 fitOls2 used to spell
+    // out inline. Deriving it is what keeps that from becoming a silent
+    // lie the next time either constant moves.
+    expect(BOOTSTRAP_FIGURE_BLOCK_RATIO).toBeCloseTo(BOOTSTRAP_MINUTES_PER_FIGURE / BOOTSTRAP_MINUTES_PER_BLOCK, 10);
+    expect(BOOTSTRAP_FIGURE_BLOCK_RATIO).not.toBeCloseTo(4, 1);
+    expect(combinedUnit(100, 10)).toBeCloseTo(100 + BOOTSTRAP_FIGURE_BLOCK_RATIO * 10, 10);
   });
 });
 
@@ -81,18 +118,27 @@ describe('fitOls3', () => {
   });
 });
 
-describe('fitOls2 (fallback fit on u = b + 4f)', () => {
+describe('fitOls2 (fallback fit on the combined unit u = b + r*f)', () => {
   it('recovers a known linear relationship on the combined unit', () => {
-    // y = 8 + 0.3*u
-    const samples: EtaSample[] = [sample(0, 0, 8), sample(100, 0, 38), sample(0, 25, 38)];
+    // y = 8 + 0.3*u, with u built via combinedUnit rather than a
+    // spelled-out b + 4f -- the ratio is derived from the bootstrap
+    // constants and Part B already moved it, so pinning a literal here
+    // would only test a number this suite itself copied.
+    const samples: EtaSample[] = [
+      sample(0, 0, 8),
+      sample(100, 0, 8 + 0.3 * combinedUnit(100, 0)),
+      sample(0, 25, 8 + 0.3 * combinedUnit(0, 25)),
+    ];
     const fit = fitOls2(samples);
     expect(fit).not.toBeNull();
     expect(fit!.mu).toBeCloseTo(0.3, 1);
+    expect(fit!.a).toBeCloseTo(8, 1);
   });
 
   it('returns null when every sample collapses to the same u (fewer than 2 distinct values)', () => {
-    // b + 4f is identical for both -- no variance to fit a slope against.
-    const samples: EtaSample[] = [sample(100, 0, 20), sample(0, 25, 45)];
+    // Both samples land on the identical u by construction -- no variance
+    // to fit a slope against.
+    const samples: EtaSample[] = [sample(combinedUnit(0, 25), 0, 20), sample(0, 25, 45)];
     expect(fitOls2(samples)).toBeNull();
   });
 
@@ -149,11 +195,12 @@ describe('EtaService', () => {
     const first = await service.estimate({ mode: 'survey', blockCount: 682, figureCount: 39 });
     expect(first.basis).toBe('bootstrap');
     expect(first.sampleCount).toBe(0);
-    // Real observation was ~90 min -- the cold estimate must be in a
-    // believable neighborhood, not the old ~356-564 min the two reversed
-    // hand-picked formulas produced.
-    expect(first.estimateMinutes).toBeGreaterThan(60);
-    expect(first.estimateMinutes).toBeLessThan(150);
+    // Real (pre-Part-B) observation was ~90 min, and B6's recalibration
+    // projects that same document forward to ~145 -- the cold estimate must
+    // be in a believable neighborhood of that, not the old ~356-564 min the
+    // two reversed hand-picked formulas produced.
+    expect(first.estimateMinutes).toBeGreaterThan(PRE_PART_B_OBSERVED_MINUTES);
+    expect(first.estimateMinutes).toBeLessThan(PRE_PART_B_OBSERVED_MINUTES * 2.5);
 
     // Second call within the cache TTL must not re-query.
     await service.estimate({ mode: 'survey', blockCount: 100, figureCount: 5 });
@@ -221,6 +268,52 @@ describe('EtaService', () => {
 
     const explicit = await service.estimate({ mode: 'survey', blockCount: 200, figureCount: 10, model: 'model-a' });
     expect(explicit.modelSampleCount).toBe(6);
+  });
+
+  it('a window of pre-Part-B-speed jobs still estimates ABOVE what that old architecture predicts -- the B6 mitigation', async () => {
+    // The exact scenario B6 exists for: this branch merges, the trailing
+    // window is still full of jobs that ran under the OLD one-call-per-
+    // branch pipeline, and the fit those jobs produce is genuinely too fast
+    // for the work the next job will actually do. No version column filters
+    // them out (a deliberate non-change, see loadFit's own comment); what
+    // protects the estimate instead is that shrinkage keeps a large share
+    // of the weight on the bootstrap, and B6 moved the bootstrap to the
+    // post-Part-B cost.
+    //
+    // Samples are generated noise-free from the PRE-Part-B cost model
+    // (y = 10 + 0.10b + 0.40f, the coefficients this file shipped before
+    // Part B), so fitOls3 recovers that old model essentially exactly and
+    // the test measures the mitigation, not fit error.
+    const oldArchitectureMinutes = (b: number, f: number): number => 10 + 0.1 * b + 0.4 * f;
+    const blocks = [200, 300, 400, 500, 600, 700, 800, 900];
+    const figures = [5, 25, 10, 40, 15, 50, 20, 60];
+    const startedAt = new Date('2026-08-01T00:00:00Z');
+    const rows = blocks.map((b, i) =>
+      row({
+        model: 'model-a',
+        blockCount: b,
+        figureCount: figures[i],
+        startedAt,
+        diffReadyAt: new Date(startedAt.getTime() + oldArchitectureMinutes(b, figures[i]) * 60_000),
+      }),
+    );
+    const service = new EtaService(fakePrisma(rows), 'model-a');
+
+    const result = await service.estimate({ mode: 'survey', blockCount: 682, figureCount: 39 });
+
+    expect(result.basis).toBe('blended');
+    expect(result.sampleCount).toBe(blocks.length);
+    // Strictly above the old architecture's own prediction, by a real
+    // margin rather than a rounding wobble -- if the bootstrap were still
+    // the pre-Part-B 0.10/block, blending toward it would land ON that
+    // number and the estimate would undersell exactly the jobs Part B just
+    // made slower.
+    const oldPrediction = oldArchitectureMinutes(682, 39);
+    expect(result.estimateMinutes).toBeGreaterThan(oldPrediction * 1.05);
+    // ...and still below the pure post-Part-B bootstrap: real observed
+    // durations, even stale ones, are allowed to pull the estimate down.
+    // Shrinkage is a brake, not an override.
+    expect(result.estimateMinutes).toBeLessThan(bootstrapMinutes(682, 39));
   });
 
   it('an unseen model gets a neutral 1.0 adjustment, never a guess', async () => {

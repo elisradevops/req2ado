@@ -14,17 +14,72 @@ export const BASELINE_FLAT_MINUTES = 1;
 // Bootstrap default -- used when there is no real history to fit against
 // (today's literal state: a prior account reset wiped all job history to
 // zero) or when the real fit degenerates (see the guards in fitOls3/fitOls2
-// below). Calibrated to the ONE real observation available: a 682-block,
-// 39-figure SURVEY job that actually took ~90 minutes --
+// below). Originally calibrated to the ONE real observation available: a
+// 682-block, 39-figure SURVEY job that actually took ~90 minutes --
 // 10 + 682*0.10 + 39*0.40 = 93.8 min, ~4% high (the safe direction to be
-// wrong in). This is explicitly NOT knowledge -- one data point calibrates
-// a formula's scale, not its shape. The 4:1 figure:block weight ratio is
-// the one thing that survives from the earlier, reversed formula (each
-// figure triggers a separate vision-model call, genuinely more expensive
-// than a text block) -- the absolute scale of both coefficients does not.
+// wrong in). That observation predates Part B's three-stage generation
+// split, so the block coefficient has since been re-derived from it rather
+// than read off it directly; see the recalibration note below. This is
+// explicitly NOT knowledge -- one data point calibrates a formula's scale,
+// not its shape. What survives from the earlier, reversed formula is that a
+// figure costs MORE than a text block (each figure triggers a separate
+// vision-model call) -- not the absolute scale of either coefficient, and
+// no longer the specific 4:1 ratio either.
+//
+// PART B RECALIBRATION (task B6). SURVEY's per-branch generation used to be
+// ONE LLM call producing a branch's structure AND all of its requirement
+// text at once. Part B split it into three ordered stages (ingestion's
+// llm_leveling.build_survey_tree): a skeleton call per branch, one
+// whole-document figure/table -> node mapping pass, then a content-authoring
+// call per branch. Three calls where there was one -- but NOT three times
+// the wall clock, and the difference is the whole point of doing this
+// arithmetic rather than multiplying by the call count:
+//
+//   * decode, the dominant term for a self-hosted model, barely moves. The
+//     old call's output was structure + text; stage 1 now emits the
+//     structure and stage 3 emits the text. Roughly the same tokens, split
+//     across two calls. Stage 2 emits ids -- almost nothing.
+//   * prefill is paid ~3x. Every stage re-sends the section (stage 3 also
+//     sends the now-final tree), and stage 2 sends the branch's node list
+//     plus its figure/table inventory.
+//   * two new document-wide BARRIERS appear. Branches used to be
+//     embarrassingly parallel end to end; now every branch must finish
+//     stage 1 before mapping starts, and mapping must finish before any
+//     branch starts stage 3. At branch_concurrency > 1 that is three
+//     max-latency waits instead of one, which costs more than a
+//     sum-of-work model predicts.
+//
+// Taking prefill at ~40% of the old call, and its structure:text decode
+// split at ~20:80, puts the new per-branch cost at ~1.6x the old. Rounded
+// UP to 1.75x (0.10 -> 0.175 min/block) for the barrier effect and because
+// this file's stated bias is that overselling wait time beats underselling
+// it (see the no-ceiling note in estimate()).
+//
+// BOOTSTRAP_MINUTES_PER_FIGURE deliberately does NOT move. The per-figure
+// cost is the vision captioning call, which happens during parse and which
+// Part B never touched; the new mapping stage is batched per BRANCH, not
+// per figure ("Cost scales with branch count, not figure count" --
+// _map_figures_tables_to_nodes' own docstring). Raising it too would have
+// been the easy, wrong symmetry. The consequence is that the figure:block
+// ratio this file asserts moves from 4:1 to ~2.3:1 -- see
+// BOOTSTRAP_FIGURE_BLOCK_RATIO below, which is why that is now derived
+// rather than written out as a literal in fitOls2.
+//
+// The one real observation above was measured PRE-Part-B. 10 + 682*0.175 +
+// 39*0.40 = 145 min is what that same document is now expected to cost.
+// That is a projection, not a measurement -- the self-tuning fit below is
+// what replaces it with real numbers, and the whole reason this file
+// exists.
 export const BOOTSTRAP_BASE_MINUTES = 10;
-export const BOOTSTRAP_MINUTES_PER_BLOCK = 0.1;
+export const BOOTSTRAP_MINUTES_PER_BLOCK = 0.175;
 export const BOOTSTRAP_MINUTES_PER_FIGURE = 0.4;
+
+// The figure:block cost ratio the bootstrap itself asserts, and the only
+// source fitOls2's combined unit takes its weight from -- DERIVED, never
+// re-typed as a literal, so the two cannot silently drift apart the way
+// they would have when Part B moved the block coefficient and left the
+// figure one alone.
+export const BOOTSTRAP_FIGURE_BLOCK_RATIO = BOOTSTRAP_MINUTES_PER_FIGURE / BOOTSTRAP_MINUTES_PER_BLOCK;
 
 // Shrinkage toward the bootstrap while real sample count (n) is low --
 // w = n / (n + K). At n=K exactly, real data and bootstrap are weighted
@@ -73,6 +128,13 @@ export interface OlsFit2 {
 
 export function bootstrapMinutes(blockCount: number, figureCount: number): number {
   return BOOTSTRAP_BASE_MINUTES + blockCount * BOOTSTRAP_MINUTES_PER_BLOCK + figureCount * BOOTSTRAP_MINUTES_PER_FIGURE;
+}
+
+// The single combined predictor fitOls2 falls back to -- one function, used
+// by the fit itself AND by every site that evaluates that fit, so a change
+// to the ratio can never land in one of the three and not the others.
+export function combinedUnit(blockCount: number, figureCount: number): number {
+  return blockCount + BOOTSTRAP_FIGURE_BLOCK_RATIO * figureCount;
 }
 
 // Solves a 3x3 linear system via Cramer's rule -- no matrix library, no
@@ -142,14 +204,14 @@ export function fitOls3(samples: EtaSample[]): OlsFit3 | null {
 }
 
 // Fallback when the 3-parameter fit degenerates: collapse block/figure
-// count into one combined unit using the bootstrap's own 4:1 weight ratio
-// (u = b + 4f), and fit y ~ a + mu*u -- a simple 2x2 linear regression, not
-// a second matrix solve. Returns null if THIS also degenerates (fewer than
-// 2 distinct u values, or a non-positive slope) -- at that point there is
-// nothing left to trust and the caller falls all the way back to the
-// bootstrap.
+// count into one combined unit using the bootstrap's own figure:block
+// weight ratio (u = b + r*f, r = BOOTSTRAP_FIGURE_BLOCK_RATIO), and fit
+// y ~ a + mu*u -- a simple 2x2 linear regression, not a second matrix
+// solve. Returns null if THIS also degenerates (fewer than 2 distinct u
+// values, or a non-positive slope) -- at that point there is nothing left
+// to trust and the caller falls all the way back to the bootstrap.
 export function fitOls2(samples: EtaSample[]): OlsFit2 | null {
-  const points = samples.map((s) => ({ u: s.blockCount + 4 * s.figureCount, y: s.minutes }));
+  const points = samples.map((s) => ({ u: combinedUnit(s.blockCount, s.figureCount), y: s.minutes }));
   const distinctU = new Set(points.map((p) => p.u));
   if (distinctU.size < 2) return null;
 
@@ -239,8 +301,7 @@ export class EtaService {
       fitted = cached.fit3.a + cached.fit3.beta * blockCount + cached.fit3.gamma * figureCount;
       n = cached.sampleCount;
     } else if (cached.fit2) {
-      const u = blockCount + 4 * figureCount;
-      fitted = cached.fit2.a + cached.fit2.mu * u;
+      fitted = cached.fit2.a + cached.fit2.mu * combinedUnit(blockCount, figureCount);
       n = cached.sampleCount;
     } else {
       // Cold start, or every guard degenerated -- pure bootstrap, n=0. This
@@ -297,6 +358,33 @@ export class EtaService {
     // would get diffReadyAt but never a retroactive startedAt; including
     // it alone computes a NaN duration that poisons the entire fit, not
     // just that one row.
+    //
+    // Part B task B6, a DELIBERATE non-change: there is no
+    // architecture/pipeline-version discriminator on these rows, and none
+    // was added. Part B made SURVEY genuinely slower per block, so for a
+    // while this window can mix pre-Part-B (faster) and post-Part-B
+    // (slower) durations and fit something optimistic between them. Three
+    // reasons that is the right trade rather than a new column plus a
+    // same-version-only filter:
+    //   1. The mixing is self-limiting by construction. ETA_WINDOW_DAYS
+    //      exists for exactly this ("so a GPU swap or model-lineup change
+    //      fades out of the fit within a quarter"); a pipeline
+    //      re-architecture is the same class of event as a model swap, not
+    //      a new one, and the 50-row cap ages it out faster still on any
+    //      deployment doing real volume.
+    //   2. While post-Part-B samples are still few, shrinkage (blend(),
+    //      ETA_SHRINKAGE_K = 8) keeps most of the weight on the bootstrap
+    //      -- which B6 already moved to the post-Part-B cost. So the
+    //      transient reads HIGH, not low, which is the direction this file
+    //      chooses to be wrong in.
+    //   3. A version column has to be bumped by hand on every future
+    //      pipeline change or it starts silently lying, and on the first
+    //      deployment to adopt it, "same version only" discards every real
+    //      sample and lands back on the bootstrap regardless. More schema
+    //      and more ceremony for the same answer the bootstrap already
+    //      gives.
+    // Pre-Part-B rows stay valid, readable and in the window -- nothing is
+    // deleted, reset or invalidated to make this work.
     const rows = await this.prisma.job.findMany({
       where: {
         mode: 'survey',
@@ -344,7 +432,7 @@ export class EtaService {
         const baseline = fit3
           ? fit3.a + fit3.beta * s.blockCount + fit3.gamma * s.figureCount
           : fit2
-            ? fit2.a + fit2.mu * (s.blockCount + 4 * s.figureCount)
+            ? fit2.a + fit2.mu * combinedUnit(s.blockCount, s.figureCount)
             : bootstrapMinutes(s.blockCount, s.figureCount);
         const blended = blend(baseline, bootstrapMinutes(s.blockCount, s.figureCount), sampleCount);
         if (blended > 0) {

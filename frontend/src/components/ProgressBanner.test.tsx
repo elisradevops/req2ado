@@ -164,6 +164,51 @@ describe('ProgressBanner', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
   });
 
+  it('never runs the bar further during stage 1 than stage 3 will later report for the same branch', () => {
+    // B6: build_skeleton's blocksDone is "blocks in the branches BEFORE
+    // this one", which only meant "those branches are DONE" back when a
+    // branch was one LLM call. Post-Part-B, stage 1 sweeps every branch's
+    // skeleton before any content exists, so taking blocksDone at face
+    // value ran the bar to ~(N-1)/N during stage 1 and then dropped it back
+    // to ~1/N on stage 3's first section_complete -- a visibly backward
+    // bar. The last stage-1 event must therefore sit BELOW the first
+    // stage-3 completion, not far above it.
+    const lastSkeleton = render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'build_skeleton', branchIndex: 3, branchCount: 4, blocksDone: 300, blocksTotal: 400, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    const skeletonPercent = Number(
+      lastSkeleton.getByRole('progressbar').getAttribute('aria-valuenow'),
+    );
+    lastSkeleton.unmount();
+
+    const firstContentDone = render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'section_complete', branchIndex: 0, branchCount: 4, blocksDone: 0, blocksTotal: 400, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    const contentPercent = Number(
+      firstContentDone.getByRole('progressbar').getAttribute('aria-valuenow'),
+    );
+
+    expect(skeletonPercent).toBeLessThanOrEqual(contentPercent);
+    // Still genuinely advancing during stage 1 -- the fix discounts the
+    // cross-branch credit, it does not freeze the bar at zero for the whole
+    // skeleton sweep.
+    expect(skeletonPercent).toBeGreaterThan(0);
+  });
+
   it('treats the new map_scope phase as a whole-document tail phase -- "Finishing up…", no fabricated ETA, no crash', () => {
     // B5: STAGE 2 (figure/table mapping) previously fired no narration at
     // all. Same tail-phase treatment as detect_conflicts/regroup_roots/
