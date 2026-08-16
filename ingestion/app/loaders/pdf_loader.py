@@ -1191,7 +1191,10 @@ def _is_degenerate_pdf_image(pypdf_image: object) -> bool:
 
 
 def load_pdf(
-    path: str, describe_figure: Callable[[bytes], str | None] | None = None, text_only: bool = False
+    path: str,
+    describe_figure: Callable[[bytes], str | None] | None = None,
+    text_only: bool = False,
+    languages: str = "eng",
 ) -> CanonicalDoc:
     """`describe_figure`, when provided, is called with each embedded
     image's raw bytes and must return a short text description -- used to
@@ -1207,7 +1210,13 @@ def load_pdf(
     only needs each page's real TEXT (see app/loaders/docx_pagination.py's
     page-alignment use, which converts a docx to PDF purely to borrow this
     function's already-correct per-page text extraction, and has no use for
-    the converted PDF's own tables/figures)."""
+    the converted PDF's own tables/figures).
+
+    `languages` is passed to Tesseract's `lang` parameter wherever this
+    document's page-level OCR fallback or table-cell OCR recovery runs
+    (see app/loaders/ocr.py and _cell_ocr_recovery below) -- has no effect
+    on a document with no OCR-eligible content at all. Default "eng"
+    matches every existing call site that predates this parameter."""
     file_path = Path(path)
     sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
     document = Document(path=path, format=DocumentFormat.PDF, sha256=sha256)

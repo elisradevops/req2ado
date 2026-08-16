@@ -62,13 +62,13 @@ def load_pdf_with_ocr_fallback(
 
     any_scanned = any(not page_has_extractable_text(path, i) for i in range(num_pages))
     if not any_scanned:
-        return load_pdf(path, describe_figure=describe_figure)
+        return load_pdf(path, describe_figure=describe_figure, languages=languages)
 
     file_path = Path(path)
     sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
     document = Document(path=path, format=DocumentFormat.PDF_SCANNED, sha256=sha256)
 
-    text_doc = load_pdf(path, describe_figure=describe_figure)
+    text_doc = load_pdf(path, describe_figure=describe_figure, languages=languages)
     blocks: list[Block] = list(text_doc.blocks)
 
     for page_index in range(num_pages):

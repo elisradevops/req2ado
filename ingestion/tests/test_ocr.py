@@ -165,3 +165,35 @@ def test_ocr_page_to_text_filtered_forwards_languages_to_image_to_data(
     ocr_page_to_text_filtered("fake.pdf", 0, languages="heb", confidence_threshold=30)
 
     assert mock_image_to_data.call_args.kwargs["lang"] == "heb"
+
+
+def test_load_pdf_with_ocr_fallback_forwards_languages_to_load_pdf_when_nothing_is_scanned() -> None:
+    # any_scanned=False branch (ocr.py:64-65) -- the common case for a real
+    # document that has extractable text overall but individual table cells
+    # missing text (the motivating bug this whole plan exists to fix).
+    from unittest.mock import patch
+
+    from app.canonical.model import CanonicalDoc, Document, DocumentFormat
+
+    fake_doc = CanonicalDoc(document=Document(path="x", format=DocumentFormat.PDF, sha256="h"))
+    with patch("app.loaders.ocr.page_has_extractable_text", return_value=True), \
+         patch("app.loaders.ocr.load_pdf") as mock_load_pdf:
+        mock_load_pdf.return_value = fake_doc
+        load_pdf_with_ocr_fallback(str(FIXTURES / "sample.pdf"), languages="heb+eng")
+    mock_load_pdf.assert_called_once_with(str(FIXTURES / "sample.pdf"), describe_figure=None, languages="heb+eng")
+
+
+def test_load_pdf_with_ocr_fallback_forwards_languages_to_load_pdf_when_a_page_is_scanned() -> None:
+    # any_scanned=True branch (ocr.py:71) -- the text_doc build call, a
+    # separate call site from the one above with its own independent gap.
+    from unittest.mock import patch
+
+    from app.canonical.model import CanonicalDoc, Document, DocumentFormat
+
+    fake_doc = CanonicalDoc(document=Document(path="x", format=DocumentFormat.PDF, sha256="h"))
+    with patch("app.loaders.ocr.page_has_extractable_text", return_value=False), \
+         patch("app.loaders.ocr.ocr_page_to_text_filtered", return_value=""), \
+         patch("app.loaders.ocr.load_pdf") as mock_load_pdf:
+        mock_load_pdf.return_value = fake_doc
+        load_pdf_with_ocr_fallback(str(FIXTURES / "scanned_sample.pdf"), languages="heb+eng")
+    mock_load_pdf.assert_called_once_with(str(FIXTURES / "scanned_sample.pdf"), describe_figure=None, languages="heb+eng")
