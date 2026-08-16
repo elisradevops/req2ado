@@ -2119,7 +2119,11 @@ def build_survey_tree(
     # for one informational event beats a visibly wrong stepper; re-narrating
     # this pass needs the frontend's phase mapping revisited alongside, which
     # belongs with the rest of the orchestrator/frontend wiring for the new
-    # staging, not here.
+    # staging, not here. This omission is scoped to these two repair passes
+    # ONLY -- STAGE 2 immediately below (the actual figure/table mapping)
+    # narrates via its own new 'map_scope' phase, added alongside the
+    # frontend phase-mapping changes that let it do so without regroup_roots'
+    # own stepper-regression problem.
     _regroup_disconnected_roots(all_nodes, "regroup_", grouping_client, all_warnings)
     _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
 
@@ -2149,6 +2153,7 @@ def build_survey_tree(
         ) = _map_figures_tables_to_nodes(
             branch_skeletons, map_fn, figures_by_id(doc.figures),
             figure_id_by_block_id, all_warnings, branch_concurrency,
+            progress_callback=progress_callback, blocks_total=blocks_total,
         )
         # Stage 3's hallucination guard (see _author_branch_content) checks a
         # node's assigned ids against what was OFFERED for it -- per branch
@@ -2609,7 +2614,7 @@ def _build_survey_skeleton_for_branch(
     top_level_group_count = sum(1 for g in (table_groups or []) if g.is_top_level)
     expected_root_count = top_level_group_count if top_level_group_count >= 2 else None
     if supports_tools and retrieve_fn is not None:
-        _fire("analyze_section", kb_grounded=False, kb_citations_raw=[])
+        _fire("build_skeleton", kb_grounded=False, kb_citations_raw=[])
         raw_nodes, raw_hits, truncated = analysis_client.analyze_section_skeleton_agentic(
             section_text, retrieve_fn, list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
             read_other_section_fn=read_other_section_fn, whole_document=whole_document, topic_count=topic_count,
@@ -2654,7 +2659,7 @@ def _build_survey_skeleton_for_branch(
         kb_citations_raw_dicts = (
             [{"source_file": "(document-level)", "similarity": 1.0}] if kb_context else []
         )
-        _fire("analyze_section", kb_grounded=bool(kb_context), kb_citations_raw=kb_citations_raw_dicts)
+        _fire("build_skeleton", kb_grounded=bool(kb_context), kb_citations_raw=kb_citations_raw_dicts)
         raw_nodes, truncated = analysis_client.analyze_section_skeleton(
             section_text, kb_context=kb_context, whole_document=whole_document,
             topic_count=topic_count, table_group_hints=table_group_hints,
@@ -3273,6 +3278,16 @@ def _map_figures_tables_to_nodes(
     figure_id_by_block_id: dict[str, str] | None,
     warnings: list[IntegrityWarning],
     branch_concurrency: int = 1,
+    # 'map_scope' narration -- fired once per TIER 1 branch batch and once
+    # per TIER 2 escalation chunk, both BEFORE that batch's own call is
+    # dispatched (never from inside a worker thread: batches can run
+    # concurrently below, and firing here in the single constructing loop
+    # keeps every progress_callback invocation on the calling thread, with no
+    # lock needed the way build_survey_tree's own concurrent-branch
+    # _fire_progress requires). None (the default) is a no-op, matching
+    # every other optional narration hook in this module.
+    progress_callback: ProgressCallback | None = None,
+    blocks_total: int = 0,
 ) -> tuple[dict[str, dict[str, list[str]]], list[str], list[str]]:
     """STAGE 2 of SURVEY's generation: binds every figure/table in the
     document to ONE exact node id, run AFTER stage 1's skeleton and the
@@ -3322,7 +3337,13 @@ def _map_figures_tables_to_nodes(
     downstream exception, unchanged by this stage and already reported on its
     own: stage 3 still drops a mapped table whose extracted grid turns out to
     have no content at all, with WarningKind.EMPTY_TABLE_CONTENT, rather than
-    shipping a table_ids entry with nothing behind it.)"""
+    shipping a table_ids entry with nothing behind it.)
+
+    `progress_callback`/`blocks_total`: optional 'map_scope' narration, fired
+    once per TIER 1 branch batch and once per TIER 2 escalation chunk (see
+    _fire_map_scope below) -- this stage previously narrated nothing at all.
+    None (the default) is a no-op, matching every other optional narration
+    hook in this module."""
     mapping: dict[str, dict[str, list[str]]] = {}
     excluded_figure_ids: list[str] = []
     excluded_table_ids: list[str] = []
@@ -3357,6 +3378,29 @@ def _map_figures_tables_to_nodes(
             for start in range(0, len(item_ids), _MAPPING_CHUNK_ITEM_COUNT)
         ]
 
+    # 'map_scope' narration -- fired here, in the single batch-CONSTRUCTING
+    # loop, for every batch about to be handed to _run() (which may dispatch
+    # several of them concurrently across worker threads below). Firing
+    # before dispatch rather than from inside _run_mapping_batch itself keeps
+    # every progress_callback call on this one calling thread, so this stage
+    # needs no lock the way build_survey_tree's own concurrent-branch
+    # _fire_progress does. branch_index=None (this is a whole-document-scope
+    # phase, same convention detect_conflicts/infer_trace_links use) --
+    # batch.scope is this batch's own human-readable "the X section"/"the
+    # whole document" label, carried as section_label so a reviewer can tell
+    # which batch is in flight.
+    def _fire_map_scope(batch: _MappingBatch) -> None:
+        if progress_callback is None:
+            return
+        progress_callback(
+            LevelingProgress(
+                phase="map_scope", branch_index=None, branch_count=len(branch_skeletons),
+                blocks_done=0, blocks_total=blocks_total,
+                kb_grounded=False, kb_citations=[],
+                section_label=batch.scope,
+            )
+        )
+
     # TIER 1 -- one call per branch, that branch's whole figure/table set
     # against that branch's own nodes.
     tier1_batches: list[_MappingBatch] = []
@@ -3380,18 +3424,18 @@ def _map_figures_tables_to_nodes(
             f'the "{skeleton.section_label}" section' if skeleton.section_label else "one section"
         )
         for chunk_index, chunk_ids in enumerate(_chunks(list(branch_items))):
-            tier1_batches.append(
-                _MappingBatch(
-                    candidates=candidates,
-                    items={item_id: branch_items[item_id] for item_id in chunk_ids},
-                    allow_escalation=True,
-                    scope=scope,
-                    detail={
-                        "tier": 1, "branch": skeleton.node_id_prefix or "(root)",
-                        "chunkIndex": chunk_index,
-                    },
-                )
+            batch = _MappingBatch(
+                candidates=candidates,
+                items={item_id: branch_items[item_id] for item_id in chunk_ids},
+                allow_escalation=True,
+                scope=scope,
+                detail={
+                    "tier": 1, "branch": skeleton.node_id_prefix or "(root)",
+                    "chunkIndex": chunk_index,
+                },
             )
+            _fire_map_scope(batch)
+            tier1_batches.append(batch)
 
     escalated_ids = pre_escalated + _merge(_run(tier1_batches))
     if not escalated_ids:
@@ -3412,16 +3456,18 @@ def _map_figures_tables_to_nodes(
     # allow_escalation=False: there is no third tier -- an item still unplaced
     # after being offered every node in the document has no home, which is
     # exactly what the excluded lists mean.
-    _merge(_run([
-        _MappingBatch(
+    tier2_batches: list[_MappingBatch] = []
+    for chunk_index, chunk_ids in enumerate(_chunks(escalated_ids)):
+        batch = _MappingBatch(
             candidates=doc_candidates,
             items={item_id: items_by_id[item_id] for item_id in chunk_ids},
             allow_escalation=False,
             scope="the whole document",
             detail={"tier": 2, "chunkIndex": chunk_index},
         )
-        for chunk_index, chunk_ids in enumerate(_chunks(escalated_ids))
-    ]))
+        _fire_map_scope(batch)
+        tier2_batches.append(batch)
+    _merge(_run(tier2_batches))
     return mapping, excluded_figure_ids, excluded_table_ids
 
 

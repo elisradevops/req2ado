@@ -29,9 +29,16 @@ const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   table_detected: 'Detecting tables',
   preparing_analysis: 'Preparing analysis',
   deterministic_subtree: 'Extracting deterministic hierarchy',
+  // STAGE 1 of SURVEY's per-branch generation -- deciding structure only,
+  // before any requirement text exists (see events.ts's own comment for the
+  // stale-'analyze_section'-label gap this replaces).
+  build_skeleton: 'Building document structure',
   analyze_section: 'Analyzing and synthesizing requirements',
   infer_hierarchy: 'Analyzing structure',
   generate_requirements: 'Generating requirements',
+  // STAGE 2 -- whole-document figure/table -> node mapping, between
+  // build_skeleton and analyze_section/section_complete.
+  map_scope: 'Mapping figures and tables to their sections',
   score_requirements: 'Scoring quality',
   score_requirements_done: 'Scoring complete',
   section_complete: 'Section complete',
@@ -69,9 +76,19 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   table_detected: 0,
   preparing_analysis: 0,
   deterministic_subtree: 0,
+  // Fires at the very start of a branch's own three-stage sequence, before
+  // build_skeleton's own skeleton call has returned -- no credit accrued
+  // yet, same as analyze_section's own value.
+  build_skeleton: 0,
   analyze_section: 0,
   infer_hierarchy: 0,
   generate_requirements: 0.4,
+  // Whole-document, branch_index=None phase (same convention
+  // detect_conflicts/regroup_roots/infer_trace_links use) -- included in
+  // isTailPhase below for the same reason those three are: no fixed
+  // per-section progress model applies, so this value is never actually
+  // looked up, present only so this Record stays exhaustive.
+  map_scope: 1,
   score_requirements: 0.75,
   score_requirements_done: 1,
   section_complete: 1,
@@ -140,9 +157,15 @@ export function ProgressBanner({
   // guess, calculate" standard forbids -- these phases show a genuinely
   // indeterminate bar and an honest "no fixed step count for this pass"
   // message instead of a fake countdown.
+  // map_scope runs in the exact same whole-document, branch_index=None
+  // window regroup_roots already does (between stage 1's skeleton pass
+  // across every branch and stage 3's content authoring for any of them) --
+  // grouped with it here for the same reason: no fixed per-section progress
+  // model applies to a single whole-document pass.
   const isTailPhase =
     latest?.phase === 'detect_conflicts' ||
     latest?.phase === 'regroup_roots' ||
+    latest?.phase === 'map_scope' ||
     latest?.phase === 'infer_trace_links';
   // Distinct from isTailPhase -- this phase runs at the very START of
   // analysis (before branchCount is even known), so "Finishing up…" would

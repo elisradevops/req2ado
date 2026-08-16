@@ -63,6 +63,12 @@ export function JobDetail(): React.ReactElement {
   const [status, setStatus] = useState<string | null>(null);
   const [mode, setMode] = useState<string | null>(null);
   const [kbCitations, setKbCitations] = useState<KbCitation[]>([]);
+  // STAGE 2 mapping's own excluded lists (see jobsStore.JobDetail's own
+  // comment) -- same load/refetch lifecycle as kbCitations above (only
+  // known once the tree exists, so seeded at mount and refreshed once the
+  // job reaches a terminal narration stage).
+  const [excludedFigureIds, setExcludedFigureIds] = useState<string[]>([]);
+  const [excludedTableIds, setExcludedTableIds] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<(WarningRecord | string)[]>([]);
   // Populated directly from the SSE callback on 'chunk_warning' events --
   // docs/ui-progress-review.md item #3: previously a mid-run chunk failure
@@ -153,6 +159,8 @@ export function JobDetail(): React.ReactElement {
         setStatus(job.status);
         setMode(job.mode);
         setKbCitations(job.kbCitations ?? []);
+        setExcludedFigureIds(job.excludedFigureIds ?? []);
+        setExcludedTableIds(job.excludedTableIds ?? []);
         setWarnings(job.warnings ?? []);
         // Seeds the FigureDescriptions panel from what's already durably
         // persisted (see Job.figureDescriptions) -- previously this panel
@@ -278,6 +286,8 @@ export function JobDetail(): React.ReactElement {
               // re-runs loadJob() and picks them up for the first time.
               setWarnings(job.warnings ?? []);
               setKbCitations(job.kbCitations ?? []);
+              setExcludedFigureIds(job.excludedFigureIds ?? []);
+              setExcludedTableIds(job.excludedTableIds ?? []);
             });
           }
         },
@@ -409,6 +419,25 @@ export function JobDetail(): React.ReactElement {
     const normalizedLive = liveWarnings.filter((raw) => !persistedRawTexts.has(raw)).map(normalizeWarning);
     return [...normalizedPersisted, ...normalizedLive];
   }, [warnings, liveWarnings]);
+
+  // STAGE 2 mapping's own excluded-as-decorative counts (B4 wired
+  // excludedFigureIds/excludedTableIds onto the Job response; this is their
+  // first frontend consumer). Deliberately phrased as a real, named count
+  // ("N excluded as decorative"), NOT an exhaustive accounting -- a table
+  // dropped for WarningKind.EMPTY_TABLE_CONTENT (a separate, pre-existing
+  // warning surfaced via CollapsibleWarnings) lands in neither a node's
+  // table_ids nor this list, so "N of M total" phrasing would be false.
+  // null (not a "0 excluded" line) when both lists are empty.
+  const excludedSummaryText = useMemo(() => {
+    const parts: string[] = [];
+    if (excludedFigureIds.length > 0) {
+      parts.push(`${excludedFigureIds.length} figure${excludedFigureIds.length === 1 ? '' : 's'}`);
+    }
+    if (excludedTableIds.length > 0) {
+      parts.push(`${excludedTableIds.length} table${excludedTableIds.length === 1 ? '' : 's'}`);
+    }
+    return parts.length > 0 ? `${parts.join(' and ')} excluded as decorative` : null;
+  }, [excludedFigureIds, excludedTableIds]);
 
   async function handleConfirm(): Promise<void> {
     if (!id || !orgUrl || isMutatingRef.current) return;
@@ -981,6 +1010,7 @@ export function JobDetail(): React.ReactElement {
           <StatTile value={summary.dedupSkipped} label="Duplicates skipped" tone={summary.dedupSkipped > 0 ? 'warning' : 'dim'} />
         </div>
       )}
+      {excludedSummaryText && <p className="text-sm text-ink-3">{excludedSummaryText}</p>}
       <CollapsibleWarnings
         warnings={mergedWarnings}
         onJumpToNode={(localId) => {

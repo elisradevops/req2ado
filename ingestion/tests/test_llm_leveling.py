@@ -1914,7 +1914,7 @@ def test_build_survey_tree_concurrency_reports_correct_per_branch_blocks_done_be
         branch_concurrency=2,
     )
 
-    section_events = [e for e in events if e.phase == "analyze_section" and e.branch_index is not None]
+    section_events = [e for e in events if e.phase == "build_skeleton" and e.branch_index is not None]
     by_branch = {e.branch_index: e.blocks_done for e in section_events}
     # Branch 0 is blocks 0-1 (heading + requirement), branch 1 starts at 2.
     assert by_branch.get(0) == 0
@@ -3587,10 +3587,10 @@ def test_build_survey_tree_progress_callback_carries_the_sections_heading_as_its
     _force_multi_branch(monkeypatch)
     events = []
     build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), progress_callback=lambda p: events.append(p))
-    # Each branch now fires two events (analyze_section, then section_complete
+    # Each branch now fires two events (build_skeleton, then section_complete
     # once its nodes are finalized) -- filter to the phase that starts each
     # branch to keep this test about section labeling, not event count.
-    analyze_events = [e for e in events if e.phase == "analyze_section"]
+    analyze_events = [e for e in events if e.phase == "build_skeleton"]
     assert analyze_events[0].section_label == "Display"
     assert analyze_events[1].section_label == "Audio"
 
@@ -3628,8 +3628,11 @@ def test_build_survey_tree_fires_progress_callback_for_each_real_step_boundary()
     phases = [e.phase for e in events]
     # preparing_analysis fires first (see its own docstring) -- whole-tree,
     # no section/branch context yet, so it's excluded from the per-section
-    # branch_index/branch_count assertions below.
-    assert phases == ["preparing_analysis", "analyze_section", "section_complete"]
+    # branch_index/branch_count assertions below. build_skeleton (STAGE 1)
+    # replaces the stale 'analyze_section' label this same fire used to
+    # carry -- FakeSectionAnalysisClient has no map_figures_tables, so STAGE
+    # 2 (map_scope) never runs here.
+    assert phases == ["preparing_analysis", "build_skeleton", "section_complete"]
     section_events = events[1:]
     assert all(e.branch_index == 0 for e in section_events)
     assert all(e.branch_count == 1 for e in section_events)
@@ -3654,7 +3657,7 @@ def test_build_survey_tree_progress_callback_fires_score_requirements_when_scori
     # own section_complete (scoring is no longer per-branch/inline).
     assert [e.phase for e in events] == [
         "preparing_analysis",
-        "analyze_section",
+        "build_skeleton",
         "section_complete",
         "score_requirements",
         "score_requirements_done",
@@ -5811,6 +5814,36 @@ def test_mapping_attaches_a_figure_and_a_table_to_their_mapped_node() -> None:
     assert tree.excluded_table_ids == []
 
 
+def test_build_survey_tree_fires_build_skeleton_and_map_scope_not_analyze_section() -> None:
+    # B5: stage 1 (_build_survey_skeleton_for_branch) previously reused the
+    # stale 'analyze_section' phase label for structure-decision work (see
+    # narration_publisher.Phase's own 'build_skeleton' comment for the full
+    # story) -- must fire 'build_skeleton' instead, and 'analyze_section'
+    # must not fire at all from this pipeline any more. STAGE 2 (mapping)
+    # previously fired NOTHING; with a map_figures_tables-capable client (see
+    # FakeMappingClient) it must now fire 'map_scope', strictly between
+    # stage 1's build_skeleton and stage 3's section_complete -- mapping only
+    # runs once every branch's skeleton exists and node ids are frozen, and
+    # strictly before content authoring reads its verdicts.
+    events: list[LevelingProgress] = []
+    fake = FakeMappingClient(
+        nodes=[_MAPPING_NODE],
+        verdicts={
+            "f0": {"node_id": "n0", "escalate": False},
+            "t0": {"node_id": "n0", "escalate": False},
+        },
+    )
+
+    build_survey_tree(_mapping_doc(), fake, progress_callback=lambda p: events.append(p))
+
+    phases = [e.phase for e in events]
+    assert "build_skeleton" in phases
+    assert "analyze_section" not in phases
+    assert "map_scope" in phases
+    skeleton_idx, map_idx = phases.index("build_skeleton"), phases.index("map_scope")
+    assert skeleton_idx < map_idx < phases.index("section_complete")
+
+
 def test_mapping_batches_a_whole_branch_into_one_call_never_one_per_item() -> None:
     # The single hardest cost constraint on this stage: one call carries a
     # branch's figures AND tables together. A per-figure call at 918-figure
@@ -5882,6 +5915,38 @@ def test_mapping_escalates_only_the_escalated_items_to_the_whole_document_tier(m
     audio_leaf = next(n for n in tree.nodes if n.local_id == "br1_n1")
     assert audio_leaf.figure_ids == ["f0", "f1"]
     assert tree.excluded_figure_ids == []
+
+
+def test_mapping_fires_map_scope_for_both_tier_1_and_tier_2(monkeypatch) -> None:
+    # Companion to test_mapping_escalates_only_the_escalated_items_to_the_
+    # whole_document_tier above (same fixture/verdict_fn shape, which proves
+    # 3 real mapping calls happen: 2 tier-1 branch batches + 1 tier-2
+    # escalation chunk) -- proves 'map_scope' narrates every one of those 3
+    # calls, not just tier 1's.
+    _force_multi_branch(monkeypatch)
+
+    def verdict_fn(candidates, items):
+        if "br1_n1" in candidates and "br0_n1" in candidates:  # tier 2: whole document
+            return {item_id: {"node_id": "br1_n1", "escalate": False} for item_id in items}
+        return {
+            item_id: ({"node_id": None, "escalate": True} if item_id == "f0"
+                      else {"node_id": "br1_n1", "escalate": False})
+            for item_id in items
+        }
+
+    fake = FakeMappingClient(verdict_fn=verdict_fn)
+    events: list[LevelingProgress] = []
+    build_survey_tree(_two_branch_figure_doc(), fake, progress_callback=lambda p: events.append(p))
+
+    assert len(fake.mapping_calls) == 3  # 2 tier-1 branch calls + 1 tier-2 chunk
+    map_scope_events = [e for e in events if e.phase == "map_scope"]
+    assert len(map_scope_events) == 3
+    # Every map_scope event is whole-document scoped (branch_index=None),
+    # same convention detect_conflicts/infer_trace_links use.
+    assert all(e.branch_index is None for e in map_scope_events)
+    # The tier-2 call's own scope label is real and distinct from tier 1's
+    # per-section labels -- confirms this isn't just 3 identical events.
+    assert any(e.section_label == "the whole document" for e in map_scope_events)
 
 
 def test_mapping_makes_no_escalation_call_when_nothing_escalates(monkeypatch) -> None:

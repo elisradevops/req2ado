@@ -65,11 +65,39 @@ Phase = Literal[
     # own isTailPhase) elsewhere in this app. One event per subtree (table or
     # heading-group), as each one's title/tag/synthesis calls run.
     "deterministic_subtree",
+    # Real gap this closes: SURVEY's per-branch generation is split into
+    # three stages (skeleton -> figure/table mapping -> content authoring,
+    # see llm_leveling.build_survey_tree), but stage 1
+    # (_build_survey_skeleton_for_branch -- deciding a branch's whole
+    # Epic/Feature/Requirement STRUCTURE, with no requirement text written
+    # yet) previously fired the SAME 'analyze_section' event stage 3
+    # (content authoring) also fires -- stale from before the split, when
+    # both were one call. A reviewer watching narration during stage 1 saw
+    # "Analyzing and synthesizing requirements" for work that hadn't
+    # synthesized a single requirement's text yet. Fired once per branch, at
+    # the exact point stage 1's own analyze_section_skeleton /
+    # analyze_section_skeleton_agentic call is made (see
+    # _build_survey_skeleton_for_branch's own `_fire` closure).
+    "build_skeleton",
     "analyze_section",
     "score_requirements",
     "score_requirements_done",
     "section_complete",
     "detect_conflicts",
+    # Real gap this closes: STAGE 2 of SURVEY's per-branch generation
+    # (binding every figure/table to an exact node id, see
+    # _map_figures_tables_to_nodes) fired ZERO narration of its own -- a
+    # genuine silent window between the last branch's build_skeleton event
+    # and stage 3's first analyze_section event, with no signal the pipeline
+    # had moved into a whole-document mapping pass in between. Unlike
+    # 'regroup_roots' directly below (see
+    # build_survey_tree's own call-site comment for why THAT specific pass
+    # stays silent), this is a NEW, dedicated phase added alongside the
+    # frontend phase-mapping it needs, precisely so it can narrate without
+    # regroup_roots' stepper-regression problem. Fired once per TIER 1
+    # branch batch and once per TIER 2 escalation chunk (see
+    # _map_figures_tables_to_nodes).
+    "map_scope",
     "regroup_roots",
     "infer_trace_links",
     # Real gap this closes (confirmed live): a job that fails deep inside

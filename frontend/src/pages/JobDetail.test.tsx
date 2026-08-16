@@ -252,6 +252,46 @@ describe('JobDetail', () => {
     expect(screen.getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
   });
 
+  it('shows an excluded-as-decorative summary line when excludedFigureIds/excludedTableIds are non-empty', async () => {
+    // B5: first frontend consumer of B4's excludedFigureIds/excludedTableIds
+    // fields. Phrased as a real count ("N excluded as decorative"), not an
+    // exhaustive accounting -- see jobsStore.JobDetail's own comment.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-28',
+      status: 'succeeded',
+      mode: 'survey',
+      dryRunDiff: [],
+      createdAt: new Date().toISOString(),
+      excludedFigureIds: ['f0', 'f1'],
+      excludedTableIds: ['t0'],
+    } as any);
+
+    renderAt('job-28');
+
+    await waitFor(() => expect(screen.getByText(/2 figures and 1 table excluded as decorative/i)).toBeInTheDocument());
+  });
+
+  it('renders no excluded-count line at all when excludedFigureIds/excludedTableIds are both empty', async () => {
+    // Must be absent entirely, not a "0 excluded" line -- a genuinely empty
+    // list is not itself a fact worth stating on every job's page.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-29',
+      status: 'succeeded',
+      mode: 'survey',
+      dryRunDiff: [],
+      createdAt: new Date().toISOString(),
+      excludedFigureIds: [],
+      excludedTableIds: [],
+    } as any);
+
+    renderAt('job-29');
+
+    await waitFor(() => expect(screen.getByText('Diff (0)')).toBeInTheDocument());
+    expect(screen.queryByText(/excluded as decorative/i)).not.toBeInTheDocument();
+  });
+
   it('hydrates a still-running job\'s live surfaces from durable event-history, not just the live SSE tail', async () => {
     // Regression this guards against (ui-progress-review.md #4): the
     // event-history fetch used to be gated to terminal statuses only, so

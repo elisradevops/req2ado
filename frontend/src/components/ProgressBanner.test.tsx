@@ -144,6 +144,47 @@ describe('ProgressBanner', () => {
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
   });
 
+  it('renders a real sublabel (not "undefined") for the new build_skeleton phase and a valid progress value', () => {
+    // B5: build_skeleton replaces the stale 'analyze_section' label stage 1
+    // (skeleton generation) used to fire -- same regression class as the
+    // analyze_section test above (PHASE_SUBLABEL/PHASE_START_WEIGHT missing
+    // an entry renders "undefined" and a NaN progress value).
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'build_skeleton', branchIndex: 0, branchCount: 6, blocksDone: 0, blocksTotal: 679, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/Section 1 of 6.*Building document structure/)).toBeInTheDocument();
+    expect(screen.queryByText(/undefined/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
+  });
+
+  it('treats the new map_scope phase as a whole-document tail phase -- "Finishing up…", no fabricated ETA, no crash', () => {
+    // B5: STAGE 2 (figure/table mapping) previously fired no narration at
+    // all. Same tail-phase treatment as detect_conflicts/regroup_roots/
+    // infer_trace_links (branch_index=null, blocksDone===blocksTotal) --
+    // must not throw, and must not compute a fabricated ETA/percentage.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'map_scope', branchIndex: null, branchCount: 2, blocksDone: 30, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Mapping figures and tables to their sections')).toBeInTheDocument();
+    expect(screen.getByText('Finishing up…')).toBeInTheDocument();
+    expect(screen.queryByText(/~0s left/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
+  });
+
   it('shows each section\'s real name (its own heading) instead of an anonymous index', () => {
     // Without sectionLabel, the step list could only ever show "Section N
     // of M" -- no way to tell WHICH real content the job analyzed or

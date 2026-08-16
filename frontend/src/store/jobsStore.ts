@@ -33,6 +33,15 @@ export interface JobDetail {
   // figureCaptionsByIndex state live SSE narration otherwise fills in
   // during a run.
   figureDescriptions?: FigureDescriptionEntry[];
+  // Figures/tables STAGE 2 mapping (see ingestion's
+  // _map_figures_tables_to_nodes) judged decorative/irrelevant rather than
+  // attaching to any node -- a real, named category, NOT an exhaustive
+  // accounting: a table dropped for EMPTY_TABLE_CONTENT (a separate,
+  // pre-existing warning) lands in neither a node's table_ids nor here.
+  // Optional/defaulted to [] server-side for a job persisted before this
+  // column existed.
+  excludedFigureIds?: string[];
+  excludedTableIds?: string[];
   createdAt: string;
   areaPath: string;
   // Both real Job columns (schema.prisma), already present on every GET

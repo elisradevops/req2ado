@@ -32,9 +32,16 @@ const PHASE_FALLBACK_SENTENCES: Record<NarrationEvent['phase'], string> = {
   table_detected: 'Detected a table.',
   preparing_analysis: 'Preparing analysis.',
   deterministic_subtree: 'Extracting a deterministic hierarchy subtree.',
+  // STAGE 1 of SURVEY's per-branch generation -- structure only, before any
+  // requirement text exists (see events.ts's own comment for the stale
+  // 'analyze_section' label this replaces).
+  build_skeleton: 'Building the Epic/Feature/Requirement structure.',
   analyze_section: 'Analyzing and synthesizing requirements.',
   infer_hierarchy: 'Analyzing structure.',
   generate_requirements: 'Generating requirements.',
+  // STAGE 2 -- whole-document figure/table -> node mapping, between
+  // build_skeleton and content authoring.
+  map_scope: 'Mapping figures and tables to their exact sections.',
   score_requirements: 'Scoring quality.',
   score_requirements_done: 'Scoring complete.',
   section_complete: 'Section complete.',

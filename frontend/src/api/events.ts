@@ -45,9 +45,24 @@ export interface NarrationEvent {
     // LLM calls with ZERO narration of its own -- confirmed live as a
     // genuine 20+ minute silent window.
     | 'deterministic_subtree'
+    // Real gap this closes: SURVEY's per-branch generation is split into
+    // three stages (skeleton -> figure/table mapping -> content authoring)
+    // -- stage 1 (deciding a branch's whole structure, no requirement text
+    // written yet) previously fired the SAME 'analyze_section' event stage
+    // 3 also fires, stale from before the split. Fired once per branch, at
+    // the start of stage 1's own skeleton call.
+    | 'build_skeleton'
     | 'analyze_section'
     | 'infer_hierarchy'
     | 'generate_requirements'
+    // STAGE 2 (whole-document figure/table -> exact node id mapping,
+    // between stage 1's skeleton and stage 3's content authoring) --
+    // previously fired nothing at all, a genuine silent window. Unlike
+    // 'regroup_roots' below (which stays deliberately silent, see
+    // build_survey_tree's own call-site comment), this is a dedicated new
+    // phase. Fired once per TIER 1 branch batch and once per TIER 2
+    // escalation chunk.
+    | 'map_scope'
     | 'score_requirements'
     // Fired once _apply_quality_scores actually finishes for a section --
     // the first real "scoring concluded" signal; previously nothing told
@@ -206,11 +221,13 @@ export const INGESTION_NARRATION_PHASES = [
   'table_detected',
   'preparing_analysis',
   'deterministic_subtree',
+  'build_skeleton',
   'analyze_section',
   'score_requirements',
   'score_requirements_done',
   'section_complete',
   'detect_conflicts',
+  'map_scope',
   'regroup_roots',
   'infer_trace_links',
   'page_alignment',
