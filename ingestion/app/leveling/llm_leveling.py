@@ -3395,7 +3395,15 @@ def _map_figures_tables_to_nodes(
         progress_callback(
             LevelingProgress(
                 phase="map_scope", branch_index=None, branch_count=len(branch_skeletons),
-                blocks_done=0, blocks_total=blocks_total,
+                # blocks_done == blocks_total, the convention EVERY other
+                # whole-document phase follows (detect_conflicts,
+                # regroup_roots, infer_trace_links): every branch's blocks
+                # have been through stage 1 by the time mapping runs. This
+                # was hardcoded to 0, which is not inert -- it renders
+                # verbatim in ProgressBanner's metrics chip ("0 / 682
+                # blocks") and in this phase's own narration message
+                # ("-- 0 of 682 blocks") for the whole mapping window.
+                blocks_done=blocks_total, blocks_total=blocks_total,
                 kb_grounded=False, kb_citations=[],
                 section_label=batch.scope,
             )
@@ -3522,6 +3530,28 @@ def _author_branch_content(
     warnings = skeleton.warnings
     section_text = skeleton.section_text
     valid_tag_values = {t.value for t in RequirementTag}
+
+    # 'analyze_section' is stage 3's own wire name -- its existing copy
+    # ("Analyzing and synthesizing requirements") is, if anything, MORE
+    # accurate now that stage 1 narrates its structure-only work as
+    # 'build_skeleton' instead of reusing this label. Fired at the very top,
+    # before the author_content call below, because without it stage 3 --
+    # typically the longest of a branch's three calls -- narrated NOTHING
+    # from the end of stage 2's mapping pass until this branch's own
+    # section_complete: a full silent window during which the UI kept showing
+    # the last 'map_scope' line, actively misreporting what the pipeline was
+    # doing. Same closure stage 1 built (see _BranchSkeleton.fire), so this
+    # reports the identical branch coordinates its build_skeleton and
+    # section_complete events do.
+    #
+    # kb_grounded/kb_citations_raw mirror section_complete's own call below
+    # (this branch's real stage-1 citations), NOT bool(kb_context) -- see the
+    # comment there for why.
+    skeleton.fire(
+        "analyze_section",
+        kb_grounded=bool(skeleton.kb_citations),
+        kb_citations_raw=[{"source_file": c.source_file, "similarity": c.similarity} for c in skeleton.kb_citations],
+    )
 
     # An empty description is exactly the "still awaiting authoring" marker
     # stage 1 leaves behind -- see _BranchSkeleton's own docstring.

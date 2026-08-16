@@ -3630,9 +3630,11 @@ def test_build_survey_tree_fires_progress_callback_for_each_real_step_boundary()
     # no section/branch context yet, so it's excluded from the per-section
     # branch_index/branch_count assertions below. build_skeleton (STAGE 1)
     # replaces the stale 'analyze_section' label this same fire used to
-    # carry -- FakeSectionAnalysisClient has no map_figures_tables, so STAGE
-    # 2 (map_scope) never runs here.
-    assert phases == ["preparing_analysis", "build_skeleton", "section_complete"]
+    # carry; 'analyze_section' now marks the START of STAGE 3 (content
+    # authoring), which previously narrated nothing at all before its own
+    # section_complete. FakeSectionAnalysisClient has no map_figures_tables,
+    # so STAGE 2 (map_scope) never runs here.
+    assert phases == ["preparing_analysis", "build_skeleton", "analyze_section", "section_complete"]
     section_events = events[1:]
     assert all(e.branch_index == 0 for e in section_events)
     assert all(e.branch_count == 1 for e in section_events)
@@ -3658,6 +3660,7 @@ def test_build_survey_tree_progress_callback_fires_score_requirements_when_scori
     assert [e.phase for e in events] == [
         "preparing_analysis",
         "build_skeleton",
+        "analyze_section",
         "section_complete",
         "score_requirements",
         "score_requirements_done",
@@ -5814,17 +5817,22 @@ def test_mapping_attaches_a_figure_and_a_table_to_their_mapped_node() -> None:
     assert tree.excluded_table_ids == []
 
 
-def test_build_survey_tree_fires_build_skeleton_and_map_scope_not_analyze_section() -> None:
+def test_build_survey_tree_narrates_each_of_the_three_stages_in_order() -> None:
     # B5: stage 1 (_build_survey_skeleton_for_branch) previously reused the
     # stale 'analyze_section' phase label for structure-decision work (see
     # narration_publisher.Phase's own 'build_skeleton' comment for the full
-    # story) -- must fire 'build_skeleton' instead, and 'analyze_section'
-    # must not fire at all from this pipeline any more. STAGE 2 (mapping)
+    # story) -- it must fire 'build_skeleton' instead. STAGE 2 (mapping)
     # previously fired NOTHING; with a map_figures_tables-capable client (see
-    # FakeMappingClient) it must now fire 'map_scope', strictly between
-    # stage 1's build_skeleton and stage 3's section_complete -- mapping only
-    # runs once every branch's skeleton exists and node ids are frozen, and
-    # strictly before content authoring reads its verdicts.
+    # FakeMappingClient) it must now fire 'map_scope'.
+    #
+    # 'analyze_section' KEPT its meaning as stage 3's (content authoring) own
+    # wire name -- B5 dropped the fire call along with the stale stage-1 use,
+    # which left the LONGEST of a branch's three calls narrating nothing at
+    # all between mapping and section_complete (the UI kept showing the last
+    # 'map_scope' line for that whole window). All four phases must therefore
+    # fire, strictly in pipeline order: mapping only runs once every branch's
+    # skeleton exists and node ids are frozen, and strictly before content
+    # authoring reads its verdicts.
     events: list[LevelingProgress] = []
     fake = FakeMappingClient(
         nodes=[_MAPPING_NODE],
@@ -5837,11 +5845,49 @@ def test_build_survey_tree_fires_build_skeleton_and_map_scope_not_analyze_sectio
     build_survey_tree(_mapping_doc(), fake, progress_callback=lambda p: events.append(p))
 
     phases = [e.phase for e in events]
-    assert "build_skeleton" in phases
-    assert "analyze_section" not in phases
-    assert "map_scope" in phases
-    skeleton_idx, map_idx = phases.index("build_skeleton"), phases.index("map_scope")
-    assert skeleton_idx < map_idx < phases.index("section_complete")
+    for phase in ("build_skeleton", "map_scope", "analyze_section", "section_complete"):
+        assert phase in phases, phase
+    assert (
+        phases.index("build_skeleton")
+        < phases.index("map_scope")
+        < phases.index("analyze_section")
+        < phases.index("section_complete")
+    )
+
+
+def test_analyze_section_reports_the_same_branch_coordinates_as_its_own_section_complete() -> None:
+    # Stage 3's start and end events must be the SAME branch's coordinates --
+    # they share stage 1's one `fire` closure precisely so the step list can
+    # match them up (see _BranchSkeleton.fire). A mismatch here is what makes
+    # the stepper highlight one section while completing another.
+    events: list[LevelingProgress] = []
+    fake = FakeMappingClient(nodes=[_MAPPING_NODE])
+
+    build_survey_tree(_mapping_doc(), fake, progress_callback=lambda p: events.append(p))
+
+    start = next(e for e in events if e.phase == "analyze_section")
+    done = next(e for e in events if e.phase == "section_complete")
+    assert start.branch_index == done.branch_index
+    assert start.branch_count == done.branch_count
+    assert start.blocks_done == done.blocks_done
+    assert start.section_label == done.section_label
+
+
+def test_map_scope_reports_every_block_done_like_other_whole_document_phases() -> None:
+    # Hardcoded blocks_done=0 is not inert: it renders verbatim in
+    # ProgressBanner's metrics chip ("0 / N blocks") and in this phase's own
+    # narration message for the whole mapping window. Every OTHER
+    # whole-document phase reports blocks_done == blocks_total.
+    events: list[LevelingProgress] = []
+    fake = FakeMappingClient(nodes=[_MAPPING_NODE])
+
+    build_survey_tree(_mapping_doc(), fake, progress_callback=lambda p: events.append(p))
+
+    map_events = [e for e in events if e.phase == "map_scope"]
+    assert map_events
+    for event in map_events:
+        assert event.blocks_total > 0
+        assert event.blocks_done == event.blocks_total
 
 
 def test_mapping_batches_a_whole_branch_into_one_call_never_one_per_item() -> None:
