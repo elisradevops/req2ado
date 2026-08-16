@@ -1604,3 +1604,46 @@ def test_languages_survives_end_to_end_to_the_real_tesseract_call() -> None:
         load_pdf(str(FIXTURES / "table_with_image_header.pdf"), languages="heb+eng")
 
     assert captured_kwargs.get("lang") == "heb+eng"
+
+
+def test_load_pdf_snaps_away_decorative_inset_rects_producing_a_clean_grid() -> None:
+    # Real, root-caused bug (confirmed against cubeadcs_icd.pdf's "Table 26:
+    # Harness Details"): a PDF that draws a styled/shaded cell as TWO NESTED
+    # filled rects (a real outer cell + a decorative inset a few points
+    # inside it) makes pdfplumber's default snap_x_tolerance (3pt) treat the
+    # inner rect's own edges as real extra column/row boundaries -- ghost
+    # columns in any row using this style, and a header row split into two
+    # grid rows when the decorative fill is drawn as two stacked
+    # half-height rects. _DECORATIVE_RECT_SNAP_TOLERANCE fixes both by
+    # snapping the decorative inner edges onto the real outer boundary.
+    doc = load_pdf(str(FIXTURES / "decorative_rect_table.pdf"))
+    assert len(doc.tables) == 1
+    rows = plain_text_rows(doc.tables[0])
+    assert rows == [
+        ["ID", "Name", "Value"],
+        ["1", "Alice", "100"],
+        ["2", "Bob", "200"],
+    ]
+    # No spanned (None) or empty-text ghost cells anywhere -- a clean,
+    # fully-populated 3x3 grid, not just "the right text somewhere in a
+    # bloated grid."
+    for row in doc.tables[0].cells:
+        assert len(row) == 3
+        assert all(cell is not None and cell.text.strip() for cell in row)
+
+
+def test_load_pdf_does_not_merge_a_genuinely_narrow_real_column() -> None:
+    # Safety net for _DECORATIVE_RECT_SNAP_TOLERANCE: proves the tolerance
+    # bump doesn't blindly merge two REAL, close-together column boundaries
+    # -- only the decorative-inset pattern it targets. This fixture's
+    # narrow "Flag" column (18pt, plain stroked borders, no decorative
+    # fill) must stay its own distinct column, not get absorbed into a
+    # neighbor.
+    doc = load_pdf(str(FIXTURES / "narrow_column_table.pdf"))
+    assert len(doc.tables) == 1
+    cells = doc.tables[0].cells
+    assert len(cells[0]) == 3  # still 3 columns, not merged down to 2
+    # The narrow column's own data cells ('Y'/'N') stay isolated in their
+    # own cell -- proof they weren't swallowed into the "Value" column.
+    assert cells[1][1] is not None and cells[1][1].text.strip() == "Y"
+    assert cells[2][1] is not None and cells[2][1].text.strip() == "N"
