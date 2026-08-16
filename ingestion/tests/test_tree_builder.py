@@ -1752,6 +1752,35 @@ def test_an_orphaned_table_with_an_ocr_recovered_cell_emits_a_warning_with_no_no
     assert ocr_warnings[0].node_ids == []
 
 
+def test_headingless_table_only_doc_with_an_ocr_recovered_cell_emits_a_warning() -> None:
+    # Mirrors test_table_with_an_ocr_recovered_cell_emits_a_warning_attributed_to_the_open_node
+    # above, but for _build_headingless_tree's SEPARATE table-folding code
+    # path (reached when doc.blocks is empty and doc.tables is not -- e.g.
+    # a real PDF page that's purely tabular, whose table-region lines get
+    # filtered out of paragraph text entirely). That path builds its own
+    # node per table rather than folding into an already-open node from the
+    # main structured walk, so it must bridge TableCell.ocr_recovered into
+    # a warning independently -- proving it isn't silently skipped there.
+    path = "headingless_table_ocr.xlsx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="Label", ocr_recovered=True), TableCell(text="Alpha")]],
+                source_ref=_sr(path, 0, 1),
+            )
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    node = next(n for n in tree.nodes if n.table_ids == ["t0"])
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].kind == WarningKind.OCR_RECOVERED_TABLE_TEXT
+    assert tree.warnings[0].node_ids == [node.local_id]
+    assert tree.warnings[0].detail == {"tableId": "t0", "recoveredCellCount": 1}
+
+
 def test_a_real_ocr_recovered_pdf_table_produces_the_expected_warning_end_to_end() -> None:
     from pathlib import Path
 

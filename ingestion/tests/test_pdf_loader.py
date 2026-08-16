@@ -1560,3 +1560,47 @@ def test_table_ocr_recovery_never_calls_ocr_for_a_genuinely_blank_cell() -> None
     assert blank_cell is not None
     assert blank_cell.text == ""
     assert blank_cell.ocr_recovered is False
+
+
+def test_cell_ocr_recovery_failure_does_not_degrade_the_whole_table() -> None:
+    # A real exception from convert_from_path (e.g. a poppler crash) must be
+    # contained to the one cell attempting recovery -- _cell_ocr_recovery's
+    # own docstring already claims "never raises"; this proves it, and
+    # proves the containment matters: an uncaught exception here propagates
+    # through _build_pdf_table_grid and degrades the ENTIRE table to the
+    # bare-cells fallback (losing colspan/rowspan/styling for every cell),
+    # not just the one cell whose OCR recovery failed.
+    with patch(
+        "app.loaders.pdf_loader.convert_from_path",
+        side_effect=RuntimeError("boom"),
+    ):
+        doc = load_pdf(str(FIXTURES / "table_with_blank_cell.pdf"))
+
+    assert len(doc.tables) == 1
+    # column_widths is only populated by the real structured grid build --
+    # the bare-cells degraded fallback always leaves it None (see
+    # _build_pdf_table_grid's caller in load_pdf).
+    assert doc.tables[0].column_widths is not None
+    assert not any("table extraction degraded structure" in b.text for b in doc.blocks)
+
+
+def test_languages_survives_end_to_end_to_the_real_tesseract_call() -> None:
+    # Proves a non-default `languages` value survives the whole
+    # load_pdf -> _build_pdf_table_grid -> _cell_ocr_recovery ->
+    # ocr_image_to_text_filtered -> pytesseract.image_to_data chain, not
+    # just the first hop (every intermediate function already threads
+    # `languages` through by signature, but nothing previously asserted the
+    # value actually arrives at the real Tesseract call unchanged).
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_image_to_data(image, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"text": ["Label"], "conf": ["90"]}
+
+    with patch(
+        "app.loaders.pdf_loader.pytesseract.image_to_data",
+        side_effect=fake_image_to_data,
+    ):
+        load_pdf(str(FIXTURES / "table_with_image_header.pdf"), languages="heb+eng")
+
+    assert captured_kwargs.get("lang") == "heb+eng"

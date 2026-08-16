@@ -496,9 +496,13 @@ def _cell_ocr_recovery(
     """Attempts to recover text for one table grid position whose
     pdfplumber extraction came back empty, by rendering the page to pixels
     (cached in page_image_cache -- a dict the CALLER creates fresh per
-    load_pdf call and owns; this function only reads/populates it, never
-    clears it, so its lifetime is exactly one load_pdf call, not global --
-    see this function's own Interfaces note in the plan that introduced it)
+    load_pdf call and owns; this function only reads/populates it. Pages
+    are walked strictly in order and never revisited, so this function
+    retains only the current page's render, clearing any prior entry
+    before inserting -- its lifetime is exactly one load_pdf call, not
+    global, and its retained size is exactly one rendered page, not every
+    page seen so far -- see this function's own Interfaces note in the
+    plan that introduced it)
     and OCR-ing just this cell's bbox crop, inset past the ruled border
     (see _CELL_CROP_INSET_POINTS). Returns "" (fail-open, never raises)
     both when the cheap pre-check judges the crop visually blank (no OCR
@@ -506,28 +510,36 @@ def _cell_ocr_recovery(
     stripping -- a miss here must never turn into fabricated cell content
     or abort the document.
     """
-    if page_index not in page_image_cache:
-        rendered = convert_from_path(path, first_page=page_index + 1, last_page=page_index + 1)
-        page_image_cache[page_index] = rendered[0]
-    page_image = page_image_cache[page_index]
+    try:
+        if page_index not in page_image_cache:
+            rendered = convert_from_path(path, first_page=page_index + 1, last_page=page_index + 1)
+            # load_pdf walks pages strictly in order and never revisits one, so
+            # keeping only the current page preserves the one-render-per-page hit
+            # rate without retaining every page's ~11 MB render for the whole call
+            # (a large multi-page document would otherwise project to gigabytes).
+            page_image_cache.clear()
+            page_image_cache[page_index] = rendered[0]
+        page_image = page_image_cache[page_index]
 
-    scale = _TABLE_OCR_RENDER_DPI / 72
-    x0, top, x1, bottom = bbox
-    inset = _CELL_CROP_INSET_POINTS
-    x0i, topi, x1i, bottomi = x0 + inset, top + inset, x1 - inset, bottom - inset
-    if x1i <= x0i or bottomi <= topi:
-        # Cell too small for the inset on at least one axis -- fall back to
-        # the raw bbox rather than pass PIL an inverted crop box (which
-        # raises). Rare in practice; the pre-check may over-trigger on a
-        # tiny cell's own border pixels in this fallback, which only costs
-        # one wasted OCR attempt (see _BLANK_CELL_STDDEV_THRESHOLD).
-        x0i, topi, x1i, bottomi = x0, top, x1, bottom
+        scale = _TABLE_OCR_RENDER_DPI / 72
+        x0, top, x1, bottom = bbox
+        inset = _CELL_CROP_INSET_POINTS
+        x0i, topi, x1i, bottomi = x0 + inset, top + inset, x1 - inset, bottom - inset
+        if x1i <= x0i or bottomi <= topi:
+            # Cell too small for the inset on at least one axis -- fall back to
+            # the raw bbox rather than pass PIL an inverted crop box (which
+            # raises). Rare in practice; the pre-check may over-trigger on a
+            # tiny cell's own border pixels in this fallback, which only costs
+            # one wasted OCR attempt (see _BLANK_CELL_STDDEV_THRESHOLD).
+            x0i, topi, x1i, bottomi = x0, top, x1, bottom
 
-    crop = page_image.crop((x0i * scale, topi * scale, x1i * scale, bottomi * scale))
-    if ImageStat.Stat(crop.convert("L")).stddev[0] < _BLANK_CELL_STDDEV_THRESHOLD:
+        crop = page_image.crop((x0i * scale, topi * scale, x1i * scale, bottomi * scale))
+        if ImageStat.Stat(crop.convert("L")).stddev[0] < _BLANK_CELL_STDDEV_THRESHOLD:
+            return ""
+
+        return ocr_image_to_text_filtered(crop, languages=languages).strip()
+    except Exception:  # noqa: BLE001 -- fail-open: an OCR miss must never degrade the table it lives in
         return ""
-
-    return ocr_image_to_text_filtered(crop, languages=languages).strip()
 
 
 def _build_pdf_table_grid(
@@ -1359,9 +1371,12 @@ def load_pdf(
     table_xs_by_id: dict[str, list[float]] = {}
     table_bbox_by_id: dict[str, tuple[float, float, float, float]] = {}
     # Rendered-page cache for table-cell OCR recovery (_cell_ocr_recovery)
-    # -- lives only for this one load_pdf call (a plain dict, never
-    # cleared but also never reused across calls since it's a fresh local
-    # here), keyed by page_index (path is fixed for the whole call).
+    # -- lives only for this one load_pdf call (a fresh local here, never
+    # reused across calls) and retains at most a single entry: pages are
+    # walked strictly in order and never revisited, so _cell_ocr_recovery
+    # clears this dict before caching each new page's render, bounding its
+    # size to one rendered page instead of every page seen so far, keyed
+    # by page_index (path is fixed for the whole call).
     # Deliberately separate from cached_pdf_reader's own @lru_cache (keyed
     # by path, storing a pypdf.PdfReader, reused ACROSS calls) -- this
     # stores a pdf2image-rendered PIL.Image per page and must never share

@@ -644,9 +644,10 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
             if not description.strip():
                 continue
             title = table.caption or f"Table {index + 1}"
+            node_id = f"n{index + 2}"
             nodes.append(
                 WorkItemNode(
-                    local_id=f"n{index + 2}",
+                    local_id=node_id,
                     type=WorkItemType.REQUIREMENT,
                     parent_local_id=feature.local_id,
                     title=extract_baseline_title(title),
@@ -661,6 +662,9 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     child_type=WorkItemType.REQUIREMENT,
                 )
             )
+            ocr_warning = _ocr_recovered_table_warning(table, node_ids=[node_id])
+            if ocr_warning is not None:
+                warnings.append(ocr_warning)
     return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))
 
 
