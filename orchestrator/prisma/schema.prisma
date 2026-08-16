@@ -95,6 +95,17 @@ model Job {
   // prisma.job.update as warnings/kbCitations above). Nullable: historical
   // jobs predate this column, same convention as warnings/userId.
   figureDescriptions Json?
+  // Doc-wide figure/table local ids the mapping stage (Part B) judged
+  // decorative/irrelevant, or that failed mapping (WorkItemTree.
+  // excluded_figure_ids/excluded_table_ids, ingestion's /level response) --
+  // NOT every figure/table not attached to a node (a table judged
+  // EMPTY_TABLE_CONTENT lands in neither table_ids nor this field, a
+  // separate pre-existing warning bucket). Persisted here so getById() can
+  // return them alongside kbCitations/warnings above (same
+  // prisma.job.update call in pipeline.worker.ts). Nullable: historical
+  // jobs predate these columns, same convention as warnings/figureDescriptions.
+  excludedFigureIds Json?
+  excludedTableIds  Json?
   // Telemetry for the SURVEY cost estimate (DESIGN.md §11.2.3) -- lets the
   // ETA be computed from this deployment's own real completed-job
   // durations instead of a hand-picked constant (two of which were tried

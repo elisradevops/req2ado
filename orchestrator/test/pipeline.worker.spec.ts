@@ -207,6 +207,11 @@ describe('runPipelineJob', () => {
         warnings: [],
         kbCitations: [],
         figureDescriptions: [],
+        // Backward-compat default: the mocked level() response has neither
+        // `excluded_figure_ids` nor `excluded_table_ids` at all, same `?? []`
+        // guard as figureDescriptions/kbCitations above.
+        excludedFigureIds: [],
+        excludedTableIds: [],
         // ETA telemetry write path (DESIGN.md §11.2.3.b) -- blockCount/
         // figureCount default to 0 here since the mocked ingest() response
         // has neither `blocks` nor `figures` populated (both fall through
@@ -713,6 +718,8 @@ describe('runPipelineJob', () => {
           raw: 'SURVEY node count (1) diverges from source block count (5) by more than 50%',
         },
       ],
+      excluded_figure_ids: ['fig-1', 'fig-2'],
+      excluded_table_ids: ['tbl-1'],
     });
     fakeDryRunService.diff.mockResolvedValue([]);
 
@@ -762,6 +769,12 @@ describe('runPipelineJob', () => {
         ],
         kbCitations: [],
         figureDescriptions: [],
+        // Doc-wide ids the mapping stage judged decorative/irrelevant, or
+        // that failed mapping (see Job.excludedTableIds' schema.prisma doc
+        // comment) -- populated from the tree-level excluded_figure_ids/
+        // excluded_table_ids fields above.
+        excludedFigureIds: ['fig-1', 'fig-2'],
+        excludedTableIds: ['tbl-1'],
         blockCount: 0,
         figureCount: 0,
         diffReadyAt: expect.any(Date),
@@ -1214,6 +1227,8 @@ describe('runPipelineJob', () => {
           { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
         ],
         figureDescriptions: [],
+        excludedFigureIds: [],
+        excludedTableIds: [],
         blockCount: 0,
         figureCount: 0,
         diffReadyAt: expect.any(Date),

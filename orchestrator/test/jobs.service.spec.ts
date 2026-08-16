@@ -2983,7 +2983,36 @@ describe('JobsService.getById', () => {
       // A historical job predates the figureDescriptions column -- a null
       // column defaults to [], same convention as warnings above.
       figureDescriptions: [],
+      // A historical job predates the excludedFigureIds/excludedTableIds
+      // columns entirely (absent from the mocked row) -- defaults to [],
+      // same convention as figureDescriptions above.
+      excludedFigureIds: [],
+      excludedTableIds: [],
     });
+  });
+
+  it('returns persisted excludedFigureIds/excludedTableIds when the columns have real data', async () => {
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready',
+          mode: 'survey',
+          dryRunDiff: [],
+          warnings: null,
+          kbCitations: [],
+          figureDescriptions: [],
+          excludedFigureIds: ['fig-1', 'fig-2'],
+          excludedTableIds: ['tbl-1'],
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result?.excludedFigureIds).toEqual(['fig-1', 'fig-2']);
+    expect(result?.excludedTableIds).toEqual(['tbl-1']);
   });
 
   it('returns persisted figureDescriptions when the column has real data', async () => {

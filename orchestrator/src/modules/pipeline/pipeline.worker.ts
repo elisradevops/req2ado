@@ -600,6 +600,8 @@ export async function runPipelineJob(
       warnings?: LeveledWarning[];
       kb_citations?: { source_file: string; similarity: number; relevance: string }[];
       trace_links?: LeveledTraceLink[];
+      excluded_figure_ids?: string[];
+      excluded_table_ids?: string[];
     };
     await deps.jobEventsPublisher.publish(job.id, 'generate_requirements_done');
     // The dominant wall-clock cost (15-40+ min for SURVEY) just finished --
@@ -859,6 +861,13 @@ export async function runPipelineJob(
           relevance: c.relevance,
         })) as any,
         figureDescriptions: figureDescriptions as any,
+        // Doc-wide figure/table ids the mapping stage judged decorative/
+        // irrelevant, or that failed mapping -- NOT an exhaustive
+        // accounting of every table/figure not attached to a node (see
+        // Job.excludedTableIds' schema.prisma doc comment for the
+        // EMPTY_TABLE_CONTENT caveat).
+        excludedFigureIds: (tree.excluded_figure_ids ?? []) as any,
+        excludedTableIds: (tree.excluded_table_ids ?? []) as any,
         // ETA telemetry write path, part 2 (DESIGN.md §11.2.3.b). Real
         // pipeline completion, independent of whether/how a human later
         // reviews it -- diffReadyAt is deliberately NOT set in confirm()
