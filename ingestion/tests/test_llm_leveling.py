@@ -1039,6 +1039,49 @@ def test_derive_section_label_does_not_skip_a_note_block_without_the_unsupported
     assert label == "Remember to emphasize the roadmap slide."
 
 
+def test_derive_section_label_skips_a_figure_placeholder_block_with_no_caption() -> None:
+    # Real live bug: a headingless branch whose first remaining block is a
+    # FIGURE placeholder rendered the literal placeholder text as the
+    # section's own label -- confirmed live as "Section 1 of 1: [FIGURE:
+    # none] -- Analyzing and synthesizing requirements" in the progress UI.
+    # Same bug class _figure_line's own docstring already names ("the root
+    # cause of the '[FIGURE: none]' fake-requirement bug") -- that fix
+    # closed the leak into rendered section CONTENT, this closes the
+    # parallel leak into the section LABEL.
+    path = "doc.pdf"
+    blocks = [
+        Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path)),
+        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall tune across 2-18 GHz.", source_ref=_sr(path)),
+    ]
+    label = _derive_section_label(blocks, tables=None, figures=None)
+    assert label == "The receiver shall tune across 2-18 GHz."
+
+
+def test_derive_section_label_skips_a_figure_block_even_with_a_real_caption() -> None:
+    # A figure's own block text is never legitimate label content, whether
+    # or not it has a real caption -- a section label should name what the
+    # section is ABOUT, not describe an embedded image.
+    path = "doc.pdf"
+    blocks = [
+        Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A block diagram of the power supply.]", source_ref=_sr(path)),
+        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall tune across 2-18 GHz.", source_ref=_sr(path)),
+    ]
+    label = _derive_section_label(blocks, tables=None, figures=None)
+    assert label == "The receiver shall tune across 2-18 GHz."
+
+
+def test_derive_section_label_falls_through_to_table_caption_when_only_figure_blocks_remain() -> None:
+    # Same fallback cascade as before this fix existed (see this function's
+    # own docstring) -- a branch with ONLY figure blocks and no heading/
+    # paragraph must still fall through to the table-caption tier, not
+    # return None early just because a figure block was skipped.
+    path = "doc.pdf"
+    blocks = [Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: none]", source_ref=_sr(path))]
+    table = Table(id="t0", cells=[], caption="Power Budget Summary", source_ref=_sr(path))
+    label = _derive_section_label(blocks, tables=[table], figures=None)
+    assert label == "Power Budget Summary"
+
+
 def test_render_block_line_omits_an_unsupported_content_note_block() -> None:
     path = "doc.txt"
     block = Block(id="b0", kind=BlockKind.NOTE, text="[UNSUPPORTED: page 7 appears multi-column]", source_ref=_sr(path))

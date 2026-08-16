@@ -731,6 +731,22 @@ def _derive_section_label(blocks: list[Block], tables: list[Table] | None, figur
         # existed.
         if _is_unsupported_content_note(block):
             continue
+        # Real live bug this closes, confirmed via a real SURVEY run: a
+        # headingless branch whose first remaining block is a FIGURE
+        # placeholder ("[FIGURE: none]" or "[FIGURE: <a real caption>]")
+        # rendered that literal placeholder text as the section's own
+        # label -- visible as "Section 1 of 1: [FIGURE: none] --
+        # Analyzing..." in the live progress UI. This is the EXACT same bug
+        # class _figure_line's own docstring already names ("the root cause
+        # of the '[FIGURE: none]' fake-requirement bug") -- that fix closed
+        # the leak into rendered SECTION CONTENT (_render_block_line calls
+        # _figure_line), but this label-derivation fallback was never given
+        # the parallel check. A figure's own block text is never legitimate
+        # label content regardless of whether it has a real caption -- a
+        # section label should name what the section is ABOUT (heading or
+        # body text), not describe an embedded image.
+        if block.kind == BlockKind.FIGURE:
+            continue
         text = block.text.strip()
         if len(text) > _SECTION_LABEL_EXCERPT_CHARS:
             return text[:_SECTION_LABEL_EXCERPT_CHARS] + "…"
