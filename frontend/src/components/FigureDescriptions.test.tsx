@@ -77,6 +77,34 @@ describe('FigureDescriptions', () => {
     expect(screen.getByText('Figure 1:')).toBeInTheDocument();
   });
 
+  it('labels by sequential array position, not the underlying figureIndex -- a gap looks like a numbering bug', () => {
+    // Real live bug: figureIndex is this figure's real position among ALL
+    // raw images, including ones never added to `items` at all (degenerate
+    // 2x2 artifacts, or figures excluded as insignificant/failed -- see
+    // JobDetail.tsx's figureCaptionStatus exclusion). Confirmed live: a
+    // reviewer's first VISIBLE entry was labeled "Figure 13" even though it
+    // was genuinely the first one shown, reading as broken numbering. Items
+    // arrive pre-sorted by figureIndex (JobDetail.tsx's own useMemo), so
+    // array position is the correct sequential display order regardless of
+    // which real indices survived filtering.
+    const items: FigureDescriptionEntry[] = [
+      { figureIndex: 13, caption: 'First real figure', figureId: 'f12' },
+      { figureIndex: 14, caption: 'Second real figure', figureId: 'f13' },
+      { figureIndex: 26, caption: 'Third real figure', figureId: 'f25' },
+    ];
+    render(<FigureDescriptions jobId="job-1" items={items} />);
+    expect(screen.getByText('Figure 1:')).toBeInTheDocument();
+    expect(screen.getByText('Figure 2:')).toBeInTheDocument();
+    expect(screen.getByText('Figure 3:')).toBeInTheDocument();
+    expect(screen.queryByText('Figure 13:')).not.toBeInTheDocument();
+    expect(screen.queryByText('Figure 14:')).not.toBeInTheDocument();
+    expect(screen.queryByText('Figure 26:')).not.toBeInTheDocument();
+    // The underlying figureId (used for the actual FigureImage lookup) must
+    // stay the REAL id, not be renumbered -- only the display label changes.
+    expect(screen.getByTestId('figure-f12')).toBeInTheDocument();
+    expect(screen.getByTestId('figure-f25')).toBeInTheDocument();
+  });
+
   it('renders caption markdown as real elements -- bold and italic render as <strong> and <em>', () => {
     const items: FigureDescriptionEntry[] = [
       { figureIndex: 1, caption: 'This is **bold** and _italic_ text', figureId: 'f0' },

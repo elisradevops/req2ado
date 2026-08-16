@@ -298,6 +298,51 @@ describe('JobDetail', () => {
     expect(within(panel).queryByText(/this figure has no discernible technical content/i)).not.toBeInTheDocument();
   });
 
+  it('does not add a figure to the FigureDescriptions panel via durable event-history backfill either, when figureCaptionStatus marks it insignificant/failed', async () => {
+    // SEPARATE population site from the live SSE test above -- a first pass
+    // at that fix only covered the live onNarration handler, missing this
+    // history-backfill effect (JobDetail.tsx populates figureCaptionsByIndex
+    // from getEventHistory too, since that fetch runs on every job page
+    // mount regardless of live/reconnect state -- confirmed live: an
+    // insignificant figure still leaked into the panel via exactly this
+    // path even after the live-handler fix landed). Needs the same guard
+    // independently, not a shared helper -- this asserts it directly.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-32', status: 'running', mode: 'survey', dryRunDiff: null, createdAt: new Date().toISOString(),
+    } as any);
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([
+      {
+        id: 'evt-1', jobId: 'job-32', phase: 'describe_figure', severity: 'info', createdAt: new Date().toISOString(),
+        message: 'Figure 1: A block diagram showing power distribution.',
+        detail: {
+          phase: 'describe_figure', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+          kbGrounded: false, kbCitations: [], message: 'Figure 1: A block diagram showing power distribution.',
+          figureIndex: 1, figureCaption: 'A block diagram showing power distribution.', figureCaptionStatus: null,
+        },
+      },
+      {
+        id: 'evt-2', jobId: 'job-32', phase: 'describe_figure', severity: 'info', createdAt: new Date().toISOString(),
+        message: 'Figure 2: this figure has no discernible technical content',
+        detail: {
+          phase: 'describe_figure', branchIndex: null, branchCount: 0, blocksDone: 0, blocksTotal: 0,
+          kbGrounded: false, kbCitations: [], message: 'Figure 2: this figure has no discernible technical content',
+          figureIndex: 2, figureCaption: 'this figure has no discernible technical content', figureCaptionStatus: 'insignificant',
+        },
+      },
+    ] as any);
+
+    renderAt('job-32');
+
+    await waitFor(() => expect(screen.getByText(/1 figure description/i)).toBeInTheDocument());
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const panelToggle = screen.getByText(/1 figure description/i);
+    await userEvent.click(panelToggle);
+    const panel = panelToggle.closest('button')!.parentElement as HTMLElement;
+    expect(within(panel).getByText(/A block diagram showing power distribution\./i)).toBeInTheDocument();
+    expect(within(panel).queryByText(/this figure has no discernible technical content/i)).not.toBeInTheDocument();
+  });
+
   it('shows an excluded-as-decorative summary line when excludedFigureIds/excludedTableIds are non-empty', async () => {
     // B5: first frontend consumer of B4's excludedFigureIds/excludedTableIds
     // fields. Phrased as a real count ("N excluded as decorative"), not an

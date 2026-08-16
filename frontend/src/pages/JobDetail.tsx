@@ -383,7 +383,20 @@ export function JobDetail(): React.ReactElement {
     const seeded: Record<number, string> = {};
     for (const event of eventHistory) {
       const detail = event.detail;
-      if (isValidNarrationEvent(detail) && detail.phase === 'describe_figure' && detail.figureIndex != null && detail.figureCaption) {
+      // Same figureCaptionStatus exclusion as the live SSE handler above --
+      // this is a SEPARATE population site reading from durable history,
+      // not a call-through to that handler, so it needs the same guard
+      // independently. Missing here on a first pass at the live-handler fix
+      // is exactly why an insignificant figure still appeared: every job
+      // page mount fetches eventHistory regardless of live/reconnect state
+      // (see this effect's own comment), so this path ran on every load.
+      if (
+        isValidNarrationEvent(detail) &&
+        detail.phase === 'describe_figure' &&
+        detail.figureIndex != null &&
+        detail.figureCaption &&
+        !detail.figureCaptionStatus
+      ) {
         seeded[detail.figureIndex] = detail.figureCaption;
       }
     }

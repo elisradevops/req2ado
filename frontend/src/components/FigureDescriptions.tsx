@@ -58,13 +58,13 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
       <div className={cn('grid min-h-0 transition-[grid-template-rows] duration-200 ease-out', expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}>
         <div className="min-h-0 overflow-hidden">
           <ul className="flex flex-col gap-2 border-t border-hairline px-3.5 py-2.5">
-            {items.map((item) => (
+            {items.map((item, position) => (
               <li key={item.figureIndex} className="flex flex-col gap-2 border-t border-hairline/60 pt-2 text-sm text-ink-2 first:border-t-0 first:pt-0 sm:flex-row sm:items-start">
                 {/* The actual figure, not just a text description of it --
                     previously this panel was caption-only, so a diagram
                     referenced only as "Figure: This diagram illustrates..."
                     had no way to be seen, only read about. */}
-                <FigureImage jobId={jobId} figureId={item.figureId} active={hasExpandedOnce} alt={`Figure ${item.figureIndex}`} />
+                <FigureImage jobId={jobId} figureId={item.figureId} active={hasExpandedOnce} alt={`Figure ${position + 1}`} />
                 {/* Final whole-branch review finding: [&_p]:!text-ink-2 targets
                     Markdown's own rendered <p> directly (an !important class
                     on this ancestor div never wins against the <p>'s own
@@ -78,7 +78,24 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
                     own line below the label, an unintended layout regression
                     from the prior plain-text-in-<p> rendering. */}
                 <div className="min-w-0 flex-1 [&_p]:inline [&_p]:!text-ink-2">
-                  <span className="font-medium text-ink-1">Figure {item.figureIndex}: </span>
+                  {/* Display position (1, 2, 3...), NOT item.figureIndex --
+                      figureIndex is this figure's real 1-based position among
+                      ALL raw images in the document, INCLUDING ones filtered
+                      out entirely (degenerate 2x2 rendering artifacts) or
+                      excluded as insignificant/failed (never added to
+                      `items` at all -- see JobDetail.tsx's figureCaptionStatus
+                      exclusion). Labeling by that real index looks like a
+                      numbering bug once enough early figures are excluded --
+                      confirmed live: a reviewer's very first VISIBLE entry
+                      was labeled "Figure 13", not "Figure 1", even though it
+                      genuinely was the first one shown. `items` is already
+                      sorted by figureIndex (JobDetail.tsx's own useMemo), so
+                      array position IS the correct sequential display order --
+                      figureIndex/figureId stay unchanged for the FigureImage
+                      lookup and NodeDetailPanel's own figureId-keyed
+                      captionByFigureId map, which must still key by the real
+                      id. */}
+                  <span className="font-medium text-ink-1">Figure {position + 1}: </span>
                   <Markdown>{item.caption}</Markdown>
                 </div>
               </li>
