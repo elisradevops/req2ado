@@ -2660,6 +2660,132 @@ def test_author_content_cache_key_differs_by_kb_context() -> None:
     assert grounded["n0"]["description"] == "True"
 
 
+_MAPPING_CANDIDATES = {
+    "n0": {"type": "Feature", "title": "Display"},
+    "n1": {"type": "Requirement", "title": "HDR support"},
+}
+_MAPPING_ITEMS = {
+    "f0": {"kind": "figure", "section": "Display", "caption": "HDR tone-mapping curve"},
+    "t0": {"kind": "table", "section": "Display", "caption": None, "columns": ["Signal", "Pin"]},
+}
+
+
+def test_map_figures_tables_returns_a_verdict_per_item() -> None:
+    captured: dict = {}
+    verdicts = {
+        "f0": {"node_id": "n1", "escalate": False},
+        "t0": {"node_id": None, "escalate": True},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps(verdicts)})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
+
+    assert result == verdicts
+    # Both halves cross the wire in ONE call -- the candidates to choose
+    # from and every item being placed (batched, never per-figure).
+    user_payload = json.loads(captured["body"]["messages"][1]["content"])
+    assert user_payload["candidates"] == _MAPPING_CANDIDATES
+    assert user_payload["items"] == _MAPPING_ITEMS
+    assert "2 item(s)" in captured["body"]["messages"][0]["content"]
+
+
+def test_map_figures_tables_response_schema_offers_all_three_outcomes() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
+
+    value_schema = captured["body"]["responseSchema"]["schema"]["additionalProperties"]
+    assert set(value_schema["properties"]) == {"node_id", "escalate"}
+    # Nullable node_id + a separate boolean is what makes "matched",
+    # "decorative" and "escalate" three checkable outcomes rather than one
+    # sentinel string sharing the id space.
+    assert value_schema["properties"]["node_id"]["type"] == ["string", "null"]
+    assert value_schema["properties"]["escalate"]["type"] == "boolean"
+
+
+def test_map_figures_tables_tolerates_a_non_object_response() -> None:
+    # Every unanswered item is the CALLER's own escalate/exclude decision
+    # (see llm_leveling._map_figures_tables_to_nodes) -- this method never
+    # invents a verdict, it reports what came back.
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "[]"})
+
+    assert client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS) == {}
+
+
+def test_map_figures_tables_raises_on_non_200_response() -> None:
+    # The mapping STAGE is fail-open, but that degradation belongs to the
+    # caller -- this method still raises like every other client method, so
+    # the caller can tell a real failure apart from an empty verdict set.
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": "{}"}, expected_status=500)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
+
+
+def test_map_figures_tables_cache_miss_then_hit_skips_the_second_llm_call() -> None:
+    from app.survey.llm_cache import LlmResponseCache
+
+    call_count = 0
+    verdicts = {"f0": {"node_id": "n1", "escalate": False}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"content": json.dumps(verdicts)})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        cache=LlmResponseCache(_CountingFakeRedis()),
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    first = client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
+    second = client.map_figures_tables(_MAPPING_CANDIDATES, _MAPPING_ITEMS)
+
+    assert call_count == 1  # second call hit the cache, never reached the transport
+    assert first == second == verdicts
+
+
+def test_map_figures_tables_cache_key_covers_the_candidates_not_just_the_items() -> None:
+    # The SAME items against a DIFFERENT candidate set is a genuinely
+    # different request -- tier 1 (this branch's nodes) and tier 2 (the whole
+    # document's) legitimately ask about the same item twice.
+    from app.survey.llm_cache import LlmResponseCache
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        candidates = json.loads(json.loads(request.content)["messages"][1]["content"])["candidates"]
+        return httpx.Response(200, json={"content": json.dumps(
+            {"f0": {"node_id": sorted(candidates)[0], "escalate": False}}
+        )})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        cache=LlmResponseCache(_CountingFakeRedis()),
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    tier1 = client.map_figures_tables({"n1": {"type": "Requirement", "title": "A"}}, _MAPPING_ITEMS)
+    tier2 = client.map_figures_tables({"n9": {"type": "Requirement", "title": "B"}}, _MAPPING_ITEMS)
+
+    assert tier1["f0"]["node_id"] == "n1"
+    assert tier2["f0"]["node_id"] == "n9"  # not a stale hit from the tier-1 candidate set
+
+
 def test_post_chat_retries_a_500_then_succeeds(monkeypatch) -> None:
     # Regression: a real job lost 45+ minutes of prior work to a single
     # transient 500 from the LLM backend with zero retry anywhere in the

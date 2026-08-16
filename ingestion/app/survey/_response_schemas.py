@@ -208,6 +208,42 @@ def content_authoring_schema() -> dict:
     }
 
 
+def figure_table_mapping_schema() -> dict:
+    """map_figures_tables: STAGE 2 of the two-stage SURVEY generation split --
+    which EXACT node (if any) each of the document's figures/tables belongs
+    to. A dynamic ITEM-id-keyed object (additionalProperties, not properties
+    -- keys are the runtime figure/table ids offered in this call), same
+    shape family as content_authoring_schema/scores_schema, and the same
+    reason this module's header docstring gives for preferring a dynamic
+    object over a bounded array.
+
+    Three distinct outcomes per item, deliberately expressed as two fields
+    rather than one tri-state string (a nullable id plus a boolean is
+    directly checkable; a magic 'NONE'/'ESCALATE' sentinel string would
+    collide with the id space it shares): 'node_id' names a candidate offered
+    in THIS call (validated against that real candidate set by the caller --
+    see llm_leveling._map_figures_tables_to_nodes, which drops a hallucinated
+    id with WarningKind.INVALID_MAPPING_TARGET); 'node_id': null with
+    'escalate': false is the deliberate "belongs to no work item at all"
+    (decorative) verdict; 'escalate': true is "this item's real home is
+    somewhere else in the document, outside the candidates offered here",
+    which sends it to the whole-document escalation tier."""
+    return {
+        "name": "figure_table_mapping",
+        "schema": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": ["string", "null"]},
+                    "escalate": {"type": "boolean"},
+                },
+                "required": ["node_id", "escalate"],
+            },
+        },
+    }
+
+
 def requirements_by_node_schema() -> dict:
     """generate_requirements_for_document: a dynamic node_id-keyed object,
     same additionalProperties shape as scores_schema, each value a list of

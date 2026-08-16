@@ -23,6 +23,16 @@
     "trace_links": {
       "type": "array",
       "items": { "$ref": "#/definitions/TraceLink" }
+    },
+    "excluded_figure_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Doc-wide (never per-node): figures SURVEY's figure/table mapping stage judged structurally irrelevant to every work item, or could not place because the mapping call failed. Never present in any node's figure_ids. Always [] for BASELINE."
+    },
+    "excluded_table_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Doc-wide (never per-node): tables SURVEY's figure/table mapping stage judged structurally irrelevant to every work item, or could not place because the mapping call failed. Never present in any node's table_ids. Always [] for BASELINE."
     }
   },
   "definitions": {
@@ -170,7 +180,7 @@
             "enhancement_call_failed", "enhancement_response_incomplete", "dropped_row",
             "front_matter_folded", "trace_link_inference_failed", "heading_id_offset_mismatch",
             "unsupported_content_note", "empty_table_content",
-            "vision_captioning_disabled"
+            "vision_captioning_disabled", "invalid_mapping_target", "mapping_call_failed"
           ]
         },
         "severity": {

@@ -154,6 +154,47 @@ def test_insignificant_figure_ids_matches_work_item_tree_schema(schema) -> None:
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
+def test_invalid_mapping_target_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.INVALID_MAPPING_TARGET,
+            "Figure f0 was mapped to a work item that isn't in this document -- the mapping was dropped.",
+            detail={"itemId": "f0", "itemKind": "figure", "requested": "nope"},
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_mapping_call_failed_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.MAPPING_CALL_FAILED,
+            "Figure/table mapping failed for this section -- 2 figure(s)/1 table(s) are listed as excluded instead.",
+            detail={"tier": 1, "branch": "br0_", "figureCount": 2, "tableCount": 1},
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_excluded_figure_and_table_ids_match_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.excluded_figure_ids = ["f0", "f1"]
+    tree.excluded_table_ids = ["t0"]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_excluded_ids_default_to_empty_lists_on_every_tree(schema) -> None:
+    # Both fields are doc-wide and additive -- BASELINE has no mapping stage
+    # at all, and a SURVEY run whose client can't map still returns [].
+    assert build_baseline_tree(_baseline_doc()).excluded_figure_ids == []
+    assert build_baseline_tree(_baseline_doc()).excluded_table_ids == []
+    survey_tree = build_survey_tree(_survey_doc(), FakeSectionAnalysisClient())
+    assert survey_tree.excluded_figure_ids == []
+    assert survey_tree.excluded_table_ids == []
+
+
 def test_schema_rejects_a_stray_field_on_a_node(schema) -> None:
     # Regression: before additionalProperties:false, this schema was nearly
     # vacuous -- it validated any node shape, stray fields included, so a

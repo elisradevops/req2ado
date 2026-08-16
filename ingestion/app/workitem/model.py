@@ -315,6 +315,20 @@ class WarningKind(str, Enum):
     HEADING_ID_OFFSET_MISMATCH = "heading_id_offset_mismatch"
     UNSUPPORTED_CONTENT_NOTE = "unsupported_content_note"
     EMPTY_TABLE_CONTENT = "empty_table_content"
+    # SURVEY stage 2 (whole-document figure/table -> exact-node mapping, see
+    # llm_leveling._map_figures_tables_to_nodes). INVALID_MAPPING_TARGET is
+    # the direct counterpart of INVALID_FIGURE_IDS/INVALID_TABLE_IDS above,
+    # one level up: those catch a hallucinated FIGURE/TABLE id, this catches
+    # a hallucinated NODE id -- a mapping call naming a work item that was
+    # never in the candidate set that same call was offered. Dropped, never
+    # trusted verbatim, exactly as those two do. MAPPING_CALL_FAILED is a
+    # genuine CALL failure (error/timeout), not a validation failure: stage 2
+    # is deliberately the one fail-OPEN stage of SURVEY's three (stages 1 and
+    # 3 both still fail hard), so a failed batch degrades its items to
+    # WorkItemTree.excluded_figure_ids/excluded_table_ids instead of failing
+    # the whole job.
+    INVALID_MAPPING_TARGET = "invalid_mapping_target"
+    MAPPING_CALL_FAILED = "mapping_call_failed"
     # Tree-level (never per-figure) warning: vision was off for this WHOLE
     # run (doc.vision_active is False) while the document has at least one
     # figure -- explains every one of that document's uncaptioned_figure_ids
@@ -357,6 +371,8 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.UNSUPPORTED_CONTENT_NOTE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.EMPTY_TABLE_CONTENT: WarningSeverity.NEEDS_REVIEW,
     WarningKind.VISION_CAPTIONING_DISABLED: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.INVALID_MAPPING_TARGET: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.MAPPING_CALL_FAILED: WarningSeverity.PIPELINE_ISSUE,
 }
 
 
@@ -404,3 +420,17 @@ class WorkItemTree(BaseModel):
     # per-node, mirroring trace_links below.
     kb_citations: list[KbCitation] = Field(default_factory=list)
     trace_links: list[TraceLink] = Field(default_factory=list)
+    # Figures/tables SURVEY's whole-document mapping stage judged structurally
+    # irrelevant to every work item (a decorative logo, a divider, a page
+    # ornament), or could not place at all because the mapping call itself
+    # failed (see WarningKind.MAPPING_CALL_FAILED's fail-open contract).
+    # Doc-wide, deliberately NOT per-node: an excluded item belongs to no
+    # node by definition, so it appears in exactly one place -- here -- and
+    # never in any node's figure_ids/table_ids. Populated only by
+    # build_survey_tree's stage 2; always [] for BASELINE (no LLM stage, no
+    # scope-judgment concept) and for a SURVEY run whose analysis client
+    # doesn't implement map_figures_tables at all. Existing to be COUNTED and
+    # shown ("N figure(s) excluded as decorative"), so a filtered-out item is
+    # visible to a reviewer rather than silently dropped.
+    excluded_figure_ids: list[str] = Field(default_factory=list)
+    excluded_table_ids: list[str] = Field(default_factory=list)

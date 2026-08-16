@@ -15,6 +15,14 @@ export interface WorkItemTree {
   warnings?: IntegrityWarning[];
   kb_citations?: KbCitation[];
   trace_links?: TraceLink[];
+  /**
+   * Doc-wide (never per-node): figures SURVEY's figure/table mapping stage judged structurally irrelevant to every work item, or could not place because the mapping call failed. Never present in any node's figure_ids. Always [] for BASELINE.
+   */
+  excluded_figure_ids?: string[];
+  /**
+   * Doc-wide (never per-node): tables SURVEY's figure/table mapping stage judged structurally irrelevant to every work item, or could not place because the mapping call failed. Never present in any node's table_ids. Always [] for BASELINE.
+   */
+  excluded_table_ids?: string[];
 }
 export interface WorkItemNode {
   local_id: string;
@@ -152,7 +160,9 @@ export interface IntegrityWarning {
     | 'heading_id_offset_mismatch'
     | 'unsupported_content_note'
     | 'empty_table_content'
-    | 'vision_captioning_disabled';
+    | 'vision_captioning_disabled'
+    | 'invalid_mapping_target'
+    | 'mapping_call_failed';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

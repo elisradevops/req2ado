@@ -20,6 +20,7 @@ from app.survey._response_schemas import (
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
     epic_feature_scores_schema,
+    figure_table_mapping_schema,
     kb_relevance_schema,
     parent_summary_schema,
     root_grouping_schema,
@@ -2024,6 +2025,94 @@ class OrchestratorLlmClient:
         if key is not None and not truncated:
             self._cache.set(key, {"content": result, "truncated": truncated})
         return result, truncated
+
+    def map_figures_tables(self, candidates: dict[str, dict], items: dict[str, dict]) -> dict[str, dict]:
+        """STAGE 2 of the two-stage SURVEY generation split: which EXACT node
+        each of this document's figures/tables belongs to. Runs BETWEEN
+        stage 1 (structure) and stage 3 (content) -- exact-node binding is
+        impossible before the nodes exist, and pointless after their text is
+        already written against a figure/table set nobody decided.
+
+        `candidates` maps each candidate node id to {'type', 'title'} --
+        TITLES ONLY, never descriptions (there are none yet at this point in
+        the pipeline, and titles are what makes a whole-document candidate
+        list affordable). `items` maps each figure/table id to its own
+        minimal identifying info ({'kind', 'section', 'caption', and
+        'columns' for a table}) -- nothing is fetched for this call that the
+        pipeline doesn't already hold.
+
+        Returns {item_id: {'node_id': str | None, 'escalate': bool}} -- the
+        three outcomes the caller distinguishes (see
+        figure_table_mapping_schema's own docstring): matched to a specific
+        node, judged decorative/irrelevant to every node, or needing the
+        whole-document escalation tier because no candidate offered here is
+        its real home. Validation of a returned node_id against the real
+        candidate set is the CALLER's job (llm_leveling.
+        _map_figures_tables_to_nodes), the same division of labour
+        author_content already documents for its own omitted-node case.
+
+        BATCHED, never per-figure: one call carries an entire branch's
+        figures AND tables (tier 1), or a whole chunk of escalated leftovers
+        (tier 2). At the 918-figure scale this stage exists for, a per-figure
+        call would double the already-dominant sequential vision-captioning
+        cost -- so this method's cost scales with branch/chunk count, not
+        figure count.
+
+        Response-cached on the same terms as author_content/analyze_section
+        (see this class's `cache` param) -- deterministic given the same
+        candidates and the same items, and re-running a document is exactly
+        when paying for a third per-branch call again would hurt most. No
+        truncation flag to guard here (unlike author_content): a missing
+        entry is already the caller's own escalate/exclude decision, not a
+        separately-signalled degraded state."""
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "map_figures_tables", self._model, self._num_ctx, self._top_k, self._min_p,
+                candidates, items,
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                logger.info("map_figures_tables: cache hit, skipping LLM call")
+                return cached
+        system_prompt = load_prompt("map_figures_tables", item_count=str(len(items)))
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps({"candidates": candidates, "items": items}),
+                },
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": figure_table_mapping_schema(),
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            # Same confirmed-live finding as every other structured-extraction
+            # call in this class -- classification over material already in
+            # the prompt, not open-ended reasoning.
+            "think": False,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"topK": self._top_k} if self._top_k else {}),
+            **({"minP": self._min_p} if self._min_p else {}),
+        }
+        with _tracer.start_as_current_span("map_figures_tables") as span:
+            span.set_attribute("gen_ai.request.model", self._model or "default")
+            span.set_attribute("gen_ai.operation.name", "chat")
+            span.set_attribute("gen_ai.request.item_count", len(items))
+            response = self._post_chat(payload)
+            response.raise_for_status()
+            content = _strip_json_fence(response.json()["content"])
+            parsed = _parse_json_object(content)
+            result = parsed if isinstance(parsed, dict) else {}
+            span.set_attribute("gen_ai.response.item_count", len(result))
+        logger.info(
+            "map_figures_tables result: candidates=%d requested=%d returned=%d",
+            len(candidates), len(items), len(result),
+        )
+        if key is not None:
+            self._cache.set(key, result)
+        return result
 
     def _run_agentic_rounds(
         self,
