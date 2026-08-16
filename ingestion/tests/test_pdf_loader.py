@@ -7,6 +7,7 @@ from pypdf import PdfReader
 from app.canonical.model import BlockKind, plain_text_rows
 from app.loaders.pdf_loader import (
     _cell_background_color,
+    _cell_ocr_recovery,
     _fontname_is_bold,
     _is_degenerate_pdf_image,
     _pdf_color_to_hex,
@@ -1428,3 +1429,72 @@ def test_load_pdf_does_not_flag_a_title_page_label_value_layout() -> None:
         result = load_pdf(str(path))
 
     assert not any(b.kind == BlockKind.NOTE and "multi-column" in b.text for b in result.blocks)
+
+
+def test_cell_ocr_recovery_skips_a_uniform_blank_crop_without_calling_ocr() -> None:
+    from unittest.mock import patch
+
+    from PIL import Image
+
+    blank_page = Image.new("RGB", (1000, 1000), color="white")
+    cache: dict[int, Image.Image] = {0: blank_page}
+    with patch(
+        "app.loaders.pdf_loader.pytesseract.image_to_data",
+        side_effect=AssertionError("OCR must not be called for a uniform/blank crop"),
+    ):
+        result = _cell_ocr_recovery("unused.pdf", 0, (10.0, 10.0, 100.0, 40.0), "eng", cache)
+    assert result == ""
+
+
+def test_cell_ocr_recovery_reaches_ocr_with_a_correctly_scaled_and_inset_crop() -> None:
+    from unittest.mock import patch
+
+    from PIL import Image
+
+    # Real per-pixel noise (not a hand-drawn shape) guarantees the crop is
+    # non-uniform regardless of exact inset/scale rounding, so this test
+    # only needs to assert the crop SIZE reaching OCR, not its content.
+    page_image = Image.effect_noise((400, 400), 60).convert("RGB")
+    cache: dict[int, Image.Image] = {0: page_image}
+    captured: dict[str, tuple[int, int]] = {}
+
+    def fake_ocr(image: Image.Image, languages: str) -> str:
+        captured["size"] = image.size
+        return "RECOVERED"
+
+    with patch("app.loaders.pdf_loader.ocr_image_to_text_filtered", side_effect=fake_ocr):
+        result = _cell_ocr_recovery("unused.pdf", 0, (10.0, 10.0, 100.0, 40.0), "eng", cache)
+
+    assert result == "RECOVERED"
+    scale = 200 / 72
+    expected_width = (100.0 - 2.0 - (10.0 + 2.0)) * scale
+    expected_height = (40.0 - 2.0 - (10.0 + 2.0)) * scale
+    assert abs(captured["size"][0] - expected_width) <= 1
+    assert abs(captured["size"][1] - expected_height) <= 1
+
+
+def test_cell_ocr_recovery_returns_empty_string_when_ocr_finds_nothing() -> None:
+    from unittest.mock import patch
+
+    from PIL import Image
+
+    page_image = Image.effect_noise((400, 400), 60).convert("RGB")
+    cache: dict[int, Image.Image] = {0: page_image}
+    with patch("app.loaders.pdf_loader.ocr_image_to_text_filtered", return_value=""):
+        result = _cell_ocr_recovery("unused.pdf", 0, (10.0, 10.0, 100.0, 40.0), "eng", cache)
+    assert result == ""
+
+
+def test_cell_ocr_recovery_renders_the_page_once_and_caches_it() -> None:
+    from unittest.mock import patch
+
+    from PIL import Image
+
+    page_image = Image.effect_noise((400, 400), 60).convert("RGB")
+    cache: dict[int, Image.Image] = {}
+    with patch("app.loaders.pdf_loader.convert_from_path", return_value=[page_image]) as mock_convert, \
+         patch("app.loaders.pdf_loader.ocr_image_to_text_filtered", return_value="x"):
+        _cell_ocr_recovery("some.pdf", 2, (10.0, 10.0, 100.0, 40.0), "eng", cache)
+        _cell_ocr_recovery("some.pdf", 2, (110.0, 10.0, 200.0, 40.0), "eng", cache)
+    mock_convert.assert_called_once_with("some.pdf", first_page=3, last_page=3)
+    assert 2 in cache

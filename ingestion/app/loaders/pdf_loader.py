@@ -450,6 +450,86 @@ def ocr_image_to_text_filtered(
     return " ".join(kept_words)
 
 
+# Matches pdf2image.convert_from_path's own default DPI (200) -- not a new,
+# independently-tuned value (confirmed: convert_from_path(dpi: int = 200) is
+# the library's own default, and every existing call site in this codebase,
+# including ocr.py's whole-page fallback, already relies on it implicitly by
+# never passing a dpi kwarg). Needed as a concrete number here because
+# converting a cell's bbox from PDF points to this rendered image's pixel
+# coordinates requires it explicitly (pixels = points * dpi / 72).
+_TABLE_OCR_RENDER_DPI = 200
+
+# Points inset from each raw cell-bbox edge before computing the pre-check
+# stddev (and before the OCR crop itself -- same crop, reused). Empirically
+# required, not a stylistic choice: pdfplumber's own cell bbox extends to
+# the ruled grid border line itself (confirmed directly against a real
+# bordered table -- an intentionally BLANK cell's un-inset crop measured
+# grayscale stddev ~50, extrema 0-255, purely from the border pixels sitting
+# on the bbox edge, comfortably clearing any reasonable "blank" threshold;
+# the same cell inset by this many points measured stddev 0.0, pure white).
+# Without this inset, the pre-check below would misfire into a wasted (if
+# still fail-open) OCR attempt on every genuinely blank cell in every
+# bordered table. 2.0pt comfortably clears a typical ~1pt ruling line with
+# margin, confirmed against both the blank-cell case above and a real
+# recovered-text cell (see _BLANK_CELL_STDDEV_THRESHOLD).
+_CELL_CROP_INSET_POINTS = 2.0
+
+# A crop's grayscale (0-255 scale) standard deviation below this is treated
+# as visually blank -- skip the real OCR call entirely. First-pass
+# conservative default (a real blank cell measures 0.0 once inset past its
+# border, per _CELL_CROP_INSET_POINTS's own comment; a real recovered-text
+# header cell from this feature's motivating fixture measures ~13-46 in
+# spot checks). Pure cost optimization, never a correctness dependency: a
+# threshold too conservative here only costs one wasted OCR attempt on a
+# truly blank cell, never a missed or wrong recovery (see
+# docs/superpowers/specs/2026-08-16-pdf-table-header-ocr-recovery-design.md).
+_BLANK_CELL_STDDEV_THRESHOLD = 5.0
+
+
+def _cell_ocr_recovery(
+    path: str,
+    page_index: int,
+    bbox: tuple[float, float, float, float],
+    languages: str,
+    page_image_cache: dict[int, Image.Image],
+) -> str:
+    """Attempts to recover text for one table grid position whose
+    pdfplumber extraction came back empty, by rendering the page to pixels
+    (cached in page_image_cache -- a dict the CALLER creates fresh per
+    load_pdf call and owns; this function only reads/populates it, never
+    clears it, so its lifetime is exactly one load_pdf call, not global --
+    see this function's own Interfaces note in the plan that introduced it)
+    and OCR-ing just this cell's bbox crop, inset past the ruled border
+    (see _CELL_CROP_INSET_POINTS). Returns "" (fail-open, never raises)
+    both when the cheap pre-check judges the crop visually blank (no OCR
+    call made at all) and when a real OCR call returns nothing after
+    stripping -- a miss here must never turn into fabricated cell content
+    or abort the document.
+    """
+    if page_index not in page_image_cache:
+        rendered = convert_from_path(path, first_page=page_index + 1, last_page=page_index + 1)
+        page_image_cache[page_index] = rendered[0]
+    page_image = page_image_cache[page_index]
+
+    scale = _TABLE_OCR_RENDER_DPI / 72
+    x0, top, x1, bottom = bbox
+    inset = _CELL_CROP_INSET_POINTS
+    x0i, topi, x1i, bottomi = x0 + inset, top + inset, x1 - inset, bottom - inset
+    if x1i <= x0i or bottomi <= topi:
+        # Cell too small for the inset on at least one axis -- fall back to
+        # the raw bbox rather than pass PIL an inverted crop box (which
+        # raises). Rare in practice; the pre-check may over-trigger on a
+        # tiny cell's own border pixels in this fallback, which only costs
+        # one wasted OCR attempt (see _BLANK_CELL_STDDEV_THRESHOLD).
+        x0i, topi, x1i, bottomi = x0, top, x1, bottom
+
+    crop = page_image.crop((x0i * scale, topi * scale, x1i * scale, bottomi * scale))
+    if ImageStat.Stat(crop.convert("L")).stddev[0] < _BLANK_CELL_STDDEV_THRESHOLD:
+        return ""
+
+    return ocr_image_to_text_filtered(crop, languages=languages).strip()
+
+
 def _build_pdf_table_grid(page, found_table) -> tuple[list[list[TableCell | None]], list[float] | None, list[float]]:
     """Builds the real per-cell styled grid for one `pdfplumber`-detected
     table, replacing the old Phase-1 bare-`TableCell(text=cell or "")`
