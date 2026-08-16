@@ -62,6 +62,16 @@ const PHASE_SUBLABEL: Record<NarrationEvent['phase'], string> = {
   chunk_warning: 'A chunk of work failed',
 };
 
+// Fraction of a branch's OWN total work that stage 1 (its skeleton call)
+// accounts for, used both to discount the cross-branch credit build_skeleton
+// carries and as the credit stage 3's own opening event may claim for the
+// branch it is starting -- see the priorBranchCredit comment below for why
+// that discount is needed at all. ~0.3 is the same stage-cost split
+// orchestrator/src/modules/pipeline/eta.service.ts's Part B recalibration
+// note derives (skeleton ~0.52 of ~1.63 total per-branch units); it is not
+// a free-floating fudge factor, and the two should move together.
+const SKELETON_STAGE_SHARE = 0.3;
+
 // Fraction of ONE section's own work considered done once a given phase
 // STARTS (not finishes) -- e.g. seeing "generate_requirements" start means
 // this section's hierarchy pass already finished, so that section is
@@ -77,10 +87,16 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   preparing_analysis: 0,
   deterministic_subtree: 0,
   // Fires at the very start of a branch's own three-stage sequence, before
-  // build_skeleton's own skeleton call has returned -- no credit accrued
-  // yet, same as analyze_section's own value.
+  // build_skeleton's own skeleton call has returned -- no credit accrued yet.
   build_skeleton: 0,
-  analyze_section: 0,
+  // STAGE 3's opening event: by the time content authoring starts for this
+  // branch, the branch's own skeleton call (stage 1) has genuinely finished,
+  // which is exactly SKELETON_STAGE_SHARE of its work. This value is also
+  // what the stage-1 clamp below is measured against -- stage 1 may never run
+  // the bar past the SMALLEST number stage 3 can report, and since stage 3
+  // now opens with analyze_section (it used to open with section_complete,
+  // which claims a whole section share) that floor moved down to here.
+  analyze_section: SKELETON_STAGE_SHARE,
   infer_hierarchy: 0,
   generate_requirements: 0.4,
   // Whole-document, branch_index=None phase (same convention
@@ -108,15 +124,6 @@ const PHASE_START_WEIGHT: Record<NarrationEvent['phase'], number> = {
   job_failed: 0,
   chunk_warning: 0,
 };
-
-// Fraction of a branch's OWN total work that stage 1 (its skeleton call)
-// accounts for, used to discount the cross-branch credit build_skeleton
-// carries -- see the priorBranchCredit comment below for why that discount
-// is needed at all. ~0.3 is the same stage-cost split
-// orchestrator/src/modules/pipeline/eta.service.ts's Part B recalibration
-// note derives (skeleton ~0.52 of ~1.63 total per-branch units); it is not
-// a free-floating fudge factor, and the two should move together.
-const SKELETON_STAGE_SHARE = 0.3;
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
@@ -205,16 +212,23 @@ export function ProgressBanner({
     // ends at 25% against stage 3's first 16.7%, at N=10 at 27% against
     // 10% -- smaller than the un-discounted jump, still backward, and this
     // suite's own fixtures already use branchCount 6. So the discounted
-    // value is additionally CLAMPED to averageSectionShare, the smallest
-    // credit stage 3 can ever report (section_complete for the first
-    // branch: blocksDone 0 + one full section's share). Stage 1 therefore
-    // cannot outrun what comes next at any branch count. ONLY build_skeleton
-    // is touched -- section_complete's blocksDone still means exactly what
-    // it always did -- and the result stays honest in the pessimistic
-    // direction.
+    // value is additionally CLAMPED to the smallest credit stage 3 can ever
+    // report, so stage 1 cannot outrun what comes next at any branch count.
+    // That floor is one section's share weighted by stage 3's OPENING phase:
+    // stage 3 used to open with section_complete (a whole section share),
+    // but now opens with analyze_section for branch 0 (blocksDone 0 +
+    // SKELETON_STAGE_SHARE of one section) -- so the clamp tracks
+    // PHASE_START_WEIGHT.analyze_section rather than hardcoding the old
+    // full-share value, which would have re-opened the same backward step.
+    // ONLY build_skeleton is touched -- section_complete's blocksDone still
+    // means exactly what it always did -- and the result stays honest in the
+    // pessimistic direction.
     const priorBranchCredit =
       latest.phase === 'build_skeleton'
-        ? Math.min(latest.blocksDone * SKELETON_STAGE_SHARE, averageSectionShare)
+        ? Math.min(
+            latest.blocksDone * SKELETON_STAGE_SHARE,
+            averageSectionShare * PHASE_START_WEIGHT.analyze_section,
+          )
         : latest.blocksDone;
     completedUnits = priorBranchCredit + withinSectionCredit;
   }
@@ -606,18 +620,45 @@ function SectionStepList({
   const conflictsActive = latest.phase === 'detect_conflicts';
   const regroupActive = latest.phase === 'regroup_roots';
   const traceLinksActive = latest.phase === 'infer_trace_links';
-  // map_scope is the SAME whole-document, branch_index=null shape the four
-  // phases above already are (see isTailPhase above this component) -- it
-  // runs AFTER every branch's own build_skeleton event, so every section row
-  // is already real "done" work by the time it fires. Without this, every
-  // section that had already flipped to a checkmark (having finished
-  // build_skeleton) visibly REVERTED to a plain pending circle for the
-  // whole map_scope window -- the exact "stepper regresses backward" bug
-  // class this narration phase itself exists to avoid (see
-  // build_survey_tree's own regroup_roots call-site comment for the
-  // sibling case this mirrors).
-  const mapScopeActive = latest.phase === 'map_scope';
-  const allSectionsDone = scoringActive || conflictsActive || regroupActive || traceLinksActive || mapScopeActive;
+  const allSectionsDone = scoringActive || conflictsActive || regroupActive || traceLinksActive;
+
+  // Which sections have GENUINELY finished, tracked from the events that say
+  // so rather than inferred from `latest.branchIndex`.
+  //
+  // The bug this replaces: SURVEY generation runs three stages, and stage 1
+  // (build_skeleton) sweeps EVERY branch before stage 3 (analyze_section /
+  // section_complete) starts for ANY of them. Both stages count
+  // branchIndex 0..N-1 independently, so `i < (latest.branchIndex ?? -1)`
+  // climbed to N-1 during stage 1 and then RESET to 0 the moment stage 3
+  // began: every section except the first visibly reverted from a checkmark
+  // to a pending circle, and the "N steps left" chip jumped backward, for
+  // the whole (longest) stage of the run.
+  //
+  // section_complete is the only event that means "this section is done".
+  // It fires exactly once per branch, only in stage 3, and never un-fires --
+  // so a set of the branch indices that have emitted it is monotonic across
+  // the whole pipeline by construction, which no `latest`-derived inference
+  // can be.
+  //
+  // This also subsumes -- and is why map_scope is deliberately NOT part of
+  // `allSectionsDone` above -- the narrower fix that folded `map_scope` in
+  // to stop stage-1 checkmarks reverting during the mapping window. Under
+  // this scheme no section is ever checked before it genuinely completes, so
+  // there is nothing for map_scope to preserve; keeping it would instead
+  // flip every row to a checkmark during mapping and then revert them all
+  // the instant stage 3 fired -- the same backward step, just one stage
+  // boundary later. map_scope remains a tail phase for the top-level bar
+  // (see isTailPhase above), which is a separate concern.
+  //
+  // Known bound: `narrations` is capped (JobDetail keeps the last 50 live
+  // events, merged with the durable history fetch), so on a document with
+  // enough branches the earliest section_complete events can age out and
+  // their rows revert. Same cap `labelsByIndex` below already lives with.
+  const completedSections = new Set(
+    narrations
+      .filter((event) => event.phase === 'section_complete' && event.branchIndex !== null)
+      .map((event) => event.branchIndex as number),
+  );
 
   // Accumulated from EVERY narration event seen so far, not just the
   // latest -- without this, once a section finishes and a later section's
@@ -651,7 +692,10 @@ function SectionStepList({
   // "What's left" -- a real countdown of remaining steps across the WHOLE
   // pipeline (sections + the two whole-document passes), not just this
   // section list in isolation -- directly answers "what's left to do".
-  const sectionsDone = allSectionsDone ? latest.branchCount : Math.max(0, latest.branchIndex ?? 0);
+  // Same monotonic signal the per-row checkmarks use (see completedSections
+  // above) -- `latest.branchIndex` resets to 0 when stage 3 starts, which
+  // made this counter jump backward by up to N steps mid-run.
+  const sectionsDone = allSectionsDone ? latest.branchCount : completedSections.size;
   const totalSteps = latest.branchCount + 4; // + scoring + detect-conflicts + regroup-roots + trace links
   // map_scope is deliberately NOT a 5th counted step here -- it runs BEFORE
   // scoring, so its own "done-ness" is already folded into sectionsDone
@@ -692,8 +736,12 @@ function SectionStepList({
         )}
       </p>
       {sections.map((i) => {
-        const isDone = allSectionsDone || i < (latest.branchIndex ?? -1);
-        const isActive = !allSectionsDone && i === latest.branchIndex;
+        const isDone = allSectionsDone || completedSections.has(i);
+        // `!isDone` guard: section_complete for branch i makes i both the
+        // latest branchIndex AND genuinely complete -- without it the row
+        // would render a checkmark while still carrying the active row's
+        // selection paint and in-progress mini-bar.
+        const isActive = !isDone && i === latest.branchIndex;
         const label = labelsByIndex.get(i);
         return (
           <div

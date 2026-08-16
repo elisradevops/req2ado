@@ -142,7 +142,13 @@ describe('ProgressBanner', () => {
     );
     expect(screen.getByText(/Section 1 of 6.*Analyzing and synthesizing requirements/)).toBeInTheDocument();
     expect(screen.queryByText(/undefined/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '0');
+    // A real finite number, not NaN. Non-zero on purpose: analyze_section is
+    // stage 3's OPENING event, and by then this branch's own skeleton call
+    // has genuinely finished (PHASE_START_WEIGHT.analyze_section) -- which is
+    // also the floor stage 1's own clamp is measured against.
+    const percent = Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'));
+    expect(Number.isFinite(percent)).toBe(true);
+    expect(percent).toBeGreaterThan(0);
   });
 
   it('renders a real sublabel (not "undefined") for the new build_skeleton phase and a valid progress value', () => {
@@ -212,10 +218,13 @@ describe('ProgressBanner', () => {
           message: 'x',
         });
 
-        // First stage-3 event: branch 0's content is done. This is the
-        // smallest number section_complete can ever report.
+        // First stage-3 event: branch 0's content authoring STARTS. Stage 3
+        // opens with analyze_section, not section_complete (that fire was
+        // missing entirely until the Part B final fix wave) -- this is the
+        // smallest number stage 3 can ever report, and therefore the real
+        // ceiling stage 1 must stay under.
         const contentPercent = percentFor({
-          phase: 'section_complete',
+          phase: 'analyze_section',
           branchIndex: 0,
           branchCount,
           blocksDone: 0,
@@ -226,6 +235,20 @@ describe('ProgressBanner', () => {
         });
 
         expect(skeletonPercent).toBeLessThanOrEqual(contentPercent);
+
+        // ...and stage 3's own opening event must not outrun its closing one.
+        const sectionDonePercent = percentFor({
+          phase: 'section_complete',
+          branchIndex: 0,
+          branchCount,
+          blocksDone: 0,
+          blocksTotal,
+          kbGrounded: false,
+          kbCitations: [],
+          message: 'x',
+        });
+        expect(contentPercent).toBeLessThanOrEqual(sectionDonePercent);
+
         // Still genuinely advancing during stage 1 -- the fix discounts and
         // clamps the cross-branch credit, it does not freeze the bar at zero
         // for the whole skeleton sweep.
@@ -272,33 +295,122 @@ describe('ProgressBanner', () => {
     expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
   });
 
-  it('does not un-check already-completed sections when map_scope becomes the latest phase', () => {
-    // Regression guard for the exact "stepper regresses backward" bug class
-    // this whole task (build_skeleton/map_scope) exists to prevent. Before
-    // this fix, map_scope's own branch_index=null left SectionStepList's
-    // `allSectionsDone` false (map_scope was only wired into the separate
-    // top-level isTailPhase, not this component's own allSectionsDone), so
-    // `isDone = allSectionsDone || i < (latest.branchIndex ?? -1)` evaluated
-    // to false for EVERY section the moment map_scope became latest --
-    // sections that already showed a checkmark visibly reverted to a plain
-    // pending circle for the whole mapping window, even though every
-    // section had, in fact, already finished its own analysis pass.
+  // The "stepper regresses backward" bug class this whole narration redesign
+  // exists to prevent, in its final and widest form: stage 1 (build_skeleton)
+  // sweeps EVERY branch before stage 3 (analyze_section/section_complete)
+  // starts for ANY of them, and both stages count branchIndex 0..N-1
+  // independently. Inferring "done" from `i < (latest.branchIndex ?? -1)`
+  // therefore climbed to N-1 across stage 1 and RESET to 0 when stage 3
+  // began. Completion is now tracked from the section_complete events
+  // themselves, which fire once per branch, only in stage 3, and never reset.
+  //
+  // The fixtures below walk the real pipeline order for a 3-branch document:
+  // build_skeleton x3 -> map_scope -> analyze_section/section_complete x3.
+  const STAGE_1_SWEEP: NarrationEvent[] = [0, 1, 2].map((branchIndex) => ({
+    phase: 'build_skeleton',
+    branchIndex,
+    branchCount: 3,
+    blocksDone: branchIndex * 10,
+    blocksTotal: 30,
+    kbGrounded: false,
+    kbCitations: [],
+    message: 'x',
+  }));
+  const STAGE_2_MAPPING: NarrationEvent = {
+    phase: 'map_scope',
+    branchIndex: null,
+    branchCount: 3,
+    blocksDone: 30,
+    blocksTotal: 30,
+    kbGrounded: false,
+    kbCitations: [],
+    message: 'x',
+  };
+  const stage3Event = (phase: 'analyze_section' | 'section_complete', branchIndex: number): NarrationEvent => ({
+    phase,
+    branchIndex,
+    branchCount: 3,
+    blocksDone: branchIndex * 10,
+    blocksTotal: 30,
+    kbGrounded: false,
+    kbCitations: [],
+    message: 'x',
+  });
+
+  const checkCount = (narrations: NarrationEvent[]): number => {
+    const view = render(
+      <ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={narrations} />,
+    );
+    const count = view.queryAllByTestId('section-check-icon').length;
+    view.unmount();
+    return count;
+  };
+
+  const stepsLeft = (narrations: NarrationEvent[]): number => {
+    const view = render(
+      <ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={narrations} />,
+    );
+    const match = /(\d+) steps? left/.exec(view.container.textContent ?? '');
+    view.unmount();
+    // No chip at all means zero left -- see SectionStepList's own `stepsLeft > 0` guard.
+    return match ? Number(match[1]) : 0;
+  };
+
+  it('never un-checks a section across the stage-1 -> stage-2 -> stage-3 transitions', () => {
+    const timeline: NarrationEvent[] = [
+      ...STAGE_1_SWEEP,
+      STAGE_2_MAPPING,
+      stage3Event('analyze_section', 0),
+      stage3Event('section_complete', 0),
+      stage3Event('analyze_section', 1),
+      stage3Event('section_complete', 1),
+      stage3Event('analyze_section', 2),
+      stage3Event('section_complete', 2),
+    ];
+    const counts = timeline.map((_, i) => checkCount(timeline.slice(0, i + 1)));
+
+    expect(counts).toEqual([...counts].sort((a, b) => a - b));
+    // ...and it genuinely reaches "all done", rather than being monotonic by
+    // never checking anything at all.
+    expect(counts.at(-1)).toBe(3);
+    // Nothing may be claimed complete before the first section_complete: the
+    // whole point is that stage 1 finishing a branch's SKELETON is not that
+    // branch finishing.
+    expect(counts[STAGE_1_SWEEP.length]).toBe(0);
+  });
+
+  it('never steps the "N steps left" countdown backward across those same transitions', () => {
+    const timeline: NarrationEvent[] = [
+      ...STAGE_1_SWEEP,
+      STAGE_2_MAPPING,
+      stage3Event('analyze_section', 0),
+      stage3Event('section_complete', 0),
+      stage3Event('analyze_section', 1),
+      stage3Event('section_complete', 1),
+    ];
+    const remaining = timeline.map((_, i) => stepsLeft(timeline.slice(0, i + 1)));
+
+    expect(remaining).toEqual([...remaining].sort((a, b) => b - a));
+    // 3 sections + 4 whole-document passes, 2 sections genuinely done.
+    expect(remaining.at(-1)).toBe(5);
+  });
+
+  it('keeps a completed section checked once a later section becomes the active one', () => {
     render(
       <ProgressBanner
         stage="infer_hierarchy_start"
         startedAt="2026-07-09T10:00:00Z"
         mode="survey"
         narrations={[
-          // Sections 0 and 1 already finished (only section 2, the last
-          // one, is still "active" at this point).
-          { phase: 'analyze_section', branchIndex: 2, branchCount: 3, blocksDone: 20, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x' },
-          // Whole-document mapping starts next -- branchIndex is null.
-          { phase: 'map_scope', branchIndex: null, branchCount: 3, blocksDone: 30, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x' },
+          stage3Event('section_complete', 0),
+          stage3Event('section_complete', 1),
+          stage3Event('analyze_section', 2),
         ]}
       />,
     );
-    // All 3 sections must show a checkmark -- none may revert to pending.
-    expect(screen.getAllByTestId('section-check-icon')).toHaveLength(3);
+    // Sections 1 and 2 checked; section 3 is the active one, not a checkmark.
+    expect(screen.getAllByTestId('section-check-icon')).toHaveLength(2);
+    expect(screen.getByText(/Section 3 of 3.*Analyzing and synthesizing requirements/)).toBeInTheDocument();
   });
 
   it('shows each section\'s real name (its own heading) instead of an anonymous index', () => {
