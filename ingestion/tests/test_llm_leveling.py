@@ -6,7 +6,6 @@ import pytest
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
-    _author_branch_content,
     _build_survey_skeleton_for_branch,
     _derive_section_label,
     _detect_conflicting_duplicates,
@@ -3807,11 +3806,14 @@ def test_render_section_prefixes_each_table_with_its_own_id_marker() -> None:
 # --- STAGE 2 seam: figure/table mapping ------------------------------------
 # Deciding WHICH figures/tables belong to which node is a whole-document
 # mapping pass that runs BETWEEN skeleton generation and content authoring.
-# That pass does not exist yet, so nothing populates figure_ids/table_ids end
-# to end through build_survey_tree today (empty is the correct, expected
-# state) -- but the validation and table-HTML-embedding machinery its verdicts
-# feed into is real and already in place, so these tests drive it through the
-# very same parameter that pass will use.
+# That pass does not exist yet, so in production nothing populates
+# figure_ids/table_ids end to end today (empty is the correct, expected state
+# -- see
+# test_build_survey_tree_leaves_figure_and_table_ids_empty_until_the_mapping_pass_lands).
+# The validation and table-HTML-embedding machinery its verdicts feed into is
+# real and already in place, though, so the tests below run the FULL
+# build_survey_tree pipeline and inject only the verdicts that pass will
+# supply, at the very call site it will supply them from.
 
 _MAPPING_NODE = {
     "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
@@ -3819,58 +3821,78 @@ _MAPPING_NODE = {
 }
 
 
-def _branch_with_mapping(
-    blocks: list[Block],
-    client: FakeSectionAnalysisClient,
-    mapping: dict[str, dict[str, list[str]]] | None,
-    tables: list[Table] | None = None,
-    figures: list[Figure] | None = None,
-    figure_id_by_block_id: dict[str, str] | None = None,
-    node_id_prefix: str = "",
-) -> tuple[list[WorkItemNode], list]:
-    """Runs one branch through both generation stages back to back with the
-    mapping seam filled in by hand, returning (nodes, warnings)."""
-    skeleton = _build_survey_skeleton_for_branch(
-        blocks, client, node_id_prefix=node_id_prefix, tables=tables, figures=figures,
-        figure_id_by_block_id=figure_id_by_block_id,
+def _claim_on_every_node(monkeypatch, **ids: list[str]) -> None:
+    """Stands in for the STAGE 2 mapping pass at its real call site: patches
+    the module-level _author_branch_content that build_survey_tree itself
+    resolves, so the FULL pipeline runs -- branch splitting,
+    _partition_tables_by_branch, the whole-document figure_id_by_block_id map,
+    per-branch block routing, both generation stages -- and only the verdicts
+    that pass is going to supply are injected.
+
+    Claims the SAME ids on every node of every branch, which is what makes
+    branch scoping observable: only a branch that genuinely offered an id may
+    keep it, whatever the mapping asks for."""
+    import app.leveling.llm_leveling as llm_leveling_module
+
+    real_author = llm_leveling_module._author_branch_content
+
+    def _patched(skeleton, analysis_client, figure_table_ids_by_local_id=None):
+        return real_author(
+            skeleton, analysis_client,
+            figure_table_ids_by_local_id={node.local_id: dict(ids) for node in skeleton.nodes},
+        )
+
+    monkeypatch.setattr(llm_leveling_module, "_author_branch_content", _patched)
+
+
+def _table_doc(cells: list[list[str]]) -> CanonicalDoc:
+    path = "table_only.txt"
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in cells], source_ref=_sr(path))],
     )
-    result = _author_branch_content(skeleton, client, figure_table_ids_by_local_id=mapping)
-    return skeleton.nodes, result.warnings
 
 
-def test_author_branch_content_embeds_a_mapped_tables_html_and_records_table_ids() -> None:
+def _figure_doc() -> CanonicalDoc:
+    path = "figure_only.txt"
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+        figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
+    )
+
+
+def test_build_survey_tree_embeds_a_mapped_tables_html_and_records_table_ids(monkeypatch) -> None:
     # known-issues item 20, piece (c): once a node is mapped to a real
     # table_id, that table's HTML is embedded into its description -- no new
     # ADO write capability needed, unlike figures (see WorkItemNode.table_ids'
     # own docstring).
-    table = Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr("table_only.txt"))
-    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+    _claim_on_every_node(monkeypatch, table_ids=["t0"])
 
-    nodes, _ = _branch_with_mapping([], fake, {"n0": {"table_ids": ["t0"]}}, tables=[table])
+    tree = build_survey_tree(_table_doc([["a", "b"]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
 
-    assert len(nodes) == 1
-    node = nodes[0]
+    assert len(tree.nodes) == 1
+    node = tree.nodes[0]
     assert node.table_ids == ["t0"]
     assert node.description.startswith("The system shall do x.")
     assert "<table>" in node.description
     assert "<td>a</td>" in node.description
 
 
-def test_author_branch_content_drops_a_hallucinated_table_id_and_warns() -> None:
+def test_build_survey_tree_drops_a_hallucinated_table_id_and_warns(monkeypatch) -> None:
     # A mapped id that doesn't match any real table this section actually
     # offered must never be trusted verbatim -- dropped, with a warning
     # surfaced for review, not silently accepted.
-    table = Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr("table_only.txt"))
-    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+    _claim_on_every_node(monkeypatch, table_ids=["t99"])
 
-    nodes, warnings = _branch_with_mapping([], fake, {"n0": {"table_ids": ["t99"]}}, tables=[table])
+    tree = build_survey_tree(_table_doc([["a", "b"]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
 
-    assert nodes[0].table_ids == []
-    assert "<table>" not in nodes[0].description
-    assert any('"t" referenced 1 table(s) not offered in this section' in w.raw for w in warnings)
+    assert tree.nodes[0].table_ids == []
+    assert "<table>" not in tree.nodes[0].description
+    assert any('"t" referenced 1 table(s) not offered in this section' in w.raw for w in tree.warnings)
 
 
-def test_author_branch_content_drops_a_valid_table_id_with_no_extractable_content_and_warns() -> None:
+def test_build_survey_tree_drops_a_valid_table_id_with_no_extractable_content_and_warns(monkeypatch) -> None:
     # A mapped table_id can pass the hallucination filter (it's a REAL table
     # this branch actually offered) yet still render empty HTML --
     # _table_to_html returns "" for a grid with no non-blank cell anywhere.
@@ -3879,98 +3901,103 @@ def test_author_branch_content_drops_a_valid_table_id_with_no_extractable_conten
     # table_ids entry with zero corresponding content in description --
     # violating the orchestrator's own documented invariant that a
     # non-empty table_ids list means that table's HTML is already embedded
-    # in description. The id must now be dropped from table_ids (together
-    # with skipping the description append) and reported via a dedicated
+    # in description. The id must be dropped from table_ids (together with
+    # skipping the description append) and reported via a dedicated
     # EMPTY_TABLE_CONTENT warning instead of silently disappearing.
-    table = Table(id="t0", cells=[[TableCell(text=""), TableCell(text="")]], source_ref=_sr("table_only.txt"))
-    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+    _claim_on_every_node(monkeypatch, table_ids=["t0"])
 
-    nodes, warnings = _branch_with_mapping([], fake, {"n0": {"table_ids": ["t0"]}}, tables=[table])
+    tree = build_survey_tree(_table_doc([["", ""]]), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
 
-    node = nodes[0]
+    node = tree.nodes[0]
     assert node.table_ids == []
     assert "<table>" not in node.description
     assert "t0" not in node.description
-    warning = next(w for w in warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT)
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT)
     assert warning.node_ids == [node.local_id]
     assert warning.detail["tableId"] == "t0"
 
 
-def test_author_branch_content_records_mapped_figure_ids() -> None:
-    path = "figure_only.txt"
-    blocks = [Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))]
-    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
+def test_build_survey_tree_records_mapped_figure_ids(monkeypatch) -> None:
+    _claim_on_every_node(monkeypatch, figure_ids=["f0"])
 
-    nodes, _ = _branch_with_mapping(
-        blocks, fake, {"n0": {"figure_ids": ["f0"]}},
-        figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
-        figure_id_by_block_id={"b0": "f0"},
+    tree = build_survey_tree(_figure_doc(), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
+
+    assert tree.nodes[0].figure_ids == ["f0"]
+
+
+def test_build_survey_tree_drops_a_hallucinated_figure_id_and_warns(monkeypatch) -> None:
+    _claim_on_every_node(monkeypatch, figure_ids=["f99"])
+
+    tree = build_survey_tree(_figure_doc(), FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
+
+    assert tree.nodes[0].figure_ids == []
+    assert any('"t" referenced 1 figure(s) not offered in this section' in w.raw for w in tree.warnings)
+
+
+def test_build_survey_tree_scopes_table_ids_validation_per_branch(monkeypatch) -> None:
+    # The multi-branch path never passes `figures=`/a per-branch table list
+    # to _build_survey_skeleton_for_branch the same simple way the
+    # single-branch path does (see _run_branch) -- this proves table_ids
+    # validation still correctly scopes to EACH branch's own real tables (via
+    # _partition_tables_by_branch), not the whole document's, through the
+    # whole real pipeline. Every node in both branches is mapped to "t0", but
+    # only branch 1 ("Audio") actually has that table in its own section.
+    _force_multi_branch(monkeypatch)
+    doc = _two_branch_doc()
+    doc = doc.model_copy(
+        update={
+            "tables": [
+                Table(
+                    id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]],
+                    source_ref=SourceRef(document_path=doc.document.path, start_offset=20, end_offset=30),
+                )
+            ]
+        }
     )
+    _claim_on_every_node(monkeypatch, table_ids=["t0"])
 
-    assert nodes[0].figure_ids == ["f0"]
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
 
-
-def test_author_branch_content_drops_a_hallucinated_figure_id_and_warns() -> None:
-    path = "figure_only.txt"
-    blocks = [Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))]
-    fake = FakeSectionAnalysisClient(nodes=[_MAPPING_NODE])
-
-    nodes, warnings = _branch_with_mapping(
-        blocks, fake, {"n0": {"figure_ids": ["f99"]}},
-        figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
-        figure_id_by_block_id={"b0": "f0"},
-    )
-
-    assert nodes[0].figure_ids == []
-    assert any('"t" referenced 1 figure(s) not offered in this section' in w.raw for w in warnings)
-
-
-def test_author_branch_content_scopes_table_ids_validation_per_branch() -> None:
-    # valid_table_ids is derived per branch, from that branch's OWN `tables`
-    # (see _partition_tables_by_branch, which routes each table to exactly
-    # one branch) -- never the whole document's. Both branches here are
-    # mapped to the identical "t0", but only the second actually has it.
-    path = "two_branch_survey_input.txt"
-    table = Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))
-    mapping = {"br0_n0": {"table_ids": ["t0"]}, "br1_n0": {"table_ids": ["t0"]}}
-
-    display_nodes, _ = _branch_with_mapping(
-        [Block(id="b0", kind=BlockKind.PARAGRAPH, text="Display.", source_ref=_sr(path))],
-        FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]), mapping, node_id_prefix="br0_",
-    )
-    audio_nodes, _ = _branch_with_mapping(
-        [Block(id="b1", kind=BlockKind.PARAGRAPH, text="Audio.", source_ref=_sr(path))],
-        FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]), mapping, tables=[table], node_id_prefix="br1_",
-    )
-
-    assert display_nodes[0].table_ids == []
-    assert "<table>" not in display_nodes[0].description
-    assert audio_nodes[0].table_ids == ["t0"]
-    assert "<table>" in audio_nodes[0].description
+    display_node = next(n for n in tree.nodes if n.local_id == "br0_n0")
+    audio_node = next(n for n in tree.nodes if n.local_id == "br1_n0")
+    assert display_node.table_ids == []
+    assert "<table>" not in display_node.description
+    assert audio_node.table_ids == ["t0"]
+    assert "<table>" in audio_node.description
+    # Branch 0 REJECTED the id as one it was never offered -- not merely
+    # failed to resolve it. Asserting the warning (not just the empty list)
+    # is what pins the branch-scoped validation itself rather than the
+    # downstream "no such table in this branch" lookup that would also
+    # produce an empty list.
+    rejections = [w for w in tree.warnings if w.kind == WarningKind.INVALID_TABLE_IDS]
+    assert [w.node_ids for w in rejections] == [["br0_n0"]]
 
 
-def test_author_branch_content_scopes_figure_ids_validation_per_branch() -> None:
+def test_build_survey_tree_scopes_figure_ids_validation_per_branch(monkeypatch) -> None:
     # Same guarantee as the table test above, for figures -- the global
     # figure_id_by_block_id map is whole-document, but valid_figure_ids is
     # derived from each branch's OWN `blocks`, so a figure belonging to a
     # DIFFERENT branch is correctly rejected here too.
+    _force_multi_branch(monkeypatch)
     path = "two_branch_survey_input.txt"
-    figure_id_by_block_id = {"b1": "f0"}
-    mapping = {"br0_n0": {"figure_ids": ["f0"]}, "br1_n0": {"figure_ids": ["f0"]}}
-
-    display_nodes, _ = _branch_with_mapping(
-        [Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: A display wiring diagram]", source_ref=_sr(path))],
-        FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]), mapping,
-        figure_id_by_block_id=figure_id_by_block_id, node_id_prefix="br0_",
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Display", source_ref=_sr(path)),
+            Block(id="b1", kind=BlockKind.FIGURE, text="[FIGURE: A display wiring diagram]", source_ref=_sr(path)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Audio", source_ref=_sr(path)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path)),
+        ],
+        figures=[Figure(id="f0", caption="A display wiring diagram", source_ref=_sr(path))],
     )
-    audio_nodes, _ = _branch_with_mapping(
-        [Block(id="b3", kind=BlockKind.PARAGRAPH, text="The speaker shall support 5.1 surround.", source_ref=_sr(path))],
-        FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]), mapping,
-        figure_id_by_block_id=figure_id_by_block_id, node_id_prefix="br1_",
-    )
+    _claim_on_every_node(monkeypatch, figure_ids=["f0"])
 
-    assert display_nodes[0].figure_ids == ["f0"]
-    assert audio_nodes[0].figure_ids == []
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient(nodes=[_MAPPING_NODE]))
+
+    display_node = next(n for n in tree.nodes if n.local_id == "br0_n0")
+    audio_node = next(n for n in tree.nodes if n.local_id == "br1_n0")
+    assert display_node.figure_ids == ["f0"]
+    assert audio_node.figure_ids == []
 
 
 def test_build_survey_tree_leaves_figure_and_table_ids_empty_until_the_mapping_pass_lands() -> None:
@@ -5401,6 +5428,50 @@ def test_skeleton_stage_produces_structure_with_no_content_at_all() -> None:
         assert node.grounding_score is None
     # Structure only -- the authoring call has not happened at this point.
     assert fake.author_calls == []
+
+
+def test_skeleton_stage_ignores_content_fields_a_model_leaks_into_its_response() -> None:
+    # section_skeleton_schema deliberately does not set
+    # additionalProperties: false, so a model CAN return content fields at
+    # stage 1 even though nothing asked for them. The guarantee the rest of
+    # Part B builds on is therefore not "the schema forbids them" -- it is
+    # that the CALLER never reads them: a node's description, tags and
+    # figure/table ids come from the later stages, and only from there.
+    # Mirror image of test_content_stage_cannot_change_the_hierarchy_it_was_given.
+    path = "leaky.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.FIGURE, text="[FIGURE: A wiring diagram]", source_ref=_sr(path))],
+        figures=[Figure(id="f0", caption="A wiring diagram", source_ref=_sr(path))],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], source_ref=_sr(path))],
+    )
+
+    class _LeakyClient(FakeSectionAnalysisClient):
+        def analyze_section_skeleton(self, section_text, **kwargs):
+            # Every leaked id here is a REAL candidate this branch actually
+            # offered, so they would sail through validation if anything
+            # ever read them -- the point is that nothing does.
+            return [{
+                "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display",
+                "description": "LEAKED description", "text": "LEAKED text",
+                "tags": ["safety"], "figure_ids": ["f0"], "table_ids": ["t0"],
+            }], False
+
+    fake = _LeakyClient()
+
+    skeleton = _skeleton_for(doc.blocks, fake, tables=doc.tables, figures=doc.figures,
+                             figure_id_by_block_id={"b0": "f0"})
+    assert [(n.description, n.tags, n.figure_ids, n.table_ids) for n in skeleton.nodes] == [("", [], [], [])]
+
+    # ...and end to end, the description that ships is stage 3's, never the
+    # one stage 1 tried to smuggle through.
+    tree = build_survey_tree(doc, _LeakyClient())
+    node = tree.nodes[0]
+    assert node.description == "The system shall handle: Display"
+    assert "LEAKED" not in node.description
+    assert node.tags == [RequirementTag.FUNCTIONAL]  # stage 3's tags, not stage 1's "safety"
+    assert node.figure_ids == []
+    assert node.table_ids == []
 
 
 def test_skeleton_stage_carries_every_structural_steering_parameter() -> None:

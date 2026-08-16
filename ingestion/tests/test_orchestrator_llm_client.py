@@ -2571,6 +2571,95 @@ def test_author_content_raises_on_non_200_response() -> None:
         client.author_content("Some section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})
 
 
+def _author_content_cached_client(handler) -> OrchestratorLlmClient:
+    from app.survey.llm_cache import LlmResponseCache
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        cache=LlmResponseCache(_CountingFakeRedis()),
+    )
+    client._transport = httpx.MockTransport(handler)
+    return client
+
+
+def test_author_content_cache_miss_then_hit_skips_the_second_llm_call() -> None:
+    # Splitting generation in two doubled a document's per-branch call count,
+    # and this is the LARGER half of the pair -- caching only the skeleton
+    # call would leave a re-run paying full price for exactly the expensive
+    # one. Same cache the analyze_section family already uses.
+    content = {"n0": {"description": "The system shall do x.", "tags": []}}
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"content": json.dumps(content)})
+
+    client = _author_content_cached_client(handler)
+    skeleton = {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
+
+    first_result, first_truncated = client.author_content("Some section text.", skeleton)
+    second_result, second_truncated = client.author_content("Some section text.", skeleton)
+
+    assert call_count == 1  # second call hit the cache, never reached the transport
+    assert first_result == second_result == content
+    assert first_truncated is second_truncated is False
+
+
+def test_author_content_cache_never_stores_a_truncated_result() -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"content": "{}", "finishReason": "length"})
+
+    client = _author_content_cached_client(handler)
+    skeleton = {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
+
+    client.author_content("Some section text.", skeleton)
+    client.author_content("Some section text.", skeleton)
+
+    # A truncated answer is a known-incomplete one -- both calls must reach
+    # the real transport rather than the second silently reusing it.
+    assert call_count == 2
+
+
+def test_author_content_cache_key_covers_the_skeleton_not_just_the_section_text() -> None:
+    # The same section under a DIFFERENT decided tree is a genuinely
+    # different request -- a cache keyed on section text alone would serve
+    # branch A's content for branch B's structure.
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested = json.loads(json.loads(request.content)["messages"][1]["content"])["nodes"]
+        return httpx.Response(200, json={"content": json.dumps(
+            {local_id: {"description": entry["title"], "tags": []} for local_id, entry in requested.items()}
+        )})
+
+    client = _author_content_cached_client(handler)
+
+    first, _ = client.author_content("Same section text.", {"n0": {"type": "Requirement", "title": "First", "parent_id": None}})
+    second, _ = client.author_content("Same section text.", {"n0": {"type": "Requirement", "title": "Second", "parent_id": None}})
+
+    assert first == {"n0": {"description": "First", "tags": []}}
+    assert second == {"n0": {"description": "Second", "tags": []}}  # not a stale hit from the first skeleton
+
+
+def test_author_content_cache_key_differs_by_kb_context() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        system_prompt = json.loads(request.content)["messages"][0]["content"]
+        grounded = "Grounding material." in system_prompt
+        return httpx.Response(200, json={"content": json.dumps({"n0": {"description": str(grounded), "tags": []}})})
+
+    client = _author_content_cached_client(handler)
+    skeleton = {"n0": {"type": "Requirement", "title": "T", "parent_id": None}}
+
+    ungrounded, _ = client.author_content("Same section text.", skeleton)
+    grounded, _ = client.author_content("Same section text.", skeleton, kb_context="Grounding material.")
+
+    assert ungrounded["n0"]["description"] == "False"
+    assert grounded["n0"]["description"] == "True"
+
+
 def test_post_chat_retries_a_500_then_succeeds(monkeypatch) -> None:
     # Regression: a real job lost 45+ minutes of prior work to a single
     # transient 500 from the LLM backend with zero retry anywhere in the

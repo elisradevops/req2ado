@@ -1955,7 +1955,27 @@ class OrchestratorLlmClient:
         likely to hit the output-token cap -- so it is surfaced the same way
         rather than swallowed; a node the response omits is the CALLER's
         problem to degrade gracefully (see llm_leveling._author_branch_content),
-        never silently dropped here."""
+        never silently dropped here.
+
+        Response-cached on the same terms as analyze_section/
+        analyze_section_skeleton (see this class's `cache` param), and for a
+        sharper reason than either: splitting generation in two DOUBLED a
+        document's per-branch call count, and this is the larger half of the
+        pair. Caching only stage 1 would mean a re-run paid full price for
+        exactly the expensive call. The key covers every input that can
+        change the answer -- the section text, the already-decided skeleton
+        (a different tree over the same section is a genuinely different
+        request), and the grounding context."""
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "author_content", self._model, self._num_ctx, self._top_k, self._min_p,
+                section_text, skeleton_nodes, kb_context,
+            )
+            cached = self._cache.get(key)
+            if cached is not None:
+                logger.info("author_content: cache hit, skipping LLM call")
+                return cached["content"], cached["truncated"]
         system_prompt = _with_kb_context(
             load_prompt(
                 "author_content",
@@ -1999,6 +2019,10 @@ class OrchestratorLlmClient:
             "author_content result: requested=%d returned=%d finishReason=%r truncated=%s",
             len(skeleton_nodes), len(result), body.get("finishReason"), truncated,
         )
+        # Never cache a truncated result -- same reasoning as analyze_section's
+        # own identical guard.
+        if key is not None and not truncated:
+            self._cache.set(key, {"content": result, "truncated": truncated})
         return result, truncated
 
     def _run_agentic_rounds(
