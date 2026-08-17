@@ -79,6 +79,19 @@ def test_group_root_topics_prompt_loads() -> None:
     assert len(result) > 0
 
 
+def test_group_root_topics_prompt_defaults_grouping_and_requires_a_recheck() -> None:
+    # v2: the v1 escape hatch ("A section that doesn't clearly belong with
+    # any other should simply not appear in any group -- do not force every
+    # section into a group") gave no counterweight, the same shape of bug
+    # Gap C fixed for map_figures_tables.v1.txt's null verdict. Confirmed
+    # live: on a real 79-root document, the local model formed only 7 groups
+    # and left 2 obviously-groupable roots ungrouped, while a frontier model
+    # given the byte-identical prompt+input formed 19 groups and placed both.
+    result = load_prompt("group_root_topics")
+    assert "Grouping a title into an existing or new theme is the default outcome" in result
+    assert "re-read every title you have NOT placed in any group" in result
+
+
 def test_judge_kb_relevance_prompt_loads() -> None:
     result = load_prompt("judge_kb_relevance")
     assert len(result) > 0
