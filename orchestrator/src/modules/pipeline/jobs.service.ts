@@ -1408,34 +1408,51 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         const figureFiles = await this.prisma.jobFigureFile.findMany({ where: { jobId: id } });
         if (figureFiles.length > 0) {
           const figureFileByFigureId = new Map(figureFiles.map((f) => [f.figureId, f]));
-          const toAttach: { adoId: number; figureId: string }[] = [];
+          // Grouped by adoId, one group per work item -- concurrency runs
+          // ACROSS groups (different work items in flight at once), never
+          // WITHIN a group. Real, confirmed bug this fixes: two
+          // figure-attachment PATCHes racing against the SAME work item
+          // both read its revision before either commits, so the second
+          // to land 409s with ADO's own optimistic-concurrency check
+          // (TF26071 "changed by someone else since you opened it") --
+          // confirmed live, 8 of 18 figures on one real Feature lost this
+          // way, silently (the existing per-figure catch below only
+          // logs). Serializing uploads to the SAME work item removes the
+          // self-race entirely; an external actor editing the same item
+          // concurrently is a separate, pre-existing, accepted risk this
+          // fix does not attempt to cover.
+          const toAttachByAdoId = new Map<number, string[]>();
           for (const entry of diff) {
             if (isExcluded(entry)) continue;
             const adoId = adoIdByLocalId.get(entry.localId);
             if (adoId === undefined) continue;
             for (const figureId of entry.figureIds ?? []) {
               if (figureFileByFigureId.has(figureId)) {
-                toAttach.push({ adoId, figureId });
+                const list = toAttachByAdoId.get(adoId) ?? [];
+                list.push(figureId);
+                toAttachByAdoId.set(adoId, list);
               }
             }
           }
-          await mapWithConcurrency(toAttach, this.writeConcurrency, async ({ adoId, figureId }) => {
-            const figureFile = figureFileByFigureId.get(figureId);
-            if (!figureFile) return;
-            // Best-effort per figure too: one failed attachment must not
-            // stop the rest of this job's figures from attaching.
-            try {
-              await this.mcpClient.uploadAttachment(
-                adoId,
-                `${figureId}.png`,
-                Buffer.from(figureFile.bytes).toString('base64'),
-                figureFile.mimeType,
-                credential,
-              );
-              await this.prisma.jobFigureFile.delete({ where: { id: figureFile.id } });
-            } catch (error) {
-              // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
-              console.error(`Figure attachment failed for ADO work item ${adoId}, figure ${figureId}:`, error);
+          await mapWithConcurrency(Array.from(toAttachByAdoId.entries()), this.writeConcurrency, async ([adoId, figureIds]) => {
+            for (const figureId of figureIds) {
+              const figureFile = figureFileByFigureId.get(figureId);
+              if (!figureFile) continue;
+              // Best-effort per figure too: one failed attachment must not
+              // stop the rest of this job's figures from attaching.
+              try {
+                await this.mcpClient.uploadAttachment(
+                  adoId,
+                  `${figureId}.png`,
+                  Buffer.from(figureFile.bytes).toString('base64'),
+                  figureFile.mimeType,
+                  credential,
+                );
+                await this.prisma.jobFigureFile.delete({ where: { id: figureFile.id } });
+              } catch (error) {
+                // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+                console.error(`Figure attachment failed for ADO work item ${adoId}, figure ${figureId}:`, error);
+              }
             }
           });
         }

@@ -2460,6 +2460,65 @@ describe('JobsService.confirm — figure attachments', () => {
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
     expect(uploadAttachment).toHaveBeenCalledWith(100, 'f1.png', Buffer.from('included').toString('base64'), 'image/png', undefined);
   });
+
+  it('serializes figure attachments to the SAME ADO work item, never running two concurrently', async () => {
+    // Real, confirmed bug this locks in: two attachment PATCHes racing
+    // against the SAME work item both read its revision before either
+    // commits -- ADO's optimistic-concurrency check 409s the second to
+    // land (TF26071 "This work item has been changed by someone else
+    // since you opened it"). Reproduced live: 8 of 18 figures on one real
+    // Feature silently failed this way, matching the user's reported
+    // "10 landed" count. This test proves the fix -- attachments to the
+    // SAME adoId never overlap in time -- by tracking whether a second
+    // call starts while an earlier call for the same adoId is still
+    // pending.
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const inFlightByAdoId = new Set<number>();
+    let overlapDetected = false;
+    const uploadAttachment = jest.fn().mockImplementation(async (adoId: number) => {
+      if (inFlightByAdoId.has(adoId)) overlapDetected = true;
+      inFlightByAdoId.add(adoId);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlightByAdoId.delete(adoId);
+    });
+    const figureFileDelete = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'F', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0', 'f1', 'f2'] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'jff-0', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('a'), mimeType: 'image/png' },
+          { id: 'jff-1', jobId: 'job-1', figureId: 'f1', bytes: Buffer.from('b'), mimeType: 'image/png' },
+          { id: 'jff-2', jobId: 'job-1', figureId: 'f2', bytes: Buffer.from('c'), mimeType: 'image/png' },
+        ]),
+        delete: figureFileDelete,
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      4, // writeConcurrency -- deliberately > 1, so overlap would show up if the 3 figures for this one work item weren't serialized
+    );
+
+    await service.confirm('job-1');
+
+    expect(uploadAttachment).toHaveBeenCalledTimes(3);
+    expect(overlapDetected).toBe(false);
+  });
 });
 
 describe('JobsService.cancel', () => {
