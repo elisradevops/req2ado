@@ -542,40 +542,38 @@ describe('NodeDetailPanel', () => {
       );
     });
 
-    it('renders a neutral, distinctly-labeled chip for an insignificant uncaptioned figure, with a softer tooltip', async () => {
+    it('renders no chip at all for an insignificant uncaptioned figure -- hidden from the item view entirely', () => {
       // f6 is uncaptioned AND in insignificantFigureIds -- the vision model
-      // correctly judged it decorative/non-technical, not a failure.
+      // correctly judged it decorative/non-technical, not a failure. Per
+      // the resolved figure-chip-noise finding, this is now surfaced only
+      // in the document-wide "N figures excluded as decorative" summary
+      // (JobDetail.tsx), never repeated on every item near it.
       renderPanel(
         <NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f6'], insignificantFigureIds: ['f6'] })} />,
       );
-      const chip = screen.getByText('Figure f6 · not significant');
-      expect(chip).toBeInTheDocument();
-      // Distinct styling from the amber "genuine failure" chip -- reuses the
-      // same neutral treatment the Tables chip below already uses, not a new
-      // color.
-      expect(chip.className).not.toContain('warning');
-      expect(chip.className).toContain('surface-alt');
-
-      const { default: userEvent } = await import('@testing-library/user-event');
-      await userEvent.hover(chip);
-      await waitFor(() =>
-        expect(screen.getByText(/judged this figure decorative\/non-technical/i)).toBeInTheDocument(),
-      );
+      expect(screen.queryByText(/not significant/)).not.toBeInTheDocument();
     });
 
-    it('renders both chip treatments together when uncaptionedFigureIds has a mix of insignificant and genuinely-failed figures', () => {
+    it('renders only the genuinely-failed chip when uncaptionedFigureIds has a mix of insignificant and genuinely-failed figures', () => {
       renderPanel(
         <NodeDetailPanel
           entry={tableEntry({ uncaptionedFigureIds: ['f5', 'f6'], insignificantFigureIds: ['f6'] })}
         />,
       );
       expect(screen.getByText('Figure f5 · no description')).toBeInTheDocument();
-      expect(screen.getByText('Figure f6 · not significant')).toBeInTheDocument();
+      expect(screen.queryByText(/not significant/)).not.toBeInTheDocument();
     });
 
     it('renders the "Figures" section for an uncaptioned figure even with no jobId/figureIds supplied', () => {
       renderPanel(<NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f2'] })} />);
       expect(screen.getByText('Figures')).toBeInTheDocument();
+    });
+
+    it('renders no "Figures" section at all when the only figure present is insignificant', () => {
+      renderPanel(
+        <NodeDetailPanel entry={tableEntry({ uncaptionedFigureIds: ['f6'], insignificantFigureIds: ['f6'] })} />,
+      );
+      expect(screen.queryByText('Figures')).not.toBeInTheDocument();
     });
 
     it('renders no uncaptioned-figure chip when uncaptionedFigureIds is absent or empty', () => {

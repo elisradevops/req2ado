@@ -177,6 +177,15 @@ export function NodeDetailPanel({
   // from the same shared rule (see canEditEntry's own doc comment).
   const editability = editabilityOf(entry, jobStatus);
   const canEdit = editability.editable;
+  // Insignificant figures (vision model correctly judged decorative/
+  // non-technical) are excluded from this per-item view entirely -- they
+  // carry no content relevant to this item, so a chip here was pure noise
+  // for a reviewer. They're still counted in the document-wide "N figures
+  // excluded as decorative" summary (JobDetail.tsx), just not repeated on
+  // every item that happened to be near one in the source document.
+  const visibleUncaptionedFigureIds = (entry.uncaptionedFigureIds ?? []).filter(
+    (figureId) => !(entry.insignificantFigureIds ?? []).includes(figureId),
+  );
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -497,8 +506,7 @@ export function NodeDetailPanel({
           'succeeded' before this figure's attachment succeeded has no
           other way to get it attached. See JobsService.attachFigureToAdo's
           own doc comment. */}
-      {((jobId && entry.figureIds && entry.figureIds.length > 0) ||
-        (entry.uncaptionedFigureIds && entry.uncaptionedFigureIds.length > 0)) && (
+      {((jobId && entry.figureIds && entry.figureIds.length > 0) || visibleUncaptionedFigureIds.length > 0) && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Figures</span>
           {jobId && entry.figureIds && entry.figureIds.length > 0 && (
@@ -567,36 +575,18 @@ export function NodeDetailPanel({
               silently-dropped figure visible to a reviewer without them
               needing to go looking for it. No image fetch here (unlike
               above) -- there is nothing about this figure in the pipeline's
-              output worth rendering beyond "this exists and got nothing". */}
-          {entry.uncaptionedFigureIds && entry.uncaptionedFigureIds.length > 0 && (
+              output worth rendering beyond "this exists and got nothing".
+              insignificantFigureIds are filtered out of
+              visibleUncaptionedFigureIds entirely -- those are the vision
+              model CORRECTLY judging a figure decorative/non-technical, not
+              a failure, so every id left here is a genuine vision_failed
+              case (or, when the whole run had vision disabled, already
+              explained once at the tree level by the
+              vision_captioning_disabled warning -- see JobDetail's warnings
+              panel). */}
+          {visibleUncaptionedFigureIds.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {entry.uncaptionedFigureIds.map((figureId) => {
-                // Task 4b sub-fix (ii): a figure id in insignificantFigureIds
-                // (a SUBSET of uncaptionedFigureIds) is the vision model
-                // CORRECTLY judging it decorative/non-technical, not a
-                // failure -- rendered as a neutral/low-emphasis chip (same
-                // treatment the Tables chip below already uses -- reused, not
-                // a new color) instead of the amber "something's wrong"
-                // treatment, so a reviewer doesn't chase a non-issue. Every
-                // other uncaptioned id (not in this subset) is a genuine
-                // vision_failed case -- or, when the whole run had vision
-                // disabled, already explained once at the tree level by the
-                // vision_captioning_disabled warning (see JobDetail's
-                // warnings panel) -- so this chip's own tooltip is narrowed
-                // to only the genuine-failure wording.
-                const isInsignificant = (entry.insignificantFigureIds ?? []).includes(figureId);
-                if (isInsignificant) {
-                  return (
-                    <Tooltip
-                      key={figureId}
-                      content="The vision model judged this figure decorative/non-technical -- nothing about it reached this item's description."
-                    >
-                      <Chip className="border border-hairline-strong bg-surface-alt text-ink-2">
-                        Figure {figureId} · not significant
-                      </Chip>
-                    </Tooltip>
-                  );
-                }
+              {visibleUncaptionedFigureIds.map((figureId) => {
                 return (
                   <Tooltip
                     key={figureId}
