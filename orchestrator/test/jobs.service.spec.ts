@@ -2573,6 +2573,11 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
     // linked from an earlier, unrelated job, skip re-linking", which is
     // false for an item THIS job just created but hadn't linked yet when
     // it failed.
+    // Two mocked values required (not one as in the original brief): both the parent (n0)
+    // and child (n1) entries must successfully create in the create-phase loop before
+    // the link-phase's rejection can be reached. With only one mock value, the second
+    // createWorkItem call would resolve to undefined, causing a TypeError before the
+    // intended linkParentChild rejection failure path is ever exercised.
     const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 }).mockResolvedValueOnce({ id: 101 });
     const linkParentChild = jest.fn().mockRejectedValue(new Error('ADO link failed'));
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
