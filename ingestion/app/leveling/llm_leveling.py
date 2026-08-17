@@ -2340,7 +2340,7 @@ def build_survey_tree(
     # above); the deterministic-only guard path further up keeps its own
     # end-of-pipeline call, since it has no two-stage generation to sit
     # between. Conflict detection stays here, after content exists: it
-    # embeds Requirement DESCRIPTIONS, so it genuinely cannot move earlier.
+    # embeds Requirement TITLES AND DESCRIPTIONS, so it genuinely cannot move earlier.
     recompute_child_types(all_nodes)
 
     trace_links: list[TraceLink] = []

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+from app.dedup.embedding_blend import blend_embeddings
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.workitem.model import IntegrityWarning, RequirementQualityIssue, WarningKind, WorkItemNode, WorkItemType
 
@@ -53,14 +54,47 @@ def _detect_conflicting_duplicates(
     28VAC vs 28VDC input) that was silently kept as two unrelated
     Requirement nodes with no signal either was wrong.
 
-    Embeds every Requirement-type node's description (one batched call),
-    clusters at >= _DUPLICATE_CLUSTER_COSINE_THRESHOLD cosine similarity
-    (a plain in-memory pass over this job's own nodes, not a new
-    vector-store dependency), and for each cluster of >= 2 members asks
-    `conflict_client` whether they're redundant/contradictory/distinct
-    (see ConflictJudgeClient's own docstring). A 'contradictory' verdict
-    adds a `conflict` warning and tags every member with
+    Embeds every Requirement-type node's TITLE and DESCRIPTION (one batched
+    call, 2N texts -- titles then descriptions, same batching shape as
+    /dedup/upsert-batch) and blends each node's pair 50/50 into a single
+    vector (app.dedup.embedding_blend.blend_embeddings, weight_a=0.5 -- the
+    same function and weight the cross-job dedup check uses, see
+    check_for_duplicates's own docstring for that measurement). Clusters at
+    >= _DUPLICATE_CLUSTER_COSINE_THRESHOLD cosine similarity (a plain
+    in-memory pass over this job's own nodes, not a new vector-store
+    dependency), and for each cluster of >= 2 members asks `conflict_client`
+    whether they're redundant/contradictory/distinct (see
+    ConflictJudgeClient's own docstring). A 'contradictory' verdict adds a
+    `conflict` warning and tags every member with
     RequirementQualityIssue.CONFLICTING_VALUE.
+
+    Title/description blend (confirmed real bug, fixed here): embedding the
+    description ALONE never got the real conflicts above to `conflict_client`
+    at all. Measured live against the configured embed model on that same
+    document, the 28VAC/28VDC pair scored 0.65 and the 85%/93% efficiency
+    pair 0.80 -- both under the 0.85 clustering threshold, because one side
+    of each pair is a terse table fragment ("Input 28VAC") and the other a
+    full formal sentence ("The power supply shall accept an input of 28V DC
+    from the platform."): length and register dominate a small
+    general-purpose sentence embedding. The nodes' TITLES are what leveling
+    has already normalized ("Power Supply Efficiency" vs "Power Supply
+    Efficiency"; "Power Supply Input Voltage" vs "Input Voltage
+    Specification"), so blending the title in carries a same-parameter pair
+    over the threshold without dragging unrelated descriptions with it -- a
+    title is at most HALF of each blended vector, so two nodes with an
+    IDENTICAL title but genuinely unrelated descriptions still blend to
+    ~0.5-0.75, under threshold. _DUPLICATE_CLUSTER_COSINE_THRESHOLD is
+    deliberately unchanged at 0.85: the blend fixes a recall gap, not a
+    threshold. `n.title or n.description` guards the (type-permitted, see
+    WorkItemNode.title's max_length-only Field) empty title -- falling back
+    to the description makes the blend a no-op for that node instead of
+    giving every empty-titled node the same shared half-vector.
+
+    Deliberately does NOT port check_for_duplicates's numeric-literal veto
+    (_numeric_tokens), even though the blend comes from that same module: it
+    downgrades a match whose numeric tokens DIFFER, which is the exact
+    opposite of this function's purpose -- same-parameter-different-number
+    is precisely the pair this pass exists to surface.
 
     Entirely optional and fail-open: `embed_client`/`conflict_client`
     omitted (the default) is a no-op, matching pre-existing behavior
@@ -80,11 +114,21 @@ def _detect_conflicting_duplicates(
                 kb_grounded=False, kb_citations=[],
             )
         )
+    node_count = len(requirement_nodes)
     try:
-        embeddings = embed_client.embed([n.description for n in requirement_nodes])
+        raw_embeddings = embed_client.embed(
+            [n.title or n.description for n in requirement_nodes]
+            + [n.description for n in requirement_nodes]
+        )
     except Exception as exc:
         logger.warning("Duplicate-cluster embedding failed, skipping conflict detection: %s", exc)
         return
+    title_embeddings = raw_embeddings[:node_count]
+    description_embeddings = raw_embeddings[node_count:]
+    embeddings = [
+        blend_embeddings(title_embedding, description_embedding)
+        for title_embedding, description_embedding in zip(title_embeddings, description_embeddings)
+    ]
 
     # Union-find over cosine-similar pairs -- O(n^2) pairwise comparisons
     # is acceptable here (pure arithmetic, no LLM/network call per pair;

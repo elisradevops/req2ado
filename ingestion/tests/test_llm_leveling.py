@@ -5,6 +5,7 @@ import time
 import pytest
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
+from app.leveling.conflict_detection import _DUPLICATE_CLUSTER_COSINE_THRESHOLD, _cosine_similarity
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
     _BranchSkeleton,
@@ -50,11 +51,16 @@ def _node(
     )
 
 
-def _req_node(local_id: str, description: str) -> WorkItemNode:
+def _req_node(local_id: str, description: str, title: str | None = None) -> WorkItemNode:
+    # title defaults to the description's first 60 chars -- what all
+    # pre-existing callers rely on. The explicit override exists for the
+    # conflict-detection tests, where the whole point is a title that is NOT
+    # a slice of the description (see _detect_conflicting_duplicates's
+    # title/description blend).
     return WorkItemNode(
         local_id=local_id, type=WorkItemType.REQUIREMENT, parent_local_id=None,
-        title=description[:60], description=description, source_ref=_sr("x.docx"),
-        mode=WorkItemMode.SURVEY,
+        title=description[:60] if title is None else title, description=description,
+        source_ref=_sr("x.docx"), mode=WorkItemMode.SURVEY,
     )
 
 
@@ -5262,8 +5268,10 @@ class _FakeEmbedClientForConflicts:
 
     def __init__(self, embedding_by_text: dict[str, list[float]]) -> None:
         self._embedding_by_text = embedding_by_text
+        self.calls: list[list[str]] = []
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
         return [self._embedding_by_text[t] for t in texts]
 
 
@@ -5387,6 +5395,77 @@ def test_detect_conflicting_duplicates_is_fail_open_on_embed_error() -> None:
     conflict_client = _FakeConflictClient({"verdict": "contradictory", "conflicting_values": []})
     _detect_conflicting_duplicates(nodes, RaisingEmbedClient(), conflict_client, warnings)
     assert nodes[0].quality_issues == []
+
+
+def test_detect_conflicting_duplicates_clusters_a_terse_fragment_with_its_formal_restatement() -> None:
+    # Confirmed live bug this locks in: a spec table's terse fragment and the
+    # body's full formal sentence state the SAME parameter with CONTRADICTING
+    # values, but description-alone embedding measured only 0.65 against the
+    # real embed model -- under the 0.85 clustering threshold, so the pair
+    # never reached conflict_client at all (the 85%/93% efficiency pair
+    # measured 0.80, also under). Length and register dominate a small
+    # general-purpose sentence embedding; the nodes' TITLES are what leveling
+    # already normalized, so the title+description blend carries the pair over.
+    title = "Power Supply Input Voltage"
+    text_a = "Input 28VAC"
+    text_b = "The power supply shall accept an input of 28V DC from the platform."
+    nodes = [_req_node("n0", text_a, title=title), _req_node("n1", text_b, title=title)]
+    # Unit vectors chosen so description-alone cosine is exactly 0.65 (the
+    # measured real-model value) while the shared title sits on their
+    # bisector (cosine 0.9083 to each) -- blending each description 50/50
+    # with that title lands the pair at 0.9083, over threshold.
+    embed_client = _FakeEmbedClientForConflicts({
+        title: [0.9083, 0.4183],
+        text_a: [1.0, 0.0],
+        text_b: [0.65, 0.7599],
+    })
+    # Pins the "previously would NOT have been detected" half of this test:
+    # if the descriptions alone ever clear the threshold, this test has
+    # stopped proving anything.
+    assert _cosine_similarity([1.0, 0.0], [0.65, 0.7599]) < _DUPLICATE_CLUSTER_COSINE_THRESHOLD
+    verdict = {"verdict": "contradictory", "conflicting_values": ["28VAC", "28V DC"]}
+    conflict_client = _FakeConflictClient(verdict)
+    warnings: list[IntegrityWarning] = []
+
+    _detect_conflicting_duplicates(nodes, embed_client, conflict_client, warnings)
+
+    assert embed_client.calls == [[title, title, text_a, text_b]]
+    assert len(conflict_client.calls) == 1
+    assert set(conflict_client.calls[0].keys()) == {"n0", "n1"}
+    assert any("conflicting values" in w.raw for w in warnings)
+    for node in nodes:
+        assert RequirementQualityIssue.CONFLICTING_VALUE in node.quality_issues
+
+
+def test_detect_conflicting_duplicates_does_not_cluster_unrelated_bodies_under_one_shared_title() -> None:
+    # Over-clustering safety net for the title+description blend: two nodes
+    # legitimately carry the SAME title over totally unrelated bodies (a
+    # "Power Supply" section states an input voltage in one place and a paint
+    # spec in another). Blending must not manufacture a cluster the
+    # description-alone code would never have produced -- the title is at most
+    # HALF of each blended vector, so unrelated descriptions stay under
+    # threshold even when the titles are byte-identical.
+    title = "Power Supply"
+    text_a = "The power supply shall accept an input of 28V DC from the platform."
+    text_b = "The power supply enclosure shall be painted per MIL-STD-171."
+    nodes = [_req_node("n0", text_a, title=title), _req_node("n1", text_b, title=title)]
+    # Unit vectors: the descriptions are genuinely unrelated (cosine 0.2),
+    # while the shared title is plausibly close to BOTH (cosine 0.6 to each)
+    # -- the worst realistic case for the blend, not an artificially
+    # orthogonal title. Blended cosine: 0.75, under the 0.85 threshold.
+    # Title-alone would be 1.0, which is what this test exists to forbid.
+    embed_client = _FakeEmbedClientForConflicts({
+        title: [0.6, 0.4899, 0.6325],
+        text_a: [1.0, 0.0, 0.0],
+        text_b: [0.2, 0.9798, 0.0],
+    })
+    conflict_client = _FakeConflictClient({"verdict": "contradictory", "conflicting_values": []})
+    warnings: list[IntegrityWarning] = []
+
+    _detect_conflicting_duplicates(nodes, embed_client, conflict_client, warnings)
+
+    assert conflict_client.calls == []  # an identical title alone must never cluster
+    assert warnings == []
 
 
 # ---------------------------------------------------------------------------
