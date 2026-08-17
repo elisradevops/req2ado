@@ -4520,6 +4520,59 @@ def test_build_survey_tree_folds_a_real_figure_caption_deterministically() -> No
     assert "[FIGURE:" not in last_leaf.description  # raw wire format never leaks through
 
 
+def test_build_survey_tree_parent_summary_preserves_a_deterministically_claimed_table() -> None:
+    # Real, root-caused bug (confirmed live against a real SURVEY job,
+    # cubeadcs_icd.pdf): a table claimed into a deterministic Epic/Feature's
+    # span via _detect_deterministic_subtrees' heading-span-claiming loop
+    # has its HTML embedded in `description` BEFORE _apply_det_parent_summary
+    # runs -- that pass replaces the whole description with a fresh
+    # synthesized summary, and without preserving the already-embedded
+    # table HTML, table_ids keeps pointing at content nowhere in the
+    # description (a "Table tN" chip with zero content).
+    #
+    # Real (spread, not identical) source offsets are required here, not
+    # _structural_heading_doc()'s all-identical (0,10) shortcut -- the
+    # span-claiming boundary search resolves a tie to the LAST heading in
+    # the document (confirmed empirically), which would attach the table
+    # to the last Requirement leaf instead of the Feature/Epic this test
+    # needs to exercise. Positioning the table's offset between the
+    # Feature heading's own offset and its first child's offset is what
+    # actually claims it at the Feature level.
+    path = "structural_survey_input.txt"
+
+    def sr(offset: int) -> SourceRef:
+        return SourceRef(document_path=path, start_offset=offset, end_offset=offset + 10)
+
+    def h(block_id: str, level: int, text: str, offset: int) -> Block:
+        return Block(id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=sr(offset))
+
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            h("b0", 1, "System Domain", 0),
+            h("b1", 2, "The system shall do A.", 100),
+            h("b2", 2, "The system shall do B.", 200),
+            h("b3", 2, "The system shall do C.", 300),
+            h("b4", 2, "The system shall do D.", 400),
+            h("b5", 2, "The system shall do E.", 500),
+        ],
+        tables=[
+            Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]], source_ref=sr(50)),
+        ],
+    )
+
+    class FakeParentSummaryClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
+
+    tree = build_survey_tree(doc, FakeSectionAnalysisClient(), parent_summary_client=FakeParentSummaryClient())
+    epic = next(n for n in tree.nodes if n.title == "Synthesized Epic")
+    assert "t0" in epic.table_ids
+    assert "Covers A-E." in epic.description
+    assert "<table>" in epic.description
+    assert "Rail" in epic.description and "Voltage" in epic.description
+
+
 def test_build_survey_tree_drops_a_placeholder_figure_caption_deterministically() -> None:
     # The "none" case -- no real caption (vision disabled, or the vision
     # call found nothing) -- must be silently omitted, never leaked into

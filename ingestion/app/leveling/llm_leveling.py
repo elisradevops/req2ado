@@ -1071,6 +1071,8 @@ def _apply_det_parent_summary(
     parent_summary_client: ParentSummaryClient | None,
     model: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    tables_by_id: dict[str, Table] | None = None,
+    figures_by_id_map: dict[str, Figure] | None = None,
 ) -> None:
     """Runs the Epic/Feature title+description enhancement pass over EVERY
     deterministic subtree at once, only after all of them (and every
@@ -1105,6 +1107,7 @@ def _apply_det_parent_summary(
     _apply_parent_summary_pass(
         det_nodes, parent_ids, parent_summary_client, det_warnings,
         token_budget=token_budget, progress_callback=progress_callback,
+        tables_by_id=tables_by_id, figures_by_id_map=figures_by_id_map,
     )
 
 
@@ -1425,7 +1428,10 @@ def _detect_deterministic_subtrees(
         # uses the plain _hash_identity, never the table-row disambiguated variant.
 
     if not claimed_heading_block_ids and not claimed_table_ids:
-        _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model, progress_callback)
+        _apply_det_parent_summary(
+            det_nodes, det_warnings, parent_summary_client, model, progress_callback,
+            tables_by_id={t.id: t for t in doc.tables}, figures_by_id_map=figures_by_id(doc.figures),
+        )
         return det_nodes, det_warnings, doc
 
     residual_blocks = [b for b in doc.blocks if b.id not in claimed_heading_block_ids]
@@ -1453,7 +1459,10 @@ def _detect_deterministic_subtrees(
         update={"blocks": residual_blocks, "tables": residual_tables, "figures": residual_figures},
     )
 
-    _apply_det_parent_summary(det_nodes, det_warnings, parent_summary_client, model, progress_callback)
+    _apply_det_parent_summary(
+        det_nodes, det_warnings, parent_summary_client, model, progress_callback,
+        tables_by_id={t.id: t for t in doc.tables}, figures_by_id_map=figures_by_id(doc.figures),
+    )
     return det_nodes, det_warnings, llm_doc
 
 

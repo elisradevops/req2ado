@@ -1,4 +1,5 @@
-from app.canonical.model import SourceRef
+from app.canonical.model import Figure, SourceRef, Table, TableCell
+from app.distillation.description import assemble_description
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.id_tree_builder import (
     _PARENT_SUMMARY_TOKEN_BUDGET,
@@ -8,6 +9,7 @@ from app.leveling.id_tree_builder import (
 )
 from app.leveling.llm_leveling import _repair_requirement_hierarchy
 from app.leveling.narration_publisher import LevelingProgress
+from app.leveling.tree_builder import _table_to_html
 from app.workitem.model import WorkItemType
 
 
@@ -237,6 +239,53 @@ def test_apply_parent_summary_pass_replaces_verbatim_title_and_gives_a_distinct_
     assert epic.title == "Synthesized: Controls:"
     assert epic.description == "A synthesized capability summary."
     assert epic.title != epic.description
+
+
+def test_apply_parent_summary_pass_preserves_already_embedded_table_and_figure_content() -> None:
+    # Real, root-caused bug (confirmed live against a real SURVEY job): the
+    # heading-span-claiming loop in _detect_deterministic_subtrees folds a
+    # table's HTML / a figure's caption line into a node's description via
+    # assemble_description, pairing that with node.table_ids/figure_ids in
+    # the same breath -- BEFORE this pass runs. This pass replaces the
+    # whole description with a fresh summary; without preserving the
+    # already-embedded content, node.table_ids/figure_ids would keep
+    # pointing at content no longer anywhere in the description (a "Table
+    # tN"/figure chip with zero content, the exact invariant violation
+    # Task 5 already fixed once for the LLM-authored path).
+    class FakeParentSummaryClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            return {
+                node_id: {"title": entry["title"], "description": "A synthesized capability summary."}
+                for node_id, entry in nodes_by_id.items()
+            }
+
+    nodes = _epic_feature_requirement_nodes()
+    warnings: list[str] = []
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+
+    table = Table(
+        id="t1",
+        cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]],
+        source_ref=_sr(),
+    )
+    table_html = _table_to_html(table)
+    assert table_html  # sanity: this fixture table really does produce real HTML
+    feature.description = assemble_description(feature.description, table_html)
+    feature.table_ids = [table.id]
+
+    figure = Figure(id="f1", caption="A wiring diagram.", source_ref=_sr())
+    feature.description = assemble_description(feature.description, f"> Figure: {figure.caption}")
+    feature.figure_ids = [figure.id]
+
+    _apply_parent_summary_pass(
+        nodes, [feature.local_id], FakeParentSummaryClient(), warnings,
+        tables_by_id={table.id: table}, figures_by_id_map={figure.id: figure},
+    )
+
+    assert warnings == []
+    assert "A synthesized capability summary." in feature.description
+    assert table_html in feature.description
+    assert "> Figure: A wiring diagram." in feature.description
 
 
 def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_direct_child() -> None:
