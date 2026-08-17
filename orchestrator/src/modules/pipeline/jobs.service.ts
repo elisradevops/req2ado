@@ -14,7 +14,7 @@ import type { McpClient } from './mcp.client';
 import { IngestionHttpError, type IngestionHttpClient } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
-import { mapWithConcurrency } from './map-with-concurrency';
+import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import { normalizeAdoStoredHtml, toAdoDescriptionHtml } from './description-html';
 import type { JobEventsPublisher } from './job-events.publisher';
@@ -1148,7 +1148,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         blocksTotal: toCreate.length,
         message: `Creating work items in ADO -- 0 of ${toCreate.length}`,
       });
-      const createResults = await mapWithConcurrency(toCreate, this.writeConcurrency, async (entry) => {
+      const createOneWorkItem = async (entry: (typeof toCreate)[number]): Promise<{ id: number }> => {
         const fields: Record<string, string> = {
           'System.Title': entry.title,
           'System.Description': toAdoDescriptionHtml(entry.description),
@@ -1221,6 +1221,39 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           message: `Creating work items in ADO -- ${createProgress} of ${toCreate.length}`,
         });
         return created;
+      };
+
+      // Grouped by parent, one group per set of siblings -- concurrency
+      // runs ACROSS groups (different parents' subtrees created in
+      // parallel), never WITHIN a group. Real requirement this satisfies
+      // (clarified live by the user): an ADO "direct links"/tree query
+      // sorts each parent's children by System.Id ascending by default,
+      // and ADO assigns System.Id in request-ARRIVAL order, not
+      // caller-array order -- with flat concurrency, up to
+      // writeConcurrency siblings could be in flight for the SAME parent
+      // at once, so network jitter alone could hand a LATER document-
+      // order child a LOWER id than an earlier one, scrambling the tree
+      // view relative to this app's own order. Root-level entries
+      // (parentLocalId === null) are grouped under one shared '__root__'
+      // key so top-level siblings get the same in-order guarantee.
+      const toCreateIndexByLocalId = new Map(toCreate.map((entry, i) => [entry.localId, i] as const));
+      const toCreateByParent = new Map<string, typeof toCreate>();
+      for (const entry of toCreate) {
+        const key = entry.parentLocalId ?? '__root__';
+        const list = toCreateByParent.get(key) ?? [];
+        list.push(entry);
+        toCreateByParent.set(key, list);
+      }
+      const createResults: SettledResult<{ id: number }>[] = new Array(toCreate.length);
+      await mapWithConcurrency(Array.from(toCreateByParent.values()), this.writeConcurrency, async (siblings) => {
+        for (const entry of siblings) {
+          const i = toCreateIndexByLocalId.get(entry.localId) as number;
+          try {
+            createResults[i] = { status: 'fulfilled', value: await createOneWorkItem(entry) };
+          } catch (reason) {
+            createResults[i] = { status: 'rejected', reason };
+          }
+        }
       });
 
       let firstCreateError: unknown = null;

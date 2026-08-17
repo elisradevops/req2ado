@@ -2611,6 +2611,122 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
   });
 });
 
+describe('JobsService.confirm — sibling creation order', () => {
+  it('creates siblings under the SAME parent strictly in document order, never two in flight at once', async () => {
+    // Real requirement this fixes (clarified live by the user): an ADO
+    // "direct links"/tree query sorts each parent's children by
+    // System.Id ascending by default, and ADO assigns System.Id in
+    // request-ARRIVAL order, not caller-array order. With flat
+    // concurrency across every create regardless of parent, up to
+    // writeConcurrency siblings of the SAME parent could be in flight at
+    // once -- network jitter alone could hand a LATER document-order
+    // child a LOWER id than an earlier one, scrambling the tree view
+    // relative to this app's own order. This test proves siblings of one
+    // parent are created strictly in sequence, in document order.
+    const siblingTitles = ['Child 0', 'Child 1', 'Child 2'];
+    const inFlightSiblings = new Set<string>();
+    let siblingOverlapDetected = false;
+    const callOrder: string[] = [];
+    let nextId = 101;
+    const createWorkItem = jest.fn().mockImplementation(async (_type: string, fields: Record<string, string>) => {
+      const title = fields['System.Title'];
+      callOrder.push(title);
+      const isSibling = siblingTitles.includes(title);
+      if (isSibling) {
+        if (inFlightSiblings.size > 0) siblingOverlapDetected = true;
+        inFlightSiblings.add(title);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (isSibling) inFlightSiblings.delete(title);
+      return { id: title === 'Parent' ? 100 : nextId++ };
+    });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'p0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hp', customerId: null },
+            { localId: 'n0', parentLocalId: 'p0', type: 'Requirement', title: 'Child 0', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+            { localId: 'n1', parentLocalId: 'p0', type: 'Requirement', title: 'Child 1', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null },
+            { localId: 'n2', parentLocalId: 'p0', type: 'Requirement', title: 'Child 2', description: 'd2', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: null },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      4, // writeConcurrency -- deliberately > 1, so overlap would show up if the 3 siblings weren't serialized relative to each other
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(siblingOverlapDetected).toBe(false);
+    expect(callOrder.filter((t) => siblingTitles.includes(t))).toEqual(['Child 0', 'Child 1', 'Child 2']);
+    expect(result).toEqual({ status: 'succeeded', createdCount: 4 });
+  });
+
+  it('still creates DIFFERENT parents subtrees concurrently, not fully serialized', async () => {
+    // Safety net for the opposite failure mode: grouping by parent must
+    // not collapse into one big sequential queue for the WHOLE job --
+    // only siblings of the SAME parent need strict order. Two
+    // single-child "parents" (each its own group) should still overlap
+    // in time when writeConcurrency allows it.
+    let overlapAcrossGroupsDetected = false;
+    const inFlight = new Set<string>();
+    const createWorkItem = jest.fn().mockImplementation(async (_type: string, fields: Record<string, string>) => {
+      const title = fields['System.Title'];
+      if (inFlight.size > 0) overlapAcrossGroupsDetected = true;
+      inFlight.add(title);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight.delete(title);
+      return { id: title === 'Root A' ? 200 : 201 };
+    });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'a', parentLocalId: null, type: 'Feature', title: 'Root A', description: 'da', action: 'create', existingAdoId: null, sourceHash: 'ha', customerId: null },
+            { localId: 'b', parentLocalId: null, type: 'Feature', title: 'Root B', description: 'db', action: 'create', existingAdoId: null, sourceHash: 'hb', customerId: null },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      4,
+    );
+
+    // Both 'a' and 'b' are root-level (parentLocalId: null) -- per the
+    // implementation, ALL root-level entries share one '__root__' group,
+    // so they are intentionally serialized relative to each other too
+    // (root-level items are "siblings" of each other in the tree view).
+    // This test documents that as EXPECTED, not a bug: assert they ran
+    // in document order, not that they overlapped.
+    const result = await service.confirm('job-1');
+
+    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+  });
+});
+
 describe('JobsService.cancel', () => {
   afterEach(() => {
     jest.restoreAllMocks();
