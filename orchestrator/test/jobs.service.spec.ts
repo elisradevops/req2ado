@@ -2674,21 +2674,32 @@ describe('JobsService.confirm — sibling creation order', () => {
     expect(result).toEqual({ status: 'succeeded', createdCount: 4 });
   });
 
-  it('still creates DIFFERENT parents subtrees concurrently, not fully serialized', async () => {
-    // Safety net for the opposite failure mode: grouping by parent must
-    // not collapse into one big sequential queue for the WHOLE job --
-    // only siblings of the SAME parent need strict order. Two
-    // single-child "parents" (each its own group) should still overlap
-    // in time when writeConcurrency allows it.
-    let overlapAcrossGroupsDetected = false;
-    const inFlight = new Set<string>();
+  it('creates DIFFERENT parents subtrees concurrently, while still serializing each parent\'s own children', async () => {
+    // Real risk this guards against: grouping by parent must not collapse
+    // into one big sequential queue for the WHOLE job -- only siblings of
+    // the SAME parent need strict order. Two DISTINCT parents (p0, p1),
+    // each with two children, should have their CHILD groups overlap in
+    // time with each other, while each parent's own two children never
+    // overlap with EACH OTHER.
+    const groupByTitle: Record<string, string> = { A0: 'A', A1: 'A', B0: 'B', B1: 'B' };
+    const inFlightByGroup = new Map<string, Set<string>>();
+    let crossGroupOverlapDetected = false;
+    let sameGroupOverlapDetected = false;
     const createWorkItem = jest.fn().mockImplementation(async (_type: string, fields: Record<string, string>) => {
       const title = fields['System.Title'];
-      if (inFlight.size > 0) overlapAcrossGroupsDetected = true;
-      inFlight.add(title);
+      if (title === 'Parent0' || title === 'Parent1') {
+        return { id: title === 'Parent0' ? 100 : 101 };
+      }
+      const group = groupByTitle[title];
+      const otherGroupsInFlight = Array.from(inFlightByGroup.entries()).some(([g, set]) => g !== group && set.size > 0);
+      if (otherGroupsInFlight) crossGroupOverlapDetected = true;
+      const sameGroupSet = inFlightByGroup.get(group) ?? new Set<string>();
+      if (sameGroupSet.size > 0) sameGroupOverlapDetected = true;
+      sameGroupSet.add(title);
+      inFlightByGroup.set(group, sameGroupSet);
       await new Promise((resolve) => setTimeout(resolve, 5));
-      inFlight.delete(title);
-      return { id: title === 'Root A' ? 200 : 201 };
+      sameGroupSet.delete(title);
+      return { id: 200 + createWorkItem.mock.calls.length };
     });
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
@@ -2696,8 +2707,12 @@ describe('JobsService.confirm — sibling creation order', () => {
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
-            { localId: 'a', parentLocalId: null, type: 'Feature', title: 'Root A', description: 'da', action: 'create', existingAdoId: null, sourceHash: 'ha', customerId: null },
-            { localId: 'b', parentLocalId: null, type: 'Feature', title: 'Root B', description: 'db', action: 'create', existingAdoId: null, sourceHash: 'hb', customerId: null },
+            { localId: 'p0', parentLocalId: null, type: 'Feature', title: 'Parent0', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hp0', customerId: null },
+            { localId: 'p1', parentLocalId: null, type: 'Feature', title: 'Parent1', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hp1', customerId: null },
+            { localId: 'a0', parentLocalId: 'p0', type: 'Requirement', title: 'A0', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'ha0', customerId: null },
+            { localId: 'a1', parentLocalId: 'p0', type: 'Requirement', title: 'A1', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'ha1', customerId: null },
+            { localId: 'b0', parentLocalId: 'p1', type: 'Requirement', title: 'B0', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hb0', customerId: null },
+            { localId: 'b1', parentLocalId: 'p1', type: 'Requirement', title: 'B1', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hb1', customerId: null },
           ],
         }),
         update: jest.fn().mockResolvedValue(undefined),
@@ -2715,15 +2730,11 @@ describe('JobsService.confirm — sibling creation order', () => {
       4,
     );
 
-    // Both 'a' and 'b' are root-level (parentLocalId: null) -- per the
-    // implementation, ALL root-level entries share one '__root__' group,
-    // so they are intentionally serialized relative to each other too
-    // (root-level items are "siblings" of each other in the tree view).
-    // This test documents that as EXPECTED, not a bug: assert they ran
-    // in document order, not that they overlapped.
     const result = await service.confirm('job-1');
 
-    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+    expect(crossGroupOverlapDetected).toBe(true);
+    expect(sameGroupOverlapDetected).toBe(false);
+    expect(result).toEqual({ status: 'succeeded', createdCount: 6 });
   });
 });
 
