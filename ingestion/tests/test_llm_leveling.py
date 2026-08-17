@@ -25,7 +25,7 @@ from app.leveling.llm_leveling import (
 from app.leveling.narration_publisher import LevelingProgress
 from app.leveling.table_groups import TableGroupInfo
 from app.workitem.model import KbCitationRelevance
-from app.workitem.model import RequirementQualityIssue, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import IntegrityWarning, RequirementQualityIssue, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
 
 def _sr(path: str) -> SourceRef:
@@ -5453,7 +5453,7 @@ def test_regroup_disconnected_roots_emits_no_narration_when_it_is_a_noop() -> No
     assert events == []
 
 
-def test_regroup_disconnected_roots_groups_matching_roots_under_a_new_feature() -> None:
+def test_regroup_disconnected_roots_groups_matching_roots_under_a_new_epic() -> None:
     nodes = [
         _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
         _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
@@ -5467,7 +5467,7 @@ def test_regroup_disconnected_roots_groups_matching_roots_under_a_new_feature() 
     _regroup_disconnected_roots(nodes, "regroup_", client, warnings)
 
     group_node = next(n for n in nodes if n.title == "VPX Utility & Management Signals")
-    assert group_node.type == WorkItemType.FEATURE  # no Epic member -> Feature, not Epic
+    assert group_node.type == WorkItemType.EPIC  # members are Feature roots -> Epic tier above them
     assert group_node.parent_local_id is None  # the new group is itself a root
     assert group_node.local_id.startswith("regroup_synth_group_")
     n0 = next(n for n in nodes if n.local_id == "n0")
@@ -5491,6 +5491,50 @@ def test_regroup_disconnected_roots_uses_epic_type_when_any_member_is_an_epic() 
     _regroup_disconnected_roots(nodes, "regroup_", client, [])
     group_node = next(n for n in nodes if n.title == "Combined Domain")
     assert group_node.type == WorkItemType.EPIC
+
+
+def test_regroup_disconnected_roots_stays_a_feature_when_every_member_is_a_requirement() -> None:
+    nodes = [
+        _node("n0", WorkItemType.REQUIREMENT, None, "Bare Requirement A"),
+        _node("n1", WorkItemType.REQUIREMENT, None, "Bare Requirement B"),
+    ]
+    client = _FakeGroupingClient({"groups": [{"title": "Leftover Requirements", "member_ids": ["n0", "n1"]}]})
+    _regroup_disconnected_roots(nodes, "regroup_", client, [])
+    group_node = next(n for n in nodes if n.title == "Leftover Requirements")
+    assert group_node.type == WorkItemType.FEATURE  # all-Requirement leaves -> Feature, not Epic
+
+
+def test_a_well_formed_thematic_group_of_root_features_becomes_an_epic_and_escapes_the_catchall() -> None:
+    # Reproduces the real document's exact shape (Gap A): several
+    # disconnected root Features get topically regrouped, and the real
+    # Epic elsewhere in the tree must not cause the new groups to be
+    # swept into _ensure_root_features_have_epic_parent's catch-all --
+    # they were already correctly typed EPIC by _regroup_disconnected_roots.
+    nodes = [
+        _node("epic0", WorkItemType.EPIC, None, "Real Epic Domain"),
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+        _node("n2", WorkItemType.FEATURE, None, "NVMRO"),
+        _node("n3", WorkItemType.FEATURE, None, "NVMRW"),
+    ]
+    client = _FakeGroupingClient({
+        "groups": [
+            {"title": "Power Sequencing Signals", "member_ids": ["n0", "n1"]},
+            {"title": "Non-Volatile Memory Signals", "member_ids": ["n2", "n3"]},
+        ]
+    })
+    warnings: list[IntegrityWarning] = []
+
+    _regroup_disconnected_roots(nodes, "regroup_", client, warnings)
+    _ensure_root_features_have_epic_parent(nodes, "regroup_", warnings)
+
+    group_titles = {"Power Sequencing Signals", "Non-Volatile Memory Signals"}
+    for title in group_titles:
+        group_node = next(n for n in nodes if n.title == title)
+        assert group_node.type == WorkItemType.EPIC
+    assert not any(n.local_id.endswith("synth_root_epic") for n in nodes)
+    assert not any(w.kind == WarningKind.CATCHALL_EPIC_WRAP for w in warnings)
+    assert sum(1 for w in warnings if w.kind == WarningKind.ROOTS_REGROUPED) == 2
 
 
 def test_regroup_disconnected_roots_ignores_an_invented_member_id() -> None:

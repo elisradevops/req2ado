@@ -109,13 +109,15 @@ def _regroup_disconnected_roots(
         if len(valid_member_ids) < 2:
             continue
         members = [by_id[member_id] for member_id in valid_member_ids]
-        # CMMI validity: a group containing an EPIC-typed member must
-        # itself be an EPIC (a Feature can never parent an Epic); a
-        # group of only Feature-typed members stays a Feature, matching
-        # the gold-standard reference's own "Feature absorbing Features"
-        # consolidation shape.
-        has_epic_member = any(m.type == WorkItemType.EPIC for m in members)
-        group_type = WorkItemType.EPIC if has_epic_member else WorkItemType.FEATURE
+        # CMMI validity: same depth-based rule id_hierarchy.classify() uses
+        # everywhere else in this codebase -- a group of Features sits one
+        # Epic tier above them; only a group of all-Requirement leaves
+        # stays a Feature.
+        group_type = (
+            WorkItemType.FEATURE
+            if all(m.type == WorkItemType.REQUIREMENT for m in members)
+            else WorkItemType.EPIC
+        )
         synth_id = f"{node_id_prefix}synth_group_{group_index}"
         member_titles = ", ".join(m.title for m in members)
         group_node = WorkItemNode(
