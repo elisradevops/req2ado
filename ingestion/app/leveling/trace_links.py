@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -17,6 +18,31 @@ from app.workitem.model import (
 )
 
 logger = logging.getLogger(__name__)
+
+_EMBEDDED_TABLE_HTML_PATTERN = re.compile(r"<table.*?</table>", re.DOTALL)
+
+
+def _without_embedded_table_html(description: str) -> str:
+    """Strips any `<table>...</table>` block a table-fold pass (either
+    BASELINE's/SURVEY's LLM-authored path or the deterministic-subtree
+    span-claiming loop, see id_tree_builder.py's own parent-summary
+    preservation fix) embedded into a node's description via
+    assemble_description. Confirmed real job failure (live SURVEY run):
+    this codebase's own convention is "text is NOT truncated" for
+    trace-link inference (a real external ref can appear anywhere in real
+    PROSE) -- but a table's raw cell data is categorically different
+    content, carries essentially zero cross-reference signal (trace links
+    are about phrases like "see Requirement 282393", never about table
+    cell values), and can be very large (confirmed: 84KB+ across the
+    tables of one real ICD's deterministic-subtree nodes alone). Left
+    unstripped, it was measured to more-than-triple this call's total
+    payload size for that document -- the direct, quantified cause of a
+    real crash (a malformed non-object entry in the model's response,
+    after the LLM's own JSON grammar came under pressure from the larger
+    prompt). Figure captions are deliberately NOT stripped here -- they
+    are real authored prose (unlike table markup) and stay small even
+    with several folded into one node."""
+    return _EMBEDDED_TABLE_HTML_PATTERN.sub("", description).strip()
 
 
 class TraceLinkInferenceClient(Protocol):
@@ -55,12 +81,14 @@ def _infer_trace_links_for_nodes(
     node_by_local_id = {node.local_id: node for node in all_nodes}
     # title dropped -- description already carries the same content, and
     # the model references node_id (not title) in its output; sending
-    # both wasted ~8-12 tokens/node for no signal. text is NOT truncated
-    # here (and must not be) -- external ref ids like "REQ-SYS-012" can
-    # appear anywhere in the description and the prompt above depends on
-    # seeing them in full.
+    # both wasted ~8-12 tokens/node for no signal. Prose text is NOT
+    # truncated here (and must not be) -- external ref ids like
+    # "REQ-SYS-012" can appear anywhere in the description and the prompt
+    # above depends on seeing them in full. Embedded table HTML IS
+    # stripped (see _without_embedded_table_html's own docstring) -- it
+    # carries no cross-reference signal and can be very large.
     llm_nodes = [
-        {"node_id": node.local_id, "type": node.type.value, "text": node.description}
+        {"node_id": node.local_id, "type": node.type.value, "text": _without_embedded_table_html(node.description)}
         for node in all_nodes
     ]
     # Trace-link inference judges relationships between already-generated
@@ -103,6 +131,17 @@ def _infer_trace_links_for_nodes(
         raw_links = []
     catalog_by_ref = {entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog}
     for raw_link in raw_links:
+        # Confirmed real job failure (live SURVEY run): the model can return
+        # a syntactically-valid JSON list where most entries are proper
+        # {source_node_id, reference_name, target_ref} objects but one is a
+        # bare string -- not the "whole response is prose" failure the
+        # try/except above already guards, so it reached here and crashed
+        # the entire /level call on a single malformed element. Same
+        # fail-open philosophy as the rest of this function: skip the one
+        # bad entry, keep every valid link either side of it.
+        if not isinstance(raw_link, dict):
+            logger.warning("Trace-link inference returned a non-object entry, skipped: %r", raw_link)
+            continue
         source_node_id = raw_link.get("source_node_id")
         reference_name = raw_link.get("reference_name")
         target_ref = raw_link.get("target_ref")

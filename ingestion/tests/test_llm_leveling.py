@@ -3407,6 +3407,82 @@ def test_build_survey_tree_sends_trace_link_nodes_without_a_redundant_title_key(
         assert set(node.keys()) == {"node_id", "type", "text"}
 
 
+def test_build_survey_tree_sends_trace_link_nodes_with_table_html_stripped() -> None:
+    # Real, root-caused bug (confirmed live, cubeadcs_icd.pdf): re-embedding
+    # a deterministic node's folded table HTML into its description (the
+    # parent-summary content-preservation fix) more-than-tripled the total
+    # payload size of this whole-tree call for a document with many
+    # deterministic-subtree tables, degrading the model's own JSON output
+    # into a malformed non-object entry that crashed the job. Table HTML
+    # carries no cross-reference signal -- it must never reach this
+    # specific payload, even though it's correctly still embedded in the
+    # tree's own persisted node.description.
+    path = "structural_survey_input.txt"
+
+    def sr(offset: int) -> SourceRef:
+        return SourceRef(document_path=path, start_offset=offset, end_offset=offset + 10)
+
+    def h(block_id: str, level: int, text: str, offset: int) -> Block:
+        return Block(id=block_id, kind=BlockKind.HEADING, heading_level=level, text=text, source_ref=sr(offset))
+
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            h("b0", 1, "System Domain", 0),
+            h("b1", 2, "The system shall do A.", 100),
+            h("b2", 2, "The system shall do B.", 200),
+            h("b3", 2, "The system shall do C.", 300),
+            h("b4", 2, "The system shall do D.", 400),
+            h("b5", 2, "The system shall do E.", 500),
+        ],
+        tables=[
+            Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["Rail", "Voltage"]]], source_ref=sr(50)),
+        ],
+    )
+
+    class FakeParentSummaryClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
+
+    fake_trace_client = FakeTraceLinkInferenceClient()
+    tree = build_survey_tree(
+        doc, FakeSectionAnalysisClient(), parent_summary_client=FakeParentSummaryClient(),
+        link_type_client=fake_trace_client, link_type_catalog=[],
+    )
+
+    epic = next(n for n in tree.nodes if n.title == "Synthesized Epic")
+    assert "<table>" in epic.description  # the actual fix: still embedded in the real tree
+
+    assert len(fake_trace_client.calls) == 1
+    sent = next(n for n in fake_trace_client.calls[0]["nodes"] if n["node_id"] == epic.local_id)
+    assert "<table" not in sent["text"]
+    assert "Covers A-E." in sent["text"]  # real prose survives the strip
+
+
+def test_build_survey_tree_skips_a_non_object_trace_link_entry_without_crashing() -> None:
+    # Real job crash (confirmed live): the model can return a
+    # syntactically-valid JSON list where one entry is a bare string
+    # instead of a {source_node_id, reference_name, target_ref} object --
+    # not the "whole response is prose" failure the ValueError guard
+    # already handles, since infer_trace_links itself doesn't raise. Must
+    # skip the one bad entry and keep every valid link either side of it,
+    # matching this function's own "must never fail a SURVEY job"
+    # philosophy.
+    fake_client = FakeTraceLinkInferenceClient(
+        results=[
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related"},
+            "a malformed bare string entry",
+        ]
+    )
+    tree = build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
+        link_type_client=fake_client, link_type_catalog=[],
+    )
+    assert len(tree.trace_links) == 1
+    assert tree.trace_links[0].source_local_id == "s1"
+    assert tree.trace_links[0].target_local_id == "s2"
+
+
 def test_build_survey_tree_calls_infer_trace_links_exactly_once_with_the_catalog() -> None:
     fake_client = FakeTraceLinkInferenceClient()
     catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
