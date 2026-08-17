@@ -454,7 +454,13 @@ export function DiffTree({
             // own width-budget call. Tinted amber below when any of those
             // figures has no description, so the gap is visible without a
             // reviewer needing to open the details dialog first.
-            const uncaptionedFigureCount = entry.uncaptionedFigureIds?.length ?? 0;
+            // insignificantFigureIds (a SUBSET of uncaptionedFigureIds) are
+            // hidden from the item detail view entirely (NodeDetailPanel.tsx)
+            // -- counting them here would show a flag number higher than
+            // what a reviewer can actually find by opening the item, exactly
+            // the "8 figures shown, only 4 real" bug report this excludes.
+            const insignificantFigureCount = entry.insignificantFigureIds?.length ?? 0;
+            const uncaptionedFigureCount = (entry.uncaptionedFigureIds?.length ?? 0) - insignificantFigureCount;
             const figureCount = (entry.figureIds?.length ?? 0) + uncaptionedFigureCount;
             return (
               <div

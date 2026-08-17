@@ -287,6 +287,29 @@ describe('DiffTree signal counts', () => {
     expect(badge.className).toContain('text-warning');
   });
 
+  it('excludes insignificant figures from the figure-count badge -- they are hidden from the item detail view entirely, so counting them here would overstate what a reviewer can actually find', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, figureIds: ['f0'], uncaptionedFigureIds: ['f1', 'f2', 'f3'], insignificantFigureIds: ['f2', 'f3'] },
+    ];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    // 1 captioned (f0) + 1 genuinely-uncaptioned (f1) = 2, NOT 4 (which
+    // would include the 2 insignificant figures nobody will ever see).
+    const badge = screen.getByTitle('2 figure(s), 1 without a description');
+    expect(badge).toBeInTheDocument();
+  });
+
+  it('hides the figure-count badge entirely when every uncaptioned figure is insignificant and none are captioned', () => {
+    const entries: DryRunDiffEntry[] = [
+      { ...baseEntry, uncaptionedFigureIds: ['f1', 'f2'], insignificantFigureIds: ['f1', 'f2'] },
+    ];
+
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    expect(screen.queryByTitle(/figure\(s\)/)).not.toBeInTheDocument();
+  });
+
   it('shows no table/figure badges when neither tableIds nor figureIds/uncaptionedFigureIds is present', () => {
     render(<DiffTree entries={[baseEntry]} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
 
