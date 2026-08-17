@@ -111,6 +111,19 @@ def test_section_analysis_prompt_root_count_marker() -> None:
     assert "This section has 3 independent top-level" in result_multi
 
 
+def test_map_figures_tables_prompt_splits_decorative_from_doesnt_fit_this_branch() -> None:
+    # Gap C: the null-verdict and escalate-verdict instructions used to
+    # contradict each other -- null's own trailing clause ("saying 'none'
+    # is the right answer whenever no candidate genuinely covers it")
+    # directly overlapped escalate's purpose ("no candidate offered here
+    # covers it"), letting a real, named, technical item get silently
+    # dropped as null instead of escalated. See map_figures_tables.v1.txt.
+    result = load_prompt("map_figures_tables", item_count="1")
+    assert "saying \"none\" is the right answer whenever no candidate genuinely covers it" not in result
+    assert "a judgment about the item's own content, never about whether any candidate here happens to cover it" in result
+    assert "a real, named table whose subject just isn't among THIS branch's candidates" in result
+
+
 def test_load_prompt_raises_on_unknown_marker() -> None:
     # A marker kwarg with no matching __NAME__ placeholder in the file is a
     # real programming error (e.g. a typo'd kwarg name) -- must raise, not

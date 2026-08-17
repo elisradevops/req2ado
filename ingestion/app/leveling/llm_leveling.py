@@ -3073,6 +3073,7 @@ _MAPPING_CHUNK_ITEM_COUNT = 200
 _MAPPING_CAPTION_PREVIEW_CHARS = 240
 _MAPPING_TABLE_COLUMN_COUNT = 8
 _MAPPING_TABLE_COLUMN_PREVIEW_CHARS = 60
+_MAPPING_TABLE_ROW_COUNT = 2
 
 
 class FigureTableMappingClient(Protocol):
@@ -3123,9 +3124,9 @@ def _mapping_items_for_branch(
     positional-bracket heuristic (uncaptioned_figure_ids) instead.
 
     Nothing is fetched here that the pipeline doesn't already hold -- the
-    caption a figure was given by vision, a table's own caption and
-    header-row labels, and the branch's section label for physical
-    where-does-this-live context."""
+    caption a figure was given by vision, a table's own caption,
+    header-row labels, and first couple of data rows, and the branch's
+    section label for physical where-does-this-live context."""
     items: dict[str, dict] = {}
     for block in skeleton.blocks:
         if block.kind != BlockKind.FIGURE:
@@ -3142,17 +3143,32 @@ def _mapping_items_for_branch(
             ),
         }
     for table_id, table in skeleton.tables_by_id.items():
-        header_row = plain_text_rows(table)[0] if table.cells else []
+        table_rows = plain_text_rows(table) if table.cells else []
+        header_row = table_rows[0] if table_rows else []
         columns = [
             preview
             for cell in header_row[:_MAPPING_TABLE_COLUMN_COUNT]
             if (preview := _mapping_preview(cell, _MAPPING_TABLE_COLUMN_PREVIEW_CHARS)) is not None
+        ]
+        # A caption-less table with its real title embedded in a merged
+        # header row (confirmed live: AirPro_BP_ICD) gives the model
+        # nothing but generic column labels to judge scope from -- a
+        # couple of real data rows meaningfully helps there, same preview
+        # truncation as columns, no row counts/styling/spans/full HTML.
+        rows = [
+            [
+                preview
+                for cell in row[:_MAPPING_TABLE_COLUMN_COUNT]
+                if (preview := _mapping_preview(cell, _MAPPING_TABLE_COLUMN_PREVIEW_CHARS)) is not None
+            ]
+            for row in table_rows[1 : 1 + _MAPPING_TABLE_ROW_COUNT]
         ]
         items[table_id] = {
             "kind": "table",
             "section": skeleton.section_label,
             "caption": _mapping_preview(table.caption, _MAPPING_CAPTION_PREVIEW_CHARS),
             "columns": columns,
+            "rows": rows,
         }
     return items
 

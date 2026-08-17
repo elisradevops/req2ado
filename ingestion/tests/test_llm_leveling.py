@@ -7,12 +7,14 @@ import pytest
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
+    _BranchSkeleton,
     _build_survey_skeleton_for_branch,
     _derive_section_label,
     _detect_conflicting_duplicates,
     _ensure_root_features_have_epic_parent,
     _grounding_score,
     _group_label_became_a_node,
+    _mapping_items_for_branch,
     _ocr_recovered_table_warnings,
     _regroup_disconnected_roots,
     _render_block_line,
@@ -6203,6 +6205,126 @@ def test_mapping_escalates_only_the_escalated_items_to_the_whole_document_tier(m
     audio_leaf = next(n for n in tree.nodes if n.local_id == "br1_n1")
     assert audio_leaf.figure_ids == ["f0", "f1"]
     assert tree.excluded_figure_ids == []
+
+
+def _mapping_two_branch_table_doc() -> CanonicalDoc:
+    """Two top-level branches; both tables physically sit under branch 0
+    ("Power") but t0 is a real, named technical table (wire gauge/mass
+    data) whose subject actually belongs to branch 1 ("Harness"), while t1
+    is a genuinely decorative revision-history table. Gap C fixture: t0
+    must escalate to the whole-document tier rather than being silently
+    excluded; t1 must be excluded directly, with no escalation call for
+    it at all."""
+    path = "mapping_tables.txt"
+
+    def ref(offset: int) -> SourceRef:
+        return SourceRef(document_path=path, start_offset=offset, end_offset=offset + 1)
+
+    return CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power", source_ref=ref(0)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The power supply shall regulate 5V.", source_ref=ref(1)),
+            Block(id="b2", kind=BlockKind.HEADING, heading_level=1, text="Harness", source_ref=ref(2)),
+            Block(id="b3", kind=BlockKind.PARAGRAPH, text="The harness shall use 22 AWG wire.", source_ref=ref(3)),
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [
+                    ["Wire", "Gauge", "Mass"], ["W1", "22 AWG", "1.2g"], ["W2", "24 AWG", "0.8g"],
+                ]],
+                source_ref=ref(1),
+            ),
+            Table(
+                id="t1",
+                cells=[[TableCell(text=c) for c in row] for row in [["Rev", "Date"], ["A", "2020-01-01"]]],
+                source_ref=ref(1),
+            ),
+        ],
+    )
+
+
+def test_mapping_escalates_a_real_table_but_excludes_a_decorative_one(monkeypatch) -> None:
+    # Gap C: the null-verdict and escalate-verdict instructions used to
+    # overlap ("saying 'none' is the right answer whenever no candidate
+    # genuinely covers it" vs escalate's own "no candidate offered here
+    # covers it"), letting a real, named, technical table get silently
+    # dropped as null instead of escalated. Proves the two verdicts route
+    # to genuinely different outcomes for TABLE items and don't cross-
+    # contaminate each other in the same branch.
+    _force_multi_branch(monkeypatch)
+
+    def verdict_fn(candidates, items):
+        if "br1_n1" in candidates and "br0_n1" in candidates:  # tier 2: whole document
+            return {item_id: {"node_id": "br1_n1", "escalate": False} for item_id in items}
+        return {
+            "t0": {"node_id": None, "escalate": True},  # real, technical -- doesn't fit this branch
+            "t1": {"node_id": None, "escalate": False},  # genuinely decorative
+        }
+
+    fake = FakeMappingClient(verdict_fn=verdict_fn)
+    tree = build_survey_tree(_mapping_two_branch_table_doc(), fake)
+
+    # Only branch 0 owns any tables (both t0 and t1 sit under "Power"), so
+    # branch 1 has no items of its own and gets no tier-1 call: 1 tier-1
+    # call (branch 0, both tables) + 1 tier-2 escalation chunk (t0 only).
+    assert len(fake.mapping_calls) == 2
+    escalation_call = fake.mapping_calls[-1]
+    assert set(escalation_call["items"]) == {"t0"}  # t1 already excluded, never re-offered
+    assert set(escalation_call["candidates"]) == {"br0_n0", "br0_n1", "br1_n0", "br1_n1"}
+    harness_node = next(n for n in tree.nodes if n.local_id == "br1_n1")
+    assert harness_node.table_ids == ["t0"]
+    assert tree.excluded_table_ids == ["t1"]
+
+
+def test_mapping_items_carry_two_data_rows_of_evidence_for_a_table() -> None:
+    # Gap C evidence addition: a caption-less table with its real title
+    # embedded in a merged header row (confirmed live: AirPro_BP_ICD) gives
+    # the mapping model nothing but generic column labels to judge scope
+    # from -- a couple of real data rows meaningfully helps.
+    long_value = "A" * 100
+    table = Table(
+        id="t0",
+        cells=[[TableCell(text=c) for c in row] for row in [
+            ["Wire", "Gauge", "Mass"],
+            ["W1", long_value, "1.2g"],
+            ["W2", "24 AWG", "0.8g"],
+            ["W3", "26 AWG", "0.5g"],
+        ]],
+        source_ref=_sr("x.docx"),
+    )
+    skeleton = _BranchSkeleton(
+        nodes=[], warnings=[], kb_citations=[], scoring_kb_context=None,
+        section_text="", section_label=None, blocks=[], tables_by_id={"t0": table},
+        valid_figure_ids=set(), valid_table_ids={"t0"}, node_id_prefix="",
+        fire=lambda *a, **k: None,
+    )
+
+    items = _mapping_items_for_branch(skeleton, {}, {})
+
+    rows = items["t0"]["rows"]
+    assert len(rows) == 2  # only the first 2 data rows -- W3 is truncated off
+    assert rows[0] == ["W1", "A" * 60 + "...", "1.2g"]  # per-cell preview truncation, same as columns
+    assert rows[1] == ["W2", "24 AWG", "0.8g"]
+
+
+def test_mapping_items_rows_is_empty_for_a_header_only_table() -> None:
+    table = Table(
+        id="t0",
+        cells=[[TableCell(text=c) for c in row] for row in [["Rev", "Date"]]],
+        source_ref=_sr("x.docx"),
+    )
+    skeleton = _BranchSkeleton(
+        nodes=[], warnings=[], kb_citations=[], scoring_kb_context=None,
+        section_text="", section_label=None, blocks=[], tables_by_id={"t0": table},
+        valid_figure_ids=set(), valid_table_ids={"t0"}, node_id_prefix="",
+        fire=lambda *a, **k: None,
+    )
+
+    items = _mapping_items_for_branch(skeleton, {}, {})
+
+    assert items["t0"]["rows"] == []
 
 
 def test_mapping_fires_map_scope_for_both_tier_1_and_tier_2(monkeypatch) -> None:
