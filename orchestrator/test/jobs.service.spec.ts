@@ -2521,6 +2521,91 @@ describe('JobsService.confirm — figure attachments', () => {
   });
 });
 
+describe('JobsService.confirm — dryRunDiff refresh on success', () => {
+  it('rewrites dryRunDiff with real ADO ids on success, so a re-fetched job stops showing stale create placeholders', async () => {
+    // Real, confirmed bug this locks in: GET /jobs/:id served the frozen
+    // pre-confirm dryRunDiff forever, even on a fully 'succeeded' job --
+    // every entry kept existingAdoId: null / action: 'create', which is
+    // exactly what NodeDetailPanel.tsx gates its "not available for a new
+    // item in this view" figure-upload placeholder on. Reproduced live
+    // against a real confirmed job.
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 }).mockResolvedValueOnce({ id: 101 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null },
+          ],
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    const finalUpdateCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
+    expect(finalUpdateCall).toBeDefined();
+    const updatedDiff = finalUpdateCall![0].data.dryRunDiff as { localId: string; existingAdoId: number | null; action: string }[];
+    expect(updatedDiff.find((e) => e.localId === 'n0')).toMatchObject({ existingAdoId: 100, action: 'reuse' });
+    expect(updatedDiff.find((e) => e.localId === 'n1')).toMatchObject({ existingAdoId: 101, action: 'reuse' });
+  });
+
+  it('does NOT rewrite dryRunDiff on the partial-failure revert path — only the final success path may flip action to reuse', async () => {
+    // Deliberately narrow scope, not an oversight: confirm() refuses to
+    // run again once status is 'succeeded' (guarded at the very top of
+    // this method), so rewriting action to 'reuse' on the SUCCESS path is
+    // permanent and safe. Doing the same rewrite in the catch-block's
+    // revert-to-'diff_ready' path would be actively wrong -- a resumed
+    // retry's own toLink filter treats action === 'reuse' as "already
+    // linked from an earlier, unrelated job, skip re-linking", which is
+    // false for an item THIS job just created but hadn't linked yet when
+    // it failed.
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 }).mockResolvedValueOnce({ id: 101 });
+    const linkParentChild = jest.fn().mockRejectedValue(new Error('ADO link failed'));
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null },
+          ],
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await expect(service.confirm('job-1')).rejects.toThrow('ADO link failed');
+
+    const revertCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'diff_ready');
+    expect(revertCall).toBeDefined();
+    expect(revertCall![0].data.dryRunDiff).toBeUndefined();
+  });
+});
+
 describe('JobsService.cancel', () => {
   afterEach(() => {
     jest.restoreAllMocks();

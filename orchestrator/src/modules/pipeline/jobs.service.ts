@@ -1473,9 +1473,34 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       throw error;
     }
 
+    // Refresh dryRunDiff so GET /jobs/:id stops serving the frozen
+    // pre-confirm snapshot forever after a job succeeds -- confirmed real
+    // bug: every entry kept existingAdoId: null / action: 'create' even
+    // on a fully 'succeeded' job, which is exactly what
+    // NodeDetailPanel.tsx's "not available for a new item in this view"
+    // placeholder is gated on (entry.action === 'create'), so a real,
+    // fully-attached figure showed that message forever. Only every entry
+    // adoIdByLocalId actually resolved (newly created OR a pre-existing
+    // reuse/dedup_skip match) gets rewritten; anything excluded or never
+    // resolved is left exactly as it was.
+    //
+    // Deliberately ONLY done here, on the final success path -- never in
+    // the catch block's revert-to-'diff_ready' path above. confirm()
+    // refuses to run again once status is 'succeeded' (guarded at the top
+    // of this method), so rewriting action to 'reuse' here is permanent
+    // and safe. Doing the same rewrite on a partial failure would be
+    // actively wrong: a resumed retry's own toLink filter (above) treats
+    // action === 'reuse' as "already linked from an earlier, unrelated
+    // job -- skip re-linking", which is false for an item this SAME job
+    // just created but hadn't linked yet when it failed.
+    const updatedDiff = diff.map((entry) => {
+      const realAdoId = adoIdByLocalId.get(entry.localId);
+      if (realAdoId === undefined) return entry;
+      return { ...entry, existingAdoId: realAdoId, action: 'reuse' };
+    });
     await this.prisma.job.update({
       where: { id },
-      data: { status: 'succeeded', confirmedAt: new Date(), completedAt: new Date() },
+      data: { status: 'succeeded', confirmedAt: new Date(), completedAt: new Date(), dryRunDiff: updatedDiff },
     });
     await this.prisma.auditEntry.create({
       data: { jobId: id, message: `Job confirmed: ${createdCount} work item(s) created` },
