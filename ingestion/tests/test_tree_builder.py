@@ -90,11 +90,14 @@ def test_icd_style_branch_autodetects_and_builds_feature_requirement() -> None:
     assert "[FIGURE:" not in requirement_node.description
 
 
-def test_baseline_fold_renders_a_real_figure_caption_as_a_blockquote() -> None:
+def test_baseline_fold_attaches_a_real_figure_caption_via_figure_ids_not_inline_text() -> None:
     # BASELINE mode never calls a vision model, but a caption CAN still be
     # present (e.g. a caption embedded in the source doc's own alt-text).
-    # This must render the same clearly-labeled way SURVEY mode does, not
-    # leak the raw "[FIGURE: ...]" wire-format text.
+    # A real caption is tracked via figure_ids only -- the Figures UI
+    # section (NodeDetailPanel.tsx) already renders the thumbnail +
+    # caption there independently of this node's description, so folding
+    # the same caption in again as an inline "> Figure: ..." line was pure
+    # duplication (removed per explicit user request).
     path = "backplane_icd.md"
     doc = CanonicalDoc(
         document=Document(path=path, format=DocumentFormat.MD, sha256="icdhash2"),
@@ -109,11 +112,13 @@ def test_baseline_fold_renders_a_real_figure_caption_as_a_blockquote() -> None:
             ),
             Block(id="d2", kind=BlockKind.FIGURE, text="[FIGURE: Rail topology diagram]", source_ref=_sr(path, 44, 76)),
         ],
+        figures=[Figure(id="f0", caption="Rail topology diagram", source_ref=_sr(path, 44, 76))],
     )
     tree = build_baseline_tree(doc)
     requirement_node = tree.nodes[-1]
-    assert "> Figure: Rail topology diagram" in requirement_node.description
+    assert "Rail topology diagram" not in requirement_node.description
     assert "[FIGURE:" not in requirement_node.description
+    assert requirement_node.figure_ids == ["f0"]
 
 
 def test_same_depth_produces_different_types_per_branch() -> None:

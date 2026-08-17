@@ -1,4 +1,4 @@
-from app.canonical.model import Figure, SourceRef, Table, TableCell
+from app.canonical.model import SourceRef, Table, TableCell
 from app.distillation.description import assemble_description
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.id_tree_builder import (
@@ -241,17 +241,23 @@ def test_apply_parent_summary_pass_replaces_verbatim_title_and_gives_a_distinct_
     assert epic.title != epic.description
 
 
-def test_apply_parent_summary_pass_preserves_already_embedded_table_and_figure_content() -> None:
+def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_not_figure_captions() -> None:
     # Real, root-caused bug (confirmed live against a real SURVEY job): the
     # heading-span-claiming loop in _detect_deterministic_subtrees folds a
-    # table's HTML / a figure's caption line into a node's description via
-    # assemble_description, pairing that with node.table_ids/figure_ids in
-    # the same breath -- BEFORE this pass runs. This pass replaces the
-    # whole description with a fresh summary; without preserving the
-    # already-embedded content, node.table_ids/figure_ids would keep
-    # pointing at content no longer anywhere in the description (a "Table
-    # tN"/figure chip with zero content, the exact invariant violation
-    # Task 5 already fixed once for the LLM-authored path).
+    # table's HTML into a node's description via assemble_description,
+    # pairing that with node.table_ids in the same breath -- BEFORE this
+    # pass runs. This pass replaces the whole description with a fresh
+    # summary; without preserving the already-embedded content,
+    # node.table_ids would keep pointing at content no longer anywhere in
+    # the description (a "Table tN" chip with zero content, the exact
+    # invariant violation Task 5 already fixed once for the LLM-authored
+    # path).
+    #
+    # Figures get no equivalent re-embed: a figure caption is never folded
+    # into description text at all (removed per explicit user request --
+    # the Figures UI section already renders thumbnail + caption
+    # independently of this text, via node.figure_ids alone), so there is
+    # nothing here for this pass to preserve.
     class FakeParentSummaryClient:
         def summarize_parent_nodes(self, nodes_by_id):
             return {
@@ -272,20 +278,17 @@ def test_apply_parent_summary_pass_preserves_already_embedded_table_and_figure_c
     assert table_html  # sanity: this fixture table really does produce real HTML
     feature.description = assemble_description(feature.description, table_html)
     feature.table_ids = [table.id]
-
-    figure = Figure(id="f1", caption="A wiring diagram.", source_ref=_sr())
-    feature.description = assemble_description(feature.description, f"> Figure: {figure.caption}")
-    feature.figure_ids = [figure.id]
+    feature.figure_ids = ["f1"]
 
     _apply_parent_summary_pass(
         nodes, [feature.local_id], FakeParentSummaryClient(), warnings,
-        tables_by_id={table.id: table}, figures_by_id_map={figure.id: figure},
+        tables_by_id={table.id: table},
     )
 
     assert warnings == []
     assert "A synthesized capability summary." in feature.description
     assert table_html in feature.description
-    assert "> Figure: A wiring diagram." in feature.description
+    assert "Figure" not in feature.description
 
 
 def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_direct_child() -> None:

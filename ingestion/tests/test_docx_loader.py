@@ -927,11 +927,14 @@ def test_load_docx_explicit_table_borders_still_detected_with_no_table_style() -
 
 def test_load_docx_end_to_end_folds_each_figure_into_its_own_section() -> None:
     # Same fixture, run through build_baseline_tree end to end: proves the
-    # placement fix actually changes which node each figure's Description
-    # ends up in, not just the block ordering in isolation. A real caption
-    # is supplied (describe_figure) because a placeholder-only figure is
-    # now omitted from the description entirely (see tree_builder.py's
-    # _figure_line) -- a caption is required to observe where it folds.
+    # placement fix actually changes which node each figure attaches to,
+    # not just the block ordering in isolation. A real caption is supplied
+    # (describe_figure) because a placeholder-only figure is omitted
+    # entirely (see tree_builder.py's _figure_line) -- a caption is
+    # required to observe where it attaches. A real caption is tracked via
+    # figure_ids only, never folded into description text (removed per
+    # explicit user request -- the Figures UI section already renders the
+    # thumbnail + caption independently of this text).
     from app.leveling.tree_builder import build_baseline_tree
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -942,11 +945,13 @@ def test_load_docx_end_to_end_folds_each_figure_into_its_own_section() -> None:
     section_one = next(n for n in tree.nodes if n.title == "Section One")
     section_two = next(n for n in tree.nodes if n.title == "Section Two")
 
-    assert "> Figure: diagram" in section_one.description
-    assert "> Figure: diagram" in section_two.description
-    # Each section's own figure did NOT leak into the other section.
-    assert section_one.description.count("> Figure:") == 1
-    assert section_two.description.count("> Figure:") == 1
+    assert "> Figure: diagram" not in section_one.description
+    assert "> Figure: diagram" not in section_two.description
+    # Each section's own figure attaches to it, and did NOT leak into the
+    # other section.
+    assert len(section_one.figure_ids) == 1
+    assert len(section_two.figure_ids) == 1
+    assert section_one.figure_ids != section_two.figure_ids
 
 
 def test_load_docx_unwraps_content_control_wrapped_heading_and_paragraph() -> None:

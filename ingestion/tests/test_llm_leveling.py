@@ -4571,13 +4571,14 @@ def test_build_survey_tree_never_does_a_live_caps_lookup_for_an_already_tuned_mo
     assert fake_client.show_model_calls == []
 
 
-def test_build_survey_tree_folds_a_real_figure_caption_deterministically() -> None:
-    # Confirmed real bug (user-reported, live review): a FIGURE-kind
-    # block's raw wire-format text ("[FIGURE: {caption or 'none'}]") was
-    # being folded into a deterministic node's description completely
-    # unfiltered, unlike the LLM-analysis path's render_section (which
-    # already uses _figure_line for exactly this). A real caption must
-    # still fold in, just formatted the same way render_section does.
+def test_build_survey_tree_never_folds_a_figure_caption_into_the_deterministic_description() -> None:
+    # A real caption must never leak into a deterministic node's description
+    # -- neither as the raw wire-format placeholder ("[FIGURE: {caption or
+    # 'none'}]") NOR as a formatted "> Figure: ..." line. The Figures UI
+    # section (NodeDetailPanel.tsx) already renders the thumbnail + caption
+    # independently of this text, via figure_ids alone -- embedding the
+    # caption again in the description was pure duplication (removed per
+    # explicit user request).
     path = "structural_survey_input.txt"
     doc = _structural_heading_doc().model_copy(
         update={
@@ -4592,8 +4593,8 @@ def test_build_survey_tree_folds_a_real_figure_caption_deterministically() -> No
     )
     tree = build_survey_tree(doc, FakeSectionAnalysisClient())
     last_leaf = next(n for n in tree.nodes if n.title == "The system shall do E.")
-    assert "> Figure: a wiring diagram of the power supply" in last_leaf.description
-    assert "[FIGURE:" not in last_leaf.description  # raw wire format never leaks through
+    assert "wiring diagram" not in last_leaf.description
+    assert "[FIGURE:" not in last_leaf.description  # raw wire format never leaks through either
 
 
 def test_build_survey_tree_parent_summary_preserves_a_deterministically_claimed_table() -> None:

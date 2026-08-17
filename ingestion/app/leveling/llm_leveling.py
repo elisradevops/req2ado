@@ -1072,7 +1072,6 @@ def _apply_det_parent_summary(
     model: str | None = None,
     progress_callback: ProgressCallback | None = None,
     tables_by_id: dict[str, Table] | None = None,
-    figures_by_id_map: dict[str, Figure] | None = None,
 ) -> None:
     """Runs the Epic/Feature title+description enhancement pass over EVERY
     deterministic subtree at once, only after all of them (and every
@@ -1107,7 +1106,7 @@ def _apply_det_parent_summary(
     _apply_parent_summary_pass(
         det_nodes, parent_ids, parent_summary_client, det_warnings,
         token_budget=token_budget, progress_callback=progress_callback,
-        tables_by_id=tables_by_id, figures_by_id_map=figures_by_id_map,
+        tables_by_id=tables_by_id,
     )
 
 
@@ -1319,50 +1318,49 @@ def _detect_deterministic_subtrees(
                     )
                 )
                 continue
-            # A FIGURE-kind block's raw text is the literal
-            # "[FIGURE: {caption or 'none'}]" wire format (see
-            # docx_loader.py/pdf_loader.py) -- folding it in unfiltered
-            # leaks the bare placeholder string into a deterministic
-            # node's description verbatim whenever a figure has no real
-            # caption (vision disabled, or genuinely non-informative).
-            # `_figure_line` already exists and is already proven correct
-            # for exactly this (the LLM-analysis path's `render_section`
-            # uses it), it just was never reused here -- None means "no
-            # real caption, fold nothing"; a real caption folds in as the
-            # same clearly-labeled "> Figure: ..." line the LLM path uses.
-            span_text = _figure_line(block) if block.kind == BlockKind.FIGURE else block.text
-            # Same known-issues item 20 pairing SURVEY's render_section
-            # already relies on -- None whenever this isn't a FIGURE-kind
-            # block, or figure_id_by_block_id wasn't supplied at all (an
-            # older/未-updated caller), matching pre-figure_ids behavior.
-            figure_id = (
-                figure_id_by_block_id.get(block.id)
-                if block.kind == BlockKind.FIGURE and figure_id_by_block_id is not None
-                else None
-            )
-            if span_text is None:
-                # No real caption (vision disabled/failed/judged insignificant --
-                # see _figure_line's own docstring) -- the figure still exists
-                # in the source though, so it's recorded as uncaptioned on
-                # whatever node its span belongs to rather than vanishing
-                # with zero trace, same as build_baseline_tree's identical
-                # fold-site fix.
+            if block.kind == BlockKind.FIGURE:
+                # Same known-issues item 20 pairing SURVEY's render_section
+                # already relies on -- None whenever figure_id_by_block_id
+                # wasn't supplied at all (an older/未-updated caller),
+                # matching pre-figure_ids behavior.
+                figure_id = (
+                    figure_id_by_block_id.get(block.id) if figure_id_by_block_id is not None else None
+                )
+                figure_line = _figure_line(block)
+                if figure_line is None:
+                    # No real caption (vision disabled/failed/judged insignificant --
+                    # see _figure_line's own docstring) -- the figure still exists
+                    # in the source though, so it's recorded as uncaptioned on
+                    # whatever node its span belongs to rather than vanishing
+                    # with zero trace, same as build_baseline_tree's identical
+                    # fold-site fix.
+                    if figure_id is not None:
+                        current_target.uncaptioned_figure_ids.append(figure_id)
+                        figure = fig_map.get(figure_id)
+                        if figure is not None and figure.caption_status == "insignificant":
+                            current_target.insignificant_figure_ids.append(figure_id)
+                    continue
+                # A real caption is tracked via figure_ids only, never folded
+                # into description text -- the Figures UI section
+                # (NodeDetailPanel.tsx) already renders the thumbnail +
+                # caption there independently of this node's description, so
+                # embedding the same caption again as an inline
+                # "> Figure: ..." line was pure duplication (removed per
+                # explicit user request), matching build_baseline_tree's
+                # identical fix.
+                current_target.source_ref = _widen_page_end(current_target.source_ref, block.source_ref)
                 if figure_id is not None:
-                    current_target.uncaptioned_figure_ids.append(figure_id)
-                    figure = fig_map.get(figure_id)
-                    if figure is not None and figure.caption_status == "insignificant":
-                        current_target.insignificant_figure_ids.append(figure_id)
+                    current_target.figure_ids.append(figure_id)
                 continue
+
             current_target.description = assemble_description(
-                current_target.description, span_text,
+                current_target.description, block.text,
             )
             current_target.fidelity_hash = _hash_description(current_target.description)
             current_target.identity_hash = _hash_identity(
                 current_target.description, current_target.source_ref,
             )
             current_target.source_ref = _widen_page_end(current_target.source_ref, block.source_ref)
-            if figure_id is not None:
-                current_target.figure_ids.append(figure_id)
 
         for table in doc.tables:
             if table.id in claimed_table_ids:
@@ -1430,7 +1428,7 @@ def _detect_deterministic_subtrees(
     if not claimed_heading_block_ids and not claimed_table_ids:
         _apply_det_parent_summary(
             det_nodes, det_warnings, parent_summary_client, model, progress_callback,
-            tables_by_id={t.id: t for t in doc.tables}, figures_by_id_map=figures_by_id(doc.figures),
+            tables_by_id={t.id: t for t in doc.tables},
         )
         return det_nodes, det_warnings, doc
 
@@ -1461,7 +1459,7 @@ def _detect_deterministic_subtrees(
 
     _apply_det_parent_summary(
         det_nodes, det_warnings, parent_summary_client, model, progress_callback,
-        tables_by_id={t.id: t for t in doc.tables}, figures_by_id_map=figures_by_id(doc.figures),
+        tables_by_id={t.id: t for t in doc.tables},
     )
     return det_nodes, det_warnings, llm_doc
 

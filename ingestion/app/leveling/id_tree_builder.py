@@ -23,7 +23,7 @@ import hashlib
 import re
 from typing import Protocol
 
-from app.canonical.model import Figure, SourceRef, Table
+from app.canonical.model import SourceRef, Table
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.id_hierarchy import HierarchyRow
@@ -320,7 +320,6 @@ def _apply_parent_summary_pass(
     token_budget: int = _PARENT_SUMMARY_TOKEN_BUDGET,
     progress_callback: ProgressCallback | None = None,
     tables_by_id: dict[str, Table] | None = None,
-    figures_by_id_map: dict[str, Figure] | None = None,
 ) -> None:
     """Fail-open, same convention as `_apply_title_tag_pass`/
     `_apply_synthesis_pass`: any exception or missing/malformed response
@@ -448,18 +447,22 @@ def _apply_parent_summary_pass(
             if isinstance(raw_description, str) and raw_description.strip():
                 description = raw_description.strip()
                 # This pass replaces the whole description with a fresh
-                # synthesized summary -- but any table/figure already folded
-                # into this node's span (see _detect_deterministic_subtrees'
+                # synthesized summary -- but any table already folded into
+                # this node's span (see _detect_deterministic_subtrees'
                 # heading-span-claiming loop, which runs BEFORE this pass)
                 # embedded its real content into the OLD description via
                 # assemble_description. Overwriting wholesale would silently
-                # discard that content while node.table_ids/figure_ids (set
-                # by that same earlier pass, untouched here) keep pointing
-                # at it -- exactly the "chip with zero content" invariant
-                # violation this codebase already fixed once for the
-                # LLM-authored path (see _author_branch_content's own
-                # table_ids/html pairing). Re-embed the same tables/figures
-                # here so the invariant holds for this path too.
+                # discard that content while node.table_ids (set by that
+                # same earlier pass, untouched here) keeps pointing at it --
+                # exactly the "chip with zero content" invariant violation
+                # this codebase already fixed once for the LLM-authored path
+                # (see _author_branch_content's own table_ids/html pairing).
+                # Re-embed the same tables here so the invariant holds for
+                # this path too. Figures need no equivalent re-embed: a
+                # figure caption is never folded into description text in
+                # the first place (see _detect_deterministic_subtrees'
+                # identical figure-handling fix) -- node.figure_ids alone
+                # drives the Figures UI section, independent of this text.
                 for table_id in node.table_ids:
                     table = (tables_by_id or {}).get(table_id)
                     if table is None:
@@ -467,10 +470,6 @@ def _apply_parent_summary_pass(
                     table_html = _table_to_html(table)
                     if table_html:
                         description = assemble_description(description, table_html)
-                for figure_id in node.figure_ids:
-                    figure = (figures_by_id_map or {}).get(figure_id)
-                    if figure is not None and figure.caption:
-                        description = assemble_description(description, f"> Figure: {figure.caption}")
                 node.description = description
                 node.fidelity_hash = _hash_description(node.description)
 

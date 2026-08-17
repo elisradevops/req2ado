@@ -913,12 +913,8 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
             depth, display_text = resolve_block_depth(block)
 
             if depth is None:
-                # figure_id is None for every non-FIGURE block (the common
-                # case) -- looked up once here so both branches below (real
-                # caption vs none) can use the SAME value without a second
-                # BlockKind check.
-                figure_id = figure_map.get(block.id) if block.kind == BlockKind.FIGURE else None
                 if block.kind == BlockKind.FIGURE:
+                    figure_id = figure_map.get(block.id)
                     figure_line = _figure_line(block)
                     if figure_line is None:
                         # Caption failed / vision disabled / the vision call
@@ -940,7 +936,21 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                             if figure is not None and figure.caption_status == "insignificant":
                                 nodes_by_id[stack[-1][1]].insignificant_figure_ids.append(figure_id)
                         continue
-                    display_text = figure_line
+                    # A real caption is tracked via figure_ids only, never
+                    # folded into description text -- the Figures UI section
+                    # (NodeDetailPanel.tsx) already renders the thumbnail +
+                    # caption there independently of this node's description,
+                    # so embedding the same caption again as an inline
+                    # "> Figure: ..." line was pure duplication (removed per
+                    # explicit user request). A figure preceding any heading
+                    # (stack empty) has no node to attach figure_ids to --
+                    # dropped silently, same precedent as an uncaptioned
+                    # front-matter figure just above.
+                    if stack and figure_id is not None:
+                        open_node = nodes_by_id[stack[-1][1]]
+                        open_node.source_ref = _widen_page_end(open_node.source_ref, block.source_ref)
+                        open_node.figure_ids.append(figure_id)
+                    continue
 
                 if _is_unsupported_content_note(block):
                     # A loader diagnostic placeholder (e.g. pdf_loader.py's
@@ -967,8 +977,6 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     open_node.fidelity_hash = _hash_description(open_node.description)
                     open_node.identity_hash = _hash_identity(open_node.description, open_node.source_ref)
                     open_node.source_ref = _widen_page_end(open_node.source_ref, block.source_ref)
-                    if figure_id is not None:
-                        open_node.figure_ids.append(figure_id)
                 else:
                     if orphan_source_ref is None:
                         orphan_source_ref = block.source_ref

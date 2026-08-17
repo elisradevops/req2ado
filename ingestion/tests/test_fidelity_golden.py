@@ -25,14 +25,13 @@ def _golden_doc() -> CanonicalDoc:
 def test_description_is_byte_for_byte_verbatim_join_of_folded_blocks() -> None:
     tree = build_baseline_tree(_golden_doc())
     requirement_node = tree.nodes[1]
-    # A FIGURE block's caption is rendered via _figure_line, not folded
-    # verbatim -- the raw "[FIGURE: ...]" wire format never reaches a work
-    # item description (see tree_builder.py's BASELINE fold path).
+    # A FIGURE block's caption is tracked via figure_ids only -- never
+    # folded into description text at all (removed per explicit user
+    # request; see tree_builder.py's BASELINE fold path).
     expected = (
         "1.1 3.3V Rail Requirements"
         "\nOPEN: confirm connector part number before release."
         "\nTBD: verify against thermal derating curve."
-        "\n> Figure: rail schematic"
     )
     assert requirement_node.description == expected
 
@@ -49,10 +48,11 @@ def test_tbd_marker_text_is_preserved_verbatim_in_description() -> None:
     assert "TBD: verify against thermal derating curve." in requirement_node.description
 
 
-def test_figure_caption_is_rendered_as_a_blockquote_in_description() -> None:
+def test_figure_caption_is_not_folded_into_description() -> None:
     tree = build_baseline_tree(_golden_doc())
     requirement_node = tree.nodes[1]
-    assert "> Figure: rail schematic" in requirement_node.description
+    assert "> Figure: rail schematic" not in requirement_node.description
+    assert "rail schematic" not in requirement_node.description
 
 
 def test_every_node_passes_verify_fidelity() -> None:
