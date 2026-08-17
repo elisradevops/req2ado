@@ -546,6 +546,16 @@ export async function runPipelineJob(
     const figureDescriptions = ((doc.figures ?? []) as LeveledFigure[])
       .map((figure, index) => ({ figureIndex: index + 1, caption: figure.caption }))
       .filter((entry): entry is { figureIndex: number; caption: string } => Boolean(entry.caption));
+    // Every figure with a real caption, regardless of node attachment --
+    // used below to keep the prune step from deleting a figure this SAME
+    // panel still promises an image for (see that comment for the full
+    // story). Read straight off `figure.id`, not re-derived from
+    // figureIndex arithmetic above -- two independent off-by-one traps
+    // (figureIndex is 1-based, figure.id's own numeric suffix is 0-based)
+    // already bit this exact reconciliation once during live debugging.
+    const captionedFigureIds = ((doc.figures ?? []) as LeveledFigure[])
+      .filter((figure) => Boolean(figure.caption))
+      .map((figure) => figure.id);
 
     // ingestion's /level call runs infer_hierarchy + generate_requirements
     // internally in one HTTP round trip with no intermediate signal back to
@@ -688,18 +698,28 @@ export async function runPipelineJob(
     // Ingestion stored a JobFigureFile row for EVERY figure at ingest time
     // (relevance wasn't known yet then) -- now that the real tree exists,
     // prune down to only the figures some node's figureIds/uncaptionedFigureIds
-    // actually references (see JobFigureFile's own Prisma model comment for
-    // the full lifecycle). Both lists are unioned: an uncaptioned figure's
-    // bytes must be retained too (it might still get manually
-    // captioned/reviewed later), not just the ones that already got a
-    // caption. Best-effort: a failure here must never fail the whole job
-    // over what's purely a storage-cost cleanup step -- a leftover row just
-    // means one extra figure sticks around until confirm() deletes it on
-    // successful attachment upload, or the retention sweep's safety net
-    // eventually reclaims it.
+    // actually references, UNION the figures the job-wide figureDescriptions
+    // panel still shows a caption for (see JobFigureFile's own Prisma model
+    // comment for the full lifecycle). The figureDescriptions union is a
+    // real, confirmed fix, not defensive padding: a figure Stage 2 mapping
+    // excludes from every node (decorative scope, see excludedFigureIds)
+    // is correctly absent from both node-level lists, but figureDescriptions
+    // itself is scoped document-wide and keeps showing its real caption
+    // regardless of exclusion -- without this, that panel's own promise
+    // ("full vision-model output for each embedded figure") broke for
+    // exactly the excluded-but-captioned figures: a real, permanent 404 on
+    // a fully-completed job, reproduced live, not the known SSE-vs-storage
+    // race the retry budget already covers. Best-effort: a failure here
+    // must never fail the whole job over what's purely a storage-cost
+    // cleanup step -- a leftover row just means one extra figure sticks
+    // around until confirm() deletes it on successful attachment upload,
+    // or the retention sweep's safety net eventually reclaims it.
     try {
       const referencedFigureIds = [
-        ...new Set(diffInputs.flatMap((node) => [...(node.figureIds ?? []), ...(node.uncaptionedFigureIds ?? [])])),
+        ...new Set([
+          ...diffInputs.flatMap((node) => [...(node.figureIds ?? []), ...(node.uncaptionedFigureIds ?? [])]),
+          ...captionedFigureIds,
+        ]),
       ];
       // Real, confirmed bug: Prisma's `notIn: []` matches EVERY row, not
       // zero, so a job where NO node references any figure at all

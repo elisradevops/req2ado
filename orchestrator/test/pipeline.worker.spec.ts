@@ -955,6 +955,40 @@ describe('runPipelineJob', () => {
     });
   });
 
+  it('prune union: a captioned figure excluded from every node (Stage-2 decorative mapping) is still kept, since figureDescriptions still promises an image for it', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({
+      blocks: [],
+      figures: [
+        { id: 'f0', caption: 'A block diagram showing power distribution.' },
+        { id: 'f1', caption: null },
+        { id: 'f2', caption: 'Excluded as decorative, but still captioned.' },
+      ],
+    });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [{ local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1', figure_ids: ['f0'] }],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: 'CUST-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.jobFigureFile.deleteMany).toHaveBeenCalledWith({
+      where: { jobId: 'job-1', figureId: { notIn: ['f0', 'f2'] } },
+    });
+  });
+
   it('supplies a dedupCheck callback to dryRunService.diff that calls ingestionClient.checkDuplicate with (description, areaPath)', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({
