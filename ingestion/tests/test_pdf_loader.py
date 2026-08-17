@@ -230,6 +230,46 @@ def test_load_pdf_skips_a_degenerate_2x2_image_without_calling_describe_figure(m
     assert len(figure_blocks) == 1
 
 
+def test_load_pdf_suppresses_a_running_header_image_repeated_on_every_page() -> None:
+    # Real gap this closes (Gap B): direct geometry probe against a real
+    # 53-page ICD (cubeadcs_icd.pdf) found byte-identical small images
+    # repeating in the page margin on most pages -- a doc-id/page marker
+    # rendered as a raster image, the same class of artifact
+    # _detect_boilerplate_templates already handles for TEXT headers/
+    # footers. See build_repeating_header_image_fixture.py's own docstring.
+    describe_calls: list[bytes] = []
+
+    def spy_describe(image_bytes: bytes) -> str:
+        describe_calls.append(image_bytes)
+        return "A real diagram."
+
+    doc = load_pdf(str(FIXTURES / "repeating_header_image.pdf"), describe_figure=spy_describe)
+
+    assert len(doc.figures) == 1
+    assert len(describe_calls) == 1
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 1
+
+
+def test_load_pdf_does_not_suppress_a_real_figure_that_happens_to_repeat_on_a_few_pages() -> None:
+    # Over-merge safety net (direct analogue of
+    # test_load_pdf_does_not_merge_a_genuinely_narrow_real_column): proves
+    # the suppression fix's two gates -- recurrence fraction and margin
+    # position -- are each independently required. An image repeated on
+    # only 2/10 pages (below the recurrence fraction) AND a distinct image
+    # repeated on 8/10 pages but placed in the page BODY (outside the
+    # margin band) must both survive.
+    doc = load_pdf(str(FIXTURES / "repeating_header_image_safety_net.pdf"))
+    assert len(doc.figures) == 10
+
+
+def test_load_pdf_keeps_figure_ids_contiguous_when_a_repeating_image_is_suppressed() -> None:
+    doc = load_pdf(str(FIXTURES / "repeating_header_image.pdf"))
+    assert [f.id for f in doc.figures] == ["f0"]
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 1
+
+
 def test_load_pdf_flags_filled_acroform_fields_with_a_note() -> None:
     from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.lib.pagesizes import letter

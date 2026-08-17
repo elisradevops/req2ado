@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,8 @@ from pytesseract import Output
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
 from app.leveling.numbering import parse_numbering, numbering_depth
+
+logger = logging.getLogger(__name__)
 
 # --- Phase 4 (docs/superpowers/specs/2026-08-12-table-fidelity-design.md):
 # real best-effort/heuristic PDF table styling extraction. Everything below
@@ -1301,6 +1304,48 @@ def _detect_boilerplate_templates(pages_first_lines: list[str], pages_last_lines
     return _templates(pages_first_lines), _templates(pages_last_lines)
 
 
+def _detect_boilerplate_images(
+    all_pages_images: list[list[tuple[dict, object]]],
+) -> set[tuple[str, float, float]]:
+    """Image analogue of `_detect_boilerplate_templates`: returns the set of
+    (byte_hash, rounded_x0, rounded_top) keys identifying an image that
+    recurs on at least `_BOILERPLATE_RECURRENCE_FRACTION` of pages -- same
+    recurrence discipline used for header/footer TEXT lines, applied to
+    images instead. `count >= 2` is a required guard for the same reason
+    documented on `_detect_boilerplate_templates`.
+
+    Deliberately does NOT check `_HEADER_FOOTER_MARGIN_POINTS` here -- that
+    gate is applied separately at the suppression call site, mirroring how
+    the margin check for text boilerplate is independent of the recurrence
+    check above (see the load loop's own header/footer suppression, which
+    checks the margin position AND template membership as two separate
+    conditions). A real figure that happens to repeat a few times but sits
+    in the page body must survive; only a recurring image ANCHORED in the
+    margin is a running header/footer artifact.
+
+    Confirmed live (cubeadcs_icd.pdf, 53 pages): 3 distinct byte-identical
+    image classes recur across many pages, all placed in the margin band --
+    a running page marker/doc-id stamp rendered as a raster image, the same
+    class of artifact `_detect_boilerplate_templates` already handles for
+    text."""
+    from collections import Counter
+
+    page_count = len(all_pages_images)
+    keys_per_page: list[set[tuple[str, float, float]]] = []
+    for page_images in all_pages_images:
+        page_keys: set[tuple[str, float, float]] = set()
+        for bbox, pypdf_image in page_images:
+            try:
+                image_hash = hashlib.sha256(pypdf_image.data).hexdigest()
+            except Exception:  # noqa: BLE001 -- an undecodable image is simply never a boilerplate candidate
+                continue
+            page_keys.add((image_hash, round(bbox["x0"], 1), round(bbox["top"], 1)))
+        keys_per_page.append(page_keys)
+    counts = Counter(key for page_keys in keys_per_page for key in page_keys)
+    threshold = page_count * _BOILERPLATE_RECURRENCE_FRACTION
+    return {key for key, count in counts.items() if count >= 2 and count >= threshold}
+
+
 # A real content figure in this tool's fixtures/documents is never smaller
 # than ~50px in either dimension (a small badge/icon at worst); the existing
 # test fixture pdf_with_figure.pdf's own figure is 10x10, so 8 leaves it a
@@ -1421,6 +1466,31 @@ def load_pdf(
         pages_first_lines = [lines[0]["text"] if lines else "" for lines in all_pages_lines]
         pages_last_lines = [lines[-1]["text"] if lines else "" for lines in all_pages_lines]
         header_templates, footer_templates = _detect_boilerplate_templates(pages_first_lines, pages_last_lines)
+
+        # First pass (Gap B): every page's own images (full pdfplumber bbox
+        # paired with each pypdf image, same best-effort positional pairing
+        # documented at the per-page build below), collected once so
+        # cross-page image recurrence can be checked across the WHOLE
+        # document before the real per-page build decides what to keep --
+        # same "recurrence is a whole-document property" discipline as the
+        # header/footer TEXT first pass above. Skipped under `text_only`
+        # (that mode never enumerates images at all -- see load_pdf's own
+        # docstring).
+        all_pages_images: list[list[tuple[dict, object]]] = [[] for _ in pdf.pages]
+        if not text_only:
+            pdf_reader = cached_pdf_reader(path)
+            for page_index, plumber_page in enumerate(pdf.pages):
+                pypdf_page = pdf_reader.pages[page_index]
+                plumber_images = plumber_page.images
+                all_pages_images[page_index] = [
+                    (
+                        plumber_images[i] if i < len(plumber_images) else {"x0": 0.0, "top": 0.0, "x1": 0.0, "bottom": 0.0},
+                        pypdf_image,
+                    )
+                    for i, pypdf_image in enumerate(pypdf_page.images)
+                ]
+        boilerplate_image_keys = _detect_boilerplate_images(all_pages_images)
+        suppressed_boilerplate_image_count = 0
 
         heading_counters: list[int] = []
         size_ranks: dict[float, int] = {}
@@ -1642,8 +1712,9 @@ def load_pdf(
                 table_bbox_by_id[f"t{table_id}"] = found_table.bbox
                 table_id += 1
 
-            # pdfplumber's own page.images gives each image region's bbox
-            # (for real-position ordering, same as tables above) but not a
+            # pdfplumber's own page.images gives each image region's full
+            # bbox (for real-position ordering, same as tables above, and
+            # for the boilerplate-image recurrence check below) but not a
             # standalone-decodable image file; pypdf's page.images gives the
             # real decodable bytes describe_figure needs but no position.
             # Best-effort correspondence: pdfplumber and pypdf both walk a
@@ -1656,19 +1727,16 @@ def load_pdf(
             # inline vs. XObject images can be counted differently), every
             # pypdf image is still captured (matching pre-fix behavior of
             # never dropping an image), just without a real position for
-            # any index past what pdfplumber reported.
+            # any index past what pdfplumber reported. Pairing itself was
+            # already done once in the first pass above (`all_pages_images`)
+            # -- reused here rather than recomputed.
             # text_only skips the pypdf image-enumeration pass too -- see
             # load_pdf's own docstring. An empty page_images list here
             # degrades to the exact same code path a page with zero images
             # already takes below.
-            page_images: list[tuple[float, object]] = []
-            if not text_only:
-                pypdf_page = cached_pdf_reader(path).pages[page_number - 1]
-                plumber_tops = [im["top"] for im in page.images]
-                page_images = [
-                    (plumber_tops[i] if i < len(plumber_tops) else 0.0, pypdf_image)
-                    for i, pypdf_image in enumerate(pypdf_page.images)
-                ]
+            page_images: list[tuple[float, dict, object]] = [
+                (bbox["top"], bbox, pypdf_image) for bbox, pypdf_image in all_pages_images[page_number - 1]
+            ]
 
             # Merge paragraphs, tables, and images into real document order
             # by top position, then walk that merged order assigning ONE
@@ -1686,7 +1754,7 @@ def load_pdf(
             merged = sorted(
                 [("paragraph", top, (text, size, is_bold, top)) for text, top, size, is_bold in paragraphs_with_meta]
                 + [("table", bbox[1], table) for bbox, table in zip(table_bboxes, page_tables)]
-                + [("image", top, pypdf_image) for top, pypdf_image in page_images],
+                + [("image", top, (bbox, pypdf_image)) for top, bbox, pypdf_image in page_images],
                 key=lambda entry: entry[1],
             )
             offset = 0
@@ -1825,7 +1893,7 @@ def load_pdf(
                         )
                     )
                 else:
-                    pypdf_image = item
+                    bbox, pypdf_image = item
                     if _is_degenerate_pdf_image(pypdf_image):
                         # Not a real figure -- see _is_degenerate_pdf_image's
                         # own docstring/constant comment. Skipped before
@@ -1833,6 +1901,29 @@ def load_pdf(
                         # this merged entry never existed), so no vision
                         # call, no Figure, no [FIGURE: ...] placeholder
                         # block, and no gap in the remaining figure ids.
+                        continue
+                    # Gap B: a recurring image (see _detect_boilerplate_images)
+                    # ANCHORED in the page margin is a running header/footer
+                    # artifact (a doc-id/page-number stamp rendered as a
+                    # raster image), not a real figure -- same two-gate
+                    # discipline (recurrence + margin position) as the text
+                    # header/footer suppression above, each independently
+                    # required: a real figure that merely repeats a few
+                    # times in the page BODY must still survive. Skipped
+                    # before touching `offset`/`block_id`/`figure_id`, same
+                    # shape as the degenerate-image check just above.
+                    try:
+                        image_key: tuple[str, float, float] | None = (
+                            hashlib.sha256(pypdf_image.data).hexdigest(), round(bbox["x0"], 1), round(bbox["top"], 1),
+                        )
+                    except Exception:  # noqa: BLE001 -- an undecodable image can never match a boilerplate key
+                        image_key = None
+                    if (
+                        image_key is not None
+                        and image_key in boilerplate_image_keys
+                        and (bbox["top"] <= _HEADER_FOOTER_MARGIN_POINTS or bbox["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS)
+                    ):
+                        suppressed_boilerplate_image_count += 1
                         continue
                     start = offset
                     end = start + 1
@@ -1860,6 +1951,12 @@ def load_pdf(
                     )
                     block_id += 1
                     figure_id += 1
+
+    if suppressed_boilerplate_image_count > 0:
+        logger.warning(
+            "Suppressed %d recurring margin-band image(s) as running header/footer artifacts",
+            suppressed_boilerplate_image_count,
+        )
 
     # Phase 3a (Task 5): cross-page table continuation merge -- must run
     # AFTER the full per-page loop above finishes (needs every table's real
