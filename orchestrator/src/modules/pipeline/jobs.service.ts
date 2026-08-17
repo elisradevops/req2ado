@@ -344,6 +344,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // doc comment. Defaults to [] for a historical job (null column), same
     // convention as warnings above.
     figureDescriptions: { figureIndex: number; caption: string }[];
+    // {tableId, caption}[] -- see Job.tableDescriptions' schema.prisma doc
+    // comment. Defaults to [] for a historical job (null column), same
+    // convention as figureDescriptions above.
+    tableDescriptions: { tableId: string; caption: string }[];
     // Doc-wide figure/table ids the mapping stage judged decorative/
     // irrelevant, or that failed mapping (see Job.excludedFigureIds/
     // excludedTableIds' schema.prisma doc comment). Defaults to [] for a
@@ -373,6 +377,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [],
       kbCitations: job.kbCitations,
       figureDescriptions: (job.figureDescriptions as { figureIndex: number; caption: string }[] | null) ?? [],
+      tableDescriptions: (job.tableDescriptions as { tableId: string; caption: string }[] | null) ?? [],
       excludedFigureIds: (job.excludedFigureIds as string[] | null) ?? [],
       excludedTableIds: (job.excludedTableIds as string[] | null) ?? [],
       createdAt: job.createdAt,

@@ -91,6 +91,11 @@ export function JobDetail(): React.ReactElement {
   // (before/after the vision call) collapse to one entry, the second
   // overwriting the first once the real caption arrives.
   const [figureCaptionsByIndex, setFigureCaptionsByIndex] = useState<Record<number, string>>({});
+  // No live-narration counterpart, unlike figureCaptionsByIndex above --
+  // tables are never narrated during a run, so this is populated once from
+  // Job.tableDescriptions in the fetch effect below and never merged with
+  // anything else.
+  const [tableDescriptions, setTableDescriptions] = useState<{ tableId: string; caption: string }[]>([]);
   // Populated directly from the SSE callback, same reasoning as
   // figureCaptionsByIndex above -- keyed by branchIndex so a section's
   // result stays visible regardless of the 50-narration cap on the general
@@ -176,6 +181,7 @@ export function JobDetail(): React.ReactElement {
           }
           return { ...seeded, ...current };
         });
+        setTableDescriptions(job.tableDescriptions ?? []);
         setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
         setStartedAt(job.createdAt);
         setAreaPath(job.areaPath);
@@ -288,6 +294,12 @@ export function JobDetail(): React.ReactElement {
               setKbCitations(job.kbCitations ?? []);
               setExcludedFigureIds(job.excludedFigureIds ?? []);
               setExcludedTableIds(job.excludedTableIds ?? []);
+              // No live-narration counterpart (tables are never narrated
+              // during a run, see tableDescriptions' own useState doc
+              // comment) -- this refetch is the only point after the
+              // mount-time loadJob() where a freshly-completed job's real
+              // captions become available.
+              setTableDescriptions(job.tableDescriptions ?? []);
             });
           }
         },
@@ -427,6 +439,14 @@ export function JobDetail(): React.ReactElement {
   const captionByFigureId = useMemo(
     () => Object.fromEntries(figureDescriptions.map((d) => [d.figureId, d.caption])),
     [figureDescriptions],
+  );
+
+  // tableId -> Table.caption -- lets NodeDetailPanel's own per-entry Tables
+  // section (entry.tableIds) show a readable title without needing its own
+  // lookup over the raw tableDescriptions array.
+  const captionByTableId = useMemo(
+    () => Object.fromEntries(tableDescriptions.map((d) => [d.tableId, d.caption])),
+    [tableDescriptions],
   );
 
   const sectionResults = useMemo<SectionResultEntry[]>(
@@ -1138,6 +1158,7 @@ export function JobDetail(): React.ReactElement {
                 diffByLocalId={diffByLocalId}
                 descendantCountsByLocalId={descendantCountsByLocalId}
                 captionByFigureId={captionByFigureId}
+                captionByTableId={captionByTableId}
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
                 onAttachFigure={handleAttachFigure}

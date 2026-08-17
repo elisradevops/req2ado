@@ -33,6 +33,13 @@ export interface JobDetail {
   // figureCaptionsByIndex state live SSE narration otherwise fills in
   // during a run.
   figureDescriptions?: FigureDescriptionEntry[];
+  // Persisted table captions (see Job.tableDescriptions' schema.prisma doc
+  // comment) -- lets a "Table tN" chip (NodeDetailPanel.tsx) show a readable
+  // title instead of the raw internal id. Keyed by the table's own id, not
+  // an array position -- unlike figureDescriptions there is no live-SSE
+  // narration counterpart to reconcile with (tables are never narrated
+  // figure-by-figure), so this is the only source for it.
+  tableDescriptions?: { tableId: string; caption: string }[];
   // Figures/tables STAGE 2 mapping (see ingestion's
   // _map_figures_tables_to_nodes) judged decorative/irrelevant rather than
   // attaching to any node -- a real, named category, NOT an exhaustive

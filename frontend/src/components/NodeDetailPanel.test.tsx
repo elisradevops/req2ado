@@ -505,11 +505,25 @@ describe('NodeDetailPanel', () => {
       ...patch,
     });
 
-    it('renders a neutral chip per tableId when present', () => {
+    it('renders a friendly 1-based ordinal fallback per tableId when no caption is available', () => {
+      // t3/t7 are the loader's own 0-based ids -- the fallback must never
+      // show the raw internal id, per the resolved "what is even means?!"
+      // finding.
       renderPanel(<NodeDetailPanel entry={tableEntry({ tableIds: ['t3', 't7'] })} />);
       expect(screen.getByText('Tables')).toBeInTheDocument();
-      expect(screen.getByText('Table t3')).toBeInTheDocument();
-      expect(screen.getByText('Table t7')).toBeInTheDocument();
+      expect(screen.getByText('Table 4')).toBeInTheDocument();
+      expect(screen.getByText('Table 8')).toBeInTheDocument();
+    });
+
+    it('renders the real caption instead of the ordinal fallback when captionByTableId has an entry', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={tableEntry({ tableIds: ['t3', 't7'] })}
+          captionByTableId={{ t3: 'Summary of CubeADCS Variants' }}
+        />,
+      );
+      expect(screen.getByText('Summary of CubeADCS Variants')).toBeInTheDocument();
+      expect(screen.getByText('Table 8')).toBeInTheDocument();
     });
 
     it('renders no Tables block when tableIds is absent or empty', () => {

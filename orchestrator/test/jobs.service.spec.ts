@@ -2983,6 +2983,10 @@ describe('JobsService.getById', () => {
       // A historical job predates the figureDescriptions column -- a null
       // column defaults to [], same convention as warnings above.
       figureDescriptions: [],
+      // A historical job predates the tableDescriptions column entirely
+      // (absent from the mocked row) -- defaults to [], same convention as
+      // figureDescriptions above.
+      tableDescriptions: [],
       // A historical job predates the excludedFigureIds/excludedTableIds
       // columns entirely (absent from the mocked row) -- defaults to [],
       // same convention as figureDescriptions above.

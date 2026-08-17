@@ -206,6 +206,11 @@ interface LeveledFigure {
   caption: string | null;
 }
 
+interface LeveledTable {
+  id: string;
+  caption: string | null;
+}
+
 interface LeveledSourceRef {
   document_path: string;
   start_offset: number;
@@ -557,6 +562,16 @@ export async function runPipelineJob(
       .filter((figure) => Boolean(figure.caption))
       .map((figure) => figure.id);
 
+    // Table.caption, keyed by the table's own id (unlike figureDescriptions'
+    // array-position figureIndex) -- a "Table tN" chip (NodeDetailPanel.tsx)
+    // already has the real tableId in hand from node.table_ids, so no
+    // index-based translation is needed here. Same "nothing to show" rule
+    // as figureDescriptions: a table with no real caption is simply absent,
+    // not an entry with a null/empty caption.
+    const tableDescriptions = ((doc.tables ?? []) as LeveledTable[])
+      .filter((table) => Boolean(table.caption))
+      .map((table) => ({ tableId: table.id, caption: table.caption as string }));
+
     // ingestion's /level call runs infer_hierarchy + generate_requirements
     // internally in one HTTP round trip with no intermediate signal back to
     // the orchestrator (SURVEY mode included) — see job-events.publisher.ts's
@@ -881,6 +896,7 @@ export async function runPipelineJob(
           relevance: c.relevance,
         })) as any,
         figureDescriptions: figureDescriptions as any,
+        tableDescriptions: tableDescriptions as any,
         // Doc-wide figure/table ids the mapping stage judged decorative/
         // irrelevant, or that failed mapping -- NOT an exhaustive
         // accounting of every table/figure not attached to a node (see

@@ -95,6 +95,17 @@ model Job {
   // prisma.job.update as warnings/kbCitations above). Nullable: historical
   // jobs predate this column, same convention as warnings/userId.
   figureDescriptions Json?
+  // {tableId, caption}[] -- Table.caption for every table that has one (see
+  // doc.tables, ingestion's canonical Table model), persisted so a "Table
+  // tN" chip (NodeDetailPanel.tsx) can show a readable title instead of the
+  // raw internal id. Only tables with a real caption are included, same
+  // "nothing to show" convention figureDescriptions above already uses --
+  // a table with no caption falls back to a friendlier ordinal derived from
+  // its id client-side, not an entry here. Populated in the SAME
+  // prisma.job.update as figureDescriptions/warnings/kbCitations. Nullable:
+  // historical jobs predate this column, same convention as
+  // figureDescriptions.
+  tableDescriptions Json?
   // Doc-wide figure/table local ids the mapping stage (Part B) judged
   // decorative/irrelevant, or that failed mapping (WorkItemTree.
   // excluded_figure_ids/excluded_table_ids, ingestion's /level response) --

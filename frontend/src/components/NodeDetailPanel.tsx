@@ -48,6 +48,18 @@ export function canEditEntry(entry: DryRunDiffEntry, jobStatus?: string | null):
   return editabilityOf(entry, jobStatus).editable;
 }
 
+// Every loader mints table ids as `t{0-based index}` (pdf_loader.py,
+// docx_loader.py, pptx_loader.py, xlsx_loader.py all share this exact
+// convention) -- a reviewer seeing the raw id ("Table t7") has no way to
+// know that. Falls back to the raw id itself if the format is ever
+// unrecognized (a network response, not a value this file controls), so
+// this never renders something worse than what it replaces.
+function tableChipLabel(tableId: string, caption: string | undefined): string {
+  if (caption) return caption;
+  const match = /^t(\d+)$/.exec(tableId);
+  return match ? `Table ${Number(match[1]) + 1}` : `Table ${tableId}`;
+}
+
 export function NodeDetailPanel({
   jobId,
   entry,
@@ -58,6 +70,7 @@ export function NodeDetailPanel({
   parentEntry,
   addChildSlot,
   captionByFigureId,
+  captionByTableId,
   onSave,
   onRescore,
   onAttachFigure,
@@ -103,6 +116,12 @@ export function NodeDetailPanel({
   // (e.g. a caption event that never fired, or a job reopened whose live
   // narration history hasn't loaded yet) just render without caption text.
   captionByFigureId?: Record<string, string>;
+  // tableId -> Table.caption, same scheme entry.tableIds references
+  // (computed by the caller, JobDetail.tsx, from Job.tableDescriptions).
+  // A table with no real caption is absent here -- the Tables chip below
+  // falls back to a friendlier ordinal derived from the id instead of the
+  // raw internal id.
+  captionByTableId?: Record<string, string>;
   // Manual "Upload to ADO" action for one of entry.figureIds -- see the
   // Figures section below and JobsService.attachFigureToAdo's own doc
   // comment for why this exists alongside confirm()'s automatic
@@ -626,7 +645,7 @@ export function NodeDetailPanel({
           <div className="mt-1 flex flex-wrap gap-1.5">
             {entry.tableIds.map((tableId) => (
               <Chip key={tableId} className="border border-hairline-strong bg-surface-alt text-ink-2">
-                Table {tableId}
+                {tableChipLabel(tableId, captionByTableId?.[tableId])}
               </Chip>
             ))}
           </div>

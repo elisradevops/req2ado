@@ -207,6 +207,7 @@ describe('runPipelineJob', () => {
         warnings: [],
         kbCitations: [],
         figureDescriptions: [],
+        tableDescriptions: [],
         // Backward-compat default: the mocked level() response has neither
         // `excluded_figure_ids` nor `excluded_table_ids` at all, same `?? []`
         // guard as figureDescriptions/kbCitations above.
@@ -769,6 +770,7 @@ describe('runPipelineJob', () => {
         ],
         kbCitations: [],
         figureDescriptions: [],
+        tableDescriptions: [],
         // Doc-wide ids the mapping stage judged decorative/irrelevant, or
         // that failed mapping (see Job.excludedTableIds' schema.prisma doc
         // comment) -- populated from the tree-level excluded_figure_ids/
@@ -1261,6 +1263,7 @@ describe('runPipelineJob', () => {
           { sourceFile: 'doc-b.pdf', similarity: 0.7, relevance: 'unknown' },
         ],
         figureDescriptions: [],
+        tableDescriptions: [],
         excludedFigureIds: [],
         excludedTableIds: [],
         blockCount: 0,
@@ -1306,6 +1309,47 @@ describe('runPipelineJob', () => {
         figureDescriptions: [
           { figureIndex: 1, caption: 'A block diagram showing power distribution.' },
           { figureIndex: 3, caption: 'A wiring harness cross-section.' },
+        ],
+      }),
+    });
+  });
+
+  it("extracts tables with a real caption from ingestion's /ingest response, keyed by the table's own id", async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({
+      blocks: [],
+      tables: [
+        { id: 't0', caption: 'Summary of CubeADCS Variants' },
+        { id: 't1', caption: null },
+        { id: 't2', caption: 'Harness Details' },
+      ],
+    });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: expect.objectContaining({
+        // t1 (no real caption) is dropped -- nothing to show, same rule
+        // figureDescriptions already applies. Keyed by tableId, not a
+        // 1-based array position -- a table chip already has the real id.
+        tableDescriptions: [
+          { tableId: 't0', caption: 'Summary of CubeADCS Variants' },
+          { tableId: 't2', caption: 'Harness Details' },
         ],
       }),
     });

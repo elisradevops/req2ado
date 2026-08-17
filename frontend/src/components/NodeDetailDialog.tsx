@@ -68,6 +68,7 @@ export function NodeDetailDialog({
   diffByLocalId,
   descendantCountsByLocalId,
   captionByFigureId,
+  captionByTableId,
   onSave,
   onRescore,
   onAttachFigure,
@@ -95,6 +96,10 @@ export function NodeDetailDialog({
   // entry's own referenced figures with its caption, without re-deriving
   // the figureIndex/figureId relationship itself.
   captionByFigureId?: Record<string, string>;
+  // tableId -> Table.caption, same scheme entry.tableIds references -- lets
+  // NodeDetailPanel's Tables section show a readable title instead of a
+  // raw internal id.
+  captionByTableId?: Record<string, string>;
   onSave?: (localId: string, patch: { title: string; description: string }) => void;
   onRescore?: (localId: string) => Promise<void>;
   // Manual "Upload to ADO" action for one of this entry's figures -- see
@@ -142,6 +147,7 @@ export function NodeDetailDialog({
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
       captionByFigureId={captionByFigureId}
+      captionByTableId={captionByTableId}
       onSave={onSave}
       onRescore={onRescore}
       onAttachFigure={onAttachFigure}

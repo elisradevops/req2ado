@@ -268,6 +268,7 @@ export class JobsController {
     warnings: (WarningRecord | string)[];
     kbCitations: unknown;
     figureDescriptions: { figureIndex: number; caption: string }[];
+    tableDescriptions: { tableId: string; caption: string }[];
     excludedFigureIds: string[];
     excludedTableIds: string[];
     createdAt: Date;
