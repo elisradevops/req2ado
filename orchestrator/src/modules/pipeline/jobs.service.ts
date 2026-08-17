@@ -1133,8 +1133,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // are self-contained; parent linking is a separate phase below that
       // only starts once ALL creates have finished) -- safe to run with
       // bounded concurrency instead of the previous one-ADO-round-trip-at-
-      // a-time sequential loop. mapWithConcurrency preserves array order in
-      // its results regardless of completion order.
+      // a-time sequential loop. Concurrency is grouped by parent so that
+      // document-order siblings never race each other -- see the grouping
+      // immediately below this section. mapWithConcurrency preserves array
+      // order in its results regardless of completion order.
       // Unconditional kick-off, even when toCreate is empty -- without this,
       // the frontend ticker sat frozen on 'discover_types' (or a stale
       // "creating -- N of N" from a PRIOR confirm() attempt on a resumed
@@ -1246,12 +1248,32 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       }
       const createResults: SettledResult<{ id: number }>[] = new Array(toCreate.length);
       await mapWithConcurrency(Array.from(toCreateByParent.values()), this.writeConcurrency, async (siblings) => {
+        let groupFailed = false;
         for (const entry of siblings) {
-          const i = toCreateIndexByLocalId.get(entry.localId) as number;
+          const i = toCreateIndexByLocalId.get(entry.localId);
+          if (i === undefined) {
+            throw new Error(`Invariant violated: sibling group contains localId "${entry.localId}" that toCreate does not`);
+          }
+          if (groupFailed) {
+            // A preceding sibling in this SAME group already failed --
+            // deliberately do not create this one out of turn. Creating it
+            // now would let a later-document-order sibling land in ADO
+            // before an earlier one that's still unresolved, which is
+            // exactly the ordering bug this task exists to prevent. Leaving
+            // it un-created (and un-mapped in CreatedItemMapping) means the
+            // next confirm() retry creates the whole remaining tail
+            // together, in order, once the earlier failure is resolved.
+            createResults[i] = {
+              status: 'rejected',
+              reason: new Error(`Skipped: an earlier sibling under the same parent failed to create; retry will recreate this item in its correct document order`),
+            };
+            continue;
+          }
           try {
             createResults[i] = { status: 'fulfilled', value: await createOneWorkItem(entry) };
           } catch (reason) {
             createResults[i] = { status: 'rejected', reason };
+            groupFailed = true;
           }
         }
       });
@@ -1454,16 +1476,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           // self-race entirely; an external actor editing the same item
           // concurrently is a separate, pre-existing, accepted risk this
           // fix does not attempt to cover.
-          const toAttachByAdoId = new Map<number, string[]>();
+          const toAttachByAdoId = new Map<number, Set<string>>();
           for (const entry of diff) {
             if (isExcluded(entry)) continue;
             const adoId = adoIdByLocalId.get(entry.localId);
             if (adoId === undefined) continue;
             for (const figureId of entry.figureIds ?? []) {
               if (figureFileByFigureId.has(figureId)) {
-                const list = toAttachByAdoId.get(adoId) ?? [];
-                list.push(figureId);
-                toAttachByAdoId.set(adoId, list);
+                const set = toAttachByAdoId.get(adoId) ?? new Set<string>();
+                set.add(figureId);
+                toAttachByAdoId.set(adoId, set);
               }
             }
           }
@@ -1508,28 +1530,37 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
     // Refresh dryRunDiff so GET /jobs/:id stops serving the frozen
     // pre-confirm snapshot forever after a job succeeds -- confirmed real
-    // bug: every entry kept existingAdoId: null / action: 'create' even
-    // on a fully 'succeeded' job, which is exactly what
-    // NodeDetailPanel.tsx's "not available for a new item in this view"
-    // placeholder is gated on (entry.action === 'create'), so a real,
-    // fully-attached figure showed that message forever. Only every entry
-    // adoIdByLocalId actually resolved (newly created OR a pre-existing
-    // reuse/dedup_skip match) gets rewritten; anything excluded or never
-    // resolved is left exactly as it was.
+    // bug: every entry kept existingAdoId: null even on a fully 'succeeded'
+    // job, which is exactly what NodeDetailPanel.tsx's "not available"
+    // placeholder is gated on, so a real, fully-attached figure showed that
+    // message forever. Only every entry adoIdByLocalId actually resolved
+    // (newly created OR a pre-existing reuse/dedup_skip match) gets
+    // rewritten; anything excluded or never resolved is left exactly as it
+    // was.
+    //
+    // This writes existingAdoId ONLY -- it deliberately never touches
+    // action. Every entry's action stays exactly what it always was
+    // (create/reuse/dedup_skip): getSummary()'s created/reused/dedupSkipped
+    // counts and the frontend's dedup_skip badge both read that field
+    // directly and must keep reflecting what actually happened, not get
+    // collapsed into a generic post-hoc "reuse" label. (A prior version of
+    // this refresh did relabel action to 'reuse' for every resolved entry,
+    // which silently destroyed the create/reuse/dedup_skip distinction for
+    // every pre-existing reuse/dedup_skip match too -- fixed.)
     //
     // Deliberately ONLY done here, on the final success path -- never in
     // the catch block's revert-to-'diff_ready' path above. confirm()
     // refuses to run again once status is 'succeeded' (guarded at the top
-    // of this method), so rewriting action to 'reuse' here is permanent
-    // and safe. Doing the same rewrite on a partial failure would be
-    // actively wrong: a resumed retry's own toLink filter (above) treats
-    // action === 'reuse' as "already linked from an earlier, unrelated
-    // job -- skip re-linking", which is false for an item this SAME job
-    // just created but hadn't linked yet when it failed.
+    // of this method), so this refresh here is permanent and safe. Doing
+    // the same refresh on a partial failure would be actively wrong: a
+    // resumed retry's own toLink filter (above) treats action === 'reuse'
+    // as "already linked from an earlier, unrelated job -- skip
+    // re-linking", which is false for an item this SAME job just created
+    // but hadn't linked yet when it failed.
     const updatedDiff = diff.map((entry) => {
       const realAdoId = adoIdByLocalId.get(entry.localId);
       if (realAdoId === undefined) return entry;
-      return { ...entry, existingAdoId: realAdoId, action: 'reuse' };
+      return { ...entry, existingAdoId: realAdoId };
     });
     await this.prisma.job.update({
       where: { id },

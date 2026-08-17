@@ -532,15 +532,14 @@ export function NodeDetailPanel({
             <ul className="mt-1 flex flex-col gap-2">
               {entry.figureIds.map((figureId) => {
                 const status = figureAttachStatus[figureId];
-                // Mirrors the backend's own resolution order (see
-                // JobsService.attachFigureToAdo): existingAdoId is known
-                // immediately for reuse/dedup_skip, while a 'create' entry's
-                // real ADO id only exists AFTER this job's confirm() has run
-                // and isn't exposed to the frontend today (CreatedItemMapping
-                // is never returned on any job-read route) -- so this button
-                // is only ever offered for the reuse/dedup_skip case, exactly
-                // the case that never gets confirm()'s automatic attachment.
-                const canAttach = entry.action !== 'create' && entry.existingAdoId != null;
+                // A 'create' entry's real ADO id does not exist until this
+                // job's confirm() has run -- but once confirm() succeeds,
+                // JobsService.confirm's post-confirm dryRunDiff refresh sets
+                // existingAdoId on every resolved entry regardless of its
+                // original action, so this button becomes available for a
+                // 'create' entry too once the job is 'succeeded', not only
+                // for reuse/dedup_skip.
+                const canAttach = entry.existingAdoId != null;
                 return (
                   <li
                     key={figureId}
@@ -576,9 +575,7 @@ export function NodeDetailPanel({
                           </Button>
                         ) : (
                           <p className="text-xs text-ink-3">
-                            {entry.action === 'create'
-                              ? 'Uploading requires a resolved ADO work item id -- not available for a new item in this view.'
-                              : 'No resolved ADO work item id yet.'}
+                            Uploading requires a resolved ADO work item id -- not available until this job has confirmed.
                           </p>
                         ))}
                     </div>

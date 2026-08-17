@@ -2559,8 +2559,8 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
     const finalUpdateCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
     expect(finalUpdateCall).toBeDefined();
     const updatedDiff = finalUpdateCall![0].data.dryRunDiff as { localId: string; existingAdoId: number | null; action: string }[];
-    expect(updatedDiff.find((e) => e.localId === 'n0')).toMatchObject({ existingAdoId: 100, action: 'reuse' });
-    expect(updatedDiff.find((e) => e.localId === 'n1')).toMatchObject({ existingAdoId: 101, action: 'reuse' });
+    expect(updatedDiff.find((e) => e.localId === 'n0')).toMatchObject({ existingAdoId: 100, action: 'create' });
+    expect(updatedDiff.find((e) => e.localId === 'n1')).toMatchObject({ existingAdoId: 101, action: 'create' });
   });
 
   it('does NOT rewrite dryRunDiff on the partial-failure revert path — only the final success path may flip action to reuse', async () => {
@@ -2608,6 +2608,47 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
     const revertCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'diff_ready');
     expect(revertCall).toBeDefined();
     expect(revertCall![0].data.dryRunDiff).toBeUndefined();
+  });
+
+  it('does not relabel pre-existing reuse/dedup_skip entries when refreshing existingAdoId', async () => {
+    // Real bug this locks in: adoIdByLocalId is seeded from BOTH newly
+    // created items and pre-existing reuse/dedup_skip matches (see the
+    // seeding around line 1067-1068), so a blanket action: 'reuse' rewrite
+    // here silently destroyed the dedup_skip near-duplicate distinction
+    // getSummary() and the frontend's ActionBadge both depend on.
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+            { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'Reused', description: 'd1', action: 'reuse', existingAdoId: 555, sourceHash: 'h1', customerId: null },
+            { localId: 'n2', parentLocalId: null, type: 'Requirement', title: 'Near-dup', description: 'd2', action: 'dedup_skip', existingAdoId: 777, sourceHash: 'h2', customerId: null },
+          ],
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    const finalUpdateCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
+    const updatedDiff = finalUpdateCall![0].data.dryRunDiff as { localId: string; existingAdoId: number | null; action: string }[];
+    expect(updatedDiff.find((e) => e.localId === 'n0')).toMatchObject({ existingAdoId: 100, action: 'create' });
+    expect(updatedDiff.find((e) => e.localId === 'n1')).toMatchObject({ existingAdoId: 555, action: 'reuse' });
+    expect(updatedDiff.find((e) => e.localId === 'n2')).toMatchObject({ existingAdoId: 777, action: 'dedup_skip' });
   });
 });
 
@@ -2685,6 +2726,7 @@ describe('JobsService.confirm — sibling creation order', () => {
     const inFlightByGroup = new Map<string, Set<string>>();
     let crossGroupOverlapDetected = false;
     let sameGroupOverlapDetected = false;
+    let nextChildId = 200;
     const createWorkItem = jest.fn().mockImplementation(async (_type: string, fields: Record<string, string>) => {
       const title = fields['System.Title'];
       if (title === 'Parent0' || title === 'Parent1') {
@@ -2699,7 +2741,7 @@ describe('JobsService.confirm — sibling creation order', () => {
       inFlightByGroup.set(group, sameGroupSet);
       await new Promise((resolve) => setTimeout(resolve, 5));
       sameGroupSet.delete(title);
-      return { id: 200 + createWorkItem.mock.calls.length };
+      return { id: nextChildId++ };
     });
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
@@ -2735,6 +2777,54 @@ describe('JobsService.confirm — sibling creation order', () => {
     expect(crossGroupOverlapDetected).toBe(true);
     expect(sameGroupOverlapDetected).toBe(false);
     expect(result).toEqual({ status: 'succeeded', createdCount: 6 });
+  });
+
+  it('stops a sibling group at its first failure instead of creating later siblings out of order', async () => {
+    // Real edge case this locks in: without this, a mid-group failure let
+    // the loop keep going and create LATER siblings anyway -- on retry,
+    // only the failed one gets recreated (CreatedItemMapping already has
+    // the others), landing it with a HIGHER System.Id than siblings that
+    // come after it in document order. This test proves the tail is left
+    // un-created (not partially created) when an earlier sibling fails.
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 }) // Parent
+      .mockResolvedValueOnce({ id: 101 }) // Child 0 -- succeeds
+      .mockRejectedValueOnce(new Error('ADO create failed')) // Child 1 -- fails
+      .mockResolvedValueOnce({ id: 103 }); // Child 2 -- must NOT be reached
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'p0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hp', customerId: null },
+            { localId: 'n0', parentLocalId: 'p0', type: 'Requirement', title: 'Child 0', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
+            { localId: 'n1', parentLocalId: 'p0', type: 'Requirement', title: 'Child 1', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null },
+            { localId: 'n2', parentLocalId: 'p0', type: 'Requirement', title: 'Child 2', description: 'd2', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: null },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      4,
+    );
+
+    await expect(service.confirm('job-1')).rejects.toThrow();
+
+    // Child 2's create must never have been attempted -- only Parent,
+    // Child 0, and the failing Child 1 call happened.
+    expect(createWorkItem).toHaveBeenCalledTimes(3);
+    const titlesCalled = createWorkItem.mock.calls.map((call) => (call[1] as Record<string, string>)['System.Title']);
+    expect(titlesCalled).not.toContain('Child 2');
   });
 });
 
