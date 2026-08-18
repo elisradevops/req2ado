@@ -461,8 +461,11 @@ existing KB metadata. `retrieve_context` (`ingestion/app/kb/retrieval.py`) is un
 "retrieve" files. `fetch_always_include_context` (`retrieval.py`) reads every
 "always_include" file's full stored text unconditionally (no embed call, no similarity
 gate) and concatenates it into `kb_context` alongside whatever `retrieve_context` returns.
-Wired into `scoring.py`'s call sites as planned; `trace_links.py`'s KB grounding remains the
-noted longer-term follow-up, not yet done.
+Wired into `scoring.py`'s call sites as planned; `trace_links.py`'s KB grounding now also
+threads the document's own `doc_kb_context` into trace-link type-choice inference on the
+fallback (non-agentic) path. The agentic path forwards only already-merged always-include
+KB material -- it does not run the document-level topical retrieval pass -- tracked as a
+narrower follow-up if that gap matters in practice.
 
 Practical bound worth calling out up front (Open WebUI's own docs imply this too --
 "short reference documents"): Full Context mode has no size ceiling by design, so an

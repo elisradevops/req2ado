@@ -3530,14 +3530,24 @@ def test_build_survey_tree_forwards_doc_kb_context_to_trace_link_inference_on_fa
     assert fake_client.calls[0]["kb_context"] == "org traceability conventions doc text"
 
 
-def test_build_survey_tree_trace_link_inference_gets_no_kb_context_on_agentic_path(monkeypatch) -> None:
+def test_build_survey_tree_trace_link_inference_gets_no_topical_kb_context_on_agentic_path_when_no_always_include_docs(monkeypatch) -> None:
     # Known, documented limitation (see _infer_trace_links_for_nodes's own
     # call site comment in build_survey_tree): on the agentic (tool-capable
-    # model) path, doc_kb_context stays None for the whole function -- that
+    # model) path, doc_kb_context only ever holds already-merged
+    # always-include KB material (via _merge_always_include_context, which
+    # runs in that branch too) -- it never gets the RETRIEVED/topical
+    # retrieve_context() result the fallback path uses, since the agentic
     # path grounds other calls via live query_kb tool calls during branch
-    # authoring, not a static context string, and infer_trace_links has no
-    # tool-calling variant of its own. Locks in the gap as verified,
-    # documented behavior rather than leaving it unverified.
+    # authoring instead of a static context string, and infer_trace_links
+    # has no tool-calling variant of its own.
+    #
+    # This test's fixture (a fresh KbVectorStore with no documents added)
+    # deliberately has NO always-include documents configured, so
+    # doc_kb_context ends up None here -- that is this test's actual
+    # scenario, not a blanket "agentic gets zero KB grounding" claim. When
+    # always-include documents ARE configured, doc_kb_context on the
+    # agentic path is non-None (see the sibling positive-case test below);
+    # this test verifies the narrower topical-retrieval gap specifically.
     from app.kb.kb_vector_store import KbVectorStore
 
     def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
@@ -3564,6 +3574,45 @@ def test_build_survey_tree_trace_link_inference_gets_no_kb_context_on_agentic_pa
     )
     assert len(fake_client.calls) == 1
     assert fake_client.calls[0]["kb_context"] is None
+
+
+def test_build_survey_tree_trace_link_inference_gets_always_include_kb_context_on_agentic_path(monkeypatch) -> None:
+    # Positive-case sibling to the test above: when the user DOES have an
+    # always-include document configured, doc_kb_context on the agentic
+    # path is non-None -- it's just the always-include material, not a
+    # topical retrieve_context() result. Confirms the corrected comment in
+    # build_survey_tree (near _infer_trace_links_for_nodes's second call
+    # site) rather than the old, blanket "agentic gets nothing" claim.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "agentic KB text", [
+            {"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}
+        ]
+
+    def _fake_fetch_always_include_context(user_id, vector_store):
+        return "always-include KB text", [{"source_file": "always.docx", "similarity": 1.0}]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+    monkeypatch.setattr("app.leveling.llm_leveling.fetch_always_include_context", _fake_fetch_always_include_context)
+
+    fake_client = FakeTraceLinkInferenceClient()
+    fake_analysis = FakeSectionAnalysisClient(
+        agentic_nodes=[
+            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}
+        ],
+        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+    )
+    build_survey_tree(
+        _small_doc(), fake_analysis,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="qwen3:4b",  # confirmed live tool-capable, see _MODEL_CAPS
+        link_type_client=fake_client, link_type_catalog=[],
+    )
+    assert len(fake_client.calls) == 1
+    assert fake_client.calls[0]["kb_context"] == "always-include KB text"
 
 
 def test_build_survey_tree_drops_a_trace_link_between_a_node_and_its_own_parent() -> None:
