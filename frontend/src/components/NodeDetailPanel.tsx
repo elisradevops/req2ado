@@ -7,6 +7,7 @@ import { SourceProvenance } from './SourceProvenance';
 import type { KbCitation } from './KbCitationChips';
 import { FigureImage } from './FigureImage';
 import type { DryRunDiffEntry } from './DiffTree';
+import type { TraceLinkFailure } from '../store/jobsStore';
 import { TextField, TextArea } from '../ui/TextField';
 import { Button } from '../ui/Button';
 import { Chip } from '../ui/Chip';
@@ -67,6 +68,7 @@ export function NodeDetailPanel({
   jobStatus,
   kbCitations,
   traceTargetTitles,
+  traceLinkFailures,
   parentEntry,
   addChildSlot,
   captionByFigureId,
@@ -74,6 +76,7 @@ export function NodeDetailPanel({
   onSave,
   onRescore,
   onAttachFigure,
+  onRetryTraceLink,
   descendantCounts,
 }: {
   // Needed only by the Figures section below (FigureImage's fetch route is
@@ -89,6 +92,13 @@ export function NodeDetailPanel({
   // real title instead of showing its raw internal id. See
   // TraceLinkChips.tsx's own doc comment.
   traceTargetTitles?: Record<string, string>;
+  // Task 4: JobTraceLinkFailure rows for the WHOLE job (computed once by
+  // the caller, JobDetail.tsx, same threading convention as kbCitations
+  // above) -- filtered down to just THIS entry's own failures below
+  // (matching on sourceLocalId === entry.localId, always true for a link
+  // in entry.traceLinks -- see pipeline.worker.ts's traceLinksByLocalId)
+  // before being passed to TraceLinkChips.
+  traceLinkFailures?: TraceLinkFailure[];
   // This entry's own parent, looked up by the caller (JobDetail.tsx) from
   // the full diff array via entry.parentLocalId -- lets a 'create' entry
   // whose PARENT already resolved to 'reuse'/'dedup_skip' tell the
@@ -127,6 +137,11 @@ export function NodeDetailPanel({
   // comment for why this exists alongside confirm()'s automatic
   // attachment. Same re-throw-on-failure contract as onRescore.
   onAttachFigure?: (localId: string, figureId: string) => Promise<void>;
+  // Task 4: manual retry for a trace link (identified by its own
+  // JobTraceLinkFailure row id) that failed to write to Azure DevOps during
+  // confirm() -- see JobsService.retryTraceLinkWrite's own doc comment. Same
+  // re-throw-on-failure contract as onAttachFigure/onRescore above.
+  onRetryTraceLink?: (failureId: string) => Promise<void>;
   // DESIGN.md §11.4.1 -- an Epic/Feature has no quality rubric (it's judged
   // on scope coherence, a review note, not a number), so its Scope group
   // shows what it covers instead: how many Feature/Requirement descendants
@@ -165,6 +180,11 @@ export function NodeDetailPanel({
   // rapid click on the same button.
   const [figureAttachStatus, setFigureAttachStatus] = useState<Record<string, 'attaching' | 'done'>>({});
   const attachingFigureIdsRef = useRef<Set<string>>(new Set());
+  // Task 4: per-failureId trace-link retry status, same in-flight/done
+  // convention (and same synchronous-guard-ref reasoning) as
+  // figureAttachStatus/attachingFigureIdsRef above.
+  const [traceLinkRetryStatus, setTraceLinkRetryStatus] = useState<Record<string, 'retrying' | 'done'>>({});
+  const retryingFailureIdsRef = useRef<Set<string>>(new Set());
 
   // Exit edit mode whenever the selected node changes so a stale draft from
   // the previously-edited node can never be saved onto a different node.
@@ -180,6 +200,8 @@ export function NodeDetailPanel({
     setPreRescoreSnapshot(null);
     setFigureAttachStatus({});
     attachingFigureIdsRef.current = new Set();
+    setTraceLinkRetryStatus({});
+    retryingFailureIdsRef.current = new Set();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entry?.localId]);
 
@@ -270,6 +292,30 @@ export function NodeDetailPanel({
       });
     } finally {
       attachingFigureIdsRef.current.delete(figureId);
+    }
+  }
+
+  // Task 4: same shape as handleAttachFigureClick above -- synchronous ref
+  // guard before the await, in-flight/done status keyed by the failure
+  // row's own id, dropped (not left stuck) on a rejected retry.
+  async function handleRetryTraceLinkClick(failureId: string): Promise<void> {
+    if (!onRetryTraceLink || retryingFailureIdsRef.current.has(failureId)) return;
+    retryingFailureIdsRef.current.add(failureId);
+    setTraceLinkRetryStatus((prev) => ({ ...prev, [failureId]: 'retrying' }));
+    try {
+      await onRetryTraceLink(failureId);
+      setTraceLinkRetryStatus((prev) => ({ ...prev, [failureId]: 'done' }));
+    } catch {
+      // onRetryTraceLink's caller (JobDetail.tsx) owns surfacing the failure
+      // (a toast) -- drop this failureId's status entirely so the control
+      // reverts to its normal, clickable state for a retry.
+      setTraceLinkRetryStatus((prev) => {
+        const next = { ...prev };
+        delete next[failureId];
+        return next;
+      });
+    } finally {
+      retryingFailureIdsRef.current.delete(failureId);
     }
   }
 
@@ -500,7 +546,13 @@ export function NodeDetailPanel({
       {entry.traceLinks && entry.traceLinks.length > 0 && (
         <div className="mt-1">
           <span className="text-xs font-semibold text-ink-2">Trace links</span>
-          <TraceLinkChips links={entry.traceLinks} titles={traceTargetTitles} />
+          <TraceLinkChips
+            links={entry.traceLinks}
+            titles={traceTargetTitles}
+            failures={traceLinkFailures?.filter((f) => f.sourceLocalId === entry.localId)}
+            retryStatus={traceLinkRetryStatus}
+            onRetry={onRetryTraceLink ? handleRetryTraceLinkClick : undefined}
+          />
         </div>
       )}
       {(entry.sourceRef ||

@@ -1,13 +1,26 @@
+import { RefreshCw, Check } from 'lucide-react';
 import { Chip } from '../ui/Chip';
 import { Tooltip } from '../ui/Tooltip';
+import { cn } from '../lib/cn';
 
 interface TraceLinkView {
+  referenceName: string;
   displayName: string;
   targetKind: 'intraJob' | 'crossJob';
   targetLocalId?: string;
   targetCustomerId?: string;
   resolvedAdoId?: number;
   resolutionStatus: 'resolved' | 'unresolved' | 'pending';
+}
+
+// A JobTraceLinkFailure row (see jobsStore.TraceLinkFailure), narrowed to
+// just what's needed to match it to a link and drive its retry. The caller
+// (NodeDetailPanel) has already filtered this down to failures for the
+// SAME entry these links belong to (matching on sourceLocalId) -- this
+// component only needs to further match on referenceName below.
+interface TraceLinkFailureView {
+  id: string;
+  referenceName: string;
 }
 
 interface ResolvedTarget {
@@ -36,23 +49,45 @@ function resolveTarget(link: TraceLinkView, titles: Record<string, string> | und
 export function TraceLinkChips({
   links,
   titles,
+  failures,
+  retryStatus,
+  onRetry,
 }: {
   links?: TraceLinkView[];
   // Optional -- omitting it just means every intraJob link with no other
   // resolution falls back to showing its raw internal id (the old
   // behavior), so this is backward compatible with every existing caller.
   titles?: Record<string, string>;
+  // Task 4: failure rows for the entry these links belong to (already
+  // filtered by sourceLocalId -- see NodeDetailPanel). Matched to a link on
+  // referenceName ALONE, not the full (sourceLocalId, referenceName,
+  // targetAdoId) key the backend uses -- an intraJob link only carries the
+  // OTHER node's localId here, not its resolved real ADO id, and this
+  // component has no diff-wide lookup to resolve that itself. A same-
+  // source, same-reference-name collision across two DIFFERENT failed
+  // targets would misattribute the retry control, but that's a rare edge
+  // case not worth the extra plumbing (a full diffByLocalId lookup) to
+  // close for this feature.
+  failures?: TraceLinkFailureView[];
+  // failureId -> in-flight/done status, owned by the caller (NodeDetailPanel)
+  // same convention as its own figureAttachStatus.
+  retryStatus?: Record<string, 'retrying' | 'done'>;
+  onRetry?: (failureId: string) => void;
 }): React.ReactElement | null {
   if (!links || links.length === 0) return null;
   return (
     <div className="flex flex-wrap gap-1">
       {links.map((link, i) => {
         const target = resolveTarget(link, titles);
+        const failure = failures?.find((f) => f.referenceName === link.referenceName);
+        const status = failure ? retryStatus?.[failure.id] : undefined;
+        const failed = failure != null && status !== 'done';
         const chip = (
           <Chip
             data-resolution-status={link.resolutionStatus}
-            bg={link.resolutionStatus === 'unresolved' ? 'var(--color-warning)' : 'var(--color-surface-alt)'}
-            color={link.resolutionStatus === 'unresolved' ? '#fff' : 'var(--color-ink-2)'}
+            data-write-status={failure ? (status === 'done' ? 'retried' : 'failed') : undefined}
+            bg={failed ? 'var(--color-danger-soft)' : link.resolutionStatus === 'unresolved' ? 'var(--color-warning)' : 'var(--color-surface-alt)'}
+            color={failed ? 'var(--color-danger-ink)' : link.resolutionStatus === 'unresolved' ? '#fff' : 'var(--color-ink-2)'}
           >
             {link.displayName} →{' '}
             {target.kind === 'ado' || target.kind === 'customer' ? (
@@ -75,8 +110,32 @@ export function TraceLinkChips({
               ? target.text
               : null;
         return (
-          <span key={`${link.displayName}-${i}`} className="inline-flex">
+          <span key={`${link.displayName}-${i}`} className="inline-flex items-center gap-1">
             {content ? <Tooltip content={content}>{chip}</Tooltip> : chip}
+            {/* Manual retry for a trace link whose write to Azure DevOps
+                failed during confirm() -- see JobsService.retryTraceLinkWrite
+                and NodeDetailPanel's handleRetryTraceLinkClick (same
+                in-flight/done status convention as its figure-attach
+                button). Stays visible (as a done checkmark, not hidden)
+                after a successful retry, mirroring the Figures section's
+                "Uploaded" treatment. */}
+            {failure && onRetry && (
+              <Tooltip content={status === 'done' ? 'Retried -- written to Azure DevOps.' : 'This trace link failed to write to Azure DevOps. Retry?'}>
+                <button
+                  type="button"
+                  aria-label={`Retry writing "${link.displayName}" trace link to Azure DevOps`}
+                  disabled={status === 'retrying' || status === 'done'}
+                  onClick={() => onRetry(failure.id)}
+                  className="inline-flex h-5 w-5 flex-none items-center justify-center rounded-full text-ink-3 hover:bg-surface-alt hover:text-ink-1 disabled:cursor-default disabled:opacity-60"
+                >
+                  {status === 'done' ? (
+                    <Check className="h-3 w-3" style={{ color: 'var(--color-ok)' }} />
+                  ) : (
+                    <RefreshCw className={cn('h-3 w-3', status === 'retrying' && 'animate-spin')} />
+                  )}
+                </button>
+              </Tooltip>
+            )}
           </span>
         );
       })}

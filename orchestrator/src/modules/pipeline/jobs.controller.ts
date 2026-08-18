@@ -277,6 +277,8 @@ export class JobsController {
     state: string;
     originalFilename: string;
     workItemTypeCatalog: Record<string, WorkItemTypeCatalogEntry>;
+    // Task 4: see JobsService.getById's own doc comment.
+    traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
   }> {
     // userId is internal (ownership only) -- strip it before returning so
     // the response shape stays exactly what it was before ownership

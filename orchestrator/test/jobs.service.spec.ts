@@ -3674,7 +3674,47 @@ describe('JobsService.getById', () => {
       // same convention as figureDescriptions above.
       excludedFigureIds: [],
       excludedTableIds: [],
+      // No traceLinkFailures relation on the mocked row (the include:
+      // {traceLinkFailures: true} clause isn't simulated by this mock) --
+      // defaults to [], same convention as the other columns above.
+      traceLinkFailures: [],
     });
+  });
+
+  it('returns traceLinkFailures shaped for the frontend (id/sourceLocalId/sourceAdoId/targetAdoId/referenceName only, no error/createdAt/jobId)', async () => {
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready',
+          mode: 'survey',
+          dryRunDiff: [],
+          warnings: null,
+          kbCitations: [],
+          figureDescriptions: [],
+          traceLinkFailures: [
+            {
+              id: 'failure-1',
+              jobId: 'job-1',
+              sourceLocalId: 'n0',
+              sourceAdoId: 100,
+              targetAdoId: 200,
+              referenceName: 'Elisra.CoveredBy-Forward',
+              error: 'TF401349: rejected relation',
+              createdAt: new Date('2026-08-01T00:00:00Z'),
+            },
+          ],
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result?.traceLinkFailures).toEqual([
+      { id: 'failure-1', sourceLocalId: 'n0', sourceAdoId: 100, targetAdoId: 200, referenceName: 'Elisra.CoveredBy-Forward' },
+    ]);
+    expect(prisma.job.findUnique).toHaveBeenCalledWith({ where: { id: 'job-1' }, include: { traceLinkFailures: true } });
   });
 
   it('returns persisted excludedFigureIds/excludedTableIds when the columns have real data', async () => {

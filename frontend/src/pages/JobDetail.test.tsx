@@ -90,6 +90,34 @@ describe('JobDetail', () => {
     expect(await screen.findAllByText('Root')).not.toHaveLength(0);
   });
 
+  it('shows a retry control for a failed trace link and calls retryTraceLinkWrite(jobId, failureId) when clicked', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-20',
+      status: 'diff_ready',
+      dryRunDiff: [{
+        localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root', description: '', action: 'create', customerId: null, tags: [],
+        traceLinks: [
+          { sourceLocalId: 'e1', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'crossJob', targetCustomerId: 'REQ-1', resolutionStatus: 'resolved' },
+        ],
+      }],
+      traceLinkFailures: [{ id: 'failure-1', sourceLocalId: 'e1', sourceAdoId: 100, targetAdoId: 200, referenceName: 'Elisra.CoveredBy-Forward' }],
+    } as any);
+    vi.mocked(jobsApi.retryTraceLinkWrite).mockResolvedValue({ written: true, sourceAdoId: 100, targetAdoId: 200 });
+    const chatApi = await import('../api/chat');
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+
+    renderAt('job-20');
+    await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByText('Root'));
+
+    const retryButton = await screen.findByRole('button', { name: /retry writing "covers" trace link/i });
+    await userEvent.click(retryButton);
+
+    expect(jobsApi.retryTraceLinkWrite).toHaveBeenCalledWith('job-20', 'failure-1');
+  });
+
   it('renders debug captures alongside the audit trail when the job has soft-failure captures', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-17', status: 'diff_ready', dryRunDiff: [] } as any);
     vi.spyOn(jobsApi, 'getAudit').mockResolvedValue([{ id: 'a1', message: 'Job submitted: x.docx', createdAt: '2026-07-09T00:00:00Z' }]);

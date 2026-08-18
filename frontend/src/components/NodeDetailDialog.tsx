@@ -9,6 +9,7 @@ import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
 import type { DryRunDiffEntry } from './DiffTree';
 import type { KbCitation } from './KbCitationChips';
+import type { TraceLinkFailure } from '../store/jobsStore';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
 
 // Matches the `lg` breakpoint the layout below switches on -- Tailwind's
@@ -65,6 +66,7 @@ export function NodeDetailDialog({
   jobStatus,
   kbCitations,
   traceTargetTitles,
+  traceLinkFailures,
   diffByLocalId,
   descendantCountsByLocalId,
   captionByFigureId,
@@ -72,6 +74,7 @@ export function NodeDetailDialog({
   onSave,
   onRescore,
   onAttachFigure,
+  onRetryTraceLink,
   onAddChild,
   onNavigate,
   hasPrev,
@@ -86,6 +89,9 @@ export function NodeDetailDialog({
   jobStatus?: string | null;
   kbCitations?: KbCitation[];
   traceTargetTitles?: Record<string, string>;
+  // Task 4: see NodeDetailPanel's own doc comment -- passed straight through
+  // unfiltered, same threading convention as traceTargetTitles above.
+  traceLinkFailures?: TraceLinkFailure[];
   diffByLocalId?: Record<string, DryRunDiffEntry>;
   // DESIGN.md §11.4.1 -- an Epic/Feature's Scope group needs real
   // descendant counts from the WHOLE diff tree; computed once by the
@@ -107,6 +113,9 @@ export function NodeDetailDialog({
   // own doc comment for why this exists alongside confirm()'s automatic
   // attachment.
   onAttachFigure?: (localId: string, figureId: string) => Promise<void>;
+  // Task 4: manual retry for a trace link that failed to write to Azure
+  // DevOps -- see NodeDetailPanel's own doc comment.
+  onRetryTraceLink?: (failureId: string) => Promise<void>;
   onAddChild: (parentLocalId: string, input: { type: string; title: string; description: string }) => void;
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
@@ -144,6 +153,7 @@ export function NodeDetailDialog({
       jobStatus={jobStatus}
       kbCitations={kbCitations}
       traceTargetTitles={traceTargetTitles}
+      traceLinkFailures={traceLinkFailures}
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
       captionByFigureId={captionByFigureId}
@@ -151,6 +161,7 @@ export function NodeDetailDialog({
       onSave={onSave}
       onRescore={onRescore}
       onAttachFigure={onAttachFigure}
+      onRetryTraceLink={onRetryTraceLink}
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}
     />
   );

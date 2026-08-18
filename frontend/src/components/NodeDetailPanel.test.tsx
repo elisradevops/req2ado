@@ -776,6 +776,71 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText(/REQ-SYS-099/i)).toBeInTheDocument();
   });
 
+  describe('trace-link retry (Task 4)', () => {
+    const entry: DryRunDiffEntry = {
+      localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Sys Req', description: 'd', action: 'create', customerId: null,
+      traceLinks: [
+        { sourceLocalId: 'n0', referenceName: 'System.LinkTypes.Affects-Forward', displayName: 'Affects', targetKind: 'crossJob', targetCustomerId: 'REQ-SYS-099', resolutionStatus: 'unresolved' },
+      ],
+    };
+
+    it('renders a retry control when a traceLinkFailures row matches this entry\'s own link', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={entry}
+          traceLinkFailures={[{ id: 'failure-1', sourceLocalId: 'n0', sourceAdoId: 100, targetAdoId: 200, referenceName: 'System.LinkTypes.Affects-Forward' }]}
+          onRetryTraceLink={vi.fn()}
+        />,
+      );
+      expect(screen.getByRole('button', { name: /retry writing "affects" trace link/i })).toBeInTheDocument();
+    });
+
+    it('filters traceLinkFailures down to THIS entry -- a failure row for a different sourceLocalId renders no retry control', () => {
+      renderPanel(
+        <NodeDetailPanel
+          entry={entry}
+          traceLinkFailures={[{ id: 'failure-1', sourceLocalId: 'some-other-node', sourceAdoId: 100, targetAdoId: 200, referenceName: 'System.LinkTypes.Affects-Forward' }]}
+          onRetryTraceLink={vi.fn()}
+        />,
+      );
+      expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
+    });
+
+    it('calls onRetryTraceLink with the failure row id when the retry control is clicked, and shows a done state on success', async () => {
+      const onRetryTraceLink = vi.fn().mockResolvedValue(undefined);
+      renderPanel(
+        <NodeDetailPanel
+          entry={entry}
+          traceLinkFailures={[{ id: 'failure-1', sourceLocalId: 'n0', sourceAdoId: 100, targetAdoId: 200, referenceName: 'System.LinkTypes.Affects-Forward' }]}
+          onRetryTraceLink={onRetryTraceLink}
+        />,
+      );
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      const button = screen.getByRole('button', { name: /retry writing "affects" trace link/i });
+      await userEvent.click(button);
+
+      expect(onRetryTraceLink).toHaveBeenCalledWith('failure-1');
+      await waitFor(() => expect(screen.getByRole('button', { name: /retry writing "affects" trace link/i })).toBeDisabled());
+    });
+
+    it('reverts to a clickable control (not stuck) when onRetryTraceLink rejects', async () => {
+      const onRetryTraceLink = vi.fn().mockRejectedValue(new Error('write failed'));
+      renderPanel(
+        <NodeDetailPanel
+          entry={entry}
+          traceLinkFailures={[{ id: 'failure-1', sourceLocalId: 'n0', sourceAdoId: 100, targetAdoId: 200, referenceName: 'System.LinkTypes.Affects-Forward' }]}
+          onRetryTraceLink={onRetryTraceLink}
+        />,
+      );
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.click(screen.getByRole('button', { name: /retry writing "affects" trace link/i }));
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /retry writing "affects" trace link/i })).toBeEnabled());
+    });
+  });
+
   it('resolves an intraJob trace link target to its real title when traceTargetTitles is supplied', () => {
     const entry: DryRunDiffEntry = {
       localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Sys Req', description: 'd', action: 'create', customerId: null,

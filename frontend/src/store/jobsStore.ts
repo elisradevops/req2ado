@@ -65,6 +65,20 @@ export interface JobDetail {
   // vaulted ADO credential, or the resolve itself failed; WorkItemTypeBadge
   // falls back to its own hardcoded color/icon map in that case.
   workItemTypeCatalog?: Record<string, { color: string; iconDataUrl: string }>;
+  // Task 4: JobTraceLinkFailure rows (see orchestrator's JobsService.getById
+  // own doc comment) -- lets TraceLinkChips render a link whose write to
+  // Azure DevOps actually failed distinctly from an ordinary resolved/
+  // unresolved link, and offer a retry (retryTraceLinkWrite, api/jobs.ts).
+  // `id` is this row's own id, needed to call the retry endpoint.
+  traceLinkFailures?: TraceLinkFailure[];
+}
+
+export interface TraceLinkFailure {
+  id: string;
+  sourceLocalId: string;
+  sourceAdoId: number;
+  targetAdoId: number;
+  referenceName: string;
 }
 
 interface JobsState {

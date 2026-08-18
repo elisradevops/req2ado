@@ -16,6 +16,7 @@ import {
   resubmitJob,
   getSummary,
   attachFigureToAdo,
+  retryTraceLinkWrite,
   type AuditEntry,
   type DebugCaptureEntry,
   type JobEventRecord,
@@ -34,6 +35,7 @@ import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
 import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { useToast } from '../components/ToastProvider';
 import type { KbCitation } from '../components/KbCitationChips';
+import type { TraceLinkFailure } from '../store/jobsStore';
 import { Button } from '../ui/Button';
 import { Alert } from '../ui/Alert';
 import { Tabs } from '../ui/Tabs';
@@ -70,6 +72,12 @@ export function JobDetail(): React.ReactElement {
   const [excludedFigureIds, setExcludedFigureIds] = useState<string[]>([]);
   const [excludedTableIds, setExcludedTableIds] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<(WarningRecord | string)[]>([]);
+  // Task 4: JobTraceLinkFailure rows -- see NodeDetailPanel's own doc
+  // comment for how these gate the per-link retry control. Not removed
+  // locally on a successful retry (mirroring the figure-attach pattern):
+  // NodeDetailPanel's own traceLinkRetryStatus map is what flips the
+  // control to its "done" state; this list just stays as of the last load.
+  const [traceLinkFailures, setTraceLinkFailures] = useState<TraceLinkFailure[]>([]);
   // Populated directly from the SSE callback on 'chunk_warning' events --
   // docs/ui-progress-review.md item #3: previously a mid-run chunk failure
   // was invisible until the whole job finished and `warnings` (above) got
@@ -167,6 +175,7 @@ export function JobDetail(): React.ReactElement {
         setExcludedFigureIds(job.excludedFigureIds ?? []);
         setExcludedTableIds(job.excludedTableIds ?? []);
         setWarnings(job.warnings ?? []);
+        setTraceLinkFailures(job.traceLinkFailures ?? []);
         // Seeds the FigureDescriptions panel from what's already durably
         // persisted (see Job.figureDescriptions) -- previously this panel
         // was fed ONLY by live SSE narration, so it went blank on reload or
@@ -291,6 +300,11 @@ export function JobDetail(): React.ReactElement {
               // panel only ever showed content after a manual reload, which
               // re-runs loadJob() and picks them up for the first time.
               setWarnings(job.warnings ?? []);
+              // Same reasoning as warnings/kbCitations above -- trace-link
+              // write failures are also only known once confirm() has run,
+              // which happens after this SSE completion callback fires, not
+              // at mount-time loadJob().
+              setTraceLinkFailures(job.traceLinkFailures ?? []);
               setKbCitations(job.kbCitations ?? []);
               setExcludedFigureIds(job.excludedFigureIds ?? []);
               setExcludedTableIds(job.excludedTableIds ?? []);
@@ -710,6 +724,24 @@ export function JobDetail(): React.ReactElement {
       showToast('Figure uploaded to Azure DevOps.', 'success');
     } catch (err) {
       showToast('Failed to upload figure — please try again.', 'error');
+      throw err;
+    }
+  }
+
+  // Manual retry for a trace link that failed to write during confirm() --
+  // same re-throw-on-failure contract as handleAttachFigure above, letting
+  // NodeDetailPanel's own per-row loading-button guard know the call
+  // failed. No diff/warnings state update needed on success here (unlike
+  // JobsService.retryTraceLinkWrite's own server-side warning recompute):
+  // the retry control's own "done" state (NodeDetailPanel) is what reflects
+  // success in this view; traceLinkFailures/warnings catch up on next load.
+  async function handleRetryTraceLink(failureId: string): Promise<void> {
+    if (!id) return;
+    try {
+      await retryTraceLinkWrite(id, failureId);
+      showToast('Trace link written to Azure DevOps.', 'success');
+    } catch (err) {
+      showToast('Failed to write trace link — please try again.', 'error');
       throw err;
     }
   }
@@ -1155,6 +1187,7 @@ export function JobDetail(): React.ReactElement {
                 jobStatus={status}
                 kbCitations={kbCitations}
                 traceTargetTitles={traceTargetTitles}
+                traceLinkFailures={traceLinkFailures}
                 diffByLocalId={diffByLocalId}
                 descendantCountsByLocalId={descendantCountsByLocalId}
                 captionByFigureId={captionByFigureId}
@@ -1162,6 +1195,7 @@ export function JobDetail(): React.ReactElement {
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
                 onAttachFigure={handleAttachFigure}
+                onRetryTraceLink={handleRetryTraceLink}
                 onAddChild={handleAddChild}
                 onNavigate={handleNavigateDialog}
                 hasPrev={hasPrevEntry}

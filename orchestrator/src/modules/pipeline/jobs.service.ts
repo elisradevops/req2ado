@@ -366,8 +366,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     state: string;
     originalFilename: string;
     userId: string | null;
+    // Task 4: exposes JobTraceLinkFailure rows so the client can tell a
+    // written trace link from a failed one (today TraceLinkChips renders
+    // both identically) and offer a retry (POST
+    // :id/trace-links/:failureId/retry, retryTraceLinkWrite above). `error`/
+    // `createdAt`/`jobId` are omitted -- not needed by the frontend, which
+    // only needs this row's own id (to call the retry endpoint) plus enough
+    // fields to match it to the trace link it renders.
+    traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
   } | null> {
-    const job = await this.prisma.job.findUnique({ where: { id } });
+    const job = await this.prisma.job.findUnique({ where: { id }, include: { traceLinkFailures: true } });
     if (!job) return null;
     return {
       id: job.id,
@@ -386,6 +394,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       state: job.state,
       originalFilename: job.originalFilename,
       userId: job.userId,
+      traceLinkFailures: (job.traceLinkFailures ?? []).map((f) => ({
+        id: f.id,
+        sourceLocalId: f.sourceLocalId,
+        sourceAdoId: f.sourceAdoId,
+        targetAdoId: f.targetAdoId,
+        referenceName: f.referenceName,
+      })),
     };
   }
 
