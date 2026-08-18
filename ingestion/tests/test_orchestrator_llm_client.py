@@ -1117,6 +1117,34 @@ def test_infer_trace_links_omits_response_schema_when_catalog_is_empty() -> None
     assert "responseSchema" not in captured["body"]
 
 
+def test_infer_trace_links_orders_catalog_native_types_first() -> None:
+    # Task 5: native ADO link types (reference names starting with System. or
+    # Microsoft.VSTS.) should be ordered first in the catalog, followed by
+    # custom org-defined types. This ensures the model prefers native types
+    # when they fit the relationship.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    # Input catalog: custom type first, native type second
+    catalog = [
+        {"reference_name": "Elisra.CoveredBy-Forward", "name": "Covered by"},
+        {"reference_name": "System.LinkTypes.Affects-Forward", "name": "Affects"},
+    ]
+    client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=catalog)
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    # Native type should appear before custom type in the system prompt
+    native_index = system_prompt.index("System.LinkTypes.Affects-Forward")
+    custom_index = system_prompt.index("Elisra.CoveredBy-Forward")
+    assert native_index < custom_index, "Native types should be ordered before custom types in the catalog"
+
+
 # --- analyze_section / analyze_section_agentic (§2b/§5b holistic redesign) ---
 
 

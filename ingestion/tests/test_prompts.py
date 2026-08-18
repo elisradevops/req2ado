@@ -32,6 +32,18 @@ def test_infer_trace_links_prompt() -> None:
     assert result.endswith("the response body must be valid JSON on its own.")
 
 
+def test_infer_trace_links_v2_prompt_includes_native_type_preference_instruction() -> None:
+    # Task 5: v2 includes an explicit instruction to prefer native ADO link
+    # types when they fit the relationship. Verify the key phrases are present.
+    result = load_prompt("infer_trace_links", catalog_lines="- Some.Ref (\"Some Name\")")
+    assert "Native Azure DevOps link types" in result
+    assert "System." in result or "Microsoft.VSTS." in result
+    assert "standard, well-established meanings" in result
+    assert "prefer one of these whenever it genuinely captures the relationship" in result
+    assert "custom, organization-defined link type" in result
+    assert "use one only when no native type fits as well" in result
+
+
 def test_score_requirements_for_document_prompt() -> None:
     result = load_prompt("score_requirements_for_document", category_instruction="X-CATEGORY-Y ", node_count="7")
     assert "X-CATEGORY-Y " in result

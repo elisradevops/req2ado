@@ -37,6 +37,13 @@ from app.workitem.model import RequirementTag
 logger = logging.getLogger(__name__)
 _tracer = get_tracer()
 
+_NATIVE_ADO_LINK_PREFIXES = ("System.", "Microsoft.VSTS.")
+
+
+def _is_native_ado_link_type(reference_name: str) -> bool:
+    return reference_name.startswith(_NATIVE_ADO_LINK_PREFIXES)
+
+
 _JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.DOTALL)
 # Same fence shape, NOT anchored to the whole string -- confirmed live (real
 # job failure, qwen3.6:35b via analyze_section_agentic): unlike the other
@@ -815,10 +822,11 @@ class OrchestratorLlmClient:
         link_type_catalog: list[dict],
         kb_context: str | None = None,
     ) -> list[dict]:
+        sorted_catalog = sorted(link_type_catalog, key=lambda entry: not _is_native_ado_link_type(entry["reference_name"]))
         catalog_lines = "\n".join(
             f"- {entry['reference_name']} (\"{entry['name']}\")"
             + (f": {entry['semantic_hint']}" if entry.get("semantic_hint") else "")
-            for entry in link_type_catalog
+            for entry in sorted_catalog
         )
         nodes_json = json.dumps(nodes)
         system_prompt = load_prompt("infer_trace_links", catalog_lines=catalog_lines)
