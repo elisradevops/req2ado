@@ -163,6 +163,10 @@ const KIND_META: Record<string, KindMeta> = {
     title: 'Trace-link inference failed',
     tip: 'Whole-document trace/coverage link inference failed -- no trace links were added, but every proposed item above is otherwise unaffected.',
   },
+  trace_link_write_failed: {
+    title: 'Trace links failed to write to Azure DevOps',
+    tip: 'These trace/coverage links could not be written during confirm -- every work item itself was created successfully. Open the affected item below and use the retry control next to the link chip.',
+  },
   heading_id_offset_mismatch: {
     title: 'Heading ID offset mismatch',
     tip: "Some headings' IDs didn't match the document's dominant heading-level offset -- excluded from deterministic structure detection and handled by the model path instead.",

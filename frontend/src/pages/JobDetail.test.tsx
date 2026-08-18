@@ -91,7 +91,7 @@ describe('JobDetail', () => {
   });
 
   it('shows a retry control for a failed trace link and calls retryTraceLinkWrite(jobId, failureId) when clicked', async () => {
-    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+    const baseJob = {
       id: 'job-20',
       status: 'diff_ready',
       dryRunDiff: [{
@@ -101,7 +101,23 @@ describe('JobDetail', () => {
         ],
       }],
       traceLinkFailures: [{ id: 'failure-1', sourceLocalId: 'e1', sourceAdoId: 100, targetAdoId: 200, referenceName: 'Elisra.CoveredBy-Forward' }],
-    } as any);
+      warnings: [
+        {
+          kind: 'trace_link_write_failed',
+          severity: 'pipeline_issue',
+          nodeIds: ['e1'],
+          detail: {},
+          raw: '1 trace link failed to write to Azure DevOps and can be retried from the node detail panel.',
+        },
+      ],
+    };
+    // First getJob call (initial load) returns the failure; the retry
+    // itself resolves successfully, and JobDetail refetches the job --
+    // this second mocked response has an empty traceLinkFailures/warnings,
+    // simulating JobsService.retryTraceLinkWrite's server-side recompute.
+    vi.spyOn(jobsApi, 'getJob')
+      .mockResolvedValueOnce(baseJob as any)
+      .mockResolvedValue({ ...baseJob, traceLinkFailures: [], warnings: [] } as any);
     vi.mocked(jobsApi.retryTraceLinkWrite).mockResolvedValue({ written: true, sourceAdoId: 100, targetAdoId: 200 });
     const chatApi = await import('../api/chat');
     vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
@@ -109,13 +125,28 @@ describe('JobDetail', () => {
 
     renderAt('job-20');
     await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());
+    // The stale warning banner (Finding 1) is present before the retry.
     const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Pipeline issue'));
+    expect(screen.getByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
+
     await userEvent.click(screen.getByText('Root'));
 
     const retryButton = await screen.findByRole('button', { name: /retry writing "covers" trace link/i });
     await userEvent.click(retryButton);
 
     expect(jobsApi.retryTraceLinkWrite).toHaveBeenCalledWith('job-20', 'failure-1');
+    // Refetch resyncs both traceLinkFailures (retry button disappears) and
+    // warnings (the stale banner is cleared) from the server response.
+    await waitFor(() => expect(jobsApi.getJob).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /retry writing "covers" trace link/i })).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText('Trace links failed to write to Azure DevOps')).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/integrity warning/i)).not.toBeInTheDocument();
   });
 
   it('renders debug captures alongside the audit trail when the job has soft-failure captures', async () => {

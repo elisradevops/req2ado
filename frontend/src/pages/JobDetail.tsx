@@ -729,16 +729,29 @@ export function JobDetail(): React.ReactElement {
   }
 
   // Manual retry for a trace link that failed to write during confirm() --
-  // same re-throw-on-failure contract as handleAttachFigure above, letting
-  // NodeDetailPanel's own per-row loading-button guard know the call
-  // failed. No diff/warnings state update needed on success here (unlike
-  // JobsService.retryTraceLinkWrite's own server-side warning recompute):
-  // the retry control's own "done" state (NodeDetailPanel) is what reflects
-  // success in this view; traceLinkFailures/warnings catch up on next load.
+  // Refetches the job on success (see the comment inside the function) so
+  // traceLinkFailures and warnings both resync from the server's own
+  // recompute -- re-throws on failure with the same contract as
+  // handleAttachFigure above, letting NodeDetailPanel's per-row
+  // loading-button guard know the call failed.
   async function handleRetryTraceLink(failureId: string): Promise<void> {
     if (!id) return;
     try {
       await retryTraceLinkWrite(id, failureId);
+      // Resync from the server rather than only clearing the retried id
+      // locally: JobsService.retryTraceLinkWrite already recomputes both
+      // the remaining traceLinkFailures AND the trace_link_write_failed
+      // job warning server-side (shrinking or removing it) -- a local-only
+      // update would leave the warning banner stale, and re-deriving its
+      // exact text/nodeIds logic here would duplicate server logic that can
+      // drift. A stale local traceLinkFailures list was a confirmed real
+      // bug: without this refetch, navigating to another node and back
+      // showed the just-fixed link as failed again (its row was deleted
+      // server-side but still present in this component's own state), and
+      // re-clicking retry 404s on the already-deleted row.
+      const job = await getJob(id);
+      setTraceLinkFailures(job.traceLinkFailures ?? []);
+      setWarnings(job.warnings ?? []);
       showToast('Trace link written to Azure DevOps.', 'success');
     } catch (err) {
       showToast('Failed to write trace link — please try again.', 'error');

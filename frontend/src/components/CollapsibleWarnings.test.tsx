@@ -68,6 +68,22 @@ describe('CollapsibleWarnings', () => {
     expect(screen.getByText('SURVEY analysis did not reference 3 of 9 source block(s).')).toBeInTheDocument();
   });
 
+  it('renders a real title/tip for trace_link_write_failed, not the generic fallback', async () => {
+    renderWarnings([
+      warning({
+        kind: 'trace_link_write_failed',
+        severity: 'pipeline_issue',
+        raw: '1 trace link failed to write to Azure DevOps and can be retried from the node detail panel.',
+      }),
+    ]);
+
+    await userEvent.click(screen.getByText(/1 integrity warning/i));
+    await userEvent.click(screen.getByText('Pipeline issue'));
+
+    expect(screen.getByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
+    expect(screen.queryByText('See the sentence below for details.')).not.toBeInTheDocument();
+  });
+
   it('falls back an unrecognized kind to a humanized title', async () => {
     renderWarnings([warning({ kind: 'some_future_kind', severity: 'needs_review', raw: 'A brand new kind of notice.' })]);
 
