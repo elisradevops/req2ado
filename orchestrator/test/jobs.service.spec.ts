@@ -2313,6 +2313,103 @@ describe('JobsService.confirm — trace links', () => {
     // Verify document order is preserved: links were created in order n0→200, n0→201, n0→202
     expect(callOrder).toEqual([200, 201, 202]);
   });
+
+  it('Task 2: upserts a JobTraceLinkFailure with the right triple on a failing linkWorkItems, and still surfaces the run as succeeded with a warning', async () => {
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 }) // n0
+      .mockResolvedValueOnce({ id: 101 }); // n1
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const linkWorkItems = jest.fn().mockRejectedValue(new Error('ADO rejected the rel'));
+    const jobTraceLinkFailureUpsert = jest.fn().mockResolvedValue(undefined);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
+            {
+              localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Cust Req', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null,
+              traceLinks: [
+                { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Reverse', displayName: 'Covers', targetKind: 'intraJob', targetLocalId: 'n0', resolutionStatus: 'pending' },
+              ],
+            },
+          ],
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobTraceLinkFailure: { upsert: jobTraceLinkFailureUpsert },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+    expect(jobTraceLinkFailureUpsert).toHaveBeenCalledWith({
+      where: { jobId_sourceAdoId_targetAdoId_referenceName: { jobId: 'job-1', sourceAdoId: 101, targetAdoId: 100, referenceName: 'Elisra.CoveredBy-Reverse' } },
+      create: { jobId: 'job-1', sourceLocalId: 'n1', sourceAdoId: 101, targetAdoId: 100, referenceName: 'Elisra.CoveredBy-Reverse', error: 'ADO rejected the rel' },
+      update: { sourceLocalId: 'n1', error: 'ADO rejected the rel' },
+    });
+
+    const finalUpdateCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
+    expect(finalUpdateCall).toBeDefined();
+    expect(finalUpdateCall![0].data.warnings).toEqual([
+      { kind: 'trace_link_write_failed', severity: 'pipeline_issue', nodeIds: ['n1'], detail: {}, raw: expect.stringContaining('1 trace link') },
+    ]);
+  });
+
+  it('Task 2: a fully successful trace-link phase writes no JobTraceLinkFailure rows and appends no warning', async () => {
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 }) // n0
+      .mockResolvedValueOnce({ id: 101 }); // n1
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const linkWorkItems = jest.fn().mockResolvedValue(undefined);
+    const jobTraceLinkFailureUpsert = jest.fn().mockResolvedValue(undefined);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
+            {
+              localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Cust Req', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null,
+              traceLinks: [
+                { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Reverse', displayName: 'Covers', targetKind: 'intraJob', targetLocalId: 'n0', resolutionStatus: 'pending' },
+              ],
+            },
+          ],
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobTraceLinkFailure: { upsert: jobTraceLinkFailureUpsert },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+    expect(jobTraceLinkFailureUpsert).not.toHaveBeenCalled();
+    const finalUpdateCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
+    expect(finalUpdateCall).toBeDefined();
+    expect(finalUpdateCall![0].data.warnings).toBeUndefined();
+  });
 });
 
 describe('JobsService.confirm — figure attachments', () => {
@@ -3009,6 +3106,7 @@ describe('JobsService.delete', () => {
       const jobSourceFileDeleteMany = jest.fn().mockResolvedValue(undefined);
       const jobFigureFileDeleteMany = jest.fn().mockResolvedValue(undefined);
       const jobEventDeleteMany = jest.fn().mockResolvedValue(undefined);
+      const jobTraceLinkFailureDeleteMany = jest.fn().mockResolvedValue(undefined);
       const jobDelete = jest.fn().mockResolvedValue(undefined);
       const prisma = {
         job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status }), delete: jobDelete },
@@ -3019,6 +3117,7 @@ describe('JobsService.delete', () => {
         jobSourceFile: { deleteMany: jobSourceFileDeleteMany },
         jobFigureFile: { deleteMany: jobFigureFileDeleteMany },
         jobEvent: { deleteMany: jobEventDeleteMany },
+        jobTraceLinkFailure: { deleteMany: jobTraceLinkFailureDeleteMany },
         idempotencyMapping: { deleteMany: jest.fn() },
         $transaction: jest.fn(async (ops: unknown[]) => Promise.all(ops)),
       };
@@ -3038,6 +3137,10 @@ describe('JobsService.delete', () => {
       // violation for every job that ever emitted a narration event (i.e.
       // every job that actually ran).
       expect(jobEventDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
+      // JobTraceLinkFailure (Task 2) has the same required, non-cascading FK
+      // to Job as JobEvent above -- must be in this transaction for the
+      // same reason.
+      expect(jobTraceLinkFailureDeleteMany).toHaveBeenCalledWith({ where: { jobId: 'job-1' } });
       expect(jobDelete).toHaveBeenCalledWith({ where: { id: 'job-1' } });
       expect(prisma.idempotencyMapping.deleteMany).not.toHaveBeenCalled();
       expect(result).toEqual({ deleted: true });

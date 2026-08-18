@@ -158,6 +158,7 @@ model Job {
   sourceFile       JobSourceFile?
   events           JobEvent[]
   figureFiles      JobFigureFile[]
+  traceLinkFailures JobTraceLinkFailure[]
 }
 
 // Retains the original uploaded file's bytes so a job can be re-submitted
@@ -278,6 +279,36 @@ model JobFigureFile {
   createdAt DateTime @default(now())
 
   @@unique([jobId, figureId])
+}
+
+// Resume-by-existence, same idiom as JobFigureFile above: a row exists only
+// while a trace-link write is still outstanding, and is deleted... except
+// there is no delete here yet -- Task 3 (retry endpoint) owns clearing a row
+// once a retried write succeeds. Written by confirm()'s per-link catch
+// (jobs.service.ts) as a best-effort bookkeeping step alongside the
+// existing console.error -- a trace-link write failure (rejected rel,
+// deleted crossJob target, transient network error, or the documented
+// residual same-endpoint race after grouping-by-source, see confirm()'s own
+// comment) must not abort confirm() once work items in the call have
+// already been created/parented, but today it also left zero persistence,
+// zero user visibility, and zero recovery path once the job succeeded. This
+// table plus the WarningRecord confirm() appends on success (kind:
+// 'trace_link_write_failed') close that gap; Task 3's retry endpoint reads
+// these rows by (jobId, sourceAdoId, targetAdoId, referenceName).
+// Upserted, not created: a retried confirm() re-attempting the same link
+// must overwrite the stored error, never 500 on the unique constraint below.
+model JobTraceLinkFailure {
+  id            String   @id @default(uuid())
+  jobId         String
+  job           Job      @relation(fields: [jobId], references: [id])
+  sourceLocalId String // matches DryRunDiffEntry.traceLinks[].sourceLocalId, so the UI can map a row back to the link it renders
+  sourceAdoId   Int
+  targetAdoId   Int
+  referenceName String
+  error         String
+  createdAt     DateTime @default(now())
+
+  @@unique([jobId, sourceAdoId, targetAdoId, referenceName])
 }
 
 // Idempotency map: prevents duplicate ADO writes on job re-run.

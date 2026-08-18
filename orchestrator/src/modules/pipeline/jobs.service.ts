@@ -818,6 +818,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // rows, so job.delete() below unconditionally failed with a foreign
       // key violation. This was the one relation missing from this list.
       this.prisma.jobEvent.deleteMany({ where: { jobId: id } }),
+      // JobTraceLinkFailure has the same required, non-cascading FK to Job
+      // as every other Job-child table here -- added alongside the model
+      // itself so a job with a stuck trace-link failure can never hit the
+      // same FK-violation bug JobEvent had above.
+      this.prisma.jobTraceLinkFailure.deleteMany({ where: { jobId: id } }),
       this.prisma.job.delete({ where: { id } }),
     ]);
     return { deleted: true };
@@ -1052,6 +1057,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // each newly-created item triggered its own /dedup/upsert call (one
     // embed() round-trip per item) inline in the loop.
     const dedupUpsertItems: { itemId: string; text: string; title: string; areaPath: string }[] = [];
+
+    // Task 2: populated by the trace-link phase's per-link catch below, read
+    // after the whole try block succeeds to append a WarningRecord (2c) to
+    // the same job.update that flips status to 'succeeded'. Declared out
+    // here (not inside the try) specifically so it survives past the try
+    // block's closing brace into that final success-path code.
+    const traceLinkFailures: { sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[] = [];
 
     try {
       // Split into 'already resolved' (reuse/dedup_skip, cheap+sync) vs
@@ -1420,7 +1432,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // targets); transport-layer 409 retry (retryWithBackoff) absorbs the
       // rest; Tasks 2-4 make anything that still fails visible and
       // recoverable.
-      const toTraceLinkBySource = new Map<number, { targetAdoId: number; referenceName: string }[]>();
+      const toTraceLinkBySource = new Map<number, { targetAdoId: number; referenceName: string; sourceLocalId: string }[]>();
       for (const entry of diff) {
         if (isExcluded(entry)) continue;
         for (const link of entry.traceLinks ?? []) {
@@ -1434,7 +1446,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           }
           if (targetAdoId === undefined) continue;
           const list = toTraceLinkBySource.get(sourceAdoId) ?? [];
-          list.push({ targetAdoId, referenceName: link.referenceName });
+          // sourceLocalId is carried alongside the ADO ids so a later write
+          // failure (see the catch below) can record JobTraceLinkFailure
+          // with the local id the UI's diff view actually renders -- reused
+          // from the same link.sourceLocalId already resolved into
+          // sourceAdoId above, not re-derived.
+          list.push({ targetAdoId, referenceName: link.referenceName, sourceLocalId: link.sourceLocalId });
           toTraceLinkBySource.set(sourceAdoId, list);
         }
       }
@@ -1465,6 +1482,39 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           } catch (error) {
             // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
             console.error(`Trace-link write failed for ${sourceAdoId} -> ${link.targetAdoId}:`, error);
+            traceLinkFailures.push({ sourceLocalId: link.sourceLocalId, sourceAdoId, targetAdoId: link.targetAdoId, referenceName: link.referenceName });
+            // Durable counterpart to the console.error above (Task 2b) --
+            // gives Task 3's retry endpoint and the warning appended below
+            // (2c) something to read once this best-effort write stays
+            // failed past confirm() returning. Upsert (not create): a
+            // retried confirm() re-attempting the same link must overwrite
+            // the stored error, never 500 on the unique constraint. Own
+            // try/catch: a bookkeeping failure here must not break the
+            // best-effort contract this whole phase exists for.
+            try {
+              await this.prisma.jobTraceLinkFailure.upsert({
+                where: {
+                  jobId_sourceAdoId_targetAdoId_referenceName: {
+                    jobId: id,
+                    sourceAdoId,
+                    targetAdoId: link.targetAdoId,
+                    referenceName: link.referenceName,
+                  },
+                },
+                create: {
+                  jobId: id,
+                  sourceLocalId: link.sourceLocalId,
+                  sourceAdoId,
+                  targetAdoId: link.targetAdoId,
+                  referenceName: link.referenceName,
+                  error: (error as Error).message,
+                },
+                update: { sourceLocalId: link.sourceLocalId, error: (error as Error).message },
+              });
+            } catch (bookkeepingError) {
+              // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+              console.error(`Failed to persist JobTraceLinkFailure for ${sourceAdoId} -> ${link.targetAdoId}:`, bookkeepingError);
+            }
           } finally {
             traceLinkProgress += 1;
             void this.jobEventsPublisher?.publishNarration(id, {
@@ -1595,9 +1645,46 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       if (realAdoId === undefined) return entry;
       return { ...entry, existingAdoId: realAdoId };
     });
+    // Task 2c: confirm() has, until now, only ever READ job.warnings (set by
+    // ingestion's /level integrity checks, SURVEY-only) -- this is a new
+    // write path, deliberately reusing WarningRecord.kind's `string` (not a
+    // closed union) typing: that field is typed loosely precisely so a
+    // non-ingestion producer like this one can introduce a new kind without
+    // a lockstep ingestion/orchestrator/frontend release (see its own doc
+    // comment in dry-run.service.ts). Only appended when this run actually
+    // recorded a failure -- a clean run's warnings are left byte-for-byte
+    // as they were.
+    const existingWarnings = (job.warnings as (WarningRecord | string)[] | null) ?? [];
+    const updatedWarnings: (WarningRecord | string)[] =
+      traceLinkFailures.length > 0
+        ? [
+            ...existingWarnings,
+            {
+              kind: 'trace_link_write_failed',
+              severity: 'pipeline_issue',
+              // Distinct sourceLocalIds, not one entry per failed link --
+              // CollapsibleWarnings.tsx reads nodeIds directly to build
+              // jump-to-node links, and a jump target is per-node, not
+              // per-link.
+              nodeIds: Array.from(new Set(traceLinkFailures.map((f) => f.sourceLocalId))),
+              detail: {},
+              raw: `${traceLinkFailures.length} trace link${traceLinkFailures.length === 1 ? '' : 's'} failed to write to Azure DevOps and can be retried from the node detail panel.`,
+            } satisfies WarningRecord,
+          ]
+        : existingWarnings;
     await this.prisma.job.update({
       where: { id },
-      data: { status: 'succeeded', confirmedAt: new Date(), completedAt: new Date(), dryRunDiff: updatedDiff },
+      data: {
+        status: 'succeeded',
+        confirmedAt: new Date(),
+        completedAt: new Date(),
+        dryRunDiff: updatedDiff,
+        // `as any`: same cast pipeline.worker.ts's own warnings write uses --
+        // updatedWarnings is plain JSON-serializable data, but Prisma's
+        // generated InputJsonValue union doesn't structurally resolve
+        // against a concrete array-of-interface type.
+        ...(traceLinkFailures.length > 0 ? { warnings: updatedWarnings as any } : {}),
+      },
     });
     await this.prisma.auditEntry.create({
       data: { jobId: id, message: `Job confirmed: ${createdCount} work item(s) created` },
