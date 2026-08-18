@@ -7,8 +7,15 @@
  * Exception: 409 Conflict is retried when it represents optimistic
  * concurrency failures (e.g. PATCH to a work item revision that changed
  * since read). A 409 means the write definitively did NOT land, so a retry
- * cannot create a duplicate relation. This is safe and correct across all
- * write operations (linkWorkItems, uploadAttachment, linkParentChild).
+ * cannot create a duplicate relation. This safety argument applies to the
+ * PATCH-based relation-write calls specifically (linkWorkItems,
+ * linkParentChild) -- it is not a universal justification for every write
+ * this retry helper covers. 409 is retried globally in RETRYABLE_STATUSES
+ * below, which also covers createWorkItem and uploadAttachment's first call
+ * (the raw-bytes POST); ADO does not 409 on those endpoints in practice, so
+ * this is not a live bug, but a 409 there would not carry the same
+ * "definitely didn't land" guarantee, since a create/upload could
+ * plausibly conflict on some other basis.
  */
 const RETRYABLE_STATUSES = new Set([409, 429, 500, 502, 503, 504]);
 
