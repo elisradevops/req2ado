@@ -69,6 +69,7 @@ def _infer_trace_links_for_nodes(
     blocks_total: int,
     branch_count: int,
     debug_capture: "DebugCapture | None" = None,
+    kb_context: str | None = None,
 ) -> list[TraceLink]:
     """Whole-tree trace-link inference, shared by both the LLM-analysis path
     (build_survey_tree's own main body) and the pure-deterministic guard
@@ -91,10 +92,14 @@ def _infer_trace_links_for_nodes(
         {"node_id": node.local_id, "type": node.type.value, "text": _without_embedded_table_html(node.description)}
         for node in all_nodes
     ]
-    # Trace-link inference judges relationships between already-generated
-    # nodes, not raw source text, so it isn't grounded against KB context
-    # the way the other three calls are -- passing None here is a
-    # deliberate simplification, not an oversight.
+    # Whether two nodes relate AT ALL is still judged from node text alone,
+    # same as before -- that relationship-EXISTENCE question genuinely
+    # doesn't benefit from KB grounding. But WHICH link type to choose for
+    # an ambiguous custom type (one ADO itself gives no definition for) can
+    # benefit from the document's own KB material -- e.g. an org's own
+    # traceability conventions doc may define what a specific custom link
+    # type is meant to capture -- so `kb_context` is threaded through to
+    # infer_trace_links despite the existence question not needing it.
     if progress_callback is not None:
         progress_callback(
             LevelingProgress(
@@ -116,7 +121,7 @@ def _infer_trace_links_for_nodes(
     # (_resolve_kb_citations) above -- trace links degrade to [], not
     # the whole job.
     try:
-        raw_links = link_type_client.infer_trace_links(llm_nodes, catalog, kb_context=None)
+        raw_links = link_type_client.infer_trace_links(llm_nodes, catalog, kb_context=kb_context)
     except ValueError as exc:
         logger.warning("Trace-link inference failed: %s", exc)
         if debug_capture is not None:

@@ -1799,7 +1799,7 @@ def build_survey_tree(
         if link_type_client is not None:
             trace_links = _infer_trace_links_for_nodes(
                 all_nodes, link_type_client, link_type_catalog or [], all_warnings,
-                progress_callback, len(det_nodes), 0, debug_capture=debug_capture,
+                progress_callback, len(det_nodes), 0, debug_capture=debug_capture, kb_context=doc_kb_context,
             )
 
         return WorkItemTree(
@@ -2345,9 +2345,18 @@ def build_survey_tree(
 
     trace_links: list[TraceLink] = []
     if link_type_client is not None:
+        # doc_kb_context is only ever populated on the fallback (non-agentic)
+        # path -- see its own definition above, guarded by `not
+        # supports_tools`. Known, documented limitation: on the agentic path
+        # (supports_tools=True), doc_kb_context stays None for this whole
+        # function, since that path grounds other calls via live query_kb
+        # tool calls during branch authoring rather than a static context
+        # string, and infer_trace_links has no tool-calling variant of its
+        # own. Trace-link type selection gets no KB grounding on that path --
+        # a real gap, tracked as a follow-up, not closed here.
         trace_links = _infer_trace_links_for_nodes(
             all_nodes, link_type_client, link_type_catalog or [], all_warnings,
-            progress_callback, blocks_total, len(branches), debug_capture=debug_capture,
+            progress_callback, blocks_total, len(branches), debug_capture=debug_capture, kb_context=doc_kb_context,
         )
 
     return WorkItemTree(

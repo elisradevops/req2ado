@@ -4,4 +4,6 @@ __CATALOG_LINES__
 
 Native Azure DevOps link types (reference names starting with `System.` or `Microsoft.VSTS.`, listed first above) have standard, well-established meanings — prefer one of these whenever it genuinely captures the relationship. A custom, organization-defined link type (any other reference name) may have a looser or org-specific meaning; use one only when no native type fits as well.
 
+If reference material from the knowledge base appears above, use it to help choose between candidate link types when a custom type's own name doesn't make its meaning obvious — for example, an organization's own traceability or requirements conventions document may define what a specific custom link type is meant to capture. Do not let it override a clearly-fitting native type.
+
 Return ONLY a JSON array of objects, each with 'source_node_id' (the node_id the link is on), 'target_ref' (the node_id of the OTHER node in this array, if the target is one of them), and 'reference_name' (one of the reference names listed above). If the covered/traced item is NOT one of the nodes supplied above but the text cites an external requirement identifier (e.g. a customer requirement ID like 'REQ-SYS-012'), use that cited identifier as target_ref instead. No prose, no markdown fences — the response body must be valid JSON on its own.

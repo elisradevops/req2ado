@@ -3502,6 +3502,70 @@ def test_build_survey_tree_calls_infer_trace_links_exactly_once_with_the_catalog
     assert fake_client.calls[0]["link_type_catalog"] == catalog
 
 
+def test_build_survey_tree_forwards_doc_kb_context_to_trace_link_inference_on_fallback_path(monkeypatch) -> None:
+    # Task 6: relationship EXISTENCE between two nodes is still judged from
+    # node text alone (unchanged), but the link-TYPE-CHOICE for an ambiguous
+    # custom type can benefit from the document's own KB material -- the
+    # SAME doc_kb_context every other LLM call in build_survey_tree reuses
+    # must now reach infer_trace_links too, on the fallback (non-agentic)
+    # path where it is actually populated.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "org traceability conventions doc text", []
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    fake_client = FakeTraceLinkInferenceClient()
+    catalog = [{"reference_name": "Elisra.CoveredBy-Forward", "name": "Covered By", "semantic_hint": None}]
+    build_survey_tree(
+        _small_doc(), FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="some-unknown-model",  # _resolve_caps gating: forces the fallback (non-agentic) path
+        link_type_client=fake_client, link_type_catalog=catalog,
+    )
+    assert len(fake_client.calls) == 1
+    assert fake_client.calls[0]["kb_context"] == "org traceability conventions doc text"
+
+
+def test_build_survey_tree_trace_link_inference_gets_no_kb_context_on_agentic_path(monkeypatch) -> None:
+    # Known, documented limitation (see _infer_trace_links_for_nodes's own
+    # call site comment in build_survey_tree): on the agentic (tool-capable
+    # model) path, doc_kb_context stays None for the whole function -- that
+    # path grounds other calls via live query_kb tool calls during branch
+    # authoring, not a static context string, and infer_trace_links has no
+    # tool-calling variant of its own. Locks in the gap as verified,
+    # documented behavior rather than leaving it unverified.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_retrieve_context(user_id, query_text, embed_client, vector_store, **_):
+        return "agentic KB text", [
+            {"source_file": "agentic.docx", "distance": 0.1, "similarity": 0.9, "text": "agentic KB text"}
+        ]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
+
+    fake_client = FakeTraceLinkInferenceClient()
+    fake_analysis = FakeSectionAnalysisClient(
+        agentic_nodes=[
+            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}
+        ],
+        agentic_citations=[{"source_file": "agentic.docx", "similarity": 0.9, "text": "agentic KB text"}],
+    )
+    build_survey_tree(
+        _small_doc(), fake_analysis,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="qwen3:4b",  # confirmed live tool-capable, see _MODEL_CAPS
+        link_type_client=fake_client, link_type_catalog=[],
+    )
+    assert len(fake_client.calls) == 1
+    assert fake_client.calls[0]["kb_context"] is None
+
+
 def test_build_survey_tree_drops_a_trace_link_between_a_node_and_its_own_parent() -> None:
     # CONFIRMED REAL BUG, found via live testing: infer_trace_links has no
     # structural signal telling it two nodes are already directly related
