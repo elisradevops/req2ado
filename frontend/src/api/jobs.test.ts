@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo } from './jobs';
+import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite } from './jobs';
 
 vi.mock('./httpClient');
 
@@ -93,5 +93,12 @@ describe('jobs api', () => {
     const result = await attachFigureToAdo('job-1', 'n0', 'f0');
     expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/figures/f0/attach');
     expect(result).toEqual({ attached: true, adoId: 555 });
+  });
+
+  it('retryTraceLinkWrite POSTs to the trace-link retry sub-route with no body', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { written: true, sourceAdoId: 100, targetAdoId: 200 } });
+    const result = await retryTraceLinkWrite('job-1', 'failure-1');
+    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/trace-links/failure-1/retry');
+    expect(result).toEqual({ written: true, sourceAdoId: 100, targetAdoId: 200 });
   });
 });

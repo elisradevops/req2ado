@@ -920,6 +920,59 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return { attached: true, adoId };
   }
 
+  // Manual retry counterpart to confirm()'s best-effort trace-link write
+  // phase -- mirrors attachFigureToAdo above for exactly the same two gaps:
+  // an already-'succeeded' job can never re-enter confirm() to retry a link
+  // that failed, and a single failure there is silently swallowed by design
+  // (Task 2b/2c). The JobTraceLinkFailure row stores the resolved ADO ids
+  // denormalized, so no re-resolution against dryRunDiff/CreatedItemMapping
+  // is needed here the way attachFigureToAdo needs it for adoId. A failure
+  // here throws (this is an explicit user action, not a best-effort
+  // background phase) rather than being swallowed and re-recorded.
+  async retryTraceLinkWrite(
+    jobId: string,
+    failureId: string,
+    credential?: { orgUrl: string; pat: string },
+  ): Promise<{ written: true; sourceAdoId: number; targetAdoId: number }> {
+    const failure = await this.prisma.jobTraceLinkFailure.findUnique({ where: { id: failureId } });
+    if (!failure || failure.jobId !== jobId) {
+      throw new NotFoundException(`Trace-link failure ${failureId} not found for job ${jobId}`);
+    }
+
+    await this.mcpClient.linkWorkItems(failure.sourceAdoId, failure.targetAdoId, failure.referenceName, credential);
+    await this.prisma.jobTraceLinkFailure.delete({ where: { id: failure.id } });
+
+    // Recompute the trace_link_write_failed warning: drop it if this was the
+    // last outstanding failure, otherwise shrink its nodeIds/raw text to the
+    // remaining set. Without this, a fully-recovered job would show a
+    // permanently stale "N trace links failed" warning forever after every
+    // one of them was successfully retried.
+    const remaining = await this.prisma.jobTraceLinkFailure.findMany({ where: { jobId } });
+    const job = await this.prisma.job.findUnique({ where: { id: jobId } });
+    if (job) {
+      const existingWarnings = (job.warnings as (WarningRecord | string)[] | null) ?? [];
+      const withoutTraceLinkWarning = existingWarnings.filter(
+        (w) => typeof w === 'string' || w.kind !== 'trace_link_write_failed',
+      );
+      const updatedWarnings: (WarningRecord | string)[] =
+        remaining.length > 0
+          ? [
+              ...withoutTraceLinkWarning,
+              {
+                kind: 'trace_link_write_failed',
+                severity: 'pipeline_issue',
+                nodeIds: Array.from(new Set(remaining.map((f) => f.sourceLocalId))),
+                detail: {},
+                raw: `${remaining.length} trace link${remaining.length === 1 ? '' : 's'} failed to write to Azure DevOps and can be retried from the node detail panel.`,
+              } satisfies WarningRecord,
+            ]
+          : withoutTraceLinkWarning;
+      await this.prisma.job.update({ where: { id: jobId }, data: { warnings: updatedWarnings as any } });
+    }
+
+    return { written: true, sourceAdoId: failure.sourceAdoId, targetAdoId: failure.targetAdoId };
+  }
+
   // Rejecting is only meaningful from 'diff_ready' -- once writing/succeeded,
   // real ADO writes may already exist and a reject can't undo those
   // (P4b's CreatedItemMapping enables safe RESUME of a failed confirm, not

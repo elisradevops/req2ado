@@ -3320,6 +3320,153 @@ describe('JobsService.attachFigureToAdo', () => {
   });
 });
 
+describe('JobsService.retryTraceLinkWrite', () => {
+  it('links, deletes the failure row, and shrinks the warning to the remaining failures (2 outstanding, 1 retried)', async () => {
+    const linkWorkItems = jest.fn().mockResolvedValue(undefined);
+    const jobTraceLinkFailureDelete = jest.fn().mockResolvedValue(undefined);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const remainingFailure = {
+      id: 'failure-2',
+      jobId: 'job-1',
+      sourceLocalId: 'n1',
+      sourceAdoId: 102,
+      targetAdoId: 100,
+      referenceName: 'Elisra.CoveredBy-Reverse',
+      error: 'ADO rejected the rel',
+      createdAt: new Date(),
+    };
+    const prisma = {
+      jobTraceLinkFailure: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'failure-1',
+          jobId: 'job-1',
+          sourceLocalId: 'n0',
+          sourceAdoId: 101,
+          targetAdoId: 100,
+          referenceName: 'Elisra.CoveredBy-Reverse',
+          error: 'ADO rejected the rel',
+          createdAt: new Date(),
+        }),
+        delete: jobTraceLinkFailureDelete,
+        findMany: jest.fn().mockResolvedValue([remainingFailure]),
+      },
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          warnings: [
+            {
+              kind: 'trace_link_write_failed',
+              severity: 'pipeline_issue',
+              nodeIds: ['n0', 'n1'],
+              detail: {},
+              raw: '2 trace links failed to write to Azure DevOps and can be retried from the node detail panel.',
+            },
+          ],
+        }),
+        update: jobUpdate,
+      },
+    };
+    const service = new JobsService(prisma as any, { linkWorkItems } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.retryTraceLinkWrite('job-1', 'failure-1', { orgUrl: 'https://ado.example', pat: 'x' });
+
+    expect(linkWorkItems).toHaveBeenCalledWith(101, 100, 'Elisra.CoveredBy-Reverse', { orgUrl: 'https://ado.example', pat: 'x' });
+    expect(jobTraceLinkFailureDelete).toHaveBeenCalledWith({ where: { id: 'failure-1' } });
+    expect(result).toEqual({ written: true, sourceAdoId: 101, targetAdoId: 100 });
+
+    expect(jobUpdate).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: {
+        warnings: [
+          {
+            kind: 'trace_link_write_failed',
+            severity: 'pipeline_issue',
+            nodeIds: ['n1'],
+            detail: {},
+            raw: '1 trace link failed to write to Azure DevOps and can be retried from the node detail panel.',
+          },
+        ],
+      },
+    });
+  });
+
+  it('removes the trace_link_write_failed warning entirely when retrying the last outstanding failure, leaving other warnings untouched', async () => {
+    const linkWorkItems = jest.fn().mockResolvedValue(undefined);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const otherWarning = { kind: 'some_other_warning', severity: 'pipeline_issue', nodeIds: ['n9'], detail: {}, raw: 'unrelated' };
+    const prisma = {
+      jobTraceLinkFailure: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'failure-1',
+          jobId: 'job-1',
+          sourceLocalId: 'n0',
+          sourceAdoId: 101,
+          targetAdoId: 100,
+          referenceName: 'Elisra.CoveredBy-Reverse',
+          error: 'ADO rejected the rel',
+          createdAt: new Date(),
+        }),
+        delete: jest.fn().mockResolvedValue(undefined),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          warnings: [
+            otherWarning,
+            {
+              kind: 'trace_link_write_failed',
+              severity: 'pipeline_issue',
+              nodeIds: ['n0'],
+              detail: {},
+              raw: '1 trace link failed to write to Azure DevOps and can be retried from the node detail panel.',
+            },
+          ],
+        }),
+        update: jobUpdate,
+      },
+    };
+    const service = new JobsService(prisma as any, { linkWorkItems } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.retryTraceLinkWrite('job-1', 'failure-1');
+
+    expect(result).toEqual({ written: true, sourceAdoId: 101, targetAdoId: 100 });
+    expect(jobUpdate).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { warnings: [otherWarning] },
+    });
+  });
+
+  it('throws NotFoundException when no failure row matches the id', async () => {
+    const prisma = {
+      jobTraceLinkFailure: { findUnique: jest.fn().mockResolvedValue(null) },
+    };
+    const service = new JobsService(prisma as any, { linkWorkItems: jest.fn() } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.retryTraceLinkWrite('job-1', 'missing-failure')).rejects.toThrow('not found');
+  });
+
+  it('throws NotFoundException when the failure row belongs to a different job', async () => {
+    const prisma = {
+      jobTraceLinkFailure: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'failure-1',
+          jobId: 'job-2',
+          sourceLocalId: 'n0',
+          sourceAdoId: 101,
+          targetAdoId: 100,
+          referenceName: 'Elisra.CoveredBy-Reverse',
+          error: 'ADO rejected the rel',
+          createdAt: new Date(),
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, { linkWorkItems: jest.fn() } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.retryTraceLinkWrite('job-1', 'failure-1')).rejects.toThrow('not found');
+  });
+});
+
 describe('JobsService.submit', () => {
   afterEach(() => {
     jest.restoreAllMocks();

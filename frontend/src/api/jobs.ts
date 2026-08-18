@@ -290,3 +290,11 @@ export async function attachFigureToAdo(jobId: string, localId: string, figureId
   const response = await httpClient.post(`/jobs/${jobId}/diff/${localId}/figures/${figureId}/attach`);
   return response.data;
 }
+
+// Manual retry for a trace link that failed to write during confirm() --
+// mirrors attachFigureToAdo above (POST with no body, server-resolved
+// credential/ids).
+export async function retryTraceLinkWrite(jobId: string, failureId: string): Promise<{ written: true; sourceAdoId: number; targetAdoId: number }> {
+  const response = await httpClient.post(`/jobs/${jobId}/trace-links/${failureId}/retry`);
+  return response.data;
+}

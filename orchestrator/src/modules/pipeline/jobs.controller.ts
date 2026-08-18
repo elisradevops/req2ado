@@ -483,6 +483,23 @@ export class JobsController {
     return this.jobsService.attachFigureToAdo(id, localId, figureId, credential);
   }
 
+  // Manual retry counterpart to confirm()'s best-effort trace-link write
+  // phase -- see JobsService.retryTraceLinkWrite's own doc comment for the
+  // two gaps this closes, mirroring attachFigureToAdo above. Session-cookie/
+  // ownedJob guarded and resolves a real ADO credential the same way
+  // confirm()/attachFigureToAdo do -- this performs a real ADO write, not a
+  // read.
+  @Post(':id/trace-links/:failureId/retry')
+  async retryTraceLinkWrite(
+    @Param('id') id: string,
+    @Param('failureId') failureId: string,
+    @CurrentUser() user: SessionUser,
+  ): Promise<{ written: true; sourceAdoId: number; targetAdoId: number }> {
+    await this.ownedJob(id, user);
+    const credential = await this.adoCredentialResolver.resolve(user.userId);
+    return this.jobsService.retryTraceLinkWrite(id, failureId, credential);
+  }
+
   @Get(':id/audit')
   async getAudit(
     @Param('id') id: string,
