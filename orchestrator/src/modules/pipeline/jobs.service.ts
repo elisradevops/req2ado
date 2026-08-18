@@ -1387,11 +1387,40 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // excluded) are skipped, never thrown: per the project's "never block"
       // philosophy, a broken trace link must not fail the whole confirm.
       // Flattened once (not the previous per-entry-then-per-link nested
-      // sequential loop) so trace-link writes can run at the same
-      // writeConcurrency as the create/link phases above instead of one at
-      // a time. Filtering happens up front since a `continue` can't happen
-      // inside mapWithConcurrency's callback.
-      const toTraceLink: { sourceAdoId: number; targetAdoId: number; referenceName: string }[] = [];
+      // Grouped by sourceAdoId, one group per work item -- concurrency runs
+      // ACROSS groups (different work items in flight at once), never
+      // WITHIN a group. Real, confirmed bug this fixes: two trace-link
+      // PATCHes racing against the SAME work item both read its revision
+      // before either commits, so the second to land 409s with ADO's own
+      // optimistic-concurrency check (TF26071 "changed by someone else since
+      // you opened it") -- confirmed live, 8 of 18 figures on one real
+      // Feature lost this way, silently (the existing per-link catch below
+      // only logs). Serializing writes to the SAME work item removes the
+      // self-race entirely; an external actor editing the same item
+      // concurrently is a separate, pre-existing, accepted risk this fix
+      // does not attempt to cover.
+      //
+      // This also fixes link ORDER, not just the race. Links for one
+      // sourceAdoId are built by iterating diff and each entry's own
+      // traceLinks[] in their existing (document/inference) order, then
+      // written by a plain sequential for loop with no concurrency inside
+      // the group -- link #2 is never sent until link #1's write (including
+      // any 409 retry from the transport layer) has resolved. The flat
+      // pre-fix array was in this same document order, but mapWithConcurrency
+      // let up to writeConcurrency of them race, scrambling completion order
+      // (and therefore each PATCH's arrival order in ADO's relations array
+      // for that work item).
+      //
+      // Known residual limitation: ADO writes the *reverse* relation on the
+      // target item too, so two links that share an endpoint transitively
+      // (100→200 and 200→300) can still race even when grouped by source.
+      // Fully closing that needs union-find over both endpoints, which
+      // collapses to near-total serialization on a densely-linked document.
+      // Grouping by source removes the dominant case (one source, many
+      // targets); transport-layer 409 retry (retryWithBackoff) absorbs the
+      // rest; Tasks 2-4 make anything that still fails visible and
+      // recoverable.
+      const toTraceLinkBySource = new Map<number, { targetAdoId: number; referenceName: string }[]>();
       for (const entry of diff) {
         if (isExcluded(entry)) continue;
         for (const link of entry.traceLinks ?? []) {
@@ -1404,44 +1433,48 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
             targetAdoId = link.resolvedAdoId;
           }
           if (targetAdoId === undefined) continue;
-          toTraceLink.push({ sourceAdoId, targetAdoId, referenceName: link.referenceName });
+          const list = toTraceLinkBySource.get(sourceAdoId) ?? [];
+          list.push({ targetAdoId, referenceName: link.referenceName });
+          toTraceLinkBySource.set(sourceAdoId, list);
         }
       }
-      // Unconditional kick-off, even when toTraceLink is empty -- same
-      // rationale as the create/link_parents kick-offs above: previously
-      // nothing published at all for an empty toTraceLink, leaving the
-      // ticker frozen on 'link_parents' even though this job has no trace
-      // links to write and confirm() is about to finish.
+      // Compute total link count once up front for the narration -- the
+      // ticker's contract is per-link, not per-group. Unconditional kick-off,
+      // even when empty, for same rationale as the create/link_parents
+      // kick-offs above.
+      const traceLinkTotalCount = Array.from(toTraceLinkBySource.values()).reduce((sum, links) => sum + links.length, 0);
       let traceLinkProgress = 0;
       await this.jobEventsPublisher?.publishNarration(id, {
         phase: 'writing',
         writeSubPhase: 'trace_links',
         blocksDone: 0,
-        blocksTotal: toTraceLink.length,
-        message: `Writing trace links -- 0 of ${toTraceLink.length}`,
+        blocksTotal: traceLinkTotalCount,
+        message: `Writing trace links -- 0 of ${traceLinkTotalCount}`,
       });
-      await mapWithConcurrency(toTraceLink, this.writeConcurrency, async (link) => {
-        // Best-effort: a trace-link write failure (rejected rel, deleted
-        // crossJob target, transient network error) must not abort confirm()
-        // after work items in this call have already been created/parented.
-        // try/catch stays INSIDE the callback (not around the
-        // mapWithConcurrency call) so mapWithConcurrency never sees a
-        // rejection and this phase can never throw a firstError the way the
-        // create/link phases above do.
-        try {
-          await this.mcpClient.linkWorkItems(link.sourceAdoId, link.targetAdoId, link.referenceName, credential);
-        } catch (error) {
-          // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
-          console.error(`Trace-link write failed for ${link.sourceAdoId} -> ${link.targetAdoId}:`, error);
-        } finally {
-          traceLinkProgress += 1;
-          void this.jobEventsPublisher?.publishNarration(id, {
-            phase: 'writing',
-            writeSubPhase: 'trace_links',
-            blocksDone: traceLinkProgress,
-            blocksTotal: toTraceLink.length,
-            message: `Writing trace links -- ${traceLinkProgress} of ${toTraceLink.length}`,
-          });
+      await mapWithConcurrency(Array.from(toTraceLinkBySource.entries()), this.writeConcurrency, async ([sourceAdoId, links]) => {
+        for (const link of links) {
+          // Best-effort: a trace-link write failure (rejected rel, deleted
+          // crossJob target, transient network error) must not abort confirm()
+          // after work items in this call have already been created/parented.
+          // try/catch stays INSIDE the callback (not around the
+          // mapWithConcurrency call) so mapWithConcurrency never sees a
+          // rejection and this phase can never throw a firstError the way the
+          // create/link phases above do.
+          try {
+            await this.mcpClient.linkWorkItems(sourceAdoId, link.targetAdoId, link.referenceName, credential);
+          } catch (error) {
+            // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
+            console.error(`Trace-link write failed for ${sourceAdoId} -> ${link.targetAdoId}:`, error);
+          } finally {
+            traceLinkProgress += 1;
+            void this.jobEventsPublisher?.publishNarration(id, {
+              phase: 'writing',
+              writeSubPhase: 'trace_links',
+              blocksDone: traceLinkProgress,
+              blocksTotal: traceLinkTotalCount,
+              message: `Writing trace links -- ${traceLinkProgress} of ${traceLinkTotalCount}`,
+            });
+          }
         }
       });
 

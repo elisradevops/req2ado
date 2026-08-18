@@ -29,6 +29,16 @@ describe('retryWithBackoff', () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
+  it('retries on a 409 Conflict response (optimistic concurrency failure)', async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce({ response: { status: 409 } })
+      .mockResolvedValueOnce('ok');
+    const result = await retryWithBackoff(fn, { baseDelayMs: 1 });
+    expect(result).toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
   it('does NOT retry on a 400 (non-retryable client error)', async () => {
     const fn = vi.fn().mockRejectedValue({ response: { status: 400 } });
     await expect(retryWithBackoff(fn, { baseDelayMs: 1 })).rejects.toMatchObject({ response: { status: 400 } });

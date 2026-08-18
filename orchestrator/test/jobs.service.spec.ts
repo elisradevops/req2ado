@@ -2247,6 +2247,72 @@ describe('JobsService.confirm — trace links', () => {
     expect(linkWorkItems).toHaveBeenCalledWith(102, 100, 'Elisra.CoveredBy-Reverse', undefined);
     expect(result).toEqual({ status: 'succeeded', createdCount: 3 });
   });
+
+  it('serializes trace links to the SAME source ADO work item, never running two concurrently', async () => {
+    // Real, confirmed bug this locks in: two trace-link PATCHes racing
+    // against the SAME work item both read its revision before either
+    // commits -- ADO's optimistic-concurrency check 409s the second to
+    // land (TF26071 "This work item has been changed by someone else
+    // since you opened it"). This test proves the fix -- links from the
+    // SAME sourceAdoId never overlap in time -- by tracking whether a
+    // second call starts while an earlier call for the same sourceAdoId is
+    // still pending. The test also verifies link order: sources are written
+    // in document/inference order (n0→200, then n0→201, then n0→202),
+    // confirming that the sequential for loop inside each group serializes
+    // by order as promised.
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 }) // n0
+      .mockResolvedValueOnce({ id: 200 }) // n1
+      .mockResolvedValueOnce({ id: 201 }) // n2
+      .mockResolvedValueOnce({ id: 202 }); // n3
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const inFlightBySourceId = new Set<number>();
+    let overlapDetected = false;
+    const callOrder: number[] = [];
+    const linkWorkItems = jest.fn().mockImplementation(async (sourceAdoId: number, targetAdoId: number) => {
+      if (inFlightBySourceId.has(sourceAdoId)) overlapDetected = true;
+      inFlightBySourceId.add(sourceAdoId);
+      callOrder.push(targetAdoId);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlightBySourceId.delete(sourceAdoId);
+    });
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'F', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [
+              { sourceLocalId: 'n0', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covered by', targetKind: 'intraJob', targetLocalId: 'n1', resolutionStatus: 'pending' },
+              { sourceLocalId: 'n0', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covered by', targetKind: 'intraJob', targetLocalId: 'n2', resolutionStatus: 'pending' },
+              { sourceLocalId: 'n0', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covered by', targetKind: 'intraJob', targetLocalId: 'n3', resolutionStatus: 'pending' },
+            ] },
+            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'T1', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, traceLinks: [] },
+            { localId: 'n2', parentLocalId: 'n0', type: 'Requirement', title: 'T2', description: 'd2', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: null, traceLinks: [] },
+            { localId: 'n3', parentLocalId: 'n0', type: 'Requirement', title: 'T3', description: 'd3', action: 'create', existingAdoId: null, sourceHash: 'h3', customerId: null, traceLinks: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+      undefined,
+      4, // writeConcurrency -- deliberately > 1, so overlap would show up if the 3 links for this one work item weren't serialized
+    );
+
+    await service.confirm('job-1');
+
+    expect(linkWorkItems).toHaveBeenCalledTimes(3);
+    expect(overlapDetected).toBe(false);
+    // Verify document order is preserved: links were created in order n0→200, n0→201, n0→202
+    expect(callOrder).toEqual([200, 201, 202]);
+  });
 });
 
 describe('JobsService.confirm — figure attachments', () => {

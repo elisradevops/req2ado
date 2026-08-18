@@ -3,8 +3,14 @@
  * docs/architecture.md's "Retry/backoff on 429/5xx + network errors, exp
  * backoff + jitter." Retries only on 429 and 5xx — 4xx (other than 429) is
  * a client error that will not succeed on retry, so it fails immediately.
+ *
+ * Exception: 409 Conflict is retried when it represents optimistic
+ * concurrency failures (e.g. PATCH to a work item revision that changed
+ * since read). A 409 means the write definitively did NOT land, so a retry
+ * cannot create a duplicate relation. This is safe and correct across all
+ * write operations (linkWorkItems, uploadAttachment, linkParentChild).
  */
-const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+const RETRYABLE_STATUSES = new Set([409, 429, 500, 502, 503, 504]);
 
 // TF401349 is ADO's own generic "An unexpected error has occurred, please
 // verify your request and try again" catch-all, returned as an otherwise-
