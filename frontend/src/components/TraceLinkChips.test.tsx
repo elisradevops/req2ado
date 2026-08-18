@@ -110,4 +110,44 @@ describe('TraceLinkChips', () => {
     expect(chip).toHaveAttribute('data-resolution-status', 'unresolved');
     expect(chip).toHaveStyle({ backgroundColor: 'var(--color-warning)' });
   });
+
+  // Regression guard (reviewer finding on the original Task 4 diff): two
+  // links sharing the same referenceName used to BOTH resolve to whichever
+  // failure row .find() hit first, so retrying chip 1 (success, row
+  // deleted server-side) then retrying chip 2 (reusing chip 1's now-stale
+  // id) 404s and reverts chip 1 back to failed/clickable -- silently
+  // undoing a successful retry, and chip 2's real failure never gets
+  // retried at all. consumedFailureIds (TraceLinkChips.tsx) fixes this by
+  // guaranteeing no two chips in one render ever bind to the same id.
+  it('binds two different chips to two DIFFERENT failure ids when both links share the same referenceName (never the same id twice)', async () => {
+    const intraJobLink = (targetLocalId: string) => ({
+      referenceName: 'Elisra.CoveredBy-Forward',
+      displayName: 'Covers',
+      targetKind: 'intraJob' as const,
+      targetLocalId,
+      resolutionStatus: 'pending' as const,
+    });
+    const onRetry = vi.fn();
+    render(
+      <TraceLinkChips
+        links={[intraJobLink('nA'), intraJobLink('nB')]}
+        failures={[
+          { id: 'failure-A', referenceName: 'Elisra.CoveredBy-Forward' },
+          { id: 'failure-B', referenceName: 'Elisra.CoveredBy-Forward' },
+        ]}
+        onRetry={onRetry}
+      />,
+    );
+
+    const buttons = screen.getAllByRole('button', { name: /retry writing "covers" trace link/i });
+    expect(buttons).toHaveLength(2);
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(buttons[0]);
+    await userEvent.click(buttons[1]);
+
+    const retriedIds = onRetry.mock.calls.map((call) => call[0]);
+    expect(retriedIds).toEqual(['failure-A', 'failure-B']);
+    expect(new Set(retriedIds).size).toBe(2);
+  });
 });

@@ -65,9 +65,19 @@ export function TraceLinkChips({
   // OTHER node's localId here, not its resolved real ADO id, and this
   // component has no diff-wide lookup to resolve that itself. A same-
   // source, same-reference-name collision across two DIFFERENT failed
-  // targets would misattribute the retry control, but that's a rare edge
-  // case not worth the extra plumbing (a full diffByLocalId lookup) to
-  // close for this feature.
+  // targets can still bind a chip to the "wrong" one of the two failures --
+  // an acceptable, documented limitation not worth the extra plumbing (a
+  // full diffByLocalId lookup) to close for this feature. What is NOT
+  // acceptable, and IS guarded against below (consumedFailureIds): letting
+  // two DIFFERENT chips resolve to the SAME failure id. Without that guard,
+  // retrying chip 1 deletes its failure row server-side and marks it
+  // 'done'; retrying chip 2 (which reused chip 1's already-consumed id)
+  // then 404s against the now-gone row, and the catch handler clears
+  // retryStatus for that shared id -- silently REVERTING chip 1 back to a
+  // failed/clickable state even though it already succeeded, while chip
+  // 2's real underlying failure is never retried at all. Tracking consumed
+  // ids while mapping over `links` prevents two chips from ever sharing one
+  // failure id, eliminating that revert/double-fire bug entirely.
   failures?: TraceLinkFailureView[];
   // failureId -> in-flight/done status, owned by the caller (NodeDetailPanel)
   // same convention as its own figureAttachStatus.
@@ -75,11 +85,17 @@ export function TraceLinkChips({
   onRetry?: (failureId: string) => void;
 }): React.ReactElement | null {
   if (!links || links.length === 0) return null;
+  // Task 4 fix: shared across the whole map below (NOT re-created per
+  // link) so that once a failure row is bound to one chip, no later chip
+  // in this same render can bind to that same id -- see the `failures`
+  // prop's own doc comment for the corruption this prevents.
+  const consumedFailureIds = new Set<string>();
   return (
     <div className="flex flex-wrap gap-1">
       {links.map((link, i) => {
         const target = resolveTarget(link, titles);
-        const failure = failures?.find((f) => f.referenceName === link.referenceName);
+        const failure = failures?.find((f) => f.referenceName === link.referenceName && !consumedFailureIds.has(f.id));
+        if (failure) consumedFailureIds.add(failure.id);
         const status = failure ? retryStatus?.[failure.id] : undefined;
         const failed = failure != null && status !== 'done';
         const chip = (
