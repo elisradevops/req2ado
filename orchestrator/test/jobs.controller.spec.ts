@@ -313,6 +313,35 @@ describe('JobsController.attachFigureToAdo', () => {
   });
 });
 
+describe('JobsController.retryTraceLinkWrite', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+
+  it('resolves an ADO credential and delegates to jobsService.retryTraceLinkWrite', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }),
+      retryTraceLinkWrite: jest.fn().mockResolvedValue({ written: true, sourceAdoId: 101, targetAdoId: 100 }),
+    };
+    const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    const result = await controller.retryTraceLinkWrite('job-1', 'failure-1', TEST_USER);
+
+    expect(adoCredentialResolver.resolve).toHaveBeenCalledWith('user-descriptor-1');
+    expect(jobsService.retryTraceLinkWrite).toHaveBeenCalledWith('job-1', 'failure-1', { orgUrl: 'https://ado.example', pat: 'x' });
+    expect(result).toEqual({ written: true, sourceAdoId: 101, targetAdoId: 100 });
+  });
+
+  it('404s for a job that does not belong to the caller before resolving any credential', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), retryTraceLinkWrite: jest.fn() };
+    const adoCredentialResolver = { resolve: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.retryTraceLinkWrite('job-1', 'failure-1', TEST_USER)).rejects.toThrow('not found');
+    expect(adoCredentialResolver.resolve).not.toHaveBeenCalled();
+    expect(jobsService.retryTraceLinkWrite).not.toHaveBeenCalled();
+  });
+});
+
 // DESIGN.md §11.2.3.d -- re-pricing without re-uploading. Route ORDERING
 // (declared before @Get(':id') in jobs.controller.ts) is a source-level
 // concern verified by reading the decorator order, not something a unit
