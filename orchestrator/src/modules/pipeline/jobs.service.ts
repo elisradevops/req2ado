@@ -1550,7 +1550,6 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           } catch (error) {
             // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
             console.error(`Trace-link write failed for ${sourceAdoId} -> ${link.targetAdoId}:`, error);
-            traceLinkFailures.push({ sourceLocalId: link.sourceLocalId, sourceAdoId, targetAdoId: link.targetAdoId, referenceName: link.referenceName });
             // Durable counterpart to the console.error above (Task 2b) --
             // gives Task 3's retry endpoint and the warning appended below
             // (2c) something to read once this best-effort write stays
@@ -1579,6 +1578,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
                 },
                 update: { sourceLocalId: link.sourceLocalId, error: (error as Error).message },
               });
+              // Only recorded in the in-memory list (used to build the
+              // trace_link_write_failed warning below) once the durable row
+              // is actually persisted -- pushing before the upsert would let
+              // a bookkeeping-only failure (DB blip, or a non-Error
+              // rejection making `(error as Error).message` undefined and
+              // hitting the `error` column's NOT NULL constraint) leave the
+              // warning promising a retry control that has no backing row.
+              traceLinkFailures.push({ sourceLocalId: link.sourceLocalId, sourceAdoId, targetAdoId: link.targetAdoId, referenceName: link.referenceName });
             } catch (bookkeepingError) {
               // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
               console.error(`Failed to persist JobTraceLinkFailure for ${sourceAdoId} -> ${link.targetAdoId}:`, bookkeepingError);

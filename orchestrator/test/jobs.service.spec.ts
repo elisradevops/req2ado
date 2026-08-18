@@ -2410,6 +2410,61 @@ describe('JobsService.confirm — trace links', () => {
     expect(finalUpdateCall).toBeDefined();
     expect(finalUpdateCall![0].data.warnings).toBeUndefined();
   });
+
+  it('Finding 5: does not count a failed link toward the trace_link_write_failed warning when its JobTraceLinkFailure row fails to persist', async () => {
+    // If jobTraceLinkFailure.upsert itself rejects (DB blip, or a non-Error
+    // rejection making `(error as Error).message` undefined and hitting the
+    // `error` column's NOT NULL constraint), the in-memory traceLinkFailures
+    // list -- used to build the trace_link_write_failed warning -- must NOT
+    // record that link: no durable row means no retry control anywhere, so
+    // the warning's own "can be retried from the node detail panel" promise
+    // would otherwise be false with zero recovery path.
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 }) // n0
+      .mockResolvedValueOnce({ id: 101 }); // n1
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const linkWorkItems = jest.fn().mockRejectedValue(new Error('ADO rejected the rel'));
+    const jobTraceLinkFailureUpsert = jest.fn().mockRejectedValue(new Error('DB blip'));
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
+            {
+              localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Cust Req', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null,
+              traceLinks: [
+                { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Reverse', displayName: 'Covers', targetKind: 'intraJob', targetLocalId: 'n0', resolutionStatus: 'pending' },
+              ],
+            },
+          ],
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobTraceLinkFailure: { upsert: jobTraceLinkFailureUpsert },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, linkWorkItems, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    const result = await service.confirm('job-1');
+
+    expect(result).toEqual({ status: 'succeeded', createdCount: 2 });
+    expect(jobTraceLinkFailureUpsert).toHaveBeenCalledTimes(1);
+    // No durable row was persisted, so no trace_link_write_failed warning
+    // should be appended -- the warnings field is left untouched (same as
+    // the fully-successful case above).
+    const finalUpdateCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
+    expect(finalUpdateCall).toBeDefined();
+    expect(finalUpdateCall![0].data.warnings).toBeUndefined();
+  });
 });
 
 describe('JobsService.confirm — figure attachments', () => {
