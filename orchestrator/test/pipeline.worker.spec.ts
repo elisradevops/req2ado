@@ -1273,13 +1273,14 @@ describe('runPipelineJob', () => {
     });
   });
 
-  it("extracts figures with a real caption from ingestion's /ingest response and persists them 1-based by array position", async () => {
+  it("extracts figures with a real caption or name from ingestion's /ingest response and persists them 1-based by array position", async () => {
     fakeIngestionClient.ingest.mockResolvedValue({
       blocks: [],
       figures: [
-        { id: 'fig-a', caption: 'A block diagram showing power distribution.' },
-        { id: 'fig-b', caption: null },
-        { id: 'fig-c', caption: 'A wiring harness cross-section.' },
+        { id: 'fig-a', caption: 'A block diagram showing power distribution.', name: null },
+        { id: 'fig-b', caption: null, name: null },
+        { id: 'fig-c', caption: 'A wiring harness cross-section.', name: 'Wiring Harness' },
+        { id: 'fig-d', caption: null, name: 'Panel Layout Diagram' },
       ],
     });
     fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
@@ -1303,12 +1304,16 @@ describe('runPipelineJob', () => {
     expect(fakePrisma.job.update).toHaveBeenCalledWith({
       where: { id: 'job-1' },
       data: expect.objectContaining({
-        // fig-b (no real caption) is dropped -- nothing to show, same rule
-        // live SSE narration already applies. fig-c keeps index 3 (its own
-        // array position), not 2 -- it is NOT re-numbered after fig-b drops.
+        // fig-b (no caption AND no name) is dropped -- nothing to show, same
+        // rule live SSE narration already applies. fig-d (a name but no
+        // caption -- Task 5's widened filter) is KEPT, proving the filter
+        // is "caption OR name", not "caption only". Every kept entry keeps
+        // its own array-position index (1/3/4), not re-numbered after
+        // fig-b drops.
         figureDescriptions: [
-          { figureIndex: 1, caption: 'A block diagram showing power distribution.' },
-          { figureIndex: 3, caption: 'A wiring harness cross-section.' },
+          { figureIndex: 1, figureId: 'fig-a', name: null, caption: 'A block diagram showing power distribution.' },
+          { figureIndex: 3, figureId: 'fig-c', name: 'Wiring Harness', caption: 'A wiring harness cross-section.' },
+          { figureIndex: 4, figureId: 'fig-d', name: 'Panel Layout Diagram', caption: null },
         ],
       }),
     });

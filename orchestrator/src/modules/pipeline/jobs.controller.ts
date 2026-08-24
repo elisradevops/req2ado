@@ -267,7 +267,7 @@ export class JobsController {
     dryRunDiff: unknown;
     warnings: (WarningRecord | string)[];
     kbCitations: unknown;
-    figureDescriptions: { figureIndex: number; caption: string }[];
+    figureDescriptions: { figureIndex: number; figureId: string; name: string | null; caption: string | null }[];
     tableDescriptions: { tableId: string; caption: string }[];
     excludedFigureIds: string[];
     excludedTableIds: string[];
@@ -277,6 +277,11 @@ export class JobsController {
     state: string;
     originalFilename: string;
     workItemTypeCatalog: Record<string, WorkItemTypeCatalogEntry>;
+    // Category ('Epic'/'Feature'/'Requirement') -> this project's real ADO
+    // type name, for DISPLAY LABELS only (AddChildForm's type picker) --
+    // see WorkItemTypeCatalogService.resolveCategoryLabels's own doc
+    // comment. Defaults to the identity map when there's no diff yet.
+    workItemTypeCategoryLabels: Record<'Epic' | 'Feature' | 'Requirement', string>;
     // Task 4: see JobsService.getById's own doc comment.
     traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
   }> {
@@ -299,18 +304,24 @@ export class JobsController {
     // already has its own hardcoded color/icon fallback for exactly this
     // case, so a missing catalog is never a hard failure.
     let workItemTypeCatalog: Record<string, WorkItemTypeCatalogEntry> = {};
+    let workItemTypeCategoryLabels: Record<'Epic' | 'Feature' | 'Requirement', string> = {
+      Epic: 'Epic',
+      Feature: 'Feature',
+      Requirement: 'Requirement',
+    };
     if (job.dryRunDiff != null && job.areaPath) {
       try {
         const credential = await this.adoCredentialResolver.resolve(user.userId);
         if (credential) {
           const project = job.areaPath.split('\\')[0];
           workItemTypeCatalog = await this.workItemTypeCatalogService.resolve(project, credential);
+          workItemTypeCategoryLabels = await this.workItemTypeCatalogService.resolveCategoryLabels(project, credential);
         }
       } catch {
         // Best-effort enrichment -- never fail the whole job fetch over it.
       }
     }
-    return { ...job, workItemTypeCatalog };
+    return { ...job, workItemTypeCatalog, workItemTypeCategoryLabels };
   }
 
   @Patch(':id/diff/:localId')
@@ -341,17 +352,40 @@ export class JobsController {
     return { dryRunDiff };
   }
 
+  @Patch(':id/diff/:localId/move')
+  async moveDiffEntry(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body('parentLocalId') parentLocalId: string | null | undefined,
+    @Body('anchorLocalId') anchorLocalId: string | null | undefined,
+    @Body('placement') placement: 'before' | 'after' | undefined,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (parentLocalId === undefined) {
+      throw new BadRequestException('parentLocalId is required (null for the top level)');
+    }
+    if (placement !== undefined && placement !== 'before' && placement !== 'after') {
+      throw new BadRequestException("placement must be 'before' or 'after'");
+    }
+    await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.moveDiffEntry(id, localId, { parentLocalId, anchorLocalId, placement });
+    return { dryRunDiff };
+  }
+
   @Post(':id/diff')
   async addDiffEntry(
     @Param('id') id: string,
     @CurrentUser() user: SessionUser,
-    @Body('parentLocalId') parentLocalId: string | undefined,
+    // CR: reparent -- null is now a legitimate value (root placement for
+    // the top category, or a Feature when no Epic exists), so it must be
+    // distinguished from an omitted field the same way moveDiffEntry does.
+    @Body('parentLocalId') parentLocalId: string | null | undefined,
     @Body('type') type: string | undefined,
     @Body('title') title: string | undefined,
     @Body('description') description: string | undefined,
   ): Promise<{ dryRunDiff: unknown }> {
-    if (!parentLocalId || !type || !title || !description) {
-      throw new BadRequestException('parentLocalId, type, title, and description are all required');
+    if (parentLocalId === undefined || !type || !title || !description) {
+      throw new BadRequestException('parentLocalId (or null for the top level), type, title, and description are all required');
     }
     await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.addDiffEntry(id, { parentLocalId, type, title, description });

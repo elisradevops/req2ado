@@ -1,8 +1,41 @@
 import { BadGatewayException } from '@nestjs/common';
 import { Queue } from 'bullmq';
-import { JobsService } from '../src/modules/pipeline/jobs.service';
+import { JobsService, buildFigureAttachmentFilename } from '../src/modules/pipeline/jobs.service';
 import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
+
+describe('buildFigureAttachmentFilename', () => {
+  it('builds a sanitized, figure-numbered filename from a real name', () => {
+    expect(buildFigureAttachmentFilename('f11', 'CubeConnect PCB (PC104 Variants) – Interior (Back) View', 'image/jpeg')).toBe(
+      'Figure-12-CubeConnect-PCB-PC104-Variants-Interior-Back-View.jpg',
+    );
+  });
+
+  it('derives the extension from mimeType, not a hardcoded .png', () => {
+    expect(buildFigureAttachmentFilename('f0', 'A Diagram', 'image/gif')).toBe('Figure-1-A-Diagram.gif');
+    expect(buildFigureAttachmentFilename('f0', 'A Diagram', 'image/webp')).toBe('Figure-1-A-Diagram.webp');
+  });
+
+  it('falls back to png for an unrecognized mimeType', () => {
+    expect(buildFigureAttachmentFilename('f0', 'A Diagram', 'application/octet-stream')).toBe('Figure-1-A-Diagram.png');
+  });
+
+  it('falls back to f{id}.{ext} when the figure has no name', () => {
+    expect(buildFigureAttachmentFilename('f13', null, 'image/png')).toBe('f13.png');
+    expect(buildFigureAttachmentFilename('f13', undefined, 'image/png')).toBe('f13.png');
+  });
+
+  it('falls back to f{id}.{ext} when the name sanitizes down to nothing', () => {
+    expect(buildFigureAttachmentFilename('f0', '!!!', 'image/png')).toBe('f0.png');
+  });
+
+  it('caps the sanitized name at 80 characters', () => {
+    const longName = 'A'.repeat(200);
+    const result = buildFigureAttachmentFilename('f0', longName, 'image/png');
+    // "Figure-1-" prefix + at most 80 sanitized chars + ".png"
+    expect(result).toBe(`Figure-1-${'A'.repeat(80)}.png`);
+  });
+});
 
 describe('JobsService.confirm', () => {
   it('creates items in tree order and links each child to its already-created parent', async () => {
@@ -781,6 +814,61 @@ describe('JobsService.confirm', () => {
     expect(linkParentChild).not.toHaveBeenCalled();
   });
 
+  // Investigation finding (the actual gap this test closes): every other
+  // reuse/dedup_skip fixture in this suite happens to already sit under
+  // its "original" parentLocalId, which never actually exercises whether
+  // the suppression is keyed on `action` (correct) or would accidentally
+  // still hold if it silently depended on parentLocalId being unchanged.
+  // A reviewer using DiffTree.tsx's drag-and-drop (DESIGN.md §11.5) can
+  // reparent a reuse entry to a BRAND NEW parent it never had before this
+  // job even ran -- moveDiffEntry allows this (it has no CreatedItemMapping
+  // row, see JobsService.moveDiffEntry's own tests), and the diff persists
+  // with the new parentLocalId. This proves confirm()'s toLink filter still
+  // suppresses linkParentChild for that entry regardless -- the real
+  // regression this whole investigation was about.
+  it('does not link a reuse-matched item to its NEW parent after a reviewer reparents it in the review tree', async () => {
+    const createWorkItem = jest.fn()
+      .mockResolvedValueOnce({ id: 100 }) // n0, the original parent
+      .mockResolvedValueOnce({ id: 101 }); // n2, the NEW parent the reviewer dragged n1 under
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Original Parent', description: 'd0', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+            { localId: 'n2', parentLocalId: null, type: 'Feature', title: 'New Parent', description: 'd2', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h2', customerId: null, sourceRef: null, tags: [] },
+            // Reparented via moveDiffEntry from n0 to n2 (simulated here by
+            // the fixture's own parentLocalId, matching what the frontend's
+            // drag-and-drop persists) -- an exact-hash match to an item
+            // that already has its own real Parent relation in ADO from
+            // whenever it was originally created, unrelated to n2.
+            { localId: 'n1', parentLocalId: 'n2', type: 'Requirement', title: 'Child', description: 'd1', action: 'reuse', existingAdoId: 42, similarity: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    // n1 (reuse) is never linked to n2, its new displayed parent -- ADO
+    // still thinks n1's parent is whatever it always was, and that's
+    // correct: this job never touches it. Only a real create-to-create
+    // link (n0/n2 have no parentLocalId here, so none applies) would fire.
+    expect(linkParentChild).not.toHaveBeenCalled();
+  });
+
   it('batches a dedup upsert for every newly-created item, but not for reused/dedup_skip ones', async () => {
     // Regression: confirm() previously called upsertDedupEntry once per
     // newly-created node inline in the loop (one embed() round-trip each);
@@ -1458,6 +1546,38 @@ describe('JobsService.validateCreatedTree', () => {
     expect(getWorkItemsBatch).toHaveBeenCalledWith([100, 101], undefined);
   });
 
+  // Real bug found during the reparent/relationship investigation: a
+  // 'reuse'/'dedup_skip' entry is never created by this job, so it never
+  // gets a CreatedItemMapping row -- only `entry.existingAdoId` (known at
+  // diff time, before this job is even confirmed) resolves its real ADO
+  // id. Before this fix, expectedParentAdoId for a created child of such a
+  // parent looked ONLY at adoIdByLocalId (mapping rows), missed, and
+  // defaulted to null -- false-flagging a correctly-written item's real
+  // parentId (the matched item's existingAdoId) as a mismatch on every
+  // single confirm. Mirrors attachFigureToAdo's own documented two-source
+  // resolution rule.
+  it('does not false-positive a parentId mismatch when a created child\'s parent is a reuse-matched (not created-by-this-job) entry', async () => {
+    const getWorkItemsBatch = jest.fn().mockResolvedValue([
+      { id: 101, type: 'Requirement', fields: { 'System.Title': 'Child', 'System.Description': toAdoDescriptionHtml('d1') }, parentId: 100 },
+    ]);
+    const service = makeService(
+      {
+        id: 'job-1',
+        dryRunDiff: [
+          { localId: 'n0', parentLocalId: null, title: 'Parent', description: 'd0', action: 'reuse', existingAdoId: 100 },
+          { localId: 'n1', parentLocalId: 'n0', title: 'Child', description: 'd1', action: 'create', existingAdoId: null },
+        ],
+      },
+      // Only n1 has a mapping row -- n0 (reuse) was never created by this job.
+      [{ localId: 'n1', adoWorkItemId: 101 }],
+      getWorkItemsBatch,
+    );
+
+    const result = await service.validateCreatedTree('job-1');
+
+    expect(result).toEqual({ valid: true, checkedCount: 1, mismatches: [] });
+  });
+
   it('does not false-positive on ADO own write-time HTML re-serialization (confirmed via a real round-trip spike)', async () => {
     // Real captured shape from a live ADO work item (see
     // docs/superpowers/specs/2026-08-12-table-fidelity-design.md's Phase 0
@@ -1973,7 +2093,9 @@ describe('JobsService.addDiffEntry', () => {
     ).rejects.toThrow('does not match');
   });
 
-  it('accepts any of the three types for a SURVEY job', async () => {
+  it('accepts a SURVEY add whose category can nest under the parent category (repeat-tier)', async () => {
+    // parent.type is 'Feature' -- canNest allows Feature-under-Feature
+    // (repeat tier) and Requirement-under-Feature (advance one tier).
     const surveyParent = { ...parent, childType: null };
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
@@ -1984,9 +2106,27 @@ describe('JobsService.addDiffEntry', () => {
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
-    const result = await service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Epic', title: 'X', description: 'Y' });
+    const result = await service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'X', description: 'Y' });
 
-    expect(result[1].type).toBe('Epic');
+    expect(result[1].type).toBe('Requirement');
+  });
+
+  // CR: reparent -- this test previously asserted the OLD, buggy behavior
+  // (any of Epic/Feature/Requirement accepted under ANY parent, with no
+  // relationship to the parent's own type). That was the exact hole
+  // jobs.service.ts:659-661 left open -- a SURVEY job could add an Epic as
+  // a child of a Requirement. Now asserts the fix: an Epic cannot be added
+  // under a Feature parent (moving backward a tier is never legal).
+  it('rejects a SURVEY add that would move backward a tier', async () => {
+    const surveyParent = { ...parent, childType: null }; // type: 'Feature'
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [surveyParent] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(
+      service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Epic', title: 'X', description: 'Y' }),
+    ).rejects.toThrow('cannot be added under');
   });
 
   it('rejects an invalid type for a SURVEY job', async () => {
@@ -1998,10 +2138,33 @@ describe('JobsService.addDiffEntry', () => {
 
     await expect(
       service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Bug', title: 'X', description: 'Y' }),
-    ).rejects.toThrow('must be one of');
+    ).rejects.toThrow('cannot be added under');
   });
 
-  it('rejects adding under a manually-added parent', async () => {
+  // CR: reparent -- the isManual-parent restriction previously applied
+  // uniformly to BASELINE and SURVEY. It is now scoped to BASELINE only
+  // (see addDiffEntry's own comment: a manual entry's childType is always
+  // null, so BASELINE could never match it anyway and the guard exists
+  // purely to give an honest error there). SURVEY mode now allows this --
+  // it's the plan's own headline scenario: create a manual Epic to house
+  // orphaned Features, then add a Feature under it.
+  it('allows adding a child under a manually-added parent in a SURVEY job', async () => {
+    const manualParent = { ...parent, isManual: true, childType: null }; // type: 'Feature'
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [manualParent] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'X', description: 'Y' });
+
+    expect(result[1].parentLocalId).toBe('n0');
+  });
+
+  it('still rejects adding under a manually-added parent in a BASELINE job, with an honest error', async () => {
     const manualParent = { ...parent, isManual: true, childType: null };
     const prisma = {
       job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'baseline', dryRunDiff: [manualParent] }) },
@@ -2011,6 +2174,247 @@ describe('JobsService.addDiffEntry', () => {
     await expect(
       service.addDiffEntry('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'X', description: 'Y' }),
     ).rejects.toThrow('manually-added');
+  });
+
+  // CR: reparent -- root-level creation. AddChildForm's parent field offers
+  // "Top level" as a real option (allowRoot via canBeRoot), which requires
+  // the endpoint to accept an explicit null parentLocalId, not just reject
+  // it as a missing field the way the pre-reparent version did.
+  it('allows creating a root-level Epic in a SURVEY job (null parentLocalId)', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.addDiffEntry('job-1', { parentLocalId: null, type: 'Epic', title: 'New Epic', description: 'Y' });
+
+    expect(result[0].parentLocalId).toBeNull();
+    expect(result[0].type).toBe('Epic');
+  });
+
+  it('rejects a root-level Feature in a SURVEY job when an Epic already exists', async () => {
+    const epic = { ...parent, localId: 'e0', type: 'Epic' };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [epic] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(
+      service.addDiffEntry('job-1', { parentLocalId: null, type: 'Feature', title: 'X', description: 'Y' }),
+    ).rejects.toThrow('top-level');
+  });
+
+  it('allows a root-level Feature in a SURVEY job when no Epic exists yet', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [] }), update },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.addDiffEntry('job-1', { parentLocalId: null, type: 'Feature', title: 'X', description: 'Y' });
+
+    expect(result[0].parentLocalId).toBeNull();
+  });
+
+  it('rejects a root-level Requirement in a SURVEY job -- Requirement can never be a root', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(
+      service.addDiffEntry('job-1', { parentLocalId: null, type: 'Requirement', title: 'X', description: 'Y' }),
+    ).rejects.toThrow('top-level');
+  });
+
+  it('rejects a null parentLocalId in a BASELINE job -- BASELINE has no root-creation concept', async () => {
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'baseline', dryRunDiff: [] }) },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(
+      service.addDiffEntry('job-1', { parentLocalId: null, type: 'Epic', title: 'X', description: 'Y' }),
+    ).rejects.toThrow('existing parent');
+  });
+});
+
+describe('JobsService.moveDiffEntry', () => {
+  const epic1 = { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null };
+  const epic2 = { localId: 'e2', parentLocalId: null, type: 'Epic', title: 'Epic 2', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: null };
+  const feature1 = { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h3', customerId: null };
+  const feature2 = { localId: 'f2', parentLocalId: 'e1', type: 'Feature', title: 'Feature 2', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h4', customerId: null };
+  const requirement1 = { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Req 1', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h5', customerId: null };
+
+  // CR: reparent review fix -- deep-clones the fixture array/objects on
+  // every call, matching real Prisma behavior (a JSON column is
+  // deserialized fresh on every query, never the same object graph
+  // twice). Without this, moveDiffEntry's real in-place mutations
+  // (entry.parentLocalId = ...; diff.splice(...)) landed directly on the
+  // shared epic1/epic2/feature1/feature2/requirement1 fixture objects
+  // above, so one test's mutation could silently leak into a LATER test
+  // that reuses the same fixtures -- including a mutation made just
+  // before an early validation throw, which never reaches
+  // prisma.job.update and so has no real-world equivalent to leak from.
+  function makeService(dryRunDiff: unknown[], opts?: { status?: string; mapping?: { linked: boolean } | null }) {
+    const clonedDiff = JSON.parse(JSON.stringify(dryRunDiff));
+    const update = jest.fn().mockResolvedValue(undefined);
+    const findUnique = jest.fn().mockResolvedValue({ id: 'job-1', status: opts?.status ?? 'diff_ready', dryRunDiff: clonedDiff });
+    const mappingFindUnique = jest.fn().mockResolvedValue(opts?.mapping ?? null);
+    const prisma = {
+      job: { findUnique, update },
+      createdItemMapping: { findUnique: mappingFindUnique },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+    return { service, update, mappingFindUnique };
+  }
+
+  it('reparents a Feature under a different Epic', async () => {
+    const { service, update } = makeService([epic1, epic2, feature1, feature2, requirement1]);
+    const result = await service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' });
+    const moved = result.find((e) => e.localId === 'f1')!;
+    expect(moved.parentLocalId).toBe('e2');
+    expect(update).toHaveBeenCalled();
+  });
+
+  it('moves a node to the top level when parentLocalId is null and its category allows root', async () => {
+    const { service } = makeService([epic1, epic2, feature1, feature2, requirement1]);
+    const result = await service.moveDiffEntry('job-1', 'e1', { parentLocalId: null });
+    expect(result.find((e) => e.localId === 'e1')!.parentLocalId).toBeNull();
+  });
+
+  it('rejects root placement for a category that cannot be a root (Requirement)', async () => {
+    const { service } = makeService([epic1, feature1, requirement1]);
+    await expect(service.moveDiffEntry('job-1', 'r1', { parentLocalId: null })).rejects.toThrow('top-level');
+  });
+
+  it('rejects root placement for a Feature when an Epic exists', async () => {
+    const { service } = makeService([epic1, feature1]);
+    await expect(service.moveDiffEntry('job-1', 'f1', { parentLocalId: null })).rejects.toThrow('top-level');
+  });
+
+  it('allows root placement for a Feature when no Epic exists', async () => {
+    const orphanFeature = { ...feature1, parentLocalId: null };
+    const { service } = makeService([orphanFeature]);
+    const result = await service.moveDiffEntry('job-1', 'f1', { parentLocalId: null });
+    expect(result.find((e) => e.localId === 'f1')!.parentLocalId).toBeNull();
+  });
+
+  it('rejects a tier violation (Requirement onto an Epic, skipping a tier)', async () => {
+    const { service } = makeService([epic1, epic2, feature1, requirement1]);
+    await expect(service.moveDiffEntry('job-1', 'r1', { parentLocalId: 'e2' })).rejects.toThrow('cannot be nested under');
+  });
+
+  it('allows a same-tier move (Epic under Epic) -- flagged client-side, not rejected server-side', async () => {
+    const { service } = makeService([epic1, epic2]);
+    const result = await service.moveDiffEntry('job-1', 'e2', { parentLocalId: 'e1' });
+    expect(result.find((e) => e.localId === 'e2')!.parentLocalId).toBe('e1');
+  });
+
+  it('rejects moving a node inside its own descendant (cycle)', async () => {
+    const { service } = makeService([epic1, feature1, requirement1]);
+    await expect(service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'r1' })).rejects.toThrow('own descendant');
+  });
+
+  it('rejects moving a node onto itself', async () => {
+    const { service } = makeService([epic1, epic2]);
+    await expect(service.moveDiffEntry('job-1', 'e1', { parentLocalId: 'e1' })).rejects.toThrow('own descendant');
+  });
+
+  it('rejects reparenting an entry already linked to ADO in a prior confirm', async () => {
+    const { service } = makeService([epic1, epic2, feature1], { mapping: { linked: true } });
+    await expect(service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' })).rejects.toThrow('already linked');
+  });
+
+  it('allows reparenting an entry with a mapping row that is not yet linked', async () => {
+    const { service } = makeService([epic1, epic2, feature1], { mapping: { linked: false } });
+    const result = await service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' });
+    expect(result.find((e) => e.localId === 'f1')!.parentLocalId).toBe('e2');
+  });
+
+  // Investigation finding: a 'reuse'/'dedup_skip' entry was never created
+  // by THIS job, so it has no CreatedItemMapping row at all -- the
+  // already-linked guard above (keyed on `mapping.linked`) is a no-op for
+  // it regardless of `mapping` being null. That's deliberate, not a gap:
+  // confirm()'s own toLink filter unconditionally excludes both actions
+  // from linkParentChild (ADO enforces at most one Parent relation per
+  // work item), so this move can never actually reach ADO either way --
+  // it only reorganizes the review tree. Locks in the allowance; the
+  // matching "still never calls linkParentChild" assertion lives in the
+  // confirm() suite below.
+  it('allows reparenting a reuse-matched entry -- it has no mapping row (this job never created it), and the move only affects the review tree, never ADO', async () => {
+    const reuseFeature = { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: 'd', action: 'reuse', existingAdoId: 999, sourceHash: 'h3', customerId: null };
+    const { service, mappingFindUnique } = makeService([epic1, epic2, reuseFeature]);
+    const result = await service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' });
+    expect(result.find((e) => e.localId === 'f1')!.parentLocalId).toBe('e2');
+    expect(mappingFindUnique).toHaveBeenCalled();
+  });
+
+  it('rejects when the job is not diff_ready', async () => {
+    const { service } = makeService([epic1, epic2], { status: 'writing' });
+    await expect(service.moveDiffEntry('job-1', 'e1', { parentLocalId: 'e2' })).rejects.toThrow('diff-editable');
+  });
+
+  it('rejects a nonexistent entry', async () => {
+    const { service } = makeService([epic1, epic2]);
+    await expect(service.moveDiffEntry('job-1', 'bogus', { parentLocalId: 'e2' })).rejects.toThrow('not found');
+  });
+
+  it('rejects a nonexistent target parent', async () => {
+    const { service } = makeService([epic1]);
+    await expect(service.moveDiffEntry('job-1', 'e1', { parentLocalId: 'bogus' })).rejects.toThrow('not found');
+  });
+
+  it('reorders within the same parent using anchorLocalId/placement, and array order reflects it', async () => {
+    const { service } = makeService([epic1, feature1, feature2]);
+    const result = await service.moveDiffEntry('job-1', 'f2', {
+      parentLocalId: 'e1',
+      anchorLocalId: 'f1',
+      placement: 'before',
+    });
+    const order = result.map((e) => e.localId);
+    expect(order.indexOf('f2')).toBeLessThan(order.indexOf('f1'));
+  });
+
+  it('reorders to "after" a sibling', async () => {
+    const { service } = makeService([epic1, feature1, feature2]);
+    const result = await service.moveDiffEntry('job-1', 'f1', {
+      parentLocalId: 'e1',
+      anchorLocalId: 'f2',
+      placement: 'after',
+    });
+    const order = result.map((e) => e.localId);
+    expect(order.indexOf('f1')).toBeGreaterThan(order.indexOf('f2'));
+  });
+
+  // CR: reparent review fix -- anchorLocalId's own entry must actually be
+  // a sibling under the requested parentLocalId. DiffTree.tsx always
+  // supplies a real sibling, so this wasn't reachable from the shipped UI,
+  // but nothing previously stopped a malformed/stale request from
+  // splicing an entry into an arbitrary array position relative to
+  // unrelated nodes (harmless to tree structure, but a confusing sibling
+  // order for the true siblings).
+  it('rejects an anchorLocalId that does not belong to the requested parentLocalId', async () => {
+    const { service } = makeService([epic1, epic2, feature1, feature2]);
+    // f1's real parent is e1, not e2 -- requesting parentLocalId: 'e2'
+    // with anchorLocalId: 'f1' asks to reorder relative to a "sibling"
+    // that isn't actually one under the target parent.
+    await expect(
+      service.moveDiffEntry('job-1', 'f2', { parentLocalId: 'e2', anchorLocalId: 'f1', placement: 'before' }),
+    ).rejects.toThrow('not a sibling');
+  });
+
+  it('appends after the new parent\'s last existing child when no anchor is given', async () => {
+    const { service } = makeService([epic1, epic2, feature1, feature2]);
+    const result = await service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' });
+    // f1 moved under e2, which had no prior children -- it should land
+    // immediately, and f2 (still under e1) is unaffected.
+    expect(result.find((e) => e.localId === 'f1')!.parentLocalId).toBe('e2');
+    expect(result.find((e) => e.localId === 'f2')!.parentLocalId).toBe('e1');
   });
 });
 
@@ -2503,6 +2907,54 @@ describe('JobsService.confirm — figure attachments', () => {
     expect(uploadAttachment).toHaveBeenCalledWith(100, 'f0.png', Buffer.from('png bytes').toString('base64'), 'image/png', undefined);
     expect(figureFileDelete).toHaveBeenCalledWith({ where: { id: 'jff-1' } });
     expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+  });
+
+  it('Task 6: uploads a named figure with a human-readable filename built from its own name, not f{id}.{ext}', async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 100 });
+    const linkParentChild = jest.fn().mockResolvedValue(undefined);
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const figureFileDelete = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f11'] },
+          ],
+          // figureId "f11" -> 1-based figure number 12, matching the doc's
+          // own "Figure 12: ..." caption -- see buildFigureAttachmentFilename.
+          figureDescriptions: [{ figureIndex: 12, figureId: 'f11', name: 'CubeConnect PCB (PC104 Variants) – Interior (Back) View', caption: null }],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      jobFigureFile: {
+        findMany: jest.fn().mockResolvedValue([{ id: 'jff-11', jobId: 'job-1', figureId: 'f11', bytes: Buffer.from('jpeg bytes'), mimeType: 'image/jpeg' }]),
+        delete: figureFileDelete,
+      },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild, uploadAttachment, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    // Sanitized name, correct .jpg extension derived from the real
+    // mimeType (not hardcoded .png), figure number 12 (not the raw "f11"
+    // internal id).
+    expect(uploadAttachment).toHaveBeenCalledWith(
+      100,
+      'Figure-12-CubeConnect-PCB-PC104-Variants-Interior-Back-View.jpg',
+      Buffer.from('jpeg bytes').toString('base64'),
+      'image/jpeg',
+      undefined,
+    );
+    expect(figureFileDelete).toHaveBeenCalledWith({ where: { id: 'jff-11' } });
   });
 
   it('skips a JobFigureFile row no node references and never uploads or deletes it', async () => {
@@ -3274,6 +3726,37 @@ describe('JobsService.attachFigureToAdo', () => {
     expect(uploadAttachment).toHaveBeenCalledWith(555, 'f0.png', Buffer.from('png bytes').toString('base64'), 'image/png', { orgUrl: 'https://ado.example', pat: 'x' });
     expect(figureFileDelete).toHaveBeenCalledWith({ where: { id: 'jff-1' } });
     expect(result).toEqual({ attached: true, adoId: 555 });
+  });
+
+  it('Task 6: uses the figure\'s own name for the attachment filename when job.figureDescriptions has one', async () => {
+    const uploadAttachment = jest.fn().mockResolvedValue(undefined);
+    const figureFileDelete = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
+          ],
+          figureDescriptions: [{ figureIndex: 1, figureId: 'f0', name: 'Panel Layout Diagram', caption: null }],
+        }),
+      },
+      jobFigureFile: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
+        delete: figureFileDelete,
+      },
+    };
+    const service = new JobsService(prisma as any, { uploadAttachment } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.attachFigureToAdo('job-1', 'n0', 'f0', { orgUrl: 'https://ado.example', pat: 'x' });
+
+    expect(uploadAttachment).toHaveBeenCalledWith(
+      555,
+      'Figure-1-Panel-Layout-Diagram.png',
+      Buffer.from('png bytes').toString('base64'),
+      'image/png',
+      { orgUrl: 'https://ado.example', pat: 'x' },
+    );
   });
 
   it('attaches using existingAdoId for a dedup_skip entry', async () => {

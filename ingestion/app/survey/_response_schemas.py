@@ -456,3 +456,22 @@ def root_grouping_schema() -> dict:
             "required": ["groups"],
         },
     }
+
+
+def leftover_assignment_schema() -> dict:
+    """assign_leftover_roots (OrchestratorLlmClient): a single free-form
+    'assignments' object mapping a leftover node id to a group id --
+    unbounded (no fixed property list), same "unbounded is the cheap case
+    for Ollama's GBNF grammar compilation" reasoning as root_grouping_
+    schema above, and the natural shape for "however many of these end up
+    placed, could be zero"."""
+    return {
+        "name": "leftover_root_assignments",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "assignments": {"type": "object"},
+            },
+            "required": ["assignments"],
+        },
+    }

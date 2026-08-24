@@ -283,6 +283,10 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
     table_index = 0
     figure_index = 0
     offset = 0
+    # Gap C (see pdf_loader.py's/docx_loader.py's own seen_figure_hashes
+    # for the full rationale): the same image bytes reused across slides
+    # (a recurring logo/watermark shape) is one figure, not one per slide.
+    seen_figure_hashes: set[str] = set()
 
     # 1-based: slide numbers are conventionally 1-based (matches how a
     # human would refer to "slide 1"), and page_provenance's docstring in
@@ -300,10 +304,15 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                     # [FIGURE: ...] placeholder block, and no gap in the
                     # remaining figure ids.
                     continue
+                image_bytes = shape.image.blob
+                image_hash = hashlib.sha256(image_bytes).hexdigest()
+                if image_hash in seen_figure_hashes:
+                    # Gap C -- see seen_figure_hashes' own comment above.
+                    continue
                 caption = None
                 if describe_figure is not None:
                     try:
-                        caption = describe_figure(shape.image.blob)
+                        caption = describe_figure(image_bytes)
                     except Exception:  # noqa: BLE001 -- a vision failure must not abort the whole deck
                         caption = None
                 # A figure gets a real slot in the same running offset
@@ -331,6 +340,7 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                 )
                 block_id += 1
                 figure_index += 1
+                seen_figure_hashes.add(image_hash)
                 continue
 
             if shape.has_table:

@@ -1009,6 +1009,41 @@ def test_group_root_topics_parses_a_valid_response() -> None:
     assert result["groups"][0]["member_ids"] == ["n0", "n1"]
 
 
+def test_assign_leftover_roots_sends_leftovers_and_groups_and_the_assignments_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.assign_leftover_roots(
+        {"n2": "SBC Serial Communication Routing"},
+        {"regroup_synth_group_0": "Bus Interfaces (I2C, SMBus, UART, USB)"},
+    )
+
+    body = captured["body"]
+    assert json.loads(body["messages"][1]["content"]) == {
+        "leftovers": {"n2": "SBC Serial Communication Routing"},
+        "groups": {"regroup_synth_group_0": "Bus Interfaces (I2C, SMBus, UART, USB)"},
+    }
+    schema = body["responseSchema"]["schema"]
+    assert schema["required"] == ["assignments"]
+    assert body["temperature"] == 0
+    assert body["think"] is False
+
+
+def test_assign_leftover_roots_parses_a_valid_response() -> None:
+    response_json = {"content": json.dumps({"assignments": {"n2": "regroup_synth_group_0"}})}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.assign_leftover_roots({"n2": "SBC Serial Communication Routing"}, {"regroup_synth_group_0": "Bus Interfaces"})
+    assert result["assignments"] == {"n2": "regroup_synth_group_0"}
+
+
 def test_infer_trace_links_never_sends_response_schema_even_with_a_nonempty_catalog() -> None:
     # Same GBNF array-wedge risk as infer_hierarchy (up to ~200 nodes across
     # a whole tree). Must stay omitted regardless of catalog size --

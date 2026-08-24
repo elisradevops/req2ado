@@ -59,7 +59,14 @@ export function WorkItemTypeBadge({
     // previously-plain icon+bold-text rendering was inconsistent with.
     <Chip bg={hexToRgba(color, 0.1)} color={color} className="border" style={{ borderColor: hexToRgba(color, 0.3) }} title={type}>
       {catalogEntry ? (
-        <img src={catalogEntry.iconDataUrl} alt="" className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
+        // draggable={false} -- real bug (user-reported): <img> elements are
+        // natively draggable in every browser regardless of any ancestor's
+        // own `draggable` attribute. Inside DiffTree's now-draggable rows
+        // (DESIGN.md §11.5), grabbing a row directly on top of this icon
+        // started the BROWSER's own image-drag gesture instead of the row's
+        // custom row-move drag -- looked like "grabbing this spot does
+        // nothing" (a data: URI often produces no visible drag ghost).
+        <img src={catalogEntry.iconDataUrl} alt="" className="h-3.5 w-3.5 flex-none" aria-hidden="true" draggable={false} />
       ) : (
         <Icon className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
       )}

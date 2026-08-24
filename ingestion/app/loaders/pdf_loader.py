@@ -168,6 +168,30 @@ _HEADING_MIN_ALNUM_CHARS = 2
 # caption.
 _TABLE_CAPTION_PATTERN = re.compile(r"^Table\s+[\w.]+[:.]?\s*(.*)$", re.IGNORECASE)
 
+# Same shape as _TABLE_CAPTION_PATTERN, for figures -- but a figure's own
+# caption line conventionally follows the image (below it), the opposite
+# order from a table caption (which precedes its table). See the figure
+# branch below for how this asymmetry is handled.
+_FIGURE_CAPTION_PATTERN = re.compile(r"^Figure\s+[\w.]+[:.]?\s*(.*)$", re.IGNORECASE)
+
+# A candidate caption line containing 4+ consecutive dots is a table-of-
+# contents dot-leader entry ("Figure 12: Some Title ..............12"),
+# not a real in-body caption -- confirmed live: cubeadcs_icd.pdf's TOC page
+# alone contributes 41 lines matching _FIGURE_CAPTION_PATTERN's shape.
+# Without this exclusion, a figure would get named from the WRONG page's
+# TOC entry instead of its own real caption (or worse, a TOC entry with no
+# nearby image at all would still just get IGNORED by the gap check, but a
+# real figure sitting near a TOC-adjacent page could misfire).
+_TOC_DOT_LEADER_PATTERN = re.compile(r"\.{4,}")
+
+# Maximum vertical gap (in PDF points) between a figure's own bottom edge
+# and a candidate caption line's top, for that line to be treated as this
+# figure's name. Measured on cubeadcs_icd.pdf: real figure->caption gaps
+# are consistently ~16pt (examples: 515.0->531.1, 342.5->358.9,
+# 444.0->460.4, 620.2->636.4) -- 40pt is generous headroom without risking
+# a match against the START of the next unrelated block.
+_FIGURE_CAPTION_MAX_GAP_POINTS = 40.0
+
 
 def _fontname_is_bold(fontname: str | None) -> bool:
     """Widened bold-fontname substring match -- see `_BOLD_FONTNAME_EXTRA_TOKENS`
@@ -1306,13 +1330,26 @@ def _detect_boilerplate_templates(pages_first_lines: list[str], pages_last_lines
 
 def _detect_boilerplate_images(
     all_pages_images: list[list[tuple[dict, object]]],
-) -> set[tuple[str, float, float]]:
+) -> set[str]:
     """Image analogue of `_detect_boilerplate_templates`: returns the set of
-    (byte_hash, rounded_x0, rounded_top) keys identifying an image that
-    recurs on at least `_BOILERPLATE_RECURRENCE_FRACTION` of pages -- same
-    recurrence discipline used for header/footer TEXT lines, applied to
-    images instead. `count >= 2` is a required guard for the same reason
+    byte-hashes identifying an image that recurs on at least
+    `_BOILERPLATE_RECURRENCE_FRACTION` of pages -- same recurrence
+    discipline used for header/footer TEXT lines, applied to images
+    instead. `count >= 2` is a required guard for the same reason
     documented on `_detect_boilerplate_templates`.
+
+    Keyed on content hash ALONE -- deliberately not on placement position.
+    Recurrence is a property of the IMAGE (the same bytes keep appearing);
+    position is a property of each individual PLACEMENT, and that is
+    already checked independently at the suppression call site via
+    `_HEADER_FOOTER_MARGIN_POINTS`. Confirmed live (cubeadcs_icd.pdf, 53
+    pages): a single running-header logo is drawn at three slightly
+    different (x0, top) coordinates across pages (40/12/1 placements) --
+    keying on position as well as hash split one recurring image into
+    three key-groups, so only the largest cleared the recurrence
+    threshold and the other two survived as if they were 13 separate
+    figures. Hash-only keying reunites all placements of one image under
+    one key, however many positions it is drawn at.
 
     Deliberately does NOT check `_HEADER_FOOTER_MARGIN_POINTS` here -- that
     gate is applied separately at the suppression call site, mirroring how
@@ -1331,15 +1368,15 @@ def _detect_boilerplate_images(
     from collections import Counter
 
     page_count = len(all_pages_images)
-    keys_per_page: list[set[tuple[str, float, float]]] = []
+    keys_per_page: list[set[str]] = []
     for page_images in all_pages_images:
-        page_keys: set[tuple[str, float, float]] = set()
-        for bbox, pypdf_image in page_images:
+        page_keys: set[str] = set()
+        for _bbox, pypdf_image in page_images:
             try:
                 image_hash = hashlib.sha256(pypdf_image.data).hexdigest()
             except Exception:  # noqa: BLE001 -- an undecodable image is simply never a boilerplate candidate
                 continue
-            page_keys.add((image_hash, round(bbox["x0"], 1), round(bbox["top"], 1)))
+            page_keys.add(image_hash)
         keys_per_page.append(page_keys)
     counts = Counter(key for page_keys in keys_per_page for key in page_keys)
     threshold = page_count * _BOILERPLATE_RECURRENCE_FRACTION
@@ -1491,6 +1528,17 @@ def load_pdf(
                 ]
         boilerplate_image_keys = _detect_boilerplate_images(all_pages_images)
         suppressed_boilerplate_image_count = 0
+        # Gap C: the same image bytes appearing more than once in the
+        # document is one figure, not N -- e.g. a diagram reused across
+        # sections, or a decorative graphic that recurs too rarely/too far
+        # from the margin to be caught by the boilerplate gate above (that
+        # gate needs recurrence on >= _BOILERPLATE_RECURRENCE_FRACTION of
+        # pages AND a margin-anchored position; a graphic repeated on a
+        # handful of pages in the page body clears neither). Tracks only
+        # hashes that were actually EMITTED as a Figure by this loop (not
+        # every image seen), so an image already dropped by an earlier gate
+        # never blocks a later, still-eligible occurrence of itself.
+        seen_figure_hashes: set[str] = set()
 
         heading_counters: list[int] = []
         size_ranks: dict[float, int] = {}
@@ -1806,8 +1854,55 @@ def load_pdf(
             # duplicate -- same precedent as docx_loader.py's own
             # Caption-paragraph-to-figure linking).
             pending_table_caption: str | None = None
+            # Figure naming (Task 4): the inverse shape of the table-caption
+            # lookup above -- a figure's own caption line conventionally
+            # FOLLOWS the image, not precedes it, so this can't reuse the
+            # single-variable "pending" pattern (which only looks one step
+            # forward from a caption to the thing it precedes). Instead,
+            # precomputed in one pass over `merged` BEFORE the main loop:
+            # for each image entry, look at the very next merged entry, and
+            # if it is a figure-caption-shaped paragraph within
+            # `_FIGURE_CAPTION_MAX_GAP_POINTS` of the image's own bottom
+            # edge, record its title text and mark that paragraph's index as
+            # consumed. The main loop below then (a) uses
+            # `figure_name_by_merged_index` when building each Figure, and
+            # (b) skips emitting a consumed caption paragraph as its own
+            # block -- same "link, don't duplicate" contract as the table
+            # caption above.
+            figure_name_by_merged_index: dict[int, str] = {}
+            consumed_figure_caption_indices: set[int] = set()
+            for i, (kind, _top, item) in enumerate(merged):
+                if kind != "image" or i + 1 >= len(merged):
+                    continue
+                next_kind, next_top, next_item = merged[i + 1]
+                if next_kind != "paragraph":
+                    continue
+                next_text, _next_size, _next_is_bold, _next_para_top = next_item
+                stripped_next_text = next_text.strip()
+                if _TOC_DOT_LEADER_PATTERN.search(stripped_next_text):
+                    continue
+                caption_match = _FIGURE_CAPTION_PATTERN.match(stripped_next_text)
+                if caption_match is None:
+                    continue
+                image_bbox, _pypdf_image = item
+                gap = next_top - image_bbox["bottom"]
+                # Small negative tolerance for baseline/rounding quirks (a
+                # caption line's reported `top` can sit fractionally above
+                # the image's own reported `bottom`) -- real measured gaps
+                # were all comfortably positive (see the constant's own
+                # comment), so this is slack, not the expected case.
+                if not (-5.0 <= gap <= _FIGURE_CAPTION_MAX_GAP_POINTS):
+                    continue
+                figure_name_by_merged_index[i] = caption_match.group(1).strip() or stripped_next_text
+                consumed_figure_caption_indices.add(i + 1)
+
             for i, (kind, _top, item) in enumerate(merged):
                 if kind == "paragraph":
+                    if i in consumed_figure_caption_indices:
+                        # Already used as the preceding figure's name (see
+                        # figure_name_by_merged_index's own comment above) --
+                        # link, don't duplicate.
+                        continue
                     text, size, is_bold, para_top = item
                     caption_match = _TABLE_CAPTION_PATTERN.match(text.strip())
                     # Only treat as a pending caption if the VERY NEXT merged
@@ -1911,11 +2006,12 @@ def load_pdf(
                     # required: a real figure that merely repeats a few
                     # times in the page BODY must still survive. Skipped
                     # before touching `offset`/`block_id`/`figure_id`, same
-                    # shape as the degenerate-image check just above.
+                    # shape as the degenerate-image check just above. The
+                    # recurrence key is content-hash only (see
+                    # _detect_boilerplate_images); the margin check right
+                    # below is what evaluates THIS placement's position.
                     try:
-                        image_key: tuple[str, float, float] | None = (
-                            hashlib.sha256(pypdf_image.data).hexdigest(), round(bbox["x0"], 1), round(bbox["top"], 1),
-                        )
+                        image_key: str | None = hashlib.sha256(pypdf_image.data).hexdigest()
                     except Exception:  # noqa: BLE001 -- an undecodable image can never match a boilerplate key
                         image_key = None
                     if (
@@ -1924,6 +2020,17 @@ def load_pdf(
                         and (bbox["top"] <= _HEADER_FOOTER_MARGIN_POINTS or bbox["bottom"] >= page.height - _HEADER_FOOTER_MARGIN_POINTS)
                     ):
                         suppressed_boilerplate_image_count += 1
+                        continue
+                    # Gap C (see seen_figure_hashes' own comment above): the
+                    # same image bytes already emitted as a Figure earlier
+                    # in this document is a reuse, not a new figure. Only
+                    # reached for images that survived both gates above, so
+                    # this never blocks a genuinely new image that merely
+                    # shares a hash with something already suppressed.
+                    # `image_key is None` (undecodable image) is never
+                    # treated as a duplicate -- same fail-open stance as the
+                    # boilerplate check just above.
+                    if image_key is not None and image_key in seen_figure_hashes:
                         continue
                     start = offset
                     end = start + 1
@@ -1938,6 +2045,7 @@ def load_pdf(
                         Figure(
                             id=f"f{figure_id}",
                             caption=caption,
+                            name=figure_name_by_merged_index.get(i),
                             source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
                         )
                     )
@@ -1951,6 +2059,8 @@ def load_pdf(
                     )
                     block_id += 1
                     figure_id += 1
+                    if image_key is not None:
+                        seen_figure_hashes.add(image_key)
 
     if suppressed_boilerplate_image_count > 0:
         logger.warning(

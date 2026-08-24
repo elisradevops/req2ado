@@ -746,6 +746,14 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
     # Every image rel consumed inline (see the w:p branch below) is recorded
     # here so the fallback pass after the body walk doesn't double-emit it.
     consumed_rel_ids: set[str] = set()
+    # Gap C (see pdf_loader.py's own seen_figure_hashes for the full
+    # rationale): the same image bytes appearing more than once in the
+    # document -- inline reuse or via the fallback rel pass below, which
+    # deliberately admits header/footer images with no position filter of
+    # its own -- is one figure, not N. Shared across BOTH the inline walk
+    # and the fallback pass, so a logo relied on by both is still counted
+    # once.
+    seen_figure_hashes: set[str] = set()
 
     # Single body-element walk (python-docx's standard idiom for document
     # order) instead of the previous two SEPARATE extraction passes
@@ -897,12 +905,17 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
             if rel is None or _IMAGE_RELTYPE_MARKER not in rel.reltype:
                 continue
             consumed_rel_ids.add(embed_id)
-            if _is_degenerate_image_bytes(rel.target_part.blob):
+            image_bytes = rel.target_part.blob
+            if _is_degenerate_image_bytes(image_bytes):
                 # Not a real figure -- see _is_degenerate_image_bytes's own
                 # docstring. Skipped before touching `offset`/`block_id`/
                 # `figure_index` (as if this rel was never an image at
                 # all), so no vision call, no Figure, no [FIGURE: ...]
                 # placeholder block, and no gap in the remaining figure ids.
+                continue
+            image_hash = hashlib.sha256(image_bytes).hexdigest()
+            if image_hash in seen_figure_hashes:
+                # Gap C -- see seen_figure_hashes' own comment above.
                 continue
             caption = _describe_one_figure(rel, describe_figure)
             start = offset
@@ -925,6 +938,7 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
             )
             block_id += 1
             figure_index += 1
+            seen_figure_hashes.add(image_hash)
 
         for ole_object in ole_objects:
             icon_data = ole_object.find(f".//{_VML_IMAGEDATA_TAG}")
@@ -996,7 +1010,15 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
     for rel_id, rel in docx_doc.part.rels.items():
         if rel_id in consumed_rel_ids or _IMAGE_RELTYPE_MARKER not in rel.reltype:
             continue
-        if _is_degenerate_image_bytes(rel.target_part.blob):
+        image_bytes = rel.target_part.blob
+        if _is_degenerate_image_bytes(image_bytes):
+            continue
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        if image_hash in seen_figure_hashes:
+            # Gap C -- see seen_figure_hashes' own comment above. Notably
+            # covers this pass's own documented header/footer-image
+            # admission: a logo repeated across every page's header rel
+            # collapses to one figure instead of one per page.
             continue
         caption = _describe_one_figure(rel, describe_figure)
         figures.append(
@@ -1016,5 +1038,6 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
         )
         block_id += 1
         figure_index += 1
+        seen_figure_hashes.add(image_hash)
 
     return CanonicalDoc(document=document, blocks=blocks, tables=tables, figures=figures)

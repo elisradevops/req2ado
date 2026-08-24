@@ -2542,6 +2542,197 @@ deviations from this list's original text.**
 
 ---
 
+### §11.5 — The diff-review tree: reparent, reorder, and place new items
+
+**The problem being fixed.** Auto-grouping sometimes produces a catch-all
+Epic — `(auto-grouped) Other Sections` — for sections that fit no real Epic. A
+reviewer looking at that today has no way to fix it before confirming to
+ADO: `DiffTree.tsx` is read-only apart from exclude/edit, and `AddChildForm`
+only creates an item under the one node its dialog was opened from. This
+section specifies reparenting a node (drag, or a keyboard-friendly picker),
+reordering siblings, and creating a new item under any valid parent — all
+scoped to `status === 'diff_ready'`, before any ADO write.
+
+**Row geometry: one new leading track, parameterized, not forked.**
+`GRID_TEMPLATE_COLUMNS` (`DiffTree.tsx:277`) is a single literal string
+shared by the sticky header and every row — its own comment already calls
+this out as the single source of truth. Do not fork it into a
+`canMove`/`!canMove` variant. Add the grip track as a CSS custom property on
+the wrapper that already carries `--clause-w`/`--status-w`:
+
+```
+gridTemplateColumns: 'var(--grip-w, 20px) 32px var(--clause-w, 44px) minmax(0,1fr) var(--status-w, 108px) 100px 36px'
+```
+
+with the wrapper setting `--grip-w: canMove ? '20px' : '0px'`. The header
+gains one matching empty `<span />` in that position so columns still line
+up when `canMove` is false (a job not in `diff_ready`).
+
+**The drag affordance never lifts, never shadows.** §6/§16.19 stand: rows
+stay `.hoverable-row` and nothing else. The grip (`GripVertical`, lucide) is
+a *child*-visibility concern, not a new row hover — reuse the exact pattern
+already shipped and tested at `JobsList.tsx:308,338`
+(`group` on the row, `opacity-0 transition-opacity duration-instant
+group-hover:opacity-100 group-focus-within:opacity-100` on the child),
+asserted by `JobsList.test.tsx:189`. No new hover system is introduced.
+
+**Drop feedback, three states:**
+
+| State | Treatment |
+|---|---|
+| Valid, drop *inside* (reparent, appended last) | `bg-accent-soft` + dashed `border-accent` on the row |
+| Valid, drop *before*/*after* a sibling (reorder) | `border-t-2 border-accent` on the target row, indented to the landing depth |
+| Invalid target | `bg-danger-soft` -- computed client-side from the same `canNest`/cycle checks the server enforces, so an invalid target is visibly rejected before release, not after a round-trip |
+
+**This does not reuse `.hoverable-row::before`.** That pseudo-element is
+already a 2px **vertical** left rail used for hover/selection
+(`index.css:465-469`). The before/after drop line is a 2px **horizontal**
+line at the row's top edge — a different signal on a different axis. Using
+`border-t-2 border-accent` keeps the two visually and mechanically distinct;
+box-sizing is `border-box` and react-window pins the row's height inline, so
+the extra border is absorbed rather than growing the 40px row.
+
+**Three badges, all informational, none blocking:**
+
+- **`same tier`** (`bg-danger-soft`/`border-danger-border`/`text-danger-ink`,
+  matching the existing `row-tag` treatment) — appears when a node's parent
+  shares its own category (Epic-under-Epic, etc.). Confirmed against this
+  environment's real on-prem Azure DevOps Server 2022.1 (GA REST API 7.0, not
+  7.1 — `mcp-ado-server/src/config/env.ts:13-19`): the Work Item Tracking API
+  accepts a same-category parent-child link outright; only ADO's native
+  Backlogs hub refuses to reorder it and shows just the leaf item on sprint
+  backlogs/taskboards. Ingestion already emits these links today
+  (`root_regrouping.py`'s sub-requirement case, the catch-all-Epic wrap), so
+  blocking them here would make existing trees unfixable. Flag, don't block.
+- **excluded-parent warning** — appears when a node's new parent is
+  (transitively) excluded. `confirm()`'s `isExcluded()` walks ancestry
+  (`jobs.service.ts:1133-1143`), so reparenting under an excluded node
+  silently drops the *entire subtree* from the confirm with no per-row
+  indication today. Same posture as `same tier`: warn, never block — the
+  reviewer may be excluding the parent on purpose.
+- **"already in ADO" lock icon** (`text-ink-3`, icon-only — not a chip, since
+  it applies to every matched row, common enough that spending truncatable
+  title width on it isn't worth it) — appears on every `reuse`/`dedup_skip`
+  row. Investigated end-to-end (orchestrator's `confirm()`, `moveDiffEntry`,
+  `validateCreatedTree`, `attachFigureToAdo`) after the question "how do we
+  maintain tree order without overriding existing ADO relationships": data
+  integrity was already sound going in — `confirm()`'s `toLink` filter
+  (`jobs.service.ts`) unconditionally excludes both actions from
+  `linkParentChild` (ADO enforces at most one Parent relation per work item;
+  confirmed live, re-adding one 400s with TF401349), and there is no
+  relation-*remove* path anywhere in `mcp-ado-server` for a rejected move to
+  even worry about undoing. The real gap was communication, not correctness,
+  plus a genuine asymmetry worth flagging: this row's OWN position is
+  cosmetic-only when moved, but a brand-new item placed as ITS CHILD really
+  does link to it in ADO on confirm — a real, permanent write onto an item
+  that (for `dedup_skip`) was only a probabilistic match. The tooltip states
+  both halves. Same neutral, non-warning treatment `ActionBadge`'s own
+  non-link chip already uses (this is a fact about a read-only property, not
+  a hazard) — see `NodeDetailPanel`'s matching "position is also read-only"
+  sentence (appended to its existing matched-entry read-only message) and
+  the Status column `InfoTip`'s extended copy for the other two places this
+  same fact now surfaces.
+
+**Scope: drag-and-drop is for short, in-viewport moves only.** `MoveToPicker`
+below is the stated, supported path for any move that needs to cross a
+scroll boundary — this is a deliberate scope decision, not an oversight, and
+DnD is not expected to auto-scroll robustly across the whole tree.
+
+**Drag mechanism: `@dnd-kit/core` (`MouseSensor`), not native HTML5 DnD —
+switched after initial deployment, following real user feedback that native
+drag remained unreliable even after three targeted fixes.** The first
+shipped version used native HTML5 DnD, matching `FileDropzone.tsx`'s
+existing precedent. In real use it lost reliably to the browser's own drag
+arbitration: dragging over a Requirement's long title competed with text
+selection (fixed with `select-none`); the `WorkItemTypeBadge` `<img>` and
+`ActionBadge` `<a>` are natively draggable regardless of any ancestor's
+`draggable` attribute (fixed with `draggable={false}` on both). Even after
+all three fixes, the user's own report was "I try to grab the 6-dot grip
+icon, that works — from other positions it sometimes works" — native DnD's
+per-element drag arbitration has more edge cases than any one fix closes.
+`@dnd-kit/core`'s `MouseSensor` drives the whole gesture from
+mousedown/mousemove/mouseup instead of the browser's native
+dragstart/dragover/drop events, so none of that native-element arbitration
+is ever in the loop — grabbing anywhere on the row (still guarded against
+interactive children, same as before) is reliable everywhere, matching the
+approved mockup's own "grab anywhere" behavior. `MouseSensor`, not
+`PointerSensor` — this is a desktop reviewer tool (native HTML5 DnD never
+supported touch either), and it sidesteps `PointerEvent` gaps some
+environments have. `@dnd-kit/sortable` was considered and rejected: this
+tree's drop semantics (three-way before/inside/after with tier validation)
+are richer than flat-list reordering, so the lower-level `DndContext`/
+`useDraggable`/`useDroppable` primitives are used directly, with `canNest`/
+cycle validation as custom logic on top — unchanged from the native-DnD
+version. No `<DragOverlay>`: dnd-kit measures whatever a `DragOverlay`
+renders *instead of* the dragged row the moment one exists
+(`draggingNodeRect = dragOverlay.rect ?? activeNodeRect`), which would throw
+off the before/inside/after math against this row's own real geometry — the
+row itself follows the pointer via `useDraggable`'s own `transform` instead,
+same pattern any dnd-kit sortable-list example uses without an overlay.
+
+**`MoveToPicker` — a new §7 Overlay-category component**, popover geometry
+per §5, filterable by title and by `customerId` (the clause id reviewers
+already recognize from the tree, e.g. `§3.4.1` — reused rather than
+inventing a parallel index), with the matched substring highlighted. This is
+the keyboard-accessible path and the only practical path once a document has
+enough items that dragging across a scrolling list stops being usable.
+Mounted in two places, both via the same shared `frontend/src/lib/
+moveValidation.ts` validity rule DiffTree's own drag-and-drop uses (one rule,
+two callers, not two independently-drifting copies): `AddChildForm`'s parent
+field (choosing a parent for a brand-new entry) and `NodeDetailDialog`'s new
+`MoveEntryControl` (reparenting an *existing* entry — this specific mount did
+not exist until audited and closed; earlier text in this section claimed the
+keyboard path as already complete when only the former existed, leaving
+reparenting mouse-drag-only in practice). Available regardless of the
+entry's `action` — a `reuse`/`dedup_skip` entry's own display position is
+legitimately movable via this control too, matching drag-and-drop's scope
+exactly (see the "already in ADO" badge above for why that's safe).
+
+**The tree toolbar has a persistent "+ New item" entry point — added after
+initial deployment, following real user feedback that creation was
+undiscoverable.** The first shipped version buried item creation entirely
+inside `AddChildCard`'s "Add child" affordance in an existing node's own
+detail dialog, with no way to create a first-class item with no anchor at
+all (a brand-new top-level Epic, the most common real starting point).
+`AddChildCard`/`AddChildForm` now both take `parentEntry` as **optional** —
+the toolbar mounts them with none, defaulting to the top category at the
+root (always legitimate: the top category can always root) — and the
+trigger reads "New item" instead of "Add direct child WI" whenever there is
+no anchor. **SURVEY mode only**: BASELINE's type is mechanically inherited
+from a real anchor's own `childType`, so an anchor-less BASELINE creation
+has no coherent "what type may I add" answer, matching this section's
+existing BASELINE/SURVEY split for the parent field itself.
+
+**Drag-and-drop applies to local state immediately, not after the
+round-trip — added after initial deployment, following real user feedback
+that the server-round-trip-only version read as laggy against the design
+mockup's zero-latency local drag.** `applyMoveOptimistically`
+(`frontend/src/lib/applyMove.ts`) mirrors `JobsService.moveDiffEntry`'s own
+splice algorithm and is applied to `diff` state the instant a drop lands, no
+different in spirit from any optimistic-UI pattern elsewhere in the app —
+the server's response still overwrites it moments later on success, and a
+snapshot taken just before the optimistic apply is restored on failure
+(mirroring every other diff mutation's error handling). Safe specifically
+*because* DiffTree's own client-side `canNest`/cycle validation already ran
+before `onMove` was ever invoked (§11.5's own `MoveToPicker`/DnD validity
+text above) — the only ways the server can still reject a client-validated
+move (an already-linked entry, a stale mismatched anchor) are both rare
+edge cases, not the common path, so an optimistic apply is right almost
+always and cheaply reverted on the rest. Deliberately **not** the
+`canNest.ts` duplication pattern (no drift guard) — that duplication exists
+because `canNest` is a *validation rule* that must never disagree between
+client and server; this is a *display preview* the server's own response
+always overrides, so a drift here degrades to "briefly shows the wrong
+order," never a correctness bug.
+
+**Ratchet baseline: `DiffTree.tsx` and the new `MoveToPicker.tsx` ship at
+zero**, not merely "must not grow" — `DiffTree.tsx` currently has no entries
+in either `palette.test.ts`'s hex baseline or `tokens.test.ts`'s pattern
+baseline, so any new raw hex, arbitrary size/radius/duration, or bare
+`transition` in this work is a first offender, not an increment.
+
+---
+
 ## §12 — Content and voice
 
 - Audience is engineers and Azure DevOps administrators. Dense, precise, no
@@ -2807,6 +2998,11 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | `DestinationBar` extended to the wizard's path bar (iteration + state segments, hatched-when-unset), used on both screens | `components/DestinationBar.tsx` (unchanged shared implementation — not rebuilt fresh, per this row's own instruction); new call site in `pages/NewJobWizard.tsx`'s Destination card | **Closed, with one honest scope reduction.** All 4 segments (Project/Area/Iteration/State) now render as their own `.hoverable-row` box with icon + uppercase key + value, iteration hatches (`repeating-linear-gradient`, `accent-soft`/`accent-soft-border`) instead of going blank when unset, and a `font-mono` preview line restates the full resolved destination below (`Radar Systems \ Radar Systems\EW Suite \ Rev C · state Proposed`). **Not shipped:** the "one sentence of consequence" this row's spec also asked for (e.g. "Proposed keeps new items out of sprint metrics..."). Checked `StatePicker.tsx`/`api/ado.ts`'s `getStates`: starting state is fetched LIVE per-project from ADO's own configurable workflow, an open org-defined list, not a small fixed enum — a hardcoded sentence for "Proposed" specifically would have no matching sentence for a custom state (e.g. "Triage", "Ready") and risks being actively wrong for an org whose "Proposed" doesn't behave like the example assumes. Real data doesn't exist to do this correctly; inventing text for an unknown value isn't a shortcut, it's a guess. A dedup regression test for identical project/area values was intentionally rewritten, not just relaxed: the old single-line unlabeled breadcrumb genuinely needed the dedup (two identical values with no distinguishing label read as a bug); each segment now carries its own key label, so showing the same value under two clearly-different labels is a real state, not a repeat to hide. 5 new tests. |
 | Epic/Feature **Scope** group in place of the absent gauge | `components/NodeDetailPanel.tsx`, `components/NodeDetailDialog.tsx`, `pages/JobDetail.tsx` (`descendantCountsByLocalId`) | **Closed, with one honest scope reduction from this section's exact copy example.** This section's illustrative copy ("Covers §3 through §3.2 — 6 features, 41 requirements") bundles two different things: a section-number range and descendant counts. The counts are real and shipped — a new O(n) children-by-parent walk in `JobDetail.tsx`, threaded down the same way `diffByLocalId` already is. The section-number range is NOT shippable from real data: `DryRunSourceRef` is byte-offset-only (confirmed via `utils/sourceRef.ts`), there is no heading-number field anywhere in the diff entry shape, and inventing one via regex-parsing title text would be a guess, not real data — same category of gap as §11.1's own per-section breakdown (tracked separately, needs a new backend field). Shipped: "Covers 6 features, 41 requirements." / "No child items under this Epic yet." plus a plain "why no score" line. 4 new tests. |
 | Band-crossing sentences ("Moved from Needs review into Solid") and **Cleared: &lt;flag&gt;** rows on a successful rescore | `components/QualityGauge.tsx` (`bandCrossingText`, `previousIssues` prop, `clearedByCategory`/`clearedOther`) | **Closed.** §11.4.4. Band-crossing sentences render on the headline and on any category row whose band actually changed, and nowhere else (a row that moved without crossing keeps only its numeral delta, per this section's own rule against decorating unmoved rows). Cleared-flag lines are grouped by category the exact same way active issues already are (reusing `categoryForIssueCode`, unmapped codes to "Other flags") and render always-visible, not gated behind the category's own expand disclosure — "the most direct evidence the edit worked... it is free," per this row's own reasoning. `NodeDetailPanel.tsx`'s pre-rescore snapshot extended to also capture `qualityIssues`. 5 new tests. |
+| **New §11.5** — diff-review tree reparent/reorder/create-with-parent (no prior spec existed for this screen) | `DESIGN.md` §11.5; new `orchestrator/src/modules/pipeline/canNest.ts` (also duplicated at `frontend/src/lib/canNest.ts`, with a drift-guard test — no shared runtime package crosses the orchestrator/frontend build boundary today, confirmed: `frontend/package.json` has no dependency on `@req2ado/shared-ts`, and that workspace member ships untranspiled `.ts` with no build step); new `PATCH /jobs/:id/diff/:localId/move` (`jobs.controller.ts`/`jobs.service.ts`); new `components/MoveToPicker.tsx`; `components/DiffTree.tsx` (grip track, native HTML5 DnD, `itemKey`, drop indicators, `same tier`/excluded-parent badges); `components/AddChildForm.tsx` (parent picker, label-only real-type-name fix, dropped `isManual` restriction) | **Closed.** Grip track added via a `--grip-w` CSS custom property on `GRID_TEMPLATE_COLUMNS`'s existing wrapper rather than forking the shared template string. Same-tier links are allowed and flagged (confirmed live against this deployment's on-prem ADO Server 2022.1, GA REST API 7.0 per `mcp-ado-server/src/config/env.ts:13-19` — the Work Item Tracking API accepts a same-category parent-child link; only the native Backlogs hub refuses to reorder it). Drag-and-drop is explicitly scoped to short, in-viewport moves — `MoveToPicker` is the stated path for anything crossing a scroll boundary, not a gap. Hover-to-expand-a-collapsed-parent-during-drag was considered and deliberately cut from this pass: the endpoint's `parentLocalId`-only form already makes dropping on a collapsed row a complete "append last" operation, and auto-expanding mid-drag risks pushing the drag source itself out of the virtualized viewport. Deployed, then refined per two rounds of real user feedback — see the next two rows. |
+| **§11.5 refinement 1** — no entry point existed to create an item with no anchor node at all | `components/AddChildCard.tsx` + `AddChildForm.tsx` (`parentEntry` now optional, trigger label conditional on its presence), new toolbar mount in `pages/JobDetail.tsx` (SURVEY + `diff_ready` only) | **Closed.** Real user feedback after deployment: "where is the workitem creation?" — the first pass only ever exposed creation through an existing node's own "Add child" dialog. Anchor-less defaults to the top category at the root (always legitimate). BASELINE excluded deliberately, not overlooked — see §11.5's own updated text. |
+| **§11.5 refinement 2** — drag-and-drop waited on a full server round-trip before the row visually moved | new `frontend/src/lib/applyMove.ts` (`applyMoveOptimistically`, mirrors `moveDiffEntry`'s splice algorithm), `pages/JobDetail.tsx`'s `handleMoveEntry` (apply immediately, snapshot-and-revert on failure) | **Closed.** Real user feedback after deployment: "its not snappy enough... I liked how it worked in the artifact" — the mockup's drag was pure local state with zero network latency; the first shipped version was 100% server-round-trip with no optimistic update, by original design intent, which read as laggy in practice. Deliberately not `canNest.ts`'s drift-guard-duplication pattern — see §11.5's own updated text for why a display preview doesn't need one. |
+| **§11.5 refinement 3** — native HTML5 drag-and-drop remained unreliable even after three targeted browser-arbitration fixes (`select-none`, `WorkItemTypeBadge`'s `<img draggable={false}>`, `ActionBadge`'s `<a draggable={false}>`) | new dependency `@dnd-kit/core`; `components/DiffTree.tsx` rewritten onto `DndContext`/`useDraggable`/`useDroppable` (`MouseSensor`, no `DragOverlay` — row follows the pointer via `transform`), `canNest`/cycle validation logic unchanged; `components/DiffTree.test.tsx` and `pages/JobDetail.optimisticMove.test.tsx` rewritten from simulated native drag events onto simulated mouse events | **Closed.** Real user feedback after deployment, repeated twice: "I try to grab the row of a requirement, nothing happens... it works only in certain locations", and again after the three fixes above landed: "I try to grab the 6-dot grip icon... that works... from other positions it sometimes work." Native HTML5 drag's per-element arbitration (text selection, natively-draggable `<img>`/`<a>`) has more edge cases than any one fix closes; `@dnd-kit/core`'s `MouseSensor` drives the gesture from mousedown/mousemove/mouseup instead, so none of that arbitration is ever in the loop. See §11.5's own updated "Drag mechanism" text for the full reasoning, including why no `<DragOverlay>` is used. **A real regression was caught before this settled** (live-browser testing, not the vitest suite — jsdom's `ResizeObserver` stub is a no-op, which hid it entirely): `DiffTreeRow`'s combined `useDraggable`/`useDroppable` ref (`setNodeRef`) was a plain inline function, recreated every render. React detaches-then-reattaches any ref callback whose *identity* changes even when the underlying DOM node hasn't moved; `useDroppable`'s own measuring is disabled while no drag is active, so this churn was inert right up until one started — the moment a drag activated, every visible row's reattach re-triggered droppable-rect measurement, which scheduled a state update, which re-rendered every row, which recreated every row's still-unstable ref, forever — a synchronous render loop that pegged the tab solid the instant any drag began. Fixed with `useCallback` (its own deps, `setDragNodeRef`/`setDropNodeRef`, are themselves stable per dnd-kit's own `useNodeRef`, so the combined callback is now genuinely stable too). |
+| **§11.5 refinement 4** — investigated whether reordering the review tree could override an item's real ADO relationships | `orchestrator/src/modules/pipeline/jobs.service.ts` (`validateCreatedTree`'s `expectedParentAdoId` now resolves a matched parent's real id from `existingAdoId`, mirroring `attachFigureToAdo`'s documented two-source rule; `moveDiffEntry`'s guard comment rewritten to state the actual two-rule policy); new "already in ADO" badge (`components/DiffTree.tsx`, `DiffTreeRow`); `components/NodeDetailPanel.tsx` (extended matched-entry read-only message); `components/DiffTree.tsx`'s Status column `InfoTip` copy; new `frontend/src/lib/moveValidation.ts` (extracted from `DiffTree.tsx`, shared with the new keyboard reparent control below); new `MoveEntryControl` (`components/NodeDetailDialog.tsx`), wired via new `onMove` prop threaded from `pages/JobDetail.tsx`'s existing `handleMoveEntry` | **Closed.** User-prompted investigation (dispatched to a dedicated deep-research pass, not assumed): is reordering/reparenting in the review tree safe against the real ADO hierarchy? Verdict, with file:line evidence: **yes, already** — `confirm()`'s `toLink` filter unconditionally excludes `reuse`/`dedup_skip` from `linkParentChild` (ADO enforces at most one Parent relation per work item; confirmed live, TF401349 on a second `add`), and `mcp-ado-server` has no relation-*remove* path at all, so even a hypothetical bug in that filter couldn't reach ADO. The two real, non-hypothetical findings closed here: (1) a genuine bug, unrelated to reparenting itself — `validateCreatedTree` never seeded a matched parent's real ADO id, false-flagging every correctly-written child of a `reuse`/`dedup_skip` parent as a `parentId` mismatch; (2) a real communication gap plus a sharper asymmetry — nothing told a reviewer that moving a matched row is display-only, while a NEW item dropped as ITS child really does write a permanent ADO relation onto a possibly-probabilistic match, with zero acknowledgment either way. Also closed in the same pass: `MoveToPicker` was mounted only for choosing a NEW entry's parent, never for reparenting an EXISTING one, despite this section's own text (twice) claiming reparenting already had a keyboard-accessible path — `moveValidation.ts`'s extraction let the new `MoveEntryControl` reuse the exact same validity rule DiffTree's drag-and-drop already enforced, rather than a third independent copy. 21 new tests (`jobs.service.spec.ts` ×3, `moveValidation.test.ts` ×8, `DiffTree.test.tsx` ×3, `NodeDetailDialog.test.tsx` ×6, `NodeDetailPanel.test.tsx` ×1). |
 | "Not scored yet" + **Score this item** for manually added entries | `components/NodeDetailPanel.tsx` | **Closed.** §11.4.4. Reuses the exact same `onRescore`/`rescoreDiffEntry` path a Stale item's Re-check quality button uses — `rescoreDiffEntry`'s guards (`diff_ready`, `action === 'create'`, `type === 'Requirement'`) never required a prior score, so this was additive, not new backend work. No delta/"Rescored." confirmation for a first-ever score (nothing to diff against). 3 new tests. |
 | Category definitions move out of `InfoTip` onto the row | `components/QualityGauge.tsx` (`CategoryRow`) | **Closed.** §11.4.3. Every row can now expand (not only ones with a mapped issue) into the same `grid-template-rows` disclosure the issue remedies already used — the definition (`KNOWN_CATEGORY_DESCRIPTIONS`/KB-derived fallback) is its first line, real text in the DOM, not an `InfoTip` hover. The per-row `InfoTip` was removed entirely (the gauge's one top-level InfoTip, explaining the overall metric, is untouched). 2 tests updated, 1 new test. |
 | `CollapsibleWarnings` literal amber hex → `warning-*` tokens | `components/CollapsibleWarnings.tsx`, `index.css` (new `--color-warning-ink-dim`) | **Closed.** §11.3.3, §16.1. 3 of 4 values matched an existing token exactly (`warning-soft`/`warning-border`/`warning-ink`); the 4th (`#9A6B1F`, a hover/secondary shade) got the one new token this row called for. `palette.test.ts`'s baseline for this file dropped from 22 to 0 (removed from the map entirely, matching every other fully-clean file). |

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { Dialog } from '../ui/Dialog';
 import { Tabs } from '../ui/Tabs';
@@ -7,7 +7,11 @@ import { ActionBadge } from './ActionBadge';
 import { NodeDetailPanel, canEditEntry } from './NodeDetailPanel';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
+import { MoveToPicker } from './MoveToPicker';
+import { canBeRoot } from '../lib/canNest';
+import { validNewParentsFor } from '../lib/moveValidation';
 import type { DryRunDiffEntry } from './DiffTree';
+import type { DiffTreeMoveInput } from './DiffTree';
 import type { KbCitation } from './KbCitationChips';
 import type { TraceLinkFailure } from '../store/jobsStore';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
@@ -70,16 +74,19 @@ export function NodeDetailDialog({
   diffByLocalId,
   descendantCountsByLocalId,
   captionByFigureId,
+  nameByFigureId,
   captionByTableId,
   onSave,
   onRescore,
   onAttachFigure,
   onRetryTraceLink,
   onAddChild,
+  onMove,
   onNavigate,
   hasPrev,
   hasNext,
   typeCatalog,
+  categoryLabels,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -101,7 +108,12 @@ export function NodeDetailDialog({
   // references -- lets NodeDetailPanel's Figures section show each of THIS
   // entry's own referenced figures with its caption, without re-deriving
   // the figureIndex/figureId relationship itself.
-  captionByFigureId?: Record<string, string>;
+  captionByFigureId?: Record<string, string | null>;
+  // Task 5: figureId -> the document's own figure name, same figureId
+  // scheme as captionByFigureId -- passed straight through to
+  // NodeDetailPanel unchanged, same threading convention as
+  // captionByFigureId above.
+  nameByFigureId?: Record<string, string | null>;
   // tableId -> Table.caption, same scheme entry.tableIds references -- lets
   // NodeDetailPanel's Tables section show a readable title instead of a
   // raw internal id.
@@ -116,11 +128,27 @@ export function NodeDetailDialog({
   // Task 4: manual retry for a trace link that failed to write to Azure
   // DevOps -- see NodeDetailPanel's own doc comment.
   onRetryTraceLink?: (failureId: string) => Promise<void>;
-  onAddChild: (parentLocalId: string, input: { type: string; title: string; description: string }) => void;
+  // CR: reparent -- parentLocalId is string|null now (root creation is
+  // possible in SURVEY mode) and is no longer always entry.localId --
+  // AddChildForm's own parent picker can point it somewhere else entirely.
+  onAddChild: (parentLocalId: string | null, input: { type: string; title: string; description: string }) => void;
+  // DESIGN.md §11.5 -- the keyboard-accessible reparent path DiffTree.tsx's
+  // own drag-and-drop implementation always claimed existed but never
+  // actually built (MoveToPicker was only ever wired into AddChildForm's
+  // parent field for a NEW item, not this "move an existing item" control).
+  // Same onMove contract DiffTree.tsx already calls -- JobDetail.tsx's
+  // handleMoveEntry (optimistic apply, snapshot-and-revert on failure)
+  // handles this identically regardless of which UI entry point called it.
+  // Omitted (undefined) hides the control entirely, same convention as
+  // onAddChild's own optional siblings above.
+  onMove?: (localId: string, input: DiffTreeMoveInput) => void;
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
   hasNext?: boolean;
   typeCatalog?: Record<string, WorkItemTypeCatalogEntry>;
+  // Category -> this project's real ADO type name, for AddChildForm's type
+  // Select LABELS only -- see AddChildForm.tsx's own doc comment.
+  categoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
 }): React.ReactElement | null {
   const [mobileTab, setMobileTab] = useState<'details' | 'chat'>('details');
   const isDesktop = useIsAboveBreakpoint(LG_BREAKPOINT_QUERY);
@@ -142,7 +170,25 @@ export function NodeDetailDialog({
 
   const addChildSlot =
     jobMode && jobStatus === 'diff_ready' ? (
-      <AddChildCard parentEntry={entry} jobMode={jobMode} onAdd={(input) => onAddChild(entry.localId, input)} />
+      <AddChildCard
+        parentEntry={entry}
+        jobMode={jobMode}
+        allEntries={Object.values(diffByLocalId ?? {})}
+        categoryLabels={categoryLabels}
+        typeCatalog={typeCatalog}
+        onAdd={(input) => onAddChild(input.parentLocalId, { type: input.type, title: input.title, description: input.description })}
+      />
+    ) : undefined;
+
+  // DESIGN.md §11.5 -- the keyboard-accessible reparent path (see onMove's
+  // own doc comment above for why this didn't already exist). Available
+  // regardless of entry.action -- a reuse/dedup_skip entry's DISPLAY
+  // position is legitimately movable (it just never reaches ADO on
+  // confirm, see DiffTree.tsx's "already in ADO" badge on this same row),
+  // matching drag-and-drop's own scope exactly rather than a narrower one.
+  const moveSlot =
+    onMove && jobStatus === 'diff_ready' ? (
+      <MoveEntryControl entry={entry} allEntries={Object.values(diffByLocalId ?? {})} categoryLabels={categoryLabels} typeCatalog={typeCatalog} onMove={onMove} />
     ) : undefined;
 
   const detailsContent = (
@@ -156,7 +202,9 @@ export function NodeDetailDialog({
       traceLinkFailures={traceLinkFailures}
       parentEntry={entry.parentLocalId != null ? diffByLocalId?.[entry.parentLocalId] : undefined}
       addChildSlot={addChildSlot}
+      moveSlot={moveSlot}
       captionByFigureId={captionByFigureId}
+      nameByFigureId={nameByFigureId}
       captionByTableId={captionByTableId}
       onSave={onSave}
       onRescore={onRescore}
@@ -248,5 +296,56 @@ export function NodeDetailDialog({
         </div>
       )}
     </Dialog>
+  );
+}
+
+// DESIGN.md §11.5's keyboard-accessible reparent control -- same visual
+// shape as AddChildForm's own "Parent [suggested]: … Change" row (current
+// value on the left, MoveToPicker trigger on the right), reused rather than
+// invented fresh, but for MOVING an existing entry rather than choosing one
+// for a new entry. Not exported -- specific to this dialog, unlike
+// AddChildCard/AddChildForm which the tree toolbar's own "+ New item" also
+// mounts directly.
+function MoveEntryControl({
+  entry,
+  allEntries,
+  categoryLabels,
+  typeCatalog,
+  onMove,
+}: {
+  entry: DryRunDiffEntry;
+  allEntries: DryRunDiffEntry[];
+  categoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
+  typeCatalog?: Record<string, WorkItemTypeCatalogEntry>;
+  onMove: (localId: string, input: DiffTreeMoveInput) => void;
+}): React.ReactElement {
+  const byLocalId = useMemo(() => new Map(allEntries.map((e) => [e.localId, e])), [allEntries]);
+  const candidates = useMemo(() => validNewParentsFor(allEntries, byLocalId, entry.localId), [allEntries, byLocalId, entry.localId]);
+  const anyEpicExists = allEntries.some((e) => e.type === 'Epic');
+  const allowRoot = canBeRoot(entry.type, anyEpicExists);
+  const currentParent = entry.parentLocalId != null ? byLocalId.get(entry.parentLocalId) : undefined;
+  const realTypeName = categoryLabels?.[entry.type as 'Epic' | 'Feature' | 'Requirement'] ?? entry.type;
+
+  return (
+    <div className="flex items-center gap-2 rounded-sm border border-hairline bg-surface px-2.5 py-1.5 text-xs">
+      <span className="flex-none text-ink-3">Parent</span>
+      <span className="min-w-0 flex-1 truncate font-medium text-ink-1">
+        {currentParent
+          ? `${currentParent.customerId ? currentParent.customerId + ' ' : ''}${currentParent.title}`
+          : 'Top level (no parent)'}
+      </span>
+      <MoveToPicker
+        triggerLabel="Move to…"
+        triggerAriaLabel={`Move this ${realTypeName} to a different parent`}
+        popoverLabel={`Move this ${realTypeName} under…`}
+        candidates={candidates.map((c) => ({ localId: c.localId, type: c.type, title: c.title, customerId: c.customerId }))}
+        allowRoot={allowRoot}
+        rootLabel="Top level (no parent)"
+        categoryLabels={categoryLabels}
+        typeCatalog={typeCatalog}
+        disabled={candidates.length === 0 && !allowRoot}
+        onSelect={(parentLocalId) => onMove(entry.localId, { parentLocalId })}
+      />
+    </div>
   );
 }

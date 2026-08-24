@@ -22,6 +22,7 @@ from app.survey._response_schemas import (
     epic_feature_scores_schema,
     figure_table_mapping_schema,
     kb_relevance_schema,
+    leftover_assignment_schema,
     parent_summary_schema,
     root_grouping_schema,
     scores_schema,
@@ -1495,6 +1496,46 @@ class OrchestratorLlmClient:
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
             "responseSchema": root_grouping_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        response = self._post_chat(payload)
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
+    def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict:
+        """Backs the RootGroupingClient protocol's second, optional method
+        (llm_leveling.py) -- closes a real gap found in group_root_topics'
+        own commit history: a controlled test (v1 -> v2 prompt change)
+        confirmed the LOCAL model reliably misses a few titles that DO
+        belong in a group it already formed, even with v2's explicit
+        "re-check what you left out" instruction baked into the SAME
+        single, non-reasoning generation. That self-check is prose inside
+        one generation with nothing verifying it happened; this makes it a
+        real second decision instead, with the already-created groups as
+        actual input rather than something the model has to remember.
+
+        `leftover_titles_by_id`/`group_titles_by_id` are both id->title
+        maps, same "titles only, never full content" discipline as
+        group_root_topics -- this call still only proposes STRUCTURE.
+        Returns {'assignments': {leftover_id: group_id, ...}} -- a
+        leftover id absent from `assignments` stays exactly where it was
+        (still its own standalone root), the same "omission is a valid
+        answer" contract group_root_topics' own member_ids already
+        established. Invents zero new nodes: every assignment re-parents a
+        real root under a group that already exists and already traces to
+        real source content."""
+        system_prompt = load_prompt("assign_leftover_roots")
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps({"leftovers": leftover_titles_by_id, "groups": group_titles_by_id})},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": leftover_assignment_schema(),
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),

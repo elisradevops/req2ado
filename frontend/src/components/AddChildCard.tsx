@@ -3,6 +3,7 @@ import { Plus, X } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { AddChildForm } from './AddChildForm';
 import type { DryRunDiffEntry } from './DiffTree';
+import type { WorkItemTypeCatalogEntry } from '../api/ado';
 
 // Collapsed-by-default disclosure wrapper around AddChildForm -- adding a
 // child is an occasional, optional action, not a peer of the item's own
@@ -12,14 +13,25 @@ import type { DryRunDiffEntry } from './DiffTree';
 // button with its own text says exactly what it does, matching Edit's own
 // visual weight next to it. AddChildForm itself is untouched (still a real
 // component with its own tests) -- this only controls whether it's mounted.
+//
+// parentEntry is OPTIONAL -- this same card backs two call sites: "Add
+// child" from NodeDetailDialog (a real anchor entry) and the diff tree's
+// own toolbar "+ New item" (JobDetail.tsx, no anchor at all -- see
+// AddChildForm.tsx's top comment for why BASELINE mode is anchor-only).
 export function AddChildCard({
   parentEntry,
   jobMode,
+  allEntries,
+  categoryLabels,
+  typeCatalog,
   onAdd,
 }: {
-  parentEntry: DryRunDiffEntry;
+  parentEntry?: DryRunDiffEntry;
   jobMode: 'baseline' | 'survey';
-  onAdd: (input: { type: string; title: string; description: string }) => void;
+  allEntries: DryRunDiffEntry[];
+  categoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
+  typeCatalog?: Record<string, WorkItemTypeCatalogEntry>;
+  onAdd: (input: { parentLocalId: string | null; type: string; title: string; description: string }) => void;
 }): React.ReactElement | null {
   const [expanded, setExpanded] = useState(false);
 
@@ -27,11 +39,18 @@ export function AddChildCard({
   // add-child form for the PREVIOUS node showing (or worse, silently
   // retaining a stale draft) against the newly-selected one would be
   // confusing, same reasoning as NodeDetailPanel's own edit-mode reset.
+  // No-op for the toolbar call site (parentEntry undefined -> the
+  // dependency never changes).
   useEffect(() => {
     setExpanded(false);
-  }, [parentEntry.localId]);
+  }, [parentEntry?.localId]);
 
-  if (parentEntry.isManual) return null;
+  // CR: reparent -- BASELINE mode still can't add a child under a manual
+  // parent (its childType is always null, so no real type could ever
+  // match -- see jobs.service.ts's addDiffEntry doc comment); SURVEY mode
+  // now can, since the parent is freely changeable via AddChildForm's own
+  // picker. See AddChildForm.tsx's top comment for the full rationale.
+  if (parentEntry?.isManual && jobMode === 'baseline') return null;
 
   return (
     <div>
@@ -50,7 +69,7 @@ export function AddChildCard({
         ) : (
           <>
             <Plus className="h-3.5 w-3.5" />
-            Add direct child WI
+            {parentEntry ? 'Add direct child WI' : 'New item'}
           </>
         )}
       </Button>
@@ -62,6 +81,9 @@ export function AddChildCard({
           <AddChildForm
             parentEntry={parentEntry}
             jobMode={jobMode}
+            allEntries={allEntries}
+            categoryLabels={categoryLabels}
+            typeCatalog={typeCatalog}
             onAdd={(input) => {
               onAdd(input);
               setExpanded(false);

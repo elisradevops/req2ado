@@ -9,6 +9,7 @@ import {
   editDiffEntry,
   setDiffEntryExcluded,
   addDiffEntry,
+  moveDiffEntry,
   rescoreDiffEntry,
   rejectJob,
   cancelJob,
@@ -21,6 +22,7 @@ import {
   type DebugCaptureEntry,
   type JobEventRecord,
   type JobSummaryReport,
+  type MoveDiffEntryInput,
 } from '../api/jobs';
 import { subscribeToJobEvents, isValidNarrationEvent, type JobStage, type NarrationEvent } from '../api/events';
 import { loadRuntimeConfig } from '../api/config';
@@ -33,6 +35,8 @@ import { NarrationTicker } from '../components/NarrationTicker';
 import { tickerFor } from '../utils/narrationTicker';
 import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
 import { NodeDetailDialog } from '../components/NodeDetailDialog';
+import { AddChildCard } from '../components/AddChildCard';
+import { applyMoveOptimistically } from '../lib/applyMove';
 import { useToast } from '../components/ToastProvider';
 import type { KbCitation } from '../components/KbCitationChips';
 import type { TraceLinkFailure } from '../store/jobsStore';
@@ -99,6 +103,11 @@ export function JobDetail(): React.ReactElement {
   // (before/after the vision call) collapse to one entry, the second
   // overwriting the first once the real caption arrives.
   const [figureCaptionsByIndex, setFigureCaptionsByIndex] = useState<Record<number, string>>({});
+  // Task 5: the document's own figure name (parsed at ingest time, not a
+  // vision-narrated value) -- unlike figureCaptionsByIndex, this has no
+  // live-SSE counterpart (narration events never carry a name), so it is
+  // seeded ONLY from Job.figureDescriptions in the fetch effect below.
+  const [figureNamesByIndex, setFigureNamesByIndex] = useState<Record<number, string | null>>({});
   // No live-narration counterpart, unlike figureCaptionsByIndex above --
   // tables are never narrated during a run, so this is populated once from
   // Job.tableDescriptions in the fetch effect below and never merged with
@@ -147,6 +156,10 @@ export function JobDetail(): React.ReactElement {
   // derivation it depended on) is gone now that the same server endpoint
   // that already knows the area path resolves this itself.
   const [typeCatalog, setTypeCatalog] = useState<Record<string, WorkItemTypeCatalogEntry> | null>(null);
+  // Category ('Epic'/'Feature'/'Requirement') -> this project's real ADO
+  // type name, for AddChildForm's type picker LABELS only -- the value it
+  // submits always stays the category. See jobsStore.ts's own doc comment.
+  const [categoryLabels, setCategoryLabels] = useState<Record<'Epic' | 'Feature' | 'Requirement', string> | null>(null);
   // Confirm and Reject are mutually exclusive, job-terminating writes -- a
   // synchronous ref guard (state alone is too slow: clicks before the first
   // re-render read the stale false from closure) prevents a double-submit
@@ -186,7 +199,18 @@ export function JobDetail(): React.ReactElement {
         setFigureCaptionsByIndex((current) => {
           const seeded: Record<number, string> = {};
           for (const entry of job.figureDescriptions ?? []) {
-            seeded[entry.figureIndex] = entry.caption;
+            if (entry.caption) seeded[entry.figureIndex] = entry.caption;
+          }
+          return { ...seeded, ...current };
+        });
+        // Task 5: same seed-only, seeded-values-yield-to-current merge
+        // shape as captions above -- names have no live counterpart to
+        // race against, but the merge order is kept identical for
+        // consistency and in case a future live source is ever added.
+        setFigureNamesByIndex((current) => {
+          const seeded: Record<number, string | null> = {};
+          for (const entry of job.figureDescriptions ?? []) {
+            seeded[entry.figureIndex] = entry.name;
           }
           return { ...seeded, ...current };
         });
@@ -198,6 +222,7 @@ export function JobDetail(): React.ReactElement {
         setWorkItemState(job.state ?? null);
         setSourceFilename(job.originalFilename);
         setTypeCatalog(job.workItemTypeCatalog ?? null);
+        setCategoryLabels(job.workItemTypeCategoryLabels ?? null);
         setLoaded(true);
       })
       .catch(() => {
@@ -290,6 +315,7 @@ export function JobDetail(): React.ReactElement {
               // fallback icons/colors for the rest of the page's lifetime,
               // even though a real diff (and thus a real catalog) now exists.
               setTypeCatalog(job.workItemTypeCatalog ?? null);
+              setCategoryLabels(job.workItemTypeCategoryLabels ?? null);
               // Real bug (user-reported): warnings/kbCitations are written
               // to the Job row by this SAME pipeline.worker.ts update that
               // sets status/dryRunDiff/workItemTypeCatalog (all handled
@@ -432,17 +458,32 @@ export function JobDetail(): React.ReactElement {
   }, [eventHistory]);
 
   const figureDescriptions = useMemo<FigureDescriptionEntry[]>(
-    () =>
-      Object.entries(figureCaptionsByIndex)
+    () => {
+      // Task 5: UNION of both maps' keys, not just figureCaptionsByIndex's
+      // own -- a figure with a document-provided name but no real caption
+      // (vision disabled/failed) has an entry ONLY in figureNamesByIndex,
+      // and must still appear here (mirrors the orchestrator's own widened
+      // "caption OR name" filter in pipeline.worker.ts).
+      const figureIndexes = new Set([
+        ...Object.keys(figureCaptionsByIndex).map(Number),
+        ...Object.keys(figureNamesByIndex).map(Number),
+      ]);
+      return Array.from(figureIndexes)
         // figureId derivation matches ingestion's own established convention
         // exactly (main.py's _describe_figure_with_progress: `figure_id =
         // f"f{index - 1}"`, where `index` IS this same 1-based figureIndex)
         // -- every loader appends a figure immediately after describing it,
         // in the same order, so this lockstep relationship is guaranteed,
         // not a guess. See FigureDescriptionEntry.figureId's own doc comment.
-        .map(([figureIndex, caption]) => ({ figureIndex: Number(figureIndex), caption, figureId: `f${Number(figureIndex) - 1}` }))
-        .sort((a, b) => a.figureIndex - b.figureIndex),
-    [figureCaptionsByIndex],
+        .map((figureIndex) => ({
+          figureIndex,
+          caption: figureCaptionsByIndex[figureIndex] ?? null,
+          name: figureNamesByIndex[figureIndex] ?? null,
+          figureId: `f${figureIndex - 1}`,
+        }))
+        .sort((a, b) => a.figureIndex - b.figureIndex);
+    },
+    [figureCaptionsByIndex, figureNamesByIndex],
   );
 
   // localId -> caption lookup keyed by the SAME figureId scheme, derived
@@ -452,6 +493,14 @@ export function JobDetail(): React.ReactElement {
   // its own figureIndex/figureId translation.
   const captionByFigureId = useMemo(
     () => Object.fromEntries(figureDescriptions.map((d) => [d.figureId, d.caption])),
+    [figureDescriptions],
+  );
+
+  // Task 5: same figureId-keyed lookup shape as captionByFigureId, for the
+  // document's own figure name -- lets NodeDetailPanel/NodeDetailDialog
+  // show a real name instead of a bare "Figure N" label.
+  const nameByFigureId = useMemo(
+    () => Object.fromEntries(figureDescriptions.map((d) => [d.figureId, d.name])),
     [figureDescriptions],
   );
 
@@ -685,6 +734,39 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // Reparent/reorder -- guarded by isDiffMutatingRef same as
+  // handleToggleExclude (a move can be fired rapidly via drag, same
+  // re-entry risk as the exclude checkbox). Applies the move to local
+  // state IMMEDIATELY (applyMoveOptimistically mirrors the server's own
+  // splice algorithm) so a drag reads as instant instead of waiting on a
+  // full request/response round-trip -- real user feedback: the
+  // server-round-trip-only version felt laggy compared to the design
+  // mockup's pure-local-state drag, which had zero network latency by
+  // construction. Safe because DiffTree's own client-side canNest/cycle
+  // validation already ran before onMove was ever called -- the only ways
+  // the server can still reject (an already-linked entry, a stale
+  // mismatched anchor) are both rare and reverted below on failure, same
+  // as every other diff mutation's error handling. The server's response
+  // still overwrites local state on success -- this is a preview, not a
+  // second source of truth.
+  async function handleMoveEntry(localId: string, input: MoveDiffEntryInput): Promise<void> {
+    if (!id || isDiffMutatingRef.current) return;
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
+    const previousDiff = diff;
+    setDiff((current) => applyMoveOptimistically(current, localId, input));
+    try {
+      const result = await moveDiffEntry(id, localId, input);
+      setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+    } catch {
+      setDiff(previousDiff);
+      showToast('Failed to move — please try again.', 'error');
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
+    }
+  }
+
   async function handleSaveEdit(localId: string, patch: { title: string; description: string }): Promise<void> {
     if (!id) return;
     try {
@@ -759,7 +841,7 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
-  async function handleAddChild(parentLocalId: string, input: { type: string; title: string; description: string }): Promise<void> {
+  async function handleAddChild(parentLocalId: string | null, input: { type: string; title: string; description: string }): Promise<void> {
     if (!id) return;
     try {
       const result = await addDiffEntry(id, { parentLocalId, ...input });
@@ -1149,6 +1231,25 @@ export function JobDetail(): React.ReactElement {
           {tab === 'tree' ? (
             <div className="pt-3">
               <Card>
+                {/* DESIGN.md §11.5 -- the artifact's persistent "+ New item"
+                    toolbar button, previously missing entirely: creation
+                    only existed buried inside an existing node's own "Add
+                    child" dialog, with no way to add a first-class item with
+                    no anchor at all (e.g. a brand-new top-level Epic). Reuses
+                    AddChildCard/AddChildForm with no parentEntry -- BASELINE
+                    mode has no anchor-independent type model (see
+                    AddChildForm.tsx's own doc comment), so this is SURVEY-only. */}
+                {mode === 'survey' && status === 'diff_ready' && (
+                  <div className="border-b border-hairline p-3">
+                    <AddChildCard
+                      jobMode="survey"
+                      allEntries={diff}
+                      categoryLabels={categoryLabels ?? undefined}
+                      typeCatalog={typeCatalog ?? undefined}
+                      onAdd={(input) => handleAddChild(input.parentLocalId, { type: input.type, title: input.title, description: input.description })}
+                    />
+                  </div>
+                )}
                 {showFilterBar && (
                   <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
                     <TextField
@@ -1187,8 +1288,11 @@ export function JobDetail(): React.ReactElement {
                   filterText={filterText}
                   onToggleExclude={handleToggleExclude}
                   typeCatalog={typeCatalog ?? undefined}
+                  categoryLabels={categoryLabels ?? undefined}
                   orgUrl={orgUrl}
                   project={teamProject}
+                  onMove={handleMoveEntry}
+                  canMove={status === 'diff_ready'}
                 />
               </Card>
               <NodeDetailDialog
@@ -1204,16 +1308,19 @@ export function JobDetail(): React.ReactElement {
                 diffByLocalId={diffByLocalId}
                 descendantCountsByLocalId={descendantCountsByLocalId}
                 captionByFigureId={captionByFigureId}
+                nameByFigureId={nameByFigureId}
                 captionByTableId={captionByTableId}
                 onSave={handleSaveEdit}
                 onRescore={handleRescore}
                 onAttachFigure={handleAttachFigure}
                 onRetryTraceLink={handleRetryTraceLink}
                 onAddChild={handleAddChild}
+                onMove={handleMoveEntry}
                 onNavigate={handleNavigateDialog}
                 hasPrev={hasPrevEntry}
                 hasNext={hasNextEntry}
                 typeCatalog={typeCatalog ?? undefined}
+                categoryLabels={categoryLabels ?? undefined}
               />
             </div>
           ) : (

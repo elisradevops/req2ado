@@ -18,6 +18,54 @@ import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import { normalizeAdoStoredHtml, toAdoDescriptionHtml } from './description-html';
 import type { JobEventsPublisher } from './job-events.publisher';
+import { canNest, canBeRoot } from './canNest';
+
+// Task 6: mimeType -> file extension for the ADO attachment filename below
+// -- JobFigureFile.mimeType is whatever ingestion's own image-sniffing
+// reported (see main.py's _sniff_image_mime_type / _rasterize_for_vision),
+// so this must cover every raster format ingestion can actually produce,
+// not just PNG. Falls back to 'png' for an unrecognized mimeType, matching
+// the extension every figure was hardcoded to before this task -- an
+// unrecognized type is no worse off than the old behavior.
+const FIGURE_MIME_TO_EXTENSION: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+  'image/tiff': 'tiff',
+};
+
+// Builds a human-readable ADO attachment filename from a figure's own name
+// (Task 5), sanitized to characters ADO accepts, with the real extension
+// derived from the figure's stored mimeType -- replaces the previous
+// unconditional `${figureId}.png` (meaningless to a reviewer in ADO's own
+// attachment list, and silently wrong whenever mimeType wasn't actually
+// PNG). Falls back to `${figureId}.{ext}` when the figure has no name, so
+// an unnamed figure's filename is unchanged from before this task (still
+// gets the CORRECT extension, though -- that half of the fix applies
+// unconditionally). The human figure number in the filename is derived
+// from figureId's own numeric suffix ("f11" -> 12), the same 0-based-id/
+// 1-based-index relationship FigureDescriptionEntry.figureId's own doc
+// comment establishes -- not a second, independently-computed index that
+// could drift from it.
+export function buildFigureAttachmentFilename(figureId: string, name: string | null | undefined, mimeType: string): string {
+  const extension = FIGURE_MIME_TO_EXTENSION[mimeType] ?? 'png';
+  const fallback = `${figureId}.${extension}`;
+  if (!name) return fallback;
+  const sanitized = name
+    .trim()
+    .replace(/[^a-zA-Z0-9\- ]+/g, '') // drop anything not alphanumeric/dash/space
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80);
+  if (!sanitized) return fallback;
+  const figureNumberMatch = /^f(\d+)$/.exec(figureId);
+  const figureNumber = figureNumberMatch ? Number(figureNumberMatch[1]) + 1 : null;
+  return figureNumber !== null ? `Figure-${figureNumber}-${sanitized}.${extension}` : `${sanitized}.${extension}`;
+}
 
 export interface SubmitJobInput {
   areaPath: string;
@@ -340,10 +388,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // where that legacy shape gets reclassified into a WarningRecord.
     warnings: (WarningRecord | string)[];
     kbCitations: unknown;
-    // {figureIndex, caption}[] -- see Job.figureDescriptions' schema.prisma
-    // doc comment. Defaults to [] for a historical job (null column), same
-    // convention as warnings above.
-    figureDescriptions: { figureIndex: number; caption: string }[];
+    // {figureIndex, figureId, name, caption}[] -- see Job.figureDescriptions'
+    // schema.prisma doc comment. Defaults to [] for a historical job (null
+    // column), same convention as warnings above. `name` is the document's
+    // own figure title (Task 5); a historical job's entries predate this
+    // field and will simply have it undefined, read as absent by callers.
+    figureDescriptions: { figureIndex: number; figureId: string; name: string | null; caption: string | null }[];
     // {tableId, caption}[] -- see Job.tableDescriptions' schema.prisma doc
     // comment. Defaults to [] for a historical job (null column), same
     // convention as figureDescriptions above.
@@ -384,7 +434,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       dryRunDiff: job.dryRunDiff,
       warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [],
       kbCitations: job.kbCitations,
-      figureDescriptions: (job.figureDescriptions as { figureIndex: number; caption: string }[] | null) ?? [],
+      figureDescriptions:
+        (job.figureDescriptions as { figureIndex: number; figureId: string; name: string | null; caption: string | null }[] | null) ?? [],
       tableDescriptions: (job.tableDescriptions as { tableId: string; caption: string }[] | null) ?? [],
       excludedFigureIds: (job.excludedFigureIds as string[] | null) ?? [],
       excludedTableIds: (job.excludedTableIds as string[] | null) ?? [],
@@ -588,7 +639,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
   async addDiffEntry(
     id: string,
-    input: { parentLocalId: string; type: string; title: string; description: string },
+    input: { parentLocalId: string | null; type: string; title: string; description: string },
   ): Promise<DryRunDiffEntry[]> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) throw new NotFoundException(`Job ${id} not found`);
@@ -596,19 +647,55 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       throw new ConflictException(`Job ${id} is not in a diff-editable state`);
     }
     const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
-    const parentEntry = diff.find((entry) => entry.localId === input.parentLocalId);
-    if (!parentEntry) throw new NotFoundException(`Diff entry ${input.parentLocalId} not found`);
-    if (parentEntry.isManual) {
-      throw new BadRequestException('cannot add a child under a manually-added entry');
+
+    let parentEntry: DryRunDiffEntry | undefined;
+    if (input.parentLocalId !== null) {
+      parentEntry = diff.find((entry) => entry.localId === input.parentLocalId);
+      if (!parentEntry) throw new NotFoundException(`Diff entry ${input.parentLocalId} not found`);
     }
+
     if (job.mode === 'baseline') {
+      // BASELINE has no root-creation concept -- every BASELINE item's type
+      // is inherited from a real parent's own childType; there is no
+      // top-level type to infer without one, so a null parentLocalId is
+      // simply not a valid request here (the frontend's AddChildForm never
+      // offers root placement in BASELINE mode -- see its own doc comment).
+      if (!parentEntry) {
+        throw new BadRequestException('a BASELINE job requires an existing parent to add a child under');
+      }
+      // A manually-added entry's childType is ALWAYS null (never recomputed
+      // by ingestion -- see the newEntry literal below), so in BASELINE mode
+      // the childType-equality check just below can never be satisfied by
+      // any real type string. Without this explicit case the caller would
+      // only ever see "does not match the required child type 'null'",
+      // which reads as a caller bug rather than what it actually is: a
+      // manually-added parent's allowed child type is fundamentally
+      // undetermined in a BASELINE job (there's no per-node inference to
+      // read a childType from). SURVEY mode has no such gap -- its branch
+      // below validates by category via canNest, which manual parents
+      // participate in exactly like any other node.
+      if (parentEntry.isManual) {
+        throw new BadRequestException('cannot add a child under a manually-added entry in a BASELINE job');
+      }
       if (input.type !== parentEntry.childType) {
         throw new BadRequestException(`type '${input.type}' does not match the required child type '${parentEntry.childType}'`);
       }
+    } else if (parentEntry) {
+      // CR: reparent -- was a flat `['Epic','Feature','Requirement'].includes()`
+      // membership check with no relationship to the parent's type at all,
+      // e.g. a SURVEY job could add an Epic as a child of a Requirement. Now
+      // routes through the same canNest tier rule the move endpoint uses, so
+      // this path and moveDiffEntry share one definition of "valid parent."
+      if (!canNest(input.type, parentEntry.type)) {
+        throw new BadRequestException(`a ${input.type} cannot be added under a ${parentEntry.type}`);
+      }
     } else {
-      const validTypes = ['Epic', 'Feature', 'Requirement'];
-      if (!validTypes.includes(input.type)) {
-        throw new BadRequestException(`type must be one of ${validTypes.join(', ')}`);
+      // CR: reparent -- root creation in SURVEY mode, mirroring
+      // moveDiffEntry's own canBeRoot check (root_regrouping.py's rule: the
+      // top category, or a Feature when the document has no Epic at all).
+      const anyEpicExists = diff.some((entry) => entry.type === 'Epic');
+      if (!canBeRoot(input.type, anyEpicExists)) {
+        throw new BadRequestException(`a ${input.type} cannot be a top-level item here`);
       }
     }
     const sourceHash = createHash('sha256').update(input.description).digest('hex');
@@ -632,6 +719,126 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const updated = [...diff, newEntry];
     await this.prisma.job.update({ where: { id }, data: { dryRunDiff: updated as any } });
     return updated;
+  }
+
+  // Reparent (parentLocalId alone) and/or reorder among siblings
+  // (anchorLocalId + placement, parentLocalId unchanged for a pure reorder).
+  // Every check below is local to dryRunDiff + one Prisma read -- no MCP
+  // client call, so this endpoint has no network round-trip and no 500
+  // surface. See DESIGN.md §11.5 for the UI this backs.
+  async moveDiffEntry(
+    id: string,
+    localId: string,
+    input: { parentLocalId: string | null; anchorLocalId?: string | null; placement?: 'before' | 'after' },
+  ): Promise<DryRunDiffEntry[]> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException(`Job ${id} not found`);
+    if (job.status !== 'diff_ready') {
+      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+    }
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const entry = diff.find((e) => e.localId === localId);
+    if (!entry) throw new NotFoundException(`Diff entry ${localId} not found`);
+    const newParent = input.parentLocalId !== null ? diff.find((e) => e.localId === input.parentLocalId) : null;
+    if (input.parentLocalId !== null && !newParent) {
+      throw new NotFoundException(`Diff entry ${input.parentLocalId} not found`);
+    }
+
+    // Two distinct rules here, not one -- audited end-to-end (see DESIGN.md
+    // §11.5's "already in ADO" badge) to confirm this is the complete
+    // policy, not just what happened to be reachable:
+    //
+    // 1. REJECT a move that would be CONTRADICTED by a write this job
+    //    already made. `mapping.linked` means a prior confirm attempt on
+    //    THIS job already ran linkParentChild for this localId under its
+    //    OLD parent -- linkParentChild only ever does op:'add' on
+    //    /relations/-, there is no remove path anywhere in the MCP server,
+    //    so a new parentLocalId here could never actually reach ADO on a
+    //    resumed confirm. Reject rather than let the tree silently diverge
+    //    from what confirm() will really do.
+    // 2. ALLOW, and label in the UI, a move that can never reach ADO at
+    //    all. A 'reuse'/'dedup_skip' entry (existingAdoId set) has no
+    //    CreatedItemMapping row -- THIS job never created or linked it --
+    //    so `mapping` is null and this check is a no-op for it. That's
+    //    intentional, not an oversight: confirm()'s own toLink filter
+    //    (this same file) unconditionally excludes both actions from
+    //    linkParentChild -- ADO enforces at most one Parent relation per
+    //    work item (confirmed live: re-adding one 400s with TF401349), and
+    //    a matched item's real position is not this job's to re-assert.
+    //    The move is still allowed to persist in dryRunDiff because it's a
+    //    legitimate, real thing for a reviewer to want: reorganizing this
+    //    REVIEW tree for their own reading, independent of whether ADO's
+    //    real hierarchy moves with it. See DiffTree.tsx's badge for the one
+    //    thing this move DOES still affect for real: a brand-new item
+    //    placed as this entry's child links for real, on confirm.
+    const mapping = await this.prisma.createdItemMapping.findUnique({
+      where: { jobId_localId: { jobId: id, localId } },
+    });
+    if (mapping?.linked) {
+      throw new ConflictException(`Diff entry ${localId} is already linked in Azure DevOps and cannot be reparented`);
+    }
+
+    // Cycle guard -- confirm()'s own isExcluded() walks parentLocalId
+    // ancestry with no cycle check and would infinite-loop in production on
+    // a cyclic tree; this is the one place a cycle could be introduced.
+    if (input.parentLocalId !== null) {
+      let cursor: DryRunDiffEntry | undefined = newParent ?? undefined;
+      while (cursor) {
+        if (cursor.localId === localId) {
+          throw new BadRequestException('cannot move an item inside its own descendant');
+        }
+        cursor = cursor.parentLocalId ? diff.find((e) => e.localId === cursor!.parentLocalId) : undefined;
+      }
+    }
+
+    // Tier rule -- same-tier (e.g. Epic under Epic) is intentionally
+    // ALLOWED here (see DESIGN.md §11.5's `same tier` badge) even though
+    // it's flagged client-side; only an actual tier violation is rejected.
+    if (newParent) {
+      if (!canNest(entry.type, newParent.type)) {
+        throw new BadRequestException(`a ${entry.type} cannot be nested under a ${newParent.type}`);
+      }
+    } else {
+      const anyEpicExists = diff.some((e) => e.type === 'Epic');
+      if (!canBeRoot(entry.type, anyEpicExists)) {
+        throw new BadRequestException(`a ${entry.type} cannot be a top-level item here`);
+      }
+    }
+
+    const fromIndex = diff.indexOf(entry);
+    diff.splice(fromIndex, 1);
+    entry.parentLocalId = input.parentLocalId;
+
+    let insertAt: number;
+    if (input.anchorLocalId) {
+      const anchorIndex = diff.findIndex((e) => e.localId === input.anchorLocalId);
+      if (anchorIndex === -1) throw new NotFoundException(`Diff entry ${input.anchorLocalId} not found`);
+      // CR: reparent review fix -- the anchor must actually be a sibling
+      // under the requested parentLocalId. DiffTree.tsx always supplies a
+      // real sibling as the anchor, so this wasn't reachable from the
+      // shipped UI, but nothing previously stopped a malformed/stale
+      // request from splicing an entry into an arbitrary array position
+      // relative to unrelated nodes (harmless to tree structure -- render
+      // groups strictly by parentLocalId -- but a confusing sibling order
+      // for the true siblings).
+      if (diff[anchorIndex].parentLocalId !== input.parentLocalId) {
+        throw new BadRequestException(`Diff entry ${input.anchorLocalId} is not a sibling under the requested parent`);
+      }
+      insertAt = input.placement === 'before' ? anchorIndex : anchorIndex + 1;
+    } else {
+      // No explicit sibling anchor -- land after the new parent's last
+      // existing child (or at the end, for a root move) rather than ahead
+      // of siblings that were already there.
+      let lastSiblingIndex = -1;
+      diff.forEach((e, i) => {
+        if (e.parentLocalId === input.parentLocalId) lastSiblingIndex = i;
+      });
+      insertAt = lastSiblingIndex === -1 ? diff.length : lastSiblingIndex + 1;
+    }
+    diff.splice(insertAt, 0, entry);
+
+    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
+    return diff;
   }
 
   // Mirrors frontend/src/pages/JobStatus.tsx's needsReview() thresholds --
@@ -697,7 +904,17 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     }
 
     const adoIdByLocalId = new Map(mappings.map((m) => [m.localId, m.adoWorkItemId]));
-    const diff = (job.dryRunDiff as { localId: string; parentLocalId: string | null; title: string; description: string }[] | null) ?? [];
+    const diff =
+      (job.dryRunDiff as
+        | {
+            localId: string;
+            parentLocalId: string | null;
+            title: string;
+            description: string;
+            action: 'create' | 'reuse' | 'dedup_skip';
+            existingAdoId: number | null;
+          }[]
+        | null) ?? [];
     const diffByLocalId = new Map(diff.map((entry) => [entry.localId, entry]));
 
     const items = await this.mcpClient.getWorkItemsBatch(
@@ -742,7 +959,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           field: 'System.Description', expected: expectedDescriptionHtml, actual: item.fields['System.Description'] ?? '',
         });
       }
-      const expectedParentAdoId = entry.parentLocalId !== null ? (adoIdByLocalId.get(entry.parentLocalId) ?? null) : null;
+      // Same two-source resolution attachFigureToAdo's own doc comment
+      // spells out: a reuse/dedup_skip parent's real ADO id is known
+      // directly from existingAdoId (this job never created it, so it has
+      // no CreatedItemMapping row at all) -- adoIdByLocalId alone only
+      // covers a 'create' parent. Real bug this fixes: every created child
+      // of a matched parent previously computed expectedParentAdoId as
+      // null (a miss on adoIdByLocalId, silently defaulted), false-flagging
+      // a correctly-written item as a parentId mismatch on every confirm.
+      const parentEntry = entry.parentLocalId !== null ? diffByLocalId.get(entry.parentLocalId) : undefined;
+      const expectedParentAdoId =
+        entry.parentLocalId === null
+          ? null
+          : parentEntry && (parentEntry.action === 'reuse' || parentEntry.action === 'dedup_skip') && parentEntry.existingAdoId !== null
+            ? parentEntry.existingAdoId
+            : (adoIdByLocalId.get(entry.parentLocalId) ?? null);
       if (expectedParentAdoId !== item.parentId) {
         mismatches.push({
           localId: mapping.localId, adoWorkItemId: mapping.adoWorkItemId,
@@ -919,9 +1150,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException(`Figure ${figureId} not found for job ${jobId}`);
     }
 
+    // Task 6: figure's own name (Task 5), looked up from the SAME
+    // figureDescriptions array getJob exposes to the frontend -- job was
+    // already loaded above, no second query needed.
+    const figureDescriptions =
+      (job.figureDescriptions as { figureId: string; name: string | null }[] | null) ?? [];
+    const figureName = figureDescriptions.find((d) => d.figureId === figureId)?.name ?? null;
+
     await this.mcpClient.uploadAttachment(
       adoId,
-      `${figureId}.png`,
+      buildFigureAttachmentFilename(figureId, figureName, figureFile.mimeType),
       Buffer.from(figureFile.bytes).toString('base64'),
       figureFile.mimeType,
       credential,
@@ -1621,6 +1859,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         const figureFiles = await this.prisma.jobFigureFile.findMany({ where: { jobId: id } });
         if (figureFiles.length > 0) {
           const figureFileByFigureId = new Map(figureFiles.map((f) => [f.figureId, f]));
+          // Task 6: figureId -> name, built once from the SAME
+          // figureDescriptions array getJob exposes -- `job` is already
+          // in scope for this whole confirm() call, no second query.
+          const figureNameByFigureId = new Map(
+            ((job.figureDescriptions as { figureId: string; name: string | null }[] | null) ?? []).map((d) => [
+              d.figureId,
+              d.name,
+            ]),
+          );
           // Grouped by adoId, one group per work item -- concurrency runs
           // ACROSS groups (different work items in flight at once), never
           // WITHIN a group. Real, confirmed bug this fixes: two
@@ -1656,7 +1903,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
               try {
                 await this.mcpClient.uploadAttachment(
                   adoId,
-                  `${figureId}.png`,
+                  buildFigureAttachmentFilename(figureId, figureNameByFigureId.get(figureId) ?? null, figureFile.mimeType),
                   Buffer.from(figureFile.bytes).toString('base64'),
                   figureFile.mimeType,
                   credential,

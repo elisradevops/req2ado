@@ -251,16 +251,56 @@ def test_load_pdf_suppresses_a_running_header_image_repeated_on_every_page() -> 
     assert len(figure_blocks) == 1
 
 
-def test_load_pdf_does_not_suppress_a_real_figure_that_happens_to_repeat_on_a_few_pages() -> None:
+def test_load_pdf_suppresses_the_same_recurring_image_drawn_at_different_margin_positions() -> None:
+    # Real gap this closes: direct geometry probe against cubeadcs_icd.pdf
+    # found a single running-header logo drawn at three slightly different
+    # (x0, top) coordinates across the document. Keying recurrence
+    # detection on (hash, x0, top) split it into three under-threshold
+    # groups instead of one, so it survived as 13 separate "figures"
+    # instead of being suppressed. Here the same emblem is drawn at
+    # position A on 5/10 pages and position B on 4/10 pages -- neither
+    # individually clears the 60% recurrence threshold, but the combined
+    # 9/10 does. Content-hash-only keying must suppress all 9 placements.
+    doc = load_pdf(str(FIXTURES / "repeating_header_image_multi_position.pdf"))
+
+    assert len(doc.figures) == 0
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 0
+
+
+def test_load_pdf_boilerplate_gates_stay_independent_but_survivors_dedupe_by_content() -> None:
     # Over-merge safety net (direct analogue of
     # test_load_pdf_does_not_merge_a_genuinely_narrow_real_column): proves
-    # the suppression fix's two gates -- recurrence fraction and margin
-    # position -- are each independently required. An image repeated on
-    # only 2/10 pages (below the recurrence fraction) AND a distinct image
-    # repeated on 8/10 pages but placed in the page BODY (outside the
-    # margin band) must both survive.
+    # the boilerplate suppression fix's two gates -- recurrence fraction
+    # and margin position -- are each independently required, and are
+    # unaffected by the separate content-dedup gate (Gap C, see
+    # seen_figure_hashes). An image repeated on only 2/10 pages (below the
+    # recurrence fraction) AND a distinct image repeated on 8/10 pages but
+    # placed in the page BODY (outside the margin band) must both survive
+    # SUPPRESSION -- neither is a running header/footer artifact. But
+    # within each group the repeats are byte-identical, so content dedup
+    # (a separate, later gate) still collapses each group to its first
+    # occurrence: 2 distinct images -> 2 figures, not 10. This narrows the
+    # old guarantee (nothing suppressed -> 10 figures) to the current one
+    # (nothing suppressed as boilerplate -> repeats collapse by content).
     doc = load_pdf(str(FIXTURES / "repeating_header_image_safety_net.pdf"))
-    assert len(doc.figures) == 10
+    assert len(doc.figures) == 2
+
+
+def test_load_pdf_dedupes_a_body_figure_reused_on_a_few_pages_by_content() -> None:
+    # Gap C: neither boilerplate gate can ever catch this case -- the
+    # reused diagram appears on only 3/6 pages (below
+    # _BOILERPLATE_RECURRENCE_FRACTION) and is placed in the page BODY, not
+    # the margin. Confirmed live on cubeadcs_icd.pdf: a 215x212 graphic
+    # recurred on 10/53 pages (19%) with only 4/10 placements in the
+    # margin band -- invisible to both existing gates, over-counted as 10
+    # figures instead of 1. This fixture's diagram repeats on pages 0/2/4;
+    # pages 1/3/5 each carry their own distinct image, so the correct
+    # result is 4 figures (1 reused + 3 unique) from 6 raw placements, not
+    # 6 -- proving dedup collapses true repeats without merging distinct
+    # images that merely share a page role.
+    doc = load_pdf(str(FIXTURES / "reused_body_diagram.pdf"))
+    assert len(doc.figures) == 4
 
 
 def test_load_pdf_keeps_figure_ids_contiguous_when_a_repeating_image_is_suppressed() -> None:
@@ -1687,3 +1727,66 @@ def test_load_pdf_does_not_merge_a_genuinely_narrow_real_column() -> None:
     # own cell -- proof they weren't swallowed into the "Value" column.
     assert cells[1][1] is not None and cells[1][1].text.strip() == "Y"
     assert cells[2][1] is not None and cells[2][1].text.strip() == "N"
+
+
+def _build_pdf_with_image_and_line(tmp_dir: Path, image_y: float, image_height: float, line_y: float | None, line_text: str | None) -> Path:
+    """Draws a single 150x150 image at (100, image_y) and, if `line_text` is
+    given, one text line at (100, line_y) -- low-level canvas positioning
+    (not platypus flow) so the vertical gap between image bottom and
+    caption top is exact and known, the same technique
+    build_repeating_header_image_fixture.py already uses for margin-band
+    control. Geometry confirmed empirically: an image at y=400 height=100
+    plus a line at y=375 produces pdfplumber bbox bottom=392.0 and line
+    top=407.484 -- a ~15.5pt gap, comfortably inside
+    _FIGURE_CAPTION_MAX_GAP_POINTS (40pt)."""
+    from PIL import Image as PILImage
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas as rl_canvas
+
+    image_path = tmp_dir / "figure.png"
+    PILImage.new("RGB", (150, 150), color="blue").save(image_path)
+    out_path = tmp_dir / "figure_with_line.pdf"
+    c = rl_canvas.Canvas(str(out_path), pagesize=letter)
+    c.drawImage(str(image_path), 100, image_y, width=150, height=image_height)
+    if line_text is not None:
+        c.drawString(100, line_y, line_text)
+    c.showPage()
+    c.save()
+    return out_path
+
+
+def test_load_pdf_names_a_figure_from_its_own_caption_line(tmp_path: Path) -> None:
+    # Task 4: the document's own "Figure N: Title" line, sitting just below
+    # the image, becomes Figure.name -- verified against real geometry
+    # measured on cubeadcs_icd.pdf (image->caption gaps consistently ~16pt).
+    out_path = _build_pdf_with_image_and_line(tmp_path, image_y=400, image_height=100, line_y=375, line_text="Figure 1: Panel Layout Diagram")
+    doc = load_pdf(str(out_path))
+    assert len(doc.figures) == 1
+    assert doc.figures[0].name == "Panel Layout Diagram"
+    # Linked, not duplicated -- the caption line is not ALSO its own
+    # standalone paragraph block, same contract as table captions.
+    paragraph_texts = [b.text for b in doc.blocks if b.kind == BlockKind.PARAGRAPH]
+    assert not any("Figure 1" in t for t in paragraph_texts)
+
+
+def test_load_pdf_does_not_treat_a_toc_dot_leader_line_as_a_figure_caption(tmp_path: Path) -> None:
+    # Task 4: a table-of-contents entry has the same "Figure N: Title"
+    # shape but trails dot leaders and a page number -- confirmed live,
+    # cubeadcs_icd.pdf's own TOC page contributes 41 such lines. Must never
+    # be read as this image's real name.
+    out_path = _build_pdf_with_image_and_line(
+        tmp_path, image_y=400, image_height=100, line_y=375,
+        line_text="Figure 1: Panel Layout Diagram .................... 12",
+    )
+    doc = load_pdf(str(out_path))
+    assert len(doc.figures) == 1
+    assert doc.figures[0].name is None
+
+
+def test_load_pdf_leaves_figure_name_none_when_no_caption_line_exists(tmp_path: Path) -> None:
+    # Task 4: an image with nothing caption-shaped nearby keeps name=None
+    # -- the document's own naming is opportunistic, not assumed present.
+    out_path = _build_pdf_with_image_and_line(tmp_path, image_y=400, image_height=100, line_y=None, line_text=None)
+    doc = load_pdf(str(out_path))
+    assert len(doc.figures) == 1
+    assert doc.figures[0].name is None

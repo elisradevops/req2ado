@@ -303,6 +303,13 @@ def _describe_figure(
     # so every existing 1-arg caller -- every loader passing this function
     # itself as its describe_figure callback (docx_loader.py etc., and the
     # 3 KB-ingestion routes below) -- stays byte-identical.
+    #
+    # Task 7 reuses this SAME dict for a second, independent key --
+    # caption_status_out["title"] -- rather than adding a new parameter:
+    # the vision model's short-title fallback for Figure.name, set only
+    # when the figure is significant AND the model actually produced one.
+    # Callers that don't care about it (every 1-arg caller above) simply
+    # never read that key; this function never requires it to be present.
     caption_status_out: dict[str, str] | None = None,
 ) -> str | None:
     # SCOPE NOTE (KB ingestion): this function is shared by SURVEY-mode
@@ -350,6 +357,11 @@ def _describe_figure(
                 # garbled entry) must still self-heal on the very next
                 # read, not silently keep serving broken text for the
                 # rest of its TTL.
+                # Task 7: `.get`, not `["title"]` -- a cache entry written
+                # before this field existed simply has no key, not a
+                # malformed one; must not raise/miss the cache over it.
+                if caption_status_out is not None and cached_obj.get("title"):
+                    caption_status_out["title"] = cached_obj["title"]
                 return _strip_degenerate_continuation(cached_obj["description"])
             except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
                 pass  # Treat an unparseable cache entry as a miss -- fall through to a live vision call.
@@ -374,13 +386,17 @@ def _describe_figure(
     try:
         _narration_redis.set(
             cache_key,
-            json.dumps({"significant": result.significant, "description": result.description}),
+            json.dumps({"significant": result.significant, "description": result.description, "title": result.title}),
             ex=_FIGURE_CAPTION_CACHE_TTL_SECONDS,
         )
     except Exception:
         logger.warning("Figure-caption cache write failed -- caption still returned, just not cached", exc_info=True)
     if not result.significant and caption_status_out is not None:
         caption_status_out["status"] = "insignificant"
+    # Task 7: only for a significant figure -- an insignificant one gets no
+    # caption AND no fallback name from either source, same as before.
+    if result.significant and result.title and caption_status_out is not None:
+        caption_status_out["title"] = result.title
     return result.description if result.significant else None
 
 
@@ -741,6 +757,12 @@ async def ingest(
     # None default) whenever vision_active is False, matching sub-fix (i)'s
     # "never disambiguate insignificant/failed when vision never ran" rule.
     figure_caption_status: dict[str, str] = {}
+    # Task 7: figure_id -> the vision model's own short title, same
+    # side-channel/patch-after-doc-exists shape as figure_caption_status
+    # above. Only ever used as a FALLBACK once `doc` exists (see the patch
+    # loop below) -- a figure the document itself already named via Task 4
+    # keeps that name unconditionally.
+    figure_title: dict[str, str] = {}
     if vision_active:
         # Closed over per-request (not module-level) -- figure_counter must
         # start at 0 for every new /ingest call, not accumulate across
@@ -776,6 +798,8 @@ async def ingest(
             figure_id = f"f{index - 1}"
             if "status" in caption_status_out:
                 figure_caption_status[figure_id] = caption_status_out["status"]
+            if "title" in caption_status_out:
+                figure_title[figure_id] = caption_status_out["title"]
             if narration_publisher is not None:
                 # caption is None exactly when the vision model judged this
                 # figure non-significant (or vision failed) -- both cases
@@ -900,12 +924,21 @@ async def ingest(
     # stays at its None default for every figure in that case (sub-fix (i)'s
     # tree-level warning covers that case instead -- see main.py's /level
     # route and _append_vision_disabled_warning below).
-    if figure_caption_status:
+    if figure_caption_status or figure_title:
         _figures_by_id = {figure.id: figure for figure in doc.figures}
         for _figure_id, _status in figure_caption_status.items():
             _figure = _figures_by_id.get(_figure_id)
             if _figure is not None:
                 _figure.caption_status = _status
+        # Task 7: ONLY a fallback -- applied when the loader itself found no
+        # document caption for this figure (Task 4's
+        # _FIGURE_CAPTION_PATTERN, PDF-only today). A figure the document
+        # already named keeps that name unconditionally; the vision title
+        # never overrides it.
+        for _figure_id, _title in figure_title.items():
+            _figure = _figures_by_id.get(_figure_id)
+            if _figure is not None and _figure.name is None:
+                _figure.name = _title
 
     if narration_publisher is not None:
         narration_publisher.publish(

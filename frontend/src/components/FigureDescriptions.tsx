@@ -6,7 +6,16 @@ import { FigureImage } from './FigureImage';
 
 export interface FigureDescriptionEntry {
   figureIndex: number;
-  caption: string;
+  // Task 5: null for a figure the widened orchestrator filter now includes
+  // because it has a NAME but no real caption (vision disabled/failed) --
+  // "caption OR name" is the entry contract now, not "always has a
+  // caption". See pipeline.worker.ts's own figureDescriptions comment.
+  caption: string | null;
+  // The document's own short title for this figure (Task 5) -- parsed
+  // from a "Figure N: Title" caption line, or an LLM-generated fallback.
+  // Distinct from `caption`, which is the vision model's prose
+  // description. Null when neither source produced one.
+  name: string | null;
   // Stable JobFigureFile key ("f0", "f1", ...) for this figure -- lets this
   // panel actually render the figure's image (FigureImage), not just its
   // text caption. figureIndex alone (a 1-based display ordinal) isn't a
@@ -64,7 +73,7 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
                     previously this panel was caption-only, so a diagram
                     referenced only as "Figure: This diagram illustrates..."
                     had no way to be seen, only read about. */}
-                <FigureImage jobId={jobId} figureId={item.figureId} active={hasExpandedOnce} alt={`Figure ${position + 1}`} />
+                <FigureImage jobId={jobId} figureId={item.figureId} active={hasExpandedOnce} alt={item.name || `Figure ${position + 1}`} />
                 {/* Final whole-branch review finding: [&_p]:!text-ink-2 targets
                     Markdown's own rendered <p> directly (an !important class
                     on this ancestor div never wins against the <p>'s own
@@ -95,8 +104,16 @@ export function FigureDescriptions({ jobId, items }: { jobId: string; items: Fig
                       lookup and NodeDetailPanel's own figureId-keyed
                       captionByFigureId map, which must still key by the real
                       id. */}
-                  <span className="font-medium text-ink-1">Figure {position + 1}: </span>
-                  <Markdown>{item.caption}</Markdown>
+                  {/* Task 5: the document's own name replaces the bare
+                      "Figure N" ordinal label when present -- falls back to
+                      the same position-based label as before when the
+                      document provided no caption line of its own (and no
+                      LLM title fallback fired either). */}
+                  <span className="font-medium text-ink-1">{item.name || `Figure ${position + 1}`}: </span>
+                  {/* A name-only entry (Task 5's widened filter) has no
+                      caption text to render -- show just the name label
+                      above, no empty Markdown block underneath it. */}
+                  {item.caption != null && <Markdown>{item.caption}</Markdown>}
                 </div>
               </li>
             ))}

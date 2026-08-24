@@ -104,6 +104,24 @@ def test_group_root_topics_prompt_defaults_grouping_and_requires_a_recheck() -> 
     assert "re-read every title you have NOT placed in any group" in result
 
 
+def test_assign_leftover_roots_prompt_loads() -> None:
+    result = load_prompt("assign_leftover_roots")
+    assert len(result) > 0
+
+
+def test_assign_leftover_roots_prompt_allows_omission_and_forbids_new_groups() -> None:
+    # Real gap this prompt closes: group_root_topics' own "re-check what
+    # you left out" instruction lives inside ONE non-reasoning generation
+    # with nothing verifying it happened -- this is a SEPARATE call whose
+    # only input is the leftovers + the groups ALREADY created, so it must
+    # not re-propose new groups (that's the first pass's job) and must
+    # still allow a genuine non-fit to stay unassigned (same "omission is
+    # a valid answer" contract group_root_topics' own member_ids has).
+    result = load_prompt("assign_leftover_roots")
+    assert "you are not proposing new groups" in result
+    assert "Leaving a leftover unassigned is a valid and expected answer" in result
+
+
 def test_judge_kb_relevance_prompt_loads() -> None:
     result = load_prompt("judge_kb_relevance")
     assert len(result) > 0

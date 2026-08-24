@@ -194,7 +194,11 @@ export async function rescoreDiffEntry(jobId: string, localId: string): Promise<
 }
 
 export interface AddDiffEntryInput {
-  parentLocalId: string;
+  // null creates a top-level item (Epic, or a Feature when no Epic exists
+  // yet) -- BASELINE jobs never send null (their type is inherited from a
+  // real parent's own childType, so there's no top-level type to infer
+  // without one; see jobs.service.ts's addDiffEntry doc comment).
+  parentLocalId: string | null;
   type: string;
   title: string;
   description: string;
@@ -202,6 +206,21 @@ export interface AddDiffEntryInput {
 
 export async function addDiffEntry(jobId: string, input: AddDiffEntryInput): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.post(`/jobs/${jobId}/diff`, input);
+  return response.data;
+}
+
+export interface MoveDiffEntryInput {
+  // null moves the entry to the top level.
+  parentLocalId: string | null;
+  // Omit both for "append last under the new parent" -- only needed to
+  // land the entry at a specific position among siblings (a reorder, or a
+  // reparent that also needs a specific slot).
+  anchorLocalId?: string | null;
+  placement?: 'before' | 'after';
+}
+
+export async function moveDiffEntry(jobId: string, localId: string, input: MoveDiffEntryInput): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}/move`, input);
   return response.data;
 }
 

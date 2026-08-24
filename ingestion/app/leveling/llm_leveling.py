@@ -1790,7 +1790,7 @@ def build_survey_tree(
         )
         _regroup_disconnected_roots(
             all_nodes, "regroup_", grouping_client, all_warnings,
-            progress_callback, len(det_nodes), 0,
+            progress_callback, len(det_nodes), 0, debug_capture=debug_capture,
         )
         _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
         recompute_child_types(all_nodes)
@@ -2177,7 +2177,7 @@ def build_survey_tree(
     # narrates via its own new 'map_scope' phase, added alongside the
     # frontend phase-mapping changes that let it do so without regroup_roots'
     # own stepper-regression problem.
-    _regroup_disconnected_roots(all_nodes, "regroup_", grouping_client, all_warnings)
+    _regroup_disconnected_roots(all_nodes, "regroup_", grouping_client, all_warnings, debug_capture=debug_capture)
     _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
 
     # STAGE 2: whole-document figure/table -> EXACT node mapping, run here

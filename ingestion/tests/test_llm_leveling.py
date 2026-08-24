@@ -5772,6 +5772,199 @@ def test_regroup_disconnected_roots_is_fail_open() -> None:
     assert nodes[1].parent_local_id is None
 
 
+class _FakeDebugCapture:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def capture(self, kind: str, identifier: str, raw_response: str) -> None:
+        self.calls.append((kind, identifier, raw_response))
+
+
+def test_regroup_disconnected_roots_captures_the_failure_when_group_root_topics_raises() -> None:
+    # Real diagnostic gap this closes: before this, a group_root_topics
+    # failure was only ever a log line -- unlike score_epics_and_features'
+    # own failure, which was already captured for the debug-read endpoint.
+    class RaisingGroupingClient:
+        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+            raise RuntimeError("boom")
+
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+    ]
+    debug_capture = _FakeDebugCapture()
+    _regroup_disconnected_roots(nodes, "regroup_", RaisingGroupingClient(), [], debug_capture=debug_capture)
+    assert len(debug_capture.calls) == 1
+    kind, identifier, raw_response = debug_capture.calls[0]
+    assert kind == "group_root_topics"
+    assert identifier == "document"
+    assert "boom" in raw_response
+
+
+def test_regroup_disconnected_roots_captures_the_failure_when_assign_leftover_roots_raises() -> None:
+    class RaisingAssignmentClient:
+        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+            return {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]}
+
+        def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict:
+            raise RuntimeError("kaboom")
+
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+        _node("n2", WorkItemType.FEATURE, None, "Truly Standalone"),
+    ]
+    debug_capture = _FakeDebugCapture()
+    _regroup_disconnected_roots(nodes, "regroup_", RaisingAssignmentClient(), [], debug_capture=debug_capture)
+    assert len(debug_capture.calls) == 1
+    kind, identifier, raw_response = debug_capture.calls[0]
+    assert kind == "assign_leftover_roots"
+    assert identifier == "document"
+    assert "kaboom" in raw_response
+    # The first pass's own group still formed correctly despite the second
+    # pass failing -- and the leftover simply stays a leftover.
+    assert any(n.title == "VPX Utility & Management Signals" for n in nodes)
+    assert nodes[2].parent_local_id is None
+
+
+# ---------------------------------------------------------------------------
+# _regroup_disconnected_roots, second pass -- assign_leftover_roots. Real
+# gap this closes: group_root_topics' own prompt already asks the model to
+# re-check every unplaced title against every group it formed, in the SAME
+# single non-reasoning generation -- confirmed live that a local model
+# misses genuine near-fits even with that instruction present. This makes
+# the re-check a real second decision, with the created groups as actual
+# input.
+# ---------------------------------------------------------------------------
+
+
+class _FakeGroupingClientWithAssignment:
+    """Deliberately a SEPARATE class from _FakeGroupingClient above, not an
+    added method on it -- _FakeGroupingClient must stay exactly as it was
+    so every existing test above continues to exercise the REAL regression
+    guard: a client that only implements group_root_topics (which is what
+    every real RootGroupingClient looked like before this pass existed)
+    hits AttributeError on assign_leftover_roots and degrades to leaving
+    leftovers exactly where they were, same as before this pass existed."""
+
+    def __init__(self, group_result: dict, assignment_result: dict) -> None:
+        self._group_result = group_result
+        self._assignment_result = assignment_result
+        self.assignment_calls: list[tuple[dict[str, str], dict[str, str]]] = []
+
+    def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+        return self._group_result
+
+    def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict:
+        self.assignment_calls.append((leftover_titles_by_id, group_titles_by_id))
+        return self._assignment_result
+
+
+def test_regroup_disconnected_roots_places_a_leftover_into_an_existing_group() -> None:
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+        _node("n2", WorkItemType.FEATURE, None, "SBC Serial Communication Routing"),
+    ]
+    client = _FakeGroupingClientWithAssignment(
+        {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]},
+        {"assignments": {"n2": "regroup_synth_group_0"}},
+    )
+    warnings: list = []
+
+    _regroup_disconnected_roots(nodes, "regroup_", client, warnings)
+
+    group_node = next(n for n in nodes if n.title == "VPX Utility & Management Signals")
+    assert nodes[2].parent_local_id == group_node.local_id
+    # The second call receives the REAL leftover title and the REAL created
+    # group's own title -- not raw ids/placeholders.
+    assert client.assignment_calls == [({"n2": "SBC Serial Communication Routing"}, {group_node.local_id: group_node.title})]
+    # Group's own description grows to mention the late-added member --
+    # it must not silently claim it only ever contained its original two.
+    assert "SBC Serial Communication Routing" in group_node.description
+    assert any(w.kind == WarningKind.ROOTS_REGROUPED and "SBC Serial Communication Routing" in w.raw for w in warnings)
+
+
+def test_regroup_disconnected_roots_promotes_a_feature_group_to_epic_when_a_leftover_is_not_a_requirement() -> None:
+    # Same CMMI depth rule as the first pass: a Feature-typed group (all
+    # original members were Requirements) absorbing a non-Requirement
+    # leftover must be promoted to Epic, or the tier rule is violated.
+    nodes = [
+        _node("n0", WorkItemType.REQUIREMENT, None, "Req A"),
+        _node("n1", WorkItemType.REQUIREMENT, None, "Req B"),
+        _node("n2", WorkItemType.FEATURE, None, "Late Feature Leftover"),
+    ]
+    client = _FakeGroupingClientWithAssignment(
+        {"groups": [{"title": "Leftover Requirements", "member_ids": ["n0", "n1"]}]},
+        {"assignments": {"n2": "regroup_synth_group_0"}},
+    )
+    _regroup_disconnected_roots(nodes, "regroup_", client, [])
+    group_node = next(n for n in nodes if n.title == "Leftover Requirements")
+    assert group_node.type == WorkItemType.EPIC
+
+
+def test_regroup_disconnected_roots_ignores_an_assignment_to_an_invented_group_id() -> None:
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+        _node("n2", WorkItemType.FEATURE, None, "Truly Standalone"),
+    ]
+    client = _FakeGroupingClientWithAssignment(
+        {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]},
+        {"assignments": {"n2": "not_a_real_group_id"}},
+    )
+    _regroup_disconnected_roots(nodes, "regroup_", client, [])
+    assert nodes[2].parent_local_id is None
+
+
+def test_regroup_disconnected_roots_skips_the_second_pass_when_there_are_no_leftovers() -> None:
+    # Every root got placed on the first pass -- nothing left to check
+    # against the groups, so the second call must not fire at all.
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+    ]
+    client = _FakeGroupingClientWithAssignment(
+        {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]},
+        {"assignments": {}},
+    )
+    _regroup_disconnected_roots(nodes, "regroup_", client, [])
+    assert client.assignment_calls == []
+
+
+def test_regroup_disconnected_roots_skips_the_second_pass_when_no_groups_were_created() -> None:
+    # Nothing to check leftovers AGAINST -- the first pass formed no
+    # groups at all, so the second call must not fire either.
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+    ]
+    client = _FakeGroupingClientWithAssignment({"groups": []}, {"assignments": {}})
+    _regroup_disconnected_roots(nodes, "regroup_", client, [])
+    assert client.assignment_calls == []
+    assert nodes[0].parent_local_id is None
+    assert nodes[1].parent_local_id is None
+
+
+def test_regroup_disconnected_roots_second_pass_is_fail_open_when_the_client_lacks_the_method() -> None:
+    # The REAL regression guard: _FakeGroupingClient (unchanged, every
+    # other test in this file uses it) has no assign_leftover_roots at
+    # all -- this must degrade to leaving the leftover exactly where it
+    # was, not crash the whole regrouping pass.
+    nodes = [
+        _node("n0", WorkItemType.FEATURE, None, "PS_SYSRESET"),
+        _node("n1", WorkItemType.FEATURE, None, "PS_SYNC"),
+        _node("n2", WorkItemType.FEATURE, None, "Truly Standalone"),
+    ]
+    client = _FakeGroupingClient({"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]})
+    warnings: list = []
+    _regroup_disconnected_roots(nodes, "regroup_", client, warnings)
+    assert nodes[2].parent_local_id is None
+    # The first pass's own group still formed correctly -- only the second
+    # pass's absence degrades, nothing upstream is affected by it.
+    assert any(n.title == "VPX Utility & Management Signals" for n in nodes)
+
+
 # ---------------------------------------------------------------------------
 # _ensure_root_features_have_epic_parent -- real gap (user-reported, live
 # review): a mixed bag of Epic-typed and bare Feature-typed roots sitting

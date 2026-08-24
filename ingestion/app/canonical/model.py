@@ -202,6 +202,17 @@ def plain_text_rows(table: Table) -> list[list[str]]:
 class Figure(BaseModel):
     id: str
     caption: str | None = None
+    # The author's own short title for this figure -- e.g. "CubeConnect PCB
+    # (PC104 Variants) - Interior (Back) View", parsed from a "Figure N:
+    # Title" caption line in the source document itself (see
+    # pdf_loader.py's _FIGURE_CAPTION_PATTERN). Distinct from `caption`,
+    # which is the vision model's own prose description: `name` is a short
+    # noun phrase meant for display (UI label, ADO attachment filename),
+    # `caption` is a paragraph meant for search/context. Falls back to an
+    # LLM-generated short title (main.py's _describe_figure, via the same
+    # caption_status_out side channel) only when the document provides no
+    # caption line of its own -- the document's own name always wins.
+    name: str | None = None
     source_ref: SourceRef
     # Why `caption` is None, when it is -- disambiguates the two independent
     # causes that previously both collapsed into the same signal (see

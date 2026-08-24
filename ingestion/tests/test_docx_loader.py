@@ -1627,3 +1627,38 @@ def test_load_docx_skips_a_degenerate_2x2_image_without_calling_describe_figure(
     assert len(describe_calls) == 1  # never called on the 2x2 image
     figure_blocks = [b for b in result.blocks if b.kind == BlockKind.FIGURE]
     assert len(figure_blocks) == 1
+
+
+def test_load_docx_dedupes_the_same_image_bytes_reused_inline() -> None:
+    # Gap C (mirrors pdf_loader.py's own seen_figure_hashes): docx has no
+    # recurrence/margin filter of its own -- unlike the PDF loader, a logo
+    # embedded twice inline has nothing else to catch it. The same image
+    # bytes appearing more than once must be one figure, not two.
+    from docx import Document as DocxDocument
+    from PIL import Image
+
+    describe_calls: list[bytes] = []
+
+    def spy_describe(image_bytes: bytes) -> str:
+        describe_calls.append(image_bytes)
+        return "A real diagram."
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        doc = DocxDocument()
+        logo_path = tmp_path / "logo.png"
+        Image.new("RGB", (40, 40), color="black").save(logo_path)
+        doc.add_picture(str(logo_path))
+        doc.add_picture(str(logo_path))  # same bytes, reused
+        real_path = tmp_path / "real.png"
+        Image.new("RGB", (40, 40), color="green").save(real_path)
+        doc.add_picture(str(real_path))
+
+        out_path = tmp_path / "reused_image.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path), describe_figure=spy_describe)
+
+    assert len(result.figures) == 2  # logo counted once, plus the real distinct image
+    assert len(describe_calls) == 2  # the second logo occurrence never reaches vision
+    figure_blocks = [b for b in result.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 2

@@ -53,7 +53,13 @@ export function ActionBadge({
     );
     if (!isLink) return chip;
     return (
-      <a href={buildWorkItemUrl(orgUrl, project, existingAdoId)} target="_blank" rel="noreferrer">
+      // draggable={false} -- <a href> is natively draggable by default in
+      // every browser, independent of any ancestor's own `draggable`
+      // attribute. Inside DiffTree's now-draggable rows (DESIGN.md §11.5),
+      // grabbing a row on top of this link started the browser's own
+      // link-drag gesture instead of the row's custom row-move drag --
+      // same bug class as WorkItemTypeBadge's icon <img>, same fix.
+      <a href={buildWorkItemUrl(orgUrl, project, existingAdoId)} target="_blank" rel="noreferrer" draggable={false}>
         {chip}
       </a>
     );
@@ -65,7 +71,8 @@ export function ActionBadge({
   );
   if (existingAdoId == null || !orgUrl) return chip;
   return (
-    <a href={buildWorkItemUrl(orgUrl, project, existingAdoId)} target="_blank" rel="noreferrer">
+    // draggable={false} -- see the "reuse" branch above for why.
+    <a href={buildWorkItemUrl(orgUrl, project, existingAdoId)} target="_blank" rel="noreferrer" draggable={false}>
       {chip}
     </a>
   );

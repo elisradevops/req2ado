@@ -204,6 +204,12 @@ async function assertNotCancelled(prisma: PrismaClient, jobId: string): Promise<
 interface LeveledFigure {
   id: string;
   caption: string | null;
+  // The author's own short title for this figure (parsed from a document
+  // "Figure N: Title" caption line, or an LLM-generated fallback -- see
+  // ingestion's Figure.name docstring) -- distinct from `caption`, which
+  // is the vision model's prose description. Null when neither source
+  // produced one.
+  name: string | null;
 }
 
 interface LeveledTable {
@@ -539,18 +545,29 @@ export async function runPipelineJob(
       });
     }
 
-    // Captions are already here -- no ingestion/`/level` change needed.
-    // 1-based index by array position matches the sequential order
-    // main.py's per-request vision-call counter narrates figures with
-    // (figure_index), which is what the frontend's FigureDescriptions
-    // panel keys captions by. Entries with no real caption (vision
-    // disabled/failed) are dropped -- same "nothing to show" rule the live
-    // SSE narration path already applies (see JobDetail.tsx's narration
-    // handler, which only ever sets a caption when figureCaption is
-    // truthy).
+    // Captions/names are already here -- no ingestion/`/level` change
+    // needed. 1-based index by array position matches the sequential
+    // order main.py's per-request vision-call counter narrates figures
+    // with (figure_index), which is what the frontend's
+    // FigureDescriptions panel keys captions by.
+    // Filter widened from "has a real caption" to "has a real caption OR a
+    // name" (Task 5) -- a figure the document itself named via its own
+    // "Figure N: Title" line (or an LLM title fallback) is now worth
+    // showing even when vision produced no caption (disabled/failed).
+    // figureId is now carried on each entry too, so jobs.service.ts's ADO
+    // attachment-filename builder (Task 6) can look a figure's name up by
+    // the SAME id JobFigureFile is keyed by, without a second Job column
+    // -- figureDescriptions is already the one JSON field this data rides
+    // in (see doc.figures.length vs figureDescriptions.length note below:
+    // widening this filter does not change figureCount, which always
+    // reads doc.figures.length directly). This is independent of
+    // captionedFigureIds just below, which is a separate computation used
+    // only for the prune-step guard and is unaffected by this filter.
     const figureDescriptions = ((doc.figures ?? []) as LeveledFigure[])
-      .map((figure, index) => ({ figureIndex: index + 1, caption: figure.caption }))
-      .filter((entry): entry is { figureIndex: number; caption: string } => Boolean(entry.caption));
+      .map((figure, index) => ({ figureIndex: index + 1, figureId: figure.id, name: figure.name, caption: figure.caption }))
+      .filter((entry): entry is { figureIndex: number; figureId: string; name: string | null; caption: string | null } =>
+        Boolean(entry.caption) || Boolean(entry.name),
+      );
     // Every figure with a real caption, regardless of node attachment --
     // used below to keep the prune step from deleting a figure this SAME
     // panel still promises an image for (see that comment for the full
@@ -908,7 +925,7 @@ export async function runPipelineJob(
         // pipeline completion, independent of whether/how a human later
         // reviews it -- diffReadyAt is deliberately NOT set in confirm()
         // or reject(). doc.figures.length (every figure), not
-        // figureDescriptions.length (already filtered to captioned-only
+        // figureDescriptions.length (already filtered to captioned-or-named
         // figures above) -- must match the same quantity
         // jobs.controller.ts's preview() counts, or the ETA fit trains on
         // a different quantity than it predicts against. Part B's

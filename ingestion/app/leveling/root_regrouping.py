@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from app.debug_capture import DebugCapture
 
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.leveling.tree_builder import _hash_identity_for_synthesized_node
@@ -23,6 +26,16 @@ class RootGroupingClient(Protocol):
 
     def group_root_topics(self, titles_by_id: dict[str, str]) -> dict: ...
 
+    # Optional second pass (see _regroup_disconnected_roots's own call
+    # site below for the full rationale): a client implementing only
+    # group_root_topics (every existing test double) simply lacks this
+    # attribute -- the call site's own try/except AttributeError degrades
+    # that to a no-op, same fail-open contract as group_root_topics
+    # itself. Not declared with a default/optional marker here because
+    # Protocol has no such mechanism; the call site is what actually makes
+    # it optional.
+    def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict: ...
+
 
 def _regroup_disconnected_roots(
     nodes: list[WorkItemNode],
@@ -32,6 +45,7 @@ def _regroup_disconnected_roots(
     progress_callback: ProgressCallback | None = None,
     blocks_total: int = 0,
     branch_count: int = 0,
+    debug_capture: "DebugCapture | None" = None,
 ) -> None:
     """Real gap closed here, confirmed against a real document (AirPro):
     77 disconnected root nodes, because the document's own Word outline
@@ -80,6 +94,8 @@ def _regroup_disconnected_roots(
         result = grouping_client.group_root_topics(titles_by_id)
     except Exception as exc:
         logger.warning("Root topical regrouping failed, leaving disconnected roots as-is: %s", exc)
+        if debug_capture is not None:
+            debug_capture.capture("group_root_topics", "document", str(exc))
         return
     if not isinstance(result, dict):
         return
@@ -90,6 +106,11 @@ def _regroup_disconnected_roots(
     root_ids = set(titles_by_id)
     by_id = {n.local_id: n for n in nodes}
     already_grouped: set[str] = set()
+    # Populated as groups are created below -- input to the second,
+    # leftover-assignment pass after this loop (that pass needs to know
+    # WHICH groups exist and under what title, not just that grouping
+    # happened).
+    created_group_nodes: dict[str, WorkItemNode] = {}
     for group_index, raw_group in enumerate(raw_groups):
         if not isinstance(raw_group, dict):
             continue
@@ -137,6 +158,7 @@ def _regroup_disconnected_roots(
             grounding_score=1.0,
         )
         nodes.append(group_node)
+        created_group_nodes[synth_id] = group_node
         for member in members:
             member.parent_local_id = synth_id
             already_grouped.add(member.local_id)
@@ -153,6 +175,77 @@ def _regroup_disconnected_roots(
                 detail={"groupId": synth_id, "groupTitle": group_node.title, "memberIds": [m.local_id for m in members]},
             )
         )
+
+    # Second pass (real gap closed here, see assign_leftover_roots' own
+    # docstring on OrchestratorLlmClient): group_root_topics' own prompt
+    # already asks the model to re-check every unplaced title against
+    # every group it formed, in the SAME single non-reasoning generation --
+    # confirmed live that this soft self-check is unreliable (a local
+    # model misses genuine near-fits even with that instruction present).
+    # This makes the re-check a real second decision, with the groups
+    # ACTUALLY created above as real input, instead of something the model
+    # has to remember unprompted mid-generation. Only fires when there is
+    # both something left to place AND somewhere to place it -- the common
+    # cases (everything grouped, or nothing grouped at all) pay for
+    # nothing extra. Invents zero new nodes: every assignment re-parents a
+    # real root under a group node that already exists and already traces
+    # to real source content -- strictly narrower than group_root_topics'
+    # own "never invent, never double-count" discipline above, not a new
+    # exception to it.
+    leftover_ids = root_ids - already_grouped
+    if leftover_ids and created_group_nodes:
+        leftover_titles_by_id = {leftover_id: titles_by_id[leftover_id] for leftover_id in leftover_ids}
+        group_titles_by_id = {group_id: node.title for group_id, node in created_group_nodes.items()}
+        try:
+            assign_result = grouping_client.assign_leftover_roots(leftover_titles_by_id, group_titles_by_id)
+        except Exception as exc:
+            # Same fail-open contract as the first pass above -- covers a
+            # real transient/parse failure AND a client that only
+            # implements group_root_topics (AttributeError), which is
+            # every existing test double and, until a live re-run proves
+            # this pass out, every real caller too.
+            logger.warning("Leftover-root assignment failed, leaving remaining roots as-is: %s", exc)
+            if debug_capture is not None:
+                debug_capture.capture("assign_leftover_roots", "document", str(exc))
+            assign_result = None
+        raw_assignments = assign_result.get("assignments") if isinstance(assign_result, dict) else None
+        if isinstance(raw_assignments, dict):
+            for leftover_id, group_id in raw_assignments.items():
+                # Only a still-genuinely-leftover id and a group id we
+                # actually created above count -- an invented id, or a
+                # leftover the model tries to assign twice, is dropped
+                # rather than trusted, same discipline as the first pass'
+                # own valid_member_ids filter.
+                if leftover_id not in leftover_ids or leftover_id in already_grouped:
+                    continue
+                group_node = created_group_nodes.get(group_id) if isinstance(group_id, str) else None
+                member = by_id.get(leftover_id)
+                if group_node is None or member is None:
+                    continue
+                # CMMI validity, same rule as the first pass above: a
+                # Feature-typed group absorbing a non-Requirement member
+                # must be promoted to Epic, or the depth rule id_hierarchy.
+                # classify() enforces everywhere else in this codebase is
+                # violated in reverse.
+                if group_node.type == WorkItemType.FEATURE and member.type != WorkItemType.REQUIREMENT:
+                    group_node.type = WorkItemType.EPIC
+                group_node.description += f", {member.title}"
+                member.parent_local_id = group_node.local_id
+                already_grouped.add(member.local_id)
+                message = (
+                    f'"{member.title}" was not grouped on the first pass but fits the existing '
+                    f"'{group_node.title}' {group_node.type.value} -- re-parented there instead of "
+                    "falling through to the generic catch-all, structure only, no content invented."
+                )
+                logger.warning(message)
+                warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.ROOTS_REGROUPED,
+                        message,
+                        node_ids=[group_node.local_id, member.local_id],
+                        detail={"groupId": group_node.local_id, "groupTitle": group_node.title, "memberIds": [member.local_id]},
+                    )
+                )
 
 
 def _ensure_root_features_have_epic_parent(

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { forwardRef } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
@@ -17,24 +17,86 @@ import type { DryRunDiffEntry } from './DiffTree';
 // fixtures). vi.hoisted is required here -- vi.mock factories are hoisted
 // above regular imports/consts, so a plain outer `const` would throw a
 // use-before-initialization error.
-const { scrollToItem } = vi.hoisted(() => ({ scrollToItem: vi.fn() }));
+const { scrollToItem, itemKeyCalls } = vi.hoisted(() => ({ scrollToItem: vi.fn(), itemKeyCalls: [] as string[] }));
 
 vi.mock('react-window', () => ({
   FixedSizeList: forwardRef<
     { scrollToItem: typeof scrollToItem },
-    { itemCount: number; children: (args: { index: number; style: CSSProperties }) => ReactNode }
+    {
+      itemCount: number;
+      children: (args: { index: number; style: CSSProperties }) => ReactNode;
+      itemKey?: (index: number) => string;
+    }
   >((props, ref) => {
     if (typeof ref === 'function') ref({ scrollToItem });
     else if (ref) ref.current = { scrollToItem };
     return (
       <div>
-        {Array.from({ length: props.itemCount }, (_, index) => (
-          <div key={index}>{props.children({ index, style: {} })}</div>
-        ))}
+        {Array.from({ length: props.itemCount }, (_, index) => {
+          if (props.itemKey) itemKeyCalls.push(props.itemKey(index));
+          return <div key={index}>{props.children({ index, style: {} })}</div>;
+        })}
       </div>
     );
   }),
 }));
+
+// Stubs getBoundingClientRect on a row so @dnd-kit/core's own rect
+// measurement (the active row's initial rect, and every droppable row's
+// rect at drag start) is deterministic -- jsdom otherwise reports every
+// element's rect as all-zero, which would make every row's collision
+// distance identical.
+function stubRowRect(el: HTMLElement, top = 0, height = 40): void {
+  vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+    top,
+    height,
+    bottom: top + height,
+    left: 0,
+    right: 600,
+    width: 600,
+    x: 0,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect);
+}
+
+function rowFor(title: string): HTMLElement {
+  return screen.getByText(title).closest('[role="treeitem"]') as HTMLElement;
+}
+
+// @dnd-kit/core's MouseSensor drives a drag from real mousedown/mousemove/
+// mouseup events -- jsdom fully supports the real MouseEvent constructor
+// (unlike PointerEvent, which jsdom does not implement at all: an early
+// attempt at this test file using PointerSensor + pointer events found
+// `typeof PointerEvent === 'undefined'` in this project's jsdom version, so
+// isPrimary/button never reached the sensor's activator and no drag ever
+// started -- MouseSensor sidesteps that gap entirely, in tests and in every
+// real desktop browser alike). move/end listeners attach to `document`, not
+// the row itself (MouseSensor's own choice, so a row that unmounts
+// mid-drag doesn't strand the gesture), so those two fire on `document`.
+function fireMouseDown(el: HTMLElement, clientY: number, clientX = 100): void {
+  fireEvent.mouseDown(el, { button: 0, clientX, clientY });
+}
+function fireMouseMove(clientY: number, clientX = 100): void {
+  fireEvent.mouseMove(document, { clientX, clientY });
+}
+function fireMouseUp(clientY: number, clientX = 100): void {
+  fireEvent.mouseUp(document, { clientX, clientY });
+}
+
+// A full drag gesture: mousedown, then a small move past the 4px
+// activation-distance constraint (this is the move that fires dnd-kit's own
+// onDragStart -- it does NOT also report the final position), then a second
+// move to the real target position (this is the one that runs collision
+// detection and updates `over`), then mouseup.
+function dragRow(source: HTMLElement, opts: { fromY: number; toY: number; fromX?: number; toX?: number }): void {
+  const fromX = opts.fromX ?? 100;
+  const toX = opts.toX ?? 100;
+  fireMouseDown(source, opts.fromY, fromX);
+  fireMouseMove(opts.fromY + 10, fromX);
+  fireMouseMove(opts.toY, toX);
+  fireMouseUp(opts.toY, toX);
+}
 
 const ENTRIES: DryRunDiffEntry[] = [
   { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root Epic', description: '', action: 'create', customerId: null, tags: [] },
@@ -215,6 +277,26 @@ describe('DiffTree selectedId navigation (jump-to-node from outside the tree)', 
 
     expect(scrollToItem).not.toHaveBeenCalled();
   });
+
+  // Real gap this closes (user-reported): "collapse/expand an Epic jumps
+  // the viewport to another item below". Root cause was this same
+  // scroll-into-view effect re-firing on every `rows` identity change --
+  // and `rows` changes identity on EVERY collapse/expand toggle (collapsed
+  // state is one of its own memo deps), not just on a real selection
+  // change. Collapsing "Root Epic" here only hides "Child Feature";
+  // "orphan1" (the selected row) stays visible throughout, so a fixed
+  // implementation must not re-scroll to it at all.
+  it('does not re-scroll to the already-selected row when an unrelated node is collapsed', async () => {
+    render(
+      <DiffTree entries={ENTRIES} selectedId="orphan1" onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    scrollToItem.mockClear(); // isolate from the initial-mount scroll
+
+    await userEvent.click(screen.getByRole('button', { name: /collapse root epic/i }));
+
+    expect(screen.queryByText('Child Feature')).not.toBeInTheDocument(); // the collapse itself did happen
+    expect(scrollToItem).not.toHaveBeenCalled();
+  });
 });
 
 const baseEntry: DryRunDiffEntry = {
@@ -335,5 +417,312 @@ describe('DiffTree signal counts', () => {
 
     screen.getByText('Sys Req').click();
     expect(onSelect).toHaveBeenCalledWith('n0');
+  });
+});
+
+// DESIGN.md §11.5 -- reparent/reorder via @dnd-kit/core.
+const MOVE_ENTRIES: DryRunDiffEntry[] = [
+  { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+  { localId: 'e2', parentLocalId: null, type: 'Epic', title: 'Epic 2', description: '', action: 'create', customerId: null },
+  { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+  { localId: 'f2', parentLocalId: 'e1', type: 'Feature', title: 'Feature 2', description: '', action: 'create', customerId: null },
+  { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Req 1', description: '', action: 'create', customerId: null },
+];
+
+// Matches buildFlatRows' real visual order for MOVE_ENTRIES (see the
+// itemKey test below): e1, f1, r1, f2, e2. Stubs every row's rect at its
+// real stacked position (ROW_HEIGHT=40 apart) -- @dnd-kit/core's
+// closestCenter collision detection needs the SOURCE row's rect (its
+// initial, pre-drag position) as well as every candidate droppable's, not
+// just the one row native HTML5 drag's own offset math used.
+function stubMoveEntryRects(): void {
+  stubRowRect(rowFor('Epic 1'), 0);
+  stubRowRect(rowFor('Feature 1'), 40);
+  stubRowRect(rowFor('Req 1'), 80);
+  stubRowRect(rowFor('Feature 2'), 120);
+  stubRowRect(rowFor('Epic 2'), 160);
+}
+
+describe('DiffTree drag-and-drop (reparent/reorder)', () => {
+  beforeEach(() => {
+    itemKeyCalls.length = 0;
+  });
+
+  it('does not render draggable rows or the grip column when canMove is false/omitted', () => {
+    render(
+      <DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    // canMove omitted -> useDraggable's attributes are never spread at all.
+    expect(rowFor('Epic 1')).not.toHaveAttribute('aria-roledescription');
+    // Epic 1 has children, so a chevron <svg> legitimately renders --
+    // check specifically for the grip's own title, not "any svg".
+    expect(rowFor('Epic 1').querySelector('[title="Drag to move"]')).toBeNull();
+  });
+
+  it('renders draggable rows when canMove is true', () => {
+    render(
+      <DiffTree
+        entries={MOVE_ENTRIES}
+        selectedId={null}
+        onSelect={vi.fn()}
+        filterAction={null}
+        filterText=""
+        onToggleExclude={vi.fn()}
+        canMove
+        onMove={vi.fn()}
+      />,
+    );
+    // @dnd-kit/core's useDraggable attributes, not a native draggable="true"
+    // -- see the module comment on computeDropPosition for why this
+    // replaced native HTML5 DnD.
+    expect(rowFor('Epic 1')).toHaveAttribute('aria-roledescription', 'draggable');
+  });
+
+  // Real bug this guarded against under native HTML5 drag (kept as a
+  // regression test -- harmless, and still true, under @dnd-kit/core):
+  // dragging over selectable text without opting out of selection first is
+  // unreliable in some browsers. select-none costs nothing to keep.
+  it('disables text selection on draggable rows (select-none)', () => {
+    render(
+      <DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} canMove onMove={vi.fn()} />,
+    );
+    expect(rowFor('Epic 1').className).toContain('select-none');
+  });
+
+  it('does not disable text selection when canMove is false -- rows are read-only, not draggable', () => {
+    render(
+      <DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    expect(rowFor('Epic 1').className).not.toContain('select-none');
+  });
+
+  it('reparents on a valid drop in the middle of a target row (inside)', () => {
+    const onMove = vi.fn();
+    render(
+      <DiffTree
+        entries={MOVE_ENTRIES}
+        selectedId={null}
+        onSelect={vi.fn()}
+        filterAction={null}
+        filterText=""
+        onToggleExclude={vi.fn()}
+        canMove
+        onMove={onMove}
+      />,
+    );
+    stubMoveEntryRects();
+    const source = rowFor('Feature 1'); // top=40, center=60
+    // Feature 1's center (60) moved to Epic 2's own center (top=160,
+    // height=40 -> center=180) -> dead center of the target -> 'inside'.
+    dragRow(source, { fromY: 0, toY: 180 - 60 });
+
+    expect(onMove).toHaveBeenCalledWith('f1', { parentLocalId: 'e2' });
+  });
+
+  it('reorders (before) when dropped in the top quarter of a sibling row', () => {
+    const onMove = vi.fn();
+    render(
+      <DiffTree
+        entries={MOVE_ENTRIES}
+        selectedId={null}
+        onSelect={vi.fn()}
+        filterAction={null}
+        filterText=""
+        onToggleExclude={vi.fn()}
+        canMove
+        onMove={onMove}
+      />,
+    );
+    stubMoveEntryRects();
+    const source = rowFor('Feature 2'); // top=120, center=140
+    // Feature 2's center (140) moved to y=42 -- Feature 1 spans
+    // top=40..80, so 42 sits at relative 0.05 of its height -> 'before'.
+    dragRow(source, { fromY: 0, toY: 42 - 140 });
+
+    expect(onMove).toHaveBeenCalledWith('f2', { parentLocalId: 'e1', anchorLocalId: 'f1', placement: 'before' });
+  });
+
+  it('rejects a tier violation client-side -- no onMove call', () => {
+    const onMove = vi.fn();
+    render(
+      <DiffTree
+        entries={MOVE_ENTRIES}
+        selectedId={null}
+        onSelect={vi.fn()}
+        filterAction={null}
+        filterText=""
+        onToggleExclude={vi.fn()}
+        canMove
+        onMove={onMove}
+      />,
+    );
+    stubMoveEntryRects();
+    const source = rowFor('Epic 1'); // Epic cannot nest under a Requirement, top=0, center=20
+    // Req 1 spans top=80..120 -> center=100.
+    dragRow(source, { fromY: 0, toY: 100 - 20 });
+
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it('rejects moving a node into its own descendant -- no onMove call', () => {
+    const onMove = vi.fn();
+    render(
+      <DiffTree
+        entries={MOVE_ENTRIES}
+        selectedId={null}
+        onSelect={vi.fn()}
+        filterAction={null}
+        filterText=""
+        onToggleExclude={vi.fn()}
+        canMove
+        onMove={onMove}
+      />,
+    );
+    stubMoveEntryRects();
+    const source = rowFor('Epic 1'); // top=0, center=20
+    // Req 1 (top=80..120, center=100) is a descendant of Epic 1 via Feature 1.
+    dragRow(source, { fromY: 0, toY: 100 - 20 });
+
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it('does not open the details dialog after a completed drag-drop', () => {
+    const onMove = vi.fn();
+    const onOpenDetails = vi.fn();
+    render(
+      <DiffTree
+        entries={MOVE_ENTRIES}
+        selectedId={null}
+        onSelect={vi.fn()}
+        onOpenDetails={onOpenDetails}
+        filterAction={null}
+        filterText=""
+        onToggleExclude={vi.fn()}
+        canMove
+        onMove={onMove}
+      />,
+    );
+    stubMoveEntryRects();
+    const source = rowFor('Feature 1'); // top=40, center=60
+    dragRow(source, { fromY: 0, toY: 180 - 60 }); // onto Epic 2's center -> 'inside'
+    // A completed cross-row drag does not naturally fire a click in a real
+    // browser (mousedown/mouseup land on different elements), and
+    // @dnd-kit/core's own MouseSensor (via the shared AbstractPointerSensor
+    // base class both it and PointerSensor extend) additionally swallows a
+    // trailing click once a real drag has activated -- this asserts the
+    // row's own defensive guard on top of that, by firing one anyway.
+    fireEvent.click(rowFor('Epic 2'));
+
+    expect(onOpenDetails).not.toHaveBeenCalled();
+  });
+
+  // CR: reparent review fix -- the drag-completion click guard was
+  // previously a single shared boolean, not scoped to the dropped-on row.
+  // That meant the NEXT click on ANY row anywhere in the tree (not just
+  // the one that received the drop) was silently swallowed -- a reviewer
+  // dragging an item, then clicking a completely different row to inspect
+  // it, would find the first click did nothing.
+  it('does not swallow a click on an UNRELATED row after a completed drag-drop elsewhere', async () => {
+    const onSelect = vi.fn();
+    const onOpenDetails = vi.fn();
+    render(
+      <DiffTree
+        entries={MOVE_ENTRIES}
+        selectedId={null}
+        onSelect={onSelect}
+        onOpenDetails={onOpenDetails}
+        filterAction={null}
+        filterText=""
+        onToggleExclude={vi.fn()}
+        canMove
+        onMove={vi.fn()}
+      />,
+    );
+    stubMoveEntryRects();
+    const source = rowFor('Feature 1'); // top=40, center=60
+    dragRow(source, { fromY: 0, toY: 180 - 60 }); // onto Epic 2's center -> 'inside'
+
+    // @dnd-kit/core's own MouseSensor additionally installs a document-level
+    // capture-phase click suppressor for ~50ms after a real drag activates
+    // (its own fix for the same "drag ends, browser still fires a trailing
+    // click" problem this row's justCompletedDragRef guards against) --
+    // waiting it out here isolates THIS test to this row's own guard,
+    // rather than asserting on dnd-kit's internal timing.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    // A click on a DIFFERENT row (not the one the drop landed on) right
+    // after the drag must behave like a normal click.
+    fireEvent.click(rowFor('Req 1'));
+
+    expect(onSelect).toHaveBeenCalledWith('r1');
+    expect(onOpenDetails).toHaveBeenCalledWith('r1');
+  });
+
+  it('uses localId (not row index) as the FixedSizeList itemKey', () => {
+    render(
+      <DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} canMove onMove={vi.fn()} />,
+    );
+    // useContainerHeight's mount effect calls setHeight once (jsdom's
+    // getBoundingClientRect always reports 0), so the list legitimately
+    // renders twice -- dedupe rather than assert an exact render count,
+    // which isn't what this test is about.
+    expect(Array.from(new Set(itemKeyCalls))).toEqual(['e1', 'f1', 'r1', 'f2', 'e2']);
+  });
+
+  it('shows a "same tier" badge when a node\'s parent shares its own category', () => {
+    const sameTier = [...MOVE_ENTRIES, { localId: 'e3', parentLocalId: 'e1', type: 'Epic', title: 'Epic 3', description: '', action: 'create' as const, customerId: null }];
+    render(<DiffTree entries={sameTier} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+
+    expect(screen.getByText('same tier')).toBeInTheDocument();
+  });
+
+  it('does not show a "same tier" badge when the parent is a different category', () => {
+    render(<DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+
+    expect(screen.queryByText('same tier')).not.toBeInTheDocument();
+  });
+
+  it('warns when a non-excluded node has an excluded ancestor', () => {
+    const withExcludedAncestor = MOVE_ENTRIES.map((entry) => (entry.localId === 'e1' ? { ...entry, excluded: true } : entry));
+    render(
+      <DiffTree entries={withExcludedAncestor} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+
+    // f1/f2/r1 are all descendants of the excluded e1 -- each gets the warning.
+    expect(screen.getAllByTitle(/ancestor of this item is excluded/i)).toHaveLength(3);
+  });
+
+  it('does not warn on the excluded node itself (only its non-excluded descendants)', () => {
+    const withExcludedAncestor = MOVE_ENTRIES.map((entry) => (entry.localId === 'e1' ? { ...entry, excluded: true } : entry));
+    render(
+      <DiffTree entries={withExcludedAncestor} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+
+    expect(rowFor('Epic 1').querySelector('[title*="ancestor of this item is excluded"]')).toBeNull();
+  });
+
+  // Investigation finding: dragging a reuse/dedup_skip row to a new parent
+  // persists with the same accepted-move feedback as any other row, but
+  // confirm() never actually re-parents it in ADO (JobsService's toLink
+  // filter). Nothing previously told a reviewer that -- this badge does.
+  it('shows an "already in ADO" badge on a reuse-matched row, naming its real WI id', () => {
+    const reuseEntries = [{ ...MOVE_ENTRIES[0] }, { ...MOVE_ENTRIES[2], action: 'reuse' as const, existingAdoId: 777 }];
+    render(<DiffTree entries={reuseEntries} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+
+    expect(rowFor('Feature 1').querySelector('[title*="Already exists in ADO as WI-777"]')).not.toBeNull();
+  });
+
+  it('shows an "already in ADO" badge on a dedup_skip row, worded as a probable match rather than a certainty', () => {
+    const dedupEntries = [{ ...MOVE_ENTRIES[0] }, { ...MOVE_ENTRIES[2], action: 'dedup_skip' as const, existingAdoId: 888 }];
+    render(<DiffTree entries={dedupEntries} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+
+    expect(rowFor('Feature 1').querySelector('[title*="Matched to a probable duplicate in ADO (WI-888)"]')).not.toBeNull();
+  });
+
+  it('does not show the "already in ADO" badge on a create row', () => {
+    render(<DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />);
+
+    expect(rowFor('Feature 1').querySelector('[title*="Already exists in ADO"]')).toBeNull();
+    expect(rowFor('Feature 1').querySelector('[title*="Matched to a probable duplicate"]')).toBeNull();
   });
 });

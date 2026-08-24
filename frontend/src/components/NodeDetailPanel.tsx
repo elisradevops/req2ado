@@ -71,7 +71,9 @@ export function NodeDetailPanel({
   traceLinkFailures,
   parentEntry,
   addChildSlot,
+  moveSlot,
   captionByFigureId,
+  nameByFigureId,
   captionByTableId,
   onSave,
   onRescore,
@@ -113,6 +115,14 @@ export function NodeDetailPanel({
   // bottom of the pane, after Sources -- disconnected from the title and
   // easy to miss below a long description/quality/trace-link stack.
   addChildSlot?: React.ReactNode;
+  // DESIGN.md §11.5 -- the keyboard-accessible "Move to..." control, owned/
+  // wired by the caller (NodeDetailDialog builds the actual
+  // MoveEntryControl) for the same reason addChildSlot is: this component
+  // doesn't know about onMove or the full diff array MoveToPicker's
+  // candidate list needs. Rendered right under the title, before the
+  // editability message -- visible without scrolling, the same reasoning
+  // addChildSlot's own doc comment gives for not burying it at the bottom.
+  moveSlot?: React.ReactNode;
   onSave?: (localId: string, patch: { title: string; description: string }) => void;
   // CR-7d rescore: owned by the caller (JobDetail.tsx), which persists the
   // fresh score/issues/categoryScores and shows a toast, mirroring onSave's
@@ -125,7 +135,12 @@ export function NodeDetailPanel({
   // figureIndex-based array FigureDescriptions renders). Absent figures
   // (e.g. a caption event that never fired, or a job reopened whose live
   // narration history hasn't loaded yet) just render without caption text.
-  captionByFigureId?: Record<string, string>;
+  captionByFigureId?: Record<string, string | null>;
+  // Task 5: figureId -> the document's own figure name (same figureId
+  // scheme as captionByFigureId, computed by the same caller from the
+  // same figureDescriptions array). Used for FigureImage's alt text in
+  // place of the generic "Figure referenced by ..." fallback when present.
+  nameByFigureId?: Record<string, string | null>;
   // tableId -> Table.caption, same scheme entry.tableIds references
   // (computed by the caller, JobDetail.tsx, from Job.tableDescriptions).
   // A table with no real caption is absent here -- the Tables chip below
@@ -379,6 +394,7 @@ export function NodeDetailPanel({
           </Button>
         )}
       </div>
+      {moveSlot}
       {/* 'excluded' has no message of its own here -- the dialog header
           already shows a dedicated "Excluded from this run" badge right
           next to the title (NodeDetailDialog.tsx), so a second copy in
@@ -390,6 +406,16 @@ export function NodeDetailPanel({
             (entry.existingAdoId != null
               ? <>Read-only: this maps to an item that already exists in ADO (<span className="font-mono">WI-{entry.existingAdoId}</span>). Edit it in Azure DevOps.</>
               : 'Read-only: this item maps to an existing ADO work item, not a new one.')}
+          {/* Real gap this closes: fields being read-only says nothing about
+              POSITION -- a reviewer dragging this row to a new parent in
+              DiffTree.tsx (DESIGN.md §11.5) sees the move persist and
+              survive reload, with nothing telling them it's cosmetic. See
+              jobs.service.ts's confirm() toLink filter, which unconditionally
+              excludes reuse/dedup_skip from linkParentChild -- ADO enforces
+              at most one Parent relation per work item (confirmed live:
+              re-adding one 400s with TF401349), so a matched item's real
+              position is not this job's to re-assert. */}
+          {editability.reason === 'matched' && ' Its position in this tree is also read-only in ADO — moving it here only reorganizes your review, it never re-parents the real item.'}
           {editability.reason === 'job_locked' && `This job is no longer editable${jobStatus ? ` (status: ${jobStatus})` : ''}.`}
         </p>
       )}
@@ -597,7 +623,7 @@ export function NodeDetailPanel({
                     key={figureId}
                     className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface-alt p-2.5 sm:flex-row sm:items-start"
                   >
-                    <FigureImage jobId={jobId} figureId={figureId} active alt={`Figure referenced by ${entry.title}`} />
+                    <FigureImage jobId={jobId} figureId={figureId} active alt={nameByFigureId?.[figureId] || `Figure referenced by ${entry.title}`} />
                     <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                       {captionByFigureId?.[figureId] && (
                         // Final whole-branch review finding: Markdown's own

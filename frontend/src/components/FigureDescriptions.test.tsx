@@ -166,6 +166,38 @@ describe('FigureDescriptions', () => {
     expect(listItems.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('Task 5: renders the document\'s own figure name as the label instead of "Figure N:" when present', () => {
+    const items: FigureDescriptionEntry[] = [
+      { figureIndex: 1, name: 'Panel Layout Diagram', caption: 'A block diagram.', figureId: 'f0' },
+    ];
+    render(<FigureDescriptions jobId="job-1" items={items} />);
+    expect(screen.getByText('Panel Layout Diagram:')).toBeInTheDocument();
+    expect(screen.queryByText('Figure 1:')).not.toBeInTheDocument();
+  });
+
+  it('Task 5: falls back to "Figure N:" when the figure has no name', () => {
+    const items: FigureDescriptionEntry[] = [{ figureIndex: 1, name: null, caption: 'A block diagram.', figureId: 'f0' }];
+    render(<FigureDescriptions jobId="job-1" items={items} />);
+    expect(screen.getByText('Figure 1:')).toBeInTheDocument();
+  });
+
+  it('Task 5: renders a name-only entry (no caption) with just its name label, no empty caption block', () => {
+    // Widened filter: a figure with a name but no real caption (vision
+    // disabled/failed) still appears here -- see pipeline.worker.ts's
+    // figureDescriptions filter ("caption OR name").
+    const items: FigureDescriptionEntry[] = [{ figureIndex: 1, name: 'Panel Layout Diagram', caption: null, figureId: 'f0' }];
+    render(<FigureDescriptions jobId="job-1" items={items} />);
+    expect(screen.getByText('Panel Layout Diagram:')).toBeInTheDocument();
+  });
+
+  it('Task 5: uses the figure name for FigureImage\'s alt text instead of the generic ordinal', () => {
+    const items: FigureDescriptionEntry[] = [
+      { figureIndex: 1, name: 'Panel Layout Diagram', caption: 'A block diagram.', figureId: 'f0' },
+    ];
+    render(<FigureDescriptions jobId="job-1" items={items} />);
+    expect(screen.getByTestId('figure-f0')).toHaveTextContent('Panel Layout Diagram');
+  });
+
   it('passes active={false} to FigureImage while collapsed', () => {
     const items: FigureDescriptionEntry[] = [{ figureIndex: 1, caption: 'A figure', figureId: 'f0' }];
     render(<FigureDescriptions jobId="job-1" items={items} />);

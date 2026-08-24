@@ -145,6 +145,43 @@ def test_load_pptx_skips_a_degenerate_2x2_image_without_calling_describe_figure(
     assert len(figure_blocks) == 1
 
 
+def test_load_pptx_dedupes_the_same_image_bytes_reused_across_slides(tmp_path: Path) -> None:
+    # Gap C (mirrors pdf_loader.py's/docx_loader.py's own
+    # seen_figure_hashes): a logo/watermark shape reused across slides has
+    # no other filter to catch it in pptx -- the same image bytes must
+    # collapse to one figure, not one per slide.
+    from io import BytesIO
+
+    from PIL import Image
+
+    presentation = Presentation()
+    logo_buffer = Image.new("RGB", (40, 40), color="black")
+    real_buffer = Image.new("RGB", (40, 40), color="red")
+
+    for pil_image in (logo_buffer, logo_buffer, real_buffer):
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        buf = BytesIO()
+        pil_image.save(buf, format="PNG")
+        buf.seek(0)
+        slide.shapes.add_picture(buf, Inches(1), Inches(1))
+
+    path = tmp_path / "reused_image.pptx"
+    presentation.save(str(path))
+
+    calls: list[bytes] = []
+
+    def spy_describe_figure(image_bytes: bytes) -> str:
+        calls.append(image_bytes)
+        return "A real diagram."
+
+    doc = load_pptx(str(path), describe_figure=spy_describe_figure)
+
+    assert len(doc.figures) == 2  # logo counted once, plus the distinct image
+    assert len(calls) == 2  # the second logo occurrence never reaches vision
+    figure_blocks = [b for b in doc.blocks if b.kind == BlockKind.FIGURE]
+    assert len(figure_blocks) == 2
+
+
 def _order_key(source_ref) -> tuple[int, int]:
     """Local stand-in for tree_builder._order_key (owned by other in-flight
     work, not imported here): document-order sort key of (page or 0,

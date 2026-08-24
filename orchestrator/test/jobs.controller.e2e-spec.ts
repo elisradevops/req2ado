@@ -214,8 +214,15 @@ describe('JobsController (e2e)', () => {
     const res = await authedRequest(app.getHttpServer()).get('/jobs/job-1');
     expect(res.status).toBe(200);
     // areaPath is absent on this fixture -- workItemTypeCatalog resolution
-    // is skipped entirely (no project to resolve against) and stays {}.
-    expect(res.body).toEqual({ id: 'job-1', status: 'diff_ready', dryRunDiff: [], workItemTypeCatalog: {} });
+    // is skipped entirely (no project to resolve against) and stays {}, and
+    // workItemTypeCategoryLabels falls back to the identity map (CR: reparent).
+    expect(res.body).toEqual({
+      id: 'job-1',
+      status: 'diff_ready',
+      dryRunDiff: [],
+      workItemTypeCatalog: {},
+      workItemTypeCategoryLabels: { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' },
+    });
   });
 
   it('GET /jobs/:id returns 404 for an unknown job', async () => {

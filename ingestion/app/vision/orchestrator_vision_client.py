@@ -21,10 +21,19 @@ class FigureVisionResult(NamedTuple):
     caption + hoped-for magic-string sentinel with schema-constrained
     output. `significant=False` means "don't show this figure to the model
     at all" (main.py's caller sets Figure.caption=None in that case, reusing
-    the existing caption=None -> omitted-from-context convention unchanged)."""
+    the existing caption=None -> omitted-from-context convention unchanged).
+
+    `title` (Task 7): a short noun-phrase name for this figure, distinct
+    from `description`'s prose -- used ONLY as a fallback for Figure.name
+    when the document itself provides no "Figure N: Title" caption line
+    (see pdf_loader.py's _FIGURE_CAPTION_PATTERN); the document's own
+    caption always wins when both exist (main.py patches this in, not
+    here). None when the model omitted it or the figure isn't significant
+    -- an insignificant figure gets no name from either source."""
 
     significant: bool
     description: str
+    title: str | None = None
 
 
 _FIGURE_SIGNIFICANCE_SCHEMA = {
@@ -48,6 +57,16 @@ _FIGURE_SIGNIFICANCE_SCHEMA = {
                 "labeled section. No markdown (no headers, no bold, no "
                 "bullet/numbered lists), no LaTeX/math notation. Empty if "
                 "not significant."
+            ),
+        },
+        "title": {
+            "type": "string",
+            "description": (
+                "A short noun-phrase title for this figure (a few words, "
+                "not a sentence) -- e.g. 'CubeConnect PCB Interior View', "
+                "not 'This is a photo of...'. Used only as a fallback name "
+                "when the document itself provides no caption for this "
+                "figure. Empty if not significant."
             ),
         },
     },
@@ -85,7 +104,9 @@ def _build_prompt(document_context: str | None) -> str:
         "numbered lists) and do NOT use LaTeX/math notation -- plain prose "
         "only. Judge whether the figure has genuine informational content "
         "worth including, or whether it is decorative (a logo, a colored "
-        "placeholder block, a blank divider)."
+        "placeholder block, a blank divider). Also give a short noun-"
+        "phrase title for the figure (a few words, for use as a display "
+        "label) -- not a sentence, not a restatement of the description."
     )
     if not document_context:
         return base
@@ -179,7 +200,16 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
                 # be empty when not significant) and is returned -- and cached
                 # -- normally.
                 return None
-            return FigureVisionResult(significant=parsed["significant"], description=description)
+            # Task 7: title is optional (not in the schema's `required`
+            # list -- a model that omits it must not fail the whole parse,
+            # unlike significant/description above). Any non-string value
+            # (missing, null, wrong type) normalizes to None, same
+            # fail-open stance as raw_description above; an empty/
+            # whitespace-only title also normalizes to None rather than
+            # being used as a blank display label.
+            raw_title = parsed.get("title")
+            title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else None
+            return FigureVisionResult(significant=parsed["significant"], description=description, title=title)
     return None
 
 

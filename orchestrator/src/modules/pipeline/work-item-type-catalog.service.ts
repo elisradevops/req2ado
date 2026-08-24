@@ -50,6 +50,26 @@ export class WorkItemTypeCatalogService {
     );
   }
 
+  // Category ('Epic'|'Feature'|'Requirement', the internal label
+  // DryRunDiffEntry.type is always stored as -- see canNest.ts's own doc
+  // comment) -> this project's real ADO type name ('User Story',
+  // 'Product Backlog Item', ...). Used for DISPLAY LABELS only (e.g.
+  // AddChildForm's type picker) -- never for the value sent back to a diff
+  // route, which always stays the category. Fails open to the identity map
+  // (same pattern as backfill.service.ts's own "Fail OPEN, never closed"
+  // category set, and pipeline.worker.ts's `.catch(() => 'Requirement')`) so
+  // a resolution hiccup degrades to CMMI-shaped labels, never breaks the form.
+  async resolveCategoryLabels(
+    project: string | undefined,
+    credential?: AdoRequestCredential,
+  ): Promise<Record<'Epic' | 'Feature' | 'Requirement', string>> {
+    try {
+      return await this.mcpClient.discoverWorkItemTypeCategories(project, credential);
+    } catch {
+      return { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' };
+    }
+  }
+
   private async resolveIconDataUrl(iconId: string, color: string, credential?: AdoRequestCredential): Promise<string> {
     const cacheKey = `${iconId}:${color}`;
     const cached = WorkItemTypeCatalogService.iconCache.get(cacheKey);

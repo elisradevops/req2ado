@@ -65,6 +65,13 @@ export interface JobDetail {
   // vaulted ADO credential, or the resolve itself failed; WorkItemTypeBadge
   // falls back to its own hardcoded color/icon map in that case.
   workItemTypeCatalog?: Record<string, { color: string; iconDataUrl: string }>;
+  // Category ('Epic'/'Feature'/'Requirement', the internal label
+  // DryRunDiffEntry.type is always stored as) -> this project's real ADO
+  // type name, for DISPLAY LABELS only -- see
+  // WorkItemTypeCatalogService.resolveCategoryLabels's own doc comment.
+  // Defaults (server-side) to the identity map, never undefined here once a
+  // job has a diff.
+  workItemTypeCategoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
   // Task 4: JobTraceLinkFailure rows (see orchestrator's JobsService.getById
   // own doc comment) -- lets TraceLinkChips render a link whose write to
   // Azure DevOps actually failed distinctly from an ordinary resolved/

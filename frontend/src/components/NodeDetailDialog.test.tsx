@@ -201,4 +201,63 @@ describe('NodeDetailDialog', () => {
       await waitFor(() => expect(screen.getByRole('button', { name: /upload to ado \(wi-555\)/i })).toBeEnabled());
     });
   });
+
+  // DESIGN.md §11.5 -- the keyboard-accessible reparent control DiffTree's
+  // own drag-and-drop always claimed existed but never actually built.
+  describe('Move control', () => {
+    const EPIC: DryRunDiffEntry = { localId: 'epic1', parentLocalId: null, type: 'Epic', title: 'Root Epic', description: '', action: 'create', customerId: null };
+    const OTHER_EPIC: DryRunDiffEntry = { localId: 'epic2', parentLocalId: null, type: 'Epic', title: 'Other Epic', description: '', action: 'create', customerId: null };
+    const CHILD_FEATURE: DryRunDiffEntry = { localId: 'e1', parentLocalId: 'epic1', type: 'Feature', title: 'Req Title', description: 'Req body', action: 'create', customerId: '3.2.1' };
+
+    it('does not render when onMove is omitted', () => {
+      renderDialog({ entry: CHILD_FEATURE, jobStatus: 'diff_ready', diffByLocalId: { epic1: EPIC, e1: CHILD_FEATURE } });
+      expect(screen.queryByRole('button', { name: /move this feature to a different parent/i })).not.toBeInTheDocument();
+    });
+
+    it('does not render once the job leaves diff_ready, even with onMove provided', () => {
+      renderDialog({ entry: CHILD_FEATURE, jobStatus: 'succeeded', onMove: vi.fn(), diffByLocalId: { epic1: EPIC, e1: CHILD_FEATURE } });
+      expect(screen.queryByRole('button', { name: /move this feature to a different parent/i })).not.toBeInTheDocument();
+    });
+
+    it('shows the current parent and a working "Move to…" trigger when diff_ready and onMove is provided', () => {
+      renderDialog({ entry: CHILD_FEATURE, jobStatus: 'diff_ready', onMove: vi.fn(), diffByLocalId: { epic1: EPIC, e1: CHILD_FEATURE } });
+      expect(screen.getByText('Root Epic')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /move this feature to a different parent/i })).toBeEnabled();
+    });
+
+    it('shows "Top level (no parent)" for a root entry', () => {
+      renderDialog({
+        entry: EPIC,
+        jobStatus: 'diff_ready',
+        onMove: vi.fn(),
+        diffByLocalId: { epic1: EPIC, epic2: OTHER_EPIC },
+      });
+      expect(screen.getByText('Top level (no parent)')).toBeInTheDocument();
+    });
+
+    it('calls onMove with the chosen parent when a candidate is selected from the picker', async () => {
+      const onMove = vi.fn();
+      renderDialog({ entry: CHILD_FEATURE, jobStatus: 'diff_ready', onMove, diffByLocalId: { epic1: EPIC, epic2: OTHER_EPIC, e1: CHILD_FEATURE } });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.click(screen.getByRole('button', { name: /move this feature to a different parent/i }));
+      await userEvent.click(await screen.findByRole('button', { name: /other epic/i }));
+
+      expect(onMove).toHaveBeenCalledWith('e1', { parentLocalId: 'epic2' });
+    });
+
+    // Real gap this closes: dragging a reuse/dedup_skip row's DISPLAY
+    // position is allowed (DiffTree.tsx's own "already in ADO" badge
+    // explains why it's cosmetic) -- the keyboard path must offer the same,
+    // not a narrower, capability.
+    it('is available for a reuse-matched entry too -- its own display position is still movable', () => {
+      renderDialog({
+        entry: { ...CHILD_FEATURE, action: 'reuse', existingAdoId: 42 },
+        jobStatus: 'diff_ready',
+        onMove: vi.fn(),
+        diffByLocalId: { epic1: EPIC, e1: { ...CHILD_FEATURE, action: 'reuse', existingAdoId: 42 } },
+      });
+      expect(screen.getByRole('button', { name: /move this feature to a different parent/i })).toBeEnabled();
+    });
+  });
 });

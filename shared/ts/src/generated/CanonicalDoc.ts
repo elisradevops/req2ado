@@ -98,6 +98,10 @@ export interface TableCell {
 export interface Figure {
   id: string;
   caption?: string | null;
+  /**
+   * The author's own short title for this figure, parsed from a 'Figure N: Title' caption line in the source document itself, or an LLM-generated short title when the document provides no caption line of its own. Distinct from `caption` (the vision model's prose description): `name` is a short noun phrase meant for display (UI label, ADO attachment filename).
+   */
+  name?: string | null;
   source_ref: SourceRef;
   /**
    * Why `caption` is null, when it is. 'insignificant': the vision model judged the figure decorative/non-technical. 'vision_failed': the vision call itself errored/timed out or returned an unparseable response. Null both when a real caption was produced AND when vision never ran for this figure at all (disabled for the whole run, or BASELINE mode) -- the latter is deliberately not distinguished here; see CanonicalDoc.vision_active and WarningKind.vision_captioning_disabled for that case instead.

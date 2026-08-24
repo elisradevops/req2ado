@@ -832,6 +832,61 @@ describe('JobDetail', () => {
     expect(screen.getByText(/diff \(0\)/i)).toBeInTheDocument();
   });
 
+  // CR: reparent -- real user feedback after deploying: "where is the
+  // workitem creation?" -- there was no entry point to create a new item
+  // with no anchor node at all (e.g. a first top-level Epic). Reuses
+  // AddChildCard/AddChildForm with no parentEntry, SURVEY mode only (see
+  // AddChildForm.tsx's own doc comment for why BASELINE has no
+  // anchor-independent type model).
+  describe('the tree toolbar "+ New item" entry point', () => {
+    it('renders for a SURVEY job at diff_ready, and creates a root-level item via addDiffEntry', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-40',
+        status: 'diff_ready',
+        mode: 'survey',
+        dryRunDiff: [],
+      } as any);
+      vi.mocked(jobsApi.addDiffEntry).mockResolvedValue({
+        dryRunDiff: [{ localId: 'e1', parentLocalId: null, type: 'Epic', title: 'New Epic', description: 'd', action: 'create', customerId: null }],
+      });
+      renderAt('job-40');
+      await waitFor(() => expect(screen.getByRole('button', { name: /^new item$/i })).toBeInTheDocument());
+
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(screen.getByRole('button', { name: /^new item$/i }));
+      await userEvent.type(screen.getByLabelText(/title/i), 'New Epic');
+      await userEvent.type(screen.getByLabelText(/description/i), 'd');
+      await userEvent.click(screen.getByRole('button', { name: /^add$/i }));
+
+      await waitFor(() => expect(jobsApi.addDiffEntry).toHaveBeenCalledWith('job-40', { parentLocalId: null, type: 'Epic', title: 'New Epic', description: 'd' }));
+      expect(await screen.findByText('New Epic')).toBeInTheDocument();
+    });
+
+    it('does not render for a BASELINE job -- no anchor-independent type model', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-41',
+        status: 'diff_ready',
+        mode: 'baseline',
+        dryRunDiff: [{ localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Row one', description: '', action: 'create', customerId: null, tags: [] }],
+      } as any);
+      renderAt('job-41');
+      await waitFor(() => expect(screen.getByText('Row one')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /^new item$/i })).not.toBeInTheDocument();
+    });
+
+    it('does not render once the job is no longer diff_ready', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-42',
+        status: 'succeeded',
+        mode: 'survey',
+        dryRunDiff: [{ localId: 'a', parentLocalId: null, type: 'Epic', title: 'Row one', description: '', action: 'create', customerId: null, tags: [] }],
+      } as any);
+      renderAt('job-42');
+      await waitFor(() => expect(screen.getByText('Row one')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /^new item$/i })).not.toBeInTheDocument();
+    });
+  });
+
   describe('state-driven layout (DESIGN.md Track B, phase B7)', () => {
     it('renders no tabs and no filter textbox while running -- no dead space for a job still parsing/analyzing', async () => {
       vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-20', status: 'running', dryRunDiff: null } as any);

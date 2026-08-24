@@ -105,6 +105,44 @@ def test_describe_figure_calls_the_orchestrator_vision_endpoint_with_bearer_auth
     assert result == FigureVisionResult(significant=True, description="A block diagram showing power distribution.")
 
 
+def test_describe_figure_parses_a_title_when_the_model_provides_one() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"description": json.dumps({"significant": True, "description": "A block diagram.", "title": "Power Distribution Diagram"})},
+        )
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.describe_figure(b"fake-png-bytes")
+    assert result == FigureVisionResult(significant=True, description="A block diagram.", title="Power Distribution Diagram")
+
+
+def test_describe_figure_title_defaults_to_none_when_the_model_omits_it() -> None:
+    # Not in the schema's `required` list -- a model that omits it must not
+    # fail the whole parse, unlike significant/description.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"description": json.dumps({"significant": True, "description": "A block diagram."})})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.describe_figure(b"fake-png-bytes")
+    assert result == FigureVisionResult(significant=True, description="A block diagram.", title=None)
+
+
+def test_describe_figure_title_normalizes_a_blank_string_to_none() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"description": json.dumps({"significant": True, "description": "A block diagram.", "title": "   "})})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client.describe_figure(b"fake-png-bytes")
+    assert result.title is None
+
+
 def test_describe_figure_sends_the_image_base64_encoded() -> None:
     captured: dict = {}
 

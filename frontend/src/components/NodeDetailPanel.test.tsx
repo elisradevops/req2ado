@@ -655,6 +655,20 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText('WI-7')).toBeInTheDocument();
   });
 
+  // Investigation finding: fields being read-only said nothing about
+  // POSITION -- a reviewer reparenting this row (drag or the "Move to..."
+  // control) sees the move persist with no indication it never reaches
+  // ADO. Extends the same read-only message rather than adding a second one.
+  it('also explains that a matched entry\'s position in the tree is read-only in ADO, distinct from its fields', () => {
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'reuse', existingAdoId: 42, customerId: null, tags: [] }}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/its position in this tree is also read-only in ado/i)).toBeInTheDocument();
+  });
+
   it('explains "job no longer editable" for a create entry once the job leaves diff_ready', () => {
     renderPanel(
       <NodeDetailPanel

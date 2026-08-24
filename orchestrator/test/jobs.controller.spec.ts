@@ -135,7 +135,10 @@ describe('JobsController.getById', () => {
     const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB) };
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
     const catalog = { Requirement: { color: '#009CCC', iconDataUrl: 'data:image/svg+xml;base64,AAA' } };
-    const workItemTypeCatalogService = { resolve: jest.fn().mockResolvedValue(catalog) };
+    const workItemTypeCatalogService = {
+      resolve: jest.fn().mockResolvedValue(catalog),
+      resolveCategoryLabels: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' }),
+    };
     const controller = new JobsController(
       jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
     );
@@ -146,7 +149,22 @@ describe('JobsController.getById', () => {
     // path segment) -- the frontend never has to send this back.
     expect(workItemTypeCatalogService.resolve).toHaveBeenCalledWith('Project', { orgUrl: 'https://ado.example', pat: 'x' });
     expect(result.workItemTypeCatalog).toEqual(catalog);
+    // CR: reparent -- the category->real-name label map used by
+    // AddChildForm's type picker (label only, never the submitted value).
+    expect(workItemTypeCatalogService.resolveCategoryLabels).toHaveBeenCalledWith('Project', { orgUrl: 'https://ado.example', pat: 'x' });
+    expect(result.workItemTypeCategoryLabels).toEqual({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' });
     expect((result as any).userId).toBeUndefined(); // still stripped, same as before this field existed
+  });
+
+  it('falls back to the identity category-label map when there is no diff yet', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, dryRunDiff: null }) };
+    const controller = new JobsController(
+      jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024,
+    );
+
+    const result = await controller.getById('job-1', TEST_USER);
+
+    expect(result.workItemTypeCategoryLabels).toEqual({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' });
   });
 
   it('does not attempt catalog resolution when the job has no diff yet (still running)', async () => {
@@ -190,6 +208,122 @@ describe('JobsController.getById', () => {
 
     expect(result.workItemTypeCatalog).toEqual({});
     expect(result.id).toBe('job-1'); // the job itself is still returned
+  });
+});
+
+describe('JobsController.moveDiffEntry', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+
+  it('delegates to jobsService.moveDiffEntry with parentLocalId/anchorLocalId/placement', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      moveDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n0', parentLocalId: 'n1' }]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    const result = await controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', 'n2', 'before');
+
+    expect(jobsService.moveDiffEntry).toHaveBeenCalledWith('job-1', 'n0', {
+      parentLocalId: 'n1',
+      anchorLocalId: 'n2',
+      placement: 'before',
+    });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', parentLocalId: 'n1' }] });
+  });
+
+  it('accepts an explicit null parentLocalId (root placement)', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      moveDiffEntry: jest.fn().mockResolvedValue([]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await controller.moveDiffEntry('job-1', 'n0', TEST_USER, null, undefined, undefined);
+
+    expect(jobsService.moveDiffEntry).toHaveBeenCalledWith('job-1', 'n0', {
+      parentLocalId: null,
+      anchorLocalId: undefined,
+      placement: undefined,
+    });
+  });
+
+  it('rejects a missing parentLocalId (undefined is not the same as null)', async () => {
+    const jobsService = { getById: jest.fn(), moveDiffEntry: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined)).rejects.toThrow(
+      'parentLocalId is required',
+    );
+    expect(jobsService.getById).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid placement value', async () => {
+    const jobsService = { getById: jest.fn(), moveDiffEntry: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', undefined, 'sideways' as any)).rejects.toThrow(
+      "placement must be 'before' or 'after'",
+    );
+  });
+
+  it('404s for a job that does not belong to the caller', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }), moveDiffEntry: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', undefined, undefined)).rejects.toThrow('not found');
+    expect(jobsService.moveDiffEntry).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsController.addDiffEntry', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+
+  it('delegates to jobsService.addDiffEntry with a real parentLocalId', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      addDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n1' }]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    const result = await controller.addDiffEntry('job-1', TEST_USER, 'n0', 'Requirement', 'Title', 'Desc');
+
+    expect(jobsService.addDiffEntry).toHaveBeenCalledWith('job-1', { parentLocalId: 'n0', type: 'Requirement', title: 'Title', description: 'Desc' });
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n1' }] });
+  });
+
+  // CR: reparent -- explicit null (root placement) must be accepted, not
+  // treated the same as a missing field the way `!parentLocalId` would.
+  it('accepts an explicit null parentLocalId (root placement)', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      addDiffEntry: jest.fn().mockResolvedValue([]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await controller.addDiffEntry('job-1', TEST_USER, null, 'Epic', 'Title', 'Desc');
+
+    expect(jobsService.addDiffEntry).toHaveBeenCalledWith('job-1', { parentLocalId: null, type: 'Epic', title: 'Title', description: 'Desc' });
+  });
+
+  it('rejects a missing (undefined) parentLocalId', async () => {
+    const jobsService = { getById: jest.fn(), addDiffEntry: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.addDiffEntry('job-1', TEST_USER, undefined, 'Epic', 'Title', 'Desc')).rejects.toThrow(
+      'parentLocalId (or null for the top level)',
+    );
+    expect(jobsService.getById).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing type/title/description', async () => {
+    const jobsService = { getById: jest.fn(), addDiffEntry: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(controller.addDiffEntry('job-1', TEST_USER, 'n0', undefined, 'Title', 'Desc')).rejects.toThrow(
+      'parentLocalId (or null for the top level)',
+    );
   });
 });
 
