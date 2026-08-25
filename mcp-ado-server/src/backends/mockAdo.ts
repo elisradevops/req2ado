@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import type {
   AdoBackend,
+  AdoFieldDescriptor,
   AdoProject,
   AreaPathNode,
   CreateWorkItemInput,
@@ -114,6 +115,35 @@ export class MockAdoBackend implements AdoBackend {
       'Microsoft.VSTS.CMMI.RequirementType',
       'Custom.CustomerId',
     ];
+  }
+
+  async discoverFieldsDetailed(workItemType: string): Promise<AdoFieldDescriptor[]> {
+    // Same field set as discoverFields, plus realistic picklist metadata for
+    // the one field that actually has any (Microsoft.VSTS.CMMI.
+    // RequirementType) -- the real 9-value CMMI taxonomy, confirmed against
+    // Microsoft's own docs, good enough to exercise the mapping/priority
+    // logic without a real ADO server.
+    const names = await this.discoverFields(workItemType);
+    return names.map((referenceName) => {
+      if (referenceName === 'Microsoft.VSTS.CMMI.RequirementType') {
+        return {
+          referenceName,
+          allowedValues: [
+            'Business Objective',
+            'Feature',
+            'Functional',
+            'Interface',
+            'Operational',
+            'Quality of Service',
+            'Safety',
+            'Scenario',
+            'Security',
+          ],
+          alwaysRequired: true,
+        };
+      }
+      return { referenceName, allowedValues: [], alwaysRequired: false };
+    });
   }
 
   async readAreaPaths(_depth: number, _project?: string): Promise<AreaPathNode> {

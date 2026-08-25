@@ -25,6 +25,14 @@ _ANALYZE_SECTION_MARKER = "analyzing one section"
 # their own titles standing in for missing descriptions.
 _AUTHOR_CONTENT_MARKER = "authoring the requirement text"
 
+# Substring unique to distill_survey_title.v1.txt -- fires (300553) when a
+# fixture's own title happens to be short/generic (e.g. "Power"), which none
+# of these tests care about distinguishing from a real one. The shared
+# handler below answers it with the SAME title the node already had (a
+# harmless no-op distillation) rather than falling through to the generic
+# "{}" default, which has no 'title' key and would KeyError.
+_DISTILL_TITLE_MARKER = "single-line replacement title"
+
 
 def _authored_content(nodes: list[dict], request: httpx.Request) -> httpx.Response:
     """Answers a STAGE 3 author_content call from the same node fixture the
@@ -75,17 +83,85 @@ def test_level_endpoint_returns_worktree_json() -> None:
     assert body["nodes"][3]["type"] == "Requirement"
 
 
-def test_level_endpoint_accepts_and_stamps_customer_id() -> None:
+def test_level_endpoint_derives_customer_id_per_requirement_from_its_own_numbering() -> None:
+    # Customer ID is a per-Requirement, document-derived attribute, never a
+    # job-level input -- /level no longer accepts a customer_id request
+    # param at all (a caller that still sends one is silently ignored, not
+    # rejected -- FastAPI drops undeclared query params). Only the leaf
+    # Requirement, and only from its OWN literal numbering, ever gets one;
+    # the Epic/Feature ancestors never do, even though they have real
+    # numbering of their own ("1", "1.1").
     doc = CanonicalDoc(
         document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
         blocks=[
             Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Receiver", source_ref=_sr("x.txt")),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Broadcast & Inputs", source_ref=_sr("x.txt")),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 Channel Scan", source_ref=_sr("x.txt")),
+            Block(
+                id="b3", kind=BlockKind.PARAGRAPH,
+                text="1.1.1.1 The receiver shall scan all channels within 10 seconds.",
+                source_ref=_sr("x.txt"),
+            ),
         ],
     )
     response = client.post("/level", params={"customer_id": "CUST-042"}, json=doc.model_dump(mode="json"))
     assert response.status_code == 200
     body = response.json()
-    assert body["nodes"][0]["customer_id"] == "CUST-042"
+    assert body["nodes"][3]["type"] == "Requirement"
+    assert body["nodes"][3]["customer_id"] == "1.1.1.1"
+    assert body["nodes"][0]["customer_id"] is None
+    assert body["nodes"][1]["customer_id"] is None
+    assert body["nodes"][2]["customer_id"] is None
+
+
+def test_level_endpoint_survey_mode_never_returns_tags_on_a_non_requirement_node(monkeypatch) -> None:
+    # End-to-end guard for the same invariant test_content_stage_never_tags_
+    # an_epic_or_feature_even_when_the_model_returns_tags_for_it pins at the
+    # unit level: even a real model response carrying tags for an Epic/
+    # Feature must never survive into the final tree.
+    nodes = [
+        {
+            "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Power",
+            "text": "Power management features.", "tags": ["safety"],
+        },
+        {
+            "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Power on",
+            "text": "The system shall power on within 5 seconds.", "tags": ["functional"],
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        system_prompt = body["messages"][0]["content"]
+        if _ANALYZE_SECTION_MARKER in system_prompt:
+            return httpx.Response(200, json={"content": json.dumps({"nodes": nodes})})
+        if _AUTHOR_CONTENT_MARKER in system_prompt:
+            return _authored_content(nodes, request)
+        if _DISTILL_TITLE_MARKER in system_prompt:
+            requested_text = json.loads(body["messages"][1]["content"])["text"]
+            return httpx.Response(200, json={"content": json.dumps({"title": requested_text})})
+        return httpx.Response(200, json={"content": "{}"})
+
+    original_init = OrchestratorLlmClient.__init__
+
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, cache=None):
+        original_init(self, base_url, bearer_token, model=model)
+        self._transport = httpx.MockTransport(handler)
+
+    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
+    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
+
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Power", source_ref=_sr("x.txt"))],
+    )
+    response = client.post("/level", params={"mode": "survey"}, json=doc.model_dump(mode="json"))
+    assert response.status_code == 200
+    body = response.json()
+    feature_node = next(n for n in body["nodes"] if n["type"] == "Feature")
+    requirement_node = next(n for n in body["nodes"] if n["type"] == "Requirement")
+    assert feature_node["tags"] == []
+    assert requirement_node["tags"] == ["functional"]
 
 
 def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> None:

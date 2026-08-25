@@ -159,6 +159,10 @@ const KIND_META: Record<string, KindMeta> = {
     title: 'Front matter folded automatically',
     tip: 'Content preceding the first heading/numbering was folded into a synthetic front-matter node instead of being dropped.',
   },
+  survey_title_distilled: {
+    title: 'Title replaced automatically',
+    tip: "This item's title was too generic or short to be useful, so it was replaced with a title distilled from the item's own generated description.",
+  },
   trace_link_inference_failed: {
     title: 'Trace-link inference failed',
     tip: 'Whole-document trace/coverage link inference failed -- no trace links were added, but every proposed item above is otherwise unaffected.',
@@ -174,6 +178,18 @@ const KIND_META: Record<string, KindMeta> = {
   ado_verification_failed: {
     title: 'Could not verify ADO items still exist',
     tip: 'A batch check confirming matched Azure DevOps items still exist failed -- they\'re shown unverified rather than blocked.',
+  },
+  missing_source_reference: {
+    title: 'Requirement has no Customer ID / source reference',
+    tip: 'The document had no literal number or ID this requirement could use as its own source reference -- none was invented. If the source document has one that could not be auto-detected, add it manually before confirming.',
+  },
+  classification_not_representable: {
+    title: "Classification not representable in this project's field",
+    tip: "This requirement's classification has no matching value in this Azure DevOps project's Requirement Type field, so it was left at ADO's own default. Review and set it manually if needed.",
+  },
+  customer_id_field_not_configured: {
+    title: 'Customer ID field not configured in this project',
+    tip: "This requirement's Customer ID could not be written to Azure DevOps -- no matching field exists on the Requirement type in this project. The value is still saved in req2ado's own review UI.",
   },
   other: {
     title: 'Other analysis notices',

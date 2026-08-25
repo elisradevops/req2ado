@@ -16,6 +16,17 @@ WORKDIR /app
 # without this Prisma silently defaults to the wrong (openssl-1.1.x) engine
 # binary and fails at runtime with "Error loading shared library libssl.so.1.1".
 RUN apk add --no-cache openssl
+# Optional, empty by default -- a developer on a network with TLS-
+# intercepting middleware (e.g. a corporate proxy) can supply an extra
+# trusted CA certificate for THIS build only, via docker-compose.override.yml
+# (gitignored, never committed -- see .gitignore). `prisma generate` below
+# makes its own outbound HTTPS fetch (the query-engine binary from
+# binaries.prisma.sh); with no cert supplied, this file is empty and
+# NODE_EXTRA_CA_CERTS resolves to zero extra certs, i.e. Node's own default
+# trust store, unchanged from before this existed.
+ARG EXTRA_CA_CERT=""
+RUN printf '%s' "$EXTRA_CA_CERT" > /tmp/extra-ca.pem
+ENV NODE_EXTRA_CA_CERTS=/tmp/extra-ca.pem
 # @req2ado/shared-ts (S10's codegen'd TS types, orchestrator/package.json's
 # only cross-package dependency) is referenced as `file:../shared/ts` --
 # pnpm's `workspace:*` protocol (the idiomatic monorepo spec) is NOT

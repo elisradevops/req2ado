@@ -6,6 +6,6 @@ For EACH node id in the input, return an object with 'description' and 'tags'.
 
 Ground every description in the section text you were given. Do not invent values, limits, or obligations the section does not state. A node whose title names something the section covers only briefly still gets a short, honest description of exactly what the section does say about it -- never padding, never invented detail.
 
-'tags': zero or more of: __TAG_VOCABULARY__. Use an empty array when none genuinely applies.
+'tags': for a Requirement node ONLY, zero or more of: __TAG_VOCABULARY__. Use an empty array when none genuinely applies. For an Epic or Feature, always return an empty array -- classification applies to individual requirements, not the containers grouping them.
 
 Return ONLY a JSON object with the SAME node id keys, each mapped to an object with 'description' (string) and 'tags' (array of strings). Never invent a node id not present in the input. The input contains exactly __NODE_COUNT__ node(s). Return exactly __NODE_COUNT__ entries in your response -- one for EVERY node id in the input, none omitted, none invented. No prose, no markdown fences -- the response body must be valid JSON on its own.

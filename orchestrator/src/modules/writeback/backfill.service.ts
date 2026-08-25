@@ -166,22 +166,16 @@ export class BackfillService {
       // Same scheme as ingestion's fidelity_hash (sha256 of the exact
       // description text) so a document whose content matches this
       // manually-created item verbatim resolves to 'reuse', not 'create'.
-      // customerId is always null here -- a manually-created item's
-      // Customer ID field value (if any) isn't reliably knowable without
-      // per-type field discovery, and req2ado's own idempotency records
-      // are ALSO customerId:null for any node whose source document never
-      // supplied one, so this is consistent with the existing scheme, not
-      // a new assumption.
       const sourceHash = createHash('sha256').update(description).digest('hex');
-      const existing = await this.idempotencyService.lookup(sourceHash, null, itemAreaPath);
+      const existing = await this.idempotencyService.lookup(sourceHash, itemAreaPath);
       if (existing === null) {
         try {
-          await this.idempotencyService.record(sourceHash, null, itemAreaPath, item.id);
+          await this.idempotencyService.record(sourceHash, itemAreaPath, item.id);
         } catch (error) {
           // Two distinct manual items sharing byte-identical description
           // text (or a race against a concurrent backfill run) would
-          // violate the (sourceHash, customerId, areaPath) unique
-          // constraint -- never let one collision abort the whole batch.
+          // violate the (sourceHash, areaPath) unique constraint -- never
+          // let one collision abort the whole batch.
           // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
           console.error(`Backfill: idempotency record failed for item ${item.id}:`, error);
         }

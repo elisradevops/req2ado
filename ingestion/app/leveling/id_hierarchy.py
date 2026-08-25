@@ -231,6 +231,17 @@ class HierarchyRow(NamedTuple):
     # `description` is real, source-derived text but should NOT be treated
     # as finished requirement prose without a synthesis pass.
     needs_synthesis: bool = False
+    # True only for conventions 1/2 (id_text is a REAL document-authored
+    # identifier, e.g. a literal "1.1.2.2" typed/printed in the source).
+    # False (the default) for convention 3, whose id_text is a fabricated
+    # "h"-prefixed running counter reconstructing Word's own auto-numbering
+    # -- cosmetic, never the document's own printed number (see
+    # rows_from_heading_structure's own docstring). This is the single
+    # machine-checkable fact id_tree_builder uses to decide whether a
+    # Requirement node's per-node Customer ID / source-requirement-number
+    # field may be populated from id_text at all -- never from a cosmetic
+    # counter, matching this codebase's "never fabricate" rule.
+    id_text_is_authored: bool = False
 
 
 def is_letter_segment(segment: int) -> bool:
@@ -434,6 +445,10 @@ def _resolve_hierarchy_rows(
             node_type=node_type, parent_index=parent_index,
             id_text=id_text_from_segments(segments),
             id_disambiguator_needed=id_disambiguator_needed,
+            # Conventions 1/2 only (this resolver's only two callers) --
+            # id_text here is a REAL document-authored identifier (see
+            # HierarchyRow.id_text_is_authored's own docstring).
+            id_text_is_authored=True,
         ))
     return rows
 

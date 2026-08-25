@@ -165,6 +165,110 @@ describe('JobDetail', () => {
     expect(screen.getByText(/infer_trace_links — document/i)).toBeInTheDocument();
   });
 
+  it('shows a resume-safe banner for a diff_ready job with a nonzero createdItemCount (300577)', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-19',
+      status: 'diff_ready',
+      dryRunDiff: [],
+      createdItemCount: 3,
+    } as any);
+
+    renderAt('job-19');
+
+    await waitFor(() => expect(screen.getByText(/already written to azure devops/i)).toBeInTheDocument());
+    expect(screen.getByText(/3 work items/i)).toBeInTheDocument();
+  });
+
+  it('does not render the resume-safe banner for a diff_ready job with no prior partial write', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-20',
+      status: 'diff_ready',
+      dryRunDiff: [],
+      createdItemCount: 0,
+    } as any);
+
+    renderAt('job-20');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /confirm/i })).toBeInTheDocument());
+    expect(screen.queryByText(/already written to azure devops/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a Validate button for a job with createdItemCount > 0, and renders a valid result on click (WID 300578)', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-21',
+      status: 'diff_ready',
+      dryRunDiff: [],
+      createdItemCount: 2,
+    } as any);
+    vi.spyOn(jobsApi, 'validateCreatedTree').mockResolvedValue({ valid: true, checkedCount: 2, mismatches: [] });
+
+    renderAt('job-21');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^validate$/i })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /^validate$/i }));
+
+    expect(jobsApi.validateCreatedTree).toHaveBeenCalledWith('job-21');
+    await waitFor(() => expect(screen.getByText(/all 2 checked work items match/i)).toBeInTheDocument());
+  });
+
+  it('renders mismatches from a failed Validate result, using the synthetic "existence" field for a missing item', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-22',
+      status: 'diff_ready',
+      dryRunDiff: [],
+      createdItemCount: 2,
+    } as any);
+    vi.spyOn(jobsApi, 'validateCreatedTree').mockResolvedValue({
+      valid: false,
+      checkedCount: 2,
+      mismatches: [
+        { localId: 'n0', adoWorkItemId: 100, field: 'System.Title', expected: 'Real title', actual: 'Wrong title' },
+        { localId: 'n1', adoWorkItemId: 101, field: 'existence', expected: 'work item exists in ADO', actual: 'not found' },
+      ],
+    });
+
+    renderAt('job-22');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^validate$/i })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /^validate$/i }));
+
+    await waitFor(() => expect(screen.getByText(/2 mismatches found/i)).toBeInTheDocument());
+    expect(screen.getByText(/WI-100/)).toBeInTheDocument();
+    expect(screen.getByText(/WI-101/)).toBeInTheDocument();
+    expect(screen.getByText(/work item exists in ADO/)).toBeInTheDocument();
+  });
+
+  it('surfaces a toast and does not crash when validateCreatedTree rejects', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-23',
+      status: 'diff_ready',
+      dryRunDiff: [],
+      createdItemCount: 1,
+    } as any);
+    vi.spyOn(jobsApi, 'validateCreatedTree').mockRejectedValue(new Error('network error'));
+
+    renderAt('job-23');
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^validate$/i })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /^validate$/i }));
+
+    await waitFor(() => expect(screen.getByText(/failed to validate/i)).toBeInTheDocument());
+  });
+
+  it('does not render a Validate button for a diff_ready job with no created items yet', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-24',
+      status: 'diff_ready',
+      dryRunDiff: [],
+      createdItemCount: 0,
+    } as any);
+
+    renderAt('job-24');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /confirm/i })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /^validate$/i })).not.toBeInTheDocument();
+  });
+
   it('does not render a debug-captures section when there are none, and still shows the audit trail on fetch failure', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({ id: 'job-18', status: 'diff_ready', dryRunDiff: [] } as any);
     vi.spyOn(jobsApi, 'getAudit').mockResolvedValue([{ id: 'a1', message: 'Job submitted: x.docx', createdAt: '2026-07-09T00:00:00Z' }]);

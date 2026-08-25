@@ -4,15 +4,25 @@ from typing import Protocol
 
 from app.distillation.title import extract_baseline_title
 
+# Status (300553, corrected -- this module now DOES have a real caller):
+# titles from the batched whole-document generation call (see
+# llm_leveling.py's build_survey_tree/_author_branch_content) stand as-is in
+# the common case, but a title that's too generic/short
+# (distillation.title.title_is_low_quality) is now corrected via
+# distill_survey_title once the node's real description text exists to
+# distill FROM -- OrchestratorLlmClient.distill_title is the real
+# implementation, wired the same way as every other TitleTagClient/
+# SynthesisClient/ParentSummaryClient-style capability in this codebase (one
+# client, many Protocols). See _author_branch_content for the actual gate.
+
 
 class TitleDistillationClient(Protocol):
-    """Interface for SURVEY-mode title distillation. No real implementation
-    exists in this phase — the orchestrator's LLM redaction-proxy (which
-    would host the actual Open WebUI/Ollama call) is separate, not-yet-built
-    infrastructure. Matches the runtime prompt contract documented in
-    docs/architecture.md: 'item text + 256 limit -> single-line title (first
-    sentence if descriptive, else concise summary/paraphrase); enforce
-    <=256.' Mirrors llm_leveling.py's LlmLevelingClient pattern (Phase 2)."""
+    """Interface for SURVEY-mode title distillation, backed by
+    OrchestratorLlmClient.distill_title (a real /llm/chat call through the
+    orchestrator's redaction-proxy). Matches the runtime prompt contract
+    documented in docs/architecture.md: 'item text + 256 limit -> single-line
+    title (first sentence if descriptive, else concise summary/paraphrase);
+    enforce <=256.'"""
 
     def distill_title(self, text: str, max_length: int) -> str: ...
 

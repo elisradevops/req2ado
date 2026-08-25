@@ -15,7 +15,14 @@ import { IngestionHttpError, type IngestionHttpClient } from './ingestion-http.c
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
+import { summarizeDiffEntries } from './diff-summary';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
+import {
+  DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES,
+  REQUIREMENT_TAG_PRIORITY,
+  REQUIREMENT_TAG_TO_ADO_VALUE,
+} from '../../config/requirement-type-fields';
+import { DEFAULT_SE_COVERAGE_REF_FIELD_CANDIDATES } from '../../config/se-coverage-ref-fields';
 import { normalizeAdoStoredHtml, toAdoDescriptionHtml } from './description-html';
 import type { JobEventsPublisher } from './job-events.publisher';
 import { canNest, canBeRoot } from './canNest';
@@ -74,16 +81,7 @@ export interface SubmitJobInput {
   // areaPath (ADO write-back destination + idempotency key only). Nullable:
   // KB grounding simply stays off for a job with no resolved identity.
   userId: string | null;
-  customerId: string | null;
   mode: 'baseline' | 'survey';
-  // True when this job ingests a follow-up document against requirements
-  // already ingested under the same area path -- gates whether
-  // pipeline.worker.ts runs the dedup-similarity check (see Job.followUp's
-  // own schema.prisma doc comment). Defaults to false in submit() below,
-  // matching pre-follow-up-mode behavior only insofar as dedup previously
-  // ran unconditionally on every job -- see pipeline.worker.ts for the
-  // actual behavior change.
-  followUp?: boolean;
   fileBuffer: Buffer;
   filename: string;
   sourceHash: string;
@@ -98,6 +96,12 @@ export interface SubmitJobInput {
   // passes it back in here as a real override, so a resubmit pins to what
   // actually ran, not to whatever today's config default happens to be.
   model?: string;
+  // Set only when this job was created by BatchService.pumpOnce() (NEW-05
+  // batch/folder ingestion) -- passed straight into the Job row (see
+  // Job.batchId's own schema.prisma doc comment for why it's relation-free).
+  // undefined for every non-batch caller, same as every other optional field
+  // here -- no behavior change to any existing submit() caller.
+  batchId?: string | null;
 }
 
 export interface JobSummary {
@@ -113,6 +117,10 @@ export interface JobSummary {
   // Backed by CreatedItemMapping, one row per item actually created.
   createdItemCount: number;
   createdAt: Date;
+  // Set only for a job submitted as part of a batch (NEW-05) -- lets
+  // JobsList render a "Batch" chip linking back to the batch's own status
+  // page. null/undefined for the overwhelming majority of jobs.
+  batchId: string | null;
 }
 
 @Injectable()
@@ -140,6 +148,17 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // step, still updates Job.status/AuditEntry) since a unit test
     // exercising unrelated methods has no reason to also wire up Redis.
     private readonly jobEventsPublisher?: JobEventsPublisher,
+    // Trailing, after jobEventsPublisher (not alongside customerIdFieldCandidates
+    // above) so every existing test call site constructing JobsService with a
+    // shorter positional arg list keeps working unchanged -- same reasoning as
+    // jobEventsPublisher's own placement.
+    private readonly requirementTypeFieldCandidates: string[] = DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES,
+    // Trailing, same placement reasoning as requirementTypeFieldCandidates
+    // above. Empty by default (see se-coverage-ref-fields.ts's own doc
+    // comment) -- so resolveSeCoverageRefField finds no candidate on any
+    // org until this is explicitly configured, and seCoverageRef simply
+    // never reaches ADO until then.
+    private readonly seCoverageRefFieldCandidates: string[] = DEFAULT_SE_COVERAGE_REF_FIELD_CANDIDATES,
   ) {
     this.queue = new Queue('req2ado-pipeline', { connection: { url: redisUrl } as any });
   }
@@ -213,11 +232,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         sourceHash: input.sourceHash,
         areaPath: input.areaPath,
         userId: input.userId,
-        followUp: input.followUp ?? false,
         state: input.state ?? this.initialState,
         iterationPath: input.iterationPath ?? null,
-        customerId: input.customerId,
         originalFilename: input.filename,
+        batchId: input.batchId ?? null,
       },
     });
     // BullMQ persists job data as JSON in Redis. JSON.stringify(Buffer)
@@ -236,9 +254,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         id: job.id,
         areaPath: input.areaPath,
         userId: input.userId,
-        customerId: input.customerId,
         mode: input.mode,
-        followUp: input.followUp ?? false,
         fileBufferBase64: input.fileBuffer.toString('base64'),
         filename: input.filename,
         ...(input.model ? { model: input.model } : {}),
@@ -264,7 +280,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
   // Re-runs a job's ORIGINAL upload under a brand-new Job row (never
   // mutates the source job) -- sourceHash is unchanged, so IdempotencyMapping
-  // (keyed on sourceHash+customerId+areaPath) correctly REUSES the same ADO
+  // (keyed on sourceHash+areaPath) correctly REUSES the same ADO
   // items on confirm() rather than duplicating them, exactly as it does for
   // any other duplicate-content submission. If the caller wants genuinely
   // NEW items, they must change areaPath (a real product decision, not
@@ -281,9 +297,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return this.submit({
       areaPath: job.areaPath,
       userId: job.userId,
-      customerId: job.customerId,
       mode: job.mode as 'baseline' | 'survey',
-      followUp: job.followUp,
       fileBuffer: Buffer.from(sourceFile.bytes),
       filename: job.originalFilename,
       sourceHash: job.sourceHash,
@@ -324,23 +338,48 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return this.prisma.dedupSkipAudit.findMany({ where: { jobId: id }, orderBy: { createdAt: 'asc' } });
   }
 
+  // Per-confirm()-call memo of ado_discover_fields_detailed, keyed by the
+  // REAL work-item type name -- introduced so resolveCustomerIdField,
+  // resolveSourceRefField, and (Phase 4) the classification field resolver
+  // all share ONE ADO round-trip per work-item type instead of one each.
+  // Field, not local variable: confirm()'s create phase resolves multiple
+  // types concurrently (mapWithConcurrency below), so this must survive
+  // across those calls within a single confirm() invocation, not be
+  // recreated per call. Cleared implicitly per confirm() invocation since
+  // JobsService itself is request-scoped-by-convention here (a fresh
+  // Map per call would also work, but every resolver already threads
+  // `credential` through per-call, so a per-call Map is simpler to reason
+  // about than a field that must remember to reset) -- see confirm()'s own
+  // instantiation of this Map at the top of its create phase.
+  private async fieldsFor(
+    fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
+    workItemType: string,
+    credential?: { orgUrl: string; pat: string },
+  ): Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]> {
+    let pending = fieldsByType.get(workItemType);
+    if (!pending) {
+      pending = this.mcpClient.discoverFieldsDetailed(workItemType, credential);
+      fieldsByType.set(workItemType, pending);
+    }
+    return pending;
+  }
+
   // docs/architecture.md's "Customer ID Field Resolution": verified at
-  // runtime against ado_discover_fields, never hardcoded to System.CustomerId
-  // (System.* is ADO's reserved built-in namespace, not custom fields).
-  // Candidate priority list is configurable (CUSTOMER_ID_FIELD_CANDIDATES),
-  // defaulting to DocGen's real-world discovered naming conventions; each
-  // candidate is verified present before use rather than trusted blind. If
-  // none match on this work-item type, resolveCustomerIdField itself leaves
-  // it off (traceability metadata, not a required field) -- but see the
-  // System.Tags fallback in confirm()'s field assembly for the
-  // non-type-gated backstop this enables (a type with no candidate field at
-  // all, e.g. Epic/Feature in the tested org, still gets the customer ID
-  // somewhere visible).
+  // runtime against ado_discover_fields_detailed, never hardcoded to
+  // System.CustomerId (System.* is ADO's reserved built-in namespace, not
+  // custom fields). Candidate priority list is configurable
+  // (CUSTOMER_ID_FIELD_CANDIDATES), defaulting to DocGen's real-world
+  // discovered naming conventions; each candidate is verified present
+  // before use rather than trusted blind. If none match on this work-item
+  // type, resolveCustomerIdField itself leaves it off (traceability
+  // metadata, not a required field) -- and, since the drop-don't-tag fix,
+  // that's the end of it: no System.Tags fallback stamps it anywhere else.
   private async resolveCustomerIdField(
+    fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
     workItemType: string,
     credential?: { orgUrl: string; pat: string },
   ): Promise<string | null> {
-    const availableFields = await this.mcpClient.discoverFields(workItemType, credential);
+    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, credential)).map((f) => f.referenceName);
     return this.customerIdFieldCandidates.find((candidate) => availableFields.includes(candidate)) ?? null;
   }
 
@@ -352,15 +391,83 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // would violate BASELINE's verbatim-fidelity contract (the description must
   // be exactly the source text, nothing appended). A dedicated field, set only
   // when the real org actually exposes one, is the only mechanism that is both
-  // real and non-destructive. Left off (not a hard failure) when no candidate
+  // real and non-destructive. Left off (not a hard failure, and -- since the
+  // drop-don't-tag fix -- not a System.Tags fallback either) when no candidate
   // field exists on that work-item type, exactly like Customer ID.
   private async resolveSourceRefField(
+    fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
     workItemType: string,
     credential?: { orgUrl: string; pat: string },
   ): Promise<string | null> {
     const candidates = ['Custom.SourceReference', 'Custom.SourceDocument', 'Custom.TraceabilityRef'];
-    const availableFields = await this.mcpClient.discoverFields(workItemType, credential);
+    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, credential)).map((f) => f.referenceName);
     return candidates.find((candidate) => availableFields.includes(candidate)) ?? null;
+  }
+
+  // Same runtime-verified resolution pattern as resolveCustomerIdField/
+  // resolveSourceRefField. Candidate list is empty by default (see
+  // se-coverage-ref-fields.ts's own doc comment), so this resolves to null
+  // on every org until SE_COVERAGE_REF_FIELD_CANDIDATES is explicitly
+  // configured -- seCoverageRef stays reviewer-editable in the diff, just
+  // never reaches ADO until then. No System.Tags fallback, ever, for this
+  // field -- same "drop, don't tag" rule as Customer ID/source ref.
+  private async resolveSeCoverageRefField(
+    fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
+    workItemType: string,
+    credential?: { orgUrl: string; pat: string },
+  ): Promise<string | null> {
+    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, credential)).map((f) => f.referenceName);
+    return this.seCoverageRefFieldCandidates.find((candidate) => availableFields.includes(candidate)) ?? null;
+  }
+
+  // Same runtime-verified resolution pattern as resolveCustomerIdField, but
+  // ALSO needs the field's real allowedValues (not just its name) -- this is
+  // exactly what ado_discover_fields_detailed (Phase 1) exists for. Unlike
+  // Customer ID / source ref, resolving no candidate field here is not the
+  // end of the story on its own: resolveClassificationValue below still has
+  // to decide, per-Requirement, whether any of its tags actually map to one
+  // of the field's real values.
+  private async resolveRequirementTypeField(
+    fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
+    workItemType: string,
+    credential?: { orgUrl: string; pat: string },
+  ): Promise<{ referenceName: string; allowedValues: string[] } | null> {
+    const fields = await this.fieldsFor(fieldsByType, workItemType, credential);
+    for (const candidate of this.requirementTypeFieldCandidates) {
+      const match = fields.find((f) => f.referenceName === candidate);
+      if (match) {
+        return { referenceName: match.referenceName, allowedValues: match.allowedValues };
+      }
+    }
+    return null;
+  }
+
+  // Collapses a Requirement's classification tags (WorkItemNode.tags, up to
+  // 11 possible values) into the single value ADO's picklist-constrained
+  // field can actually hold. Matched case/whitespace-insensitively against
+  // the field's REAL allowedValues (never assumed present verbatim, even
+  // for a value this codebase's own REQUIREMENT_TAG_TO_ADO_VALUE table
+  // expects to exist) -- an org on a legacy api-version that doesn't honor
+  // $expand=allowedValues (Phase 1) simply resolves an empty allowedValues
+  // list, which correctly makes every tag "unmappable" there rather than
+  // risking an unvalidated write.
+  //
+  // REQUIREMENT_TAG_PRIORITY decides the winner when more than one of the
+  // Requirement's tags maps to a real value (product-owner-confirmed,
+  // safety-first order). Returns null when NONE of the Requirement's tags
+  // map to anything the org's field actually allows -- the caller (below)
+  // is responsible for warning in that case, not this pure function.
+  private static resolveClassificationValue(tags: string[], allowedValues: string[]): string | null {
+    const normalizedAllowed = new Map(allowedValues.map((value) => [value.toLowerCase().trim(), value]));
+    for (const tag of REQUIREMENT_TAG_PRIORITY) {
+      if (!tags.includes(tag)) continue;
+      const mapped = REQUIREMENT_TAG_TO_ADO_VALUE[tag];
+      const real = mapped ? normalizedAllowed.get(mapped.toLowerCase()) : undefined;
+      if (real !== undefined) {
+        return real;
+      }
+    }
+    return null;
   }
 
   private static formatSourceRef(sourceRef: {
@@ -424,8 +531,19 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // only needs this row's own id (to call the retry endpoint) plus enough
     // fields to match it to the trace link it renders.
     traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
+    // Count of durable CreatedItemMapping rows (see confirm()'s resume
+    // support, P4b) -- for a 'diff_ready' job, a nonzero count means a
+    // PRIOR confirm() attempt already wrote some items before failing
+    // (confirm()'s own catch reverts status to 'diff_ready', see its doc
+    // comment). Lets JobDetail show the reviewer what's already written
+    // before they click Confirm again, instead of a blind re-submit --
+    // same `_count` pattern `list()` above already uses.
+    createdItemCount: number;
   } | null> {
-    const job = await this.prisma.job.findUnique({ where: { id }, include: { traceLinkFailures: true } });
+    const job = await this.prisma.job.findUnique({
+      where: { id },
+      include: { traceLinkFailures: true, _count: { select: { createdItemMappings: true } } },
+    });
     if (!job) return null;
     return {
       id: job.id,
@@ -452,6 +570,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         targetAdoId: f.targetAdoId,
         referenceName: f.referenceName,
       })),
+      createdItemCount: job._count.createdItemMappings,
     };
   }
 
@@ -471,6 +590,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         originalFilename: true,
         dryRunDiff: true,
         createdAt: true,
+        batchId: true,
         _count: { select: { createdItemMappings: true } },
       },
     });
@@ -483,6 +603,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       itemCount: Array.isArray(row.dryRunDiff) ? row.dryRunDiff.length : 0,
       createdItemCount: row._count.createdItemMappings,
       createdAt: row.createdAt,
+      batchId: row.batchId,
     }));
   }
 
@@ -500,7 +621,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return diff;
   }
 
-  async editDiffEntry(id: string, localId: string, patch: { title?: string; description?: string }): Promise<DryRunDiffEntry[]> {
+  async editDiffEntry(
+    id: string,
+    localId: string,
+    patch: { title?: string; description?: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
+  ): Promise<DryRunDiffEntry[]> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) throw new NotFoundException(`Job ${id} not found`);
     if (job.status !== 'diff_ready') {
@@ -515,9 +640,43 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // A patch key present with an explicit `undefined` value (as sent by the
     // controller for a caller who never mentioned that field) must not
     // overwrite the existing value — only apply keys the caller actually set.
-    const definedPatch: { title?: string; description?: string } = {};
+    const definedPatch: {
+      title?: string;
+      description?: string;
+      customerId?: string | null;
+      tags?: string[];
+      seCoverageRef?: string | null;
+    } = {};
     if (patch.title !== undefined) definedPatch.title = patch.title;
     if (patch.description !== undefined) definedPatch.description = patch.description;
+    if (patch.customerId !== undefined) {
+      // Customer ID is a per-Requirement, document-derived attribute --
+      // Epic/Feature must never carry one, matching the same type gate
+      // confirm() itself enforces at ADO-write time (jobs.service.ts's
+      // create-loop). Rejecting here, not silently ignoring, since a
+      // caller attempting this is almost certainly a UI bug, not a
+      // legitimate no-op.
+      if (diff[index].type !== 'Requirement') {
+        throw new BadRequestException('customerId can only be set on a Requirement entry');
+      }
+      definedPatch.customerId = patch.customerId;
+    }
+    if (patch.tags !== undefined) {
+      // Same reasoning and same rejection (not silent ignore) as customerId
+      // immediately above -- classification is a per-Requirement attribute,
+      // matching confirm()'s own Requirement-only write gate.
+      if (diff[index].type !== 'Requirement') {
+        throw new BadRequestException('tags can only be set on a Requirement entry');
+      }
+      definedPatch.tags = patch.tags;
+    }
+    if (patch.seCoverageRef !== undefined) {
+      // Same reasoning and same rejection as customerId/tags above.
+      if (diff[index].type !== 'Requirement') {
+        throw new BadRequestException('seCoverageRef can only be set on a Requirement entry');
+      }
+      definedPatch.seCoverageRef = patch.seCoverageRef;
+    }
     // CR-7d rescore: quality scoring judges `description` text only (see
     // ingestion's _apply_quality_scores) -- a title-only edit changes
     // nothing the score was judged against, so only a real description
@@ -710,6 +869,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       similarity: null,
       sourceHash,
       customerId: null,
+      seCoverageRef: null,
       tags: [],
       qualityScore: null,
       qualityIssues: [],
@@ -841,20 +1001,6 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     return diff;
   }
 
-  // Mirrors frontend/src/pages/JobStatus.tsx's needsReview() thresholds --
-  // duplicated (not imported) because frontend and orchestrator are separate
-  // deployables with no shared package for these constants, same as that
-  // file's own comment mirroring ingestion's llm_leveling thresholds.
-  private static readonly LOW_GROUNDING_THRESHOLD = 0.2;
-  private static readonly LOW_QUALITY_THRESHOLD = 50;
-
-  private static isFlagged(entry: { groundingScore?: number | null; qualityScore?: number | null }): boolean {
-    return (
-      (entry.groundingScore != null && entry.groundingScore < JobsService.LOW_GROUNDING_THRESHOLD) ||
-      (entry.qualityScore != null && entry.qualityScore < JobsService.LOW_QUALITY_THRESHOLD)
-    );
-  }
-
   async getSummary(id: string): Promise<{
     created: number;
     reused: number;
@@ -870,10 +1016,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (!job) return null;
     const diff = (job.dryRunDiff as { action: string; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
     return {
-      created: diff.filter((e) => e.action === 'create').length,
-      reused: diff.filter((e) => e.action === 'reuse').length,
-      dedupSkipped: diff.filter((e) => e.action === 'dedup_skip').length,
-      flagged: diff.filter((e) => JobsService.isFlagged(e)).length,
+      // Extracted to diff-summary.ts so BatchService's batch-level rollup
+      // (NEW-05) shares the exact same create/reuse/dedup_skip/flagged
+      // vocabulary instead of re-implementing it.
+      ...summarizeDiffEntries(diff),
       warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [],
     };
   }
@@ -1035,7 +1181,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // child relations -- a cascade can't reach ChatMessage (no FK relation at
   // all, only an index) and an explicit transaction covers all four rows
   // without a schema migration. IdempotencyMapping is deliberately NOT
-  // touched here -- it's keyed by (sourceHash, customerId, areaPath), not
+  // touched here -- it's keyed by (sourceHash, areaPath), not
   // jobId, and is intentionally cross-job (see its own model comment); a
   // deleted job's prior ADO writes must stay idempotency-protected against a
   // future resubmit of the same source content.
@@ -1264,9 +1410,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // UI for however long the create/link/trace-link phases below took.
     await this.jobEventsPublisher?.publish(id, 'writing');
 
-    // Each diff entry carries its own sourceHash/customerId (per-node content
-    // hash), NOT job.sourceHash (a whole-file hash) — see DryRunDiffEntry's
-    // doc comment for why recording at job-level granularity silently broke
+    // Each diff entry carries its own sourceHash (per-node content hash),
+    // NOT job.sourceHash (a whole-file hash) — see DryRunDiffEntry's doc
+    // comment for why recording at job-level granularity silently broke
     // re-run idempotency (found via the golden E2E script: job #2's re-run
     // always showed 'create' since the recorded key never matched the
     // per-node key diff() looks up by).
@@ -1280,6 +1426,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       existingAdoId: number | null;
       sourceHash: string;
       customerId: string | null;
+      // Carried through from ingestion (see DryRunDiffEntry.seCoverageRef).
+      // Always null coming out of ingestion; a reviewer-editable manual
+      // forward reference, written to ADO below (see
+      // resolveSeCoverageRefField) only once an operator configures a real
+      // candidate field name -- see se-coverage-ref-fields.ts's own doc
+      // comment. Declared here for the SAME reason as figureIds' own doc
+      // comment below: omitting a field here silently drops it on the
+      // `{...diff[index]}`-style rewrites this file does elsewhere.
+      seCoverageRef: string | null;
       // Carried through from ingestion (see DryRunDiffEntry). sourceRef is
       // written to ADO below (see resolveSourceRefField); tags feeds
       // System.Tags directly. Both optional/nullable: manually-added entries
@@ -1340,14 +1495,43 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // pass is sufficient: every entry's parentLocalId, if non-null, already
     // has its ADO id in this map by the time we reach the child.
     const adoIdByLocalId = new Map<string, number>(resumedAdoIdByLocalId);
-    // Customer ID's real ref name is runtime-verified per work-item type, not
-    // hardcoded (docs/architecture.md's "Customer ID Field Resolution") —
-    // cached per type for this confirm() call so discoverFields is called at
-    // most once per distinct type in the diff, not once per node.
+    // Customer ID's real ref name is runtime-verified, not hardcoded
+    // (docs/architecture.md's "Customer ID Field Resolution") — cached for
+    // this confirm() call so discoverFields is called at most once. Only
+    // ever resolved for the Requirement type; see the create-loop gate below.
     const customerIdFieldByType = new Map<string, string | null>();
     // Same runtime-verified, per-type, cached-once resolution for the source
     // traceability field (see resolveSourceRefField's doc comment).
     const sourceRefFieldByType = new Map<string, string | null>();
+    // Same runtime-verified, per-type, cached-once resolution for the SE
+    // coverage reference field (see resolveSeCoverageRefField's doc
+    // comment) -- empty candidate list by default, so this resolves null
+    // on every org until explicitly configured.
+    const seCoverageRefFieldByType = new Map<string, string | null>();
+    // Same pattern again for requirement classification -- see
+    // resolveRequirementTypeField's own doc comment for why this ALSO
+    // carries allowedValues, not just a field name.
+    const requirementTypeFieldByType = new Map<string, { referenceName: string; allowedValues: string[] } | null>();
+    // Requirements whose tags carried at least one category the resolved
+    // field's real allowedValues couldn't represent -- collected across the
+    // whole create loop into ONE warning below, matching this codebase's
+    // established one-per-run dedup convention (see traceLinkFailures'
+    // own warning below).
+    const unmappableClassificationLocalIds: string[] = [];
+    // Requirements that carried an extracted customerId but whose project
+    // exposes no candidate Customer ID field at all (NEW-06 correction):
+    // previously dropped silently, same "drop, don't tag" precedent as
+    // sourceRef/seCoverageRef -- but unlike those two, a MISSING Customer ID
+    // field is itself worth a reviewer's attention (it's the one traceability
+    // value the customer spec calls out by name), so this is collected the
+    // same way unmappableClassificationLocalIds is, into one combined
+    // warning below rather than silence.
+    const customerIdFieldMissingLocalIds: string[] = [];
+    // Backs fieldsFor()'s per-confirm()-call memo of ado_discover_fields_detailed
+    // -- shared by resolveCustomerIdField/resolveSourceRefField above (and
+    // the classification field resolver) so each work-item type triggers at
+    // most one ADO round-trip total, not one per field concept.
+    const fieldsByType = new Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>();
     let createdCount = 0;
 
     // A failure anywhere below previously left the job stuck in 'writing'
@@ -1438,12 +1622,30 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // wasteful (not incorrect), but resolving up front avoids that
       // entirely and keeps customerIdFieldByType's "at most once per type"
       // guarantee exact even under concurrency.
+      // Requirement-only: Customer ID is a per-Requirement, document-derived
+      // attribute (see ingestion/app/leveling/id_hierarchy.py) -- Epic/
+      // Feature never carry one, and this gate is what stops them from ever
+      // triggering a discoverFields round-trip or receiving the field/tag
+      // below.
       for (const entry of toCreate) {
-        if (entry.customerId != null && !customerIdFieldByType.has(entry.type)) {
-          customerIdFieldByType.set(entry.type, await this.resolveCustomerIdField(realType(entry.type), credential));
+        if (entry.type === 'Requirement' && entry.customerId != null && !customerIdFieldByType.has(entry.type)) {
+          customerIdFieldByType.set(entry.type, await this.resolveCustomerIdField(fieldsByType, realType(entry.type), credential));
         }
         if (entry.sourceRef != null && !sourceRefFieldByType.has(entry.type)) {
-          sourceRefFieldByType.set(entry.type, await this.resolveSourceRefField(realType(entry.type), credential));
+          sourceRefFieldByType.set(entry.type, await this.resolveSourceRefField(fieldsByType, realType(entry.type), credential));
+        }
+        // Requirement-only, same reasoning as Customer ID above.
+        if (entry.type === 'Requirement' && entry.seCoverageRef != null && !seCoverageRefFieldByType.has(entry.type)) {
+          seCoverageRefFieldByType.set(entry.type, await this.resolveSeCoverageRefField(fieldsByType, realType(entry.type), credential));
+        }
+        // Requirement-only, same reasoning as Customer ID above: classification
+        // (entry.tags) is a per-Requirement attribute (see Phase 3's ingestion-side
+        // enforcement) -- Epic/Feature never carry one and never trigger this
+        // round-trip. BASELINE jobs never carry tags at all (tree_builder.py
+        // never assigns them), so this is a no-op there without needing a
+        // separate mode check.
+        if (entry.type === 'Requirement' && (entry.tags?.length ?? 0) > 0 && !requirementTypeFieldByType.has(entry.type)) {
+          requirementTypeFieldByType.set(entry.type, await this.resolveRequirementTypeField(fieldsByType, realType(entry.type), credential));
         }
       }
 
@@ -1478,50 +1680,75 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         if (job.iterationPath) {
           fields['System.IterationPath'] = job.iterationPath;
         }
-        const tags = [...(entry.tags ?? [])];
-        if (entry.customerId != null) {
+        // Requirement-only, per the gate above -- Epic/Feature never reach
+        // here even when entry.customerId happens to be non-null (belt-and-
+        // suspenders: ingestion's own enforcement pass already nulls it out
+        // for non-Requirement nodes, see model.py's /level exit pass).
+        // No System.Tags fallback when this org's process template exposes
+        // no candidate field: a customer requirement's own source reference
+        // is metadata, not a required field, and a free-text tag stamp
+        // (`CustomerId:<value>`) turned out not to be a usable reference for
+        // anyone reading it in ADO -- confirmed via a corrected audit
+        // finding, not a guess. Left off entirely, same "traceability
+        // metadata, not a hard failure" precedent resolveCustomerIdField's
+        // own doc comment already establishes for the no-candidate-field case
+        // -- but (NEW-06 correction) queued for the one combined warning
+        // below instead of dropped in total silence: unlike sourceRef/
+        // seCoverageRef, a missing Customer ID field is exactly the gap this
+        // customer's own spec asks to be told about, not just tolerated.
+        if (entry.type === 'Requirement' && entry.customerId != null) {
           const customerIdField = customerIdFieldByType.get(entry.type);
           if (customerIdField !== null && customerIdField !== undefined) {
             fields[customerIdField] = entry.customerId;
           } else {
-            // Non-type-gated fallback: this work-item type exposes no
-            // Custom.CustomerId-style field at all (e.g. Epic/Feature in the
-            // tested org, which only defines it on Requirement) -- rather
-            // than silently dropping the customer ID for that type, stamp it
-            // into System.Tags (a native field every type has) so it is at
-            // least visible somewhere on the item, not lost entirely.
-            tags.push(`CustomerId:${entry.customerId}`);
+            customerIdFieldMissingLocalIds.push(entry.localId);
           }
         }
+        // Same "resolve a real field or drop it, never tag" rule as Customer
+        // ID above -- NOT appended to System.Description either: that's
+        // rejected elsewhere in this file as violating BASELINE's
+        // verbatim-fidelity guarantee (see resolveSourceRefField's own doc
+        // comment).
         if (entry.sourceRef != null) {
           const sourceRefField = sourceRefFieldByType.get(entry.type);
           if (sourceRefField !== null && sourceRefField !== undefined) {
             fields[sourceRefField] = JobsService.formatSourceRef(entry.sourceRef);
-          } else {
-            // Same non-type-gated fallback as Customer ID above: this org
-            // exposes no Custom.SourceReference-style field at all for this
-            // work-item type -- rather than silently dropping traceability
-            // (the previous behavior), stamp it into System.Tags so it's at
-            // least visible somewhere. NOT appended to System.Description --
-            // that's rejected elsewhere in this file as violating BASELINE's
-            // verbatim-fidelity guarantee (see resolveSourceRefField's own
-            // doc comment).
-            tags.push(`SourceRef:${JobsService.formatSourceRef(entry.sourceRef)}`);
           }
         }
-        // System.Tags is a native ADO field on every work-item type (unlike
-        // Custom.CustomerId/SourceRef, it needs no discoverFields gating).
-        // Deliberately NOT also writing Microsoft.VSTS.CMMI.RequirementType:
-        // that field is picklist-constrained by the org's process template,
-        // and ado_discover_fields only returns field *names*, never the
-        // allowed values for a field -- writing an unvalidated free-text tag
-        // into a picklist field would 400 the entire create on any org whose
-        // allowed values don't happen to match our 11-tag taxonomy verbatim.
-        if (tags.length > 0) {
-          fields['System.Tags'] = tags.join('; ');
+        // SE coverage reference -- same "resolve a real field or drop it,
+        // never tag" rule. Resolves to null on every org until
+        // SE_COVERAGE_REF_FIELD_CANDIDATES is explicitly configured (see
+        // se-coverage-ref-fields.ts), so this is a no-op write path today
+        // by design, not a bug -- the field stays reviewer-visible/editable
+        // in the diff regardless.
+        if (entry.type === 'Requirement' && entry.seCoverageRef != null) {
+          const seCoverageRefField = seCoverageRefFieldByType.get(entry.type);
+          if (seCoverageRefField !== null && seCoverageRefField !== undefined) {
+            fields[seCoverageRefField] = entry.seCoverageRef;
+          }
+        }
+        // Requirement classification -- same "resolve a real field or drop
+        // it, never tag" rule as Customer ID/source ref above. Unlike those
+        // two, a real resolved field doesn't always mean a value gets
+        // written: entry.tags might carry only categories this org's real
+        // picklist can't represent (e.g. "regulatory" has no CMMI
+        // counterpart at all), in which case the field is deliberately left
+        // at whatever ADO's own default already is (confirmed: this org's
+        // process-template default, not something this code invents) and
+        // the Requirement is queued for the one combined warning below.
+        if (entry.type === 'Requirement' && (entry.tags?.length ?? 0) > 0) {
+          const requirementTypeField = requirementTypeFieldByType.get(entry.type);
+          if (requirementTypeField != null) {
+            const value = JobsService.resolveClassificationValue(entry.tags ?? [], requirementTypeField.allowedValues);
+            if (value !== null) {
+              fields[requirementTypeField.referenceName] = value;
+            } else {
+              unmappableClassificationLocalIds.push(entry.localId);
+            }
+          }
         }
         const created = await this.mcpClient.createWorkItem(realType(entry.type), fields, credential);
-        await this.idempotencyService.record(entry.sourceHash, entry.customerId, job.areaPath, created.id);
+        await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id);
         // Durable resume state (P4b): written immediately, not batched at
         // the end of the create loop, so a LATER item in this same
         // mapWithConcurrency batch failing doesn't lose the fact that THIS
@@ -1977,7 +2204,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // recorded a failure -- a clean run's warnings are left byte-for-byte
     // as they were.
     const existingWarnings = (job.warnings as (WarningRecord | string)[] | null) ?? [];
-    const updatedWarnings: (WarningRecord | string)[] =
+    let updatedWarnings: (WarningRecord | string)[] =
       traceLinkFailures.length > 0
         ? [
             ...existingWarnings,
@@ -1994,6 +2221,42 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
             } satisfies WarningRecord,
           ]
         : existingWarnings;
+    // Same reasoning as trace_link_write_failed above -- an ADO-org-specific
+    // fact (this org's real RequirementType picklist doesn't include a
+    // value for one of these tags) that only the orchestrator, not
+    // ingestion, can know. Deliberately NOT one entry per Requirement --
+    // one combined warning per confirm() run, matching this codebase's
+    // established dedup convention (see DROPPED_BLOCKS/ZERO_NODES on the
+    // ingestion side, and trace_link_write_failed immediately above).
+    if (unmappableClassificationLocalIds.length > 0) {
+      updatedWarnings = [
+        ...updatedWarnings,
+        {
+          kind: 'classification_not_representable',
+          severity: 'needs_review',
+          nodeIds: Array.from(new Set(unmappableClassificationLocalIds)),
+          detail: {},
+          raw: `${unmappableClassificationLocalIds.length} Requirement(s) had a classification with no matching value in this project's Requirement Type field -- left at its default; review and set it manually if needed.`,
+        } satisfies WarningRecord,
+      ];
+    }
+    // NEW-06 correction: this project exposes no Customer ID field candidate
+    // at all for the Requirement type, so the extracted value was left off
+    // every affected item entirely (see the create loop above) -- flagged
+    // here, once per confirm() run, same dedup convention as
+    // classification_not_representable immediately above.
+    if (customerIdFieldMissingLocalIds.length > 0) {
+      updatedWarnings = [
+        ...updatedWarnings,
+        {
+          kind: 'customer_id_field_not_configured',
+          severity: 'needs_review',
+          nodeIds: Array.from(new Set(customerIdFieldMissingLocalIds)),
+          detail: {},
+          raw: `${customerIdFieldMissingLocalIds.length} Requirement(s) had a Customer ID value that could not be written -- this project exposes no matching Customer ID field for the Requirement type. The value is preserved in req2ado's own review UI; configure CUSTOMER_ID_FIELD_CANDIDATES or add a matching field in Azure DevOps if this should be written there.`,
+        } satisfies WarningRecord,
+      ];
+    }
     await this.prisma.job.update({
       where: { id },
       data: {
@@ -2005,7 +2268,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // updatedWarnings is plain JSON-serializable data, but Prisma's
         // generated InputJsonValue union doesn't structurally resolve
         // against a concrete array-of-interface type.
-        ...(traceLinkFailures.length > 0 ? { warnings: updatedWarnings as any } : {}),
+        ...(updatedWarnings !== existingWarnings ? { warnings: updatedWarnings as any } : {}),
       },
     });
     await this.prisma.auditEntry.create({

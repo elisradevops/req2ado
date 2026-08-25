@@ -66,8 +66,8 @@ def extract_baseline_title(text: str, max_length: int = 256) -> str:
     unsuitable" -- that requires judgment a pure, deterministic function
     can't make (and would need an LLM call, which BASELINE mode's
     verbatim/no-LLM guarantee rules out). Out of scope by design, not an
-    oversight -- see survey_title.py's TitleDistillationClient docstring for
-    where that judgment-based half would live if ever built."""
+    oversight -- see title_is_low_quality/distill_survey_title for that
+    judgment-based half, wired into SURVEY mode only (300553)."""
     stripped = text.strip()
     candidate = _first_sentence(stripped) if stripped else stripped
 
@@ -79,3 +79,33 @@ def extract_baseline_title(text: str, max_length: int = 256) -> str:
     if last_space == -1:
         return window
     return window[:last_space].rstrip()
+
+
+# Deliberately small and literal, not a general "is this a good title"
+# judgment (that needs an LLM -- see survey_title.py's TitleDistillationClient)
+# -- just the small set of placeholder/generic labels a structure-analysis
+# pass can plausibly emit when a section gives it nothing more specific to
+# name a node with (e.g. an untitled table row, a bare "3." heading).
+# Casefold-compared, so "Requirement", "REQUIREMENT", "requirement " all match.
+_GENERIC_TITLE_LABELS = {
+    "requirement", "item", "section", "untitled", "unnamed", "unknown", "n/a", "tbd",
+}
+# A title this short (after stripping) carries essentially no information for
+# a reviewer to recognize the item by, regardless of whether it happens to
+# match a literal label above -- e.g. "Item 3", "TBD.", a bare number.
+_MIN_MEANINGFUL_TITLE_LENGTH = 8
+
+
+def title_is_low_quality(title: str) -> bool:
+    """SURVEY-mode smart-title fallback (300553) gate: True when `title` is
+    too generic/short to be worth keeping as-is, so a caller should replace
+    it with a real distillation call (see distill_survey_title) once the
+    node's actual description text exists to distill FROM. Deliberately
+    conservative -- false negatives (a mediocre-but-specific title kept
+    as-is) are fine; false positives (rewriting a perfectly good short title)
+    waste an LLM call and risk drifting from the source wording for no
+    reason."""
+    stripped = title.strip()
+    if len(stripped) < _MIN_MEANINGFUL_TITLE_LENGTH:
+        return True
+    return stripped.casefold().rstrip(".") in _GENERIC_TITLE_LABELS

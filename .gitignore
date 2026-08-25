@@ -14,6 +14,7 @@ coverage/
 *.sqlite
 .DS_Store
 .certs/
+docker-compose.override.yml
 .worktrees/
 .superpowers/
 .playwright-mcp-upload-tmp.docx

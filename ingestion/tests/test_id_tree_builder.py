@@ -39,7 +39,7 @@ def test_build_hierarchy_subtree_basic_construction() -> None:
         _row("Audio Control", "Feature", None, "1.1"),
         _row("The system shall control volume.", "Requirement", 0, "1.1.1", has_shall=True),
     ]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     assert warnings == []
     assert len(nodes) == 2
     parent = next(n for n in nodes if n.title == "Audio Control")
@@ -55,7 +55,7 @@ def test_build_hierarchy_subtree_folds_a_non_producing_row() -> None:
         _row("Lone Wrapper", None, 0, "1.1"),
         _row("The system shall do A.", "Requirement", 1, "1.1.1", has_shall=True),
     ]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     assert len(nodes) == 2  # the fold row produced no node of its own
     leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
     group = next(n for n in nodes if n.title == "Real Group")
@@ -68,7 +68,7 @@ def test_build_hierarchy_subtree_folds_a_non_producing_row() -> None:
 
 def test_build_hierarchy_subtree_warns_when_a_fold_row_has_no_producing_ancestor() -> None:
     rows = [_row("Orphan Fold", None, None, "1")]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     assert nodes == []
     assert any("no node-producing ancestor" in w.raw for w in warnings)
 
@@ -83,7 +83,7 @@ def test_build_hierarchy_subtree_leaves_epic_requirement_violation_for_caller_to
         _row("Mislabeled Epic", "Epic", None, "1"),
         _row("The system shall do A.", "Requirement", 0, "1.1", has_shall=True),
     ]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     epic_node = next(n for n in nodes if n.title == "Mislabeled Epic")
     assert epic_node.type == WorkItemType.EPIC  # unfixed here, deliberately
 
@@ -97,7 +97,7 @@ def test_repair_requirement_hierarchy_fixes_the_epic_requirement_violation_after
         _row("Mislabeled Epic", "Epic", None, "1"),
         _row("The system shall do A.", "Requirement", 0, "1.1", has_shall=True),
     ]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     _repair_requirement_hierarchy(nodes, "det0_", warnings)
     recompute_child_types(nodes)
     epic_node = next(n for n in nodes if n.title == "Mislabeled Epic")
@@ -122,7 +122,7 @@ def test_repair_requirement_hierarchy_keeps_a_real_epic_child_intact_in_a_mixed_
         # this is the one that needs repair.
         _row("The system shall do B.", "Requirement", 0, "1.2", has_shall=True),
     ]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     _repair_requirement_hierarchy(nodes, "det0_", warnings)
     recompute_child_types(nodes)
     mixed_domain = next(n for n in nodes if n.title == "Mixed Domain")
@@ -150,7 +150,7 @@ def test_repair_requirement_hierarchy_bridges_orphans_locally_per_epic_not_globa
         _row("Epic Beta", "Epic", None, "2"),
         _row("The system shall do B.", "Requirement", 2, "2.1", has_shall=True),
     ]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     _repair_requirement_hierarchy(nodes, "det0_", warnings)
     recompute_child_types(nodes)
     epic_alpha = next(n for n in nodes if n.title == "Epic Alpha")
@@ -182,7 +182,7 @@ def test_build_hierarchy_subtree_uses_disambiguated_identity_hash_for_table_rows
             source_ref=shared_ref, id_disambiguator_needed=True,
         ),
     ]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     requirement_nodes = [n for n in nodes if n.type == WorkItemType.REQUIREMENT]
     assert len(requirement_nodes) == 2
     assert requirement_nodes[0].identity_hash != requirement_nodes[1].identity_hash
@@ -195,7 +195,7 @@ def test_build_hierarchy_subtree_child_type_reflects_real_children() -> None:
         _row("Feature Child", "Feature", 0, "1.1"),
         _row("The system shall do A.", "Requirement", 1, "1.1.1", has_shall=True),
     ]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
     recompute_child_types(nodes)
     epic_node = next(n for n in nodes if n.title == "Epic Domain")
     feature_node = next(n for n in nodes if n.title == "Feature Child")
@@ -211,7 +211,7 @@ def _epic_feature_requirement_nodes():
         _row("Over 28V VDC input", "Feature", 0, "1.1"),
         _row("The system shall clamp input over 28V.", "Requirement", 1, "1.1.1", has_shall=True),
     ]
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
     recompute_child_types(nodes)
     return nodes
 
@@ -303,7 +303,7 @@ def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_di
         _row("The system shall support mode A.", "Requirement", 0, "1.1", has_shall=True),
         _row("The system shall also support mode A fallback.", "Requirement", 1, "1.1.a", has_shall=True),
     ]
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
     recompute_child_types(nodes)
     epic = next(n for n in nodes if n.type == WorkItemType.EPIC)
     requirements = [n for n in nodes if n.type == WorkItemType.REQUIREMENT]
@@ -335,7 +335,7 @@ def test_apply_parent_summary_pass_gives_each_nested_epic_its_own_full_rollup_in
         _row("Child Domain", "Epic", 0, "1.1"),
         _row("The system shall do X.", "Requirement", 1, "1.1.1", has_shall=True),
     ]
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
     recompute_child_types(nodes)
     epics = [n for n in nodes if n.type == WorkItemType.EPIC]
     assert len(epics) == 2  # confirms the fixture actually nests one Epic under another
@@ -374,7 +374,7 @@ def test_apply_parent_summary_pass_splits_by_token_budget_without_dropping_any_p
     for i in range(20):
         rows.append(_row(f"Feature {i}", "Feature", None, str(i + 1)))
         rows.append(_row(long_text, "Requirement", len(rows) - 1, f"{i + 1}.1", has_shall=True))
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
     recompute_child_types(nodes)
     features = [n for n in nodes if n.type == WorkItemType.FEATURE]
     assert len(features) == 20
@@ -407,7 +407,7 @@ def test_apply_parent_summary_pass_never_splits_a_single_oversized_parent_it_jus
         _row("Huge Feature", "Feature", None, "1"),
         _row(huge_text, "Requirement", 0, "1.1", has_shall=True),
     ]
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
     recompute_child_types(nodes)
     feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
 
@@ -480,7 +480,7 @@ def test_build_hierarchy_subtree_title_tag_client_is_fail_open() -> None:
             raise RuntimeError("boom")
 
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None, RaisingClient())
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_", RaisingClient())
     assert len(nodes) == 1
     assert nodes[0].tags == []
     assert any("failed" in w.raw for w in warnings)
@@ -493,7 +493,7 @@ def test_build_hierarchy_subtree_title_tag_failure_fires_chunk_warning() -> None
 
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
     fired: list[LevelingProgress] = []
-    nodes, warnings = build_hierarchy_subtree(rows, "det0_", None, RaisingClient(), progress_callback=fired.append)
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_", RaisingClient(), progress_callback=fired.append)
 
     chunk_warnings = [p for p in fired if p.phase == "chunk_warning"]
     assert len(chunk_warnings) == 1
@@ -526,6 +526,67 @@ def test_build_hierarchy_subtree_synthesizes_a_flagged_fragment_leaf() -> None:
     # verbatim row label -- no longer the self-comparison bug
     # (_grounding_score(description, description), always 1.0).
     assert leaf.grounding_score is not None and leaf.grounding_score < 1.0
+
+
+def test_build_hierarchy_subtree_grounding_score_is_not_trivially_1_for_unrelated_hebrew_text() -> None:
+    # NEW-04/Phase 6 regression guard: before extracting to grounding.py,
+    # this module had its own ASCII-only word pattern, which silently
+    # emptied significant_words() for Hebrew and made grounding_score
+    # trivially 1.0 ("nothing significant to judge") regardless of whether
+    # the synthesized text was actually related to the source. This is the
+    # one test in this file that actually fails on the pre-fix ASCII-only
+    # implementation and passes after it -- not just exercising the pass in
+    # general.
+    class FakeSynthesisClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            return {
+                node_id: {
+                    "title": "לוח זמנים",
+                    "text": "לוח הזמנים של הרכבת השתנה",  # unrelated to the row's own Hebrew label below
+                    "tags": [],
+                }
+                for node_id in items_by_id
+            }
+
+    rows = [
+        _row("מקלט", "Feature", None, "1"),
+        _row("המערכת תציג התרעה על תקלה בחיישן", "Requirement", 0, "1.1", needs_synthesis=True),
+    ]
+    nodes, warnings = build_hierarchy_subtree(
+        rows, "det0_", None, synthesis_client=FakeSynthesisClient(),
+    )
+    leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+    assert leaf.grounding_score is not None and leaf.grounding_score < 1.0
+
+
+def test_build_hierarchy_subtree_never_tags_a_non_requirement_synthesized_leaf() -> None:
+    # Confirmed real bug this guards against: this pass used to gate tag
+    # assignment on needs_synthesis alone, not on the node's own type --
+    # and _repair_requirement_hierarchy (elsewhere in the pipeline) can
+    # re-type a synthesized leaf to Feature. A defensive, type-checked-at-
+    # assignment-time gate is what actually has to hold regardless of
+    # calling order, so this constructs the case directly rather than
+    # relying on a specific upstream sequence to produce it.
+    class FakeSynthesisClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            return {
+                node_id: {
+                    "title": "Power Supply",
+                    "text": "The COTS power supply shall have a 3U, 1-inch form factor.",
+                    "tags": ["interface"],
+                }
+                for node_id in items_by_id
+            }
+
+    rows = [_row('Size: 3U 1"', "Feature", None, "1", needs_synthesis=True)]
+    nodes, warnings = build_hierarchy_subtree(
+        rows, "det0_", None, synthesis_client=FakeSynthesisClient(),
+    )
+    assert len(nodes) == 1
+    assert nodes[0].type == WorkItemType.FEATURE
+    assert nodes[0].tags == []
+    # The rest of the synthesis result still applies -- only tags are gated.
+    assert nodes[0].description == "The COTS power supply shall have a 3U, 1-inch form factor."
 
 
 def test_build_hierarchy_subtree_synthesis_is_fail_open() -> None:
@@ -572,7 +633,7 @@ def test_build_hierarchy_subtree_never_synthesizes_a_non_flagged_leaf() -> None:
 
     client = RecordingSynthesisClient()
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
-    build_hierarchy_subtree(rows, "det0_", None, synthesis_client=client)
+    build_hierarchy_subtree(rows, "det0_", synthesis_client=client)
     assert client.called is False
 
 
@@ -591,7 +652,7 @@ def test_build_hierarchy_subtree_fires_progress_before_the_title_tag_chunk() -> 
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
     events: list[LevelingProgress] = []
     build_hierarchy_subtree(
-        rows, "det0_", None, title_tag_client=FakeTitleTagClient(),
+        rows, "det0_", title_tag_client=FakeTitleTagClient(),
         progress_callback=lambda p: events.append(p),
         subtree_index=0, subtree_count=2, subtree_label="Table t0",
     )
@@ -641,7 +702,7 @@ def test_build_hierarchy_subtree_fires_one_progress_event_per_chunk_not_per_subt
     ]
     events: list[LevelingProgress] = []
     build_hierarchy_subtree(
-        rows, "det0_", None, title_tag_client=FakeTitleTagClient(),
+        rows, "det0_", title_tag_client=FakeTitleTagClient(),
         progress_callback=lambda p: events.append(p),
         subtree_index=0, subtree_count=1, subtree_label="Heading hierarchy",
     )
@@ -672,7 +733,7 @@ def test_build_hierarchy_subtree_section_path_is_the_root_first_ancestor_label_c
         _row("Volume", "Feature", 0, "1.1"),
         _row("The system shall control volume.", "Requirement", 1, "1.1.1", has_shall=True),
     ]
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
     root = next(n for n in nodes if n.title == "Audio Control")
     middle = next(n for n in nodes if n.title == "Volume")
     leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
@@ -692,7 +753,7 @@ def test_build_hierarchy_subtree_section_path_includes_a_fold_rows_own_label() -
         _row("Lone Wrapper", None, 0, "1.1"),
         _row("The system shall do A.", "Requirement", 1, "1.1.1", has_shall=True),
     ]
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None)
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
     leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
     assert leaf.source_ref.section_path == ["Real Group", "Lone Wrapper"]
 
@@ -705,7 +766,7 @@ def test_build_hierarchy_subtree_section_path_root_seeds_a_table_subtrees_own_id
         _row("Power Requirements", "Feature", None, "1"),
         _row("The rail shall regulate within 2%.", "Requirement", 0, "1.1", has_shall=True),
     ]
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None, section_path_root="Table t7")
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", section_path_root="Table t7")
     root = next(n for n in nodes if n.title == "Power Requirements")
     leaf = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
     assert root.source_ref.section_path == ["Table t7"]
@@ -724,7 +785,7 @@ def test_build_hierarchy_subtree_identity_and_fidelity_hashes_are_unaffected_by_
         _row("Audio Control", "Feature", None, "1"),
         _row("The system shall control volume.", "Requirement", 0, "1.1", has_shall=True),
     ]
-    nodes, _ = build_hierarchy_subtree(rows, "det0_", None, section_path_root="Table t7")
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", section_path_root="Table t7")
     for node in nodes:
         bare_ref = node.source_ref.model_copy(update={"section_path": []})
         assert node.identity_hash == _hash_identity(node.description, bare_ref)

@@ -72,6 +72,13 @@ export interface DryRunTreeNode {
   // record() -- only ever read as a fallback.
   legacySourceHash?: string | null;
   customerId: string | null;
+  // Per-Requirement, like customerId -- but NEVER auto-populated by
+  // ingestion (always null coming from there). A manually-entered forward
+  // reference to a Systems Engineering requirements-layer artifact this
+  // Requirement is a basis for coverage of -- see ingestion's
+  // WorkItemNode.se_coverage_ref's own docstring. Reviewer-editable via
+  // editDiffEntry, same as customerId.
+  seCoverageRef: string | null;
   areaPath: string;
   tags: string[];
   // SURVEY-only signals (see ingestion's WorkItemNode) -- null/undefined for
@@ -157,6 +164,7 @@ export interface DryRunDiffEntry {
   // way to record the mapping using the same key diff() looks it up by.
   sourceHash: string;
   customerId: string | null;
+  seCoverageRef: string | null;
   tags: string[];
   groundingScore?: number | null;
   qualityScore?: number | null;
@@ -361,7 +369,6 @@ export class DryRunService {
     {
       const existingAdoId = await idempotencyService.lookup(
         node.sourceHash,
-        node.customerId,
         node.areaPath,
         node.legacySourceHash ?? undefined,
       );
@@ -370,6 +377,7 @@ export class DryRunService {
           localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
           title: node.title, description: node.description, action: 'reuse' as const,
           existingAdoId, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
+          seCoverageRef: node.seCoverageRef,
           tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
           qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
           qualityCategoryChecklist: node.qualityCategoryChecklist,
@@ -409,7 +417,7 @@ export class DryRunService {
               localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
               title: node.title, description: node.description, action: 'dedup_skip' as const,
               existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
-              sourceHash: node.sourceHash, customerId: node.customerId, tags: node.tags,
+              sourceHash: node.sourceHash, customerId: node.customerId, seCoverageRef: node.seCoverageRef, tags: node.tags,
               groundingScore: node.groundingScore, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
               qualityCategoryScores: node.qualityCategoryScores, qualityCategoryChecklist: node.qualityCategoryChecklist,
               sourceRef: node.sourceRef, childType: node.childType, traceLinks: node.traceLinks,
@@ -427,6 +435,7 @@ export class DryRunService {
         localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
         title: node.title, description: node.description, action: 'create' as const,
         existingAdoId: null, similarity: null, sourceHash: node.sourceHash, customerId: node.customerId,
+        seCoverageRef: node.seCoverageRef,
         tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
         qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
         qualityCategoryChecklist: node.qualityCategoryChecklist,

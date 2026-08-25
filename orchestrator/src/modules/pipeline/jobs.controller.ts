@@ -33,12 +33,32 @@ import type { SessionUser } from '../auth/session.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 import type { WarningRecord } from '../writeback/dry-run.service';
 import { Public } from '../auth/public.decorator';
+import { VALID_REQUIREMENT_TAGS } from '../../config/requirement-type-fields';
 
 // Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
 // md, docx, pdf (incl. scanned/OCR, same extension), xlsx. Not a security
 // boundary against malicious file CONTENT (that's ingestion's own parsing
 // robustness), only a cheap reject-obviously-wrong-format-early gate.
-const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
+// Exported for reuse by BatchController/BatchService (NEW-05) -- a batch
+// file must be validated against the exact same rules as a single-file
+// submit(), not a second hand-maintained copy of them.
+export const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
+
+// Customer ID (per-Requirement source reference, e.g. "1.1.2.2") stays a
+// free-form identifier -- no format/regex is enforced since the source
+// document's own numbering/ID scheme isn't known ahead of time. Only a
+// generous length ceiling to catch an obviously-wrong paste.
+export const MAX_CUSTOMER_ID_LENGTH = 128;
+
+// Same free-form-identifier reasoning as MAX_CUSTOMER_ID_LENGTH above --
+// see WorkItemNode.se_coverage_ref's own docstring (ingestion side) for
+// what this field actually is.
+export const MAX_SE_COVERAGE_REF_LENGTH = 128;
+
+// Requirement classification tags, unlike Customer ID, ARE validated against
+// a closed vocabulary -- see VALID_REQUIREMENT_TAGS's own doc comment for
+// why that list (not one org's live ADO allowedValues) is the right thing
+// to validate a PATCH against.
 
 // Multer's own decorator-time limit must be evaluated BEFORE NestJS DI
 // resolves anything (decorator arguments run at class-definition time), so
@@ -107,12 +127,10 @@ export class JobsController {
     @UploadedFile() file: Express.Multer.File | undefined,
     @CurrentUser() user: SessionUser,
     @Body('areaPath') areaPath: string | undefined,
-    @Body('customerId') customerId: string | undefined,
     @Body('mode') mode: string | undefined,
     @Body('state') state: string | undefined,
     @Body('iterationPath') iterationPath: string | undefined,
     @Body('model') model: string | undefined,
-    @Body('followUp') followUp: string | boolean | undefined,
   ): Promise<{ jobId: string }> {
     if (!file) {
       throw new BadRequestException('file is required');
@@ -141,7 +159,6 @@ export class JobsController {
       // identity (AuthGuard), never client-supplied -- a caller could
       // previously submit a job under any userId string it liked.
       userId: user.userId,
-      customerId: customerId ?? null,
       mode: (mode as 'baseline' | 'survey' | undefined) ?? 'baseline',
       fileBuffer: file.buffer,
       filename: file.originalname,
@@ -149,10 +166,6 @@ export class JobsController {
       state,
       iterationPath: iterationPath ?? null,
       model,
-      // Multipart form bodies send booleans as the strings "true"/"false"
-      // (or omit the field entirely) -- coerce explicitly rather than
-      // relying on JS truthiness, since the string "false" is truthy.
-      followUp: followUp === true || followUp === 'true',
     });
   }
 
@@ -284,6 +297,15 @@ export class JobsController {
     workItemTypeCategoryLabels: Record<'Epic' | 'Feature' | 'Requirement', string>;
     // Task 4: see JobsService.getById's own doc comment.
     traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
+    // See JobsService.getById's own doc comment.
+    createdItemCount: number;
+    // The SAME field (and its real allowedValues) JobsService.confirm()
+    // will actually write a Requirement's classification to -- lets the
+    // review UI show which of a Requirement's tags is representable BEFORE
+    // commit. null when there's no diff yet, no credential, or resolution
+    // fails (best-effort, see WorkItemTypeCatalogService.
+    // resolveRequirementClassificationField's own doc comment).
+    requirementClassificationField: { referenceName: string; allowedValues: string[] } | null;
   }> {
     // userId is internal (ownership only) -- strip it before returning so
     // the response shape stays exactly what it was before ownership
@@ -309,6 +331,7 @@ export class JobsController {
       Feature: 'Feature',
       Requirement: 'Requirement',
     };
+    let requirementClassificationField: { referenceName: string; allowedValues: string[] } | null = null;
     if (job.dryRunDiff != null && job.areaPath) {
       try {
         const credential = await this.adoCredentialResolver.resolve(user.userId);
@@ -316,12 +339,13 @@ export class JobsController {
           const project = job.areaPath.split('\\')[0];
           workItemTypeCatalog = await this.workItemTypeCatalogService.resolve(project, credential);
           workItemTypeCategoryLabels = await this.workItemTypeCatalogService.resolveCategoryLabels(project, credential);
+          requirementClassificationField = await this.workItemTypeCatalogService.resolveRequirementClassificationField(project, credential);
         }
       } catch {
         // Best-effort enrichment -- never fail the whole job fetch over it.
       }
     }
-    return { ...job, workItemTypeCatalog, workItemTypeCategoryLabels };
+    return { ...job, workItemTypeCatalog, workItemTypeCategoryLabels, requirementClassificationField };
   }
 
   @Patch(':id/diff/:localId')
@@ -331,9 +355,51 @@ export class JobsController {
     @CurrentUser() user: SessionUser,
     @Body('title') title: string | undefined,
     @Body('description') description: string | undefined,
+    @Body('customerId') customerId: string | undefined,
+    @Body('tags') tags: string[] | undefined,
+    @Body('seCoverageRef') seCoverageRef: string | undefined,
   ): Promise<{ dryRunDiff: unknown }> {
     await this.ownedJob(id, user);
-    const dryRunDiff = await this.jobsService.editDiffEntry(id, localId, { title, description });
+    // Same trim-then-null-if-blank convention the wizard's own (now-removed)
+    // job-level Customer ID field used -- undefined (field omitted) leaves
+    // the entry's customerId untouched; a real service-layer type gate
+    // (Requirement-only) is enforced in JobsService.editDiffEntry itself.
+    let trimmedCustomerId: string | null | undefined;
+    if (customerId !== undefined) {
+      const trimmed = customerId.trim();
+      if (trimmed.length > MAX_CUSTOMER_ID_LENGTH) {
+        throw new BadRequestException(`customerId exceeds the ${MAX_CUSTOMER_ID_LENGTH}-character limit`);
+      }
+      trimmedCustomerId = trimmed.length > 0 ? trimmed : null;
+    }
+    // undefined (field omitted) leaves the entry's tags untouched, same
+    // convention as customerId above; the Requirement-only type gate is
+    // enforced in JobsService.editDiffEntry itself, same as customerId's.
+    if (tags !== undefined) {
+      if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === 'string')) {
+        throw new BadRequestException('tags must be an array of strings');
+      }
+      const unknownTags = tags.filter((tag) => !VALID_REQUIREMENT_TAGS.includes(tag));
+      if (unknownTags.length > 0) {
+        throw new BadRequestException(`Unknown classification tag(s): ${unknownTags.join(', ')}`);
+      }
+    }
+    // Same trim-then-null-if-blank convention as customerId above.
+    let trimmedSeCoverageRef: string | null | undefined;
+    if (seCoverageRef !== undefined) {
+      const trimmed = seCoverageRef.trim();
+      if (trimmed.length > MAX_SE_COVERAGE_REF_LENGTH) {
+        throw new BadRequestException(`seCoverageRef exceeds the ${MAX_SE_COVERAGE_REF_LENGTH}-character limit`);
+      }
+      trimmedSeCoverageRef = trimmed.length > 0 ? trimmed : null;
+    }
+    const dryRunDiff = await this.jobsService.editDiffEntry(id, localId, {
+      title,
+      description,
+      customerId: trimmedCustomerId,
+      tags,
+      seCoverageRef: trimmedSeCoverageRef,
+    });
     return { dryRunDiff };
   }
 

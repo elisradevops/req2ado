@@ -107,6 +107,15 @@ export const adoOperations: AdoOperation[] = [
     handler: (backend, { workItemType }: { workItemType: string }) => callBackend(() => backend.discoverFields(workItemType)),
   },
   {
+    name: 'ado_discover_fields_detailed',
+    title: 'Discover ADO work-item type fields with picklist metadata',
+    description:
+      'Same scope as ado_discover_fields, but each field also carries its allowedValues (empty for a non-picklist field) and alwaysRequired. Use this instead of ado_discover_fields whenever the caller needs to write to a picklist-constrained field (e.g. Microsoft.VSTS.CMMI.RequirementType) -- writing an unvalidated value into such a field 400s the whole request on any org whose allowed values don\'t match what was assumed. workItemType must be the REAL ADO type name for this project (resolve via ado_discover_work_item_type_categories first, not req2ado\'s internal Epic/Feature/Requirement labels).',
+    inputSchema: { workItemType: z.string() },
+    handler: (backend, { workItemType }: { workItemType: string }) =>
+      callBackend(() => backend.discoverFieldsDetailed(workItemType)),
+  },
+  {
     name: 'ado_read_area_paths',
     title: 'Read ADO area paths',
     description: 'Returns the nested area-path tree for the configured project, used to populate a real area-path picker instead of free text.',

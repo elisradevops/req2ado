@@ -18,11 +18,13 @@ import {
   getSummary,
   attachFigureToAdo,
   retryTraceLinkWrite,
+  validateCreatedTree,
   type AuditEntry,
   type DebugCaptureEntry,
   type JobEventRecord,
   type JobSummaryReport,
   type MoveDiffEntryInput,
+  type ValidationResult,
 } from '../api/jobs';
 import { subscribeToJobEvents, isValidNarrationEvent, type JobStage, type NarrationEvent } from '../api/events';
 import { loadRuntimeConfig } from '../api/config';
@@ -61,6 +63,19 @@ import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar
 import { FileX2 } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState';
 
+// WID 300578's own field/expected/actual can carry the item's full
+// (HTML-normalized) description -- long, and often not useful in full for
+// spotting WHICH mismatch this is. Collapsed to one readable line, same
+// convention as SourceProvenance/other single-line previews elsewhere in
+// this app.
+const VALIDATION_MISMATCH_PREVIEW_LENGTH = 80;
+
+function truncateForDisplay(text: string): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= VALIDATION_MISMATCH_PREVIEW_LENGTH) return collapsed;
+  return `${collapsed.slice(0, VALIDATION_MISMATCH_PREVIEW_LENGTH)}…`;
+}
+
 export function JobDetail(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -82,6 +97,14 @@ export function JobDetail(): React.ReactElement {
   // NodeDetailPanel's own traceLinkRetryStatus map is what flips the
   // control to its "done" state; this list just stays as of the last load.
   const [traceLinkFailures, setTraceLinkFailures] = useState<TraceLinkFailure[]>([]);
+  // See jobsStore.ts's JobDetail.createdItemCount doc comment.
+  const [createdItemCount, setCreatedItemCount] = useState(0);
+  // WID 300578: result of the last manual "Validate" click -- diffs the
+  // real ADO state of every created/resumed item against the confirmed
+  // dryRunDiff. null until the reviewer actually runs it; not auto-run on
+  // load (a real ADO round-trip per created item, not a free check).
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
   // Populated directly from the SSE callback on 'chunk_warning' events --
   // docs/ui-progress-review.md item #3: previously a mid-run chunk failure
   // was invisible until the whole job finished and `warnings` (above) got
@@ -160,6 +183,9 @@ export function JobDetail(): React.ReactElement {
   // type name, for AddChildForm's type picker LABELS only -- the value it
   // submits always stays the category. See jobsStore.ts's own doc comment.
   const [categoryLabels, setCategoryLabels] = useState<Record<'Epic' | 'Feature' | 'Requirement', string> | null>(null);
+  // The SAME field JobsService.confirm() will actually write a Requirement's
+  // classification to -- see jobsStore.ts's own doc comment.
+  const [requirementClassificationField, setRequirementClassificationField] = useState<{ referenceName: string; allowedValues: string[] } | null>(null);
   // Confirm and Reject are mutually exclusive, job-terminating writes -- a
   // synchronous ref guard (state alone is too slow: clicks before the first
   // re-render read the stale false from closure) prevents a double-submit
@@ -189,6 +215,7 @@ export function JobDetail(): React.ReactElement {
         setExcludedTableIds(job.excludedTableIds ?? []);
         setWarnings(job.warnings ?? []);
         setTraceLinkFailures(job.traceLinkFailures ?? []);
+        setCreatedItemCount(job.createdItemCount ?? 0);
         // Seeds the FigureDescriptions panel from what's already durably
         // persisted (see Job.figureDescriptions) -- previously this panel
         // was fed ONLY by live SSE narration, so it went blank on reload or
@@ -223,6 +250,7 @@ export function JobDetail(): React.ReactElement {
         setSourceFilename(job.originalFilename);
         setTypeCatalog(job.workItemTypeCatalog ?? null);
         setCategoryLabels(job.workItemTypeCategoryLabels ?? null);
+        setRequirementClassificationField(job.requirementClassificationField ?? null);
         setLoaded(true);
       })
       .catch(() => {
@@ -316,6 +344,7 @@ export function JobDetail(): React.ReactElement {
               // even though a real diff (and thus a real catalog) now exists.
               setTypeCatalog(job.workItemTypeCatalog ?? null);
               setCategoryLabels(job.workItemTypeCategoryLabels ?? null);
+              setRequirementClassificationField(job.requirementClassificationField ?? null);
               // Real bug (user-reported): warnings/kbCitations are written
               // to the Job row by this SAME pipeline.worker.ts update that
               // sets status/dryRunDiff/workItemTypeCatalog (all handled
@@ -331,6 +360,7 @@ export function JobDetail(): React.ReactElement {
               // which happens after this SSE completion callback fires, not
               // at mount-time loadJob().
               setTraceLinkFailures(job.traceLinkFailures ?? []);
+              setCreatedItemCount(job.createdItemCount ?? 0);
               setKbCitations(job.kbCitations ?? []);
               setExcludedFigureIds(job.excludedFigureIds ?? []);
               setExcludedTableIds(job.excludedTableIds ?? []);
@@ -576,6 +606,7 @@ export function JobDetail(): React.ReactElement {
       const result = await confirmJob(id);
       const job = await getJob(id);
       setStatus(job.status);
+      setCreatedItemCount(job.createdItemCount ?? 0);
       showToast(`Confirmed — ${result.createdCount} work item(s) written to Azure DevOps.`, 'success');
     } catch {
       setMutationError('Confirm failed — the job may be safe to retry. Check the Audit tab for details.');
@@ -584,7 +615,10 @@ export function JobDetail(): React.ReactElement {
       // durably records partial progress (CreatedItemMapping) even on
       // failure, so job.status reflects the real, safe-to-retry state.
       const job = await getJob(id).catch(() => null);
-      if (job) setStatus(job.status);
+      if (job) {
+        setStatus(job.status);
+        setCreatedItemCount(job.createdItemCount ?? 0);
+      }
     } finally {
       isMutatingRef.current = false;
       setIsMutating(false);
@@ -689,6 +723,22 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // WID 300578: read-only, no local diff mutation -- just fetches and
+  // displays the comparison. A real ADO round-trip (getWorkItemsBatch), so
+  // this is an explicit reviewer action, never auto-run.
+  async function handleValidate(): Promise<void> {
+    if (!id || isValidating) return;
+    setIsValidating(true);
+    try {
+      const result = await validateCreatedTree(id);
+      setValidationResult(result);
+    } catch {
+      showToast('Failed to validate — please try again.', 'error');
+    } finally {
+      setIsValidating(false);
+    }
+  }
+
   async function handleToggleExclude(localId: string, excluded: boolean): Promise<void> {
     if (!id || isDiffMutatingRef.current) return;
     isDiffMutatingRef.current = true;
@@ -767,7 +817,10 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
-  async function handleSaveEdit(localId: string, patch: { title: string; description: string }): Promise<void> {
+  async function handleSaveEdit(
+    localId: string,
+    patch: { title: string; description: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
+  ): Promise<void> {
     if (!id) return;
     try {
       const result = await editDiffEntry(id, localId, patch);
@@ -1057,6 +1110,11 @@ export function JobDetail(): React.ReactElement {
                 </Tooltip>
               </>
             )}
+            {status !== 'pending' && status !== 'running' && status !== 'writing' && createdItemCount > 0 && (
+              <Button size="sm" variant="ghost" onClick={handleValidate} disabled={isValidating}>
+                {isValidating ? 'Validating…' : 'Validate'}
+              </Button>
+            )}
             {status !== 'pending' && status !== 'running' && status !== 'writing' && (
               <>
                 <Button variant="outline" size="sm" onClick={() => setResubmitDialogOpen(true)} disabled={isMutating}>
@@ -1137,6 +1195,49 @@ export function JobDetail(): React.ReactElement {
       {mutationError && (
         <Alert severity="error" onClose={() => setMutationError(null)}>
           {mutationError}
+        </Alert>
+      )}
+      {/* Resume-safe partial write (300577) -- confirm()'s own resume
+          machinery already makes clicking Confirm again safe (see its
+          CreatedItemMapping-backed skip logic), but a reviewer had no way
+          to tell "confirm never ran" apart from "confirm ran, partly
+          wrote, then failed" before this banner. Shown only for a
+          diff_ready job with a nonzero createdItemCount -- a fresh,
+          never-confirmed job has none. */}
+      {status === 'diff_ready' && createdItemCount > 0 && (
+        <Alert severity="info">
+          {createdItemCount} work item{createdItemCount === 1 ? '' : 's'} from a previous attempt{' '}
+          {createdItemCount === 1 ? 'was' : 'were'} already written to Azure DevOps. Clicking Confirm resumes
+          safely — it will not create duplicates.
+        </Alert>
+      )}
+      {/* WID 300578: real-ADO-state validation result, shown until the
+          reviewer navigates away or runs it again. `field: 'existence'`
+          (JobsService.validateCreatedTree's own synthetic value) means the
+          ADO item itself is gone, not a field-content mismatch --
+          expected/actual are then plain sentences, not field values, so
+          they render as-is rather than truncated code. */}
+      {validationResult && (
+        <Alert severity={validationResult.valid ? 'success' : 'warning'} onClose={() => setValidationResult(null)}>
+          {validationResult.valid ? (
+            <>All {validationResult.checkedCount} checked work item{validationResult.checkedCount === 1 ? '' : 's'} match what was confirmed.</>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <span>
+                {validationResult.mismatches.length} mismatch{validationResult.mismatches.length === 1 ? '' : 'es'} found across{' '}
+                {validationResult.checkedCount} checked work item{validationResult.checkedCount === 1 ? '' : 's'}:
+              </span>
+              <ul className="flex flex-col gap-1 text-xs">
+                {validationResult.mismatches.map((m, i) => (
+                  <li key={`${m.localId}-${m.field}-${i}`} className="font-mono">
+                    WI-{m.adoWorkItemId} ({m.field}): expected{' '}
+                    {m.field === 'existence' ? m.expected : `"${truncateForDisplay(m.expected)}"`}, got{' '}
+                    {m.field === 'existence' ? m.actual : `"${truncateForDisplay(m.actual)}"`}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </Alert>
       )}
       {mode && status && (
@@ -1321,6 +1422,7 @@ export function JobDetail(): React.ReactElement {
                 hasNext={hasNextEntry}
                 typeCatalog={typeCatalog ?? undefined}
                 categoryLabels={categoryLabels ?? undefined}
+                requirementClassificationField={requirementClassificationField}
               />
             </div>
           ) : (

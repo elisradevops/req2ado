@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { McpClient, type AdoRequestCredential } from './mcp.client';
+import { DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES } from '../../config/requirement-type-fields';
 
 export interface WorkItemTypeCatalogEntry {
   color: string;
@@ -27,7 +28,14 @@ const ICON_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
  */
 @Injectable()
 export class WorkItemTypeCatalogService {
-  constructor(private readonly mcpClient: McpClient) {}
+  constructor(
+    private readonly mcpClient: McpClient,
+    // Trailing/optional, same reasoning as JobsService's own
+    // requirementTypeFieldCandidates param -- keeps every existing bare
+    // `new WorkItemTypeCatalogService(mcpClient)` call site (this module's
+    // own DI registration, any direct test construction) working unchanged.
+    private readonly requirementTypeFieldCandidates: string[] = DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES,
+  ) {}
 
   async resolve(project: string | undefined, credential?: AdoRequestCredential): Promise<Record<string, WorkItemTypeCatalogEntry>> {
     const types = await this.mcpClient.discoverWorkItemTypes(project, credential);
@@ -67,6 +75,33 @@ export class WorkItemTypeCatalogService {
       return await this.mcpClient.discoverWorkItemTypeCategories(project, credential);
     } catch {
       return { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' };
+    }
+  }
+
+  // Surfaces the SAME resolved requirement-classification field JobsService.
+  // confirm() will actually write to (JobsService.resolveRequirementTypeField),
+  // so the reviewer's edit UI can show what's representable BEFORE commit --
+  // not a second, independently-arrived-at answer. Fails open to null (no
+  // credential, no diff yet, or the resolve itself failing) -- the same
+  // "best-effort enrichment, never fails the whole job fetch" convention as
+  // resolve()/resolveCategoryLabels above and JobsController.getById's own
+  // try/catch around this whole enrichment block.
+  async resolveRequirementClassificationField(
+    project: string | undefined,
+    credential?: AdoRequestCredential,
+  ): Promise<{ referenceName: string; allowedValues: string[] } | null> {
+    try {
+      const categoryLabels = await this.resolveCategoryLabels(project, credential);
+      const fields = await this.mcpClient.discoverFieldsDetailed(categoryLabels.Requirement, credential);
+      for (const candidate of this.requirementTypeFieldCandidates) {
+        const match = fields.find((f) => f.referenceName === candidate);
+        if (match) {
+          return { referenceName: match.referenceName, allowedValues: match.allowedValues };
+        }
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 

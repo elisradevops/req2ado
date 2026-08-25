@@ -31,7 +31,7 @@ import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
 
-// Rows are now pure information (exclude toggle, clause id, type+title,
+// Rows are now pure information (exclude toggle, index, type+title,
 // action state, a compact issue/trace-link count, a details button) -- all
 // the per-node detail that used to live inline (tags, quality gauge/issues,
 // trace link chips, KB citations) moved into NodeDetailDialog. Fixed height
@@ -39,10 +39,9 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 // resetAfterIndex) since a single-line row never wraps.
 const ROW_HEIGHT = 40;
 
-// Fallback clause-column width when no entry has a customerId yet (or
-// document is unavailable, e.g. SSR/tests) -- matches the approved
-// design's own fallback.
-const FALLBACK_CLAUSE_WIDTH = 44;
+// Fallback index-column width when the document is unavailable (e.g.
+// SSR/tests) -- matches the approved design's own fallback.
+const FALLBACK_INDEX_WIDTH = 44;
 const FALLBACK_STATUS_WIDTH = 108;
 
 // Used only before the container's real height is first measured (see
@@ -82,6 +81,11 @@ export interface DryRunDiffEntry {
   action: 'create' | 'reuse' | 'dedup_skip';
   existingAdoId?: number | null;
   customerId: string | null;
+  // Manually-entered forward reference to a Systems Engineering
+  // requirements-layer artifact, never auto-populated -- see ingestion's
+  // WorkItemNode.se_coverage_ref's own docstring. Optional/nullable: older
+  // job shapes and non-Requirement entries predate/never carry this field.
+  seCoverageRef?: string | null;
   tags?: string[];
   qualityScore?: number | null;
   qualityIssues?: string[];
@@ -173,6 +177,19 @@ interface FlatRow {
   // Ancestor localIds, root-first -- lets the collapse filter below hide a
   // row when ANY ancestor (not just its immediate parent) is collapsed.
   ancestorIds: string[];
+  // Generic, always-present per-row reference (e.g. "1.2.3") -- purely a
+  // function of this row's OWN position among its siblings and its
+  // parent's index, computed fresh from the CURRENT tree shape on every
+  // render. Deliberately unrelated to entry.customerId (a per-Requirement,
+  // document-derived source reference -- see WorkItemNode.customer_id's
+  // own docstring, ingestion side): this index exists purely so a reviewer
+  // can point at/search for a specific row, applies uniformly to every
+  // node type (Epic/Feature/Requirement alike), and stays correct
+  // regardless of how (or whether) the source document itself is
+  // numbered -- a drag-and-drop move, an exclude, or a new child added
+  // mid-review all naturally renumber it on the next render, with no
+  // separate recompute step.
+  index: string;
 }
 
 function buildFlatRows(entries: DryRunDiffEntry[]): FlatRow[] {
@@ -185,14 +202,16 @@ function buildFlatRows(entries: DryRunDiffEntry[]): FlatRow[] {
     byParent.set(parentKey, siblings);
   }
   const rows: FlatRow[] = [];
-  function visit(parentKey: string | null, depth: number, ancestorIds: string[]): void {
-    for (const entry of byParent.get(parentKey) ?? []) {
+  function visit(parentKey: string | null, depth: number, ancestorIds: string[], parentIndex: string): void {
+    const siblings = byParent.get(parentKey) ?? [];
+    siblings.forEach((entry, position) => {
       const hasChildren = byParent.has(entry.localId);
-      rows.push({ entry, depth, hasChildren, ancestorIds });
-      visit(entry.localId, depth + 1, [...ancestorIds, entry.localId]);
-    }
+      const index = parentIndex ? `${parentIndex}.${position + 1}` : `${position + 1}`;
+      rows.push({ entry, depth, hasChildren, ancestorIds, index });
+      visit(entry.localId, depth + 1, [...ancestorIds, entry.localId], index);
+    });
   }
-  visit(null, 0, []);
+  visit(null, 0, [], '');
   return rows;
 }
 
@@ -234,30 +253,30 @@ function resolveCssVar(name: string, fallback: string): string {
   return value || fallback;
 }
 
-// Clause-id column width is measured from the real content, not guessed --
-// a fixed pixel value fits "3.2.1" but clips "3.2.1.a" the moment a
-// document numbers one level deeper. Since react-window renders each row
-// as an independent absolutely-positioned element (not siblings in one CSS
+// Index column width is measured from the real content, not guessed -- a
+// fixed pixel value fits "3.2.1" but clips "3.2.1.10" the moment a branch
+// grows past 9 siblings. Since react-window renders each row as an
+// independent absolutely-positioned element (not siblings in one CSS
 // Grid), the column can't self-size via `grid-template-columns: auto`
-// across rows -- it has to be measured once from all entries and applied
-// as a CSS custom property on a shared ancestor, which every row then
-// reads via `var(--clause-w)`.
-function useClauseColumnWidth(entries: DryRunDiffEntry[]): number {
+// across rows -- it has to be measured once from every row's own computed
+// index and applied as a CSS custom property on a shared ancestor, which
+// every row then reads via `var(--index-w)`.
+function useIndexColumnWidth(rows: FlatRow[]): number {
   return useMemo(() => {
     const fontFamily = resolveCssVar('--font-mono', 'monospace');
     const font = `12px ${fontFamily}`;
     let widest = 0;
-    for (const entry of entries) {
-      widest = Math.max(widest, measureTextWidth(entry.customerId ?? '', font, '-0.02em'));
+    for (const row of rows) {
+      widest = Math.max(widest, measureTextWidth(row.index, font, '-0.02em'));
     }
-    return widest > 0 ? Math.ceil(widest) + 18 : FALLBACK_CLAUSE_WIDTH;
-  }, [entries]);
+    return widest > 0 ? Math.ceil(widest) + 18 : FALLBACK_INDEX_WIDTH;
+  }, [rows]);
 }
 
 // Confirmed real bug (screenshot): the Status column's fixed 108px was
 // sized for "New", not for the widest real label this column ever
 // renders -- "Near-duplicate of WI-123456" clips mid-word. Same fix shape
-// as useClauseColumnWidth above: react-window renders each row as an
+// as useIndexColumnWidth above: react-window renders each row as an
 // independent absolutely-positioned element, so the column can't
 // self-size via `grid-template-columns: auto` across rows -- measured
 // once from every entry's real label and applied as a CSS custom
@@ -291,7 +310,7 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
 
 // Shared grid template for both the sticky header and every data row --
 // guarantees pixel-exact column alignment (a single source of truth, not
-// two hand-kept-in-sync definitions). grip / exclude / clause id / elastic
+// two hand-kept-in-sync definitions). grip / exclude / index / elastic
 // item / status / flags / details-button.
 // Flags column widened from 60px -- it used to fit only the issue-count and
 // trace-link-count chips; a table-count and a combined figure-count chip
@@ -301,9 +320,9 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
 // copy of this template string, so the header and every row stay driven by
 // this ONE literal regardless of whether the current job can be moved
 // (diff_ready) or not. `--grip-w` is set to 0px (not omitted) on the same
-// wrapper that already carries `--clause-w`/`--status-w` when canMove is
+// wrapper that already carries `--index-w`/`--status-w` when canMove is
 // false, so columns still line up pixel-for-pixel either way.
-const GRID_TEMPLATE_COLUMNS = 'var(--grip-w, 20px) 32px var(--clause-w, 44px) minmax(0,1fr) var(--status-w, 108px) 100px 36px';
+const GRID_TEMPLATE_COLUMNS = 'var(--grip-w, 20px) 32px var(--index-w, 44px) minmax(0,1fr) var(--status-w, 108px) 100px 36px';
 
 // DESIGN.md §11.5 -- drag-and-drop is scoped to short, in-viewport moves;
 // MoveToPicker (a separate component, not part of this file) is the stated
@@ -422,7 +441,10 @@ export function DiffTree({
   const rows = useMemo(() => {
     return allRows.filter((row) => {
       const matchesAction = !filterAction || row.entry.action === filterAction;
-      const matchesText = !filterText || row.entry.title.toLowerCase().includes(filterText.toLowerCase());
+      const matchesText =
+        !filterText ||
+        row.entry.title.toLowerCase().includes(filterText.toLowerCase()) ||
+        row.index === filterText.trim();
       if (!matchesAction || !matchesText) return false;
       // A search/filter in progress auto-expands -- hiding a real match
       // under a collapsed ancestor would look like the filter silently
@@ -432,7 +454,7 @@ export function DiffTree({
     });
   }, [allRows, filterAction, filterText, isFiltering, collapsedIds]);
 
-  const clauseColumnWidth = useClauseColumnWidth(entries);
+  const indexColumnWidth = useIndexColumnWidth(allRows);
   const statusColumnWidth = useStatusColumnWidth(entries);
 
   const listRef = useRef<FixedSizeList>(null);
@@ -641,7 +663,7 @@ export function DiffTree({
     <div
       style={
         {
-          '--clause-w': `${clauseColumnWidth}px`,
+          '--index-w': `${indexColumnWidth}px`,
           '--status-w': `${statusColumnWidth}px`,
           '--grip-w': canMove ? '20px' : '0px',
         } as React.CSSProperties
@@ -655,7 +677,7 @@ export function DiffTree({
       >
         <span />
         <span />
-        <span className="text-right">Clause</span>
+        <span className="text-right">Index</span>
         <span>Item</span>
         <span className="flex items-center gap-1">
           Status
@@ -928,14 +950,15 @@ function DiffTreeRow({
       </span>
       <span onClick={(e) => e.stopPropagation()} className="flex justify-center">
         <Checkbox
-          ariaLabel={`Exclude ${entry.customerId ?? entry.title}`}
+          ariaLabel={`Exclude ${entry.title}`}
           checked={!!entry.excluded}
           onCheckedChange={(checked) => onToggleExclude(entry.localId, checked)}
         />
       </span>
 
-      {/* Clause id column -- width scales to the widest id actually present (see useClauseColumnWidth) */}
-      <span className="text-right font-mono text-xs tabular-nums tracking-tight text-ink-3">{entry.customerId}</span>
+      {/* Generic per-row index (see FlatRow.index's own doc comment) -- width
+          scales to the widest index actually present (see useIndexColumnWidth). */}
+      <span className="text-right font-mono text-xs tabular-nums tracking-tight text-ink-3">{row.index}</span>
 
       {/* Item column: indent guides -> chevron -> type badge -> title, all single-line (truncated, not
           wrapped -- fixed row height demands it; full title/description is one click away in the
@@ -971,6 +994,20 @@ function DiffTreeRow({
           <p className={cn('min-w-0 flex-1 truncate text-sm font-medium leading-snug', entry.excluded && 'line-through text-ink-3')}>
             {entry.title}
           </p>
+          {/* Customer ID -- a per-Requirement, document-derived source
+              reference (e.g. a clause/requirement number the customer's own
+              document printed), NOT this row's generic Index column to its
+              left. Requirement-only (Epic/Feature never carry one) and only
+              shown when one was actually found/entered -- see
+              WorkItemNode.customer_id's own docstring, ingestion side. */}
+          {entry.customerId && (
+            <span
+              className="flex-none truncate font-mono text-xs tracking-tight text-ink-3"
+              title={`Customer ID: ${entry.customerId}`}
+            >
+              {entry.customerId}
+            </span>
+          )}
           {/* DESIGN.md §11.5 -- "already in ADO" badge. Real gap this closes
               (found while investigating whether tree reorder could override
               a matched item's real ADO relationships): dragging this row

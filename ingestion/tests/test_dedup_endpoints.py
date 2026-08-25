@@ -72,6 +72,69 @@ def test_dedup_delete_removes_a_stale_match_so_it_no_longer_matches(tmp_path, mo
     assert check_response.json()["is_duplicate"] is False
 
 
+def _fixed_angle_embed_handler(request: httpx.Request) -> httpx.Response:
+    # Deterministic, known-angle vectors (cosine similarity = 0.5 between
+    # the two texts below) -- independent of _mock_embed_handler's
+    # length-derived scheme, which turned out to keep any two same-shaped
+    # short sentences well above 0.90 regardless of length, making it
+    # unsuitable for testing a threshold strictly between 0.01 and 0.90.
+    texts = json.loads(request.content)["texts"]
+    vectors = {
+        "Short.": [1.0, 0.0],
+        "A completely different and much longer requirement about something else entirely.": [0.5, 0.8660254],
+    }
+    return httpx.Response(200, json={"embeddings": [vectors[text] for text in texts]})
+
+
+def test_dedup_check_uses_the_default_threshold_when_none_is_provided(tmp_path, monkeypatch) -> None:
+    # A moderately-similar pair (cosine similarity 0.5, well under the real
+    # 0.90 default) should NOT be flagged as a duplicate when the request
+    # omits `threshold` entirely -- same behavior as before the
+    # Settings-window override existed.
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_fixed_angle_embed_handler)
+
+    client.post(
+        "/dedup/upsert",
+        json={"item_id": "item-1", "text": "Short.", "title": "Short.", "area_path": "Project\\Area1"},
+    )
+    response = client.post(
+        "/dedup/check",
+        json={
+            "text": "A completely different and much longer requirement about something else entirely.",
+            "title": "A completely different and much longer requirement about something else entirely.",
+            "area_path": "Project\\Area1",
+        },
+    )
+    assert response.json()["is_duplicate"] is False
+
+
+def test_dedup_check_respects_an_explicit_threshold_override(tmp_path, monkeypatch) -> None:
+    # Same pair as above (cosine similarity 0.5) -- but an explicit, low
+    # threshold (Settings-window override) should now flag it as a
+    # duplicate, proving the request-body threshold actually reaches
+    # check_for_duplicates.
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_fixed_angle_embed_handler)
+
+    client.post(
+        "/dedup/upsert",
+        json={"item_id": "item-1", "text": "Short.", "title": "Short.", "area_path": "Project\\Area1"},
+    )
+    response = client.post(
+        "/dedup/check",
+        json={
+            "text": "A completely different and much longer requirement about something else entirely.",
+            "title": "A completely different and much longer requirement about something else entirely.",
+            "area_path": "Project\\Area1",
+            "threshold": 0.4,
+        },
+    )
+    body = response.json()
+    assert body["is_duplicate"] is True
+    assert body["matched_item_id"] == "item-1"
+
+
 def test_dedup_upsert_batch_upserts_all_items_in_one_embed_call(tmp_path, monkeypatch) -> None:
     # Regression: /dedup/upsert previously required one HTTP call (and one
     # embed() round-trip) per item. /dedup/upsert-batch embeds every item's

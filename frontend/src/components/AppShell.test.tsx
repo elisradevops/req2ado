@@ -112,6 +112,38 @@ describe('AppShell breadcrumbs', () => {
     expect(breadcrumb.queryByRole('link', { name: 'Jobs' })).not.toBeInTheDocument();
   });
 
+  it('does not let /jobs/\'s prefix rule swallow /jobs/batch/new (NEW-05, longest-prefix-first ordering)', async () => {
+    render(
+      <MemoryRouter initialEntries={['/jobs/batch/new']}>
+        <AppShell>
+          <div />
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    const breadcrumb = within(await screen.findByRole('navigation', { name: 'Breadcrumb' }));
+    expect(breadcrumb.getByText('New Batch')).toBeInTheDocument();
+    // Must not render as "Jobs / batch/new" (the generic /jobs/ catch-all
+    // misreading the second path segment as a job id) -- neither a "batch"
+    // nor a "batch/new" crumb should appear.
+    expect(breadcrumb.queryByText(/batch\/new/)).not.toBeInTheDocument();
+  });
+
+  it('renders "Jobs / <batchId>" for a batch status route (NEW-05), with Jobs linking back to the list', async () => {
+    render(
+      <MemoryRouter initialEntries={['/jobs/batch/87fdf5b1-01a0-441d-a519-741598d7c0b0']}>
+        <AppShell>
+          <div />
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    const breadcrumb = within(await screen.findByRole('navigation', { name: 'Breadcrumb' }));
+    const jobsLink = breadcrumb.getByRole('link', { name: 'Jobs' });
+    expect(jobsLink).toHaveAttribute('href', '/jobs');
+    expect(breadcrumb.getByText('87fdf5b1…')).toBeInTheDocument();
+  });
+
   it('renders a single, non-linked crumb for a route with no sub-path', async () => {
     render(
       <MemoryRouter initialEntries={['/knowledge-base']}>

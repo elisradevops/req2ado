@@ -188,4 +188,32 @@ describe('JobsList', () => {
     expect(deleteButton.parentElement?.className).toContain('opacity-0');
     expect(deleteButton.parentElement?.className).toContain('group-hover:opacity-100');
   });
+
+  it('New batch button navigates to the batch wizard (NEW-05)', async () => {
+    const mockNavigate = vi.fn();
+    vi.mocked(reactRouterDom.useNavigate).mockReturnValue(mockNavigate);
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([]);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getByRole('button', { name: /new batch/i })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /new batch/i }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/jobs/batch/new');
+  });
+
+  it('renders a Batch chip for a job tagged with batchId, which navigates to the batch page without also navigating to the job (NEW-05)', async () => {
+    const mockNavigate = vi.fn();
+    vi.mocked(reactRouterDom.useNavigate).mockReturnValue(mockNavigate);
+    vi.spyOn(jobsApi, 'listJobs').mockResolvedValue([
+      { id: 'j1', mode: 'baseline', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 1, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z', batchId: 'batch-1' },
+      { id: 'j2', mode: 'baseline', status: 'diff_ready', areaPath: 'Proj\\A', originalFilename: 'b.docx', itemCount: 1, createdItemCount: 0, createdAt: '2026-07-09T00:00:00Z' },
+    ]);
+    render(<ToastProvider><MemoryRouter><JobsList /></MemoryRouter></ToastProvider>);
+    await waitFor(() => expect(screen.getByText('a.docx')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Batch'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/jobs/batch/batch-1');
+    expect(mockNavigate).not.toHaveBeenCalledWith('/jobs/j1');
+  });
 });

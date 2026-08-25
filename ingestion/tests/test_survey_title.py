@@ -3,10 +3,10 @@ from app.distillation.survey_title import TitleDistillationClient, distill_surve
 
 class FakeTitleDistillationClient:
     """Hand-written test double proving the TitleDistillationClient
-    interface/wiring works end-to-end. No real Open WebUI call exists yet —
-    the orchestrator's LLM redaction-proxy is separate, not-yet-built
-    infrastructure (same scope boundary as llm_leveling.py's
-    FakeLlmLevelingClient from Phase 2)."""
+    interface/wiring works end-to-end, without a real /llm/chat round-trip.
+    OrchestratorLlmClient.distill_title (300553) is the real implementation
+    used in production -- see test_llm_leveling.py for the smart-title
+    fallback's own gate/wiring tests."""
 
     def distill_title(self, text: str, max_length: int) -> str:
         assert max_length == 256

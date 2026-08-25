@@ -20,44 +20,31 @@ row backing it."""
 from __future__ import annotations
 
 import hashlib
-import re
 from typing import Protocol
 
 from app.canonical.model import SourceRef, Table
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
+from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.leveling.tree_builder import _hash_description, _table_to_html
 from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
-# Duplicated from llm_leveling.py's own _significant_words/_grounding_score
-# (that module cannot be imported here: llm_leveling.py itself imports
-# THIS module for the pipeline plumbing, and a two-way import would be
-# circular). A description compared against ITSELF always yields 1.0
-# regardless of the exact stopword set -- every one of a text's own
-# significant words trivially appears in that same text -- so this is
-# genuinely computed (not a hardcoded literal, per this module's own
-# fabrication-avoidance rationale), just via a self-contained
-# implementation rather than a cross-module call.
-_GROUNDING_STOPWORDS = {
-    "a", "an", "the", "shall", "system", "is", "are", "of", "to", "and", "or",
-    "in", "on", "for", "with", "be", "will", "this", "that", "it", "its",
-}
-_WORD_PATTERN = re.compile(r"[a-z0-9]+")
-
-
-def _significant_words(text: str) -> set[str]:
-    words = _WORD_PATTERN.findall(text.lower())
-    return {word for word in words if word not in _GROUNDING_STOPWORDS}
-
-
-def _grounding_score(generated_text: str, source_text: str) -> float:
-    generated_words = _significant_words(generated_text)
-    if not generated_words:
-        return 1.0
-    source_words = _significant_words(source_text)
-    return len(generated_words & source_words) / len(generated_words)
+# Previously a second, independent copy of llm_leveling.py's own
+# _significant_words/_grounding_score with an ASCII-only word pattern --
+# confirmed real bug (NEW-04): it silently emptied the significant-word set
+# (and made grounding_score trivially 1.0, "can't judge, assume fine") for
+# Hebrew/Arabic/any non-Latin script content, reopening exactly the gap
+# _apply_synthesis_pass's own grounding_score line below claims to have
+# closed. Extracted to grounding.py instead (Phase 6) -- a leaf module with
+# zero intra-package dependencies, so both this module and llm_leveling.py
+# (which itself imports THIS module for pipeline plumbing) can import it
+# without the circular import a direct cross-import between the two would
+# create. Aliased under the original private names so every call site below
+# needs no change.
+from app.leveling.grounding import grounding_score as _grounding_score
+from app.leveling.grounding import significant_words as _significant_words
 
 
 def _hash_identity_for_row(description: str, source_ref: SourceRef, id_text: str) -> str:
@@ -624,14 +611,19 @@ def _apply_synthesis_pass(
             if isinstance(raw_title, str) and raw_title.strip():
                 node.title = extract_baseline_title(raw_title)
             raw_tags = entry.get("tags")
-            if isinstance(raw_tags, list):
+            # Requirement-only -- gated explicitly here, not merely via this
+            # pass's needs_synthesis-scoped caller: _repair_requirement_hierarchy
+            # can re-type a synthesized leaf to FEATURE AFTER this pass runs,
+            # so a check anywhere upstream of that repair wouldn't reflect the
+            # node's final type. A fresh check right here, at assignment time
+            # (before any such repair), is what actually needs to hold.
+            if isinstance(raw_tags, list) and node.type == WorkItemType.REQUIREMENT:
                 node.tags = [RequirementTag(t) for t in raw_tags if t in _VALID_TAGS]
 
 
 def build_hierarchy_subtree(
     rows: list[HierarchyRow],
     node_id_prefix: str,
-    customer_id: str | None,
     title_tag_client: TitleTagClient | None = None,
     synthesis_client: SynthesisClient | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -739,9 +731,23 @@ def build_hierarchy_subtree(
         # SAME SourceRef object `row` itself still holds (and that every
         # OTHER row derived from the same source might also reference).
         section_path = ([section_path_root] if section_path_root else []) + _ancestor_labels(i)
+        node_type_enum = WorkItemType(row.node_type)
+        # Customer ID is a per-Requirement, document-derived attribute --
+        # never a job-level value applied uniformly (see WorkItemNode.
+        # customer_id's own docstring). Only Requirement nodes ever carry
+        # one. A customer-assigned code (e.g. "REQ-AV-014") anywhere in this
+        # row's own text wins first; falls back to a REAL document-authored
+        # identifier (never convention 3's fabricated running counter);
+        # otherwise None, flagged by main.py's /level exit enforcement
+        # pass, never invented.
+        customer_id = (
+            (extract_customer_requirement_code(row.label) or (row.id_text if row.id_text_is_authored else None))
+            if node_type_enum == WorkItemType.REQUIREMENT
+            else None
+        )
         node = WorkItemNode(
             local_id=local_id,
-            type=WorkItemType(row.node_type),
+            type=node_type_enum,
             parent_local_id=None,  # resolved in the second pass, once every row has a local_id
             title=title,
             description=description,

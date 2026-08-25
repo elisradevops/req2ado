@@ -527,6 +527,66 @@ describe('RealAdoBackend.discoverFields', () => {
   });
 });
 
+describe('RealAdoBackend.discoverFieldsDetailed', () => {
+  it('requests the allowedValues expand and parses each field\'s picklist metadata', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        data: {
+          count: 2,
+          value: [
+            { referenceName: 'System.Title' },
+            {
+              referenceName: 'Microsoft.VSTS.CMMI.RequirementType',
+              allowedValues: ['Functional', 'Safety', 'Security'],
+              alwaysRequired: true,
+            },
+          ],
+        },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.discoverFieldsDetailed('Requirement');
+
+    expect(getSpy.mock.calls[1][0]).toContain('$expand=allowedValues');
+    // A field the response entry omits allowedValues/alwaysRequired for
+    // (a non-picklist field) must parse to [] / false, never undefined --
+    // an absent list and an empty list are the same fact for every caller.
+    expect(result).toEqual([
+      { referenceName: 'System.Title', allowedValues: [], alwaysRequired: false },
+      {
+        referenceName: 'Microsoft.VSTS.CMMI.RequirementType',
+        allowedValues: ['Functional', 'Safety', 'Security'],
+        alwaysRequired: true,
+      },
+    ]);
+  });
+
+  it('builds a "?"-prefixed $expand when the resolved api-version is "none" -- no stray "&"', async () => {
+    const noneVersionConfig: AdoMcpConfig = { ...testConfig, apiVersionLadder: ['none'] };
+    const backend = new RealAdoBackend(noneVersionConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({ status: 200, data: { count: 0, value: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.discoverFieldsDetailed('Requirement');
+
+    const url = getSpy.mock.calls[1][0] as string;
+    expect(url).toContain('/fields?$expand=allowedValues');
+    expect(url).not.toContain('&&');
+    expect(url).not.toMatch(/\?.*&\$expand/);
+  });
+});
+
 describe('RealAdoBackend.readAreaPaths', () => {
   it('uses config.adoProject by default', async () => {
     const backend = new RealAdoBackend(testConfig, credential);

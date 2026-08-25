@@ -112,3 +112,30 @@ describe('configSchema PIPELINE_WORKER_CONCURRENCY', () => {
     expect(result.PIPELINE_WORKER_CONCURRENCY).toBe(10);
   });
 });
+
+describe('configSchema batch/folder ingestion fields (NEW-05)', () => {
+  it('defaults BATCH_SURVEY_CONCURRENCY to 2 when unset', () => {
+    const result = configSchema.parse(BASE_ENV);
+    expect(result.BATCH_SURVEY_CONCURRENCY).toBe(2);
+  });
+
+  it('coerces an explicit BATCH_SURVEY_CONCURRENCY override from a string env value', () => {
+    const result = configSchema.parse({ ...BASE_ENV, BATCH_SURVEY_CONCURRENCY: '5' });
+    expect(result.BATCH_SURVEY_CONCURRENCY).toBe(5);
+  });
+
+  it('defaults BATCH_PUMP_INTERVAL_MS to 10000ms when unset', () => {
+    const result = configSchema.parse(BASE_ENV);
+    expect(result.BATCH_PUMP_INTERVAL_MS).toBe(10_000);
+  });
+
+  it('defaults MAX_BATCH_FILES to 25 when unset', () => {
+    const result = configSchema.parse(BASE_ENV);
+    expect(result.MAX_BATCH_FILES).toBe(25);
+  });
+
+  it('defaults BATCH_SUBMIT_STUCK_MS to 5 minutes when unset', () => {
+    const result = configSchema.parse(BASE_ENV);
+    expect(result.BATCH_SUBMIT_STUCK_MS).toBe(5 * 60_000);
+  });
+});

@@ -62,6 +62,24 @@ describe('McpClient', () => {
     expect(JSON.parse(options.body)).toEqual({ workItemType: 'Requirement' });
   });
 
+  it('discoverFieldsDetailed POSTs to ado_discover_fields_detailed and parses the descriptor list', async () => {
+    mockJsonResponse([
+      { referenceName: 'System.Title', allowedValues: [], alwaysRequired: false },
+      { referenceName: 'Microsoft.VSTS.CMMI.RequirementType', allowedValues: ['Functional', 'Safety'], alwaysRequired: true },
+    ]);
+
+    const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
+    const result = await client.discoverFieldsDetailed('Requirement');
+
+    expect(result).toEqual([
+      { referenceName: 'System.Title', allowedValues: [], alwaysRequired: false },
+      { referenceName: 'Microsoft.VSTS.CMMI.RequirementType', allowedValues: ['Functional', 'Safety'], alwaysRequired: true },
+    ]);
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://mcp.internal/api/ado/ado_discover_fields_detailed');
+    expect(JSON.parse(options.body)).toEqual({ workItemType: 'Requirement' });
+  });
+
   it('queryIds POSTs to ado_query_ids with the given field match, omitting project when not given', async () => {
     mockJsonResponse([100, 101]);
 

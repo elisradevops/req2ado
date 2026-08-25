@@ -12,6 +12,7 @@ import { runPipelineJob, type PipelineJobInput } from './pipeline.worker';
 import { CredentialVaultService } from '../auth/credential-vault.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
 import { OpenWebUiClient } from '../llm/openwebui.client';
+import { SettingsService } from '../settings/settings.service';
 
 /**
  * BullMQ sandboxed processor: runs in its OWN child process, spawned/pooled
@@ -54,6 +55,9 @@ const mcpClient = new McpClient(`${config.MCP_URL}/api/ado`, config.MCP_BEARER, 
 const backfillService = new BackfillService(mcpClient, ingestionClient, idempotencyService);
 const credentialVault = new CredentialVaultService(prisma, config.CREDENTIAL_ENC_KEY, config.CREDENTIAL_ENC_KEY_PREVIOUS);
 const adoCredentialResolver = new AdoCredentialResolver(credentialVault);
+// Settings window (NEW-07) -- reuses this process's own `prisma`, same
+// per-process-singleton pattern every other client here follows.
+const settingsService = new SettingsService(prisma);
 // Phase 6c: whole-document AI context primer (see pipeline.worker.ts's own
 // primer wiring block). Same config fields llm.module.ts's OpenWebUiClient
 // factory already uses -- this child process has no NestJS DI container of
@@ -102,5 +106,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     defaultLlmModel: config.LLM_CHAT_MODEL,
     openWebUiClient,
     primerCacheRedis: primerCacheRedis as any,
+    settingsService,
+    ocrLanguages: config.OCR_LANGUAGES,
   });
 }

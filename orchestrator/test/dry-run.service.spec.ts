@@ -27,6 +27,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -49,6 +50,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -58,7 +60,7 @@ describe('DryRunService', () => {
     ]);
   });
 
-  it('passes legacySourceHash through to idempotencyService.lookup as its 4th argument', async () => {
+  it('passes legacySourceHash through to idempotencyService.lookup as its 3rd argument', async () => {
     // Regression: identity_hash's migration-safety fallback (see
     // IdempotencyService.lookup's own doc comment) only works if diff()
     // actually forwards the node's legacySourceHash -- silently dropping it
@@ -76,6 +78,7 @@ describe('DryRunService', () => {
           sourceHash: 'new-identity-hash',
           legacySourceHash: 'legacy-fidelity-hash',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -88,7 +91,6 @@ describe('DryRunService', () => {
     );
     expect(fakeIdempotencyService.lookup).toHaveBeenCalledWith(
       'new-identity-hash',
-      null,
       'Project\\Area1',
       'legacy-fidelity-hash',
     );
@@ -110,6 +112,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -120,7 +123,7 @@ describe('DryRunService', () => {
       ],
       fakeIdempotencyService,
     );
-    expect(fakeIdempotencyService.lookup).toHaveBeenCalledWith('hash1', null, 'Project\\Area1', undefined);
+    expect(fakeIdempotencyService.lookup).toHaveBeenCalledWith('hash1', 'Project\\Area1', undefined);
   });
 
   it('marks a node as "reuse" when an existing mapping is found', async () => {
@@ -136,6 +139,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: 'CUST-1',
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -158,6 +162,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: 'CUST-1',
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -180,6 +185,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -195,6 +201,7 @@ describe('DryRunService', () => {
           description: 'Desc 1',
           sourceHash: 'hash2',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -217,6 +224,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -234,6 +242,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash2',
         customerId: null,
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -256,6 +265,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -286,6 +296,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -309,6 +320,7 @@ describe('DryRunService', () => {
         similarity: 0.94,
         sourceHash: 'hash1',
         customerId: null,
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -348,6 +360,7 @@ describe('DryRunService', () => {
           description: tableBearingDescription,
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -380,6 +393,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -403,6 +417,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -426,6 +441,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -455,6 +471,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -477,6 +494,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -501,6 +519,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -516,6 +535,7 @@ describe('DryRunService', () => {
           description: 'Desc 1',
           sourceHash: 'hash2',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -539,6 +559,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash1',
         customerId: null,
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -556,6 +577,7 @@ describe('DryRunService', () => {
         similarity: null,
         sourceHash: 'hash2',
         customerId: null,
+        seCoverageRef: null,
         groundingScore: null,
         qualityScore: null,
         qualityIssues: [],
@@ -580,6 +602,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: 0.15,
           qualityScore: 40,
@@ -614,6 +637,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           qualityScore: 80,
           qualityIssues: [],
@@ -648,6 +672,7 @@ describe('DryRunService', () => {
           description: 'Desc 0',
           sourceHash: 'hash1',
           customerId: null,
+          seCoverageRef: null,
           areaPath: 'Project\\Area1',
           groundingScore: null,
           qualityScore: null,
@@ -748,7 +773,7 @@ describe('DryRunService', () => {
       [
         {
           localId: 'n0', parentLocalId: null, type: 'Feature', title: 'T', description: 'D',
-          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
           childType: 'Requirement',
         },
       ],
@@ -771,7 +796,7 @@ describe('DryRunService', () => {
       [
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
           figureIds: ['f0', 'f1'],
         },
       ],
@@ -788,7 +813,7 @@ describe('DryRunService', () => {
       [
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
           figureIds: ['f2'],
         },
       ],
@@ -806,7 +831,7 @@ describe('DryRunService', () => {
       [
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
           figureIds: ['f3'],
         },
       ],
@@ -835,7 +860,7 @@ describe('DryRunService', () => {
       [
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
           sourceRef, tableIds: ['t0'], uncaptionedFigureIds: ['f9'], insignificantFigureIds: ['f9'],
         },
       ],
@@ -859,7 +884,7 @@ describe('DryRunService', () => {
       [
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
           sourceRef, tableIds: ['t1'], uncaptionedFigureIds: ['f8'], insignificantFigureIds: ['f8'],
         },
       ],
@@ -884,7 +909,7 @@ describe('DryRunService', () => {
       [
         {
           localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-          sourceHash: 'h0', customerId: null, areaPath: 'Project\\Area1', tags: [],
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
           sourceRef, tableIds: ['t2'], uncaptionedFigureIds: ['f7'], insignificantFigureIds: ['f7'],
         },
       ],
@@ -907,7 +932,7 @@ describe('DryRunService', () => {
     const service = new DryRunService();
     const nodes = Array.from({ length: 5 }, (_, i) => ({
       localId: `n${i}`, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
-      sourceHash: `h${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
+      sourceHash: `h${i}`, customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
     }));
     const progressCalls: [number, number][] = [];
     await service.diff(nodes, fakeIdempotencyService, undefined, (completed, total) => {
@@ -977,6 +1002,7 @@ function _entry(overrides: Partial<DryRunDiffEntry>): DryRunDiffEntry {
   return {
     localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
     action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h', customerId: null,
+    seCoverageRef: null,
     tags: [], groundingScore: null, qualityScore: null, qualityIssues: [], sourceRef: null,
     ...overrides,
   };

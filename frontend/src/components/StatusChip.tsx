@@ -14,6 +14,16 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   failed: { label: 'Failed', color: 'var(--color-danger)' },
   rejected: { label: 'Rejected', color: 'var(--color-ink-2)' },
   cancelled: { label: 'Cancelled', color: 'var(--color-ink-2)' },
+  // NEW-05 batch/folder ingestion -- JobBatchFile's own pre-submit statuses,
+  // reported as a file's "status" on the batch status page alongside every
+  // real Job.status above (see BatchService.externalStatusOf).
+  queued: { label: 'Queued', color: 'var(--color-ink-2)' },
+  invalid: { label: 'Invalid', color: 'var(--color-danger)' },
+  submit_failed: { label: 'Submit failed', color: 'var(--color-danger)' },
+  // A file whose Job was individually deleted after being created --
+  // Job.batchId/JobBatchFile.jobId are deliberately relation-free, so this
+  // is a real, expected state, not a data-integrity error.
+  deleted: { label: 'Deleted', color: 'var(--color-ink-2)' },
 };
 
 export function StatusChip({ status }: { status: string }): React.ReactElement {

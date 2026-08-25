@@ -31,6 +31,10 @@ export interface WorkItemNode {
   title: string;
   description: string;
   customer_id?: string | null;
+  /**
+   * Manually-entered forward reference to a Systems Engineering requirements-layer artifact this Requirement is a basis for coverage of. Requirement-only, like customer_id. NEVER auto-populated/inferred by ingestion -- always null out of ingestion, reviewer-supplied only before confirm. No matching/linking logic exists for this field; it is a hook to hold a future reference, not a resolved relation.
+   */
+  se_coverage_ref?: string | null;
   source_ref: {
     document_path: string;
     start_offset: number;
@@ -163,7 +167,9 @@ export interface IntegrityWarning {
     | 'vision_captioning_disabled'
     | 'invalid_mapping_target'
     | 'mapping_call_failed'
-    | 'ocr_recovered_table_text';
+    | 'ocr_recovered_table_text'
+    | 'missing_source_reference'
+    | 'survey_title_distilled';
   /**
    * auto_fixed: deterministic code already resolved it, no action needed. needs_review: an AI/heuristic judgment call a human should verify. pipeline_issue: something broke or was incomplete for this run.
    */

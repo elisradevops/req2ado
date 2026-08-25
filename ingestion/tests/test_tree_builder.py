@@ -468,17 +468,39 @@ def test_fidelity_hash_reflects_folded_description_not_just_the_initiating_block
     assert requirement_node.fidelity_hash == expected_hash
 
 
-def test_customer_id_is_stamped_on_every_node_when_provided() -> None:
-    icd_doc = _icd_style_doc()
-    tree = build_baseline_tree(icd_doc, customer_id="CUST-042")
-    assert len(tree.nodes) > 0
-    for node in tree.nodes:
-        assert node.customer_id == "CUST-042"
+def test_customer_id_is_the_requirement_nodes_own_literal_numbering() -> None:
+    # Positive case: a numbered-paragraph document (not headings) where the
+    # leaf's own text literally starts with a real number -- only that
+    # Requirement node gets a customer_id (its own number), never its
+    # Epic/Feature ancestors even though THEY have real numbers too ("1",
+    # "1.1").
+    path = "numbered.txt"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="1 Epic text", source_ref=_sr(path, 0, 1)),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="1.1 Feature text", source_ref=_sr(path, 1, 2)),
+            Block(id="b2", kind=BlockKind.PARAGRAPH, text="1.1.1 The system shall do X.", source_ref=_sr(path, 2, 3)),
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    by_type = {n.type: n for n in tree.nodes}
+    assert by_type[WorkItemType.REQUIREMENT].customer_id == "1.1.1"
+    assert by_type[WorkItemType.EPIC].customer_id is None
+    assert by_type[WorkItemType.FEATURE].customer_id is None
 
 
-def test_customer_id_defaults_to_none_when_not_provided() -> None:
+def test_customer_id_is_none_for_a_heading_only_document_with_no_literal_numbering() -> None:
+    # Customer ID is a per-Requirement, document-derived attribute -- never
+    # a job-level value applied uniformly, and never fabricated. This
+    # fixture is heading-only (Word-style headings, no literal numbering
+    # text anywhere), so there is no real document-authored number to
+    # extract for ANY node, Requirement included -- an honest None, not a
+    # regression (see main.py's /level exit enforcement pass for the
+    # human-review flag this triggers in the real pipeline).
     icd_doc = _icd_style_doc()
     tree = build_baseline_tree(icd_doc)
+    assert len(tree.nodes) > 0
     for node in tree.nodes:
         assert node.customer_id is None
 
@@ -1485,6 +1507,17 @@ def test_baseline_structured_tree_table_fold_populates_table_ids() -> None:
     assert parent.table_ids == ["t0"]
 
 
+def test_baseline_tree_never_assigns_tags_to_any_node() -> None:
+    # BASELINE is verbatim ingestion -- classification (WorkItemNode.tags)
+    # is a Generation/SURVEY-mode concept only (see llm_leveling.py's
+    # author_content). build_baseline_tree never calls an LLM at all, so
+    # this pins the invariant at the data level regardless of node type or
+    # tree shape.
+    tree = build_baseline_tree(_icd_style_doc())
+    assert len(tree.nodes) > 0
+    assert all(node.tags == [] for node in tree.nodes)
+
+
 def test_baseline_identity_and_fidelity_hashes_are_unaffected_by_section_path() -> None:
     # Critical invariant (Phase 2): section_path/page_end/page_provenance
     # are ADDITIVE provenance fields, deliberately excluded from
@@ -1591,7 +1624,7 @@ def test_flat_list_tree_direct_call_populates_figure_ids_when_a_branch_root_is_a
         ],
         figures=[Figure(id="fig0", caption="Wiring diagram", source_ref=_sr(path, 0, 20))],
     )
-    tree = _build_flat_list_tree(doc, [[doc.blocks[0]]], customer_id=None)
+    tree = _build_flat_list_tree(doc, [[doc.blocks[0]]])
     requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
     assert requirement_node.figure_ids == ["fig0"]
     assert requirement_node.uncaptioned_figure_ids == []
@@ -1610,7 +1643,7 @@ def test_flat_list_tree_direct_call_populates_insignificant_figure_ids_as_a_subs
         ],
         figures=[Figure(id="fig0", caption=None, caption_status="insignificant", source_ref=_sr(path, 0, 20))],
     )
-    tree = _build_flat_list_tree(doc, [[doc.blocks[0]]], customer_id=None)
+    tree = _build_flat_list_tree(doc, [[doc.blocks[0]]])
     requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
     assert requirement_node.uncaptioned_figure_ids == ["fig0"]
     assert requirement_node.insignificant_figure_ids == ["fig0"]

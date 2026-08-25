@@ -43,7 +43,7 @@ from app.survey.orchestrator_llm_client import OrchestratorLlmClient
 from app.vision.emf_converter import convert_vector_image_to_png, sniff_vector_image_extension
 from app.vision.orchestrator_vision_client import PROMPT_VERSION, OrchestratorVisionClient, _strip_degenerate_continuation
 from app.vision.figure_storage_client import OrchestratorFigureFileClient, compress_figure_for_storage
-from app.workitem.model import IntegrityWarning, WarningKind, WorkItemTree
+from app.workitem.model import IntegrityWarning, WarningKind, WorkItemTree, WorkItemType
 
 logging.basicConfig(
     level=settings.log_level,
@@ -430,7 +430,6 @@ def _get_criteria_retriever() -> CriteriaRetriever | None:
 def _build_survey_tree_with_scoring(
     doc: CanonicalDoc,
     client: OrchestratorLlmClient,
-    customer_id: str | None,
     user_id: str | None,
     link_type_catalog: list[dict] | None,
     job_id: str | None,
@@ -475,7 +474,6 @@ def _build_survey_tree_with_scoring(
             doc,
             analysis_client=client,
             scoring_client=client,
-            customer_id=customer_id,
             criteria_retriever=_get_criteria_retriever(),
             user_id=user_id,
             embed_client=_embed_client,
@@ -523,6 +521,12 @@ def _build_survey_tree_with_scoring(
             grouping_client=client,
             branch_concurrency=settings.survey_branch_concurrency,
             primer_context=primer_context,
+            # Same client, implements TitleDistillationClient directly --
+            # 300553's smart-title fallback: a stage-1 title too generic/
+            # short to be useful gets replaced once the node's real
+            # description exists to distill a better one from (see
+            # _author_branch_content's own gate for the actual quality check).
+            title_distillation_client=client,
         )
 
 
@@ -530,6 +534,11 @@ class DedupCheckRequest(BaseModel):
     text: str
     title: str
     area_path: str
+    # Settings-window-driven override (NEW-07) -- orchestrator's own
+    # AppSettings row; omitted (None) falls through to
+    # check_for_duplicates's own 0.90 default, identical to before this
+    # field existed.
+    threshold: float | None = None
 
 
 class DedupUpsertRequest(BaseModel):
@@ -1024,10 +1033,61 @@ def _append_vision_disabled_warning(
     return tree
 
 
+def _enforce_requirement_only_fields(tree: WorkItemTree) -> WorkItemTree:
+    """Customer ID (WorkItemNode.customer_id), classification
+    (WorkItemNode.tags), and the SE coverage reference
+    (WorkItemNode.se_coverage_ref) are all per-Requirement attributes --
+    never applied to Epic/Feature. Customer ID is additionally never
+    fabricated when no real document-authored identifier exists;
+    se_coverage_ref is never auto-populated at all, under any
+    circumstance (always None out of ingestion -- see its own docstring).
+    Every node-construction site in tree_builder.py/id_tree_builder.py/
+    llm_leveling.py already gets this right on its own, but this belt-and-
+    suspenders pass, applied uniformly to BOTH mode's builders from this
+    one call site (same VISION_CAPTIONING_DISABLED precedent immediately
+    above -- fires exactly once regardless of BASELINE/SURVEY mode or
+    which internal builder path produced the tree), makes the invariant
+    provable rather than dependent on every current and future
+    construction site individually staying correct.
+
+    Non-Requirement nodes: customer_id/se_coverage_ref forced to None,
+    tags forced to [] unconditionally (Epic/Feature never carry any of
+    these, even if some future change accidentally set one). A stripped
+    Epic/Feature value is a silently-corrected internal invariant, not
+    reviewer-actionable, so it gets no warning -- unlike customer_id below.
+    se_coverage_ref never warns even on a Requirement: unlike a missing
+    Customer ID, an absent SE coverage reference is the expected default
+    (nothing to extract, ever), not a review-worthy gap.
+
+    Requirement nodes with no customer_id: left as None (never invented),
+    but flagged in ONE tree-level MISSING_SOURCE_REFERENCE warning listing
+    every affected node -- matching this codebase's established one-per-
+    tree, not one-per-node, dedup convention (see DROPPED_BLOCKS/
+    ZERO_NODES)."""
+    missing_node_ids: list[str] = []
+    for node in tree.nodes:
+        if node.type != WorkItemType.REQUIREMENT:
+            node.customer_id = None
+            node.tags = []
+            node.se_coverage_ref = None
+        elif node.customer_id is None:
+            missing_node_ids.append(node.local_id)
+    if missing_node_ids:
+        tree.warnings.append(
+            IntegrityWarning.make(
+                WarningKind.MISSING_SOURCE_REFERENCE,
+                f"{len(missing_node_ids)} Requirement(s) have no document-authored Customer ID / "
+                "source-requirement-number -- none was invented; review and add one manually if the "
+                "source document has one that couldn't be automatically extracted.",
+                node_ids=missing_node_ids,
+            )
+        )
+    return tree
+
+
 @app.post("/level", response_model=WorkItemTree)
 async def level(
     doc: CanonicalDoc,
-    customer_id: str | None = None,
     mode: str = "baseline",
     user_id: str | None = None,
     link_type_catalog: str | None = None,
@@ -1045,8 +1105,8 @@ async def level(
         # (including /health). Moving the blocking work to FastAPI's
         # threadpool keeps the loop free.
         # link_type_catalog arrives as a JSON-encoded query param (matches
-        # the existing lightweight query-param style used by customer_id/
-        # user_id here) rather than restructuring the request body around
+        # the existing lightweight query-param style user_id here already
+        # uses) rather than restructuring the request body around
         # CanonicalDoc — the orchestrator is the only caller that populates it.
         # model is an optional per-job override of the orchestrator's own
         # LLM_CHAT_MODEL default (see OpenWebUiClient.chat's opts.model) --
@@ -1085,11 +1145,11 @@ async def level(
         )
         catalog = json.loads(link_type_catalog) if link_type_catalog else None
         tree = await run_in_threadpool(
-            _build_survey_tree_with_scoring, doc, client, customer_id, user_id, catalog, job_id, model, primer_context
+            _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context
         )
-        return _append_vision_disabled_warning(tree, doc, mode)
-    return _append_vision_disabled_warning(
-        build_baseline_tree(doc, customer_id=customer_id), doc, mode,
+        return _enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, mode))
+    return _enforce_requirement_only_fields(
+        _append_vision_disabled_warning(build_baseline_tree(doc), doc, mode)
     )
 
 
@@ -1131,6 +1191,12 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
 
 @app.post("/dedup/check", response_model=DuplicateCheckResult)
 async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
+    # body.threshold is None when the caller didn't override it (the
+    # orchestrator's own Settings-window lookup failed or wasn't wired) --
+    # only pass an explicit kwarg when it's actually set, so
+    # check_for_duplicates's own default (0.90) governs otherwise, exactly
+    # as before this field existed.
+    kwargs = {"threshold": body.threshold} if body.threshold is not None else {}
     return check_for_duplicates(
         body.text,
         body.title,
@@ -1139,6 +1205,7 @@ async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
         embed_client=_embed_client,
         vector_store=_vector_store,
         judge_client=_dedup_judge_client,
+        **kwargs,
     )
 
 

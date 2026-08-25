@@ -19,13 +19,38 @@ import { BackfillService } from '../writeback/backfill.service';
 import { BackfillController } from '../writeback/backfill.controller';
 import { LlmModule } from '../llm/llm.module';
 import { AuthModule } from '../auth/auth.module';
+import { BatchController } from '../batch/batch.controller';
+import { BatchService } from '../batch/batch.service';
+import { BatchPumpService } from '../batch/batch-pump.service';
 
 @Module({
   imports: [ConfigModule, LlmModule, AuthModule],
-  controllers: [JobsController, AdoController, JobEventsController, BackfillController],
+  controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
-    WorkItemTypeCatalogService,
+    {
+      // Same erased-runtime-type / explicit-factory reasoning this module
+      // already documents for IdempotencyService et al -- needed here only
+      // because requirementTypeFieldCandidates (below) must be threaded
+      // through explicitly; McpClient alone would resolve via a bare class
+      // provider fine.
+      provide: WorkItemTypeCatalogService,
+      inject: [McpClient, ConfigService],
+      useFactory: (mcpClient: McpClient, config: ConfigService) =>
+        new WorkItemTypeCatalogService(
+          mcpClient,
+          // Same unset-keeps-the-default-list reasoning as JobsService's own
+          // REQUIREMENT_TYPE_FIELD_CANDIDATES wiring below -- one config
+          // knob, read in two places, so an override applies consistently
+          // to both the real write (JobsService) and this read-only
+          // reviewer-facing enrichment.
+          config
+            .get<string>('REQUIREMENT_TYPE_FIELD_CANDIDATES')
+            ?.split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        ),
+    },
     {
       provide: McpClient,
       inject: [ConfigService],
@@ -90,6 +115,13 @@ import { AuthModule } from '../auth/auth.module';
           // reused for resubmit retention rather than a second config knob.
           config.get<number>('MAX_UPLOAD_SIZE_MB')! * 1024 * 1024,
           jobEventsPublisher,
+          // Same unset-keeps-the-default-list reasoning as
+          // CUSTOMER_ID_FIELD_CANDIDATES above.
+          config
+            .get<string>('REQUIREMENT_TYPE_FIELD_CANDIDATES')
+            ?.split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
         ),
     },
     {
@@ -191,6 +223,35 @@ import { AuthModule } from '../auth/auth.module';
       inject: [McpClient, IngestionHttpClient, IdempotencyService],
       useFactory: (mcpClient: McpClient, ingestionClient: IngestionHttpClient, idempotencyService: IdempotencyService) =>
         new BackfillService(mcpClient, ingestionClient, idempotencyService),
+    },
+    {
+      // NEW-05 batch/folder ingestion. BatchService's constructor params
+      // are declared via `import type` (see batch.service.ts) -- same
+      // erased-runtime-type DI issue this module already documents for
+      // IdempotencyService/BackfillService above, hence the explicit-factory
+      // treatment. Reuses the SAME 'MAX_UPLOAD_SIZE_BYTES' token
+      // JobsController already relies on -- one config knob, not two.
+      provide: BatchService,
+      inject: [PrismaClient, JobsService, 'MAX_UPLOAD_SIZE_BYTES', ConfigService],
+      useFactory: (prisma: PrismaClient, jobsService: JobsService, maxUploadSizeBytes: number, config: ConfigService) =>
+        new BatchService(
+          prisma,
+          jobsService,
+          maxUploadSizeBytes,
+          config.get<number>('BATCH_SURVEY_CONCURRENCY')!,
+          config.get<number>('BATCH_SUBMIT_STUCK_MS')!,
+        ),
+    },
+    {
+      provide: BatchPumpService,
+      inject: [BatchService, ConfigService],
+      useFactory: (batchService: BatchService, config: ConfigService) =>
+        new BatchPumpService(batchService, config.get<number>('BATCH_PUMP_INTERVAL_MS')!),
+    },
+    {
+      provide: 'MAX_BATCH_FILES',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => config.get<number>('MAX_BATCH_FILES')!,
     },
   ],
 })

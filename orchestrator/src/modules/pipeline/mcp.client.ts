@@ -42,6 +42,12 @@ export interface WorkItemIcon {
   dataBase64: string;
 }
 
+export interface AdoFieldDescriptor {
+  referenceName: string;
+  allowedValues: string[];
+  alwaysRequired: boolean;
+}
+
 /**
  * Thrown when a single REST round trip to mcp-ado-server exceeds
  * requestTimeoutMs. Extends Error so every existing untyped catch (both
@@ -176,6 +182,14 @@ export class McpClient {
     return this.call('ado_discover_fields', { workItemType }, credential);
   }
 
+  // Sibling to discoverFields, for callers that need a field's picklist
+  // allowedValues (e.g. resolving Microsoft.VSTS.CMMI.RequirementType) --
+  // see ado_discover_fields_detailed's own description for why this can't
+  // just be a shape change to discoverFields itself.
+  async discoverFieldsDetailed(workItemType: string, credential?: AdoRequestCredential): Promise<AdoFieldDescriptor[]> {
+    return this.call('ado_discover_fields_detailed', { workItemType }, credential);
+  }
+
   async getWorkItemsBatch(
     ids: number[],
     credential?: AdoRequestCredential,
@@ -202,4 +216,5 @@ export class McpClient {
   ): Promise<void> {
     await this.call('ado_upload_attachment', { workItemId, fileName, dataBase64, mimeType }, credential);
   }
+
 }

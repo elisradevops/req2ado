@@ -10,6 +10,7 @@ import type { JobEventsPublisher } from './job-events.publisher';
 import type { McpClient, AdoRequestCredential } from './mcp.client';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import type { AdoCredentialResolver } from '../auth/ado-credential.resolver';
+import type { SettingsService } from '../settings/settings.service';
 
 // A full area-path WIQL scan + batch fetch + embed + upsert (see
 // BackfillService.backfillAreaPath) is real cost that shouldn't repeat on
@@ -97,16 +98,7 @@ export interface PipelineJobInput {
   // areaPath (ADO write-back destination + dedup key only). Nullable: an
   // older/mocked job predating this field simply gets no KB grounding.
   userId: string | null;
-  customerId: string | null;
   mode: 'baseline' | 'survey';
-  // True when this job ingests a follow-up document against requirements
-  // already ingested under the same area path -- gates whether the diff()
-  // call below runs the dedup-similarity check at all (see Job.followUp's
-  // schema.prisma doc comment). Defaults to false when constructing the
-  // BullMQ payload (see pipeline-worker.main.ts/jobs.service.ts), matching
-  // an older/mocked job predating this field: no dedup, same as any other
-  // first-time ingestion.
-  followUp?: boolean;
   fileBuffer: Buffer;
   filename: string;
   // Per-job LLM model override (SURVEY only -- BASELINE never calls an
@@ -162,6 +154,18 @@ export interface PipelineWorkerDeps {
   // runPipelineJob's own model resolution below) means ingestion always
   // receives a real, known model string for a SURVEY job.
   defaultLlmModel: string;
+  // Settings window (NEW-07) -- optional, same graceful-degrade convention
+  // as openWebUiClient/primerCacheRedis above: an older/mocked deps object
+  // predating this field simply never fetches a live threshold, and the
+  // dedup-check call below passes no override, falling through to
+  // check_for_duplicates.py's own unchanged 0.90 default.
+  settingsService?: SettingsService;
+  // Tesseract OCR language pack(s) for scanned-PDF OCR fallback (NEW-04),
+  // e.g. 'heb+eng'. Optional, deployment-configured (OCR_LANGUAGES env var)
+  // -- omitted for any deps object predating this field, and ingest() only
+  // sends it on if it's actually set, so a deployment that never
+  // configures it keeps ingestion's own unchanged 'eng' default.
+  ocrLanguages?: string;
 }
 
 /**
@@ -268,6 +272,11 @@ interface LeveledNode {
   // below, i.e. the pre-identity_hash behavior exactly.
   identity_hash?: string | null;
   customer_id: string | null;
+  // Optional, same backward-compat reason as the scoring fields below --
+  // an older/mocked ingestion response predating this field must not crash
+  // the mapping. See ingestion's WorkItemNode.se_coverage_ref's own
+  // docstring: always null out of ingestion, reviewer-supplied only.
+  se_coverage_ref?: string | null;
   // SURVEY-only signals (see ingestion's WorkItemNode) -- null/[] for
   // BASELINE nodes and for any SURVEY node when scoring wasn't enabled.
   // Optional (not just nullable) because they didn't exist on this
@@ -520,7 +529,7 @@ export async function runPipelineJob(
     // with no data dependency on ingest, so there's no reason to pay its
     // cost serially on top of /ingest's own wall-clock time.
     const [doc] = await Promise.all([
-      deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id, primerContext),
+      deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id, primerContext, deps.ocrLanguages),
       maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential),
     ]);
 
@@ -637,7 +646,7 @@ export async function runPipelineJob(
     // _resolve_caps can resolve real caps/tool-support instead of silently
     // falling back to the conservative unknown-model default for the
     // (common) "Default" wizard selection.
-    const tree = (await deps.ingestionClient.level(doc, job.customerId, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext)) as {
+    const tree = (await deps.ingestionClient.level(doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext)) as {
       nodes: LeveledNode[];
       warnings?: LeveledWarning[];
       kb_citations?: { source_file: string; similarity: number; relevance: string }[];
@@ -700,6 +709,11 @@ export async function runPipelineJob(
         // null case for an older/mocked node shape.
         legacySourceHash: node.fidelity_hash,
         customerId: node.customer_id,
+        // Always null coming out of ingestion (see WorkItemNode.
+        // se_coverage_ref's own docstring) -- carried through purely so a
+        // reviewer's later edit (editDiffEntry) has somewhere to persist
+        // to on the SAME diff entry, exactly like customerId itself.
+        seCoverageRef: node.se_coverage_ref ?? null,
         areaPath: job.areaPath,
         groundingScore: node.grounding_score ?? null,
         qualityScore: node.quality_score,
@@ -796,25 +810,36 @@ export async function runPipelineJob(
         customerIdFieldCandidates.find((candidate) => availableFields.includes(candidate)) ?? null;
     }
 
-    // Always run the near-duplicate check, regardless of Job.followUp --
-    // deciding whether a work item already exists under this area path is a
-    // required step of every ingestion, not an opt-in extra a user has to
-    // remember to tick. A first-time area path simply has nothing indexed
-    // yet, so every check legitimately comes back "not a duplicate" at
-    // negligible cost (one embed call per node, already fail-open on any
-    // dedup-service error -- see dryRunService.diff's own doc comment).
-    // Job.followUp itself is left alone (unused now, no schema/DTO churn
-    // for a field that's harmless to leave in place).
+    // Always run the near-duplicate check -- deciding whether a work item
+    // already exists under this area path is a required step of every
+    // ingestion, not an opt-in extra a user has to remember to tick. A
+    // first-time area path simply has nothing indexed yet, so every check
+    // legitimately comes back "not a duplicate" at negligible cost (one
+    // embed call per node, already fail-open on any dedup-service error --
+    // see dryRunService.diff's own doc comment). (This used to be gated on
+    // a now-removed Job.followUp flag, WID 300567 -- the flag was never
+    // wired to anything real; this check has always run unconditionally.)
     // Previously this whole burst (confirmed live: ~543 nodes on a real
     // job) published NO progress signal at all -- 'diff_ready' was the very
     // next event after 'generate_requirements_done', so a job could sit
     // silent for however long the idempotency/dedup-check burst took with
     // no way to tell it from a stall.
     await deps.jobEventsPublisher.publish(job.id, 'dedup_check');
+    // Fetched once per job, not per node -- a live-editable value read
+    // hundreds of times in a tight loop would be needless DB load for a
+    // number that can't meaningfully change mid-job. Fail-open (same
+    // convention as every other dedup-adjacent call in this function): a
+    // Settings lookup failure must never fail a job, it just means this
+    // job runs against ingestion's own unchanged 0.90 default, identical to
+    // before this feature existed.
+    const dedupThreshold = await deps.settingsService?.get().then(
+      (settings) => settings.dedupThreshold,
+      () => undefined,
+    );
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      (text, title, areaPath) => deps.ingestionClient.checkDuplicate(text, title, areaPath),
+      (text, title, areaPath) => deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold),
       (completed, total, currentTitle) => {
         void deps.jobEventsPublisher.publishNarration(job.id, {
           phase: 'dedup_check',

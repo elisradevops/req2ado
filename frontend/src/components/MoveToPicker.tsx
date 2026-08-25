@@ -15,9 +15,9 @@ export interface MoveToPickerCandidate {
   localId: string;
   type: string;
   title: string;
-  // The clause id (e.g. "§3.4.1") -- the identifier reviewers actually
-  // recognize in this tree, reused here rather than inventing a parallel
-  // index. Filterable, same as title.
+  // The Requirement's own Customer ID (e.g. "REQ-AV-014"), when the source
+  // document assigns one -- a separate concept from the tree's purely
+  // structural per-row index (see DiffTree.tsx). Filterable, same as title.
   customerId: string | null;
 }
 
@@ -34,12 +34,12 @@ function highlightMatch(text: string, query: string): ReactNode {
   );
 }
 
-function matchesQuery(candidate: MoveToPickerCandidate, query: string): { hit: boolean; titleHit: boolean; clauseHit: boolean } {
+function matchesQuery(candidate: MoveToPickerCandidate, query: string): { hit: boolean; titleHit: boolean; customerIdHit: boolean } {
   const q = query.trim().toLowerCase();
-  if (!q) return { hit: true, titleHit: false, clauseHit: false };
+  if (!q) return { hit: true, titleHit: false, customerIdHit: false };
   const titleHit = candidate.title.toLowerCase().includes(q);
-  const clauseHit = !!candidate.customerId && candidate.customerId.toLowerCase().includes(q);
-  return { hit: titleHit || clauseHit, titleHit, clauseHit };
+  const customerIdHit = !!candidate.customerId && candidate.customerId.toLowerCase().includes(q);
+  return { hit: titleHit || customerIdHit, titleHit, customerIdHit };
 }
 
 export function MoveToPicker({
@@ -112,7 +112,7 @@ export function MoveToPicker({
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Filter by title or clause id…"
+              placeholder="Filter by title or customer ID…"
               className="w-full border-none bg-transparent py-0.5 text-sm text-ink-1 outline-none placeholder:text-ink-3"
             />
           </div>
@@ -129,9 +129,9 @@ export function MoveToPicker({
               >
                 <WorkItemTypeBadge type={candidate.type} catalogEntry={typeCatalog?.[realTypeName(candidate.type)]} />
                 {candidate.customerId && (
-                  <span className="flex-none font-mono text-xs text-ink-3">{highlightMatch(candidate.customerId, match.clauseHit ? query : '')}</span>
+                  <span className="flex-none font-mono text-xs text-ink-3">{highlightMatch(candidate.customerId, match.customerIdHit ? query : '')}</span>
                 )}
-                <span className={cn('min-w-0 flex-1 truncate', match.titleHit && !match.clauseHit && 'font-medium')}>
+                <span className={cn('min-w-0 flex-1 truncate', match.titleHit && !match.customerIdHit && 'font-medium')}>
                   {highlightMatch(candidate.title, match.titleHit ? query : '')}
                 </span>
               </button>

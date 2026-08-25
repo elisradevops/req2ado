@@ -433,6 +433,33 @@ req2ado's own commitment (see "Field ref names" above: "Verify exact custom ref 
 
 This keeps the "verify at runtime, don't hardcode" architecture commitment while reusing DocGen's field-naming conventions as a starting candidate list rather than as unverified truth.
 
+## SE Coverage Reference Field Resolution (WID NEW-02: hook only, not data)
+
+The customer's spec asks that generated requirements form "a basis for coverage by the
+Systems-Engineering requirements layer" — but no deployed org's ADO setup has a concrete
+SE-layer artifact to link to today, and this feature deliberately does NOT invent one. It
+adds only a mechanism to hold a future manual reference, mirroring Customer ID's own field-
+resolution shape exactly:
+
+- `WorkItemNode.se_coverage_ref` (ingestion) — always `null` out of ingestion, never
+  auto-populated under any circumstance (unlike `customer_id`, which extraction can populate
+  from the document). Requirement-only, same type gate.
+- `JobsService.resolveSeCoverageRefField` (orchestrator) — same runtime-verified
+  candidate-list resolution as Customer ID, via `SE_COVERAGE_REF_FIELD_CANDIDATES`
+  (comma-separated env override, see `.env.template`).
+- **Candidate list is empty by default** — deliberately, since (unlike Customer ID's
+  DocGen-sourced candidate list) there is no real-world evidence for what this field would
+  even be named on any org. Shipping a guessed name risks silently writing to the wrong
+  field on an org that happens to have something similarly named. Until an operator
+  configures a real candidate, the field stays reviewer-visible/editable in the diff (via
+  `editDiffEntry`) but is never written to ADO — the value sits in req2ado's own database
+  only.
+- No `System.Tags` fallback, ever, for this field — same "resolve a real field or drop it"
+  rule Customer ID/source-ref both follow.
+- Explicitly out of scope: no matching logic against any real SE-layer artifact, no new
+  work-item type, no ADO relation. This is a place to type a future reference by hand,
+  nothing more.
+
 ## Remaining Minor Questions (safe defaults chosen; confirm at Phase 0 or override)
 
 1. **App login mechanism:** RESOLVED — ADO PAT validated against the ADO Server's own `connectionData` endpoint (see "Locked Decisions" above). Azure AD remains available as a backend config option (`AUTH_PROVIDER=azure_ad`) for deployments that can register an app, but is not the default and is not surfaced in the current login UI.

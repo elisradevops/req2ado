@@ -430,6 +430,26 @@ def duplicate_pair_verdict_schema() -> dict:
     }
 
 
+def distill_title_schema() -> dict:
+    """distill_title (OrchestratorLlmClient, backing TitleDistillationClient/
+    distill_survey_title -- 300553's smart-title fallback): the single
+    field this call ever needs, a replacement title for a node whose
+    stage-1 title was too generic/short. Length enforcement itself is NOT
+    trusted to the model (distill_survey_title re-truncates defensively via
+    extract_baseline_title) -- this schema only constrains the response
+    shape, not the string's length."""
+    return {
+        "name": "distilled_title",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+            },
+            "required": ["title"],
+        },
+    }
+
+
 def root_grouping_schema() -> dict:
     """group_root_topics (OrchestratorLlmClient): a fixed 'groups' array,
     each item a title + member id list. Unbounded (no maxItems) on both

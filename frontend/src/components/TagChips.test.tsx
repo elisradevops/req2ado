@@ -18,4 +18,15 @@ describe('TagChips', () => {
     const { container } = render(<TagChips tags={undefined} />);
     expect(container.querySelectorAll('span').length).toBe(0);
   });
+
+  it('marks the winning tag distinctly and mentions the ADO write in its tooltip, leaving the others plain', () => {
+    render(<TagChips tags={['functional', 'safety']} winningTag="safety" />);
+    expect(screen.getByText(/Safety/).textContent).toContain('→');
+    expect(screen.getByText('Functional').textContent).not.toContain('→');
+  });
+
+  it('marks no chip when winningTag is null (nothing representable in this org\'s field)', () => {
+    render(<TagChips tags={['regulatory']} winningTag={null} />);
+    expect(screen.getByText('Regulatory').textContent).not.toContain('→');
+  });
 });

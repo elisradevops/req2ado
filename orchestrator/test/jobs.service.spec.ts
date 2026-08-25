@@ -37,6 +37,23 @@ describe('buildFigureAttachmentFilename', () => {
   });
 });
 
+// jobs.service.ts's field resolution moved from ado_discover_fields to
+// ado_discover_fields_detailed (Phase 1 of the tag-misuse plan) so
+// resolveCustomerIdField/resolveSourceRefField/the classification resolver
+// share one ADO round-trip per work-item type. Every existing fixture below
+// mocks a bare `discoverFields` (name list) -- this derives the detailed
+// mock from it so each fixture's original intent (which field names are
+// "available" on that work-item type) survives unchanged. Field-specific
+// allowedValues a test actually needs (e.g. the classification tests in a
+// later phase) should mock discoverFieldsDetailed directly instead of going
+// through this helper.
+function discoverFieldsDetailedFrom(discoverFields: jest.Mock): jest.Mock {
+  return jest.fn().mockImplementation(async (...args: unknown[]) => {
+    const names: string[] = await discoverFields(...args);
+    return names.map((referenceName) => ({ referenceName, allowedValues: [], alwaysRequired: false }));
+  });
+}
+
 describe('JobsService.confirm', () => {
   it('creates items in tree order and links each child to its already-created parent', async () => {
     const createWorkItem = jest.fn()
@@ -343,7 +360,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverFieldsDetailed: discoverFieldsDetailedFrom(discoverFields), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -365,7 +382,52 @@ describe('JobsService.confirm', () => {
     );
   });
 
-  it('falls back to a System.Tags entry when no candidate Customer ID field is discovered, rather than dropping it entirely', async () => {
+  it('never resolves or writes a Customer ID field/tag for Epic or Feature, even when they carry a non-null customerId', async () => {
+    // Customer ID is a per-Requirement, document-derived attribute -- Epic/
+    // Feature must never trigger the discoverFields round-trip or receive
+    // the field/tag, even if (e.g. a stale fixture, a future ingestion bug)
+    // entry.customerId is non-null on one of them.
+    const createWorkItem = jest.fn().mockImplementation((type: string) => Promise.resolve({ id: type === 'Epic' ? 300 : type === 'Feature' ? 301 : 302 }));
+    const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description', 'Custom.CustomerRequirementId']);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          dryRunDiff: [
+            { localId: 'e0', parentLocalId: null, type: 'Epic', title: 'E', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1', sourceRef: null, tags: [] },
+            { localId: 'f0', parentLocalId: 'e0', type: 'Feature', title: 'F', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: 'CUST-1', sourceRef: null, tags: [] },
+            { localId: 'n0', parentLocalId: 'f0', type: 'Requirement', title: 'R', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h2', customerId: 'CUST-1', sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverFieldsDetailed: discoverFieldsDetailedFrom(discoverFields), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    // Only ever resolved for Requirement -- one call, not three.
+    expect(discoverFields).toHaveBeenCalledTimes(1);
+    expect(discoverFields).toHaveBeenCalledWith('Requirement', undefined);
+    const epicCall = createWorkItem.mock.calls.find((c) => c[0] === 'Epic')!;
+    const featureCall = createWorkItem.mock.calls.find((c) => c[0] === 'Feature')!;
+    const requirementCall = createWorkItem.mock.calls.find((c) => c[0] === 'Requirement')!;
+    expect(epicCall[1]).not.toHaveProperty('Custom.CustomerRequirementId');
+    expect(epicCall[1]).not.toHaveProperty('System.Tags');
+    expect(featureCall[1]).not.toHaveProperty('Custom.CustomerRequirementId');
+    expect(featureCall[1]).not.toHaveProperty('System.Tags');
+    expect(requirementCall[1]).toMatchObject({ 'Custom.CustomerRequirementId': 'CUST-1' });
+  });
+
+  it('leaves Customer ID unwritten (no field, no System.Tags fallback) when no candidate field is discovered', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 201 });
     const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
     const prisma = {
@@ -384,7 +446,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverFieldsDetailed: discoverFieldsDetailedFrom(discoverFields), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -399,44 +461,10 @@ describe('JobsService.confirm', () => {
         'System.Description': toAdoDescriptionHtml('D'),
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
-        'System.Tags': 'CustomerId:CUST-1',
       },
       undefined,
     );
-  });
-
-  it('combines the CustomerId fallback tag with real classification tags in one System.Tags value', async () => {
-    const createWorkItem = jest.fn().mockResolvedValue({ id: 201 });
-    const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
-    const prisma = {
-      job: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
-          dryRunDiff: [
-            {
-              localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-              action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1',
-              sourceRef: null, tags: ['functional'],
-            },
-          ],
-        }),
-        update: jest.fn().mockResolvedValue(undefined),
-      },
-      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
-
-      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
-    };
-    const service = new JobsService(
-      prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
-      { record: jest.fn() } as any,
-      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
-      'redis://unused',
-    );
-
-    await service.confirm('job-1');
-
-    expect(createWorkItem.mock.calls[0][1]['System.Tags']).toBe('functional; CustomerId:CUST-1');
+    expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty('System.Tags');
   });
 
   it('uses a configurable Customer ID candidate list instead of the hardcoded default', async () => {
@@ -458,7 +486,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverFieldsDetailed: discoverFieldsDetailedFrom(discoverFields), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -498,7 +526,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverFieldsDetailed: discoverFieldsDetailedFrom(discoverFields), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -519,7 +547,7 @@ describe('JobsService.confirm', () => {
     );
   });
 
-  it('falls back to stamping SourceRef into System.Tags when no candidate source-ref field is discovered, rather than dropping traceability', async () => {
+  it('leaves source ref unwritten (no field, no System.Tags fallback) when no candidate source-ref field is discovered', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 203 });
     const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
     const prisma = {
@@ -543,7 +571,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverFieldsDetailed: discoverFieldsDetailedFrom(discoverFields), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -558,47 +586,10 @@ describe('JobsService.confirm', () => {
         'System.Description': toAdoDescriptionHtml('D'),
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
-        'System.Tags': 'SourceRef:/tmp/doc.docx#offset=10-20',
       },
       undefined,
     );
-  });
-
-  it('combines the CustomerId fallback tag with the SourceRef fallback tag when neither custom field resolves', async () => {
-    const createWorkItem = jest.fn().mockResolvedValue({ id: 204 });
-    const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
-    const prisma = {
-      job: {
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
-          dryRunDiff: [
-            {
-              localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
-              action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1',
-              sourceRef: { documentPath: '/tmp/doc.docx', startOffset: 10, endOffset: 20, page: null },
-              tags: ['functional'],
-            },
-          ],
-        }),
-        update: jest.fn().mockResolvedValue(undefined),
-      },
-      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
-
-      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
-    };
-    const service = new JobsService(
-      prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
-      { record: jest.fn() } as any,
-      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
-      'redis://unused',
-    );
-
-    await service.confirm('job-1');
-
-    expect(createWorkItem.mock.calls[0][1]['System.Tags']).toBe(
-      'functional; CustomerId:CUST-1; SourceRef:/tmp/doc.docx#offset=10-20',
-    );
+    expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty('System.Tags');
   });
 
   it('formats a sourceRef with a page number as #page=N&offset=start-end', async () => {
@@ -625,7 +616,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFields, discoverFieldsDetailed: discoverFieldsDetailedFrom(discoverFields), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -636,8 +627,16 @@ describe('JobsService.confirm', () => {
     expect(createWorkItem.mock.calls[0][1]['Custom.SourceDocument']).toBe('/tmp/doc.pdf#page=3&offset=5-15');
   });
 
-  it('writes non-empty tags as a semicolon-joined System.Tags value', async () => {
+  it('resolves the real RequirementType field and writes the priority-mapped value for a multi-tag Requirement, never System.Tags', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 205 });
+    const discoverFieldsDetailed = jest.fn().mockResolvedValue([
+      { referenceName: 'System.Title', allowedValues: [], alwaysRequired: false },
+      {
+        referenceName: 'Microsoft.VSTS.CMMI.RequirementType',
+        allowedValues: ['Business Objective', 'Feature', 'Functional', 'Interface', 'Operational', 'Quality of Service', 'Safety', 'Scenario', 'Security'],
+        alwaysRequired: true,
+      },
+    ]);
     const prisma = {
       job: {
         findUnique: jest.fn().mockResolvedValue({
@@ -658,7 +657,7 @@ describe('JobsService.confirm', () => {
     };
     const service = new JobsService(
       prisma as any,
-      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFieldsDetailed, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
       { record: jest.fn() } as any,
       { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
       'redis://unused',
@@ -666,7 +665,103 @@ describe('JobsService.confirm', () => {
 
     await service.confirm('job-1');
 
-    expect(createWorkItem.mock.calls[0][1]['System.Tags']).toBe('functional; safety');
+    // safety outranks functional in REQUIREMENT_TAG_PRIORITY.
+    expect(createWorkItem.mock.calls[0][1]['Microsoft.VSTS.CMMI.RequirementType']).toBe('Safety');
+    expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty('System.Tags');
+  });
+
+  it('leaves the RequirementType field at its ADO default and warns when none of a Requirement\'s tags are representable', async () => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 207 });
+    const discoverFieldsDetailed = jest.fn().mockResolvedValue([
+      {
+        referenceName: 'Microsoft.VSTS.CMMI.RequirementType',
+        allowedValues: ['Business Objective', 'Feature', 'Functional', 'Interface', 'Operational', 'Quality of Service', 'Safety', 'Scenario', 'Security'],
+        alwaysRequired: true,
+      },
+    ]);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          dryRunDiff: [
+            {
+              localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+              action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null,
+              sourceRef: null, tags: ['regulatory'],
+            },
+          ],
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFieldsDetailed, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty('Microsoft.VSTS.CMMI.RequirementType');
+    expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty('System.Tags');
+    const finalUpdateCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
+    const warningsWritten = finalUpdateCall![0].data.warnings;
+    expect(warningsWritten).toEqual([
+      expect.objectContaining({ kind: 'classification_not_representable', nodeIds: ['n0'] }),
+    ]);
+  });
+
+  it('warns when a Requirement carries a Customer ID but this project has no matching field (NEW-06)', async () => {
+    const createWorkItem = jest.fn().mockResolvedValue({ id: 208 });
+    // No candidate Customer ID field name (System.CustomerId / Custom.CustomerId
+    // / Custom.CustomerRequirementId / Custom.CustomerID) is present -- same
+    // "org exposes none of these" shape as resolveCustomerIdField's own doc
+    // comment, forcing it to resolve null.
+    const discoverFieldsDetailed = jest.fn().mockResolvedValue([
+      { referenceName: 'System.Title', allowedValues: [], alwaysRequired: false },
+    ]);
+    const jobUpdate = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          dryRunDiff: [
+            {
+              localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+              action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'REQ-AV-014',
+              sourceRef: null, tags: [],
+            },
+          ],
+        }),
+        update: jobUpdate,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverFieldsDetailed, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    for (const candidate of ['System.CustomerId', 'Custom.CustomerId', 'Custom.CustomerRequirementId', 'Custom.CustomerID']) {
+      expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty(candidate);
+    }
+    const finalUpdateCall = jobUpdate.mock.calls.find((call) => call[0].data.status === 'succeeded');
+    const warningsWritten = finalUpdateCall![0].data.warnings;
+    expect(warningsWritten).toEqual([
+      expect.objectContaining({ kind: 'customer_id_field_not_configured', nodeIds: ['n0'] }),
+    ]);
   });
 
   it('leaves System.Tags off the written item when the node has no tags', async () => {
@@ -1761,6 +1856,67 @@ describe('JobsService.editDiffEntry', () => {
 
     expect(result[0].title).toBe('New');
     expect(result[0].description).toBe('New desc');
+  });
+
+  it('updates customerId on a Requirement entry', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { customerId: '1.1.2.2' });
+
+    expect(result[0].customerId).toBe('1.1.2.2');
+  });
+
+  it('clears customerId to null on a Requirement entry', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const withCustomerId = { ...baseEntry, customerId: '1.1.2.2' };
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [withCustomerId] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { customerId: null });
+
+    expect(result[0].customerId).toBeNull();
+  });
+
+  it('rejects setting customerId on an Epic or Feature entry', async () => {
+    const update = jest.fn();
+    const epicEntry = { ...baseEntry, type: 'Epic' };
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [epicEntry] }), update },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.editDiffEntry('job-1', 'n0', { customerId: '1' })).rejects.toThrow(
+      'customerId can only be set on a Requirement entry',
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('leaves customerId untouched when the patch omits it entirely', async () => {
+    const update = jest.fn().mockResolvedValue(undefined);
+    const withCustomerId = { ...baseEntry, customerId: '1.1.2.2' };
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [withCustomerId] }),
+        update,
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { title: 'New' });
+
+    expect(result[0].customerId).toBe('1.1.2.2');
   });
 
   it('rejects editing a reuse entry', async () => {
@@ -4024,7 +4180,7 @@ describe('JobsService.submit', () => {
     );
 
     await service.submit({
-      areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline',
+      areaPath: 'Project\\Area1', userId: null, mode: 'baseline',
       fileBuffer: Buffer.from('small file'), filename: 'doc.txt', sourceHash: 'hash-1',
     });
 
@@ -4045,7 +4201,7 @@ describe('JobsService.submit', () => {
     );
 
     await service.submit({
-      areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline',
+      areaPath: 'Project\\Area1', userId: null, mode: 'baseline',
       fileBuffer: Buffer.from('a file bigger than 5 bytes'), filename: 'doc.txt', sourceHash: 'hash-1',
     });
 
@@ -4062,7 +4218,7 @@ describe('JobsService.submit', () => {
     const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
 
     const result = await service.submit({
-      areaPath: 'Project\\Area1', userId: null, customerId: null, mode: 'baseline',
+      areaPath: 'Project\\Area1', userId: null, mode: 'baseline',
       fileBuffer: Buffer.from('small file'), filename: 'doc.txt', sourceHash: 'hash-1',
     });
 
@@ -4095,7 +4251,7 @@ describe('JobsService.resubmit', () => {
       job: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', customerId: 'CUST-1', mode: 'survey',
-          followUp: true, originalFilename: 'doc.txt', sourceHash: 'hash-1', state: 'Approved', iterationPath: 'Iter\\1',
+          originalFilename: 'doc.txt', sourceHash: 'hash-1', state: 'Approved', iterationPath: 'Iter\\1',
         }),
         create: jobCreate,
       },
@@ -4108,8 +4264,8 @@ describe('JobsService.resubmit', () => {
 
     expect(jobCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        areaPath: 'Project\\Area1', userId: 'user-1', customerId: 'CUST-1', mode: 'survey',
-        followUp: true, state: 'Approved', iterationPath: 'Iter\\1', originalFilename: 'doc.txt', sourceHash: 'hash-1',
+        areaPath: 'Project\\Area1', userId: 'user-1', mode: 'survey',
+        state: 'Approved', iterationPath: 'Iter\\1', originalFilename: 'doc.txt', sourceHash: 'hash-1',
       }),
     });
     expect(result).toEqual({ jobId: 'job-2' });
@@ -4129,6 +4285,7 @@ describe('JobsService.list', () => {
             originalFilename: 'b.docx',
             dryRunDiff: [{}, {}, {}],
             createdAt: new Date('2026-07-09T10:00:00Z'),
+            batchId: null,
             _count: { createdItemMappings: 0 },
           },
           {
@@ -4139,6 +4296,7 @@ describe('JobsService.list', () => {
             originalFilename: 'a.docx',
             dryRunDiff: [{}],
             createdAt: new Date('2026-07-08T10:00:00Z'),
+            batchId: 'batch-1',
             _count: { createdItemMappings: 1 },
           },
         ]),
@@ -4150,8 +4308,8 @@ describe('JobsService.list', () => {
 
     expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { createdAt: 'desc' } }));
     expect(result).toEqual([
-      { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', originalFilename: 'b.docx', itemCount: 3, createdItemCount: 0, createdAt: new Date('2026-07-09T10:00:00Z') },
-      { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 1, createdItemCount: 1, createdAt: new Date('2026-07-08T10:00:00Z') },
+      { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', originalFilename: 'b.docx', itemCount: 3, createdItemCount: 0, createdAt: new Date('2026-07-09T10:00:00Z'), batchId: null },
+      { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 1, createdItemCount: 1, createdAt: new Date('2026-07-08T10:00:00Z'), batchId: 'batch-1' },
     ]);
   });
 
@@ -4186,6 +4344,7 @@ describe('JobsService.getById', () => {
           warnings: null,
           kbCitations: ['doc-a.docx'],
           figureDescriptions: null,
+          _count: { createdItemMappings: 0 },
         }),
       },
     };
@@ -4216,6 +4375,8 @@ describe('JobsService.getById', () => {
       // {traceLinkFailures: true} clause isn't simulated by this mock) --
       // defaults to [], same convention as the other columns above.
       traceLinkFailures: [],
+      // No prior confirm() attempt -- zero durable CreatedItemMapping rows.
+      createdItemCount: 0,
     });
   });
 
@@ -4242,6 +4403,7 @@ describe('JobsService.getById', () => {
               createdAt: new Date('2026-08-01T00:00:00Z'),
             },
           ],
+          _count: { createdItemMappings: 0 },
         }),
       },
     };
@@ -4252,7 +4414,10 @@ describe('JobsService.getById', () => {
     expect(result?.traceLinkFailures).toEqual([
       { id: 'failure-1', sourceLocalId: 'n0', sourceAdoId: 100, targetAdoId: 200, referenceName: 'Elisra.CoveredBy-Forward' },
     ]);
-    expect(prisma.job.findUnique).toHaveBeenCalledWith({ where: { id: 'job-1' }, include: { traceLinkFailures: true } });
+    expect(prisma.job.findUnique).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      include: { traceLinkFailures: true, _count: { select: { createdItemMappings: true } } },
+    });
   });
 
   it('returns persisted excludedFigureIds/excludedTableIds when the columns have real data', async () => {
@@ -4268,6 +4433,7 @@ describe('JobsService.getById', () => {
           figureDescriptions: [],
           excludedFigureIds: ['fig-1', 'fig-2'],
           excludedTableIds: ['tbl-1'],
+          _count: { createdItemMappings: 0 },
         }),
       },
     };
@@ -4290,6 +4456,7 @@ describe('JobsService.getById', () => {
           warnings: null,
           kbCitations: [],
           figureDescriptions: [{ figureIndex: 1, caption: 'A block diagram.' }],
+          _count: { createdItemMappings: 0 },
         }),
       },
     };
@@ -4305,5 +4472,27 @@ describe('JobsService.getById', () => {
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     expect(await service.getById('missing')).toBeNull();
+  });
+
+  it('returns a nonzero createdItemCount for a diff_ready job with durable partial-write state (300577)', async () => {
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready',
+          mode: 'baseline',
+          dryRunDiff: [],
+          warnings: null,
+          kbCitations: [],
+          figureDescriptions: [],
+          _count: { createdItemMappings: 3 },
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result?.createdItemCount).toBe(3);
   });
 });

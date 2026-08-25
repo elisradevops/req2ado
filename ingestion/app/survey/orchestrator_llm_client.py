@@ -17,6 +17,7 @@ from app.survey._response_schemas import (
     checklist_definitions_schema,
     checklist_extraction_schema,
     content_authoring_schema,
+    distill_title_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
     epic_feature_scores_schema,
@@ -1392,6 +1393,32 @@ class OrchestratorLlmClient:
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
+
+    def distill_title(self, text: str, max_length: int) -> str:
+        """Backs the TitleDistillationClient protocol
+        (distillation/survey_title.py) -- 300553's smart-title fallback.
+        `max_length` is included in the prompt as a hint, but never trusted
+        to be honored: distill_survey_title (the caller) re-truncates the
+        result via extract_baseline_title regardless, same "never trust an
+        external response to self-enforce a hard limit" rule that function's
+        own docstring documents."""
+        system_prompt = load_prompt("distill_survey_title")
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps({"text": text, "maxLength": max_length})},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            "responseSchema": distill_title_schema(),
+            "think": False,
+            "maxTokens": _MAX_OUTPUT_TOKENS,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+        }
+        response = self._post_chat(payload)
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)["title"]
 
     def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
         """Backs the DuplicateJudgeClient protocol

@@ -218,20 +218,27 @@ ADO web UI for each new capability. Reuse the same scratch project/PAT.
   best-effort field, not a hard requirement). If one candidate DOES exist,
   confirm the created item's field is populated as
   `<document path>#offset=<start>-<end>` (or `#page=N&offset=...` for a PDF).
-- [ ] **Classification tags.** Every created item should have `System.Tags`
-  populated with its SURVEY-mode taxonomy tags (e.g. `functional; safety`)
-  when the source doc was processed in SURVEY mode with tags present.
-  `Microsoft.VSTS.CMMI.RequirementType` is deliberately NOT written (picklist
-  risk — see `JobsService.confirm`'s field-assembly comment).
-- [ ] **Customer ID non-type-gated fallback.** For a work-item type with NO
-  candidate Customer ID field (Epic/Feature per the CR7 round above),
-  `System.Tags` should now contain a `CustomerId:<value>` entry instead of
-  silently dropping it — confirm this on an Epic/Feature node from a job
-  with `customerId` set.
+- [ ] **Classification writes to the real Requirement Type field, not
+  `System.Tags`.** For a Requirement processed in SURVEY mode with a
+  non-empty classification, confirm the created item's
+  `Microsoft.VSTS.CMMI.RequirementType` (or `Custom.Requirement_Type` if
+  that's what this project's process template exposes) is populated with
+  the mapped value — and confirm `System.Tags` has NO `functional`/`safety`/
+  etc. entries at all. When a Requirement's only tag has no CMMI
+  counterpart (`regulatory`/`maintenance`/`behavior`), confirm the field is
+  left at ADO's own default and the job's warnings include one
+  `classification_not_representable` entry listing that Requirement.
+- [ ] **Customer ID / source ref left unwritten when no candidate field
+  exists (no `System.Tags` fallback).** A free-text `CustomerId:<value>` /
+  `SourceRef:<value>` tag stamp turned out not to be a usable reference —
+  removed. For a Requirement whose type has no candidate Customer ID field
+  (Epic/Feature never carry one at all, by type gate), confirm the created
+  item simply has no Customer ID field populated and — just as important —
+  no `CustomerId:` entry in `System.Tags` either. Same check for source ref.
 - [ ] **Configurable Customer ID candidates.** If your org uses a Customer ID
   field name not in the default 3-name list, set
   `CUSTOMER_ID_FIELD_CANDIDATES` (comma-separated, see `.env.template`) and
-  confirm it resolves instead of falling back to the `System.Tags` tag above.
+  confirm it resolves to the real field.
 - [ ] **HTML table rendering.** Ingest a document containing a real table
   (docx table or xlsx sheet). The created Requirement's `System.Description`
   now contains an HTML `<table>` (row/column-preserving) instead of the

@@ -1,4 +1,4 @@
-from app.distillation.title import extract_baseline_title
+from app.distillation.title import extract_baseline_title, title_is_low_quality
 
 
 def test_returns_text_unchanged_when_under_the_limit() -> None:
@@ -121,3 +121,33 @@ def test_hard_cuts_the_first_sentence_when_it_has_no_word_boundary() -> None:
     result = extract_baseline_title(text)
     assert len(result) == 256
     assert result == "A" * 256
+
+
+# 300553 smart-title fallback gate -------------------------------------------
+
+
+def test_title_is_low_quality_for_a_generic_label() -> None:
+    assert title_is_low_quality("Requirement") is True
+    assert title_is_low_quality("item") is True
+    assert title_is_low_quality("TBD") is True
+    assert title_is_low_quality("N/A") is True
+
+
+def test_title_is_low_quality_is_case_and_trailing_period_insensitive() -> None:
+    assert title_is_low_quality("REQUIREMENT") is True
+    assert title_is_low_quality("Untitled.") is True
+
+
+def test_title_is_low_quality_for_a_too_short_title() -> None:
+    assert title_is_low_quality("Item 3") is True
+    assert title_is_low_quality("3.") is True
+
+
+def test_title_is_not_low_quality_for_a_specific_title() -> None:
+    assert title_is_low_quality("Power supply shall regulate output voltage") is False
+    assert title_is_low_quality("UART baud rate configuration") is False
+
+
+def test_title_is_low_quality_strips_surrounding_whitespace_before_judging() -> None:
+    assert title_is_low_quality("   Requirement   ") is True
+    assert title_is_low_quality("   Power supply shall regulate output voltage   ") is False

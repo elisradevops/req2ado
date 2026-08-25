@@ -135,9 +135,11 @@ describe('JobsController.getById', () => {
     const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB) };
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
     const catalog = { Requirement: { color: '#009CCC', iconDataUrl: 'data:image/svg+xml;base64,AAA' } };
+    const classificationField = { referenceName: 'Microsoft.VSTS.CMMI.RequirementType', allowedValues: ['Functional', 'Safety'] };
     const workItemTypeCatalogService = {
       resolve: jest.fn().mockResolvedValue(catalog),
       resolveCategoryLabels: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' }),
+      resolveRequirementClassificationField: jest.fn().mockResolvedValue(classificationField),
     };
     const controller = new JobsController(
       jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
@@ -153,6 +155,8 @@ describe('JobsController.getById', () => {
     // AddChildForm's type picker (label only, never the submitted value).
     expect(workItemTypeCatalogService.resolveCategoryLabels).toHaveBeenCalledWith('Project', { orgUrl: 'https://ado.example', pat: 'x' });
     expect(result.workItemTypeCategoryLabels).toEqual({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' });
+    expect(workItemTypeCatalogService.resolveRequirementClassificationField).toHaveBeenCalledWith('Project', { orgUrl: 'https://ado.example', pat: 'x' });
+    expect(result.requirementClassificationField).toEqual(classificationField);
     expect((result as any).userId).toBeUndefined(); // still stripped, same as before this field existed
   });
 
@@ -208,6 +212,110 @@ describe('JobsController.getById', () => {
 
     expect(result.workItemTypeCatalog).toEqual({});
     expect(result.id).toBe('job-1'); // the job itself is still returned
+  });
+});
+
+describe('JobsController.editDiffEntry', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+
+  it('passes title/description/customerId through to jobsService.editDiffEntry', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', 'New desc', '1.1.2.2', undefined, undefined);
+
+    expect(jobsService.editDiffEntry).toHaveBeenCalledWith('job-1', 'n0', {
+      title: 'New Title',
+      description: 'New desc',
+      customerId: '1.1.2.2',
+    });
+  });
+
+  it('trims a real customerId and treats whitespace-only as clearing it to null', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn().mockResolvedValue([]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, '  1.1.2.2  ', undefined, undefined);
+    expect(jobsService.editDiffEntry).toHaveBeenLastCalledWith('job-1', 'n0', expect.objectContaining({ customerId: '1.1.2.2' }));
+
+    await controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, '   ', undefined, undefined);
+    expect(jobsService.editDiffEntry).toHaveBeenLastCalledWith('job-1', 'n0', expect.objectContaining({ customerId: null }));
+  });
+
+  it('leaves customerId untouched (undefined in the patch) when the caller omits it entirely', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn().mockResolvedValue([]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', undefined, undefined, undefined, undefined);
+
+    expect(jobsService.editDiffEntry).toHaveBeenCalledWith('job-1', 'n0', {
+      title: 'New Title',
+      description: undefined,
+      customerId: undefined,
+    });
+  });
+
+  it('rejects a customerId over the length limit', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn(),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(
+      controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, 'x'.repeat(129), undefined, undefined),
+    ).rejects.toThrow(/exceeds the 128-character limit/i);
+    expect(jobsService.editDiffEntry).not.toHaveBeenCalled();
+  });
+
+  it('passes valid tags through to jobsService.editDiffEntry', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn().mockResolvedValue([]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined, ['functional', 'safety'], undefined);
+
+    expect(jobsService.editDiffEntry).toHaveBeenCalledWith(
+      'job-1', 'n0',
+      expect.objectContaining({ tags: ['functional', 'safety'] }),
+    );
+  });
+
+  it('rejects a tag outside the closed vocabulary', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn(),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await expect(
+      controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined, ['not_a_real_tag'], undefined),
+    ).rejects.toThrow(/unknown classification tag/i);
+    expect(jobsService.editDiffEntry).not.toHaveBeenCalled();
+  });
+
+  it('leaves tags untouched (undefined in the patch) when the caller omits it entirely', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      editDiffEntry: jest.fn().mockResolvedValue([]),
+    };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+
+    await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', undefined, undefined, undefined, undefined);
+
+    expect(jobsService.editDiffEntry).toHaveBeenCalledWith('job-1', 'n0', expect.objectContaining({ tags: undefined }));
   });
 });
 

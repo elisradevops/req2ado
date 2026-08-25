@@ -426,7 +426,11 @@ def _repair_requirement_hierarchy(
                 "Auto-inserted grouping Feature -- the model emitted one or more "
                 "Requirements in this section without a Feature parent."
             ),
-            customer_id=requirement.customer_id,
+            # A synthesized Feature never carries a customer_id -- only
+            # Requirement nodes do (see WorkItemNode.customer_id's own
+            # docstring). Previously copied from `requirement`, which was
+            # a real violation of that rule.
+            customer_id=None,
             source_ref=requirement.source_ref,
             fidelity_hash=hashlib.sha256(synth_id.encode()).hexdigest(),
             identity_hash=_hash_identity_for_synthesized_node(synth_id, requirement.source_ref),

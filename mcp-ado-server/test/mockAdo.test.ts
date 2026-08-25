@@ -95,6 +95,23 @@ describe('MockAdoBackend.discoverFields', () => {
   });
 });
 
+describe('MockAdoBackend.discoverFieldsDetailed', () => {
+  it('exposes the real CMMI RequirementType allowed values, and [] for a non-picklist field', async () => {
+    const backend = new MockAdoBackend(':memory:');
+    const fields = await backend.discoverFieldsDetailed('Requirement');
+
+    const requirementType = fields.find((f) => f.referenceName === 'Microsoft.VSTS.CMMI.RequirementType');
+    expect(requirementType?.allowedValues).toEqual(
+      expect.arrayContaining(['Functional', 'Safety', 'Security', 'Interface', 'Operational']),
+    );
+    expect(requirementType?.alwaysRequired).toBe(true);
+
+    const title = fields.find((f) => f.referenceName === 'System.Title');
+    expect(title?.allowedValues).toEqual([]);
+    expect(title?.alwaysRequired).toBe(false);
+  });
+});
+
 describe('MockAdoBackend.discoverProjects', () => {
   it('returns a fixed list of projects, including "Project" to align with the readAreaPaths mock root', async () => {
     const backend = new MockAdoBackend(':memory:');

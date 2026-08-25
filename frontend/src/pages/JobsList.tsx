@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Briefcase, Plus, RefreshCw, Trash2, RotateCw } from 'lucide-react';
+import { Briefcase, Plus, RefreshCw, Trash2, RotateCw, Layers } from 'lucide-react';
 import { listJobs, deleteJob, resubmitJob } from '../api/jobs';
 import { useJobsStore, useJobs, type JobSummary } from '../store/jobsStore';
 import { StatusChip } from '../components/StatusChip';
@@ -15,6 +15,7 @@ import { Skeleton } from '../ui/Skeleton';
 import { Tooltip } from '../ui/Tooltip';
 import { InfoTip } from '../ui/Tooltip';
 import { StatTile } from '../ui/StatTile';
+import { Chip } from '../ui/Chip';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useToast } from '../components/ToastProvider';
 import { formatRelativeTime } from '../utils/relativeTime';
@@ -154,6 +155,9 @@ export function JobsList(): React.ReactElement {
           <>
             <Button variant="outline" onClick={load} disabled={!loaded}>
               <RefreshCw className="h-4 w-4" /> Refresh
+            </Button>
+            <Button variant="outline" onClick={() => navigate('/jobs/batch/new')}>
+              <Layers className="h-4 w-4" /> New batch
             </Button>
             <Button onClick={() => navigate('/jobs/new')}>
               <Plus className="h-4 w-4" /> New job
@@ -308,7 +312,26 @@ export function JobsList(): React.ReactElement {
                         style={{ animationDelay: `${Math.min(index, 8) * 30}ms` }}
                       >
                         <td className={cn('border-l-2 border-transparent px-3.5 transition-colors duration-fast group-hover:border-accent', cellPaddingY)}>
-                          <span className="block truncate text-sm font-medium">{job.originalFilename}</span>
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="block truncate text-sm font-medium">{job.originalFilename}</span>
+                            {job.batchId && (
+                              <Tooltip content="Part of a batch upload -- click to view the whole batch">
+                                <Chip
+                                  className="flex-none cursor-pointer border border-hairline-strong bg-surface-alt text-ink-2 hover:bg-canvas"
+                                  onClick={(event) => {
+                                    // The row itself navigates to the job on
+                                    // click -- without this, clicking the
+                                    // chip would also navigate there instead
+                                    // of to the batch.
+                                    event.stopPropagation();
+                                    navigate(`/jobs/batch/${job.batchId}`);
+                                  }}
+                                >
+                                  <Layers className="h-3 w-3" /> Batch
+                                </Chip>
+                              </Tooltip>
+                            )}
+                          </span>
                         </td>
                         <td className={cn('px-3.5', cellPaddingY)}>
                           <ModeBadge mode={job.mode as 'baseline' | 'survey'} />

@@ -49,6 +49,10 @@ def test_rows_from_table_resolves_type_and_parent_index() -> None:
     assert len(leaves) == 2
     assert all(rows[leaf.parent_index].label == "External Source Detection" for leaf in leaves)
     assert all(r.id_disambiguator_needed for r in rows)
+    # Convention 1's id_text ("1.1", "1.1.1", ...) is a real document-
+    # authored identifier -- id_text_is_authored must be True so
+    # id_tree_builder can populate a Requirement node's customer_id from it.
+    assert all(r.id_text_is_authored is True for r in rows)
 
 
 def test_rows_from_table_returns_empty_for_non_conforming_table() -> None:
@@ -166,6 +170,12 @@ def test_rows_from_heading_structure_builds_from_pure_nesting() -> None:
     root = rows[0]
     assert root.node_type == "Feature"  # all children are Requirement-typed leaves
     assert all(r.node_type == "Requirement" for r in rows[1:])
+    # Convention 3's id_text is a fabricated "h"-prefixed running counter,
+    # never a real document-authored identifier -- id_text_is_authored must
+    # be False for every row, so id_tree_builder never mistakes it for a
+    # real customer_id / source-requirement-number (see
+    # HierarchyRow.id_text_is_authored's own docstring).
+    assert all(r.id_text_is_authored is False for r in rows)
 
 
 def test_rows_from_heading_structure_groups_by_child_count_even_with_shall() -> None:

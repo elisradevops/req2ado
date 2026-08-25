@@ -147,6 +147,25 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
     label: 'Cancelled',
     description: 'You cancelled this job before it finished -- nothing was written to Azure DevOps.',
   },
+  // NEW-05 batch/folder ingestion -- a batch file's own pre-submit statuses
+  // (JobBatchFile.status), shown on the batch status page for a file that
+  // doesn't have a real Job yet (or never will).
+  queued: {
+    label: 'Queued',
+    description: 'Waiting for a slot to be submitted as a real job -- BASELINE files are submitted immediately; SURVEY files may wait if this deployment is at its concurrency limit.',
+  },
+  invalid: {
+    label: 'Invalid',
+    description: 'Rejected before submission -- see this file’s own error for why (usually an unsupported file type or a size over the upload limit).',
+  },
+  submit_failed: {
+    label: 'Submit failed',
+    description: 'Accepted, but the attempt to submit it as a real job failed -- see this file’s own error for details.',
+  },
+  deleted: {
+    label: 'Deleted',
+    description: 'The job this file was submitted as has since been deleted.',
+  },
 };
 
 export function jobStatusLabel(status: string): { label: string; description: string } {

@@ -99,6 +99,16 @@ interface Crumb {
 // there is no route `handle`/`useMatches` to read a param from here).
 const ROUTE_CRUMBS: { prefix: string; crumbs: (pathname: string) => Crumb[] }[] = [
   { prefix: '/jobs/new', crumbs: () => [{ label: 'New Job' }] },
+  // Both NEW-05 batch routes must sit ABOVE the generic '/jobs/' catch-all
+  // below -- that entry matches any '/jobs/...' path via startsWith, and
+  // without these more-specific entries first, a batch path would render
+  // its own second path segment ("batch/new" or "batch/<id>") as if it
+  // were a job id.
+  { prefix: '/jobs/batch/new', crumbs: () => [{ label: 'New Batch' }] },
+  {
+    prefix: '/jobs/batch/',
+    crumbs: (pathname) => [{ label: 'Jobs', to: '/jobs' }, { label: pathname.slice('/jobs/batch/'.length), mono: true }],
+  },
   {
     prefix: '/jobs/',
     crumbs: (pathname) => [{ label: 'Jobs', to: '/jobs' }, { label: pathname.slice('/jobs/'.length), mono: true }],

@@ -145,6 +145,16 @@ def _skeleton_of(nodes: list[dict]) -> list[dict]:
     ]
 
 
+class FakeTitleDistillationClient:
+    """Test double for TitleDistillationClient (300553 smart-title fallback)
+    -- always returns the same fixed replacement title, which is all these
+    wiring/gate tests need (the actual distillation logic has its own
+    coverage in test_survey_title.py)."""
+
+    def distill_title(self, text: str, max_length: int) -> str:
+        return "Physical robustness"
+
+
 def _strip_branch_prefix(local_id: str) -> str:
     """local_id -> the temp_id the client itself returned for that node.
     build_survey_tree namespaces a multi-branch document's node ids as
@@ -268,29 +278,67 @@ def test_build_survey_tree_uses_injected_analysis_client() -> None:
     assert tree.nodes[1].parent_local_id == "n0"
 
 
-def test_build_survey_tree_stamps_customer_id_on_every_node() -> None:
-    # Regression: build_survey_tree previously had no customer_id parameter
-    # at all -- /level silently dropped the job's customer_id for every
-    # SURVEY-mode node (always None), unlike build_baseline_tree, which
-    # threads it correctly. confirm()'s Customer ID field resolution was
-    # therefore never reachable for a SURVEY job.
-    tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), customer_id="CUST-042")
-    assert len(tree.nodes) == 2
-    assert all(n.customer_id == "CUST-042" for n in tree.nodes)
-
-
-def test_build_survey_tree_stamps_customer_id_across_multiple_branches(monkeypatch) -> None:
-    # Same as above, but for the multi-branch path (_build_survey_skeleton_for_branch
-    # called once per branch) -- customer_id must reach every branch's nodes.
-    _force_multi_branch(monkeypatch)
-    tree = build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), customer_id="CUST-042")
-    assert len(tree.nodes) == 4  # 2 nodes/branch x 2 branches
-    assert all(n.customer_id == "CUST-042" for n in tree.nodes)
-
-
-def test_build_survey_tree_defaults_customer_id_to_none() -> None:
+def test_build_survey_tree_defaults_customer_id_to_none_when_no_code_is_present() -> None:
+    # Customer ID is a per-Requirement, document-derived attribute, never a
+    # job-level value applied uniformly -- build_survey_tree has no
+    # customer_id parameter at all. _author_branch_content DOES try to
+    # extract a real customer-assigned code from each Requirement's final
+    # description (see that function's own doc comment), but this fixture's
+    # generated text has nothing code-shaped in it, so every node still
+    # honestly gets None, across single- and multi-branch runs alike --
+    # never fabricated just because none of _DEFAULT_NODES' text qualifies.
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     assert all(n.customer_id is None for n in tree.nodes)
+
+
+def test_build_survey_tree_defaults_customer_id_to_none_across_multiple_branches(monkeypatch) -> None:
+    _force_multi_branch(monkeypatch)
+    tree = build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient())
+    assert len(tree.nodes) == 4  # 2 nodes/branch x 2 branches
+    assert all(n.customer_id is None for n in tree.nodes)
+
+
+def test_build_survey_tree_extracts_a_customer_code_from_a_requirements_generated_description() -> None:
+    # Real mock-e2e finding this closes: a source requirements table folded
+    # into a Requirement's description (table_ids != []) still carries its
+    # row's own literal customer-assigned code verbatim in the raw cell
+    # text, even though the LLM's own paraphrased prose (`text`) typically
+    # doesn't repeat it. SURVEY-only, unlike BASELINE's authored-numbering
+    # path -- this is the generic customer-CODE pattern (customer_id.py),
+    # not the dotted-numbering one.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
+                "text": "The system shall synchronize to Standard-XX within N ms. P-SENSOR-001#", "tags": [],
+            },
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    # Same real regex behavior as customer_id.py's own docstring documents:
+    # a single-letter prefix ("P-") doesn't qualify (2-8 letters required),
+    # so the match starts at "SENSOR" -- SENSOR-001, not P-SENSOR-001.
+    assert tree.nodes[0].customer_id == "SENSOR-001"
+
+
+def test_build_survey_tree_never_gives_an_epic_or_feature_a_customer_code_even_when_one_is_present() -> None:
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Sync",
+                "text": "Covers requirement REQ-AV-014.", "tags": [],
+            },
+            {
+                "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Sync source",
+                "text": "The system shall synchronize. REQ-AV-014", "tags": [],
+            },
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    feature = next(n for n in tree.nodes if n.type == WorkItemType.FEATURE)
+    requirement = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
+    assert feature.customer_id is None
+    assert requirement.customer_id == "REQ-AV-014"
 
 
 def test_build_survey_tree_has_no_warnings_when_node_count_matches_block_count() -> None:
@@ -604,6 +652,74 @@ def test_build_survey_tree_truncates_an_overlong_model_title() -> None:
     )
     tree = build_survey_tree(_small_doc(), fake)
     assert len(tree.nodes[0].title) <= 256
+
+
+def test_build_survey_tree_distills_a_low_quality_title_once_its_real_description_exists() -> None:
+    # 300553 smart-title fallback: stage 1's skeleton title is generated
+    # before any content exists, so a generic label like "Requirement" is
+    # possible -- once stage 3 authors a real description, a distillation
+    # client (when provided) replaces it with a better title, and the
+    # correction is reported via a SURVEY_TITLE_DISTILLED warning.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+                "title": "Requirement", "text": "The unit shall survive a 1m drop onto concrete.", "tags": [],
+            },
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake, title_distillation_client=FakeTitleDistillationClient())
+    assert tree.nodes[0].title == "Physical robustness"
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.SURVEY_TITLE_DISTILLED)
+    assert warning.node_ids == ["n0"]
+
+
+def test_build_survey_tree_leaves_title_unchanged_when_no_distillation_client_is_provided() -> None:
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+                "title": "Requirement", "text": "The unit shall survive a 1m drop onto concrete.", "tags": [],
+            },
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    assert tree.nodes[0].title == "Requirement"
+    assert not any(w.kind == WarningKind.SURVEY_TITLE_DISTILLED for w in tree.warnings)
+
+
+def test_build_survey_tree_does_not_distill_an_already_specific_title() -> None:
+    # A distillation client is provided, but the title doesn't need it --
+    # must stand exactly as stage 1 produced it, no wasted call, no warning.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None,
+                "title": "Drop-test survivability", "text": "The unit shall survive a 1m drop onto concrete.", "tags": [],
+            },
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake, title_distillation_client=FakeTitleDistillationClient())
+    assert tree.nodes[0].title == "Drop-test survivability"
+    assert not any(w.kind == WarningKind.SURVEY_TITLE_DISTILLED for w in tree.warnings)
+
+
+def test_build_survey_tree_does_not_distill_title_when_description_fell_back_to_it() -> None:
+    # A node whose content-authoring response was empty/omitted degrades its
+    # OWN title into its description (see _author_branch_content's own
+    # docstring) -- there is nothing new to distill a better title FROM in
+    # that case, so the low-quality title is left as-is even with a
+    # distillation client available, and no SURVEY_TITLE_DISTILLED warning
+    # fires (only the pre-existing "content authoring returned no text"
+    # warning does).
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Requirement", "text": "", "tags": []},
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake, title_distillation_client=FakeTitleDistillationClient())
+    assert tree.nodes[0].title == "Requirement"
+    assert not any(w.kind == WarningKind.SURVEY_TITLE_DISTILLED for w in tree.warnings)
 
 
 def test_analyze_section_called_exactly_once_per_branch() -> None:
@@ -2162,6 +2278,11 @@ def test_build_survey_tree_excludes_a_synthesized_bridge_feature_from_epic_featu
     # so score_epics_and_features_for_document is never even called.
     assert scoring_client.epic_feature_calls == []
     assert synthesized[0].quality_score is None
+    # A synthesized bridge Feature never carries a customer_id, even though
+    # it's built FROM a Requirement that (in principle) might have one --
+    # only Requirement nodes ever do (see ensure_bridge_feature's own fix
+    # in root_regrouping.py).
+    assert synthesized[0].customer_id is None
 
 
 def test_score_epics_and_features_excludes_a_per_epic_bridge_feature() -> None:
@@ -4106,10 +4227,11 @@ def _claim_on_every_node(monkeypatch, **ids: list[str]) -> None:
 
     real_author = llm_leveling_module._author_branch_content
 
-    def _patched(skeleton, analysis_client, figure_table_ids_by_local_id=None):
+    def _patched(skeleton, analysis_client, figure_table_ids_by_local_id=None, title_distillation_client=None):
         return real_author(
             skeleton, analysis_client,
             figure_table_ids_by_local_id={node.local_id: dict(ids) for node in skeleton.nodes},
+            title_distillation_client=title_distillation_client,
         )
 
     monkeypatch.setattr(llm_leveling_module, "_author_branch_content", _patched)
@@ -6107,7 +6229,13 @@ def test_skeleton_stage_ignores_content_fields_a_model_leaks_into_its_response()
     node = tree.nodes[0]
     assert node.description == "The system shall handle: Display"
     assert "LEAKED" not in node.description
-    assert node.tags == [RequirementTag.FUNCTIONAL]  # stage 3's tags, not stage 1's "safety"
+    # n0 is a Feature (this test's own skeleton override, above) -- Features
+    # never carry tags regardless of what either stage returns, so this is
+    # [] rather than stage 3's _DEFAULT_NODES value. "leaked stage-1 content
+    # ignored" is already fully covered by the description/figure/table
+    # assertions above; test_content_stage_cannot_change_the_hierarchy_it_
+    # was_given covers "stage 3's real tags win" for an actual Requirement.
+    assert node.tags == []
     assert node.figure_ids == []
     assert node.table_ids == []
 
@@ -6163,6 +6291,29 @@ def test_content_stage_cannot_change_the_hierarchy_it_was_given() -> None:
     ]
     assert [n.description for n in tree.nodes] == ["Root feature text.", "Child requirement text."]
     assert tree.nodes[1].tags == [RequirementTag.SAFETY]
+
+
+def test_content_stage_never_tags_an_epic_or_feature_even_when_the_model_returns_tags_for_it() -> None:
+    # Confirmed real bug this guards against: author_content's own prompt
+    # used to ask for 'tags' on every node id including Epic/Feature, and
+    # the assignment applied whatever the model returned with no type
+    # check -- so a Feature could end up carrying a classification tag
+    # meant for Requirements only. n0 is the Feature (see _small_doc's
+    # skeleton); a real model returning "safety" for it must still land as
+    # [] on the final node.
+    class _OvertaggingClient(FakeSectionAnalysisClient):
+        def author_content(self, section_text, skeleton_nodes, kb_context=None):
+            return {
+                "n0": {"description": "Display features.", "tags": ["safety"]},
+                "n1": {"description": "The display shall support HDR.", "tags": ["functional"]},
+            }, False
+
+    tree = build_survey_tree(_small_doc(), _OvertaggingClient())
+
+    feature_node = next(n for n in tree.nodes if n.type == WorkItemType.FEATURE)
+    requirement_node = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
+    assert feature_node.tags == []
+    assert requirement_node.tags == [RequirementTag.FUNCTIONAL]
 
 
 def test_content_stage_falls_back_to_the_title_for_an_omitted_node_and_warns() -> None:
@@ -6321,7 +6472,7 @@ def test_full_two_stage_pipeline_produces_a_coherent_multi_branch_tree(monkeypat
         ]
     )
 
-    tree = build_survey_tree(_two_branch_doc(), fake, customer_id="CUST-1")
+    tree = build_survey_tree(_two_branch_doc(), fake)
 
     assert len(fake.calls) == 2 and len(fake.author_calls) == 2  # one of each, per branch
     assert len(tree.nodes) == 6
@@ -6330,7 +6481,7 @@ def test_full_two_stage_pipeline_produces_a_coherent_multi_branch_tree(monkeypat
         assert node.description, f"{node.local_id} shipped with no description"
         assert node.fidelity_hash and node.identity_hash
         assert node.mode == WorkItemMode.SURVEY
-        assert node.customer_id == "CUST-1"
+        assert node.customer_id is None
         assert node.grounding_score is not None
         if node.parent_local_id is not None:
             assert node.parent_local_id in by_id, f"{node.local_id} has a dangling parent"

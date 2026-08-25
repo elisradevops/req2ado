@@ -52,8 +52,8 @@ describe('BackfillService.backfillAreaPath', () => {
     expect(result).toEqual({ scanned: 2, seeded: 2, skipped: 0, skippedReasons: {} });
     expect(queryIds).toHaveBeenCalledWith({ 'System.AreaPath': 'Project\\Area1' }, 'Project', undefined);
     expect(discoverWorkItemTypeCategories).toHaveBeenCalledWith('Project', undefined);
-    expect(record).toHaveBeenCalledWith(sourceHashFor('D1'), null, 'Project\\Area1', 100);
-    expect(record).toHaveBeenCalledWith(sourceHashFor('D2'), null, 'Project\\Area1', 101);
+    expect(record).toHaveBeenCalledWith(sourceHashFor('D1'), 'Project\\Area1', 100);
+    expect(record).toHaveBeenCalledWith(sourceHashFor('D2'), 'Project\\Area1', 101);
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
       { itemId: '100', text: 'D1', title: 'T1', areaPath: 'Project\\Area1' },
       { itemId: '101', text: 'D2', title: 'T2', areaPath: 'Project\\Area1' },
@@ -84,7 +84,7 @@ describe('BackfillService.backfillAreaPath', () => {
 
     await service.backfillAreaPath('Project\\Area1');
 
-    expect(record).toHaveBeenCalledWith(sourceHashFor(rawHtmlDescription), null, 'Project\\Area1', 647);
+    expect(record).toHaveBeenCalledWith(sourceHashFor(rawHtmlDescription), 'Project\\Area1', 647);
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
       {
         itemId: '647',
@@ -253,7 +253,7 @@ describe('BackfillService.backfillAreaPath', () => {
     expect(result.seeded).toBe(1);
     expect(result.skipped).toBe(1);
     expect(result.skippedReasons).toEqual({ 'no title or description': 1 });
-    expect(record).toHaveBeenCalledWith(sourceHashFor('Title only'), null, 'Project\\Area1', 300);
+    expect(record).toHaveBeenCalledWith(sourceHashFor('Title only'), 'Project\\Area1', 300);
   });
 
   it('does not re-record an item whose sourceHash already has an idempotency mapping', async () => {
@@ -467,8 +467,8 @@ describe('BackfillService.backfillAreaPath', () => {
 
     await service.backfillAreaPath('Project\\Parent');
 
-    expect(lookup).toHaveBeenCalledWith(sourceHashFor('D1'), null, 'Project\\Parent\\Child');
-    expect(record).toHaveBeenCalledWith(sourceHashFor('D1'), null, 'Project\\Parent\\Child', 650);
+    expect(lookup).toHaveBeenCalledWith(sourceHashFor('D1'), 'Project\\Parent\\Child');
+    expect(record).toHaveBeenCalledWith(sourceHashFor('D1'), 'Project\\Parent\\Child', 650);
     expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
       { itemId: '650', text: 'D1', title: 'Nested Item', areaPath: 'Project\\Parent\\Child' },
     ]);

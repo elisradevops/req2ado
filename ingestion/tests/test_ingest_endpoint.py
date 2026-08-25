@@ -842,7 +842,6 @@ def test_build_survey_tree_with_scoring_passes_the_client_as_title_tag_client() 
                 blocks=[], tables=[], figures=[],
             ),
             client=fake_client,
-            customer_id=None,
             user_id=None,
             link_type_catalog=None,
             job_id=None,

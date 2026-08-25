@@ -47,6 +47,10 @@
         "title": { "type": "string", "maxLength": 256 },
         "description": { "type": "string" },
         "customer_id": { "type": ["string", "null"] },
+        "se_coverage_ref": {
+          "type": ["string", "null"],
+          "description": "Manually-entered forward reference to a Systems Engineering requirements-layer artifact this Requirement is a basis for coverage of. Requirement-only, like customer_id. NEVER auto-populated/inferred by ingestion -- always null out of ingestion, reviewer-supplied only before confirm. No matching/linking logic exists for this field; it is a hook to hold a future reference, not a resolved relation."
+        },
         "source_ref": {
           "type": "object",
           "additionalProperties": false,
@@ -181,7 +185,7 @@
             "front_matter_folded", "trace_link_inference_failed", "heading_id_offset_mismatch",
             "unsupported_content_note", "empty_table_content",
             "vision_captioning_disabled", "invalid_mapping_target", "mapping_call_failed",
-            "ocr_recovered_table_text"
+            "ocr_recovered_table_text", "missing_source_reference", "survey_title_distilled"
           ]
         },
         "severity": {

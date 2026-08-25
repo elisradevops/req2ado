@@ -176,6 +176,26 @@ describe('NewJobWizard Step 1', () => {
     );
   });
 
+  it('does not render a Customer ID field -- it is now a per-Requirement, document-derived attribute, never a job-level input', async () => {
+    useAuthStore.getState().logout();
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 20, sectionCount: 3, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+    await waitFor(() => expect(screen.getByText(/20/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    await screen.findByLabelText(/area path/i);
+    expect(screen.queryByLabelText(/customer id/i)).not.toBeInTheDocument();
+  });
+
   it('does not render a "follow-up document" checkbox -- the near-duplicate check is now always performed, not opt-in', async () => {
     useAuthStore.getState().logout();
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({

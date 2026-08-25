@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { httpClient } from '../api/httpClient';
 import { getSharePointStatus, reconnectSharePoint, type SharePointStatus } from '../api/kb';
+import { getAppSettings, updateAppSettings } from '../api/settings';
 import { useAuthStore, useDisplayName, useOrgUrl, useUserId } from '../store/authStore';
 import { useDenseView, useAutoSyncLedgers, useUiPreferencesStore } from '../store/uiPreferencesStore';
 import { useToast } from '../components/ToastProvider';
@@ -14,6 +15,7 @@ import { Spinner } from '../ui/Spinner';
 import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
 import { Switch } from '../ui/Switch';
+import { Skeleton } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
 
 type IntegrationTone = 'ok' | 'danger' | 'warning' | 'dim';
@@ -41,6 +43,34 @@ const TONE_CARD_CLASSES: Record<IntegrationTone, string> = {
   danger: 'border-danger-border bg-danger-soft/40',
   warning: 'border-warning-border bg-warning-soft/40',
 };
+
+// The API carries dedupThreshold as a cosine similarity in [0, 1], but this
+// product describes it to users as a percentage everywhere else ("treat
+// matches above 90% as existing duplicates"), so the control edits percent
+// and converts at the boundary only.
+const THRESHOLD_PERCENT_MIN = 0;
+const THRESHOLD_PERCENT_MAX = 100;
+const THRESHOLD_LOAD_ERROR = "Couldn't load the current threshold. Reload the page to try again.";
+const THRESHOLD_SAVE_ERROR = "Couldn't save the threshold. Check your connection and try again.";
+const THRESHOLD_RANGE_ERROR = `Enter a percentage between ${THRESHOLD_PERCENT_MIN} and ${THRESHOLD_PERCENT_MAX}.`;
+
+// 0.905 -> "90.5". Rounds to one decimal place of a percent, which is finer
+// than anyone tunes this and keeps float noise (0.8999999999) off screen.
+function fractionToPercentText(fraction: number): string {
+  if (!Number.isFinite(fraction)) return '';
+  return String(Math.round(fraction * 1000) / 10);
+}
+
+// "90.5" -> 0.905. Returns null for anything the backend's own
+// z.number().finite().min(0).max(1) would reject, so the Save button can be
+// disabled instead of round-tripping a guaranteed 400.
+function percentTextToFraction(text: string): number | null {
+  const trimmed = text.trim();
+  if (trimmed === '') return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < THRESHOLD_PERCENT_MIN || parsed > THRESHOLD_PERCENT_MAX) return null;
+  return Math.round(parsed * 10) / 1000;
+}
 
 const TONE_ACTION_LABEL: Record<IntegrationTone, string> = {
   ok: 'Configure',
@@ -148,10 +178,30 @@ export function Settings(): React.ReactElement {
   const [isSharePointReconnecting, setIsSharePointReconnecting] = useState(false);
   const [sharePointReconnectError, setSharePointReconnectError] = useState<string | null>(null);
 
+  // Draft (what's in the field) vs saved (what the server last confirmed) --
+  // the pair is what makes the Save button honest about being dirty.
+  const [thresholdPercent, setThresholdPercent] = useState('');
+  const [savedThresholdPercent, setSavedThresholdPercent] = useState<string | null>(null);
+  const [isThresholdLoading, setIsThresholdLoading] = useState(true);
+  const [isSavingThreshold, setIsSavingThreshold] = useState(false);
+  const [thresholdError, setThresholdError] = useState<string | null>(null);
+  const isSavingThresholdRef = useRef(false);
+
   useEffect(() => {
     getSharePointStatus()
       .then(setSharePointStatus)
       .catch(() => setSharePointStatus({ status: 'unreachable', expiresInSeconds: null }));
+  }, []);
+
+  useEffect(() => {
+    getAppSettings()
+      .then((settings) => {
+        const percentText = fractionToPercentText(settings.dedupThreshold);
+        setThresholdPercent(percentText);
+        setSavedThresholdPercent(percentText);
+      })
+      .catch(() => setThresholdError(THRESHOLD_LOAD_ERROR))
+      .finally(() => setIsThresholdLoading(false));
   }, []);
 
   function openReconnect(): void {
@@ -203,6 +253,39 @@ export function Settings(): React.ReactElement {
       setIsSharePointReconnecting(false);
     }
   }
+
+  async function handleSaveThreshold(): Promise<void> {
+    // Synchronous ref guard, checked before any await -- setIsSavingThreshold
+    // hasn't re-rendered yet for a second click in the same tick.
+    if (isSavingThresholdRef.current) return;
+    const fraction = percentTextToFraction(thresholdPercent);
+    if (fraction === null) {
+      setThresholdError(THRESHOLD_RANGE_ERROR);
+      return;
+    }
+    isSavingThresholdRef.current = true;
+    setIsSavingThreshold(true);
+    setThresholdError(null);
+    try {
+      const updated = await updateAppSettings(fraction);
+      // Re-read from the server's own response rather than trusting the
+      // local draft -- the stored value is the authority on what dedup_check
+      // will actually use.
+      const percentText = fractionToPercentText(updated.dedupThreshold);
+      setThresholdPercent(percentText);
+      setSavedThresholdPercent(percentText);
+      showToast('Duplicate detection threshold saved.', 'success');
+    } catch {
+      setThresholdError(THRESHOLD_SAVE_ERROR);
+    } finally {
+      isSavingThresholdRef.current = false;
+      setIsSavingThreshold(false);
+    }
+  }
+
+  const isThresholdUnavailable = !isThresholdLoading && savedThresholdPercent === null;
+  const isThresholdDirty = savedThresholdPercent !== null && thresholdPercent.trim() !== savedThresholdPercent;
+  const isThresholdValid = percentTextToFraction(thresholdPercent) !== null;
 
   const sharePointCopy = sharePointStatus ? SHAREPOINT_COPY[sharePointStatus.status] : null;
   const sharePointExpiry = sharePointStatus ? formatSharePointExpiry(sharePointStatus.expiresInSeconds) : null;
@@ -257,6 +340,51 @@ export function Settings(): React.ReactElement {
                 onCheckedChange={(value) => useUiPreferencesStore.getState().setAutoSyncLedgers(value)}
               />
             </div>
+          </SectionCard>
+
+          <SectionCard title="Duplicate Detection">
+            {isThresholdLoading ? (
+              <Skeleton className="h-8 w-full" />
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-1.5 text-sm font-medium text-ink-1">
+                      Similarity threshold
+                      <InfoTip content="Raise it and the system gets more conservative about calling two items duplicates: fewer items are skipped by mistake, but a real near-duplicate is likelier to slip through and be created a second time in Azure DevOps. Lower it and more items are skipped as duplicates, including ones you wanted created. Compared as a cosine similarity against work items already in the project." />
+                    </p>
+                    <p className="text-xs text-ink-3">
+                      A proposed item scoring at or above this against an existing work item is skipped as a duplicate instead of created.
+                    </p>
+                  </div>
+                  <div className="flex flex-none items-center gap-1.5">
+                    <TextField
+                      type="number"
+                      min={THRESHOLD_PERCENT_MIN}
+                      max={THRESHOLD_PERCENT_MAX}
+                      step={1}
+                      aria-label="Similarity threshold percentage"
+                      value={thresholdPercent}
+                      onChange={(e) => setThresholdPercent(e.target.value)}
+                      disabled={isThresholdUnavailable || isSavingThreshold}
+                      className="w-[72px] text-right"
+                    />
+                    <span className="text-sm text-ink-2">%</span>
+                  </div>
+                </div>
+                {thresholdError && <p className="text-sm text-danger">{thresholdError}</p>}
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    onClick={handleSaveThreshold}
+                    disabled={isThresholdUnavailable || !isThresholdDirty || !isThresholdValid || isSavingThreshold}
+                  >
+                    {isSavingThreshold && <Spinner />}
+                    Save threshold
+                  </Button>
+                </div>
+              </div>
+            )}
           </SectionCard>
         </div>
       </div>

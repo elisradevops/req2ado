@@ -32,6 +32,12 @@ data:
   # --- Pipeline worker ---
   PIPELINE_WORKER_CONCURRENCY: "4"
 
+  # --- Batch/folder ingestion (NEW-05) ---
+  BATCH_SURVEY_CONCURRENCY: "2"
+  BATCH_PUMP_INTERVAL_MS: "10000"
+  MAX_BATCH_FILES: "25"
+  BATCH_SUBMIT_STUCK_MS: "300000"
+
   # --- Infra (in-cluster service DNS names) ---
   # REDIS_URL has no credential in this topology (matches docker-compose's
   # unauthenticated dev redis) -- safe as a plain ConfigMap value. DATABASE_URL

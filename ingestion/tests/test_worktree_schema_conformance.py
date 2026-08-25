@@ -190,6 +190,34 @@ def test_ocr_recovered_table_text_warning_matches_work_item_tree_schema(schema) 
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
+def test_missing_source_reference_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.MISSING_SOURCE_REFERENCE,
+            "1 Requirement(s) have no document-authored Customer ID / source-requirement-number -- "
+            "none was invented; review and add one manually if the source document has one that "
+            "couldn't be automatically extracted.",
+            node_ids=["n0"],
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_survey_title_distilled_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.SURVEY_TITLE_DISTILLED,
+            "1 node title(s) in this section were too generic/short to be useful and were replaced "
+            "with a title distilled from the node's own generated description.",
+            node_ids=["n0"],
+            detail={"branch": "br0_", "totalDistilled": 1},
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
 def test_excluded_figure_and_table_ids_match_work_item_tree_schema(schema) -> None:
     tree = build_baseline_tree(_baseline_doc())
     tree.excluded_figure_ids = ["f0", "f1"]

@@ -13,7 +13,9 @@ if TYPE_CHECKING:
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, plain_text_rows
 from app.distillation.description import assemble_description
-from app.distillation.title import extract_baseline_title
+from app.distillation.title import extract_baseline_title, title_is_low_quality
+from app.distillation.survey_title import TitleDistillationClient, distill_survey_title
+from app.leveling.customer_id import extract_customer_requirement_code
 from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_CHUNKS
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import fetch_always_include_context, retrieve_context
@@ -161,19 +163,13 @@ def _merge_branches_by_budget(branches: list[list[Block]], budget_tokens: int) -
     return merged
 
 
-# Common connective/requirement-boilerplate words excluded from the overlap
-# calculation so they don't inflate the score for genuinely unrelated
-# content that merely happens to also be phrased as a "shall" statement.
-_GROUNDING_STOPWORDS = {
-    "a", "an", "the", "shall", "system", "is", "are", "of", "to", "and", "or",
-    "in", "on", "for", "with", "be", "will", "this", "that", "it", "its",
-}
-_WORD_PATTERN = re.compile(r"[a-z0-9]+")
-
-
-def _significant_words(text: str) -> set[str]:
-    return {word for word in _WORD_PATTERN.findall(text.lower()) if word not in _GROUNDING_STOPWORDS}
-
+# Extracted to grounding.py (Phase 6, NEW-04) so id_tree_builder.py can use
+# the SAME Unicode-aware implementation instead of maintaining a second copy
+# that already drifted (ASCII-only) -- see that module's own docstring for
+# the real bug this closes. Aliased under their original private names so
+# every existing call site in this file (11+) needs no change.
+from app.leveling.grounding import grounding_score as _grounding_score
+from app.leveling.grounding import significant_words as _significant_words
 
 _PREVIEW_LENGTH = 80
 
@@ -186,21 +182,6 @@ def _truncate_for_preview(text: str) -> str:
     if len(collapsed) <= _PREVIEW_LENGTH:
         return f'"{collapsed}"' if collapsed else "(empty block)"
     return f'"{collapsed[:_PREVIEW_LENGTH]}…"'
-
-
-def _grounding_score(generated_text: str, source_text: str) -> float:
-    """Fraction of the generated text's own significant vocabulary that
-    also appears in its source block's text -- precision, not similarity:
-    a generated description using mostly words absent from the source
-    (invented/unrelated content) scores low regardless of the source's own
-    length. 1.0 when the generated text has no significant words at all
-    (nothing to be ungrounded about) or when every significant word is
-    present in the source."""
-    generated_words = _significant_words(generated_text)
-    if not generated_words:
-        return 1.0
-    source_words = _significant_words(source_text)
-    return len(generated_words & source_words) / len(generated_words)
 
 
 # A 1-2-significant-word block ("APOLLO2", "SBC", "Notes:") is a structural
@@ -1112,7 +1093,6 @@ def _apply_det_parent_summary(
 
 def _detect_deterministic_subtrees(
     doc: CanonicalDoc,
-    customer_id: str | None,
     title_tag_client: TitleTagClient | None,
     synthesis_client: SynthesisClient | None = None,
     parent_summary_client: ParentSummaryClient | None = None,
@@ -1197,7 +1177,7 @@ def _detect_deterministic_subtrees(
     for table, rows in qualifying_table_rows:
         _fire_subtree(f"Table {table.id}")
         nodes, warnings = build_hierarchy_subtree(
-            rows, f"det{subtree_index}_", customer_id, title_tag_client, synthesis_client,
+            rows, f"det{subtree_index}_", title_tag_client, synthesis_client,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label=f"Table {table.id}",
             # Every row here came from parsing THIS one table (see
@@ -1240,7 +1220,7 @@ def _detect_deterministic_subtrees(
     if heading_rows:
         _fire_subtree("Heading hierarchy")
         nodes, build_warnings = build_hierarchy_subtree(
-            heading_rows, f"det{subtree_index}_", customer_id, title_tag_client, synthesis_client,
+            heading_rows, f"det{subtree_index}_", title_tag_client, synthesis_client,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label="Heading hierarchy",
         )
@@ -1468,7 +1448,6 @@ def build_survey_tree(
     doc: CanonicalDoc,
     analysis_client: SectionAnalysisClient,
     scoring_client: BatchedScoringClient | None = None,
-    customer_id: str | None = None,
     criteria_retriever: CriteriaRetriever | None = None,
     user_id: str | None = None,
     embed_client: object | None = None,
@@ -1525,6 +1504,14 @@ def build_survey_tree(
     # None (the default) is byte-identical to before this capability
     # existed: no primer is used.
     primer_context: str | None = None,
+    # Optional smart-title fallback (300553) -- stage 1's skeleton title is
+    # produced before any content exists, so it can be vague/generic (e.g.
+    # "Requirement", "Item"). None (the default) is byte-identical to before
+    # this capability existed: a node's stage-1 title stands as-is regardless
+    # of how the description that gets authored afterward reads. See
+    # _author_branch_content's own use of this for the real quality gate and
+    # distill_survey_title for the actual correction call.
+    title_distillation_client: TitleDistillationClient | None = None,
 ) -> WorkItemTree:
     """SURVEY-mode leveling entry point. Splits the document into top-level
     branches (_split_into_branches, the same depth-1-heading split
@@ -1590,12 +1577,16 @@ def build_survey_tree(
     Warnings from every branch are concatenated into one list, in branch
     order.
 
-    `customer_id` is a single value applied uniformly to every node produced
-    (same contract as build_baseline_tree's own customer_id parameter) --
-    previously this parameter did not exist at all here, so /level silently
-    dropped the job's customer_id for every SURVEY-mode node (always None),
-    while BASELINE nodes got it correctly. Confirm()'s Customer ID field
-    resolution has therefore never been reachable for a SURVEY job.
+    Customer ID (WorkItemNode.customer_id) is a per-Requirement, document-
+    derived attribute, never a parameter threaded through this function.
+    For the deterministic path, see _detect_deterministic_subtrees'/
+    id_tree_builder's own docstrings (a real document-authored identifier,
+    conventions 1/2 only). For THIS function's own LLM-driven generative
+    path, see _author_branch_content's own customer_id extraction: it tries
+    the same generic customer-code pattern (customer_id.py) against each
+    authored Requirement's final description text, which still carries a
+    source table's literal codes verbatim when one got folded in -- honest
+    on both outcomes, never fabricated when no such code is present.
 
     `criteria_retriever` is entirely optional (default None, same
     opt-in-capability convention as scoring_client) -- when supplied
@@ -1697,7 +1688,7 @@ def build_survey_tree(
     # that doesn't use any of these conventions -- `llm_doc is doc` in that
     # case (a true no-op, not a copy).
     det_nodes, det_warnings, llm_doc = _detect_deterministic_subtrees(
-        doc, customer_id, title_tag_client, synthesis_client, parent_summary_client, model,
+        doc, title_tag_client, synthesis_client, parent_summary_client, model,
         progress_callback=progress_callback,
         figure_id_by_block_id=figure_id_by_block_id,
     )
@@ -2036,7 +2027,7 @@ def build_survey_tree(
         single_call_front_matter_guard = _front_matter_guard_for_whole_document(doc.blocks)
         branch_skeletons = [_build_survey_skeleton_for_branch(
             doc.blocks, analysis_client,
-            node_id_prefix="", customer_id=customer_id,
+            node_id_prefix="",
             tables=doc.tables, figures=doc.figures,
             supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
             list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
@@ -2105,7 +2096,7 @@ def build_survey_tree(
             )
             return _build_survey_skeleton_for_branch(
                 branch_blocks, analysis_client,
-                node_id_prefix=f"br{branch_index}_", customer_id=customer_id,
+                node_id_prefix=f"br{branch_index}_",
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
                 supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
                 list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
@@ -2245,14 +2236,14 @@ def build_survey_tree(
     # reaches exactly the branch that owns its target node.
     if branch_concurrency <= 1 or len(branch_skeletons) <= 1:
         branch_results: list[_BranchContentResult] = [
-            _author_branch_content(skeleton, analysis_client, figure_table_ids_by_local_id)
+            _author_branch_content(skeleton, analysis_client, figure_table_ids_by_local_id, title_distillation_client)
             for skeleton in branch_skeletons
         ]
     else:
         with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
             content_futures = [
                 executor.submit(
-                    _author_branch_content, skeleton, analysis_client, figure_table_ids_by_local_id,
+                    _author_branch_content, skeleton, analysis_client, figure_table_ids_by_local_id, title_distillation_client,
                 )
                 for skeleton in branch_skeletons
             ]
@@ -2479,7 +2470,6 @@ def _build_survey_skeleton_for_branch(
     blocks: list[Block],
     analysis_client: SectionAnalysisClient,
     node_id_prefix: str,
-    customer_id: str | None = None,
     tables: list[Table] | None = None,
     figures: list[Figure] | None = None,
     supports_tools: bool = False,
@@ -2889,7 +2879,11 @@ def _build_survey_skeleton_for_branch(
                 # likewise deferred to that same stage -- there is nothing
                 # yet to hash or to score.
                 description="",
-                customer_id=customer_id,
+                # Always None: Generation mode's LLM-authored nodes have no
+                # real per-node document-authored identifier to extract at
+                # all (informal-narrative input, no formal numbering) --
+                # never fabricated. See build_survey_tree's own docstring.
+                customer_id=None,
                 source_ref=representative_source_ref,
                 # Confirmed real bug (live, via golden-e2e's BASELINE re-run
                 # assertion, which surfaced the same class of issue this
@@ -3578,6 +3572,10 @@ def _author_branch_content(
     # table-HTML fold-in the model's own inline figure_ids/table_ids used to
     # get.
     figure_table_ids_by_local_id: dict[str, dict[str, list[str]]] | None = None,
+    # 300553 smart-title fallback -- see build_survey_tree's own doc comment
+    # for this param. None (the default): every title stands as stage 1
+    # produced it, byte-identical to before this capability existed.
+    title_distillation_client: TitleDistillationClient | None = None,
 ) -> _BranchContentResult:
     """STAGE 3 of SURVEY's two-stage per-branch generation: authors each
     node's requirement/description text and tags via ONE author_content call
@@ -3614,6 +3612,12 @@ def _author_branch_content(
     warnings = skeleton.warnings
     section_text = skeleton.section_text
     valid_tag_values = {t.value for t in RequirementTag}
+    # 300553: local_ids whose stage-1 title got replaced below because it was
+    # too generic/short AND a real description now exists to distill a
+    # better one from -- collected into ONE combined info-level warning at
+    # the end of this branch, same one-per-run convention as every other
+    # collect-and-warn list in this module.
+    distilled_title_local_ids: list[str] = []
 
     # 'analyze_section' is stage 3's own wire name -- its existing copy
     # ("Analyzing and synthesizing requirements") is, if anything, MORE
@@ -3676,16 +3680,35 @@ def _author_branch_content(
         entry = content.get(node.local_id)
         entry = entry if isinstance(entry, dict) else {}
         text = entry.get("description")
-        if not isinstance(text, str) or not text.strip():
+        # 300553: a node that fell back to its own title as its description
+        # (below) has nothing new to distill a title FROM -- distilling
+        # "text" back into a title would just regenerate roughly the same
+        # short string at the cost of a wasted LLM call, so smart-title
+        # correction later in this loop is skipped for these.
+        used_title_as_description = not isinstance(text, str) or not text.strip()
+        if used_title_as_description:
             # See this function's own docstring: degrade to the title stage 1
             # already derived from this same section rather than shipping an
             # empty work item or silently dropping a node the structural
             # stage committed to.
             unauthored.append(node)
             text = node.title
-        node.tags = sorted(
-            {RequirementTag(tag) for tag in (entry.get("tags") or []) if tag in valid_tag_values},
-            key=lambda t: t.value,
+        # Requirement-only -- classification is a per-Requirement attribute
+        # (see WorkItemNode.tags's own docstring); Epic/Feature never carry
+        # one, even though `authorable` above is NOT type-gated (every node
+        # starts with an empty description, so Epic/Feature nodes pass
+        # through this same loop to get their own descriptions authored).
+        # Confirmed real bug this closes: author_content's prompt used to
+        # ask for `tags` on every node id including Epic/Feature, and this
+        # assignment applied whatever the model returned with no type check
+        # at all.
+        node.tags = (
+            sorted(
+                {RequirementTag(tag) for tag in (entry.get("tags") or []) if tag in valid_tag_values},
+                key=lambda t: t.value,
+            )
+            if node.type == WorkItemType.REQUIREMENT
+            else []
         )
 
         # known-issues item 20: a figure/table id outside what stage 2
@@ -3780,11 +3803,36 @@ def _author_branch_content(
         node.figure_ids = figure_ids
         node.table_ids = table_ids
         node.description = description
+        # Customer ID (per-Requirement, document-derived -- see
+        # customer_id.py's own docstring) is SURVEY-only here: the generated
+        # `text` above is paraphrased prose that rarely keeps the source's
+        # literal code verbatim, but a table folded into `description` above
+        # (table_ids != []) still carries it verbatim in the raw cell text,
+        # so this can still find a real one, honestly, whenever it's there.
+        # Requirement-only, same gate every other per-Requirement field in
+        # this codebase uses -- main.py's /level exit pass belt-and-suspenders
+        # nulls it out for any non-Requirement node regardless.
+        if node.type == WorkItemType.REQUIREMENT:
+            node.customer_id = extract_customer_requirement_code(node.description)
         # Hashes the FINAL description (text plus any embedded table HTML),
         # not just `text` -- fidelity_hash exists to detect drift in the
         # actual persisted field; hashing `text` alone would never notice a
         # change to the embedded table half.
         node.fidelity_hash = hashlib.sha256(description.encode()).hexdigest()
+
+        # 300553 smart-title fallback: stage 1 named this node before any
+        # content existed, so a vague/generic title (e.g. "Requirement") is
+        # possible even though a perfectly good real description now exists
+        # to distill a better title FROM. Skipped for a node that fell back
+        # to its own title as its description above -- there's nothing new
+        # to distill from in that case (see the flag's own comment).
+        if (
+            title_distillation_client is not None
+            and not used_title_as_description
+            and title_is_low_quality(node.title)
+        ):
+            node.title = distill_survey_title(node.description, title_distillation_client)
+            distilled_title_local_ids.append(node.local_id)
 
         grounding_score = _grounding_score(text, section_text)
         node.grounding_score = grounding_score
@@ -3803,6 +3851,22 @@ def _author_branch_content(
                     detail={"groundingScore": grounding_score, "threshold": _LOW_GROUNDING_THRESHOLD},
                 )
             )
+
+    if distilled_title_local_ids:
+        message = (
+            f"{len(distilled_title_local_ids)} node title(s) in this section were too generic/short "
+            "to be useful and were replaced with a title distilled from the node's own generated "
+            "description."
+        )
+        logger.info(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.SURVEY_TITLE_DISTILLED,
+                message,
+                node_ids=distilled_title_local_ids[:10],
+                detail={"branch": skeleton.node_id_prefix or "(root)", "totalDistilled": len(distilled_title_local_ids)},
+            )
+        )
 
     if unauthored:
         previews = ", ".join(f'"{node.title}"' for node in unauthored[:10])

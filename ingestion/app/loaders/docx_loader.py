@@ -39,11 +39,11 @@ _MC_FALLBACK_TAG = "{http://schemas.openxmlformats.org/markup-compatibility/2006
 # the modern `start`/`end` spellings (only the legacy left/right/center/both
 # tokens), so calling it on a real `start`/`end` value raises ValueError --
 # a real, if uncommon, value this loader must not choke on. `both` is
-# OOXML's own name for full justification. `start`/`end` are mapped to the
-# LTR reading (left/right) -- this codebase has no RTL-direction signal to
-# do better than that today; if a bidi/RTL table is ever reported as
-# misrendering, this mapping is the first place to revisit, not a silent
-# correctness bug in the meantime.
+# OOXML's own name for full justification. `start`/`end` here are the plain
+# LTR reading (left/right) -- this is the fallback `_cell_alignment` uses
+# when a paragraph carries no `w:bidi` RTL signal (see `_is_bidi_paragraph`,
+# which resolves `start`/`end` against real per-paragraph direction when one
+# IS present -- NEW-04).
 _JC_TO_ALIGN: dict[str, Literal["left", "center", "right", "justify"]] = {
     "left": "left",
     "center": "center",
@@ -114,6 +114,19 @@ def _row_is_header(tr: CT_Row) -> bool:
     return trPr.find(qn("w:tblHeader")) is not None
 
 
+def _is_bidi_paragraph(pPr) -> bool:
+    """`w:pPr/w:bidi` is OOXML's real per-paragraph RTL-direction signal --
+    distinct from `w:jc`'s logical `start`/`end` values, which this
+    function's own presence/absence is what `_cell_alignment` needs to
+    resolve them correctly against. Absent element or an explicit
+    off-value (`0`/`false`/`off`, matching OOXML's own boolean-attribute
+    convention elsewhere) means LTR, same as no signal at all."""
+    bidi = pPr.find(qn("w:bidi"))
+    if bidi is None:
+        return False
+    return bidi.get(qn("w:val")) not in ("0", "false", "off")
+
+
 def _cell_alignment(tc: CT_Tc) -> Literal["left", "center", "right", "justify"] | None:
     """First paragraph's `w:pPr/w:jc/@w:val`, read as a raw XML string
     (see `_JC_TO_ALIGN` above for why -- python-docx's own alignment
@@ -124,6 +137,11 @@ def _cell_alignment(tc: CT_Tc) -> Literal["left", "center", "right", "justify"] 
     claim that every paragraph agrees. An unrecognized/exotic `w:val`
     (`distribute`, `mediumKashida`, ...) intentionally falls through to
     `None` via `dict.get` rather than guessing.
+
+    `start`/`end` are direction-relative, not absolute -- resolved against
+    the same paragraph's real `w:bidi` RTL signal (see `_is_bidi_paragraph`)
+    instead of always assuming LTR (NEW-04). A document with no `w:bidi`
+    anywhere behaves byte-identical to before this existed.
     """
     if not tc.p_lst:
         return None
@@ -133,7 +151,10 @@ def _cell_alignment(tc: CT_Tc) -> Literal["left", "center", "right", "justify"] 
     jc = pPr.find(qn("w:jc"))
     if jc is None:
         return None
-    return _JC_TO_ALIGN.get(jc.get(qn("w:val")))
+    val = jc.get(qn("w:val"))
+    if val in ("start", "end") and _is_bidi_paragraph(pPr):
+        return "right" if val == "start" else "left"
+    return _JC_TO_ALIGN.get(val)
 
 
 def _cell_is_bold(cell: DocxCell) -> bool:

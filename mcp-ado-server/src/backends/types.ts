@@ -74,6 +74,15 @@ export interface WorkItemIcon {
   dataBase64: string;
 }
 
+export interface AdoFieldDescriptor {
+  referenceName: string;
+  // Empty for a non-picklist field, or when the target org/api-version
+  // doesn't honor the allowed-values expand at all -- an absent list and an
+  // empty list are the same fact for every caller (never null).
+  allowedValues: string[];
+  alwaysRequired: boolean;
+}
+
 export interface AdoBackend {
   ping(): Promise<{ ok: true; backend: 'mock' | 'real' }>;
   createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord>;
@@ -111,6 +120,16 @@ export interface AdoBackend {
    * itself lives in the caller (see Task 9's write-back driver), not here.
    */
   discoverFields(workItemType: string): Promise<string[]>;
+  /**
+   * Same field-discovery scope as discoverFields, but with each field's
+   * picklist metadata included -- the missing capability that previously
+   * forced callers writing to a picklist-constrained field (e.g.
+   * Microsoft.VSTS.CMMI.RequirementType) to either skip it or risk a 400 on
+   * any org whose allowed values didn't match an assumed taxonomy. A
+   * sibling to discoverFields, not a replacement -- existing callers that
+   * only need field names keep using the cheaper call.
+   */
+  discoverFieldsDetailed(workItemType: string): Promise<AdoFieldDescriptor[]>;
   /** Updates (merges) fields on an existing work item without changing its type or parent link. */
   setFields(id: number, fields: Record<string, string>): Promise<void>;
   /**

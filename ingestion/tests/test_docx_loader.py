@@ -432,6 +432,77 @@ def test_load_docx_reads_alignment_including_modern_start_end_spellings() -> Non
     assert row[1] is not None and row[1].align == "left"  # "start" -> left (LTR reading)
 
 
+def _build_docx_with_bidi_alignment(tmp_path: Path) -> Path:
+    # NEW-04: a real RTL paragraph (w:bidi present) with a logical "start"/
+    # "end" alignment must resolve against ITS OWN direction, not the LTR
+    # assumption _build_docx_with_alignment above exercises.
+    from docx import Document as DocxDocument
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=1, cols=2)
+
+    def _set_bidi_jc(col: int, cell_text: str, jc_val: str) -> None:
+        paragraph = table.cell(0, col).paragraphs[0]
+        paragraph.text = cell_text
+        pPr = paragraph._p.get_or_add_pPr()
+        pPr.append(OxmlElement("w:bidi"))
+        jc = OxmlElement("w:jc")
+        jc.set(qn("w:val"), jc_val)
+        pPr.append(jc)
+
+    _set_bidi_jc(0, "RTL start", "start")
+    _set_bidi_jc(1, "RTL end", "end")
+
+    out_path = tmp_path / "bidi_alignment.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_resolves_start_end_against_a_real_bidi_paragraphs_direction() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_bidi_alignment(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    row = doc.tables[0].cells[0]
+    # RTL paragraph: logical "start" is visually right, "end" is visually left --
+    # the reverse of the LTR-only mapping the sibling test above asserts.
+    assert row[0] is not None and row[0].align == "right"
+    assert row[1] is not None and row[1].align == "left"
+
+
+def _build_docx_with_ltr_start_end_and_no_bidi_signal(tmp_path: Path) -> Path:
+    # Regression guard: a paragraph with NO w:bidi element at all must keep
+    # today's plain LTR mapping byte-identical, even though this is the
+    # exact same jc values the bidi test above uses.
+    from docx import Document as DocxDocument
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = DocxDocument()
+    table = doc.add_table(rows=1, cols=1)
+    paragraph = table.cell(0, 0).paragraphs[0]
+    paragraph.text = "No bidi signal"
+    pPr = paragraph._p.get_or_add_pPr()
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "start")
+    pPr.append(jc)
+
+    out_path = tmp_path / "no_bidi_signal.docx"
+    doc.save(str(out_path))
+    return out_path
+
+
+def test_load_docx_keeps_the_ltr_mapping_when_no_bidi_signal_is_present() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        docx_path = _build_docx_with_ltr_start_end_and_no_bidi_signal(Path(tmp_dir))
+        doc = load_docx(str(docx_path))
+
+    row = doc.tables[0].cells[0]
+    assert row[0] is not None and row[0].align == "left"
+
+
 def _build_docx_with_bold_prefix_cell(tmp_path: Path) -> Path:
     # The exact case the uniform-bold rule exists for: a bold "Note:"
     # prefix followed by non-bold body text in the SAME cell/paragraph. A

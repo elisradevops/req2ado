@@ -100,15 +100,9 @@ export async function getEstimate(params: {
 export interface SubmitJobParams {
   file: File;
   areaPath: string;
-  customerId?: string;
   mode: 'baseline' | 'survey';
   state?: string;
   iterationPath?: string;
-  // True when this job ingests a follow-up document against requirements
-  // already ingested under the same area path -- gates whether the
-  // orchestrator runs the dedup-similarity check at all. Defaults to false
-  // (a first-time ingestion has nothing to compare against).
-  followUp?: boolean;
   // SURVEY-only LLM model override (BASELINE never calls an LLM). Unset
   // means "use whatever the orchestrator is configured with".
   model?: string;
@@ -119,10 +113,8 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   form.append('file', params.file);
   form.append('areaPath', params.areaPath);
   form.append('mode', params.mode);
-  if (params.customerId) form.append('customerId', params.customerId);
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);
-  form.append('followUp', params.followUp ? 'true' : 'false');
   if (params.model) form.append('model', params.model);
   const response = await httpClient.post('/jobs', form);
   return response.data;
@@ -172,7 +164,7 @@ export async function getEventHistory(id: string): Promise<JobEventRecord[]> {
 export async function editDiffEntry(
   jobId: string,
   localId: string,
-  patch: { title?: string; description?: string },
+  patch: { title?: string; description?: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
 ): Promise<{ dryRunDiff: unknown }> {
   const response = await httpClient.patch(`/jobs/${jobId}/diff/${localId}`, patch);
   return response.data;
@@ -260,6 +252,32 @@ export interface JobSummaryReport {
 
 export async function getSummary(id: string): Promise<JobSummaryReport> {
   const response = await httpClient.get<JobSummaryReport>(`/jobs/${id}/summary`);
+  return response.data;
+}
+
+// WID 300578: post-write validation, diffing the real ADO state of every
+// created/resumed work item against what the confirmed dryRunDiff expected
+// -- catches ADO-side field-length truncation/picklist coercion silently
+// altering what was written, not just "did the item get created at all."
+// `field` can be the synthetic value 'existence' (JobsService.
+// validateCreatedTree's own convention) when the ADO item itself is simply
+// missing, rather than one of its real field ref names.
+export interface ValidationMismatch {
+  localId: string;
+  adoWorkItemId: number;
+  field: string;
+  expected: string;
+  actual: string;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  checkedCount: number;
+  mismatches: ValidationMismatch[];
+}
+
+export async function validateCreatedTree(id: string): Promise<ValidationResult> {
+  const response = await httpClient.get<ValidationResult>(`/jobs/${id}/validate`);
   return response.data;
 }
 

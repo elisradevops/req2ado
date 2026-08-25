@@ -103,7 +103,8 @@
 | 5.3 | Parent/child links actually written to ADO | Met | Was a real gap (found: zero linking calls, empty field content on every write) — closed: `confirm()` now creates in tree order, links children to both newly-created and reused parents |
 | 5.4 | Customer ID field resolved at runtime, never hardcoded | Met (abstracted) | Candidate-list resolution against `ado_discover_fields`, cached per work-item type; config-override step (checking an operator-specified field name first) is not yet wired — only matters if none of the three known candidate names exist in your real project |
 | 5.5 | AreaPath and State written on every created item | Met | Was a real gap (found: only Title/Description written) — closed |
-| 5.6 | Idempotency: `(source_hash, customer_id, area_path) → System.Id`, prevents duplicate writes on re-run | Met | Proven via a real golden test: identical re-submission produces a 100%-reuse diff |
+| 5.6 | Idempotency: `(source_hash, area_path) → System.Id`, prevents duplicate writes on re-run | Met | Key simplified from `(source_hash, customer_id, area_path)` after Customer ID became a per-Requirement, non-job-level attribute — proven via a real golden test: identical re-submission produces a 100%-reuse diff |
+| 5.7 | SE coverage reference (NEW-02): a per-Requirement, manually-entered forward reference to a Systems Engineering requirements-layer artifact | Met (hook only, by design) | `WorkItemNode.se_coverage_ref` — never auto-populated, resolved to a real ADO field the same runtime-verified way as Customer ID, but ships with an EMPTY candidate list (no real-world SE-layer field name is known yet) — see "SE Coverage Reference Field Resolution" in architecture.md. Reviewer-editable in req2ado's own diff regardless of whether any org has a real field configured. |
 
 ---
 

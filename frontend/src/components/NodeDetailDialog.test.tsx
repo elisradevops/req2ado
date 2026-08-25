@@ -51,7 +51,7 @@ describe('NodeDetailDialog', () => {
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('renders the item title, type badge, and clause id in the header', () => {
+  it('renders the item title, type badge, and customer ID in the header', () => {
     renderDialog();
     expect(screen.getAllByText('Req Title').length).toBeGreaterThan(0);
     expect(screen.getByText('3.2.1')).toBeInTheDocument();

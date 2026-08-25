@@ -10,6 +10,7 @@ import { JobsModule } from './modules/pipeline/jobs.module';
 import { ChatModule } from './modules/chat/chat.module';
 import { KbModule } from './modules/kb/kb.module';
 import { WikiModule } from './modules/wiki/wiki.module';
+import { SettingsModule } from './modules/settings/settings.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { WikiModule } from './modules/wiki/wiki.module';
     ChatModule,
     KbModule,
     WikiModule,
+    SettingsModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

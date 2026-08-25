@@ -2967,3 +2967,50 @@ def test_post_chat_does_not_retry_a_4xx(monkeypatch) -> None:
         client.analyze_section("Some section text.")
     assert call_count["n"] == 1
     assert sleep_calls == []
+
+
+# distill_title (300553 smart-title fallback, backing TitleDistillationClient) ----
+
+
+def test_distill_title_parses_the_title_out_of_a_valid_json_response() -> None:
+    response_json = {"content": '{"title": "Physical robustness"}'}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.distill_title("The unit shall survive a 1m drop onto concrete.", 256)
+    assert result == "Physical robustness"
+
+
+def test_distill_title_sends_temperature_zero_and_the_max_length_hint() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured["temperature"] = body["temperature"]
+        captured["user_content"] = json.loads(body["messages"][1]["content"])
+        return httpx.Response(200, json={"content": '{"title": "T"}'})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.distill_title("some text", 100)
+    assert captured["temperature"] == 0
+    assert captured["user_content"] == {"text": "some text", "maxLength": 100}
+
+
+def test_distill_title_strips_a_markdown_json_fence() -> None:
+    response_json = {"content": '```json\n{"title": "Physical robustness"}\n```'}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.distill_title("some text", 256)
+    assert result == "Physical robustness"
+
+
+def test_distill_title_raises_on_malformed_json_content() -> None:
+    response_json = {"content": "not valid json"}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    with pytest.raises(ValueError, match="malformed"):
+        client.distill_title("some text", 256)

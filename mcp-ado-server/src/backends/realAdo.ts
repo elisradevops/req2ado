@@ -5,6 +5,7 @@ import https from 'https';
 import { buildBasicAuthHeader, type AdoCredential } from '../auth/patAuth.js';
 import type {
   AdoBackend,
+  AdoFieldDescriptor,
   AdoProject,
   AreaPathNode,
   CreateWorkItemInput,
@@ -317,6 +318,28 @@ export class RealAdoBackend implements AdoBackend {
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
     );
     return response.data.value.map((field: { referenceName: string }) => field.referenceName);
+  }
+
+  // Same endpoint as discoverFields, with allowed-values expand appended --
+  // confirmed against Microsoft's own docs (WorkItemTypeFieldsExpandLevel):
+  // $expand=allowedValues returns each field's picklist values in the same
+  // response, no separate call needed. Tolerant of a missing/empty
+  // allowedValues on the response entry (a non-picklist field, or a legacy
+  // on-prem api-version that ignores $expand) -- never throws over it, per
+  // this backend's existing fail-open convention (see readAreaPaths et al).
+  async discoverFieldsDetailed(workItemType: string): Promise<AdoFieldDescriptor[]> {
+    const version = await this.getApiVersion();
+    const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/workitemtypes/${workItemType}/fields${versionQueryParam(version)}${version === 'none' ? '?' : '&'}$expand=allowedValues`;
+    const response = await retryWithBackoff(() =>
+      this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
+    );
+    return response.data.value.map(
+      (field: { referenceName: string; allowedValues?: string[]; alwaysRequired?: boolean }) => ({
+        referenceName: field.referenceName,
+        allowedValues: field.allowedValues ?? [],
+        alwaysRequired: field.alwaysRequired ?? false,
+      }),
+    );
   }
 
   async readAreaPaths(depth: number, project?: string): Promise<AreaPathNode> {

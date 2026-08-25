@@ -138,13 +138,34 @@ class WorkItemNode(BaseModel):
     parent_local_id: str | None
     title: str = Field(max_length=256)
     description: str
+    # Per-Requirement, document-derived attribute -- the requirement's own
+    # source reference number (e.g. "1.1.2.2"), populated ONLY for a
+    # Requirement-type node and ONLY from a real document-authored
+    # identifier (never fabricated). Every Epic/Feature, and every
+    # Requirement with no real identifier to extract, is None -- see
+    # main.py's /level exit enforcement pass, which flags a None here for
+    # human review rather than inventing a value. NOT a job/document-level
+    # concept: unrelated to the orchestrator's own idempotency key
+    # (sourceHash, areaPath), which this field is never part of.
     customer_id: str | None = None
+    # Per-Requirement, like customer_id -- but NEVER auto-populated from the
+    # document by ingestion, under any circumstance. A manually-entered
+    # forward reference to a Systems Engineering requirements-layer
+    # artifact this Requirement is a basis for coverage of (the customer
+    # spec's own "a basis for coverage by the Systems-Engineering
+    # requirements layer" language) -- deliberately just a hook to hold a
+    # future reference, not a resolved relation: no matching logic, no new
+    # work-item type, no ADO relation exist for this field. Always None out
+    # of ingestion; a reviewer fills it in via editDiffEntry before confirm
+    # (orchestrator-side), exactly like a Customer ID ingestion couldn't
+    # auto-detect.
+    se_coverage_ref: str | None = None
     source_ref: SourceRef
     fidelity_hash: str | None = None
     # Distinct from fidelity_hash, which exists purely for drift detection
     # (verify_fidelity: does this node's CURRENT description still match its
     # recorded hash). identity_hash exists for the orchestrator's idempotency
-    # lookup (source_hash, customer_id, area_path) -> System.Id -- it must
+    # lookup (source_hash, area_path) -> System.Id -- it must
     # distinguish two nodes whose description happens to be byte-identical
     # but come from different places in the source document (e.g. a genuine
     # verbatim repeat like "GA2 shall be replaced to signal
@@ -345,6 +366,27 @@ class WarningKind(str, Enum):
     # One warning per TABLE with any such cell, not per cell -- matches
     # this codebase's established table/section-level dedup convention.
     OCR_RECOVERED_TABLE_TEXT = "ocr_recovered_table_text"
+    # Tree-level (never per-node): one or more Requirement nodes have no
+    # real, document-authored Customer ID / source-requirement-number (see
+    # WorkItemNode.customer_id's own docstring) -- e.g. the document's
+    # numbering is Word-auto-numbered with no literal text anywhere, or the
+    # node came from an informal-narrative Generation-mode section with no
+    # formal numbering at all. Never fabricated: this flag exists precisely
+    # so the gap is surfaced for human review instead of invented. One
+    # warning per tree, `detail["nodeIds"]` listing every affected
+    # Requirement -- same one-per-tree convention as DROPPED_BLOCKS/
+    # ZERO_NODES, not one warning per node. Emitted by main.py's /level
+    # route exit, same VISION_CAPTIONING_DISABLED precedent, so it fires
+    # exactly once regardless of BASELINE/SURVEY mode.
+    MISSING_SOURCE_REFERENCE = "missing_source_reference"
+    # 300553 smart-title fallback: a SURVEY-mode node's stage-1 title (see
+    # llm_leveling._author_branch_content) was too generic/short
+    # (title_is_low_quality) and got replaced by a real distillation call
+    # once its actual description text existed to distill FROM. One warning
+    # per branch, `detail["nodeIds"]` listing every affected node -- same
+    # one-per-branch dedup convention as DROPPED_BLOCKS immediately above it
+    # in this same function's caller.
+    SURVEY_TITLE_DISTILLED = "survey_title_distilled"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -381,6 +423,8 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.INVALID_MAPPING_TARGET: WarningSeverity.NEEDS_REVIEW,
     WarningKind.MAPPING_CALL_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.OCR_RECOVERED_TABLE_TEXT: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.MISSING_SOURCE_REFERENCE: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.SURVEY_TITLE_DISTILLED: WarningSeverity.AUTO_FIXED,
 }
 
 

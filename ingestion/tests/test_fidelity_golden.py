@@ -79,10 +79,16 @@ def test_rebuilding_the_same_document_produces_identical_titles_and_descriptions
 
 
 def test_customer_id_and_fidelity_are_independent_dimensions() -> None:
-    # Stamping customer_id must never perturb fidelity_hash — Customer ID is
-    # pipeline metadata, not part of the hashed source-fidelity content.
-    tree_no_customer = build_baseline_tree(_golden_doc())
-    tree_with_customer = build_baseline_tree(_golden_doc(), customer_id="CUST-042")
-    hashes_no_customer = [node.fidelity_hash for node in tree_no_customer.nodes]
-    hashes_with_customer = [node.fidelity_hash for node in tree_with_customer.nodes]
-    assert hashes_no_customer == hashes_with_customer
+    # customer_id (a per-Requirement, document-derived attribute -- see
+    # WorkItemNode.customer_id's own docstring) must never perturb
+    # fidelity_hash -- it's pipeline metadata, not part of the hashed
+    # source-fidelity content. build_baseline_tree has no customer_id
+    # parameter to vary anymore, so this proves the independence
+    # structurally instead: fidelity_hash is always exactly
+    # sha256(description), for every node, regardless of what its own
+    # customer_id happens to be (None or a real derived number).
+    import hashlib
+
+    tree = build_baseline_tree(_golden_doc())
+    for node in tree.nodes:
+        assert node.fidelity_hash == hashlib.sha256(node.description.encode()).hexdigest()

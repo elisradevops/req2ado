@@ -135,41 +135,6 @@ describe('JobsController (e2e)', () => {
     expect(fakeJobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ mode: 'survey' }));
   });
 
-  it('POST /jobs defaults followUp to false when not provided', async () => {
-    fakeJobsService.submit.mockResolvedValue({ jobId: 'job-1' });
-    const res = await authedRequest(app.getHttpServer())
-      .post('/jobs')
-      .field('areaPath', 'Project\\Area1')
-      .attach('file', Buffer.from('hello world'), 'spec.txt');
-
-    expect(res.status).toBe(201);
-    expect(fakeJobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ followUp: false }));
-  });
-
-  it('POST /jobs passes followUp=true through when the field is the string "true"', async () => {
-    fakeJobsService.submit.mockResolvedValue({ jobId: 'job-1' });
-    const res = await authedRequest(app.getHttpServer())
-      .post('/jobs')
-      .field('areaPath', 'Project\\Area1')
-      .field('followUp', 'true')
-      .attach('file', Buffer.from('hello world'), 'spec.txt');
-
-    expect(res.status).toBe(201);
-    expect(fakeJobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ followUp: true }));
-  });
-
-  it('POST /jobs treats followUp="false" as false, not truthy string coercion', async () => {
-    fakeJobsService.submit.mockResolvedValue({ jobId: 'job-1' });
-    const res = await authedRequest(app.getHttpServer())
-      .post('/jobs')
-      .field('areaPath', 'Project\\Area1')
-      .field('followUp', 'false')
-      .attach('file', Buffer.from('hello world'), 'spec.txt');
-
-    expect(res.status).toBe(201);
-    expect(fakeJobsService.submit).toHaveBeenCalledWith(expect.objectContaining({ followUp: false }));
-  });
-
   it('POST /jobs rejects an invalid mode value', async () => {
     const res = await authedRequest(app.getHttpServer())
       .post('/jobs')
@@ -222,6 +187,7 @@ describe('JobsController (e2e)', () => {
       dryRunDiff: [],
       workItemTypeCatalog: {},
       workItemTypeCategoryLabels: { Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' },
+      requirementClassificationField: null,
     });
   });
 

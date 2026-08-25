@@ -1,4 +1,5 @@
-from app.leveling.llm_leveling import _grounding_score
+from app.leveling.grounding import grounding_score as _grounding_score
+from app.leveling.grounding import significant_words as _significant_words
 
 
 def test_identical_text_scores_1() -> None:
@@ -41,3 +42,19 @@ def test_partial_overlap_scores_between_0_and_1() -> None:
         "The display supports HDR.",
     )
     assert 0.0 < score < 1.0
+
+
+def test_significant_words_matches_hebrew_text_not_just_ascii() -> None:
+    # NEW-04/300541 regression guard: the word pattern used to be
+    # [a-z0-9]+ (ASCII-only), which silently returned an empty set for any
+    # non-Latin script -- both this check and _grounding_score treat an
+    # empty word set as "nothing to judge," making them inert on Hebrew.
+    assert _significant_words("המערכת תציג נתונים בזמן אמת") == {"המערכת", "תציג", "נתונים", "בזמן", "אמת"}
+
+
+def test_grounding_score_is_not_trivially_1_for_unrelated_hebrew_text() -> None:
+    # Before the fix, an empty word set on either side made this always
+    # score 1.0 (both branches short-circuit on "nothing significant to
+    # judge") regardless of whether the texts were actually related.
+    score = _grounding_score("המערכת תציג התרעה על תקלה בחיישן", "לוח הזמנים של הרכבת השתנה")
+    assert score < 1.0

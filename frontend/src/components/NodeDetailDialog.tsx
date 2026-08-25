@@ -87,6 +87,7 @@ export function NodeDetailDialog({
   hasNext,
   typeCatalog,
   categoryLabels,
+  requirementClassificationField,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -118,7 +119,13 @@ export function NodeDetailDialog({
   // NodeDetailPanel's Tables section show a readable title instead of a
   // raw internal id.
   captionByTableId?: Record<string, string>;
-  onSave?: (localId: string, patch: { title: string; description: string }) => void;
+  onSave?: (
+    localId: string,
+    patch: { title: string; description: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
+  ) => void;
+  // The SAME field JobsService.confirm() will actually write a Requirement's
+  // classification to -- see NodeDetailPanel's own doc comment.
+  requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   onRescore?: (localId: string) => Promise<void>;
   // Manual "Upload to ADO" action for one of this entry's figures -- see
   // NodeDetailPanel's Figures section and JobsService.attachFigureToAdo's
@@ -211,6 +218,7 @@ export function NodeDetailDialog({
       onAttachFigure={onAttachFigure}
       onRetryTraceLink={onRetryTraceLink}
       descendantCounts={descendantCountsByLocalId?.[entry.localId]}
+      requirementClassificationField={requirementClassificationField}
     />
   );
 

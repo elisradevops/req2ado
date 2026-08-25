@@ -73,6 +73,20 @@ export const configSchema = z.object({
   // org-specific field name without a code change. Unset keeps the exact
   // previous default list.
   CUSTOMER_ID_FIELD_CANDIDATES: z.string().optional(),
+  // Same override mechanism as CUSTOMER_ID_FIELD_CANDIDATES above, for the
+  // picklist-constrained requirement-classification field (see
+  // JobsService.resolveRequirementTypeField). Unset keeps the exact
+  // previous default list (Microsoft.VSTS.CMMI.RequirementType, then
+  // Custom.Requirement_Type).
+  REQUIREMENT_TYPE_FIELD_CANDIDATES: z.string().optional(),
+  // Tesseract OCR language pack(s) for scanned-PDF OCR fallback (NEW-04),
+  // forwarded to ingestion's /ingest?languages=... (e.g. 'heb+eng' for a
+  // deployment whose documents mix Hebrew and English). Previously this
+  // path was fully built and tested ingestion-side but never reachable
+  // from a real job -- the orchestrator never set this query param at all.
+  // Unset means "don't send it," so ingestion's own 'eng' default governs,
+  // unchanged from before this config existed.
+  OCR_LANGUAGES: z.string().optional(),
   // Bounded concurrency for confirm()'s work-item create/link calls --
   // previously fully sequential (one ADO round-trip at a time), meaning a
   // tree of hundreds of nodes took ~2N serial round-trips with no way to
@@ -129,6 +143,27 @@ export const configSchema = z.object({
   // key -- rotating CREDENTIAL_ENC_KEY never requires a big-bang migration
   // or invalidates every stored credential at once.
   CREDENTIAL_ENC_KEY_PREVIOUS: z.string().optional(),
+  // NEW-05 batch/folder ingestion (BatchService.pumpOnce) -- global cap on
+  // batch-originated SURVEY jobs concurrently in 'pending'|'running' across
+  // ALL batches (the scarce resource, one real LLM generation slot in this
+  // deployment's backend, is global, not per-batch). BASELINE files in a
+  // batch are never throttled -- they have no LLM cost. Deliberately small:
+  // enqueueing every SURVEY file in a large batch at once would make each
+  // one individually crawl toward INGESTION_REQUEST_TIMEOUT_MS with zero
+  // isolation between them (see docs/survey-performance.md).
+  BATCH_SURVEY_CONCURRENCY: z.coerce.number().default(2),
+  // BatchPumpService's poll interval -- how often queued JobBatchFile rows
+  // get another look for a free slot.
+  BATCH_PUMP_INTERVAL_MS: z.coerce.number().default(10_000),
+  // Hard ceiling on files accepted in a single POST /batches submission.
+  MAX_BATCH_FILES: z.coerce.number().default(25),
+  // A JobBatchFile stuck in 'submitting' (the optimistic pre-submit claim)
+  // longer than this is reclaimed back to 'queued' by the next pump tick --
+  // covers a crash between the claim and the real JobsService.submit()
+  // call. Comfortably above one submit() call's real cost (file read +
+  // one Postgres write), well below BATCH_PUMP_INTERVAL_MS's own
+  // many-tick horizon.
+  BATCH_SUBMIT_STUCK_MS: z.coerce.number().default(5 * 60_000),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

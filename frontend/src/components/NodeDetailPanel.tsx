@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pencil, Link2, RefreshCw, Upload, Check } from 'lucide-react';
 import { TagChips } from './TagChips';
+import { resolveWinningTag } from '../utils/requirementClassification';
+import { REQUIREMENT_TAG_LABELS } from '../utils/labels';
 import { QualityGauge, type QualityCategoryScores } from './QualityGauge';
 import { TraceLinkChips } from './TraceLinkChips';
 import { SourceProvenance } from './SourceProvenance';
@@ -80,6 +82,7 @@ export function NodeDetailPanel({
   onAttachFigure,
   onRetryTraceLink,
   descendantCounts,
+  requirementClassificationField,
 }: {
   // Needed only by the Figures section below (FigureImage's fetch route is
   // job-scoped) -- optional so every existing caller/test that has no
@@ -123,7 +126,16 @@ export function NodeDetailPanel({
   // editability message -- visible without scrolling, the same reasoning
   // addChildSlot's own doc comment gives for not burying it at the bottom.
   moveSlot?: React.ReactNode;
-  onSave?: (localId: string, patch: { title: string; description: string }) => void;
+  onSave?: (
+    localId: string,
+    patch: { title: string; description: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
+  ) => void;
+  // The SAME field JobsService.confirm() will actually write a Requirement's
+  // classification to -- undefined/null when there's no diff yet, no
+  // credential, or resolution failed (JobsController.getById's own
+  // best-effort enrichment). Used only to show which tag would land in ADO;
+  // never gates whether the edit control itself is shown.
+  requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   // CR-7d rescore: owned by the caller (JobDetail.tsx), which persists the
   // fresh score/issues/categoryScores and shows a toast, mirroring onSave's
   // own contract. Rejecting leaves the stored entry (and its qualityStale
@@ -169,6 +181,22 @@ export function NodeDetailPanel({
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
   const [draftDescription, setDraftDescription] = useState('');
+  // Requirement-only (see WorkItemNode.customer_id's own docstring, ingestion
+  // side) -- a per-Requirement source reference derived from the document's
+  // own numbering, editable here so a reviewer can correct it or fill it in
+  // when it couldn't be auto-detected (see the missing_source_reference
+  // warning this pairs with).
+  const [draftCustomerId, setDraftCustomerId] = useState('');
+  // Requirement-only, same reasoning as draftCustomerId above -- classification
+  // is a per-Requirement attribute (see WorkItemNode.tags's own docstring).
+  const [draftTags, setDraftTags] = useState<string[]>([]);
+  // Requirement-only, same reasoning as draftCustomerId above. Unlike
+  // Customer ID, never auto-populated from the document under any
+  // circumstance -- a manually-entered forward reference to a Systems
+  // Engineering requirements-layer artifact (see WorkItemNode.
+  // se_coverage_ref's own docstring). No matching/linking behavior exists
+  // for this field -- it is purely a hook to hold a future reference.
+  const [draftSeCoverageRef, setDraftSeCoverageRef] = useState('');
   const [rescoring, setRescoring] = useState(false);
   const isRescoringRef = useRef(false);
   const [preRescoreSnapshot, setPreRescoreSnapshot] = useState<{
@@ -210,6 +238,9 @@ export function NodeDetailPanel({
     setEditing(false);
     setDraftTitle('');
     setDraftDescription('');
+    setDraftCustomerId('');
+    setDraftTags([]);
+    setDraftSeCoverageRef('');
     setRescoring(false);
     isRescoringRef.current = false;
     setPreRescoreSnapshot(null);
@@ -246,12 +277,26 @@ export function NodeDetailPanel({
   function startEditing(): void {
     setDraftTitle(entry!.title);
     setDraftDescription(entry!.description);
+    setDraftCustomerId(entry!.customerId ?? '');
+    setDraftTags(entry!.tags ?? []);
+    setDraftSeCoverageRef(entry!.seCoverageRef ?? '');
     setEditing(true);
   }
 
   function save(): void {
-    onSave?.(entry!.localId, { title: draftTitle, description: draftDescription });
+    // Only ever sent for a Requirement -- omitted (undefined) for Epic/
+    // Feature leaves their customerId/seCoverageRef untouched server-side
+    // rather than attempting a write the backend would reject (see
+    // JobsService.editDiffEntry's own type gate).
+    const customerId = entry!.type === 'Requirement' ? draftCustomerId.trim() || null : undefined;
+    const tags = entry!.type === 'Requirement' ? draftTags : undefined;
+    const seCoverageRef = entry!.type === 'Requirement' ? draftSeCoverageRef.trim() || null : undefined;
+    onSave?.(entry!.localId, { title: draftTitle, description: draftDescription, customerId, tags, seCoverageRef });
     setEditing(false);
+  }
+
+  function toggleDraftTag(tag: string): void {
+    setDraftTags((current) => (current.includes(tag) ? current.filter((t) => t !== tag) : [...current, tag]));
   }
 
   async function handleRescoreClick(): Promise<void> {
@@ -357,6 +402,68 @@ export function NodeDetailPanel({
           className="text-base font-semibold"
           fullWidth
         />
+        {/* Requirement-only -- Epic/Feature never carry a Customer ID (see
+            WorkItemNode.customer_id's own docstring, ingestion side). */}
+        {entry.type === 'Requirement' && (
+          <TextField
+            label="Customer ID"
+            helperText="This requirement's own source reference (e.g. a clause number like 1.1.2.2) -- leave blank if the source document has none."
+            value={draftCustomerId}
+            onChange={(e) => setDraftCustomerId(e.target.value)}
+            className="font-mono text-sm"
+            fullWidth
+          />
+        )}
+        {/* Requirement-only, same gate as Customer ID above. Never
+            auto-populated -- see WorkItemNode.se_coverage_ref's own
+            docstring (ingestion side): this is a manual-only hook with no
+            matching/linking behavior, not a resolved relation. */}
+        {entry.type === 'Requirement' && (
+          <TextField
+            label="SE Coverage Reference"
+            helperText="A manual forward reference to a Systems Engineering requirements-layer artifact this requirement is a basis for coverage of -- entered by hand, never auto-detected or linked. Leave blank if not applicable."
+            value={draftSeCoverageRef}
+            onChange={(e) => setDraftSeCoverageRef(e.target.value)}
+            className="font-mono text-sm"
+            fullWidth
+          />
+        )}
+        {entry.type === 'Requirement' && (() => {
+          const editWinningTag = resolveWinningTag(draftTags, requirementClassificationField?.allowedValues);
+          return (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Classification</span>
+              <div className="flex flex-wrap gap-1.5">
+                {Object.keys(REQUIREMENT_TAG_LABELS).map((tag) => {
+                  const { label } = REQUIREMENT_TAG_LABELS[tag];
+                  const selected = draftTags.includes(tag);
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => toggleDraftTag(tag)}
+                      aria-pressed={selected}
+                      className={cn(
+                        'rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+                        selected ? 'border-ink-1 bg-ink-1 text-canvas' : 'border-hairline text-ink-2 hover:border-ink-3',
+                      )}
+                    >
+                      {label}
+                      {tag === editWinningTag ? ' →' : ''}
+                    </button>
+                  );
+                })}
+              </div>
+              {draftTags.length > 0 && (
+                <span className="text-xs text-ink-3">
+                  {editWinningTag
+                    ? `"${REQUIREMENT_TAG_LABELS[editWinningTag].label}" (→) is what will be written to ADO's Requirement Type field.`
+                    : "None of the selected categories map to this project's Requirement Type field -- it will be left at its default."}
+                </span>
+              )}
+            </div>
+          );
+        })()}
         <TextArea
           label="Description"
           helperText="Markdown supported -- **bold**, *italic*, ~~strikethrough~~, and - / 1. lists."
@@ -465,7 +572,7 @@ export function NodeDetailPanel({
       {entry.tags && entry.tags.length > 0 && (
         <div className="flex flex-col gap-1">
           <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Classification</span>
-          <TagChips tags={entry.tags} />
+          <TagChips tags={entry.tags} winningTag={resolveWinningTag(entry.tags, requirementClassificationField?.allowedValues)} />
         </div>
       )}
       {/* DESIGN.md §11.4.1 -- gated on the item's real ADO work-item type,

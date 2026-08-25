@@ -112,6 +112,14 @@ export class IngestionHttpClient {
     // predating this field (e.g. /jobs/preview), matching jobId's own
     // backward-compat convention above.
     primerContext?: string,
+    // Tesseract OCR language pack(s) for a scanned PDF's OCR fallback (e.g.
+    // 'heb+eng') -- optional, appended last per this method's existing
+    // backward-compat convention. Omitted (undefined) sends nothing, so
+    // ingestion's own "eng" default governs, byte-identical to every call
+    // site predating this param (deliberately NOT defaulted to 'eng' here
+    // too, to keep "not sent at all" and "sent as eng" distinguishable if
+    // that ever matters).
+    languages?: string,
   ): Promise<CanonicalDoc> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
@@ -125,6 +133,9 @@ export class IngestionHttpClient {
     if (primerContext) {
       params.set('primer_context', primerContext);
     }
+    if (languages) {
+      params.set('languages', languages);
+    }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
     const response = await fetch(url, { method: 'POST', body: form, dispatcher: this.longRunningAgent });
     if (!response.ok) {
@@ -135,7 +146,6 @@ export class IngestionHttpClient {
 
   async level(
     doc: CanonicalDoc,
-    customerId: string | null,
     mode: 'baseline' | 'survey' = 'baseline',
     // Knowledge Base scope key -- the submitting user's stable ADO identity
     // (see Job.userId's own doc comment), NOT the job's ADO areaPath. Kept
@@ -154,7 +164,6 @@ export class IngestionHttpClient {
     primerContext?: string,
   ): Promise<WorkItemTree> {
     const params = new URLSearchParams({ mode });
-    if (customerId) params.set('customer_id', customerId);
     if (userId) params.set('user_id', userId);
     if (model) params.set('model', model);
     if (jobId) params.set('job_id', jobId);
@@ -228,13 +237,19 @@ export class IngestionHttpClient {
   // side -- description alone can't separate "same requirement, reworded"
   // from "different requirement, same topic" (confirmed real miss: a true
   // duplicate scored 0.755, its nearest false neighbor 0.747). See
-  // check_for_duplicates.py's own docstring for the full rationale; the
-  // fixed 0.90 threshold itself is unchanged.
-  async checkDuplicate(text: string, title: string, areaPath: string): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
+  // check_for_duplicates.py's own docstring for the full rationale.
+  // `threshold` is optional and Settings-window-driven (NEW-07) -- when
+  // omitted, ingestion falls back to its own unchanged 0.90 default.
+  async checkDuplicate(
+    text: string,
+    title: string,
+    areaPath: string,
+    threshold?: number,
+  ): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
     const response = await fetch(`${this.baseUrl}/dedup/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, title, area_path: areaPath }),
+      body: JSON.stringify({ text, title, area_path: areaPath, ...(threshold !== undefined ? { threshold } : {}) }),
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /dedup/check request failed: ${await _readErrorDetail(response)}`);

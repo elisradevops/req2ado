@@ -114,6 +114,54 @@ describe('DiffTree', () => {
     expect(screen.getByText('Orphan Req')).toBeInTheDocument();
   });
 
+  it('renders a generic hierarchical index for every row, regardless of type, computed purely from tree position', () => {
+    render(
+      <DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    // e1 (root Epic) -> "1"; f1 (its only child Feature) -> "1.1"; orphan1
+    // (its declared parent doesn't exist, so it becomes a second root
+    // Requirement) -> "2" -- purely structural, unrelated to entry.type or
+    // any document-derived customerId (all null in this fixture).
+    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('1.1')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('renders customerId as a separate badge next to the title, distinct from the row index', () => {
+    const withCustomerId: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Root Epic', description: '', action: 'create', customerId: null, tags: [] },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Child Feature', description: '', action: 'create', customerId: null, tags: [] },
+      { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'A Requirement', description: '', action: 'create', customerId: 'REQ-AV-014', tags: [] },
+    ];
+    render(
+      <DiffTree entries={withCustomerId} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    // The Requirement's own index (root Epic -> child Feature -> child
+    // Requirement, all only children) is "1.1.1" -- present AND distinct
+    // from its customerId badge "REQ-AV-014", both rendered simultaneously.
+    expect(screen.getByText('1.1.1')).toBeInTheDocument();
+    expect(screen.getByText('REQ-AV-014')).toBeInTheDocument();
+    // Epic/Feature never render a customerId badge (both are null here) --
+    // only their own index cells ("1", "1.1") appear.
+    expect(screen.queryAllByText('null')).toHaveLength(0);
+  });
+
+  it('filters to a row by an exact index match, in addition to the existing title substring match', () => {
+    const { rerender } = render(
+      <DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
+    );
+    expect(screen.getByText('Child Feature')).toBeInTheDocument();
+    expect(screen.getByText('Orphan Req')).toBeInTheDocument();
+
+    // "1.1" is Child Feature's own index -- filtering to it hides every
+    // other row, including the unrelated second-root Orphan Req.
+    rerender(
+      <DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="1.1" onToggleExclude={vi.fn()} />,
+    );
+    expect(screen.getByText('Child Feature')).toBeInTheDocument();
+    expect(screen.queryByText('Orphan Req')).not.toBeInTheDocument();
+  });
+
   it('calls onSelect with the localId when a row is clicked', async () => {
     const onSelect = vi.fn();
     render(

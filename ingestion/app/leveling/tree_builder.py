@@ -9,7 +9,8 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRe
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.autodetect import classify_numbering_branch, is_heading_style_branch
-from app.leveling.depth import resolve_block_depth
+from app.leveling.customer_id import extract_customer_requirement_code
+from app.leveling.depth import authored_numbering_label, resolve_block_depth
 from app.leveling.profiles import heading_style_type_for_depth
 from app.leveling.table_color import colgroup_html, resolve_cell_style_colors, table_style_attr
 from app.leveling.warnings_finalize import finalize_warnings
@@ -505,7 +506,7 @@ def _partition_tables_by_branch(branches: list[list[Block]], tables: list[Table]
     return buckets
 
 
-def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkItemTree:
+def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
     """Grouping-without-headings rule (original request, BASELINE mode):
     when a document has NO internal heading structure at all — every block
     resolves to depth=None via resolve_block_depth (no headings, no
@@ -532,6 +533,13 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
     Requirement child of that Feature, each verbatim (title/description
     extracted from the block/table exactly as in the structured path; only
     the two synthetic parent nodes are non-verbatim).
+
+    Every node's customer_id is always None here: by definition this
+    function only runs when the document has no heading/numbering
+    structure at all, so there is no real document-authored identifier to
+    extract for any node -- never fabricated (see main.py's /level exit
+    enforcement pass, which flags a Requirement node's missing customer_id
+    for human review rather than inventing one).
     """
     doc_title = _derive_doc_title(doc)
     first_source_ref = doc.blocks[0].source_ref if doc.blocks else doc.tables[0].source_ref
@@ -542,7 +550,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
         parent_local_id=None,
         title=doc_title,
         description=doc_title,
-        customer_id=customer_id,
+        customer_id=None,
         source_ref=first_source_ref,
         fidelity_hash=_hash_description(doc_title),
         identity_hash=_hash_identity(doc_title, first_source_ref),
@@ -556,7 +564,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
         parent_local_id=epic.local_id,
         title=doc_title,
         description=doc_title,
-        customer_id=customer_id,
+        customer_id=None,
         source_ref=first_source_ref,
         fidelity_hash=_hash_description(doc_title),
         identity_hash=_hash_identity(doc_title, first_source_ref),
@@ -626,7 +634,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     parent_local_id=feature.local_id,
                     title=extract_baseline_title(description),
                     description=description,
-                    customer_id=customer_id,
+                    customer_id=None,
                     source_ref=block.source_ref,
                     fidelity_hash=_hash_description(description),
                     identity_hash=_hash_identity(description, block.source_ref),
@@ -652,7 +660,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
                     parent_local_id=feature.local_id,
                     title=extract_baseline_title(title),
                     description=description,
-                    customer_id=customer_id,
+                    customer_id=None,
                     source_ref=table.source_ref,
                     fidelity_hash=_hash_description(description),
                     identity_hash=_hash_identity(description, table.source_ref),
@@ -668,7 +676,7 @@ def _build_headingless_tree(doc: CanonicalDoc, customer_id: str | None) -> WorkI
     return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))
 
 
-def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], customer_id: str | None) -> WorkItemTree:
+def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]]) -> WorkItemTree:
     """Flat single-column list rule: a document where every top-level branch
     is exactly one lone block (numbering resolves a depth, e.g. '1 Do X',
     '2 Do Y', but nothing ever nests under any of them) would otherwise fall
@@ -690,16 +698,18 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
     doc_title = _derive_doc_title(doc)
     first_source_ref = branches[0][0].source_ref
 
+    # Epic/Feature synthetic wrappers never carry a customer_id -- only
+    # Requirement nodes do (see WorkItemNode.customer_id's own docstring).
     epic = WorkItemNode(
         local_id="n0", type=WorkItemType.EPIC, parent_local_id=None,
-        title=doc_title, description=doc_title, customer_id=customer_id,
+        title=doc_title, description=doc_title, customer_id=None,
         source_ref=first_source_ref, fidelity_hash=_hash_description(doc_title),
         identity_hash=_hash_identity(doc_title, first_source_ref),
         tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.FEATURE,
     )
     feature = WorkItemNode(
         local_id="n1", type=WorkItemType.FEATURE, parent_local_id=epic.local_id,
-        title=doc_title, description=doc_title, customer_id=customer_id,
+        title=doc_title, description=doc_title, customer_id=None,
         source_ref=first_source_ref, fidelity_hash=_hash_description(doc_title),
         identity_hash=_hash_identity(doc_title, first_source_ref),
         tags=[], mode=WorkItemMode.BASELINE, child_type=WorkItemType.REQUIREMENT,
@@ -739,7 +749,16 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
         nodes.append(
             WorkItemNode(
                 local_id=f"n{index + 2}", type=WorkItemType.REQUIREMENT, parent_local_id=feature.local_id,
-                title=extract_baseline_title(display_text), description=display_text, customer_id=customer_id,
+                title=extract_baseline_title(display_text), description=display_text,
+                # A customer-assigned code (e.g. "REQ-AV-014") anywhere in
+                # this item's own text wins first; falls back to a real
+                # document-authored number when this item's own text
+                # literally started with one (e.g. "1 Do X"); None,
+                # honestly, for a heading-kind branch with no literal
+                # number and no customer code -- never fabricated (see
+                # extract_customer_requirement_code's/
+                # authored_numbering_label's own docstrings).
+                customer_id=extract_customer_requirement_code(block.text) or authored_numbering_label(block),
                 source_ref=block.source_ref, fidelity_hash=_hash_description(display_text),
                 identity_hash=_hash_identity(display_text, block.source_ref),
                 tags=[], figure_ids=figure_ids, uncaptioned_figure_ids=uncaptioned_figure_ids,
@@ -750,7 +769,7 @@ def _build_flat_list_tree(doc: CanonicalDoc, branches: list[list[Block]], custom
     return WorkItemTree(nodes=nodes)
 
 
-def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> WorkItemTree:
+def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
     """Deterministic BASELINE-mode leveling: no LLM involved. Splits the
     document into top-level branches, auto-detects a profile per branch
     (see autodetect.py), then walks each branch's blocks maintaining a
@@ -782,11 +801,13 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     parent block to fold into) but wrong for any document that ALSO has
     real heading blocks.
 
-    customer_id is a single value applied uniformly to every node in this
-    call — one ingestion run corresponds to one customer's document, per
-    docs/architecture.md's idempotency key (source_hash, customer_id,
-    area_path) -> System.Id. It is NOT parsed or extracted from document
-    content.
+    customer_id (WorkItemNode.customer_id) is a per-Requirement, document-
+    derived attribute, never a parameter of this function -- only a
+    Requirement node whose own text literally starts with a real, document-
+    authored number (see authored_numbering_label) ever gets one; every
+    Epic/Feature and every Requirement with no such literal number gets
+    None, never fabricated (see main.py's /level exit enforcement pass for
+    the human-review flag this triggers).
 
     Grouping-without-headings rule: if the document has no heading/numbering
     structure at all (every block resolves depth=None), OR has no blocks at
@@ -809,11 +830,11 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
     if (doc.blocks and all(resolve_block_depth(b)[0] is None for b in doc.blocks)) or (
         not doc.blocks and doc.tables
     ):
-        return _build_headingless_tree(doc, customer_id)
+        return _build_headingless_tree(doc)
 
     branches = _split_into_branches(doc)
     if len(branches) > 1 and all(len(branch) == 1 for branch in branches):
-        return _build_flat_list_tree(doc, branches, customer_id)
+        return _build_flat_list_tree(doc, branches)
 
     table_buckets = _partition_tables_by_branch(branches, doc.tables) if doc.tables else [[] for _ in branches]
     # Whole-document (not per-branch) block.id -> Figure.id map -- see
@@ -1043,7 +1064,18 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                 parent_local_id=parent_local_id,
                 title=extract_baseline_title(display_text),
                 description=display_text,
-                customer_id=customer_id,
+                # Only a Requirement node ever carries one. A customer-
+                # assigned code anywhere in this block's own text wins
+                # first; falls back to a real document-authored number;
+                # never fabricated otherwise -- see
+                # extract_customer_requirement_code's/
+                # authored_numbering_label's/WorkItemNode.customer_id's own
+                # docstrings.
+                customer_id=(
+                    (extract_customer_requirement_code(block.text) or authored_numbering_label(block))
+                    if node_type == WorkItemType.REQUIREMENT
+                    else None
+                ),
                 source_ref=block.source_ref.model_copy(update={"section_path": section_path}),
                 fidelity_hash=_hash_description(display_text),
                 identity_hash=_hash_identity(display_text, block.source_ref),
@@ -1069,7 +1101,11 @@ def build_baseline_tree(doc: CanonicalDoc, customer_id: str | None = None) -> Wo
                     parent_local_id=local_id,
                     title=f"Front Matter: {_derive_doc_title(doc)}",
                     description=front_matter_text,
-                    customer_id=customer_id,
+                    # Always None: by construction this node folds together
+                    # text that precedes any heading/numbering in its
+                    # branch -- there is no real document-authored number
+                    # to extract for it.
+                    customer_id=None,
                     source_ref=front_matter_source_ref,
                     fidelity_hash=_hash_description(front_matter_text),
                     identity_hash=_hash_identity(front_matter_text, front_matter_source_ref),

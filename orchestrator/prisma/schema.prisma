@@ -65,14 +65,26 @@ model Job {
   // from areaPath (the ADO write-back destination + idempotency key,
   // unrelated concern). Nullable: historical jobs predate this column.
   userId           String?
+  // Deprecated/legacy, kept for historical rows only -- no longer written
+  // by any submit path. Customer ID has no job/document-level meaning;
+  // it's now a per-Requirement, document-derived attribute (see
+  // ingestion/app/leveling/id_hierarchy.py, WorkItemNode.customer_id).
   customerId       String?
-  // True when this job ingests a follow-up document against requirements
-  // already ingested under the same area path -- gates whether
-  // pipeline.worker.ts's diff() runs the dedup-similarity check at all.
-  // Default false: a first-time ingestion has nothing to compare against,
-  // so skipping the check is both correct and faster (no wasted embed
-  // calls). See docs/runbook.md's "Duplicate Detection for Follow-up
-  // Documents" backlog item.
+  // Set only for a Job created by BatchService.pumpOnce() (NEW-05 batch/
+  // folder ingestion) -- deliberately a plain indexed scalar, NOT a Prisma
+  // relation to JobBatch: a relation would pull JobBatch into
+  // JobsService.delete's transaction and JobRetentionService.sweep's
+  // deletion-order list for every ordinary single-file job too. Same
+  // relation-free convention as IdempotencyMapping. Null for every job
+  // submitted outside a batch (the overwhelming majority, unchanged).
+  batchId          String?
+  // DEAD COLUMN, kept unused rather than dropped (audit finding WID
+  // 300567): was meant to gate the dedup-similarity check to follow-up
+  // documents only, but dedup already runs unconditionally on every job
+  // regardless of this value (pipeline.worker.ts never branches on it) --
+  // confirmed no application code reads or writes this field anymore.
+  // Column retained for the same reason the old job-level Customer ID
+  // columns were kept: avoid a destructive migration for historical rows.
   followUp         Boolean   @default(false)
   originalFilename String
   dryRunDiff       Json?
@@ -159,6 +171,8 @@ model Job {
   events           JobEvent[]
   figureFiles      JobFigureFile[]
   traceLinkFailures JobTraceLinkFailure[]
+
+  @@index([batchId])
 }
 
 // Retains the original uploaded file's bytes so a job can be re-submitted
@@ -312,7 +326,11 @@ model JobTraceLinkFailure {
 }
 
 // Idempotency map: prevents duplicate ADO writes on job re-run.
-// See docs/architecture.md 1c: (source_hash, customer_id, area_path) -> System.Id
+// See docs/architecture.md 1c: (source_hash, area_path) -> System.Id
+// customerId is kept as an unused legacy column (historical rows only --
+// Customer ID no longer has any job/document-level meaning; it's now a
+// per-Requirement, document-derived attribute -- see id_hierarchy.py) so no
+// destructive DROP COLUMN is needed for this refactor.
 model IdempotencyMapping {
   id           String @id @default(uuid())
   sourceHash   String
@@ -320,7 +338,26 @@ model IdempotencyMapping {
   areaPath     String
   adoWorkItemId Int
 
-  @@unique([sourceHash, customerId, areaPath])
+  @@unique([sourceHash, areaPath])
+}
+
+// Single global row of user-editable, live-tunable parameters (Settings
+// window, NEW-07) -- deliberately NOT per-user: every logged-in user sees
+// and can change the same value, matching this app's existing no-app-RBAC
+// posture (ADO identity is the only real access gate). Fixed `id` enforces
+// the singleton via the same @id-uniqueness Prisma already gives every
+// model, no separate uniqueness mechanism needed. New fields for future
+// settings belong here, nullable/defaulted the same way every other
+// additive column in this schema is.
+model AppSettings {
+  id             String   @id @default("singleton")
+  // Dedup near-duplicate similarity threshold (see check_for_duplicates.py),
+  // previously hardcoded to 0.90 and documented as "fixed, not tunable" --
+  // default here is that same 0.90 so a fresh deployment with no row yet
+  // (or a row never edited) behaves byte-identical to the old hardcoded
+  // behavior.
+  dedupThreshold Float    @default(0.90)
+  updatedAt      DateTime @updatedAt
 }
 
 // Non-secret metadata for a document ingested into the KB from a
@@ -370,4 +407,77 @@ model ChatMessage {
   createdAt           DateTime @default(now())
 
   @@index([jobId, localId])
+}
+
+// NEW-05 batch/folder ingestion -- the shared submission config for a set
+// of files uploaded together (area path, mode, etc). Deliberately
+// NOT a parent of Job (see Job.batchId's own doc comment: relation-free by
+// design) -- this row exists purely for aggregate listing/reporting
+// (BatchService.getBatch/listBatches), never as a lookup Job rows depend on.
+// Named JobBatch (not BatchJob) to match this schema's existing Job*-prefixed
+// child-table convention (JobSourceFile, JobEvent, JobFigureFile).
+model JobBatch {
+  id            String   @id @default(uuid())
+  userId        String
+  areaPath      String
+  // Deprecated/legacy, kept for historical rows only -- see Job.customerId's
+  // own doc comment.
+  customerId    String?
+  mode          String // "baseline" | "survey"
+  state         String?
+  iterationPath String?
+  model         String?
+  // DEAD COLUMN, kept unused -- see Job.followUp's own doc comment (same
+  // audit finding, WID 300567).
+  followUp      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  files         JobBatchFile[]
+}
+
+// One row per file selected in a batch upload -- the per-file status ledger
+// BatchService.pumpOnce() advances as it submits each file as an ordinary
+// Job. `jobId` is set only once the file has actually been submitted via
+// the existing JobsService.submit() (see BatchService's own doc comment on
+// why a Job row must never exist before real enqueue: JobsService.
+// onModuleInit's orphan reconciliation would mark a pre-enqueued, queue-less
+// Job 'failed' on the very next orchestrator restart). Relation-free to Job
+// for the same reason Job.batchId is relation-free to JobBatch.
+model JobBatchFile {
+  id          String    @id @default(uuid())
+  batchId     String
+  batch       JobBatch  @relation(fields: [batchId], references: [id])
+  ordinal     Int
+  filename    String
+  sizeBytes   Int
+  sourceHash  String
+  // "queued" | "submitting" | "submitted" | "invalid" | "submit_failed" | "cancelled"
+  status      String
+  error       String?
+  jobId       String?
+  // When this row's optimistic claim (status flipped to 'submitting') was
+  // made -- distinct from createdAt (when the row was first queued, which
+  // could be long before it was ever claimed). BatchService.pumpOnce()
+  // reclaims a 'submitting' row back to 'queued' once claimedAt is older
+  // than BATCH_SUBMIT_STUCK_MS, covering a crash between the claim and the
+  // real JobsService.submit() call.
+  claimedAt   DateTime?
+  submittedAt DateTime?
+  createdAt   DateTime  @default(now())
+  blob        JobBatchFileBlob?
+
+  @@index([batchId, ordinal])
+  @@index([status, createdAt])
+}
+
+// A queued file's bytes, held only until BatchService.pumpOnce() submits it
+// as a real Job (which gets its own JobSourceFile copy at that point) --
+// own table, same "ordinary queries never drag blob bytes along" convention
+// as JobSourceFile/JobFigureFile. Deleted in the same transaction that
+// marks its JobBatchFile 'submitted'; retained on 'submit_failed' so a
+// future retry doesn't require a re-upload.
+model JobBatchFileBlob {
+  batchFileId String       @id
+  batchFile   JobBatchFile @relation(fields: [batchFileId], references: [id])
+  bytes       Bytes
+  createdAt   DateTime     @default(now())
 }

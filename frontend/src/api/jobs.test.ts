@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite } from './jobs';
+import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree } from './jobs';
 
 vi.mock('./httpClient');
 
@@ -13,16 +13,13 @@ describe('jobs api', () => {
     expect(result).toEqual([{ id: 'j1' }]);
   });
 
-  it('submitJob appends followUp="true"/"false" to the form data (never omitted)', async () => {
+  it('submitJob appends file/areaPath/mode to the form data', async () => {
     (httpClient.post as any).mockResolvedValue({ data: { jobId: 'job-1' } });
 
-    await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline', followUp: true });
-    let form = (httpClient.post as any).mock.calls[0][1] as FormData;
-    expect(form.get('followUp')).toBe('true');
-
     await submitJob({ file: new File(['x'], 'req.docx'), areaPath: 'Project\\Area1', mode: 'baseline' });
-    form = (httpClient.post as any).mock.calls[1][1] as FormData;
-    expect(form.get('followUp')).toBe('false');
+    const form = (httpClient.post as any).mock.calls[0][1] as FormData;
+    expect(form.get('areaPath')).toBe('Project\\Area1');
+    expect(form.get('mode')).toBe('baseline');
   });
 
   it('confirmJob posts with no credential -- the orchestrator resolves the PAT server-side from the vault', async () => {
@@ -100,5 +97,13 @@ describe('jobs api', () => {
     const result = await retryTraceLinkWrite('job-1', 'failure-1');
     expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/trace-links/failure-1/retry');
     expect(result).toEqual({ written: true, sourceAdoId: 100, targetAdoId: 200 });
+  });
+
+  it('validateCreatedTree GETs the validate sub-route', async () => {
+    const validationResult = { valid: false, checkedCount: 2, mismatches: [{ localId: 'n0', adoWorkItemId: 42, field: 'System.Title', expected: 'T', actual: 'T2' }] };
+    (httpClient.get as any).mockResolvedValue({ data: validationResult });
+    const result = await validateCreatedTree('job-1');
+    expect(httpClient.get).toHaveBeenCalledWith('/jobs/job-1/validate');
+    expect(result).toEqual(validationResult);
   });
 });

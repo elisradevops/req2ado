@@ -46,7 +46,7 @@ describe('MoveToPicker', () => {
     expect(queryByFullText('Power Distribution')).not.toBeInTheDocument();
   });
 
-  it('filters by clause id (customerId)', async () => {
+  it('filters by customer ID', async () => {
     render(<MoveToPicker triggerLabel="Move to…" candidates={CANDIDATES} onSelect={vi.fn()} />);
     await openPicker();
 

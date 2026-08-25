@@ -12,6 +12,9 @@ export interface JobSummary {
   itemCount: number;
   createdItemCount: number;
   createdAt: string;
+  // Set only for a job submitted as part of a batch (NEW-05) -- lets
+  // JobsList render a "Batch" chip linking back to the batch's status page.
+  batchId?: string | null;
 }
 
 export interface JobDetail {
@@ -72,12 +75,23 @@ export interface JobDetail {
   // Defaults (server-side) to the identity map, never undefined here once a
   // job has a diff.
   workItemTypeCategoryLabels?: Record<'Epic' | 'Feature' | 'Requirement', string>;
+  // The SAME field (and its real allowedValues) JobsService.confirm() will
+  // actually write a Requirement's classification to -- see
+  // WorkItemTypeCatalogService.resolveRequirementClassificationField's own
+  // doc comment. null/undefined in the same cases workItemTypeCatalog is {}.
+  requirementClassificationField?: { referenceName: string; allowedValues: string[] } | null;
   // Task 4: JobTraceLinkFailure rows (see orchestrator's JobsService.getById
   // own doc comment) -- lets TraceLinkChips render a link whose write to
   // Azure DevOps actually failed distinctly from an ordinary resolved/
   // unresolved link, and offer a retry (retryTraceLinkWrite, api/jobs.ts).
   // `id` is this row's own id, needed to call the retry endpoint.
   traceLinkFailures?: TraceLinkFailure[];
+  // Count of durable CreatedItemMapping rows (see orchestrator's
+  // JobsService.getById own doc comment) -- nonzero on a 'diff_ready' job
+  // means a prior confirm() attempt already wrote some items before
+  // failing partway through. Lets JobDetail show this before a resumed
+  // Confirm click, instead of a blind re-submit.
+  createdItemCount?: number;
 }
 
 export interface TraceLinkFailure {

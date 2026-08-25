@@ -2,32 +2,25 @@ import { Injectable } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 
 /**
- * Backs docs/architecture.md's idempotency key: (source_hash, customer_id,
- * area_path) -> System.Id. A row existing means this exact source content,
- * for this customer, in this area path, already has a corresponding ADO
- * work item — re-running ingestion must reuse that id, never create a
- * duplicate.
+ * Backs docs/architecture.md's idempotency key: (source_hash, area_path) ->
+ * System.Id. A row existing means this exact source content, in this area
+ * path, already has a corresponding ADO work item — re-running ingestion
+ * must reuse that id, never create a duplicate.
+ *
+ * Previously a 3-part key including `customerId` -- that dimension was a
+ * job/document-level "Customer ID" the product no longer has (Customer ID
+ * is now a per-Requirement, document-derived attribute with no job-level
+ * meaning at all). Dropping it was an explicit product decision, accepting
+ * that two different customers submitting byte-identical content to the
+ * same area path are now treated as the same prior ingestion.
  */
 @Injectable()
 export class IdempotencyService {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async lookup(
-    sourceHash: string,
-    customerId: string | null,
-    areaPath: string,
-    legacySourceHash?: string,
-  ): Promise<number | null> {
-    // findUnique's generated compound-unique-key input type rejects `null`
-    // for any field at runtime, even though `customerId` is a nullable
-    // column (Prisma does not support `null` in @@unique compound key
-    // lookups — see prisma/prisma#3197). findFirst has no such restriction
-    // and works correctly with null values in a plain `where` filter; the
-    // (sourceHash, customerId, areaPath) unique constraint still guarantees
-    // at most one matching row. See task-9 report for the empirical
-    // verification against a real Prisma client/Postgres instance.
+  async lookup(sourceHash: string, areaPath: string, legacySourceHash?: string): Promise<number | null> {
     const record = await this.prisma.idempotencyMapping.findFirst({
-      where: { sourceHash, customerId, areaPath },
+      where: { sourceHash, areaPath },
     });
     if (record) {
       return record.adoWorkItemId;
@@ -45,13 +38,13 @@ export class IdempotencyService {
       return null;
     }
     const legacyRecord = await this.prisma.idempotencyMapping.findFirst({
-      where: { sourceHash: legacySourceHash, customerId, areaPath },
+      where: { sourceHash: legacySourceHash, areaPath },
     });
     return legacyRecord?.adoWorkItemId ?? null;
   }
 
-  async record(sourceHash: string, customerId: string | null, areaPath: string, adoWorkItemId: number): Promise<void> {
-    await this.prisma.idempotencyMapping.create({ data: { sourceHash, customerId, areaPath, adoWorkItemId } });
+  async record(sourceHash: string, areaPath: string, adoWorkItemId: number): Promise<void> {
+    await this.prisma.idempotencyMapping.create({ data: { sourceHash, areaPath, adoWorkItemId } });
   }
 
   // Called when DryRunService.verifyExistingAdoIdsStillExist proves a

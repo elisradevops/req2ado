@@ -64,10 +64,13 @@ def check_for_duplicates(
 ) -> DuplicateCheckResult:
     """Embeds `title`+`text` (blended, see below) and checks the blend
     against the Area-Path-scoped vector store for a near-duplicate.
-    Threshold is inclusive (similarity >= threshold means duplicate), per
-    config.yaml's dedup.threshold: 0.90 -- fixed, not tunable (confirmed
-    product requirement). Does NOT upsert `item_id`/its embedding into the
-    store — this function only answers the question, a caller decides
+    Threshold is inclusive (similarity >= threshold means duplicate).
+    Historically fixed at 0.90 (confirmed product requirement at the time);
+    now live-editable via the orchestrator's Settings window (NEW-07) --
+    `/dedup/check` passes an explicit `threshold` when the caller has one,
+    otherwise this default governs, so 0.90 remains the behavior for any
+    caller that never opts in. Does NOT upsert `item_id`/its embedding into
+    the store — this function only answers the question, a caller decides
     separately whether to add a confirmed-non-duplicate item.
 
     Title/description blend (confirmed real gap, fixed here): embedding

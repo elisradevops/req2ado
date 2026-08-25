@@ -430,7 +430,136 @@ describe('NodeDetailPanel', () => {
     await user.clear(titleField);
     await user.type(titleField, 'Updated Title');
     await user.click(screen.getByRole('button', { name: /save/i }));
-    expect(onSave).toHaveBeenCalledWith('e1', { title: 'Updated Title', description: 'Req body' });
+    expect(onSave).toHaveBeenCalledWith('e1', { title: 'Updated Title', description: 'Req body', customerId: null, tags: [], seCoverageRef: null });
+  });
+
+  it('shows an editable Customer ID field for a Requirement, and includes the edited value on save', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        onSave={onSave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    const customerIdField = screen.getByLabelText(/customer id/i);
+    await user.type(customerIdField, '1.1.2.2');
+    await user.click(screen.getByRole('button', { name: /save/i }));
+    expect(onSave).toHaveBeenCalledWith('e1', { title: 'Req Title', description: 'Req body', customerId: '1.1.2.2', tags: [], seCoverageRef: null });
+  });
+
+  it('clears an existing Customer ID to null when the field is emptied before saving', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: '1.1.2.2', tags: [] }}
+        onSave={onSave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    const customerIdField = screen.getByDisplayValue('1.1.2.2');
+    await user.clear(customerIdField);
+    await user.click(screen.getByRole('button', { name: /save/i }));
+    expect(onSave).toHaveBeenCalledWith('e1', { title: 'Req Title', description: 'Req body', customerId: null, tags: [], seCoverageRef: null });
+  });
+
+  it('shows an editable SE Coverage Reference field for a Requirement, and includes the edited value on save', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] }}
+        onSave={onSave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    const seCoverageRefField = screen.getByLabelText(/se coverage reference/i);
+    await user.type(seCoverageRefField, 'SYS-REQ-42');
+    await user.click(screen.getByRole('button', { name: /save/i }));
+    expect(onSave).toHaveBeenCalledWith(
+      'e1',
+      expect.objectContaining({ seCoverageRef: 'SYS-REQ-42' }),
+    );
+  });
+
+  it('does not render an SE Coverage Reference field for an Epic or Feature -- only Requirement carries one', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Feature', title: 'Feat Title', description: 'Feat body', action: 'create', customerId: null, tags: [] }}
+        onSave={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    expect(screen.queryByLabelText(/se coverage reference/i)).not.toBeInTheDocument();
+  });
+
+  it('does not render a Customer ID field for an Epic or Feature -- only Requirement carries one', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Feature', title: 'Feat Title', description: 'Feat body', action: 'create', customerId: null, tags: [] }}
+        onSave={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    expect(screen.queryByLabelText(/customer id/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the classification control for a Requirement, pre-selected from its existing tags, and includes edits on save', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: ['functional'] }}
+        onSave={onSave}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    const functionalButton = screen.getByRole('button', { name: /functional/i, pressed: true });
+    expect(functionalButton).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^safety$/i }));
+    await user.click(screen.getByRole('button', { name: /save/i }));
+    expect(onSave).toHaveBeenCalledWith(
+      'e1',
+      expect.objectContaining({ tags: expect.arrayContaining(['functional', 'safety']) }),
+    );
+  });
+
+  it('does not render the classification control for an Epic or Feature -- only Requirement carries tags', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Feature', title: 'Feat Title', description: 'Feat body', action: 'create', customerId: null, tags: [] }}
+        onSave={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    expect(screen.queryByText('Classification')).not.toBeInTheDocument();
+  });
+
+  it('marks the tag that would actually be written to ADO when requirementClassificationField allows it', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: ['functional', 'safety'] }}
+        onSave={vi.fn()}
+        requirementClassificationField={{ referenceName: 'Microsoft.VSTS.CMMI.RequirementType', allowedValues: ['Functional', 'Safety'] }}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    // safety outranks functional -- see utils/requirementClassification.ts.
+    expect(screen.getByText(/"Safety".*written to ADO/i)).toBeInTheDocument();
   });
 
   it('exits edit mode and drops the stale draft when the selected entry changes mid-edit', async () => {

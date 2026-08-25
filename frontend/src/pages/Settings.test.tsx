@@ -6,9 +6,11 @@ import { ToastProvider } from '../components/ToastProvider';
 import { useAuthStore } from '../store/authStore';
 import { httpClient } from '../api/httpClient';
 import * as kbApi from '../api/kb';
+import * as settingsApi from '../api/settings';
 
 vi.mock('../api/httpClient', () => ({ httpClient: { post: vi.fn() } }));
 vi.mock('../api/kb');
+vi.mock('../api/settings');
 
 function renderPage(): void {
   useAuthStore.getState().login('https://ado.example', 'Jane Doe', 'user-descriptor-1');
@@ -23,6 +25,8 @@ describe('Settings', () => {
   beforeEach(() => {
     vi.mocked(httpClient.post).mockReset();
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
+    vi.spyOn(settingsApi, 'getAppSettings').mockResolvedValue({ dedupThreshold: 0.9 });
+    vi.spyOn(settingsApi, 'updateAppSettings').mockResolvedValue({ dedupThreshold: 0.9 });
   });
 
   it('shows the signed-in identity and current org URL', () => {
@@ -102,6 +106,62 @@ describe('Settings', () => {
       await userEvent.click(toggle);
 
       expect(toggle).toHaveAttribute('aria-checked', 'false');
+    });
+  });
+
+  describe('Duplicate Detection threshold (NEW-07)', () => {
+    async function findThresholdField(): Promise<HTMLInputElement> {
+      return (await screen.findByLabelText(/similarity threshold percentage/i)) as HTMLInputElement;
+    }
+
+    it('renders the section with the fetched threshold as a percentage', async () => {
+      vi.mocked(settingsApi.getAppSettings).mockResolvedValue({ dedupThreshold: 0.85 });
+      renderPage();
+
+      expect(await screen.findByText('Duplicate Detection')).toBeInTheDocument();
+      expect(await findThresholdField()).toHaveValue(85);
+    });
+
+    it('saves the edited percentage back as a 0-1 fraction', async () => {
+      vi.mocked(settingsApi.updateAppSettings).mockResolvedValue({ dedupThreshold: 0.94 });
+      renderPage();
+
+      const field = await findThresholdField();
+      await userEvent.clear(field);
+      await userEvent.type(field, '94');
+      await userEvent.click(screen.getByRole('button', { name: /save threshold/i }));
+
+      await waitFor(() => expect(settingsApi.updateAppSettings).toHaveBeenCalledWith(0.94));
+      await waitFor(() => expect(screen.getByText(/duplicate detection threshold saved/i)).toBeInTheDocument());
+    });
+
+    it('keeps Save disabled until the value actually changes', async () => {
+      renderPage();
+
+      await findThresholdField();
+      expect(screen.getByRole('button', { name: /save threshold/i })).toBeDisabled();
+    });
+
+    it('shows an inline error and does not crash when the save fails', async () => {
+      vi.mocked(settingsApi.updateAppSettings).mockRejectedValue(new Error('500'));
+      renderPage();
+
+      const field = await findThresholdField();
+      await userEvent.clear(field);
+      await userEvent.type(field, '80');
+      await userEvent.click(screen.getByRole('button', { name: /save threshold/i }));
+
+      await waitFor(() => expect(screen.getByText(/couldn't save the threshold/i)).toBeInTheDocument());
+      // Still editable, and the draft is preserved so the retry is one click.
+      expect(await findThresholdField()).toHaveValue(80);
+    });
+
+    it('surfaces a load failure instead of leaving the control blank and silent', async () => {
+      vi.mocked(settingsApi.getAppSettings).mockRejectedValue(new Error('500'));
+      renderPage();
+
+      await waitFor(() => expect(screen.getByText(/couldn't load the current threshold/i)).toBeInTheDocument());
+      expect(await findThresholdField()).toBeDisabled();
     });
   });
 });

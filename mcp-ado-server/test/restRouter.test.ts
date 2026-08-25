@@ -20,7 +20,8 @@ describe('REST ADO router', () => {
     const names = res.body.map((op: { name: string }) => op.name);
     expect(names).toContain('ado_create_work_item');
     expect(names).toContain('ado_link_parent_child');
-    expect(names.length).toBe(17);
+    expect(names).toContain('ado_discover_fields_detailed');
+    expect(names.length).toBe(18);
   });
 
   it('POST /:operation 404s for an unknown operation', async () => {
