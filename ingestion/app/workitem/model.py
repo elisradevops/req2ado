@@ -387,6 +387,34 @@ class WarningKind(str, Enum):
     # one-per-branch dedup convention as DROPPED_BLOCKS immediately above it
     # in this same function's caller.
     SURVEY_TITLE_DISTILLED = "survey_title_distilled"
+    # Per-row requirement splitting (2026-08-26): a source table row that
+    # carries its own literal requirement identifier (see
+    # requirement_rows.qualifying_requirement_rows) but that no generated
+    # node's customer_id claimed -- the row may have been merged into
+    # another requirement, or dropped entirely. An identified row going
+    # unclaimed is a lost, explicitly-numbered customer requirement, the
+    # worst failure mode this feature can have, so it gets its own kind
+    # rather than reusing DROPPED_ROW (whose grouped message text is
+    # hardcoded to the deterministic path's own mechanism) or
+    # MISSING_TABLE_GROUP_COVERAGE (a lost GROUPING, not a lost
+    # requirement). One warning per branch, same one-per-branch dedup
+    # convention as MISSING_TABLE_GROUP_COVERAGE immediately above.
+    MISSING_REQUIREMENT_ROW_COVERAGE = "missing_requirement_row_coverage"
+    # A genuine customer ID is, by definition, unique to ONE requirement;
+    # the model can report the same value on 2+ distinct Requirement
+    # nodes when it mistakes a recurring product/variant name mentioned
+    # in the source text for a per-row customer-assigned identifier (see
+    # docs/handoff-heading-tier-detector-and-customer-id-fixes.md for the
+    # confirmed live case). There is no way to tell which report (if any)
+    # is genuinely correct -- so main.py's /level exit pass
+    # (_enforce_requirement_only_fields) strips the value from EVERY node
+    # that shares it rather than guessing, same "never fabricate, prefer
+    # honest None" rule as MISSING_SOURCE_REFERENCE. One warning per tree,
+    # `node_ids` listing every affected node and `detail["duplicateValue"]`
+    # the shared value -- separate from MISSING_SOURCE_REFERENCE (that
+    # kind means "no id was ever offered"; this one means "an id WAS
+    # offered but couldn't be trusted").
+    DUPLICATE_CUSTOMER_ID = "duplicate_customer_id"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -406,6 +434,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.ZERO_NODES: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.DROPPED_BLOCKS: WarningSeverity.NEEDS_REVIEW,
     WarningKind.MISSING_TABLE_GROUP_COVERAGE: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.MISSING_REQUIREMENT_ROW_COVERAGE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.EXTERNAL_REFERENCE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.SCORING_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.SCORING_MISSING: WarningSeverity.PIPELINE_ISSUE,
@@ -425,6 +454,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.OCR_RECOVERED_TABLE_TEXT: WarningSeverity.NEEDS_REVIEW,
     WarningKind.MISSING_SOURCE_REFERENCE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.SURVEY_TITLE_DISTILLED: WarningSeverity.AUTO_FIXED,
+    WarningKind.DUPLICATE_CUSTOMER_ID: WarningSeverity.NEEDS_REVIEW,
 }
 
 

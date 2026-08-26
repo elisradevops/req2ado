@@ -158,7 +158,18 @@ def section_skeleton_schema() -> dict:
     it called' -- the content half is authored separately against this
     already-fixed skeleton (see content_authoring_schema below), and
     figure/table attachment is a separate whole-document mapping pass that
-    runs between the two."""
+    runs between the two.
+
+    'customer_id' is the one deliberate exception to "no content fields":
+    it is structural, not content -- the source document's OWN identity for
+    the row/item this node came from, which is precisely the evidence that
+    a row-splitting decision (see section_skeleton.v1.txt's table-
+    classification paragraph) was made correctly, and it is only available
+    to the pass that makes that decision. Nullable-string, not required --
+    most nodes (every Epic/Feature, and any un-numbered Requirement) have
+    none, and forcing an always-null field onto every node is prompt-
+    compliance noise for no benefit; null is a real, distinct value from an
+    absent/empty string, same shape as 'parent_temp_id' above."""
     return {
         "name": "section_skeleton",
         "schema": {
@@ -173,6 +184,7 @@ def section_skeleton_schema() -> dict:
                             "type": {"type": "string", "enum": _TYPES},
                             "parent_temp_id": {"type": ["string", "null"]},
                             "title": {"type": "string"},
+                            "customer_id": {"type": ["string", "null"]},
                         },
                         "required": ["temp_id", "type", "parent_temp_id", "title"],
                     },

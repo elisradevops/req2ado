@@ -1004,11 +1004,28 @@ def _heading_level_from_size_rank(size: float, body_size: float, size_ranks: dic
     size = rank 1 (shallowest) -- built incrementally as new sizes are
     encountered, so a document's actual heading sizes (whatever they are)
     define their own depth ordering rather than assuming a fixed set of
-    sizes up front."""
+    sizes up front.
+
+    Confirmed real bug, fixed here: a new size's rank was previously
+    computed only from sizes ALREADY seen (`1 + count of already-ranked
+    sizes larger than it`), never revisiting an EXISTING size's own rank
+    once a genuinely larger size arrived later in document order. A
+    smaller heading size encountered BEFORE a larger one (e.g. a level-3
+    heading's size seen on page 1, its document's real level-1 size not
+    seen until page 4) kept its earlier, now-wrong rank -- both sizes
+    collided onto rank 1, silently merging two real, distinct heading
+    tiers into one. Every EXISTING size smaller than a newly-seen size
+    must have its own rank pushed one level deeper first, so the final
+    ranking always matches sorted size order (largest = rank 1) regardless
+    of the order sizes were first encountered in."""
     if size not in size_ranks:
-        # New size -- rank it below every size seen so far that's
-        # LARGER than it (a genuinely new, smaller heading size is a
-        # deeper level than every larger size already ranked).
+        for other_size, other_rank in size_ranks.items():
+            if other_size < size:
+                size_ranks[other_size] = other_rank + 1
+        # This new size's own rank is 1 + however many EXISTING sizes are
+        # still larger than it -- computed AFTER the bump above, but that
+        # bump only ever touches sizes smaller than this one, so it can
+        # never change this count.
         deeper_than = sum(1 for s in size_ranks if s > size)
         size_ranks[size] = deeper_than + 1
     return size_ranks[size]

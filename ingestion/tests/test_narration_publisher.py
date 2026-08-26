@@ -388,16 +388,16 @@ def test_publish_section_complete_carries_camelcased_section_nodes_and_a_count_m
         _progress(
             phase="section_complete",
             section_nodes=[
-                {"type": "Requirement", "title": "HDR support", "text": "The display shall support HDR.", "quality_score": 87},
-                {"type": "Feature", "title": "Display", "text": "The system shall handle: Display", "quality_score": None},
+                {"type": "Requirement", "title": "HDR support", "text": "The display shall support HDR.", "quality_score": 87, "customer_id": "P-SENSOR-001#"},
+                {"type": "Feature", "title": "Display", "text": "The system shall handle: Display", "quality_score": None, "customer_id": None},
             ],
         )
     )
 
     payload = json.loads(redis_client.publish_calls[0][1])
     assert payload["sectionNodes"] == [
-        {"type": "Requirement", "title": "HDR support", "text": "The display shall support HDR.", "qualityScore": 87},
-        {"type": "Feature", "title": "Display", "text": "The system shall handle: Display", "qualityScore": None},
+        {"type": "Requirement", "title": "HDR support", "text": "The display shall support HDR.", "qualityScore": 87, "customerId": "P-SENSOR-001#"},
+        {"type": "Feature", "title": "Display", "text": "The system shall handle: Display", "qualityScore": None, "customerId": None},
     ]
     assert "2 item(s) drafted" in payload["message"]
 

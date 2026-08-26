@@ -553,6 +553,11 @@ class NarrationPublisher:
                             "title": n["title"],
                             "text": n["text"],
                             "qualityScore": n.get("quality_score"),
+                            # Per-row requirement splitting (2026-08-26): lets
+                            # a reviewer see this node's own customer_id live,
+                            # as soon as content authoring decides it, rather
+                            # than only once the job reaches diff_ready.
+                            "customerId": n.get("customer_id"),
                         }
                         for n in progress.section_nodes
                     ]

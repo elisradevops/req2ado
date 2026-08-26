@@ -40,7 +40,8 @@ class FakeSectionAnalysisClient:
     def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
         topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
+        heading_type_hints: list[tuple[str, str]] | None = None,
     ) -> tuple[list[dict], bool]:
         self.calls.append(
             {

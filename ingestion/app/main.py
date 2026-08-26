@@ -1063,15 +1063,55 @@ def _enforce_requirement_only_fields(tree: WorkItemTree) -> WorkItemTree:
     but flagged in ONE tree-level MISSING_SOURCE_REFERENCE warning listing
     every affected node -- matching this codebase's established one-per-
     tree, not one-per-node, dedup convention (see DROPPED_BLOCKS/
-    ZERO_NODES)."""
+    ZERO_NODES).
+
+    Guards against a value that both stage 1 (model self-report) and
+    stage 3 (table-fallback extraction) can individually pass as verbatim-
+    grounded and yet still be wrong -- e.g. a recurring product/variant
+    name mentioned in the source text, mistaken for a per-row customer-
+    assigned identifier. Neither stage has visibility into what value
+    landed on any OTHER node, so this whole-tree pass is the only layer
+    that can catch it: a genuine customer ID is unique to ONE requirement
+    by definition, so any value shared by 2+ nodes ACROSS THE WHOLE TREE
+    gets stripped from every node that carries it (never guessing which,
+    if any, is genuinely correct), flagged via its own
+    DUPLICATE_CUSTOMER_ID warning, separate from MISSING_SOURCE_REFERENCE
+    (that one means "no id was ever offered"; this one means "an id WAS
+    offered but couldn't be trusted"). Computed BEFORE the missing-id loop
+    above, over the ORIGINAL per-node values, so a node stripped here is
+    reported only in the duplicate warning, not double-counted as merely
+    "missing" too. Confirmed live case and the two prior mechanisms this
+    backstops: docs/handoff-heading-tier-detector-and-customer-id-fixes.md."""
+    customer_id_counts: dict[str, int] = {}
+    for node in tree.nodes:
+        if node.type == WorkItemType.REQUIREMENT and node.customer_id:
+            customer_id_counts[node.customer_id] = customer_id_counts.get(node.customer_id, 0) + 1
+    duplicate_values = {value for value, count in customer_id_counts.items() if count > 1}
+
     missing_node_ids: list[str] = []
+    duplicate_node_ids_by_value: dict[str, list[str]] = {}
     for node in tree.nodes:
         if node.type != WorkItemType.REQUIREMENT:
             node.customer_id = None
             node.tags = []
             node.se_coverage_ref = None
+        elif node.customer_id in duplicate_values:
+            duplicate_node_ids_by_value.setdefault(node.customer_id, []).append(node.local_id)
+            node.customer_id = None
         elif node.customer_id is None:
             missing_node_ids.append(node.local_id)
+    for value, node_ids in duplicate_node_ids_by_value.items():
+        tree.warnings.append(
+            IntegrityWarning.make(
+                WarningKind.DUPLICATE_CUSTOMER_ID,
+                f"Customer ID '{value}' was reported on {len(node_ids)} different Requirements -- "
+                "a real customer ID is unique to one requirement, so it was removed from all of them "
+                "rather than guessing which (if any) is correct; review and add the real ID manually "
+                "if the source document has one.",
+                node_ids=node_ids,
+                detail={"duplicateValue": value},
+            )
+        )
     if missing_node_ids:
         tree.warnings.append(
             IntegrityWarning.make(

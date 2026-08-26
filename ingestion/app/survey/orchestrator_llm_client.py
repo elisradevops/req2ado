@@ -517,6 +517,23 @@ def _branch_topic_hint(topic_count: int | None) -> str:
 # an unusually large table, not a meaningfully tight constraint.
 _MAX_FEATURE_TABLE_GROUPS_NAMED = 40
 
+# Same reasoning as _MAX_FEATURE_TABLE_GROUPS_NAMED above -- a sane ceiling
+# on an unusually large requirements table, not a meaningfully tight
+# constraint (token cost per named row is ~10-15 tokens). Deliberately NOT
+# a cap on the numeric floor itself (topic_count's own arithmetic always
+# uses the TRUE full row count -- see build_survey_tree) -- only on how
+# many codes get spelled out verbatim in the hint text.
+_MAX_REQUIREMENT_ROWS_NAMED = 60
+
+# Same reasoning again, for _heading_outline_hint below -- a real document
+# can have dozens of Feature-typed headings (Requirement-typed leaves are
+# never named at all, see _heading_outline_hint's own docstring; live
+# counts on a real large document: docs/handoff-heading-tier-detector-and-customer-id-fixes.md).
+# Epic-typed entries are never capped (same policy as _table_group_hint's
+# own EPIC/REQUIREMENT exemption) -- there are always far fewer of them,
+# and an Epic-tier miss is the more consequential one.
+_MAX_HEADING_FEATURES_NAMED = 60
+
 
 def _table_group_hint(table_group_hints: list[tuple[str, str]] | None) -> str:
     """Confirmed live: a QUALITATIVE instruction alone ("use the source's
@@ -586,6 +603,133 @@ def _table_group_hint(table_group_hints: list[tuple[str, str]] | None) -> str:
         "do not merge them into one combined description on the parent "
         "Requirement itself; the parent's own text should state the general "
         "behavior only, with each specific sub-case as a separate child."
+    )
+
+
+def _requirement_row_hint(requirement_row_hints: list[tuple[str, str]] | None) -> str:
+    """Same countable-instruction pattern as _table_group_hint above,
+    confirmed necessary for the same reason: a qualitative instruction
+    alone (the table-classification paragraph already merged into
+    section_skeleton.v1.txt) is not trusted on its own to change structural
+    model behavior on this codebase's own evidence. This is the concrete,
+    document-derived counterpart -- state the real row count, name the
+    actual per-row identifiers, and require each one to land on its own
+    node's 'customer_id' verbatim. topic_count's own arithmetic (see
+    build_survey_tree/qualifying_requirement_rows) already includes these
+    rows in its floor -- this hint only names which of that floor's nodes
+    they are and what identifier each must carry."""
+    if not requirement_row_hints:
+        return ""
+    displayed = requirement_row_hints[:_MAX_REQUIREMENT_ROWS_NAMED]
+    dropped_count = len(requirement_row_hints) - len(displayed)
+    codes_text = "; ".join(
+        f"'{code}' ({label})" if label else f"'{code}'" for code, label in displayed
+    )
+    if dropped_count:
+        codes_text += f"; and {dropped_count} more"
+    return (
+        "\n\nNOTE: this section's source table(s) print their own literal "
+        f"requirement identifier on {len(requirement_row_hints)} individual "
+        "row(s), so those rows are separate requirements by the source "
+        "document's own explicit numbering -- not a table of values to fold "
+        f"into one node: {codes_text}. Your response must contain a distinct "
+        "Requirement node for EACH of them, each carrying that exact "
+        "identifier, copied character for character, in its own "
+        "'customer_id'. These rows are part of the floor stated above. "
+        "Merging two of them into one node, or omitting one, loses a "
+        "requirement the source document explicitly numbered. Do not invent "
+        "an identifier for any node not in this list, and do not renumber, "
+        "reformat, extend or shorten these."
+    )
+
+
+def _heading_outline_hint(heading_type_hints: list[tuple[str, str]] | None) -> str:
+    """Without an explicit structural hint, a document with several real
+    top-tier heading sections, each grouping its own sub-section(s), can
+    still fit in a single whole-document skeleton call -- the model may
+    correctly Epic-type the richest section but Feature-type the others
+    directly underneath it instead of promoting each to its own Epic (see
+    docs/handoff-heading-tier-detector-and-customer-id-fixes.md for the
+    confirmed live case). The base prompt's scope test ("could this take
+    multiple sprints and cover several distinct Features on its own?") is
+    a soft, content-based judgment with no explicit tie to the document's
+    own heading depth.
+
+    `heading_type_hints` comes from
+    app.leveling.heading_outline.heading_outline_entries, reduced to
+    (title, type) pairs -- see that function's own docstring for how type
+    is determined (a bottom-up, tree-shape-derived ladder, never an
+    absolute "Heading 1"/"Heading 2" number, which is why this hint's own
+    wording never names a heading level either -- only the document's own
+    outline). That detector honestly returns Requirement-typed entries too
+    (a leaf heading whose own text IS the requirement) -- Phase 1 (this
+    function) drops them before naming anything: no live evidence yet
+    that any document reaching this hint needs them named, and a
+    heading-heavy document would otherwise add hundreds of named items.
+    The model still sees every heading's own text rendered in its section,
+    so an unnamed heading is not hidden from it, only left to its own
+    judgment, same as before this hint existed."""
+    named = [(title, suggested_type) for title, suggested_type in (heading_type_hints or []) if suggested_type != "Requirement"]
+    if not named:
+        return ""
+    # Type-priority filtering, same policy as _table_group_hint: Epic-typed
+    # entries are always named in full; only Feature-typed entries are
+    # subject to a cap.
+    displayed: list[tuple[str, str]] = []
+    feature_count = 0
+    dropped: list[str] = []
+    for title, suggested_type in named:
+        if suggested_type == "Feature":
+            feature_count += 1
+            if feature_count > _MAX_HEADING_FEATURES_NAMED:
+                dropped.append(title)
+                continue
+        displayed.append((title, suggested_type))
+    if dropped:
+        logger.warning(
+            "heading_outline_hint: %d Feature title(s) dropped from the named hint "
+            "past the %d cap (still counted in the numeric floor, not individually named): %s",
+            len(dropped), _MAX_HEADING_FEATURES_NAMED, dropped,
+        )
+    labels_text = ", ".join(f"'{title}' ({suggested_type})" for title, suggested_type in displayed)
+    if dropped:
+        labels_text += f", and {len(dropped)} more"
+    has_epic = any(suggested_type == "Epic" for _title, suggested_type in named)
+    # Emitted only when the document's own outline has no grouping tier at
+    # all (every named heading is a peer Feature) -- see
+    # heading_outline_entries's own docstring on why this shape is left
+    # exactly as-is here rather than having an Epic invented for it: a
+    # uniformly Feature-topped tree is a legitimate, already-tested shape,
+    # and the LATER whole-document root-regrouping pass is the
+    # better-informed place to decide whether these roots deserve a
+    # topical Epic, since it sees every root title at once instead of just
+    # this one section.
+    single_tier_clause = (
+        ""
+        if has_epic
+        else (
+            " This section's own outline has ONE tier only -- these are peer "
+            "sections with no grouping heading above them in the source. Do "
+            "NOT invent an Epic (one per heading, or one shared wrapper) for "
+            "them; introduce an Epic here only if the section's own CONTENT "
+            "genuinely groups several of them into one larger initiative, not "
+            "merely because they are listed together."
+        )
+    )
+    return (
+        "\n\nNOTE: this section's own document structure already fixes part of "
+        f"the type boundary for {len(named)} of its real headings: {labels_text}. "
+        "Each Epic listed is its OWN separate top-level Epic -- do not merge "
+        "multiple listed Epics under one shared Epic, and do not Feature-type "
+        "one just because it covers less content than another. Each Feature "
+        "listed belongs directly under whichever listed Epic it actually "
+        "appears under in the section text -- never skip that tier, and never "
+        "attach it under a different Epic than the one it appears under. A "
+        "listed Feature whose own Epic is not itself listed here is a root-"
+        "level node in THIS section (a later whole-document pass reconciles "
+        "roots across sections, not this call). Use exactly these types for "
+        "exactly these headings; a heading not listed here is still yours to "
+        "judge using the general rules above." + single_tier_clause
     )
 
 
@@ -1860,28 +2004,44 @@ class OrchestratorLlmClient:
         topic_count: int | None = None,
         table_group_hints: list[tuple[str, str]] | None = None,
         expected_root_count: int | None = None,
+        requirement_row_hints: list[tuple[str, str]] | None = None,
+        heading_type_hints: list[tuple[str, str]] | None = None,
     ) -> tuple[list[dict], bool]:
         """STAGE 1 of the two-stage SURVEY generation split: the STRUCTURE
         half of what analyze_section used to decide in one call. Given the
         same single coherent rendering of a whole section, returns the
-        complete node SKELETON -- [{temp_id, type, parent_temp_id, title}]
-        -- with no requirement text, no tags, and no figure/table ids at
-        all (see section_skeleton_schema and the section_skeleton prompt).
-        The content half is authored separately, against this
-        already-decided skeleton, by author_content; figure/table
-        attachment is a separate whole-document mapping pass between the
-        two.
+        complete node SKELETON -- [{temp_id, type, parent_temp_id, title,
+        customer_id}] -- with no requirement text, no tags, and no figure/
+        table ids at all (see section_skeleton_schema and the
+        section_skeleton prompt; 'customer_id' is the one deliberate
+        exception -- see that schema's own docstring for why). The content
+        half is authored separately, against this already-decided skeleton,
+        by author_content; figure/table attachment is a separate
+        whole-document mapping pass between the two.
 
         Every steering parameter analyze_section takes is kept and means
         exactly the same thing here, because every one of them steers a
         STRUCTURAL decision: `whole_document`/`topic_count` are node-COUNT
         floors, `table_group_hints` names which groups must each become
         their own node AND with which type, `expected_root_count` is the
-        multi-root permission. `kb_context` (the non-tool-capable path's
-        pre-computed once-per-document string) is threaded in with the same
-        soft framing analyze_section uses -- domain material can genuinely
-        inform where a node boundary belongs, not just how a requirement is
-        worded.
+        multi-root permission, `requirement_row_hints` names which source
+        table rows each carry their own literal requirement identifier and
+        must therefore each become their own Requirement node (see
+        _requirement_row_hint's own docstring -- confirmed real gap, live:
+        a 3-column requirements table with no dotted-numeric id was never
+        counted in topic_count's own floor at all, and the model silently
+        merged multiple such rows into fewer nodes); `heading_type_hints`
+        names the document's own real heading outline and the Epic/Feature
+        type each one must become, derived from the document's own
+        relative nesting shape rather than any absolute heading level (see
+        _heading_outline_hint's own docstring -- confirmed real gap, live:
+        several real top-tier heading sections analyzed in one call
+        collapsed under a single Epic instead of each becoming its own).
+        `kb_context` (the non-tool-capable
+        path's pre-computed once-per-document string) is threaded in with
+        the same soft framing analyze_section uses -- domain material can
+        genuinely inform where a node boundary belongs, not just how a
+        requirement is worded.
 
         This is the FALLBACK path for models without tool-calling support;
         tool-capable models use analyze_section_skeleton_agentic instead.
@@ -1891,8 +2051,18 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "analyze_section_skeleton", self._model, self._num_ctx, self._top_k, self._min_p,
+                # Corrected 2026-08-26: bumped to .v4 -- the heading-outline
+                # hint's own wording and typing rules changed (relative,
+                # tree-shape-derived typing replacing an absolute Heading
+                # 1/Heading 2 map -- see heading_outline.py's own docstring).
+                # cache_key covers the call's own arguments but not the
+                # prompt/schema text itself, and this cache is live in
+                # production with a 24h TTL -- a pre-change entry would
+                # replay the old absolute-level behavior for a full day if
+                # this key stayed unchanged.
+                "analyze_section_skeleton.v4", self._model, self._num_ctx, self._top_k, self._min_p,
                 section_text, kb_context, whole_document, topic_count, table_group_hints, expected_root_count,
+                requirement_row_hints, heading_type_hints,
             )
             cached = self._cache.get(key)
             if cached is not None:
@@ -1906,6 +2076,8 @@ class OrchestratorLlmClient:
         elif topic_count is not None:
             system_prompt += _branch_topic_hint(topic_count)
         system_prompt += _table_group_hint(table_group_hints)
+        system_prompt += _requirement_row_hint(requirement_row_hints)
+        system_prompt += _heading_outline_hint(heading_type_hints)
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1954,6 +2126,8 @@ class OrchestratorLlmClient:
         topic_count: int | None = None,
         table_group_hints: list[tuple[str, str]] | None = None,
         expected_root_count: int | None = None,
+        requirement_row_hints: list[tuple[str, str]] | None = None,
+        heading_type_hints: list[tuple[str, str]] | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
         """Tool-calling variant of analyze_section_skeleton, standing in the
         same relation to it that analyze_section_agentic does to
@@ -1979,6 +2153,8 @@ class OrchestratorLlmClient:
         elif topic_count is not None:
             system_prompt += _branch_topic_hint(topic_count)
         system_prompt += _table_group_hint(table_group_hints)
+        system_prompt += _requirement_row_hint(requirement_row_hints)
+        system_prompt += _heading_outline_hint(heading_type_hints)
         citations: list[dict] = []
         content, truncated, rounds_exhausted = self._run_agentic_rounds(
             system_prompt, section_text, section_skeleton_schema(), tools,
@@ -1998,9 +2174,15 @@ class OrchestratorLlmClient:
                 _MAX_TOOL_ROUNDS,
             )
             return [], citations, False
+        # Forward requirement_row_hints/heading_type_hints into the degraded
+        # fallback too, same as table_group_hints/expected_root_count already
+        # are -- easy to miss since this branch is reached only on a weak/
+        # misbehaving tool-capable model, exactly where these steering hints
+        # matter most.
         fallback_nodes, fallback_truncated = self.analyze_section_skeleton(
             section_text, kb_context=None, whole_document=whole_document, topic_count=topic_count,
             table_group_hints=table_group_hints, expected_root_count=expected_root_count,
+            requirement_row_hints=requirement_row_hints, heading_type_hints=heading_type_hints,
         )
         return fallback_nodes, citations, fallback_truncated
 

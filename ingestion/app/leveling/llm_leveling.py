@@ -15,7 +15,6 @@ from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRe
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title, title_is_low_quality
 from app.distillation.survey_title import TitleDistillationClient, distill_survey_title
-from app.leveling.customer_id import extract_customer_requirement_code
 from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_CHUNKS
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import fetch_always_include_context, retrieve_context
@@ -39,6 +38,8 @@ from app.leveling.id_tree_builder import (
 )
 from app.leveling.model_caps import ModelCapsClient, _ModelCaps, _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
+from app.leveling.heading_outline import HeadingOutlineEntry, entries_for_blocks, heading_outline_entries
+from app.leveling.requirement_rows import RequirementRowInfo, qualifying_requirement_rows, repeated_customer_code_in_table
 from app.leveling.root_regrouping import (
     RootGroupingClient,
     _ensure_root_features_have_epic_parent,
@@ -264,6 +265,67 @@ def _group_label_became_a_node(label: str, nodes: list[WorkItemNode]) -> bool:
     if not _significant_words(label):
         return True
     return bool(_label_match_candidates(label, nodes))
+
+
+# A model dumping a whole sentence into 'customer_id' is not an
+# identifier -- real customer codes/section numbers seen in this
+# codebase's own fixtures top out well under this (e.g.
+# "P-SENSOR-001#" is 13 chars); this is a generous ceiling, not a tight
+# format constraint (no format is enforced beyond length -- see
+# _validated_skeleton_customer_id's own docstring for why).
+_MAX_MODEL_REPORTED_CUSTOMER_ID_LENGTH = 64
+
+
+def _validated_skeleton_customer_id(
+    raw_value: object, node_type: WorkItemType, rendered_section_text: str, local_id: str, title: str
+) -> str | None:
+    """Stage 1's model-reported 'customer_id' (see section_skeleton_schema),
+    validated before being trusted -- never fabricated, same "never invent
+    a value with no real basis" rule the rest of this codebase already
+    enforces for this field. Rejects, in order (each rejection logged, not
+    warned -- the resulting None is already surfaced downstream by
+    main.py's own MISSING_SOURCE_REFERENCE exit-pass warning, so a second
+    warning here would be redundant noise, not new information):
+
+    1. not a non-empty string once stripped (a model that returns null,
+       omits the field, or returns "" -- the normal case for most nodes);
+    2. longer than _MAX_MODEL_REPORTED_CUSTOMER_ID_LENGTH (a leaked
+       sentence, not an identifier);
+    3. node_type is not Requirement -- Customer ID is a per-Requirement,
+       document-derived attribute (see WorkItemNode.customer_id's own
+       docstring); an Epic/Feature value is silently corrected, matching
+       main.py's own established "internal invariant, not a reviewer-
+       actionable gap" treatment for exactly this field;
+    4. NOT found verbatim in this branch's own rendered_section_text -- the
+       honest bar for "never fabricated": deliberately NOT required to
+       also match customer_id.py's own regex, since the whole point of
+       asking the model (rather than only ever regex-scanning afterward,
+       see _author_branch_content's fallback) is that it can correctly
+       read a convention that pattern cannot (a dotted "3.2.1-a", a
+       "Req. 14", an RTL-numbered id) -- verbatim presence in the actual
+       source text is what makes "never fabricated" provable, not the
+       shape of the string itself."""
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value.strip()
+    if not value:
+        return None
+    if len(value) > _MAX_MODEL_REPORTED_CUSTOMER_ID_LENGTH:
+        logger.warning(
+            "Dropped an implausibly long model-reported customer_id (%d chars) for %r (%r): %r",
+            len(value), local_id, title, value,
+        )
+        return None
+    if node_type is not WorkItemType.REQUIREMENT:
+        return None
+    if value not in rendered_section_text:
+        logger.warning(
+            "Dropped a model-reported customer_id not found verbatim in this branch's own source "
+            "text for %r (%r): %r",
+            local_id, title, value,
+        )
+        return None
+    return value
 
 
 def _find_node_by_label(label: str, nodes: list[WorkItemNode]) -> WorkItemNode | None:
@@ -509,9 +571,23 @@ class SectionAnalysisClient(Protocol):
     # STAGE 1 -- same parameters as analyze_section/analyze_section_agentic
     # above, every one of which steers a structural decision (node-count
     # floors, which table groups must each get their own node and with what
-    # type, whether a real multi-root document is expected). Returns
-    # skeleton entries {temp_id, type, parent_temp_id, title} -- no text, no
-    # tags, no ids.
+    # type, whether a real multi-root document is expected), PLUS
+    # `requirement_row_hints`: (code, label) pairs for this section's own
+    # qualifying requirement-list table rows (see
+    # requirement_rows.qualifying_requirement_rows) -- names which source
+    # rows each carry their own literal requirement identifier and must
+    # therefore each become their own Requirement node, counted in
+    # topic_count's own floor; and `heading_type_hints`: (title, type) pairs
+    # for this section's own real heading outline (see
+    # heading_outline.heading_outline_entries) -- names each Epic/Feature-
+    # typed heading and the type it must become, derived from the
+    # document's own relative nesting shape (never an absolute heading
+    # level), so a document with several real top-tier heading sections
+    # analyzed in one call doesn't collapse them all under a single Epic.
+    # Returns skeleton entries {temp_id, type,
+    # parent_temp_id, title, customer_id} -- no text, no tags, no figure/
+    # table ids; `customer_id` is the one deliberate exception (see
+    # section_skeleton_schema's own docstring).
     def analyze_section_skeleton(
         self,
         section_text: str,
@@ -520,6 +596,8 @@ class SectionAnalysisClient(Protocol):
         topic_count: int | None = None,
         table_group_hints: list[tuple[str, str]] | None = None,
         expected_root_count: int | None = None,
+        requirement_row_hints: list[tuple[str, str]] | None = None,
+        heading_type_hints: list[tuple[str, str]] | None = None,
     ) -> tuple[list[dict], bool]: ...
 
     def analyze_section_skeleton_agentic(
@@ -533,6 +611,8 @@ class SectionAnalysisClient(Protocol):
         topic_count: int | None = None,
         table_group_hints: list[tuple[str, str]] | None = None,
         expected_root_count: int | None = None,
+        requirement_row_hints: list[tuple[str, str]] | None = None,
+        heading_type_hints: list[tuple[str, str]] | None = None,
     ) -> tuple[list[dict], list[dict], bool]: ...
 
     # STAGE 3 -- `skeleton_nodes` maps each node's own local_id to
@@ -1582,11 +1662,35 @@ def build_survey_tree(
     For the deterministic path, see _detect_deterministic_subtrees'/
     id_tree_builder's own docstrings (a real document-authored identifier,
     conventions 1/2 only). For THIS function's own LLM-driven generative
-    path, see _author_branch_content's own customer_id extraction: it tries
-    the same generic customer-code pattern (customer_id.py) against each
-    authored Requirement's final description text, which still carries a
-    source table's literal codes verbatim when one got folded in -- honest
-    on both outcomes, never fabricated when no such code is present.
+    path, there are two layered mechanisms, primary then fallback, plus a
+    whole-tree consistency check neither one can see on its own:
+    (1) PRIMARY: stage 1's own model-reported customer_id (see
+    section_skeleton_schema, _build_survey_skeleton_for_branch's
+    _validated_skeleton_customer_id) -- the model reads the section's own
+    rendered table/paragraph text at the same time it decides a row is its
+    own separate node, and reports that row's literal identifier directly,
+    verified verbatim against the branch's own source text before being
+    trusted. (2) FALLBACK, for whatever (1) leaves None: see
+    _author_branch_content's own customer_id extraction, which checks a
+    source table folded verbatim into the node's description (via
+    table_ids/skeleton.tables_by_id) with
+    requirement_rows.repeated_customer_code_in_table (a column only counts
+    as a real id column when it repeats a whole-cell code match at least
+    twice) -- never a raw regex search over the table's rendered HTML or
+    the surrounding model-authored paraphrase, either of which can just as
+    easily match an unrelated cited product/protocol designator as carry
+    the node's own real code.
+
+    Neither mechanism can tell, by itself, that the SAME reported value
+    got assigned to several unrelated nodes -- a real customer ID is
+    unique to one requirement, so main.py's /level exit pass
+    (_enforce_requirement_only_fields) runs a THIRD, whole-tree check
+    after this function returns: any value shared by 2+ Requirements gets
+    stripped from all of them (WarningKind.DUPLICATE_CUSTOMER_ID), since
+    neither this stage nor stage 1 has enough context to know which one,
+    if any, is genuinely correct. Honest on every path: never fabricated
+    when no such code is present, at any stage. Live bug history for all
+    three layers: docs/handoff-heading-tier-detector-and-customer-id-fixes.md.
 
     `criteria_retriever` is entirely optional (default None, same
     opt-in-capability convention as scoring_client) -- when supplied
@@ -1678,6 +1782,17 @@ def build_survey_tree(
     figure_caption_status_by_id: dict[str, str] = {
         f.id: f.caption_status for f in doc.figures if f.caption_status is not None
     }
+    # Document's own real heading outline, built ONCE here over the FULL,
+    # ORIGINAL `doc` -- same "before _detect_deterministic_subtrees ever
+    # runs" reasoning as figure_id_by_block_id directly above: typing is a
+    # document-wide, tree-shape-derived property (see
+    # heading_outline.heading_outline_entries's own docstring), not a
+    # per-branch one, and a branch that starts at a heading deeper than
+    # the document's own shallowest level must not see that heading as its
+    # own top tier. Every call site below filters this SAME list down to
+    # just its own blocks via entries_for_blocks, rather than recomputing
+    # it from a block subset.
+    full_doc_heading_entries = heading_outline_entries(doc.blocks, doc.tables)
 
     # Deterministic hierarchy detection (table-row / ID-bearing-heading /
     # structural-heading conventions -- see _detect_deterministic_subtrees's
@@ -1852,6 +1967,34 @@ def build_survey_tree(
     # parallel N) -- see table_groups.qualifying_table_groups's own
     # docstring for the detection heuristic and its documented limitations.
     doc_table_groups = qualifying_table_groups(doc.tables)
+    # Confirmed real bug (live, Mock_PRD_Sensor.docx): a 3-column table
+    # whose every row carries its own literal id ("P-SENSOR-001#") -- a
+    # separate, independently-identified requirement per row -- contributed
+    # NOTHING to this floor: heading_count only sees HEADING blocks, and
+    # qualifying_table_groups (above) requires a strictly-2-column dotted-
+    # numeric-ID table, which this convention isn't. A 19-requirement
+    # document was given a floor of 5 (headings only) and the model
+    # silently consolidated multiple rows into fewer nodes. Folded
+    # ADDITIVELY into the same one coherent topic_count integer below,
+    # exactly as doc_table_groups already is -- see
+    # requirement_rows.qualifying_requirement_rows's own docstring for the
+    # detection heuristic (deliberately gated so a genuinely supplementary
+    # table, e.g. AirPro_BP_ICD_Revision_0.3.docx's own power-budget
+    # tables, contributes zero rows here and is completely untouched).
+    doc_requirement_rows = qualifying_requirement_rows(doc.tables)
+    # Structural Epic/Feature naming hint (heading_outline.py) -- without
+    # it, a model given several real top-tier heading sections in one
+    # whole-document call can correctly type the richest section as Epic
+    # but Feature-type the others directly underneath instead of promoting
+    # each to its own Epic (see docs/handoff-heading-tier-detector-and-customer-id-fixes.md
+    # for the confirmed live case). `full_doc_heading_entries` was already
+    # computed once, over the FULL original document, above -- filtered
+    # here down to just this call's own (residual) blocks via
+    # entries_for_blocks, never recomputed from this subset (see that
+    # function's own docstring for why). Purely a naming/typing hint -- it
+    # does NOT change topic_count's arithmetic, since heading_count above
+    # already counts every HEADING-kind block regardless of depth.
+    doc_heading_hints = entries_for_blocks(full_doc_heading_entries, doc.blocks)
 
     global_context: str | None = None
     glossary_sections: list[tuple[int, str, str]] = []
@@ -2039,8 +2182,10 @@ def build_survey_tree(
             # branch on the doesn't-fit path (§4), which is NOT the
             # whole-doc-gate's "fits in one call outright" case.
             whole_document=(global_context is None),
-            topic_count=heading_count + len(doc_table_groups),
+            topic_count=heading_count + len(doc_table_groups) + len(doc_requirement_rows),
             table_groups=doc_table_groups,
+            requirement_rows=doc_requirement_rows,
+            heading_hints=doc_heading_hints,
             branch_index=0, branch_count=1, blocks_done_before=0, blocks_total=blocks_total,
             progress_callback=progress_callback,
             figure_id_by_block_id=figure_id_by_block_id,
@@ -2094,6 +2239,30 @@ def build_survey_tree(
             branch_table_groups = qualifying_table_groups(
                 branch_tables[branch_index] if branch_tables is not None else None
             )
+            # Per-branch requirement-row floor -- same per-branch scoping as
+            # branch_table_groups directly above (a table's rows are never
+            # split across branches).
+            branch_requirement_rows = qualifying_requirement_rows(
+                branch_tables[branch_index] if branch_tables is not None else None
+            )
+            # Per-branch heading-outline hint -- filtered from
+            # `full_doc_heading_entries` (computed once, over the FULL
+            # document, above build_survey_tree's whole-doc gate), NEVER
+            # recomputed from this branch's own block subset (see
+            # heading_outline.entries_for_blocks's own docstring for why:
+            # classify_by_nesting's type computation is subset-invariant,
+            # so recomputing wouldn't retype anything wrong on its own --
+            # the real risk is the S1/S2 Title-suppression heuristic
+            # wrongly firing on a branch that isolates one Epic's whole
+            # subtree, since it then looks like the document's only
+            # top-tier heading). Matters on this path too, not just the
+            # whole-document one: _merge_branches_by_budget (this
+            # function's own caller) can merge several adjacent top-tier
+            # sections back into ONE physical branch/call up to the
+            # model's coverage budget, reproducing the exact same
+            # multi-top-tier-section-in-one-call shape the whole-document
+            # path hits.
+            branch_heading_hints = entries_for_blocks(full_doc_heading_entries, branch_blocks)
             return _build_survey_skeleton_for_branch(
                 branch_blocks, analysis_client,
                 node_id_prefix=f"br{branch_index}_",
@@ -2104,8 +2273,10 @@ def build_survey_tree(
                     global_context, branch_index, glossary_sections, primer_context, front_matter_branch_indices,
                 ),
                 read_other_section_fn=read_other_section_fn,
-                topic_count=branch_heading_count + len(branch_table_groups),
+                topic_count=branch_heading_count + len(branch_table_groups) + len(branch_requirement_rows),
                 table_groups=branch_table_groups,
+                requirement_rows=branch_requirement_rows,
+                heading_hints=branch_heading_hints,
                 branch_index=branch_index, branch_count=len(branches),
                 blocks_done_before=blocks_done_before_by_branch[branch_index],
                 blocks_total=blocks_total, progress_callback=_fire_progress,
@@ -2427,6 +2598,18 @@ class _BranchSkeleton(NamedTuple):
     # the identical branch coordinates stage 1's analyze_section event did,
     # with no second copy of that parameter list threaded through.
     fire: Callable[..., None]
+    # Per-row requirement splitting (2026-08-26): table ids this branch's
+    # own requirement_rows already fully decomposed into per-row
+    # Requirement nodes. Kept here so _mapping_items_for_branch (stage 2)
+    # can exclude them from the figure/table mapping pass entirely -- a
+    # table already split into N Requirements is not an unplaced artifact
+    # needing a home, and offering it anyway would let stage 3 fold the
+    # WHOLE table's HTML into just one of those N nodes, re-creating
+    # exactly the "one table, one description" problem this feature exists
+    # to stop, on top of an otherwise-correct split. Trailing, with a
+    # default, so every pre-existing direct _BranchSkeleton(...) test
+    # construction that doesn't care about this stays byte-identical.
+    requirement_list_table_ids: frozenset[str] = frozenset()
 
 
 def _widen_branch_page_range(
@@ -2488,6 +2671,26 @@ def _build_survey_skeleton_for_branch(
     # warning after nodes are built (see qualifying_table_groups's own
     # docstring for the detection heuristic).
     table_groups: list[TableGroupInfo] | None = None,
+    # Full RequirementRowInfo objects (table_id + code + label) for THIS
+    # branch's own qualifying requirements-list table rows -- same two uses
+    # as table_groups directly above: reduced to (code, label) pairs for
+    # the client's generation-time hint, and kept in full for the post-hoc
+    # coverage-check warning after nodes are built (see
+    # requirement_rows.qualifying_requirement_rows's own docstring).
+    requirement_rows: list[RequirementRowInfo] | None = None,
+    # This section's own real heading outline, already filtered to this
+    # branch's own blocks (see heading_outline.entries_for_blocks) -- each
+    # entry's type is derived from the document's own relative nesting
+    # shape, never an absolute heading level (see
+    # heading_outline.heading_outline_entries's own docstring). Reduced to
+    # (title, type) pairs for the client's generation-time hint below;
+    # there is no coverage-check counterpart to table_groups/
+    # requirement_rows above (a heading's
+    # title is not a stable identifier the way a table_id or a literal
+    # customer_id code is, so a post-hoc title-match coverage check would
+    # be unreliably noisy -- this stays steer-only, same as
+    # whole_document_hint/branch_topic_hint).
+    heading_hints: list[HeadingOutlineEntry] | None = None,
     branch_index: int = 0,
     branch_count: int = 1,
     blocks_done_before: int = 0,
@@ -2603,7 +2806,13 @@ def _build_survey_skeleton_for_branch(
     exactly like the single analyze_section call it replaces. Core
     generation failing must fail the job, not silently produce a structureless
     document; only clearly-optional enhancement passes fail open."""
-    section_text = render_section(blocks, tables, figures, figure_id_by_block_id)
+    # Kept as its own local (not just folded into section_text below) so
+    # the model-reported customer_id verification further down can check
+    # against THIS branch's own real source text specifically -- a code
+    # that appears only in another section's compact global_context outline
+    # must never validate.
+    rendered_section_text = render_section(blocks, tables, figures, figure_id_by_block_id)
+    section_text = rendered_section_text
     if global_context:
         section_text = f"{global_context}\n\n---\n\n{section_text}"
     section_label = _derive_section_label(blocks, tables, figures)
@@ -2658,6 +2867,18 @@ def _build_survey_skeleton_for_branch(
     table_group_hints = (
         [(g.label, g.suggested_type) for g in table_groups] if table_groups else None
     )
+    # (code, label) pairs cross into the client -- table_id is this
+    # function's own bookkeeping for the coverage-check warning below, the
+    # client only needs the literal identifier and a short label to name.
+    requirement_row_hints = (
+        [(r.code, r.label) for r in requirement_rows] if requirement_rows else None
+    )
+    # (title, type) pairs cross into the client -- see heading_hints'
+    # own param comment above for why there is no coverage-check
+    # counterpart to keep in full here, unlike table_groups/requirement_rows.
+    heading_type_hint_pairs = (
+        [(h.title, h.suggested_type) for h in heading_hints] if heading_hints else None
+    )
     # Count of this branch's own independent top-level table groups (no
     # common ancestor in the table's ID hierarchy) -- e.g. "Television
     # Receiver" and "Remote Control" each their own root Epic. Confirmed
@@ -2676,6 +2897,7 @@ def _build_survey_skeleton_for_branch(
             section_text, retrieve_fn, list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
             read_other_section_fn=read_other_section_fn, whole_document=whole_document, topic_count=topic_count,
             table_group_hints=table_group_hints, expected_root_count=expected_root_count,
+            requirement_row_hints=requirement_row_hints, heading_type_hints=heading_type_hint_pairs,
         )
         # The model chose to pull and use these snippets itself, so relevance
         # verification (kb_relevance_client) doesn't apply on this path --
@@ -2720,7 +2942,8 @@ def _build_survey_skeleton_for_branch(
         raw_nodes, truncated = analysis_client.analyze_section_skeleton(
             section_text, kb_context=kb_context, whole_document=whole_document,
             topic_count=topic_count, table_group_hints=table_group_hints,
-            expected_root_count=expected_root_count,
+            expected_root_count=expected_root_count, requirement_row_hints=requirement_row_hints,
+            heading_type_hints=heading_type_hint_pairs,
         )
         kb_citations = []  # doc-level citations are collected once in build_survey_tree, not per-branch
 
@@ -2879,11 +3102,19 @@ def _build_survey_skeleton_for_branch(
                 # likewise deferred to that same stage -- there is nothing
                 # yet to hash or to score.
                 description="",
-                # Always None: Generation mode's LLM-authored nodes have no
-                # real per-node document-authored identifier to extract at
-                # all (informal-narrative input, no formal numbering) --
-                # never fabricated. See build_survey_tree's own docstring.
-                customer_id=None,
+                # Primary mechanism, since 2026-08-26: the model reports
+                # this directly (see section_skeleton_schema), verified
+                # against this branch's own real source text before being
+                # trusted (see _validated_skeleton_customer_id). None on
+                # any rejection -- an honest, never-fabricated absence, not
+                # a placeholder. _author_branch_content's own regex-based
+                # extraction (see its own doc comment) is a FALLBACK for
+                # whatever this leaves None, not a second, independent
+                # mechanism -- see build_survey_tree's own docstring for
+                # the full primary/fallback story.
+                customer_id=_validated_skeleton_customer_id(
+                    entry.get("customer_id"), node_type, rendered_section_text, local_id, title
+                ),
                 source_ref=representative_source_ref,
                 # Confirmed real bug (live, via golden-e2e's BASELINE re-run
                 # assertion, which surfaced the same class of issue this
@@ -3029,6 +3260,38 @@ def _build_survey_skeleton_for_branch(
             )
         )
 
+    # Requirement-row coverage check -- the "catch" half of the per-row
+    # splitting fix, pairing with the generation-time floor
+    # (topic_count + _requirement_row_hint) threaded in above (the
+    # "steer" half), same complementary relationship missing_groups
+    # directly above already has with table_group_hints. An identified
+    # row's own code is checked against every node's FINAL customer_id
+    # (whichever of the primary/model-reported or fallback/regex
+    # mechanisms actually set it -- see _validated_skeleton_customer_id
+    # and _author_branch_content) -- a row whose code claims no node at
+    # all is a real, lost, explicitly-numbered customer requirement.
+    claimed_codes = {n.customer_id for n in nodes if n.customer_id}
+    unclaimed_rows = [r for r in (requirement_rows or []) if r.code not in claimed_codes]
+    if unclaimed_rows:
+        row_previews = "; ".join(f"{r.code} ({r.label})" if r.label else r.code for r in unclaimed_rows[:10])
+        message = (
+            f"{len(unclaimed_rows)} source table row(s) carry their own literal requirement "
+            "identifier but no generated work item claims it -- those rows may have been merged "
+            f"into another requirement or dropped entirely: {row_previews}"
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.MISSING_REQUIREMENT_ROW_COVERAGE,
+                message,
+                detail={
+                    "branch": node_id_prefix or "(root)",
+                    "unclaimedCodes": [r.code for r in unclaimed_rows[:10]],
+                    "totalIdentifiedRows": len(requirement_rows or []),
+                },
+            )
+        )
+
     warnings.extend(_referenced_attachment_warnings(section_text, section_label))
     warnings.extend(_unsupported_content_warnings(blocks, section_label))
     warnings.extend(_ocr_recovered_table_warnings(tables, section_label))
@@ -3044,6 +3307,7 @@ def _build_survey_skeleton_for_branch(
         tables_by_id=tables_by_id,
         valid_figure_ids=valid_figure_ids,
         valid_table_ids=valid_table_ids,
+        requirement_list_table_ids=frozenset(r.table_id for r in (requirement_rows or [])),
         node_id_prefix=node_id_prefix,
         fire=_fire,
     )
@@ -3151,6 +3415,14 @@ def _mapping_items_for_branch(
             ),
         }
     for table_id, table in skeleton.tables_by_id.items():
+        # Per-row requirement splitting (2026-08-26): a table already fully
+        # decomposed into its own per-row Requirement nodes (see
+        # requirement_list_table_ids' own doc comment on _BranchSkeleton)
+        # is not an unplaced artifact needing a home -- offering it here
+        # would let stage 3 fold the WHOLE table's HTML into just one of
+        # those already-split nodes.
+        if table_id in skeleton.requirement_list_table_ids:
+            continue
         table_rows = plain_text_rows(table) if table.cells else []
         header_row = table_rows[0] if table_rows else []
         columns = [
@@ -3737,7 +4009,18 @@ def _author_branch_content(
                 )
             )
         raw_table_ids = mapping.get("table_ids") or []
-        table_ids_requested = sorted({tid for tid in raw_table_ids if isinstance(tid, str) and tid in skeleton.valid_table_ids})
+        # Per-row requirement splitting (2026-08-26): a requirements-list
+        # table is never offered to stage 2's mapping pass at all (see
+        # _mapping_items_for_branch), so a real mapping verdict can never
+        # legitimately name one -- but the model still SEES that table's
+        # literal id rendered inline in section_text (render_section injects
+        # it unconditionally), so a hallucinated claim naming it anyway must
+        # be rejected here too, same treatment as any other id outside what
+        # stage 2 actually offered.
+        table_ids_requested = sorted({
+            tid for tid in raw_table_ids
+            if isinstance(tid, str) and tid in skeleton.valid_table_ids and tid not in skeleton.requirement_list_table_ids
+        })
         if len(table_ids_requested) < len(raw_table_ids):
             dropped_table_count = len(raw_table_ids) - len(table_ids_requested)
             message = (
@@ -3803,17 +4086,52 @@ def _author_branch_content(
         node.figure_ids = figure_ids
         node.table_ids = table_ids
         node.description = description
-        # Customer ID (per-Requirement, document-derived -- see
-        # customer_id.py's own docstring) is SURVEY-only here: the generated
-        # `text` above is paraphrased prose that rarely keeps the source's
-        # literal code verbatim, but a table folded into `description` above
-        # (table_ids != []) still carries it verbatim in the raw cell text,
-        # so this can still find a real one, honestly, whenever it's there.
-        # Requirement-only, same gate every other per-Requirement field in
-        # this codebase uses -- main.py's /level exit pass belt-and-suspenders
-        # nulls it out for any non-Requirement node regardless.
-        if node.type == WorkItemType.REQUIREMENT:
-            node.customer_id = extract_customer_requirement_code(node.description)
+        # FALLBACK ONLY: stage 1's own model-reported, source-verified
+        # customer_id (see _validated_skeleton_customer_id) is the PRIMARY
+        # mechanism -- the model reads the raw table cell for the row it
+        # decided this node came from, so it is right regardless of the
+        # table's shape, column order or numbering convention, all of
+        # which this regex can only guess at. This still runs for every
+        # Requirement stage 1 left without one: a table folded into
+        # `description` above (table_ids != []) still carries its own
+        # literal code verbatim in the raw cell text, so this can still
+        # find a real one, honestly, whenever it's there.
+        #
+        # A raw regex search over the whole description or over just the
+        # embedded <table>...</table> HTML both risk matching an unrelated
+        # cited product/protocol designator that happens to be code-shaped
+        # but is really a category label, not a repeating id column --
+        # being inside a genuine source table doesn't by itself make a
+        # code-shaped cell this node's own identifier.
+        #
+        # requirement_rows.repeated_customer_code_in_table is the actual
+        # fix: trusts a code only when the SAME column repeats a whole-
+        # cell match at least twice in the REAL Table object this node's
+        # own table_ids already resolved to (skeleton.tables_by_id).
+        # Deliberately NOT qualifying_requirement_rows's own full gate:
+        # that function's 50%-of-rows fraction requirement is the "should
+        # this whole table be pre-split into its own per-row nodes at
+        # stage 1" decision (see doc_requirement_rows/Phase 6 above) -- a
+        # table that met THAT gate is already excluded from ever reaching
+        # this point, so re-checking the same full gate here would always
+        # read empty.
+        #
+        # Belt-and-suspenders, not a replacement -- and honest on both
+        # paths: an absent code stays a real None either way, never
+        # invented, and main.py's exit pass still surfaces the gap
+        # (MISSING_SOURCE_REFERENCE) regardless of which mechanism was
+        # tried. Requirement-only, same gate every other per-Requirement
+        # field in this codebase uses. Live bug history:
+        # docs/handoff-heading-tier-detector-and-customer-id-fixes.md.
+        if node.type == WorkItemType.REQUIREMENT and not node.customer_id:
+            for table_id in table_ids:
+                table = skeleton.tables_by_id.get(table_id)
+                if table is None:
+                    continue
+                code = repeated_customer_code_in_table(table)
+                if code:
+                    node.customer_id = code
+                    break
         # Hashes the FINAL description (text plus any embedded table HTML),
         # not just `text` -- fidelity_hash exists to detect drift in the
         # actual persisted field; hashing `text` alone would never notice a
@@ -3975,7 +4293,15 @@ def _author_branch_content(
         kb_grounded=bool(skeleton.kb_citations),
         kb_citations_raw=[{"source_file": c.source_file, "similarity": c.similarity} for c in skeleton.kb_citations],
         section_nodes=[
-            {"type": node.type.value, "title": node.title, "text": node.description, "quality_score": node.quality_score}
+            {
+                "type": node.type.value, "title": node.title, "text": node.description,
+                "quality_score": node.quality_score,
+                # Live UI visibility for the per-row splitting fix (2026-08-26):
+                # a reviewer watching the run see this node's own model-
+                # reported/regex-fallback customer_id as soon as it's decided,
+                # not only once the whole job reaches diff_ready.
+                "customer_id": node.customer_id,
+            }
             for node in nodes
         ],
     )

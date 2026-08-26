@@ -63,7 +63,8 @@ class FakeSectionAnalysisClient:
     def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
         topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
+        heading_type_hints: list[tuple[str, str]] | None = None,
     ) -> tuple[list[dict], bool]:
         return [
             {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display"},
@@ -204,6 +205,21 @@ def test_missing_source_reference_warning_matches_work_item_tree_schema(schema) 
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
+def test_duplicate_customer_id_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.DUPLICATE_CUSTOMER_ID,
+            "Customer ID 'PC104' was reported on 2 different Requirements -- a real customer ID is "
+            "unique to one requirement, so it was removed from all of them rather than guessing which "
+            "(if any) is correct; review and add the real ID manually if the source document has one.",
+            node_ids=["n0", "n1"],
+            detail={"duplicateValue": "PC104"},
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
 def test_survey_title_distilled_warning_matches_work_item_tree_schema(schema) -> None:
     tree = build_baseline_tree(_baseline_doc())
     tree.warnings = [
@@ -213,6 +229,20 @@ def test_survey_title_distilled_warning_matches_work_item_tree_schema(schema) ->
             "with a title distilled from the node's own generated description.",
             node_ids=["n0"],
             detail={"branch": "br0_", "totalDistilled": 1},
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
+def test_missing_requirement_row_coverage_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.MISSING_REQUIREMENT_ROW_COVERAGE,
+            "1 source table row(s) carry their own literal requirement identifier but no generated "
+            "work item claims it -- those rows may have been merged into another requirement or "
+            "dropped entirely: P-SENSOR-003# (Sync interval)",
+            detail={"branch": "br0_", "unclaimedCodes": ["P-SENSOR-003#"], "totalIdentifiedRows": 3},
         )
     ]
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)

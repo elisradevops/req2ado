@@ -135,7 +135,7 @@ _REQUIREMENT_SHAPE_MODAL_PATTERN = re.compile(
 _SPEC_CELL_LABEL_PATTERN = re.compile(r"^[^:]{1,40}:\s*\S")
 
 
-def _is_requirement_shaped(text: str) -> bool:
+def is_requirement_shaped(text: str) -> bool:
     """Per-leaf predicate backing MIN_REQUIREMENT_SHAPED_LEAF_FRACTION (see
     its own docstring for the real fragment-vs-prose gap this closes).
     Deliberately conservative (false negatives -- real short prose
@@ -845,7 +845,7 @@ def rows_from_heading_structure(
             continue
         root = root_of_index[i]
         total_leaf_count_by_root[root] = total_leaf_count_by_root.get(root, 0) + 1
-        if _is_requirement_shaped(candidates[i].text):
+        if is_requirement_shaped(candidates[i].text):
             shaped_leaf_count_by_root[root] = shaped_leaf_count_by_root.get(root, 0) + 1
     needs_synthesis_by_root: dict[int, bool] = {}
     for root, total in total_leaf_count_by_root.items():

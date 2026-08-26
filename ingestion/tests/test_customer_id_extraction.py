@@ -41,5 +41,29 @@ def test_never_matches_ordinary_technical_units_and_measurements() -> None:
         assert extract_customer_requirement_code(text) is None, text
 
 
+def test_extracts_a_single_letter_prefix_plus_trailing_hash() -> None:
+    # Real mock-e2e finding: a customer convention with a single-letter
+    # prefix segment ("P-") and a literal trailing "#" as part of the id
+    # itself (this document's own "#" table column header).
+    assert extract_customer_requirement_code("P-SENSOR-001# Time sync source") == "P-SENSOR-001#"
+
+
+def test_single_letter_prefix_extension_does_not_widen_the_core_letter_requirement() -> None:
+    # The optional single-letter+separator prefix is a narrow EXTENSION of
+    # an already-qualifying 2-8 letter core, not a lowered floor -- a bare
+    # single-letter+digit part/model number embedded in ordinary prose must
+    # still never match on its own.
+    for text in [
+        "M3 screws shall be used to secure the enclosure.",
+        "The connector shall accept A4 paper size printouts.",
+        "T500 connector type shall be used.",
+    ]:
+        assert extract_customer_requirement_code(text) is None, text
+
+
+def test_trailing_hash_included_even_when_followed_by_more_text() -> None:
+    assert extract_customer_requirement_code("P-SENSOR-002# Sync accuracy: Timing accuracy shall be better than X µs.") == "P-SENSOR-002#"
+
+
 def test_returns_none_for_empty_text() -> None:
     assert extract_customer_requirement_code("") is None

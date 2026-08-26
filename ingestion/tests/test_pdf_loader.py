@@ -9,6 +9,7 @@ from app.loaders.pdf_loader import (
     _cell_background_color,
     _cell_ocr_recovery,
     _fontname_is_bold,
+    _heading_level_from_size_rank,
     _is_degenerate_pdf_image,
     _pdf_color_to_hex,
     cached_pdf_reader,
@@ -18,6 +19,31 @@ from app.loaders.pdf_loader import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_heading_level_from_size_rank_ranks_by_size_regardless_of_arrival_order() -> None:
+    # Confirmed real bug, fixed: a smaller heading size encountered BEFORE
+    # a larger one used to keep its earlier, now-wrong rank once the
+    # larger size arrived, colliding two real, distinct heading tiers onto
+    # the same rank number.
+    size_ranks: dict[float, int] = {}
+    assert _heading_level_from_size_rank(12.0, 10.0, size_ranks) == 1  # first size seen, provisionally rank 1
+    assert _heading_level_from_size_rank(16.0, 10.0, size_ranks) == 1  # genuinely larger -- takes over rank 1
+    assert size_ranks[12.0] == 2  # 12's own rank correctly pushed deeper, not left colliding with 16 at rank 1
+    assert _heading_level_from_size_rank(14.0, 10.0, size_ranks) == 2  # inserts between the two existing sizes
+    assert size_ranks == {16.0: 1, 14.0: 2, 12.0: 3}  # final ranking matches sorted size order, largest first
+
+
+def test_heading_level_from_size_rank_is_stable_once_every_size_has_been_seen() -> None:
+    size_ranks: dict[float, int] = {}
+    _heading_level_from_size_rank(12.0, 10.0, size_ranks)
+    _heading_level_from_size_rank(16.0, 10.0, size_ranks)
+    _heading_level_from_size_rank(14.0, 10.0, size_ranks)
+    # Every size already ranked -- re-querying any of them must return the
+    # exact same rank, not perturb the others.
+    assert _heading_level_from_size_rank(16.0, 10.0, size_ranks) == 1
+    assert _heading_level_from_size_rank(14.0, 10.0, size_ranks) == 2
+    assert _heading_level_from_size_rank(12.0, 10.0, size_ranks) == 3
 
 
 def test_load_pdf_extracts_text_blocks_with_page_number() -> None:

@@ -121,7 +121,7 @@ _SIBLING_NODES = [
 
 
 def _skeleton_of(nodes: list[dict]) -> list[dict]:
-    """The STRUCTURE half of a fixture node dict -- exactly the four fields
+    """The STRUCTURE half of a fixture node dict -- exactly the five fields
     stage 1's real response schema allows, with every content field
     (text/tags/figure_ids/table_ids) stripped. Fixtures throughout this file
     are written in the old single-call shape (structure AND content in one
@@ -133,13 +133,19 @@ def _skeleton_of(nodes: list[dict]) -> list[dict]:
     always carries one, and this reproduces exactly the title such a
     fixture used to end up with (the pre-split call derived a missing title
     from the node's own text). A fixture deliberately exercising a genuinely
-    title-less skeleton entry states an explicit empty title instead."""
+    title-less skeleton entry states an explicit empty title instead.
+
+    'customer_id' is carried through from the fixture too -- unlike every
+    other content field, it's a deliberate stage-1 field now (see
+    section_skeleton_schema's own docstring), served here to STRUCTURE, not
+    to author_content below."""
     return [
         {
             "temp_id": node.get("temp_id"),
             "type": node.get("type"),
             "parent_temp_id": node.get("parent_temp_id"),
             "title": node.get("title", node.get("text", "")),
+            "customer_id": node.get("customer_id"),
         }
         for node in nodes
     ]
@@ -221,13 +227,16 @@ class FakeSectionAnalysisClient:
     def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
         topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
+        heading_type_hints: list[tuple[str, str]] | None = None,
     ) -> tuple[list[dict], bool]:
         self.calls.append({
             "section_text": section_text, "kb_context": kb_context,
             "whole_document": whole_document, "topic_count": topic_count,
             "table_group_hints": table_group_hints,
             "expected_root_count": expected_root_count,
+            "requirement_row_hints": requirement_row_hints,
+            "heading_type_hints": heading_type_hints,
         })
         return _skeleton_of(self._nodes), self._truncated
 
@@ -235,7 +244,8 @@ class FakeSectionAnalysisClient:
         self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
         read_other_section_fn=None, whole_document: bool = False, topic_count: int | None = None,
         table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
+        heading_type_hints: list[tuple[str, str]] | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
         self.agentic_calls.append(
             {
@@ -248,6 +258,8 @@ class FakeSectionAnalysisClient:
                 "topic_count": topic_count,
                 "table_group_hints": table_group_hints,
                 "expected_root_count": expected_root_count,
+                "requirement_row_hints": requirement_row_hints,
+                "heading_type_hints": heading_type_hints,
             }
         )
         return _skeleton_of(self._agentic_nodes), self._agentic_citations, self._truncated
@@ -298,6 +310,32 @@ def test_build_survey_tree_defaults_customer_id_to_none_across_multiple_branches
     assert all(n.customer_id is None for n in tree.nodes)
 
 
+def _customer_code_table(code: str, table_id: str = "t0", path: str = "survey_input.txt") -> Table:
+    # A SECOND, genuinely distinct code-shaped row in the SAME column is
+    # required, not cosmetic -- see
+    # requirement_rows.repeated_customer_code_in_table's own MIN_ID_ROWS
+    # floor (a lone code-shaped cell among otherwise non-code-shaped rows
+    # is exactly the confirmed real false-positive shape this fallback
+    # closed for -- a "PC104" category label sitting alone in a 3-row
+    # "Variant" column, not a real repeating id column).
+    #
+    # Deliberately kept BELOW qualifying_requirement_rows's own 50%-of-
+    # rows fraction gate (2 matches out of 5 rows = 40%): a table that met
+    # BOTH gates is a "requirements list" and gets pre-split into its own
+    # per-row nodes at stage 1 (Phase 6) -- excluded from ever being
+    # folded into another node's description at all, so it would never
+    # reach this fallback in the first place. Row order matters: `code`
+    # is first, so a test asserting the extracted value pins the FIRST
+    # matching row, not "some" row.
+    return Table(
+        id=table_id,
+        cells=[[TableCell(text=c) for c in row] for row in [
+            ["ID", "Value"], [code, "42"], ["Other One", "x"], ["Other Two", "y"], ["AUX-999", "43"],
+        ]],
+        source_ref=_sr(path),
+    )
+
+
 def test_build_survey_tree_extracts_a_customer_code_from_a_requirements_generated_description() -> None:
     # Real mock-e2e finding this closes: a source requirements table folded
     # into a Requirement's description (table_ids != []) still carries its
@@ -305,40 +343,321 @@ def test_build_survey_tree_extracts_a_customer_code_from_a_requirements_generate
     # text, even though the LLM's own paraphrased prose (`text`) typically
     # doesn't repeat it. SURVEY-only, unlike BASELINE's authored-numbering
     # path -- this is the generic customer-CODE pattern (customer_id.py),
-    # not the dotted-numbering one.
+    # not the dotted-numbering one. The fallback only ever scans the folded
+    # table's OWN embedded HTML, never the surrounding prose (see
+    # test_build_survey_tree_never_extracts_a_customer_code_from_plain_
+    # prose_alone below for the converse).
+    doc = _small_doc()
+    doc.tables = [_customer_code_table("P-SENSOR-001#")]
+    fake = FakeMappingClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
+                "text": "The system shall synchronize to Standard-XX within N ms.", "tags": [],
+            },
+        ],
+        verdicts={"t0": {"node_id": "n0", "escalate": False}},
+    )
+    tree = build_survey_tree(doc, fake)
+    # Includes the single-letter "P-" prefix and the trailing "#", both part
+    # of this customer's own literal convention -- see customer_id.py's own
+    # docstring for why the single-letter prefix is a narrow, safe extension
+    # rather than a lowered general letter-count floor.
+    assert tree.nodes[0].customer_id == "P-SENSOR-001#"
+
+
+def test_build_survey_tree_never_extracts_a_customer_code_from_plain_prose_alone() -> None:
+    # Confirmed real bug, live (cubeadcs_icd.pdf): with no table folded in
+    # at all, a code-shaped token in the model's own paraphrased prose
+    # ("REQ-AV-014" here, "PC104"/"RS485" in the real document) is a cited
+    # designator, not this node's own customer-assigned code, and must
+    # stay honestly None.
     fake = FakeSectionAnalysisClient(
         nodes=[
             {
                 "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
-                "text": "The system shall synchronize to Standard-XX within N ms. P-SENSOR-001#", "tags": [],
-            },
-        ]
-    )
-    tree = build_survey_tree(_small_doc(), fake)
-    # Same real regex behavior as customer_id.py's own docstring documents:
-    # a single-letter prefix ("P-") doesn't qualify (2-8 letters required),
-    # so the match starts at "SENSOR" -- SENSOR-001, not P-SENSOR-001.
-    assert tree.nodes[0].customer_id == "SENSOR-001"
-
-
-def test_build_survey_tree_never_gives_an_epic_or_feature_a_customer_code_even_when_one_is_present() -> None:
-    fake = FakeSectionAnalysisClient(
-        nodes=[
-            {
-                "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Sync",
-                "text": "Covers requirement REQ-AV-014.", "tags": [],
-            },
-            {
-                "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Sync source",
                 "text": "The system shall synchronize. REQ-AV-014", "tags": [],
             },
         ]
     )
     tree = build_survey_tree(_small_doc(), fake)
+    assert tree.nodes[0].customer_id is None
+
+
+def test_build_survey_tree_never_gives_an_epic_or_feature_a_customer_code_even_when_one_is_present() -> None:
+    doc = _small_doc()
+    doc.tables = [_customer_code_table("REQ-AV-014")]
+    fake = FakeMappingClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Sync",
+                "text": "Covers requirement synchronization.", "tags": [],
+            },
+            {
+                "temp_id": "n1", "type": "Requirement", "parent_temp_id": "n0", "title": "Sync source",
+                "text": "The system shall synchronize.", "tags": [],
+            },
+        ],
+        verdicts={"t0": {"node_id": "n1", "escalate": False}},
+    )
+    tree = build_survey_tree(doc, fake)
     feature = next(n for n in tree.nodes if n.type == WorkItemType.FEATURE)
     requirement = next(n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT)
     assert feature.customer_id is None
     assert requirement.customer_id == "REQ-AV-014"
+
+
+def test_skeleton_stage_carries_the_model_reported_customer_id_onto_the_node() -> None:
+    # The primary mechanism: stage 1 reports customer_id directly on the
+    # skeleton entry, verified verbatim against this branch's own rendered
+    # section text. The fixture's own `text` deliberately carries a
+    # DIFFERENT code (REQ-AV-014) so this pins the STAGE-1 value winning,
+    # not the stage-3 regex fallback (see the fallback-only test below).
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="P-SENSOR-001# Time sync source", source_ref=_sr("x.txt"))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
+                "text": "The system shall synchronize. REQ-AV-014", "tags": [], "customer_id": "P-SENSOR-001#",
+            },
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert tree.nodes[0].customer_id == "P-SENSOR-001#"
+
+
+def test_skeleton_stage_drops_a_model_reported_customer_id_not_grounded_in_the_source() -> None:
+    # Never-fabricate guard: a value the model invents (not present
+    # verbatim anywhere in this branch's own rendered section text) must
+    # never be trusted, even though it's shaped like a real code.
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
+                "text": "The system shall synchronize.", "tags": [], "customer_id": "P-SENSOR-999#",
+            },
+        ]
+    )
+    tree = build_survey_tree(_small_doc(), fake)
+    assert tree.nodes[0].customer_id is None
+
+
+def test_skeleton_stage_never_gives_an_epic_or_feature_a_model_reported_customer_id() -> None:
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="P-SENSOR-001# Sync", source_ref=_sr("x.txt"))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Sync",
+                "text": "Sync feature.", "tags": [], "customer_id": "P-SENSOR-001#",
+            },
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert tree.nodes[0].customer_id is None
+
+
+def test_content_stage_regex_only_fills_a_customer_id_stage_one_left_empty() -> None:
+    # Fallback layering: one Requirement gets a stage-1 value; a sibling
+    # gets none from stage 1 but has a table folded into its own
+    # description (via stage 2 mapping) whose own id column carries a real
+    # literal code -- the first keeps stage 1's value untouched, the
+    # second falls back to requirement_rows.qualifying_requirement_rows
+    # against that folded table's real id column (a SECOND code-shaped
+    # row is required to qualify, see _customer_code_table's own
+    # docstring above; not the surrounding paraphrased prose, confirmed
+    # necessary by the false-positive test right below).
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="P-SENSOR-001# has one shape", source_ref=_sr("x.txt")),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="REQ-AV-014 has another", source_ref=_sr("x.txt")),
+        ],
+        tables=[_customer_code_table("REQ-AV-014")],
+    )
+    fake = FakeMappingClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "First",
+                "text": "The system shall do X.", "tags": [], "customer_id": "P-SENSOR-001#",
+            },
+            {
+                "temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "title": "Second",
+                "text": "The system shall do Y.", "tags": [],
+            },
+        ],
+        verdicts={"t0": {"node_id": "n1", "escalate": False}},
+    )
+    tree = build_survey_tree(doc, fake)
+    first = next(n for n in tree.nodes if n.local_id == "n0")
+    second = next(n for n in tree.nodes if n.local_id == "n1")
+    assert first.customer_id == "P-SENSOR-001#"
+    assert second.customer_id == "REQ-AV-014"
+    assert "t0" in second.table_ids
+
+
+def test_content_stage_regex_never_matches_a_product_designator_in_plain_paraphrased_prose() -> None:
+    # Confirmed real bug, live (cubeadcs_icd.pdf): the model's own
+    # paraphrased description text is free prose, not a table's id-bearing
+    # cell -- "PC104" and "RS485" are cited product/protocol designators
+    # in that prose, not customer-assigned codes, and got wrongly tagged
+    # as this Requirement's own customer_id before this fix. No table is
+    # folded into this node's description at all, so the fallback must
+    # stay honestly None rather than scanning the prose itself.
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.PARAGRAPH, text="The PC104 variant uses RS485 signalling.", source_ref=_sr("x.txt"))],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "PC104 Variant",
+                "text": "The PC104 variant is designed for satellites larger than 6U with RS485 signalling.", "tags": [],
+            },
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert tree.nodes[0].customer_id is None
+
+
+def _requirements_table(rows: list[list[str]], table_id: str = "t0", path: str = "x.docx") -> Table:
+    return Table(id=table_id, cells=[[TableCell(text=c) for c in row] for row in rows], source_ref=_sr(path))
+
+
+def test_requirement_rows_raise_the_node_count_floor_and_are_named_in_the_hint() -> None:
+    # Real bug this closes (live, Mock_PRD_Sensor.docx): a 3-column
+    # requirements table contributed nothing to topic_count's floor at all.
+    doc = CanonicalDoc(
+        document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Synchronization", source_ref=_sr("x.docx"))],
+        tables=[_requirements_table([
+            ["#", "Parameter", "Requirement / Value"],
+            ["P-SENSOR-001#", "Time sync source", "The system shall synchronize to Standard-XX within N ms."],
+            ["P-SENSOR-002#", "Sync accuracy", "Timing accuracy shall be better than X µs."],
+            ["P-SENSOR-003#", "Sync interval", "Re-synchronization shall occur every N seconds."],
+        ])],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert fake.calls[0]["topic_count"] == 1 + 3  # 1 heading + 3 identified rows
+    assert fake.calls[0]["requirement_row_hints"] == [
+        ("P-SENSOR-001#", "The system shall synchronize to Standard-XX within N ms."),
+        ("P-SENSOR-002#", "Timing accuracy shall be better than X µs."),
+        ("P-SENSOR-003#", "Re-synchronization shall occur every N seconds."),
+    ]
+
+
+def test_supplementary_table_contributes_no_requirement_row_hints_and_no_new_floor() -> None:
+    # The single most important regression test in this feature: a real
+    # AirPro_BP_ICD-shaped power-budget table (no per-row identifier) must
+    # contribute NOTHING -- today's exact floor and hint, unchanged.
+    doc = CanonicalDoc(
+        document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Power Budget", source_ref=_sr("x.docx"))],
+        tables=[_requirements_table([
+            ["SRU module", "QTY", "Unit Power [Watt]", "Total power"],
+            ["Power supply Efficiency", "1", "63", "0.87"],
+            ["Receiver Module", "2", "12", "24"],
+        ])],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert fake.calls[0]["topic_count"] == 1  # heading only, exactly as before this feature existed
+    assert fake.calls[0]["requirement_row_hints"] is None
+
+
+def test_unclaimed_identified_requirement_rows_are_reported() -> None:
+    # The live bug, pinned: 3 identified rows, but the model only produced
+    # nodes claiming 2 of them (silently consolidated the third).
+    doc = CanonicalDoc(
+        document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Synchronization", source_ref=_sr("x.docx"))],
+        tables=[_requirements_table([
+            ["#", "Parameter", "Requirement / Value"],
+            ["P-SENSOR-001#", "Time sync source", "The system shall synchronize to Standard-XX within N ms."],
+            ["P-SENSOR-002#", "Sync accuracy", "Timing accuracy shall be better than X µs."],
+            ["P-SENSOR-003#", "Sync interval", "Re-synchronization shall occur every N seconds."],
+        ])],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source and accuracy",
+                "text": "The system shall synchronize to Standard-XX within N ms and timing accuracy shall be "
+                "better than X µs.", "tags": [], "customer_id": "P-SENSOR-001#",
+            },
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    warning = next(w for w in tree.warnings if w.kind == WarningKind.MISSING_REQUIREMENT_ROW_COVERAGE)
+    assert warning.detail["unclaimedCodes"] == ["P-SENSOR-002#", "P-SENSOR-003#"]
+    assert warning.detail["totalIdentifiedRows"] == 3
+
+
+def test_no_unclaimed_row_warning_when_every_identified_row_became_its_own_node() -> None:
+    doc = CanonicalDoc(
+        document=Document(path="x.docx", format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Synchronization", source_ref=_sr("x.docx"))],
+        tables=[_requirements_table([
+            ["#", "Parameter", "Requirement / Value"],
+            ["P-SENSOR-001#", "Time sync source", "The system shall synchronize to Standard-XX within N ms."],
+            ["P-SENSOR-002#", "Sync accuracy", "Timing accuracy shall be better than X µs."],
+        ])],
+    )
+    fake = FakeSectionAnalysisClient(
+        nodes=[
+            {
+                "temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "title": "Sync source",
+                "text": "The system shall synchronize to Standard-XX within N ms.", "tags": [], "customer_id": "P-SENSOR-001#",
+            },
+            {
+                "temp_id": "n1", "type": "Requirement", "parent_temp_id": None, "title": "Sync accuracy",
+                "text": "Timing accuracy shall be better than X µs.", "tags": [], "customer_id": "P-SENSOR-002#",
+            },
+        ]
+    )
+    tree = build_survey_tree(doc, fake)
+    assert not any(w.kind == WarningKind.MISSING_REQUIREMENT_ROW_COVERAGE for w in tree.warnings)
+
+
+def test_requirement_row_hints_are_scoped_per_branch(monkeypatch) -> None:
+    _force_multi_branch(monkeypatch)
+    path = "x.docx"
+
+    def sr(start: int, end: int) -> SourceRef:
+        return SourceRef(document_path=path, start_offset=start, end_offset=end)
+
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=2, text="Section A", source_ref=sr(0, 5)),
+            Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="Section B", source_ref=sr(100, 105)),
+        ],
+        tables=[
+            Table(
+                id="ta",
+                cells=[[TableCell(text=c) for c in row] for row in [["#", "Req"], ["SECA-001", "First."], ["SECA-002", "Second."]]],
+                source_ref=sr(1, 4),  # inside branch 1's own block range (0-5)
+            ),
+            Table(
+                id="tb",
+                cells=[[TableCell(text=c) for c in row] for row in [["#", "Req"], ["SECB-001", "Third."], ["SECB-002", "Fourth."]]],
+                source_ref=sr(101, 104),  # inside branch 2's own block range (100-105)
+            ),
+        ],
+    )
+    fake = FakeSectionAnalysisClient()
+    build_survey_tree(doc, fake)
+    assert len(fake.calls) == 2
+    branch_a_codes = {code for code, _ in (fake.calls[0]["requirement_row_hints"] or [])}
+    branch_b_codes = {code for code, _ in (fake.calls[1]["requirement_row_hints"] or [])}
+    assert branch_a_codes.isdisjoint(branch_b_codes)
+    assert branch_a_codes | branch_b_codes == {"SECA-001", "SECA-002", "SECB-001", "SECB-002"}
 
 
 def test_build_survey_tree_has_no_warnings_when_node_count_matches_block_count() -> None:
@@ -3933,7 +4252,8 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
         def analyze_section_skeleton(
             self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
             topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-            expected_root_count: int | None = None,
+            expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
+            heading_type_hints: list[tuple[str, str]] | None = None,
         ) -> tuple[list[dict], bool]:
             self.call_count += 1
             return [
@@ -6251,9 +6571,94 @@ def test_skeleton_stage_carries_every_structural_steering_parameter() -> None:
     assert len(fake.calls) == 1
     assert set(fake.calls[0]) == {
         "section_text", "kb_context", "whole_document", "topic_count",
-        "table_group_hints", "expected_root_count",
+        "table_group_hints", "expected_root_count", "requirement_row_hints",
+        "heading_type_hints",
     }
+    # Deliberately unchanged: 'customer_id' is stage 1's own concern (it's
+    # read from the SKELETON entry, see _validated_skeleton_customer_id) --
+    # stage 3 never receives or produces it, so this set staying exactly
+    # {section_text, skeleton_nodes, kb_context} is itself the assertion
+    # that customer_id did NOT leak into content authoring.
     assert set(fake.author_calls[0]) == {"section_text", "skeleton_nodes", "kb_context"}
+
+
+def test_skeleton_stage_receives_the_documents_own_heading_1_and_2_outline() -> None:
+    # Confirmed real bug (Mock_PRD_Sensor (1).docx): a document with several
+    # real top-tier heading sections, each with its own sub-section, analyzed
+    # in ONE whole-document call must have EVERY top-tier section named in
+    # the hint reaching stage 1's client, each with its own Epic type -- not
+    # just the first -- otherwise the model has no signal that a later
+    # section is its own top-level Epic rather than a Feature under
+    # whichever Epic came first. Each leaf sub-section carries TWO real
+    # requirement-shaped paragraphs (see heading_outline.py's own
+    # MIN_CHILD_OBLIGATIONS_FOR_CONTAINER -- a single obligation would leave
+    # the leaf a Requirement and its parent a Feature, not a Feature/Epic
+    # pair, so this fixture deliberately mirrors the real document's own
+    # multi-row-per-section shape, not a simplification of it).
+    path = "x.docx"
+
+    def sr(start: int, end: int) -> SourceRef:
+        return SourceRef(document_path=path, start_offset=start, end_offset=end)
+
+    blocks = [
+        Block(id="b0", kind=BlockKind.HEADING, text="Alpha Domain", heading_level=1, source_ref=sr(0, 1)),
+        Block(id="b1", kind=BlockKind.HEADING, text="Alpha Feature", heading_level=2, source_ref=sr(1, 2)),
+        Block(id="b2", kind=BlockKind.PARAGRAPH, text="The system shall support alpha synchronization.", source_ref=sr(2, 3)),
+        Block(id="b3", kind=BlockKind.PARAGRAPH, text="The system shall report alpha status regularly.", source_ref=sr(3, 4)),
+        Block(id="b4", kind=BlockKind.HEADING, text="Beta Domain", heading_level=1, source_ref=sr(4, 5)),
+        Block(id="b5", kind=BlockKind.HEADING, text="Beta Feature", heading_level=2, source_ref=sr(5, 6)),
+        Block(id="b6", kind=BlockKind.PARAGRAPH, text="The system shall support beta synchronization.", source_ref=sr(6, 7)),
+        Block(id="b7", kind=BlockKind.PARAGRAPH, text="The system shall report beta status regularly.", source_ref=sr(7, 8)),
+    ]
+    doc = CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks)
+    fake = FakeSectionAnalysisClient()
+
+    build_survey_tree(doc, fake)
+
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["heading_type_hints"] == [
+        ("Alpha Domain", "Epic"), ("Alpha Feature", "Feature"),
+        ("Beta Domain", "Epic"), ("Beta Feature", "Feature"),
+    ]
+
+
+def test_skeleton_stage_names_no_epic_for_a_flat_single_tier_document() -> None:
+    # Real reference document shape (Mock_PRD_Sensor (Not Properly
+    # Aligned).docx): every real section sits at the SAME heading level,
+    # with no grouping tier above them at all, and each section's own
+    # obligations live in a requirements-list TABLE (the real document's
+    # own mechanism -- not plain prose, which would trip the S1 Title
+    # heuristic on this document's own first real section; see
+    # heading_outline.py's own module docstring). The hint reaching stage
+    # 1 must name these as Features only -- never invent an Epic tier
+    # with no structural evidence for it (see
+    # root_regrouping._ensure_root_features_have_epic_parent's own
+    # docstring for why a uniformly Feature-topped tree is a legitimate,
+    # already-tested shape left for a later pass to reconsider, not this
+    # per-heading hint).
+    path = "x.docx"
+
+    def sr(start: int, end: int) -> SourceRef:
+        return SourceRef(document_path=path, start_offset=start, end_offset=end)
+
+    def _id_table(table_id: str, offset: int, prefix: str) -> Table:
+        rows = [["#", "Requirement"]]
+        for i in range(2):
+            rows.append([f"{prefix}-{i:03d}#", f"The system shall handle {prefix} case {i}."])
+        return Table(id=table_id, cells=[[TableCell(text=c) for c in row] for row in rows], source_ref=sr(offset, offset + 1))
+
+    blocks = [
+        Block(id="b0", kind=BlockKind.HEADING, text="Alpha Feature", heading_level=2, source_ref=sr(0, 1)),
+        Block(id="b1", kind=BlockKind.HEADING, text="Beta Feature", heading_level=2, source_ref=sr(2, 3)),
+    ]
+    tables = [_id_table("t0", 1, "ALPHA"), _id_table("t1", 3, "BETA")]
+    doc = CanonicalDoc(document=Document(path=path, format=DocumentFormat.TXT, sha256="h"), blocks=blocks, tables=tables)
+    fake = FakeSectionAnalysisClient()
+
+    build_survey_tree(doc, fake)
+
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["heading_type_hints"] == [("Alpha Feature", "Feature"), ("Beta Feature", "Feature")]
 
 
 def test_content_stage_is_given_the_already_decided_skeleton() -> None:
@@ -6861,6 +7266,37 @@ def test_mapping_items_rows_is_empty_for_a_header_only_table() -> None:
     items = _mapping_items_for_branch(skeleton, {}, {})
 
     assert items["t0"]["rows"] == []
+
+
+def test_mapping_never_offers_a_table_that_was_already_split_into_requirement_nodes() -> None:
+    # Phase 6: a requirements-list table (t0) was already fully split into
+    # its own Requirement nodes by the skeleton stage -- offering its whole
+    # HTML back to stage 2's figure/table mapping would let the model fold
+    # it into one of its own child Requirements, undoing the split. A
+    # second, ordinary supplementary table (t1) is unaffected.
+    t0 = Table(
+        id="t0",
+        cells=[[TableCell(text=c) for c in row] for row in [
+            ["ID", "Requirement"],
+            ["P-SENSOR-001#", "Time sync source"],
+        ]],
+        source_ref=_sr("x.docx"),
+    )
+    t1 = Table(
+        id="t1",
+        cells=[[TableCell(text=c) for c in row] for row in [["Wire", "Gauge"], ["W1", "24 AWG"]]],
+        source_ref=_sr("x.docx"),
+    )
+    skeleton = _BranchSkeleton(
+        nodes=[], warnings=[], kb_citations=[], scoring_kb_context=None,
+        section_text="", section_label=None, blocks=[], tables_by_id={"t0": t0, "t1": t1},
+        valid_figure_ids=set(), valid_table_ids={"t0", "t1"}, node_id_prefix="",
+        fire=lambda *a, **k: None, requirement_list_table_ids=frozenset({"t0"}),
+    )
+
+    items = _mapping_items_for_branch(skeleton, {}, {})
+
+    assert set(items) == {"t1"}
 
 
 def test_mapping_fires_map_scope_for_both_tier_1_and_tier_2(monkeypatch) -> None:

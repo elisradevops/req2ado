@@ -26,11 +26,12 @@ def _row(
     source_ref: SourceRef | None = None,
     id_disambiguator_needed: bool = False,
     needs_synthesis: bool = False,
+    id_text_is_authored: bool = False,
 ) -> HierarchyRow:
     return HierarchyRow(
         label=label, has_shall=has_shall, source_ref=source_ref or _sr(), node_type=node_type,
         parent_index=parent_index, id_text=id_text, id_disambiguator_needed=id_disambiguator_needed,
-        needs_synthesis=needs_synthesis,
+        needs_synthesis=needs_synthesis, id_text_is_authored=id_text_is_authored,
     )
 
 
@@ -47,6 +48,55 @@ def test_build_hierarchy_subtree_basic_construction() -> None:
     assert child.parent_local_id == parent.local_id
     assert parent.local_id == "det0_1_1"
     assert parent.grounding_score == 1.0
+
+
+def test_build_hierarchy_subtree_never_extracts_a_customer_id_for_a_convention_with_no_real_id_text() -> None:
+    # Confirmed real bug, live (AirPro_BP_ICD_Revision_0.3.docx, convention
+    # 3 -- id_text_is_authored defaults False, matching _row's own
+    # default): convention 3 has NO id concept at all (see
+    # rows_from_heading_structure's own docstring), so scanning a leaf's
+    # own free-flowing requirement text for anything code-shaped matched
+    # an unrelated industry-standard citation or a cited component part
+    # number as if it were the row's own customer-assigned code -- 47 of
+    # 428 real Requirements on that document, none of them real customer
+    # IDs. This exact shape (a "shall" sentence citing "VITA62.0-2022")
+    # must now stay None.
+    rows = [
+        _row(
+            "PS_SYSRESET shall comply to SOSA 2.0/Para 13.2.6.5 & VITA62.0-2022[12V-only Profile]/para 4.6.3.3.",
+            "Requirement", None, "h1", has_shall=True,
+        ),
+    ]
+    nodes, _warnings = build_hierarchy_subtree(rows, "det0_")
+    assert nodes[0].customer_id is None
+
+
+def test_build_hierarchy_subtree_still_extracts_a_customer_id_when_the_convention_has_a_real_id_text() -> None:
+    # Conventions 1/2 (id_text_is_authored=True) are unaffected -- a
+    # genuine customer-assigned code embedded in the row's own text still
+    # wins, exactly as before this fix.
+    rows = [
+        _row(
+            "REQ-AV-014: The system shall control cabin lighting.",
+            "Requirement", None, "1.1", has_shall=True, id_text_is_authored=True,
+        ),
+    ]
+    nodes, _warnings = build_hierarchy_subtree(rows, "det0_")
+    assert nodes[0].customer_id == "REQ-AV-014"
+
+
+def test_build_hierarchy_subtree_falls_back_to_the_authored_numeric_id_only_for_conventions_1_and_2() -> None:
+    # The numeric id_text fallback was already gated on id_text_is_authored
+    # before this fix -- confirms that gate is preserved, not just the new
+    # alphanumeric-extraction gate.
+    rows = [
+        _row("The system shall control volume.", "Requirement", None, "1.1.1", has_shall=True, id_text_is_authored=True),
+        _row("The system shall control brightness.", "Requirement", None, "h1", has_shall=True),
+    ]
+    nodes, _warnings = build_hierarchy_subtree(rows, "det0_")
+    by_desc = {n.description: n for n in nodes}
+    assert by_desc["The system shall control volume."].customer_id == "1.1.1"
+    assert by_desc["The system shall control brightness."].customer_id is None
 
 
 def test_build_hierarchy_subtree_folds_a_non_producing_row() -> None:

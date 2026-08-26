@@ -1,6 +1,6 @@
 from app.canonical.model import Block, BlockKind, SourceRef, Table, TableCell
 from app.leveling.id_hierarchy import (
-    _is_requirement_shaped,
+    is_requirement_shaped,
     classify_by_nesting,
     qualifying_groups,
     rows_from_heading_structure,
@@ -263,32 +263,32 @@ def test_rows_from_heading_structure_ignores_non_heading_blocks() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _is_requirement_shaped / MIN_REQUIREMENT_SHAPED_LEAF_FRACTION (per-root-
+# is_requirement_shaped / MIN_REQUIREMENT_SHAPED_LEAF_FRACTION (per-root-
 # subtree gate, distinct from the whole-document shall-fraction gate above)
 # ---------------------------------------------------------------------------
 
 
 def test_is_requirement_shaped_accepts_a_real_requirement_sentence() -> None:
-    assert _is_requirement_shaped(
+    assert is_requirement_shaped(
         "The power supply shall deliver a minimum output power of 500 watts."
     )
 
 
 def test_is_requirement_shaped_rejects_a_short_fragment() -> None:
-    assert not _is_requirement_shaped("Over-current")
-    assert not _is_requirement_shaped("ON/OFF control")
-    assert not _is_requirement_shaped('Size: 3U 1"')
+    assert not is_requirement_shaped("Over-current")
+    assert not is_requirement_shaped("ON/OFF control")
+    assert not is_requirement_shaped('Size: 3U 1"')
 
 
 def test_is_requirement_shaped_rejects_a_trailing_colon_section_label() -> None:
-    assert not _is_requirement_shaped("Voltage Distribution and Power Rails:")
+    assert not is_requirement_shaped("Voltage Distribution and Power Rails:")
 
 
 def test_is_requirement_shaped_rejects_a_spec_cell_even_at_six_plus_words() -> None:
     # Word count alone is insufficient -- confirmed false-positive risk:
     # this is 6 words but still a bare "Label: value" spec-table cell, not
     # a requirement.
-    assert not _is_requirement_shaped("Zodiac: 3.3V 494uF, 12V 352uF total")
+    assert not is_requirement_shaped("Zodiac: 3.3V 494uF, 12V 352uF total")
 
 
 def test_rows_from_heading_structure_flags_a_fragment_heavy_subtree_for_synthesis() -> None:

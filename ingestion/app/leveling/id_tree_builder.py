@@ -735,14 +735,25 @@ def build_hierarchy_subtree(
         # Customer ID is a per-Requirement, document-derived attribute --
         # never a job-level value applied uniformly (see WorkItemNode.
         # customer_id's own docstring). Only Requirement nodes ever carry
-        # one. A customer-assigned code (e.g. "REQ-AV-014") anywhere in this
-        # row's own text wins first; falls back to a REAL document-authored
-        # identifier (never convention 3's fabricated running counter);
+        # one, and only when this row's own source convention has a REAL id
+        # concept to begin with (id_text_is_authored -- conventions 1/2
+        # only; see HierarchyRow's own docstring). Convention 3 has no id
+        # concept at all (see rows_from_heading_structure's own docstring:
+        # "no id text at all") -- scanning its leaf text for anything
+        # code-shaped risks matching an unrelated industry-standard
+        # citation or cited component part number just as readily as a
+        # genuine customer-assigned code, so it must stay gated out
+        # entirely (see docs/handoff-heading-tier-detector-and-customer-id-fixes.md
+        # for the confirmed live false-positive rate). A customer-assigned
+        # code anywhere in this row's own text wins first when the
+        # convention DOES have one; falls back to the real document-
+        # authored numeric identifier (never convention 3's fabricated
+        # running counter -- id_text_is_authored gates that too);
         # otherwise None, flagged by main.py's /level exit enforcement
         # pass, never invented.
         customer_id = (
-            (extract_customer_requirement_code(row.label) or (row.id_text if row.id_text_is_authored else None))
-            if node_type_enum == WorkItemType.REQUIREMENT
+            (extract_customer_requirement_code(row.label) or row.id_text)
+            if node_type_enum == WorkItemType.REQUIREMENT and row.id_text_is_authored
             else None
         )
         node = WorkItemNode(

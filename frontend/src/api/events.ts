@@ -163,7 +163,7 @@ export interface NarrationEvent {
   figureCaptionStatus?: string | null;
   // section_complete only: this branch's finished nodes, in generation
   // order -- null on every other phase.
-  sectionNodes?: { type: string; title: string; text: string; qualityScore: number | null }[] | null;
+  sectionNodes?: { type: string; title: string; text: string; qualityScore: number | null; customerId: string | null }[] | null;
   // deterministic_subtree only: which subtree (0-based) out of how many
   // total, and a human label (the source Table's id, or "Heading
   // hierarchy") -- same "N of M plus a real name" pattern branchIndex/

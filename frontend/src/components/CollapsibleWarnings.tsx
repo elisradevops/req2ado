@@ -163,6 +163,10 @@ const KIND_META: Record<string, KindMeta> = {
     title: 'Title replaced automatically',
     tip: "This item's title was too generic or short to be useful, so it was replaced with a title distilled from the item's own generated description.",
   },
+  missing_requirement_row_coverage: {
+    title: 'A numbered source requirement is missing',
+    tip: 'A source table row carries its own literal requirement identifier, but no generated work item claims it -- it may have been merged into another requirement or dropped entirely. Review the source table for this section.',
+  },
   trace_link_inference_failed: {
     title: 'Trace-link inference failed',
     tip: 'Whole-document trace/coverage link inference failed -- no trace links were added, but every proposed item above is otherwise unaffected.',
@@ -182,6 +186,10 @@ const KIND_META: Record<string, KindMeta> = {
   missing_source_reference: {
     title: 'Requirement has no Customer ID / source reference',
     tip: 'The document had no literal number or ID this requirement could use as its own source reference -- none was invented. If the source document has one that could not be auto-detected, add it manually before confirming.',
+  },
+  duplicate_customer_id: {
+    title: 'Customer ID removed -- reported on multiple requirements',
+    tip: 'The same Customer ID was reported on more than one requirement, so it was removed from all of them rather than guessing which is correct. Review the source document and add the real ID manually if it has one.',
   },
   classification_not_representable: {
     title: "Classification not representable in this project's field",

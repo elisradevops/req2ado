@@ -10,6 +10,7 @@ export interface SectionResultNode {
   title: string;
   text: string;
   qualityScore: number | null;
+  customerId: string | null;
 }
 
 export interface SectionResultEntry {
@@ -112,6 +113,19 @@ function SectionResultRow({ item }: { item: SectionResultEntry }): React.ReactEl
               <div className="flex items-center gap-2">
                 <WorkItemTypeBadge type={node.type} />
                 <span className="text-sm font-medium text-ink-1">{node.title}</span>
+                {/* Per-row requirement splitting live visibility (2026-08-26):
+                    lets a reviewer confirm, section by section as the job
+                    runs, that a source table's own row identifier actually
+                    landed on the right node -- same mono/Requirement-only
+                    convention as DiffTree's own Customer ID badge. */}
+                {node.customerId && (
+                  <span
+                    className="flex-none truncate font-mono text-xs tracking-tight text-ink-3"
+                    title={`Customer ID: ${node.customerId}`}
+                  >
+                    {node.customerId}
+                  </span>
+                )}
               </div>
               <p className="text-sm text-ink-2">{node.text}</p>
               {node.qualityScore != null && <QualityGauge score={node.qualityScore} />}

@@ -1727,6 +1727,179 @@ def test_table_group_hint_is_empty_for_no_labels() -> None:
     assert _table_group_hint([]) == ""
 
 
+def test_requirement_row_hint_names_every_identified_row_and_its_true_count() -> None:
+    from app.survey.orchestrator_llm_client import _requirement_row_hint
+
+    hint = _requirement_row_hint([("P-SENSOR-001#", "Time sync source"), ("P-SENSOR-002#", "Sync accuracy")])
+    assert "2 individual row(s)" in hint
+    assert "P-SENSOR-001#" in hint
+    assert "Time sync source" in hint
+    assert "P-SENSOR-002#" in hint
+    assert "customer_id" in hint
+
+
+def test_requirement_row_hint_caps_the_rows_named_but_states_the_true_count() -> None:
+    from app.survey.orchestrator_llm_client import _MAX_REQUIREMENT_ROWS_NAMED, _requirement_row_hint
+
+    hints = [(f"REQ-{i:03d}", f"Row {i}") for i in range(_MAX_REQUIREMENT_ROWS_NAMED + 10)]
+    hint = _requirement_row_hint(hints)
+    assert f"{len(hints)} individual row(s)" in hint  # true count always stated in full
+    assert "REQ-000" in hint
+    assert f"REQ-{_MAX_REQUIREMENT_ROWS_NAMED - 1:03d}" in hint
+    assert f"REQ-{_MAX_REQUIREMENT_ROWS_NAMED:03d}" not in hint  # beyond the display cap
+    assert "10 more" in hint
+
+
+def test_requirement_row_hint_omits_the_label_parenthetical_when_blank() -> None:
+    from app.survey.orchestrator_llm_client import _requirement_row_hint
+
+    hint = _requirement_row_hint([("P-SENSOR-009#", "")])
+    assert "'P-SENSOR-009#'" in hint
+    assert "'P-SENSOR-009#' ()" not in hint
+
+
+def test_heading_outline_hint_names_every_heading_and_its_true_count() -> None:
+    from app.survey.orchestrator_llm_client import _heading_outline_hint
+
+    hint = _heading_outline_hint([("Functional and Performance", "Epic"), ("Synchronization", "Feature")])
+    assert "for 2 of its real headings" in hint
+    assert "'Functional and Performance' (Epic)" in hint
+    assert "'Synchronization' (Feature)" in hint
+    assert "Heading 1" not in hint  # no absolute heading-level phrasing anywhere
+    assert "Heading 2" not in hint
+
+
+def test_heading_outline_hint_drops_requirement_typed_pairs_before_naming_or_counting() -> None:
+    # Phase 1 (see heading_outline.py's own docstring): the detector
+    # honestly reports Requirement-typed headings (a leaf whose own text
+    # IS the requirement), but this hint never names them and the stated
+    # count reflects only what's actually named -- not the raw input length.
+    from app.survey.orchestrator_llm_client import _heading_outline_hint
+
+    hint = _heading_outline_hint([("Domain", "Epic"), ("Sync", "Feature"), ("Leaf One", "Requirement"), ("Leaf Two", "Requirement")])
+    assert "for 2 of its real headings" in hint
+    assert "Leaf One" not in hint
+    assert "Leaf Two" not in hint
+
+
+def test_heading_outline_hint_caps_features_named_but_never_epics() -> None:
+    from app.survey.orchestrator_llm_client import _MAX_HEADING_FEATURES_NAMED, _heading_outline_hint
+
+    epics = [(f"Epic {i}", "Epic") for i in range(5)]
+    features = [(f"Feature {i}", "Feature") for i in range(_MAX_HEADING_FEATURES_NAMED + 10)]
+    hint = _heading_outline_hint(epics + features)
+    for i in range(5):
+        assert f"'Epic {i}' (Epic)" in hint  # every Epic named, uncapped
+    assert f"'Feature {_MAX_HEADING_FEATURES_NAMED - 1}' (Feature)" in hint
+    assert f"'Feature {_MAX_HEADING_FEATURES_NAMED}' (Feature)" not in hint
+    assert "10 more" in hint
+    assert f"for {5 + _MAX_HEADING_FEATURES_NAMED + 10} of its real headings" in hint  # true named count always stated
+
+
+def test_heading_outline_hint_adds_a_single_tier_clause_only_when_no_epic_is_named() -> None:
+    from app.survey.orchestrator_llm_client import _heading_outline_hint
+
+    flat_hint = _heading_outline_hint([("Synchronization", "Feature"), ("Connectors", "Feature")])
+    assert "ONE tier only" in flat_hint
+    assert "Do NOT invent an Epic" in flat_hint
+
+    tiered_hint = _heading_outline_hint([("Domain", "Epic"), ("Sync", "Feature")])
+    assert "ONE tier only" not in tiered_hint
+
+
+def test_heading_outline_hint_is_empty_for_no_headings_or_only_requirement_typed_ones() -> None:
+    from app.survey.orchestrator_llm_client import _heading_outline_hint
+
+    assert _heading_outline_hint(None) == ""
+    assert _heading_outline_hint([]) == ""
+    assert _heading_outline_hint([("Leaf", "Requirement")]) == ""
+
+
+def test_analyze_section_skeleton_prompt_names_every_identified_heading() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton(
+        "Some section text.", heading_type_hints=[("Target Handling", "Epic"), ("Target tracking", "Feature")],
+    )
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "'Target Handling' (Epic)" in system_prompt
+    assert "'Target tracking' (Feature)" in system_prompt
+
+
+def test_analyze_section_skeleton_omits_the_heading_outline_hint_when_none_supplied() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton("Some section text.")
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "of its real headings" not in system_prompt
+
+
+def test_analyze_section_skeleton_cache_key_covers_the_heading_type_hints() -> None:
+    from app.survey.llm_cache import LlmResponseCache
+
+    cache = LlmResponseCache(_CountingFakeRedis())
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton("Some section text.", heading_type_hints=[("A", "Epic")])
+    client.analyze_section_skeleton("Some section text.", heading_type_hints=[("B", "Epic")])
+    assert call_count["n"] == 2  # different hints -- cache must not conflate them
+
+    client.analyze_section_skeleton("Some section text.", heading_type_hints=[("A", "Epic")])
+    assert call_count["n"] == 2  # same hints as the first call -- real cache hit
+
+
+def test_analyze_section_skeleton_agentic_forwards_heading_type_hints_into_its_degraded_fallback_call() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "tools" in body:
+            return httpx.Response(200, json={})
+        captured["body"] = body
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton_agentic(
+        "Some section text.", lambda query: (None, []),
+        heading_type_hints=[("Target Handling", "Epic")],
+    )
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "'Target Handling' (Epic)" in system_prompt
+
+
+def test_requirement_row_hint_is_empty_for_no_rows() -> None:
+    from app.survey.orchestrator_llm_client import _requirement_row_hint
+
+    assert _requirement_row_hint(None) == ""
+    assert _requirement_row_hint([]) == ""
+
+
 def test_whole_document_hint_falls_back_to_qualitative_when_no_topics() -> None:
     from app.survey.orchestrator_llm_client import _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT, _whole_document_hint
 
@@ -2409,6 +2582,10 @@ def test_analyze_section_skeleton_returns_structure_only_nodes() -> None:
     assert nodes == _skeleton_nodes()
     assert truncated is False
     # The whole point of the split: nothing content-shaped comes back here.
+    # 'customer_id' is deliberately absent from this check too -- it's
+    # structural (see section_skeleton_schema), not content, so its
+    # presence here wouldn't violate this test's own premise; this
+    # fixture's nodes just don't happen to set it.
     assert all(not (set(n) & {"text", "description", "tags", "figure_ids", "table_ids"}) for n in nodes)
 
 
@@ -2424,8 +2601,16 @@ def test_analyze_section_skeleton_response_schema_asks_for_no_content_fields() -
 
     client.analyze_section_skeleton("Some section text.")
 
-    item_properties = captured["body"]["responseSchema"]["schema"]["properties"]["nodes"]["items"]["properties"]
-    assert set(item_properties) == {"temp_id", "type", "parent_temp_id", "title"}
+    schema = captured["body"]["responseSchema"]["schema"]["properties"]["nodes"]["items"]
+    item_properties = schema["properties"]
+    # 'customer_id' is the one deliberate exception to "no content fields"
+    # -- structural, not content, since it's the source document's OWN
+    # identity for the row this node came from (see section_skeleton_schema
+    # and _validated_skeleton_customer_id). Not required -- most nodes have
+    # none.
+    assert set(item_properties) == {"temp_id", "type", "parent_temp_id", "title", "customer_id"}
+    assert "customer_id" not in schema["required"]
+    assert item_properties["customer_id"] == {"type": ["string", "null"]}
     # Same deliberately-unbounded array as section_analysis_schema -- a
     # maxItems bound is the expensive case for Ollama's GBNF grammar.
     assert "maxItems" not in captured["body"]["responseSchema"]["schema"]["properties"]["nodes"]
@@ -2463,6 +2648,107 @@ def test_analyze_section_skeleton_prompt_carries_the_structural_steering_paramet
     # Multi-root permission is a purely STRUCTURAL decision, so it belongs
     # to this stage rather than to content authoring.
     assert "2" in system_prompt
+
+
+def test_analyze_section_skeleton_prompt_names_every_identified_requirement_row() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton(
+        "Some section text.", requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+    )
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "P-SENSOR-001#" in system_prompt
+    assert "1 individual row(s)" in system_prompt
+
+
+def test_analyze_section_skeleton_omits_the_requirement_row_hint_when_none_supplied() -> None:
+    # Mutation-safe: byte-identical prompt to before this parameter existed
+    # for the common no-identified-rows case.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton("Some section text.")
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "individual row(s)" not in system_prompt
+
+
+def test_analyze_section_skeleton_cache_key_covers_the_requirement_row_hints() -> None:
+    from app.survey.llm_cache import LlmResponseCache
+
+    cache = LlmResponseCache(_CountingFakeRedis())
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", cache=cache)
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton("Some section text.", requirement_row_hints=[("P-SENSOR-001#", "Time sync source")])
+    client.analyze_section_skeleton("Some section text.", requirement_row_hints=[("P-SENSOR-002#", "Sync accuracy")])
+    assert call_count["n"] == 2  # different hints -- cache must not conflate them
+
+    client.analyze_section_skeleton("Some section text.", requirement_row_hints=[("P-SENSOR-001#", "Time sync source")])
+    assert call_count["n"] == 2  # same hints as the first call -- real cache hit
+
+
+def test_analyze_section_skeleton_cache_key_changed_with_the_prompt_and_schema_contract() -> None:
+    from app.survey.llm_cache import cache_key
+
+    key = cache_key(
+        "analyze_section_skeleton.v2", "model", 4096, 40, 0.05,
+        "text", None, False, None, None, None, None,
+    )
+    # A same-arguments key computed under the OLD operation string must
+    # differ -- proves a pre-existing 24h-TTL cache entry from before this
+    # change cannot be replayed as a hit against the new prompt/schema.
+    old_key = cache_key(
+        "analyze_section_skeleton", "model", 4096, 40, 0.05,
+        "text", None, False, None, None, None,
+    )
+    assert key != old_key
+
+
+def test_analyze_section_skeleton_agentic_forwards_requirement_row_hints_into_its_degraded_fallback_call() -> None:
+    # The easy-to-miss path: a round that returns neither tool_calls nor
+    # content degrades to the plain skeleton call -- confirmed here that
+    # requirement_row_hints (like table_group_hints/expected_root_count)
+    # is actually forwarded, not silently dropped on this specific branch.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "tools" in body:
+            return httpx.Response(200, json={})
+        captured["body"] = body
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton_agentic(
+        "Some section text.", lambda query: (None, []),
+        requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+    )
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "P-SENSOR-001#" in system_prompt
 
 
 def test_analyze_section_skeleton_raises_on_non_200_response() -> None:
