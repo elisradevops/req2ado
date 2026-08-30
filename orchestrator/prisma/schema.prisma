@@ -182,6 +182,10 @@ model Job {
   traceLinkFailures JobTraceLinkFailure[]
 
   @@index([batchId])
+  // Job.status has no covering index at all today -- StaleJobWatchdogService's
+  // sweep() and this model's own onModuleInit() orphan-reconciliation query
+  // both filter on status alone and seq-scan the whole table without it.
+  @@index([status])
 }
 
 // Retains the original uploaded file's bytes so a job can be re-submitted

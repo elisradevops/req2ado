@@ -201,6 +201,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     try {
       const orphanCandidates = await this.prisma.job.findMany({
         where: { status: { in: ['pending', 'running', 'writing'] } },
+        // Only id/status are ever read below (bullJob lookup by id, the
+        // audit message text) -- selecting every column pulled the full
+        // dryRunDiff JSON (can be multi-MB) across the wire for every
+        // candidate row on every process startup for no reason.
+        select: { id: true, status: true },
       });
       for (const job of orphanCandidates) {
         const bullJob = await this.queue.getJob(job.id);

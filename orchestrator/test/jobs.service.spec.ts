@@ -4723,3 +4723,17 @@ describe('JobsService.getById', () => {
     expect(result?.documentOverview).toBeNull();
   });
 });
+
+describe('JobsService.onModuleInit', () => {
+  it('selects only id/status for orphan-candidate reconciliation, not full Job rows including dryRunDiff', async () => {
+    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) } };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.onModuleInit();
+
+    expect(prisma.job.findMany).toHaveBeenCalledWith({
+      where: { status: { in: ['pending', 'running', 'writing'] } },
+      select: { id: true, status: true },
+    });
+  });
+});
