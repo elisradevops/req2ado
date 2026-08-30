@@ -109,6 +109,19 @@ describe('ChatPanel', () => {
     expect(await screen.findByRole('option', { name: 'llama3.1' })).toBeInTheDocument();
   });
 
+  it('shows an error toast and renders an empty history (not a crash) when getChatHistory fails to load chat history', async () => {
+    vi.mocked(chatApi.getChatHistory).mockRejectedValue(new Error('network down'));
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/failed to load chat history/i)).toBeInTheDocument());
+    // Options only mount once the (Radix combobox) select is opened.
+    await userEvent.click(screen.getByLabelText('Model'));
+    expect(await screen.findByRole('option', { name: 'llama3.1' })).toBeInTheDocument();
+  });
+
   it('shows a specific "job is closed" message on a 409, not the generic send-failure toast', async () => {
     // Regression: a 409 here means the backend's own diff_ready gate
     // rejected the turn -- almost always because the job's status changed

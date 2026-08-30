@@ -146,9 +146,13 @@ export function ChatPanel({
   useEffect(() => {
     if (disabled) return;
     let cancelled = false;
-    getChatHistory(jobId, localId).then((h) => {
-      if (!cancelled) setHistory(h);
-    });
+    getChatHistory(jobId, localId)
+      .then((h) => {
+        if (!cancelled) setHistory(h);
+      })
+      .catch(() => {
+        if (!cancelled) showToast('Failed to load chat history for this item.', 'error');
+      });
     listModels()
       .then((m) => {
         if (!cancelled) setModels(m);
