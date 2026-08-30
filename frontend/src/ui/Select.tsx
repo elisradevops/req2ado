@@ -2,6 +2,7 @@ import { Children, forwardRef, isValidElement, useId, type OptionHTMLAttributes,
 import { Select as RadixSelect } from 'radix-ui';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { FieldShell } from './FieldShell';
 
 // Radix's Select.Item forbids an empty-string value (it reserves '' to mean
 // "nothing selected" internally) -- but this app's callers all pass native
@@ -65,17 +66,7 @@ export const Select = forwardRef<
   }
 
   return (
-    <div className={cn('flex flex-col gap-1.5', fullWidth && 'w-full')}>
-      {(label || labelExtra) && (
-        <div className="flex items-center justify-between gap-1.5">
-          {label && (
-            <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
-              {label}
-            </label>
-          )}
-          {labelExtra}
-        </div>
-      )}
+    <FieldShell label={label} labelExtra={labelExtra} helperText={helperText} fullWidth={fullWidth} fieldId={fieldId}>
       <RadixSelect.Root
         value={toRadixValue(value)}
         defaultValue={toRadixValue(defaultValue)}
@@ -136,7 +127,6 @@ export const Select = forwardRef<
           </RadixSelect.Content>
         </RadixSelect.Portal>
       </RadixSelect.Root>
-      {helperText && <span className="text-xs text-ink-3">{helperText}</span>}
-    </div>
+    </FieldShell>
   );
 });

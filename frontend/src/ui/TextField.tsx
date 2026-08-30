@@ -1,5 +1,6 @@
 import { forwardRef, useId, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '../lib/cn';
+import { FieldShell } from './FieldShell';
 
 const FIELD_CLASSES =
   // DESIGN.md §7 Input category: hover:border-ink-3, matching Checkbox.tsx's own already-correct treatment.
@@ -25,20 +26,9 @@ export const TextField = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLIn
     const generatedId = useId();
     const fieldId = id ?? generatedId;
     return (
-      <div className={cn('flex flex-col gap-1.5', fullWidth && 'w-full')}>
-        {(label || labelExtra) && (
-          <div className="flex items-center justify-between gap-1.5">
-            {label && (
-              <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
-                {label}
-              </label>
-            )}
-            {labelExtra}
-          </div>
-        )}
+      <FieldShell label={label} labelExtra={labelExtra} helperText={helperText} fullWidth={fullWidth} fieldId={fieldId}>
         <input ref={ref} id={fieldId} className={cn(FIELD_CLASSES, className)} {...props} />
-        {helperText && <span className="text-xs text-ink-3">{helperText}</span>}
-      </div>
+      </FieldShell>
     );
   },
 );
@@ -48,15 +38,9 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
     const generatedId = useId();
     const fieldId = id ?? generatedId;
     return (
-      <div className={cn('flex flex-col gap-1.5', fullWidth && 'w-full')}>
-        {label && (
-          <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
-            {label}
-          </label>
-        )}
+      <FieldShell label={label} helperText={helperText} fullWidth={fullWidth} fieldId={fieldId}>
         <textarea ref={ref} id={fieldId} className={cn(FIELD_CLASSES, 'min-h-[80px] resize-y', className)} {...props} />
-        {helperText && <span className="text-xs text-ink-3">{helperText}</span>}
-      </div>
+      </FieldShell>
     );
   },
 );

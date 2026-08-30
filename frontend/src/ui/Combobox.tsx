@@ -2,6 +2,7 @@ import { useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Popover } from 'radix-ui';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { FieldShell } from './FieldShell';
 
 /**
  * Was a plain <input list="..."> + <datalist> -- replaced for the exact same
@@ -98,17 +99,7 @@ export function Combobox({
   }
 
   return (
-    <div className={cn('flex flex-col gap-1.5', fullWidth && 'w-full')}>
-      {(label || labelExtra) && (
-        <div className="flex items-center justify-between gap-1.5">
-          {label && (
-            <label htmlFor={fieldId} className="text-meta font-semibold uppercase tracking-wide text-ink-2">
-              {label}
-            </label>
-          )}
-          {labelExtra}
-        </div>
-      )}
+    <FieldShell label={label} labelExtra={labelExtra} helperText={helperText} fullWidth={fullWidth} fieldId={fieldId}>
       <Popover.Root open={popoverOpen} onOpenChange={setOpen}>
         <Popover.Anchor asChild>
           <div className="relative w-full">
@@ -178,7 +169,6 @@ export function Combobox({
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
-      {helperText && <span className="text-xs text-ink-3">{helperText}</span>}
-    </div>
+    </FieldShell>
   );
 }
