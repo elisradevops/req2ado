@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
 import { FolderTree } from 'lucide-react';
 import {
@@ -151,6 +151,7 @@ export function KnowledgeBase(): React.ReactElement {
   // recursively (foldersOnly) and what the center pane shows by default.
   const [rootEntries, setRootEntries] = useState<FolderTreeEntry[] | null>(null);
   const [browsing, setBrowsing] = useState(false);
+  const browsingRef = useRef(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
 
   // Three-pane navigation state (DESIGN.md Track B, phase B10) -- which
@@ -160,6 +161,8 @@ export function KnowledgeBase(): React.ReactElement {
   const [centerEntries, setCenterEntries] = useState<FolderTreeEntry[] | null>(null);
   const [centerLoading, setCenterLoading] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
+  // Stale-response guard for navigateToFolder -- see its own comment below.
+  const folderNavSeqRef = useRef(0);
 
   // Ingest/remove state lifted up here (rather than duplicated per-row
   // inside KbFileList AND KbFileDetailPane) so both panes always agree on
@@ -168,6 +171,7 @@ export function KnowledgeBase(): React.ReactElement {
   // detail pane too, without a re-browse round trip.
   const [ingestOverrides, setIngestOverrides] = useState<Record<string, { ingested: boolean; docId: string | null }>>({});
   const [ingestingId, setIngestingId] = useState<string | null>(null);
+  const ingestingRef = useRef(false);
   // Per-file "always include" (Full Context mode) choice, made in the
   // detail pane before ingest -- keyed by entry.id so switching the
   // selected file never leaks one file's choice onto another's checkbox.
@@ -175,9 +179,11 @@ export function KnowledgeBase(): React.ReactElement {
 
   const [documentPendingRemoval, setDocumentPendingRemoval] = useState<PendingRemoval | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
+  const isRemovingRef = useRef(false);
   const [reconnectOpen, setReconnectOpen] = useState(false);
   const [reconnectToken, setReconnectToken] = useState('');
   const [isReconnecting, setIsReconnecting] = useState(false);
+  const isReconnectingRef = useRef(false);
   const [reconnectError, setReconnectError] = useState<string | null>(null);
   const [statusRefreshKey, setStatusRefreshKey] = useState(0);
 
@@ -194,7 +200,8 @@ export function KnowledgeBase(): React.ReactElement {
   // wouldn't be visible in this closure until the next render.
   async function handleBrowse(urlOverride?: string): Promise<void> {
     const url = urlOverride ?? browseUrl;
-    if (!url || !userId) return;
+    if (!url || !userId || browsingRef.current) return;
+    browsingRef.current = true;
     setBrowsing(true);
     setBrowseError(null);
     setRootEntries(null);
@@ -212,6 +219,7 @@ export function KnowledgeBase(): React.ReactElement {
     } catch (error) {
       setBrowseError(describeIngestError(error));
     } finally {
+      browsingRef.current = false;
       setBrowsing(false);
     }
   }
@@ -230,16 +238,25 @@ export function KnowledgeBase(): React.ReactElement {
 
   async function navigateToFolder(id: string, driveId: string | null, path: string, name: string): Promise<void> {
     if (!userId || !driveId) return;
+    // Stale-response guard, same pattern as NewJobWizard.tsx's own
+    // estimateRequestSeq: only the response matching the request fired
+    // most recently is allowed to commit to state -- otherwise clicking
+    // folder A then quickly folder B can let A's slower response overwrite
+    // B's already-painted contents under B's already-shown breadcrumb.
+    const seq = ++folderNavSeqRef.current;
     setCurrentFolder({ id, driveId, path, name });
     setSelectedFileId(null);
     setCenterLoading(true);
     try {
-      setCenterEntries(await browseSubfolder(driveId, id, userId, path));
+      const entries = await browseSubfolder(driveId, id, userId, path);
+      if (seq !== folderNavSeqRef.current) return;
+      setCenterEntries(entries);
     } catch {
+      if (seq !== folderNavSeqRef.current) return;
       showToast(`Failed to open "${name}" — please try again.`, 'error');
       setCenterEntries([]);
     } finally {
-      setCenterLoading(false);
+      if (seq === folderNavSeqRef.current) setCenterLoading(false);
     }
   }
 
@@ -265,7 +282,8 @@ export function KnowledgeBase(): React.ReactElement {
   }
 
   async function handleIngestFile(entry: FolderTreeEntry): Promise<void> {
-    if (!userId || !entry.downloadUrl || ingestingId) return;
+    if (!userId || !entry.downloadUrl || ingestingId || ingestingRef.current) return;
+    ingestingRef.current = true;
     setIngestingId(entry.id);
     try {
       const relativePath = currentFolder.path ? `${currentFolder.path}/${entry.name}` : entry.name;
@@ -276,6 +294,7 @@ export function KnowledgeBase(): React.ReactElement {
     } catch {
       showToast(`Failed to add "${entry.name}" — please try again.`, 'error');
     } finally {
+      ingestingRef.current = false;
       setIngestingId(null);
     }
   }
@@ -287,7 +306,8 @@ export function KnowledgeBase(): React.ReactElement {
   }
 
   async function handleRemoveDocument(): Promise<void> {
-    if (!documentPendingRemoval || !userId) return;
+    if (!documentPendingRemoval || !userId || isRemovingRef.current) return;
+    isRemovingRef.current = true;
     setIsRemoving(true);
     try {
       await deleteIngestedDocument(documentPendingRemoval.documentId, userId);
@@ -297,6 +317,7 @@ export function KnowledgeBase(): React.ReactElement {
     } catch {
       showToast('Failed to remove the document. Please try again.', 'error');
     } finally {
+      isRemovingRef.current = false;
       setIsRemoving(false);
     }
   }
@@ -308,6 +329,8 @@ export function KnowledgeBase(): React.ReactElement {
   }
 
   async function handleReconnect(): Promise<void> {
+    if (isReconnectingRef.current) return;
+    isReconnectingRef.current = true;
     setIsReconnecting(true);
     setReconnectError(null);
     try {
@@ -322,6 +345,7 @@ export function KnowledgeBase(): React.ReactElement {
     } catch {
       setReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
     } finally {
+      isReconnectingRef.current = false;
       setIsReconnecting(false);
     }
   }

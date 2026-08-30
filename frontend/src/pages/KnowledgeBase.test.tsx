@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AxiosError } from 'axios';
 import { KnowledgeBase } from './KnowledgeBase';
 import { ToastProvider } from '../components/ToastProvider';
 import * as kbApi from '../api/kb';
+import type { FolderTreeEntry } from '../api/kb';
 import { useAuthStore } from '../store/authStore';
 
 vi.mock('../api/kb');
@@ -323,6 +324,196 @@ describe('KnowledgeBase', () => {
 
       await waitFor(() => expect(screen.queryByText('nested.pdf')).not.toBeInTheDocument());
       expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0);
+    });
+  });
+
+  // Regression guards for SWEEP.md: 4 backend-mutation handlers had no
+  // synchronous re-entry guard (only a `disabled` prop, which doesn't
+  // commit to the DOM until React's next render -- a truly rapid second
+  // click/action can still slip through before that commit), plus a
+  // stale-response race in navigateToFolder.
+  describe('re-entry guards and stale-response guard (SWEEP.md)', () => {
+    it('handleBrowse: a rapid second click before the first browse resolves does not fire a second request', async () => {
+      let resolveBrowse!: (entries: FolderTreeEntry[]) => void;
+      const deferred = new Promise<FolderTreeEntry[]>((resolve) => {
+        resolveBrowse = resolve;
+      });
+      vi.spyOn(kbApi, 'browseSharedFolder').mockReturnValue(deferred);
+      renderPage();
+
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      const browseButton = screen.getByRole('button', { name: /^browse$/i });
+
+      // Both clicks inside ONE outer act() -- React defers the resulting
+      // DOM commit (the `disabled` attribute from setBrowsing(true)) until
+      // this whole act() callback returns, so the second click still lands
+      // on a not-yet-disabled button, same as two clicks in the same tick
+      // in a real browser. Only the new browsingRef guard (not the disabled
+      // prop, which hasn't committed yet) can catch this.
+      act(() => {
+        fireEvent.click(browseButton);
+        fireEvent.click(browseButton);
+      });
+
+      await act(async () => {
+        resolveBrowse([]);
+        await Promise.resolve();
+      });
+
+      await waitFor(() => expect(browseButton).not.toBeDisabled());
+      expect(kbApi.browseSharedFolder).toHaveBeenCalledTimes(1);
+    });
+
+    it('handleIngestFile: a rapid second click on the same row before ingest resolves does not fire a second request', async () => {
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: 'https://graph.example/download/f1' },
+      ]);
+      let resolveIngest!: (result: Awaited<ReturnType<typeof kbApi.ingestFolderItem>>) => void;
+      const deferred = new Promise<Awaited<ReturnType<typeof kbApi.ingestFolderItem>>>((resolve) => {
+        resolveIngest = resolve;
+      });
+      vi.spyOn(kbApi, 'ingestFolderItem').mockReturnValue(deferred);
+      renderPage();
+
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getByText('spec.docx')).toBeInTheDocument());
+
+      const ingestButton = screen.getByRole('button', { name: /add spec\.docx to the knowledge base/i });
+      // Both clicks inside ONE outer act() -- see handleBrowse's own test
+      // above for why this is what actually forces the re-entry race.
+      act(() => {
+        fireEvent.click(ingestButton);
+        fireEvent.click(ingestButton);
+      });
+
+      await act(async () => {
+        resolveIngest({
+          documentName: 'spec.docx',
+          driveitemId: 'f1',
+          mimeType: null,
+          sizeBytes: 2048,
+          chunksStored: 3,
+          skippedUnchanged: false,
+          ingestedDocumentId: 'doc-1',
+        });
+        await Promise.resolve();
+      });
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /remove spec\.docx from the knowledge base/i })).toBeInTheDocument());
+      expect(kbApi.ingestFolderItem).toHaveBeenCalledTimes(1);
+    });
+
+    it('handleRemoveDocument: a rapid second confirm click before removal resolves does not fire a second request', async () => {
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'f1', name: 'spec.docx', mimeType: null, sizeBytes: 2048, isFolder: false, driveId: null, alreadyIngested: true, ingestedDocumentId: 'doc-1', downloadUrl: null },
+      ]);
+      let resolveRemove!: () => void;
+      const deferred = new Promise<void>((resolve) => {
+        resolveRemove = resolve;
+      });
+      vi.spyOn(kbApi, 'deleteIngestedDocument').mockReturnValue(deferred);
+      renderPage();
+
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getByText('spec.docx')).toBeInTheDocument());
+
+      await userEvent.click(screen.getByRole('button', { name: /remove spec\.docx from the knowledge base/i }));
+      const confirmButton = screen.getByRole('button', { name: /remove document/i });
+      // Both clicks inside ONE outer act() -- see handleBrowse's own test
+      // above for why this is what actually forces the re-entry race.
+      act(() => {
+        fireEvent.click(confirmButton);
+        fireEvent.click(confirmButton);
+      });
+
+      await act(async () => {
+        resolveRemove();
+        await Promise.resolve();
+      });
+
+      await waitFor(() => expect(screen.getByText(/removed "spec\.docx"/i)).toBeInTheDocument());
+      expect(kbApi.deleteIngestedDocument).toHaveBeenCalledTimes(1);
+    });
+
+    it('handleReconnect: a rapid second click before reconnect resolves does not fire a second request', async () => {
+      let resolveReconnect!: (status: Awaited<ReturnType<typeof kbApi.reconnectSharePoint>>) => void;
+      const deferred = new Promise<Awaited<ReturnType<typeof kbApi.reconnectSharePoint>>>((resolve) => {
+        resolveReconnect = resolve;
+      });
+      vi.spyOn(kbApi, 'reconnectSharePoint').mockReturnValue(deferred);
+      renderPage();
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /reconnect/i })).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: /reconnect/i }));
+      await userEvent.type(screen.getByLabelText(/sharepoint access token/i), 'new-token');
+      const confirmButton = screen.getAllByRole('button', { name: /^reconnect$/i }).at(-1)!;
+      // Both clicks inside ONE outer act() -- see handleBrowse's own test
+      // above for why this is what actually forces the re-entry race.
+      act(() => {
+        fireEvent.click(confirmButton);
+        fireEvent.click(confirmButton);
+      });
+
+      await act(async () => {
+        resolveReconnect({ status: 'valid', expiresInSeconds: 3600 });
+        await Promise.resolve();
+      });
+
+      await waitFor(() => expect(screen.getByText(/sharepoint reconnected/i)).toBeInTheDocument());
+      expect(kbApi.reconnectSharePoint).toHaveBeenCalledTimes(1);
+    });
+
+    it("navigateToFolder: a slower response for an earlier click cannot overwrite a faster later click's already-shown contents", async () => {
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'a1', name: 'FolderA', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-a', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+        { id: 'b1', name: 'FolderB', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-b', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+      ]);
+
+      let resolveA!: (entries: FolderTreeEntry[]) => void;
+      const aPromise = new Promise<FolderTreeEntry[]>((resolve) => {
+        resolveA = resolve;
+      });
+      const bEntries: FolderTreeEntry[] = [
+        { id: 'b-nested', name: 'b-nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+      ];
+      vi.spyOn(kbApi, 'browseSubfolder').mockImplementation((_driveId, itemId) => (itemId === 'a1' ? aPromise : Promise.resolve(bEntries)));
+
+      renderPage();
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getAllByText('FolderA').length).toBeGreaterThan(0));
+
+      // Click FolderA's CENTER-pane row first -- fires the slower, still-
+      // pending browseSubfolder('drive-a', 'a1', ...) request.
+      const folderARow = screen.getAllByText('FolderA').map((el) => el.closest('tr')).find(Boolean);
+      await userEvent.click(folderARow!);
+
+      // Before A resolves, click FolderB from the LEFT tree (its row
+      // survives the center pane switching to its loading skeleton, unlike
+      // FolderB's own center-pane <tr>) -- fires a second, faster request
+      // that resolves and paints B's contents first.
+      const folderBTreeRow = screen.getByText('FolderB').closest('[role="button"]');
+      await userEvent.click(folderBTreeRow!);
+
+      await waitFor(() => expect(screen.getByText('b-nested.pdf')).toBeInTheDocument());
+      const folderNav = screen.getByRole('navigation', { name: /folder/i });
+      expect(folderNav).toHaveTextContent('FolderB');
+
+      // Now let A's slower response resolve LAST -- it must not repaint the
+      // center pane, or its breadcrumb, out from under B's already-shown state.
+      await act(async () => {
+        resolveA([
+          { id: 'a-nested', name: 'a-nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+        ]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByText('a-nested.pdf')).toBeNull();
+      expect(screen.getByText('b-nested.pdf')).toBeInTheDocument();
+      expect(folderNav).toHaveTextContent('FolderB');
     });
   });
 });
