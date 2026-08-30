@@ -1627,6 +1627,25 @@ describe('JobsService.getSummary', () => {
 
     expect(await service.getSummary('unknown')).toBeNull();
   });
+
+  it('excludes an entry (and its whole subtree) from created/reused/dedupSkipped/flagged counts, matching what confirm() would actually write', async () => {
+    const service = makeService({
+      id: 'job-1',
+      dryRunDiff: [
+        { localId: 'feat-1', parentLocalId: null, action: 'create', excluded: true, groundingScore: null, qualityScore: null },
+        { localId: 'req-1', parentLocalId: 'feat-1', action: 'create', groundingScore: null, qualityScore: null },
+        { localId: 'req-2', parentLocalId: null, action: 'reuse', groundingScore: null, qualityScore: null },
+      ],
+      warnings: [],
+    });
+
+    const summary = await service.getSummary('job-1');
+
+    // feat-1 is directly excluded; req-1 is excluded via its excluded
+    // ancestor (feat-1) even though req-1 itself carries no excluded
+    // flag -- only req-2 (unrelated, not excluded) should count.
+    expect(summary).toEqual({ created: 0, reused: 1, dedupSkipped: 0, flagged: 0, warnings: [] });
+  });
 });
 
 describe('JobsService.validateCreatedTree', () => {

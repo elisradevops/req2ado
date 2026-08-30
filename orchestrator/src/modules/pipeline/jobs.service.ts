@@ -15,7 +15,7 @@ import { IngestionHttpError, type IngestionHttpClient } from './ingestion-http.c
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
-import { summarizeDiffEntries } from './diff-summary';
+import { filterExcludedDiffEntries, summarizeDiffEntries } from './diff-summary';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import {
   DEFAULT_REQUIREMENT_TYPE_FIELD_CANDIDATES,
@@ -1060,12 +1060,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   } | null> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
-    const diff = (job.dryRunDiff as { action: string; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
+    const diff = (job.dryRunDiff as { action: string; localId: string; parentLocalId: string | null; excluded?: boolean; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
     return {
-      // Extracted to diff-summary.ts so BatchService's batch-level rollup
-      // (NEW-05) shares the exact same create/reuse/dedup_skip/flagged
-      // vocabulary instead of re-implementing it.
-      ...summarizeDiffEntries(diff),
+      // Excluded entries (and their whole subtree) must never count toward
+      // "N new work items" -- confirm() itself skips them entirely (see
+      // its own isExcluded), so this pre-confirm summary must match what
+      // a real confirm() call would actually create/reuse/skip.
+      ...summarizeDiffEntries(filterExcludedDiffEntries(diff)),
       warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [],
     };
   }
