@@ -1432,6 +1432,19 @@ def _detect_deterministic_subtrees(
             )
             current_target.source_ref = _widen_page_end(current_target.source_ref, block.source_ref)
 
+        # Precomputed ONCE, not per table: each boundary's own upper bound is
+        # just the NEXT entry in this already-document-ordered list -- a
+        # plain index+1 lookup. Previously rebuilt via a fresh O(H) list
+        # comprehension (`[b for b in heading_boundaries if b > boundary_idx]`)
+        # inside the per-table loop below, making the whole table-attribution
+        # pass O(T*H^2) instead of O(T*H).
+        boundary_upper_by_idx: dict[int, tuple | None] = {}
+        for k, boundary_idx in enumerate(heading_boundaries):
+            next_boundary_idx = heading_boundaries[k + 1] if k + 1 < len(heading_boundaries) else None
+            boundary_upper_by_idx[boundary_idx] = (
+                _order_key(doc.blocks[next_boundary_idx].source_ref) if next_boundary_idx is not None else None
+            )
+
         for table in doc.tables:
             if table.id in claimed_table_ids:
                 continue
@@ -1441,12 +1454,7 @@ def _detect_deterministic_subtrees(
                 boundary_block = doc.blocks[boundary_idx]
                 if boundary_block.id not in block_id_to_row_index:
                     continue
-                next_boundaries = [b for b in heading_boundaries if b > boundary_idx]
-                upper = (
-                    _order_key(doc.blocks[next_boundaries[0]].source_ref)
-                    if next_boundaries
-                    else None
-                )
+                upper = boundary_upper_by_idx[boundary_idx]
                 lower = _order_key(boundary_block.source_ref)
                 if lower <= table_key and (upper is None or table_key < upper):
                     owning_boundary_idx = boundary_idx
