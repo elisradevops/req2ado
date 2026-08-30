@@ -258,8 +258,15 @@ export function CollapsibleWarnings({
   // see buildWorkItemUrl's own docstring for why this matters.
   project?: string | null;
 }): React.ReactElement | null {
-  const [expandedSeverities, setExpandedSeverities] = useState<Set<WarningSeverity>>(new Set());
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
+  // Real gap this closes (confirmed live): a needs_review/pipeline_issue
+  // warning -- something the user actually has to act on -- rendered
+  // collapsed by default, identical in weight to an auto_fixed one. Lazy
+  // initializers so this is a one-time default, not a forced-open state
+  // that fights a user who deliberately collapses it back.
+  const [expandedSeverities, setExpandedSeverities] = useState<Set<WarningSeverity>>(
+    () => new Set(warnings.some((w) => w.severity !== 'auto_fixed') ? (['needs_review', 'pipeline_issue'] as WarningSeverity[]) : []),
+  );
+  const [summaryExpanded, setSummaryExpanded] = useState(() => warnings.some((w) => w.severity !== 'auto_fixed'));
   if (warnings.length === 0) return null;
 
   const bySeverity: Record<WarningSeverity, WarningRecord[]> = { auto_fixed: [], needs_review: [], pipeline_issue: [] };

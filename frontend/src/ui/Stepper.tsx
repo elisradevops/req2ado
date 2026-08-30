@@ -44,6 +44,7 @@ export function Stepper({
   activeSpinner = false,
   colors,
   states,
+  subLabels,
 }: {
   steps: string[];
   // Superseded by `states` (DESIGN.md Track B, phase B3) but kept as the
@@ -60,6 +61,12 @@ export function Stepper({
   // passes this, since a single "active index" can't express completed
   // history, a frozen-at-failure state, or a skipped step all at once.
   states?: StepState[];
+  // Optional, one per step -- a small mono chip under a step's own label
+  // for real sub-phase context that step alone can't show (e.g. which of
+  // deterministic_subtree's two chunked passes is active, or a live
+  // figure-caption count during Parse). Every existing caller omits this
+  // and renders exactly as before.
+  subLabels?: (string | null | undefined)[];
 }): React.ReactElement {
   const resolvedStates = states ?? deriveStates(steps.length, activeIndex ?? 0, activeSpinner);
 
@@ -106,6 +113,11 @@ export function Stepper({
               />
             </div>
             <span className={cn('whitespace-nowrap text-meta font-medium', STATE_LABEL_CLASSES[state])}>{step}</span>
+            {subLabels?.[index] && (
+              <span className="whitespace-nowrap rounded-full border border-accent-soft-border bg-accent-soft px-1.5 py-px font-mono text-micro font-semibold text-accent-ink">
+                {subLabels[index]}
+              </span>
+            )}
           </li>
         );
       })}

@@ -2,7 +2,7 @@ import { Stepper, type StepState } from '../ui/Stepper';
 import { InfoTip } from '../ui/Tooltip';
 import type { JobStage } from '../api/events';
 
-type LifecycleKey = 'parse' | 'analyze' | 'score' | 'dedupCheck' | 'review' | 'write';
+export type LifecycleKey = 'parse' | 'analyze' | 'score' | 'dedupCheck' | 'review' | 'write';
 
 interface StepDef {
   key: LifecycleKey;
@@ -66,7 +66,20 @@ function reachedKeyFor(
 
   let key: LifecycleKey;
   if (status === 'running') {
-    if (stage === 'dedup_check') {
+    // Real bug this fixes (confirmed live): `dedup_check` is BOTH a
+    // JobStage (`stage`, the coarse SSE signal checked below) AND its own
+    // NarrationEvent phase, with real content ("Checking for existing/
+    // duplicate work items...") that starts arriving before the coarser
+    // stage event catches up. In that real gap, `stage` was still
+    // whatever it was during scoring, and `latestNarrationPhase ===
+    // 'dedup_check'` matched none of the recognized score-adjacent
+    // phases below -- falling through to the hardcoded "Analyze" default,
+    // then jumping straight to Dedup check (skipping Score entirely,
+    // visibly) once `stage` finally updated. Same bug class this
+    // function's own comments already fixed twice for detect_conflicts/
+    // regroup_roots/infer_trace_links -- this was the one phase still
+    // missing from that list.
+    if (stage === 'dedup_check' || latestNarrationPhase === 'dedup_check') {
       key = 'dedupCheck';
     } else if (
       latestNarrationPhase === 'score_requirements' ||
@@ -99,7 +112,7 @@ function reachedKeyFor(
     // regardless of how far it actually got -- a real job that finished
     // parsing, scoring, and dedup/grouping/trace-link inference before
     // failing at the very last phase still showed "failed at Analyze".
-    if (stage === 'dedup_check') key = 'dedupCheck';
+    if (stage === 'dedup_check' || latestNarrationPhase === 'dedup_check') key = 'dedupCheck';
     else if (stage === 'diff_ready') key = 'review';
     else if (
       latestNarrationPhase === 'score_requirements' ||
@@ -166,6 +179,7 @@ export function JobLifecycleSteps({
   status,
   stage,
   latestNarrationPhase,
+  subLabelByKey,
 }: {
   mode: 'baseline' | 'survey';
   status: string;
@@ -180,6 +194,12 @@ export function JobLifecycleSteps({
   // this same prop, so the real last-reached phase survives even when the
   // very last narration IS the failure marker itself.
   latestNarrationPhase?: string | null;
+  // Optional real sub-phase context this stepper's own keys can't show on
+  // their own (figure-caption progress during "Parse", which of
+  // deterministic_subtree's two chunked passes is active during
+  // "Analyze") -- computed by the caller from the same narration data it
+  // already has, since only it knows the raw fields these come from.
+  subLabelByKey?: Partial<Record<LifecycleKey, string>>;
 }): React.ReactElement {
   const stepDefs = stepsFor(mode);
   const keys = stepDefs.map((s) => s.key);
@@ -233,7 +253,7 @@ export function JobLifecycleSteps({
           that the glow fits within its own bounds instead of relying on
           bleeding past them. */}
       <div className="min-w-0 flex-1 overflow-x-auto py-0.5 [mask-image:linear-gradient(to_right,black_calc(100%-20px),transparent)]">
-        <Stepper steps={stepDefs.map((s) => s.label)} states={states} />
+        <Stepper steps={stepDefs.map((s) => s.label)} states={states} subLabels={keys.map((key) => subLabelByKey?.[key])} />
       </div>
       <InfoTip content={tip} />
     </div>

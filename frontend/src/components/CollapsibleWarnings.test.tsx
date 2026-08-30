@@ -34,6 +34,23 @@ function renderWarnings(
 }
 
 describe('CollapsibleWarnings', () => {
+  it('auto-expands by default when a needs_review/pipeline_issue warning exists', () => {
+    // Real gap this fixes (confirmed live): something the user actually
+    // has to act on defaulted to collapsed, identical in weight to an
+    // auto_fixed notice -- easy to scroll past without ever noticing it.
+    renderWarnings([
+      warning({ kind: 'low_grounding', severity: 'needs_review', raw: "Node n0's generated description has low grounding." }),
+    ]);
+    expect(screen.getByText('Low grounding -- possible fabrication')).toBeInTheDocument();
+  });
+
+  it('stays collapsed by default when every warning is auto_fixed', () => {
+    renderWarnings([
+      warning({ kind: 'reparented_to_feature', severity: 'auto_fixed', raw: '3 Requirement(s) were re-parented under Feature f0.' }),
+    ]);
+    expect(screen.queryByText('Re-parented under a Feature')).not.toBeInTheDocument();
+  });
+
   it('renders nothing when there are no warnings', () => {
     const { container } = renderWarnings([]);
     expect(container.firstChild).toBeNull();
@@ -60,7 +77,6 @@ describe('CollapsibleWarnings', () => {
     ]);
 
     await userEvent.click(screen.getByText(/2 integrity warnings/i));
-    await userEvent.click(screen.getByText('Needs your review'));
 
     expect(screen.getByText('Content the model may have dropped')).toBeInTheDocument();
     expect(screen.getAllByText(/under-synthesized/i).length).toBe(1);
@@ -78,7 +94,6 @@ describe('CollapsibleWarnings', () => {
     ]);
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Pipeline issue'));
 
     expect(screen.getByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
     expect(screen.queryByText('See the sentence below for details.')).not.toBeInTheDocument();
@@ -88,7 +103,6 @@ describe('CollapsibleWarnings', () => {
     renderWarnings([warning({ kind: 'some_future_kind', severity: 'needs_review', raw: 'A brand new kind of notice.' })]);
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Needs your review'));
 
     expect(screen.getByText('Some Future Kind')).toBeInTheDocument();
   });
@@ -103,7 +117,6 @@ describe('CollapsibleWarnings', () => {
     ]);
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Needs your review'));
     await userEvent.click(screen.getByText('References to documents not in your knowledge base'));
 
     const link = screen.getByRole('link', { name: /add to knowledge base/i });
@@ -116,7 +129,6 @@ describe('CollapsibleWarnings', () => {
     ]);
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Needs your review'));
 
     expect(screen.getByText(/from an older run/i)).toBeInTheDocument();
   });
@@ -136,7 +148,6 @@ describe('CollapsibleWarnings', () => {
     );
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Needs your review'));
 
     // Real gap this closes (user-reported): two buttons both labeled
     // "Review item ->" read as duplicated UI -- each must now carry the
@@ -161,7 +172,6 @@ describe('CollapsibleWarnings', () => {
     ], { onJumpToNode: vi.fn() });
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Needs your review'));
 
     expect(screen.getByRole('button', { name: 'Review item 1 →' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Review item 2 →' })).toBeInTheDocument();
@@ -181,7 +191,6 @@ describe('CollapsibleWarnings', () => {
     );
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Needs your review'));
 
     expect(screen.getAllByRole('button', { name: /^review /i })).toHaveLength(2); // still offered for both
     const adoLink = screen.getByRole('link', { name: /view wi #604 in azure devops/i });
@@ -202,7 +211,6 @@ describe('CollapsibleWarnings', () => {
     );
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Needs your review'));
 
     const adoLink = screen.getByRole('link', { name: /view wi #604 in azure devops/i });
     expect(adoLink).toHaveAttribute('href', 'https://dev.azure.com/example-org/elisradevops-project/_workitems/edit/604');
@@ -215,7 +223,6 @@ describe('CollapsibleWarnings', () => {
     });
 
     await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Pipeline issue'));
 
     expect(screen.queryByRole('button', { name: /review/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /view wi/i })).not.toBeInTheDocument();

@@ -29,6 +29,13 @@ describe('Stepper states prop', () => {
     }
   });
 
+  it('renders a sub-label chip under a step when one is given, and nothing when omitted', () => {
+    render(<Stepper steps={['A', 'B']} states={['current', 'pending']} subLabels={['pass 1 of 2 · synthesizing text', null]} />);
+    expect(screen.getByText('pass 1 of 2 · synthesizing text')).toBeInTheDocument();
+    expect(screen.getByText('A').closest('li')?.textContent).toContain('pass 1 of 2 · synthesizing text');
+    expect(screen.getByText('B').closest('li')?.querySelector('.text-accent-ink')).toBeNull();
+  });
+
   it('gives skipped steps a struck-through label, unlike pending', () => {
     render(<Stepper steps={['A', 'B']} states={['skipped', 'pending']} />);
     expect(screen.getByText('A').className).toContain('line-through');

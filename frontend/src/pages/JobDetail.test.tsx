@@ -125,10 +125,10 @@ describe('JobDetail', () => {
 
     renderAt('job-20');
     await waitFor(() => expect(screen.getByText('Root')).toBeInTheDocument());
-    // The stale warning banner (Finding 1) is present before the retry.
+    // The stale warning (Finding 1) is present before the retry -- a
+    // pipeline_issue warning auto-expands by default now, so no clicks are
+    // needed to reveal it.
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByText(/1 integrity warning/i));
-    await userEvent.click(screen.getByText('Pipeline issue'));
     expect(screen.getByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
 
     await userEvent.click(screen.getByText('Root'));
@@ -697,7 +697,10 @@ describe('JobDetail', () => {
 
     renderAt('job-27');
 
-    await waitFor(() => expect(screen.getByText(/1 integrity warning/i)).toBeInTheDocument());
+    // The prominent warning banner and the detail panel below it both
+    // legitimately say this now -- getAllByText tolerates that expected
+    // duplication (same convention ProgressBanner's own tests already use).
+    await waitFor(() => expect(screen.getAllByText(/1 integrity warning/i).length).toBeGreaterThan(0));
   });
 
   it('gates the Confirm button on diff_ready status', async () => {

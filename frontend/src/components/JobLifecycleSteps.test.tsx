@@ -67,6 +67,22 @@ describe('JobLifecycleSteps', () => {
     }
   });
 
+  it('recognizes the dedup_check NARRATION phase even before the coarser dedup_check STAGE arrives', () => {
+    // Real bug this fixes (confirmed live): dedup_check is both a JobStage
+    // (checked via `stage`) and its own NarrationEvent phase, with real
+    // content that starts arriving before the coarser stage event catches
+    // up. In that real gap, `stage` is still whatever it was during
+    // scoring -- without this fix, the stepper fell through to the
+    // hardcoded "Analyze" default (visibly regressing backward from
+    // Score), then jumped straight to Dedup check once `stage` finally
+    // updated, skipping Score entirely on the way.
+    render(<JobLifecycleSteps mode="survey" status="running" stage="infer_hierarchy_start" latestNarrationPhase="dedup_check" />);
+    expect(stateOf('Parse')).toBe('done');
+    expect(stateOf('Analyze')).toBe('done');
+    expect(stateOf('Score')).toBe('done');
+    expect(stateOf('Dedup check')).toBe('current');
+  });
+
   it('marks dedup_check as current from stage, and everything before it done', () => {
     render(<JobLifecycleSteps mode="survey" status="running" stage="dedup_check" latestNarrationPhase={null} />);
     expect(stateOf('Parse')).toBe('done');

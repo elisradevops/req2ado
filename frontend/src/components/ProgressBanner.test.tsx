@@ -1,9 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { act } from 'react';
 import { ProgressBanner } from './ProgressBanner';
 import type { NarrationEvent } from '../api/events';
 
 describe('ProgressBanner', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('shows no ETA chip before any narration has arrived', () => {
     // No narration yet -- there's no real progress data to calculate a
     // rate from, so no ETA (calculated or "Estimating...") should render
@@ -52,6 +57,183 @@ describe('ProgressBanner', () => {
     expect(screen.queryByText(/~0s left/i)).not.toBeInTheDocument();
     expect(screen.getByText('Finishing up…')).toBeInTheDocument();
     expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
+  });
+
+  it('does not blend an unrelated phase\'s elapsed time into a fresh deterministic_subtree ETA', () => {
+    // Real regression this fixes (confirmed live on a real 679-block
+    // document): deterministic_subtree's rate used to be computed from
+    // `now - job startedAt`, which blends in whatever ran before it (here,
+    // ~3.5 real minutes of unrelated figure-captioning work during parse).
+    // startedAt is set far in the past so the OLD calc would trivially
+    // clear the 15s/1-unit trust threshold and render a fabricated "~X
+    // left" number derived from that unrelated time. The fix re-baselines
+    // to when THIS deterministic_subtree window (this phase + this
+    // blocksTotal) actually started -- on this narration's first render
+    // that's "just now", so it must show the same honest "Estimating…"
+    // fallback a phase with no history yet always shows, not a number.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2020-01-01T00:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'deterministic_subtree',
+            branchIndex: null,
+            branchCount: 0,
+            blocksDone: 150,
+            blocksTotal: 275,
+            kbGrounded: false,
+            kbCitations: [],
+            subtreeLabel: 'synthesizing requirement text for 125 node(s) (chunk 2 of 2)',
+            message: 'x',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Estimating time left…')).toBeInTheDocument();
+    expect(screen.queryByText(/~\d.*left/i)).not.toBeInTheDocument();
+  });
+
+  it('does not show a falsely-shrinking ETA for a first-time observer arriving mid-chunk (deterministic_subtree)', () => {
+    // Real regression this fixes (confirmed live, redeploy mid-run): a tab
+    // that starts observing an already-in-flight chunk must not divide
+    // real elapsed time by completedUnits that already reflects work it
+    // never watched happen -- it must stay on the honest "Estimating…"
+    // fallback until it has personally witnessed at least one unit
+    // resolve, no matter how much real time passes waiting for that.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-09T10:10:00Z'));
+    const narrations: NarrationEvent[] = [
+      {
+        phase: 'deterministic_subtree',
+        branchIndex: null,
+        branchCount: 0,
+        blocksDone: 150,
+        blocksTotal: 153,
+        kbGrounded: false,
+        kbCitations: [],
+        subtreeLabel: 'enhancing titles/tags for 3 node(s) (chunk 2 of 2)',
+        message: 'x',
+      },
+    ];
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={narrations}
+      />,
+    );
+    expect(screen.getByText('Estimating time left…')).toBeInTheDocument();
+    // 30 real seconds pass with NOTHING changing server-side (blocksDone
+    // stays 150) -- the old, unbaselined calc would have crossed the 15s
+    // trust threshold and shown a wrong, shrinking number by now.
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(screen.getByText('Estimating time left…')).toBeInTheDocument();
+    expect(screen.queryByText(/~\d.*left/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a chunk track and a real explanation of what a deterministic_subtree chunk is doing', () => {
+    // Real gap this fixes (confirmed live): the ETA fixes above make the
+    // dead zone honest, not informative -- this is the first real content
+    // shown during the 4-9 real minutes a chunk blocks for.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2020-01-01T00:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'deterministic_subtree',
+            branchIndex: null,
+            branchCount: 0,
+            blocksDone: 150,
+            blocksTotal: 275,
+            kbGrounded: false,
+            kbCitations: [],
+            subtreeLabel: 'synthesizing requirement text for 125 node(s) (chunk 2 of 2)',
+            message: 'x',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('2 / 2')).toBeInTheDocument();
+    // Real node count (from the label) and a real, deterministically-zero
+    // "so far" clock on first render -- not a fabricated percentage or
+    // duration range.
+    expect(screen.getByText('Drafting requirement text for 125 headings in one model call — 0s so far.')).toBeInTheDocument();
+    // No hardcoded minute-range claim -- the app's own standard (this
+    // session's ETA fix) is never to fabricate a duration it doesn't have.
+    expect(screen.queryByText(/\d+\s*[-–]\s*\d+\+?\s*min/i)).not.toBeInTheDocument();
+  });
+
+  it('labels the title/tag pass distinctly from the synthesis pass in the chunk-track explainer', () => {
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2020-01-01T00:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'deterministic_subtree',
+            branchIndex: null,
+            branchCount: 0,
+            blocksDone: 0,
+            blocksTotal: 153,
+            kbGrounded: false,
+            kbCitations: [],
+            subtreeLabel: 'enhancing titles/tags for 150 node(s) (chunk 1 of 2)',
+            message: 'x',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Enhancing titles and tags for 150 headings in one model call — 0s so far.')).toBeInTheDocument();
+  });
+
+  it('does not show a chunk track for phases other than deterministic_subtree', () => {
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2020-01-01T00:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 1, branchCount: 4, blocksDone: 100, blocksTotal: 400, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Drafting requirement text for/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Enhancing titles and tags for/)).not.toBeInTheDocument();
+  });
+
+  it('ticks the per-chunk "so far" clock forward as real time passes, for a genuine sense of progression', () => {
+    // Real gap this fixes: the explainer previously read as a static,
+    // interchangeable line no matter how long a chunk had actually been
+    // running -- nothing ever visibly moved. This must count up on its
+    // own, the same live clock the ETA above already ticks from.
+    vi.useFakeTimers();
+    const narrations: NarrationEvent[] = [
+      {
+        phase: 'deterministic_subtree',
+        branchIndex: null,
+        branchCount: 0,
+        blocksDone: 0,
+        blocksTotal: 275,
+        kbGrounded: false,
+        kbCitations: [],
+        subtreeLabel: 'synthesizing requirement text for 150 node(s) (chunk 1 of 2)',
+        message: 'x',
+      },
+    ];
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2020-01-01T00:00:00Z" mode="survey" narrations={narrations} />);
+    expect(screen.getByText(/— 0s so far\.$/)).toBeInTheDocument();
+    act(() => {
+      vi.advanceTimersByTime(75_000);
+    });
+    expect(screen.getByText(/— 1m 15s so far\.$/)).toBeInTheDocument();
   });
 
   it('shows real determinate progress and a batch chip during score_requirements -- unlike other tail phases, the total is known upfront', () => {
@@ -468,6 +650,25 @@ describe('ProgressBanner', () => {
     expect(screen.getByText(/Section 2 of 3: Backplane Power Budget/)).toBeInTheDocument();
   });
 
+  it('labels the 4 whole-document rows under their own "Scoring & linking" header, separate from "Sections"', () => {
+    // Real user confusion this fixes: those 4 rows (scoring, conflicts,
+    // regroup, trace links) are whole-document passes, not per-section work,
+    // but previously sat under the "Sections" header with no label of their
+    // own -- reading as if they were more sections.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 0, branchCount: 1, blocksDone: 10, blocksTotal: 30, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Sections')).toBeInTheDocument();
+    expect(screen.getByText('Scoring & linking')).toBeInTheDocument();
+  });
+
   it('retains an earlier section\'s real name after a later section becomes active', () => {
     // The whole point for debugging a failed job: by the time it dies on
     // section 3, you still see what sections 1 and 2 actually were, not
@@ -578,6 +779,37 @@ describe('ProgressBanner', () => {
     // tolerates that expected duplication.
     expect(screen.getAllByText(/figure 3 so far/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Section 1 of/)).not.toBeInTheDocument();
+  });
+
+  it('shows a real progress percentage for describe_figure once a pre-counted figureCount is known', () => {
+    // Real regression this fixes: with a real figureCount already known
+    // (docx pre-count ran ahead of the walk -- see figure_count's own
+    // docstring), the metrics line used to still say "Working -- no
+    // progress estimate for this step yet." even though "figure 21 of 36"
+    // was already known and displayed right above this same panel.
+    render(
+      <ProgressBanner
+        stage="parse"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          {
+            phase: 'describe_figure',
+            branchIndex: null,
+            branchCount: 0,
+            blocksDone: 0,
+            blocksTotal: 0,
+            kbGrounded: false,
+            kbCitations: [],
+            figureIndex: 21,
+            figureCount: 36,
+            message: 'Describing an embedded figure via the vision model (figure 21 of 36)',
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/~58% of this section \(est\.\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no progress estimate for this step yet/i)).not.toBeInTheDocument();
   });
 
   it('never renders a blank metrics line during preparing_analysis (must always show real text)', () => {

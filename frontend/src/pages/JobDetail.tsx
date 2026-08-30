@@ -32,7 +32,11 @@ import { useOrgUrl } from '../store/authStore';
 import { StatusChip } from '../components/StatusChip';
 import { ModeBadge } from '../components/ModeBadge';
 import { ProgressBanner } from '../components/ProgressBanner';
-import { JobLifecycleSteps } from '../components/JobLifecycleSteps';
+import { JobLifecycleSteps, type LifecycleKey } from '../components/JobLifecycleSteps';
+import {
+  parseDeterministicSubtreeChunk,
+  formatDeterministicSubtreePassSubLabel,
+} from '../utils/deterministicSubtreeChunk';
 import { NarrationTicker } from '../components/NarrationTicker';
 import { tickerFor } from '../utils/narrationTicker';
 import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
@@ -1067,6 +1071,31 @@ export function JobDetail(): React.ReactElement {
   // falls back to today's plain AuditEntry-derived message in that case.
   const jobFailedEvent = eventHistory.find((event) => event.phase === 'job_failed');
 
+  // Real gap this closes (confirmed live): the stepper's "Parse" node
+  // covers both deterministic parsing AND per-figure vision-LLM
+  // captioning, and "Analyze" covers deterministic_subtree's two
+  // structurally different chunked passes, with no visible distinction
+  // between either. Sourced entirely from data the backend already emits
+  // -- nothing invented.
+  const latestNarrationForSteps = mergedNarrations.at(-1) ?? null;
+  const stepSubLabelByKey: Partial<Record<LifecycleKey, string>> = {};
+  if (latestNarrationForSteps?.phase === 'describe_figure' && latestNarrationForSteps.figureIndex != null && latestNarrationForSteps.figureCount != null) {
+    stepSubLabelByKey.parse = `figures ${latestNarrationForSteps.figureIndex}/${latestNarrationForSteps.figureCount}`;
+  }
+  if (latestNarrationForSteps?.phase === 'deterministic_subtree') {
+    const chunk = parseDeterministicSubtreeChunk(latestNarrationForSteps.subtreeLabel);
+    if (chunk) stepSubLabelByKey.analyze = formatDeterministicSubtreePassSubLabel(chunk);
+  }
+
+  // Real gap this closes (confirmed live): a warning needing a real
+  // decision (severity needs_review/pipeline_issue) carried the same
+  // visual weight as the figure-descriptions row below it -- a plain
+  // collapsed accordion, easy to scroll past. auto_fixed warnings don't
+  // need this -- nothing for the user to actually do about those.
+  const actionableWarningCount = mergedWarnings.filter(
+    (w) => w.severity === 'needs_review' || w.severity === 'pipeline_issue',
+  ).length;
+
   return (
     // px-2 lives on this one outer container -- every child below relies on
     // it for its horizontal inset instead of re-declaring its own mx-2/px-2
@@ -1258,6 +1287,7 @@ export function JobDetail(): React.ReactElement {
                 ? (mergedNarrations.at(-1)?.lastPhase ?? null)
                 : (mergedNarrations.at(-1)?.phase ?? null)
             }
+            subLabelByKey={stepSubLabelByKey}
           />
           <NarrationTicker
             sentence={tickerFor({ status, stage, latest: mergedNarrations.at(-1) ?? null }).sentence}
@@ -1265,6 +1295,23 @@ export function JobDetail(): React.ReactElement {
             startedAt={startedAt ?? ''}
           />
         </div>
+      )}
+      {actionableWarningCount > 0 && (
+        <Alert severity="warning" className="mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <span>
+              {actionableWarningCount} integrity warning{actionableWarningCount === 1 ? '' : 's'} need
+              {actionableWarningCount === 1 ? 's' : ''} your review.
+            </span>
+            <button
+              type="button"
+              onClick={() => document.getElementById('integrity-warnings')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              className="flex-none rounded-sm border border-warning-border bg-surface px-2.5 py-1 text-xs font-medium text-warning-ink hover:border-current"
+            >
+              Review now
+            </button>
+          </div>
+        </Alert>
       )}
       {status === 'pending' && (
         <Alert severity="info">
@@ -1280,8 +1327,28 @@ export function JobDetail(): React.ReactElement {
           mode={mode as 'baseline' | 'survey'}
           narrations={mergedNarrations}
           completedSectionIndices={completedSectionIndices}
+          jobId={id}
         />
       )}
+      <div id="integrity-warnings">
+        <CollapsibleWarnings
+          warnings={mergedWarnings}
+          onJumpToNode={(localId) => {
+            // Matches onOpenDetails below exactly -- previously this only
+            // switched tabs and set selection, which (a) never scrolled the
+            // target into view (DiffTree's own useEffect on selectedId below
+            // handles that) and (b) never opened the dialog, so "Review item"
+            // looked like it did nothing on any list of real size.
+            setTab('tree');
+            setSelectedId(localId);
+            setDialogOpen(true);
+          }}
+          adoIdByLocalId={adoIdByLocalId}
+          titleByLocalId={titleByLocalId}
+          orgUrl={orgUrl}
+          project={teamProject}
+        />
+      </div>
       <FigureDescriptions jobId={id!} items={figureDescriptions} />
       <SectionResults items={sectionResults} />
       {showTiles && summary && (
@@ -1303,23 +1370,6 @@ export function JobDetail(): React.ReactElement {
         </div>
       )}
       {excludedSummaryText && <p className="text-sm text-ink-3">{excludedSummaryText}</p>}
-      <CollapsibleWarnings
-        warnings={mergedWarnings}
-        onJumpToNode={(localId) => {
-          // Matches onOpenDetails below exactly -- previously this only
-          // switched tabs and set selection, which (a) never scrolled the
-          // target into view (DiffTree's own useEffect on selectedId below
-          // handles that) and (b) never opened the dialog, so "Review item"
-          // looked like it did nothing on any list of real size.
-          setTab('tree');
-          setSelectedId(localId);
-          setDialogOpen(true);
-        }}
-        adoIdByLocalId={adoIdByLocalId}
-        titleByLocalId={titleByLocalId}
-        orgUrl={orgUrl}
-        project={teamProject}
-      />
       {showTabs ? (
         <Tabs
           value={tab}
