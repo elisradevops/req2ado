@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { httpClient } from '../api/httpClient.js';
@@ -35,8 +35,14 @@ export function Login(): JSX.Element {
   const [pat, setPat] = useState('');
   const [status, setStatus] = useState<'idle' | 'checking' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const isLoggingInRef = useRef(false);
 
   const handleLogin = async (): Promise<void> => {
+    // Synchronous ref guard, checked before any await -- form onSubmit can
+    // re-fire (double-click / Enter resubmission) before React re-renders
+    // the disabled submit button.
+    if (isLoggingInRef.current) return;
+    isLoggingInRef.current = true;
     setStatus('checking');
     setErrorMessage(null);
     try {
@@ -50,6 +56,8 @@ export function Login(): JSX.Element {
     } catch (err) {
       setStatus('error');
       setErrorMessage(err instanceof Error ? err.message : 'Sign-in failed');
+    } finally {
+      isLoggingInRef.current = false;
     }
   };
 

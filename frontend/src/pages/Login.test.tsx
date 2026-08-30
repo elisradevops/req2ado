@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { Login } from './Login';
 import { httpClient } from '../api/httpClient';
@@ -76,6 +76,27 @@ describe('Login page', () => {
       pat: 'fake-pat',
     });
     expect(useAuthStore.getState().orgUrl).toBe('https://dev.azure.com/elisradevops');
+  });
+
+  it('handleLogin: ignores a rapid resubmission (double-click / Enter) while the first request is still in flight (isLoggingInRef guard -- both fireEvent.click calls batched inside one act() so no re-render, and thus no disabled attribute, lands between them; this is what reproduces the "second click before the first re-render" race the ref guard fixes, same technique as Settings.test.tsx\'s isReconnectingRef test)', async () => {
+    let resolvePost: (value: { data: { displayName: string } }) => void;
+    const postPromise = new Promise<{ data: { displayName: string } }>((resolve) => {
+      resolvePost = resolve;
+    });
+    vi.spyOn(httpClient, 'post').mockReturnValueOnce(postPromise);
+
+    renderLogin();
+    fireEvent.change(screen.getByLabelText('ADO Organization URL'), { target: { value: 'https://tfs.internal/tfs/Collection' } });
+    fireEvent.change(screen.getByLabelText('Personal Access Token'), { target: { value: 'fake-pat' } });
+    const submitButton = screen.getByText('Sign in');
+    act(() => {
+      fireEvent.click(submitButton);
+      fireEvent.click(submitButton);
+    });
+
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
+    resolvePost!({ data: { displayName: 'Jane Doe' } });
+    await waitFor(() => expect(screen.getByText('Jobs Page')).toBeInTheDocument());
   });
 
   it('shows an error alert when sign-in fails', async () => {
