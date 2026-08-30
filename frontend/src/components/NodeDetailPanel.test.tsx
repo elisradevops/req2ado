@@ -1054,4 +1054,32 @@ describe('NodeDetailPanel', () => {
 
     expect(screen.queryByText(/similar parent item already exists/i)).not.toBeInTheDocument();
   });
+
+  it('renders a Grounding metric when groundingScore is present, marked low below 0.2', () => {
+    const baseRequirementEntry: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: null, tags: [],
+    };
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ ...baseRequirementEntry, groundingScore: 0.14 }}
+      />,
+    );
+    expect(screen.getByText('0.14')).toBeInTheDocument();
+    expect(screen.getByText(/grounding/i)).toBeInTheDocument();
+    expect(screen.getByText(/low/i)).toBeInTheDocument();
+  });
+
+  it('omits the Grounding metric when groundingScore is null (e.g. a BASELINE node)', () => {
+    const baseRequirementEntry: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: null, tags: [],
+    };
+    renderPanel(
+      <NodeDetailPanel
+        entry={{ ...baseRequirementEntry, groundingScore: null }}
+      />,
+    );
+    expect(screen.queryByText(/grounding/i)).not.toBeInTheDocument();
+  });
 });

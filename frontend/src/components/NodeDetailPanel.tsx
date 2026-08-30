@@ -648,6 +648,14 @@ export function NodeDetailPanel({
           )}
         </div>
       )}
+      {entry.groundingScore != null && (
+        <div className="flex items-center gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5 text-sm">
+          <span className={cn('font-mono font-semibold', entry.groundingScore < 0.2 ? 'text-warning' : 'text-ink-1')}>
+            {entry.groundingScore.toFixed(2)}
+          </span>
+          <span className="text-ink-3">Grounding{entry.groundingScore < 0.2 ? ' ⚠ low' : ''}</span>
+        </div>
+      )}
       {/* DESIGN.md §11.4.1 -- in place of the absent gauge, an Epic/Feature
           shows what it covers (real descendant counts from the diff tree,
           computed by the caller) and states plainly why there is no score,
