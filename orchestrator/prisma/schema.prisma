@@ -195,6 +195,8 @@ model AuditEntry {
   job       Job      @relation(fields: [jobId], references: [id])
   message   String
   createdAt DateTime @default(now())
+
+  @@index([jobId])
 }
 
 // Durable counterpart to the Redis-backed narration-log (ingestion's
@@ -232,6 +234,8 @@ model DedupSkipAudit {
   similarity    Float
   existingAdoId Int
   createdAt     DateTime @default(now())
+
+  @@index([jobId])
 }
 
 // Throttle state for BackfillService.backfillAreaPath -- runPipelineJob
