@@ -105,3 +105,24 @@ async def test_stream_reply_omits_model_key_when_none() -> None:
     [_ async for _ in client.stream_reply([{"role": "user", "content": "hi"}], model=None)]
 
     assert "model" not in captured["body"]
+
+
+async def test_stream_reply_sends_a_fixed_seed_for_reproducibility() -> None:
+    # Real gap this closes: this was the one non-JSON chat surface with a
+    # non-zero temperature and no seed at all -- an identical request
+    # couldn't be reproduced for debugging. Same seed=42 default
+    # OrchestratorLlmClient's SURVEY calls already use.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, content=b"")
+
+    transport = httpx.MockTransport(handler)
+    client = ChatLlmClient("http://orchestrator:3001", "test-token")
+    client._transport = transport  # noqa: SLF001
+
+    [_ async for _ in client.stream_reply([{"role": "user", "content": "hi"}], model=None)]
+
+    assert captured["body"]["seed"] == 42
+    assert captured["body"]["temperature"] == 0.3

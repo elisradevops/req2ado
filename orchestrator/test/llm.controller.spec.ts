@@ -133,6 +133,27 @@ describe('LlmController', () => {
     expect(streamChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { seed: 42 });
   });
 
+  it('threads numCtx/topK/minP/think from the request body into llmClient.streamChat (previously silently discarded)', async () => {
+    async function* fakeDeltas() {
+      yield { content: 'Hi' };
+    }
+    const streamChat = jest.fn().mockReturnValue(fakeDeltas());
+    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const res = { setHeader: jest.fn(), write: jest.fn(), end: jest.fn(), on: jest.fn() };
+
+    await controller.chatStream(
+      { messages: [{ role: 'user', content: 'hi' }], numCtx: 28000, topK: 50, minP: 0.05, think: false },
+      res as any,
+    );
+
+    expect(streamChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], {
+      numCtx: 28000,
+      topK: 50,
+      minP: 0.05,
+      think: false,
+    });
+  });
+
   it('writes reasoningDelta (not delta) for a reasoning-model chunk, keeping the two fields distinct on the wire', async () => {
     async function* fakeChunks() {
       yield { reasoning: 'Hmm, ' };

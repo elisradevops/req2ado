@@ -145,6 +145,15 @@ export class OpenWebUiClient implements LlmClient {
 
   async *streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<LlmStreamChunk> {
     const outboundMessages = this.config.LLM_TRUSTED_LOCAL ? messages : redactMessages(messages);
+    // Same Ollama-passthrough-options construction as chat() above -- see
+    // that method's own comment for why this must be ONE merged object.
+    // Previously silently dropped here even though LlmChatOptions/the DTO
+    // both accept them, and chat() already forwards them for the
+    // non-streaming path.
+    const ollamaOptions: Record<string, number> = {};
+    if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
+    if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
+    if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
     const buildParams = (includeSchema: boolean) => ({
       model: opts?.model ?? this.config.LLM_CHAT_MODEL,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
@@ -155,6 +164,11 @@ export class OpenWebUiClient implements LlmClient {
       ...(opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
+      // See chat()'s own reasoning_effort comment for why this is the
+      // correct field for Ollama's OpenAI-compat endpoint (not a bare
+      // think/options.think field). Only sent when explicitly `false`.
+      ...(opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
     });
     let stream;
     try {

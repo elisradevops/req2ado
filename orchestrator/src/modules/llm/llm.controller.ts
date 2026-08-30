@@ -80,6 +80,14 @@ export class LlmController {
         ...(body.seed !== undefined ? { seed: body.seed } : {}),
         ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
         ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
+        // The DTO has accepted these since chat()'s own non-streaming path
+        // started using them -- streamChat() silently discarded them until
+        // now even though openwebui.client.ts's streamChat() forwards them
+        // like chat() already does.
+        ...(body.numCtx !== undefined ? { numCtx: body.numCtx } : {}),
+        ...(body.topK !== undefined ? { topK: body.topK } : {}),
+        ...(body.minP !== undefined ? { minP: body.minP } : {}),
+        ...(body.think !== undefined ? { think: body.think } : {}),
       })) {
         // `delta` stays the wire name for final-answer content (backward
         // compatible with every existing consumer); `reasoningDelta` is new,

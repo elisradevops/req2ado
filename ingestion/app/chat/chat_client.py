@@ -55,7 +55,13 @@ class ChatLlmClient:
         pair is non-empty per chunk (a reasoning model's chain-of-thought
         arrives on a separate wire field, `reasoningDelta`, from the final
         answer's `delta` -- see llm.controller.ts's chatStream doc comment)."""
-        payload: dict = {"messages": messages, "temperature": 0.3}
+        # seed=42: same default OrchestratorLlmClient's SURVEY calls already
+        # use -- pins the RNG state so an identical (messages, model)
+        # request is byte-reproducible for debugging, even though
+        # temperature=0.3 (a deliberate non-zero value, unlike every other
+        # caller in this codebase) still introduces controlled sampling
+        # variety across genuinely different prompts.
+        payload: dict = {"messages": messages, "temperature": 0.3, "seed": 42}
         if model is not None:
             payload["model"] = model
         async with httpx.AsyncClient(transport=self._transport, timeout=_STREAM_REQUEST_TIMEOUT_SECONDS) as client:

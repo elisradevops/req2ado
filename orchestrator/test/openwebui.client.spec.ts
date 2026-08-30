@@ -408,6 +408,32 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
   });
 
+  it('streamChat forwards numCtx/topK/minP as ONE options object and think:false as reasoning_effort (previously silently discarded)', async () => {
+    const client = new OpenWebUiClient(config);
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: 'hi' } }] };
+    }
+    const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _ of client.streamChat([{ role: 'user', content: 'hi' }], {
+      numCtx: 28000,
+      topK: 50,
+      minP: 0.05,
+      think: false,
+    })) {
+      // drain
+    }
+    expect(fakeCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: { num_ctx: 28000, top_k: 50, min_p: 0.05 },
+        reasoning_effort: 'none',
+      }),
+    );
+  });
+
   it('streamChat yields a reasoning model\'s chain-of-thought on a separate field from content', async () => {
     const client = new OpenWebUiClient(config);
     async function* fakeStream() {
