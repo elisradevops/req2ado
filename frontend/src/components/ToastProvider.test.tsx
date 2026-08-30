@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -39,5 +40,33 @@ describe('ToastProvider', () => {
     await user.click(screen.getByRole('button', { name: 'Trigger' }));
     const toast = await screen.findByText('Saved');
     expect(toast.closest('[class*="border-l-4"]')).toHaveClass('border-l-ok');
+  });
+
+  it('keeps the context value referentially stable across a toast add, so consumers do not re-render for no reason', async () => {
+    const seenValues: unknown[] = [];
+    function Consumer(): React.ReactElement {
+      const value = useToast();
+      const renderCount = useRef(0);
+      renderCount.current += 1;
+      seenValues.push(value);
+      return (
+        <button type="button" onClick={() => value.showToast('hi', 'info')}>
+          Trigger {renderCount.current}
+        </button>
+      );
+    }
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <Consumer />
+      </ToastProvider>,
+    );
+    const before = seenValues.at(-1);
+
+    await user.click(screen.getByRole('button', { name: /Trigger/ }));
+    await screen.findByText('hi');
+
+    const after = seenValues.at(-1);
+    expect(after).toBe(before);
   });
 });

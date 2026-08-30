@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 import { Toast as RadixToast } from 'radix-ui';
 import { X } from 'lucide-react';
 import { cn } from '../lib/cn';
@@ -51,8 +51,15 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
 
+  // A fresh { showToast } object literal every render would re-render
+  // every consumer in the tree on each toast add/dismiss (any context
+  // value change re-renders every subscriber, object identity or not).
+  // showToast itself is already a stable useCallback reference, so this
+  // only ever produces a new object when it doesn't need to.
+  const contextValue = useMemo(() => ({ showToast }), [showToast]);
+
   return (
-    <ToastContext.Provider value={{ showToast }}>
+    <ToastContext.Provider value={contextValue}>
       {children}
       <RadixToast.Provider swipeDirection="right" duration={4400}>
         {toasts.map((toast) => {
