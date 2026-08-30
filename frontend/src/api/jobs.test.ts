@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree } from './jobs';
+import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
 
 vi.mock('./httpClient');
 
@@ -105,5 +105,55 @@ describe('jobs api', () => {
     const result = await validateCreatedTree('job-1');
     expect(httpClient.get).toHaveBeenCalledWith('/jobs/job-1/validate');
     expect(result).toEqual(validationResult);
+  });
+
+  describe('previewExposition', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('posts the heading outline and returns the overview', async () => {
+      vi.mocked(httpClient.post).mockResolvedValue({ data: { synopsis: 'About a backplane.', caveat: null } } as any);
+
+      const result = await previewExposition({ documentMap: [{ number: null, title: 'Intro', blockCount: 5, figureCount: 0 }], sectionCount: 1, depth: 2 });
+
+      expect(result).toEqual({ synopsis: 'About a backplane.', caveat: null });
+      expect(httpClient.post).toHaveBeenCalledWith('/jobs/preview/exposition', {
+        documentMap: [{ number: null, title: 'Intro', blockCount: 5, figureCount: 0 }],
+        sectionCount: 1,
+        depth: 2,
+      });
+    });
+  });
+
+  describe('submitJob with documentOverview', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('appends documentOverview to the form data when provided', async () => {
+      vi.mocked(httpClient.post).mockResolvedValue({ data: { jobId: 'job-1' } } as any);
+
+      await submitJob({
+        file: new File(['x'], 'doc.docx'),
+        areaPath: 'Project\\Area1',
+        mode: 'survey',
+        documentOverview: { synopsis: 'About a backplane.', caveat: null },
+      });
+
+      const calls = vi.mocked(httpClient.post).mock.calls;
+      const formData = calls[calls.length - 1][1] as FormData;
+      expect(formData.get('documentOverview')).toBe(JSON.stringify({ synopsis: 'About a backplane.', caveat: null }));
+    });
+
+    it('omits documentOverview from the form data when not provided', async () => {
+      vi.mocked(httpClient.post).mockResolvedValue({ data: { jobId: 'job-1' } } as any);
+
+      await submitJob({ file: new File(['x'], 'doc.docx'), areaPath: 'Project\\Area1', mode: 'baseline' });
+
+      const calls = vi.mocked(httpClient.post).mock.calls;
+      const formData = calls[calls.length - 1][1] as FormData;
+      expect(formData.get('documentOverview')).toBeNull();
+    });
   });
 });
