@@ -56,8 +56,11 @@ export interface JobDetail {
   // understanding" step, before this Job existed -- see Job.documentOverview's
   // schema.prisma doc comment. Null for BASELINE (never attempted, an
   // explicit mode-driven state, see JobDetail.tsx's DocumentOverviewCard)
-  // or a SURVEY job whose generation call failed at wizard time.
-  documentOverview: { synopsis: string; caveat: string | null } | null;
+  // or a SURVEY job whose generation call failed at wizard time. Optional,
+  // like excludedFigureIds/tableDescriptions/iterationPath above, for a job
+  // persisted before this column existed -- JobDetail.tsx already reads it
+  // via `job.documentOverview ?? null`.
+  documentOverview?: { synopsis: string; caveat: string | null } | null;
   createdAt: string;
   areaPath: string;
   // Both real Job columns (schema.prisma), already present on every GET

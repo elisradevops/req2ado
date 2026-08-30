@@ -67,4 +67,36 @@ describe('DocumentOverviewService.generate', () => {
 
     expect(result).toBeNull();
   });
+
+  it('fails open to null when documentMap is malformed and computeDeterministicCaveat throws synchronously', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: 'unused' });
+    const service = new DocumentOverviewService({ chat } as any);
+
+    // A malformed shape (null instead of an array) makes computeDeterministicCaveat's
+    // own .filter() throw a TypeError before any LLM call is even attempted --
+    // this must degrade to null via the surrounding try/catch, not propagate.
+    const result = await service.generate({ documentMap: null as any, sectionCount: 1, depth: 1 });
+
+    expect(result).toBeNull();
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('caps the heading list sent to the LLM and appends a trailing count for the rest', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: 'A large fragmented document.' });
+    const service = new DocumentOverviewService({ chat } as any);
+
+    const documentMap = Array.from({ length: 200 }, (_, i) => ({
+      number: null,
+      title: `Section ${i + 1}`,
+      blockCount: 10,
+      figureCount: 0,
+    }));
+
+    await service.generate({ documentMap, sectionCount: 200, depth: 2 });
+
+    const userMessage = chat.mock.calls[0][0].find((m: { role: string }) => m.role === 'user');
+    expect(userMessage.content).toContain('Section 150');
+    expect(userMessage.content).not.toContain('Section 151');
+    expect(userMessage.content).toContain('…and 50 more sections');
+  });
 });

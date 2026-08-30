@@ -306,7 +306,7 @@ describe('DiffTree', () => {
     expect(screen.getByText('Healthy req').closest('[role="row"], div')?.parentElement).not.toHaveTextContent(/review/i);
   });
 
-  it('filterFlaggedOnly shows only flagged entries, expanding their ancestors', () => {
+  it('filterFlaggedOnly shows only flagged entries, hiding unflagged rows including ancestors', () => {
     const entries: DryRunDiffEntry[] = [
       { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
       { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
@@ -327,6 +327,10 @@ describe('DiffTree', () => {
 
     expect(screen.getByText('Flagged req')).toBeInTheDocument();
     expect(screen.queryByText('Healthy req')).not.toBeInTheDocument();
+    // Ancestors are unflagged themselves -- the filter hides them too,
+    // it does not expand a collapsed-but-matching subtree into view.
+    expect(screen.queryByText('Epic 1')).not.toBeInTheDocument();
+    expect(screen.queryByText('Feature 1')).not.toBeInTheDocument();
   });
 
   it('ArrowDown/ArrowUp move selection between visible rows', async () => {

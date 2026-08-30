@@ -18,6 +18,14 @@ const FRAGMENTED_MIN_SECTION_COUNT = 30;
 const FRAGMENTED_TINY_SECTION_FRACTION = 0.4;
 const TINY_SECTION_BLOCK_COUNT = 2;
 
+// Caps the number of headings sent to the LLM in the prompt -- the plan's
+// own reference document had 543 flat heading rows, and an unbounded join
+// risks overflowing the model's context on a sufficiently large/fragmented
+// document. 150 comfortably covers the vast majority of real documents
+// while staying well within typical context budgets; anything beyond that
+// is summarized as a trailing count rather than dropped silently.
+const MAX_HEADINGS_IN_PROMPT = 150;
+
 const CAVEAT_TEXT =
   "This document's heading structure is unusually deep and fragmented — many small sections sit alongside a few much larger ones. Worth a closer look to confirm nothing was misclassified.";
 
@@ -38,11 +46,14 @@ export class DocumentOverviewService {
   constructor(private readonly llmClient: OpenWebUiClient) {}
 
   async generate(input: { documentMap: DocumentMapSection[]; sectionCount: number; depth: number }): Promise<DocumentOverview | null> {
-    const caveat = computeDeterministicCaveat(input.sectionCount, input.depth, input.documentMap);
-    const headingList = input.documentMap
-      .map((section) => (section.number ? `${section.number} ${section.title}` : section.title))
-      .join('\n');
     try {
+      const caveat = computeDeterministicCaveat(input.sectionCount, input.depth, input.documentMap);
+      const headings = input.documentMap
+        .slice(0, MAX_HEADINGS_IN_PROMPT)
+        .map((section) => (section.number ? `${section.number} ${section.title}` : section.title));
+      const remaining = input.documentMap.length - headings.length;
+      const headingList =
+        remaining > 0 ? [...headings, `…and ${remaining} more sections`].join('\n') : headings.join('\n');
       const result = await this.llmClient.chat(
         [
           { role: 'system', content: SYNOPSIS_SYSTEM_PROMPT },

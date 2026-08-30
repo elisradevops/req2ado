@@ -290,7 +290,7 @@ export class JobsController {
     @Body('sectionCount') sectionCount: number | undefined,
     @Body('depth') depth: number | undefined,
   ): Promise<{ synopsis: string; caveat: string | null } | null> {
-    if (!documentMap || typeof sectionCount !== 'number' || typeof depth !== 'number') {
+    if (!documentMap || !Array.isArray(documentMap) || typeof sectionCount !== 'number' || typeof depth !== 'number') {
       return null;
     }
     return this.documentOverviewService.generate({ documentMap, sectionCount, depth });

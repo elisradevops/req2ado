@@ -47,4 +47,14 @@ describe('JobsController.previewExposition', () => {
     expect(result).toBeNull();
     expect(documentOverviewService.generate).not.toHaveBeenCalled();
   });
+
+  it('returns null without calling the service when documentMap is truthy but not an array', async () => {
+    const documentOverviewService = { generate: jest.fn() };
+    const controller = makeController(documentOverviewService);
+
+    const result = await controller.previewExposition({ not: 'an array' } as any, 1, 2);
+
+    expect(result).toBeNull();
+    expect(documentOverviewService.generate).not.toHaveBeenCalled();
+  });
 });
