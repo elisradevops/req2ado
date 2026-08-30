@@ -52,6 +52,12 @@ export interface JobDetail {
   // column existed.
   excludedFigureIds?: string[];
   excludedTableIds?: string[];
+  // Generated once in the New Job Wizard's SURVEY-only "Confirm
+  // understanding" step, before this Job existed -- see Job.documentOverview's
+  // schema.prisma doc comment. Null for BASELINE (never attempted, an
+  // explicit mode-driven state, see JobDetail.tsx's DocumentOverviewCard)
+  // or a SURVEY job whose generation call failed at wizard time.
+  documentOverview: { synopsis: string; caveat: string | null } | null;
   createdAt: string;
   areaPath: string;
   // Both real Job columns (schema.prisma), already present on every GET
