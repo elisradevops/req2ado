@@ -53,14 +53,28 @@ export class StaleJobWatchdogService implements OnModuleInit, OnModuleDestroy {
   async sweep(): Promise<void> {
     const candidates = await this.prisma.job.findMany({
       where: { status: { in: ['pending', 'running'] } },
+      // Only id/createdAt are ever read below -- selecting every column
+      // pulled each in-flight job's full dryRunDiff JSON across the wire
+      // on every tick just to compare a timestamp.
+      select: { id: true, createdAt: true },
     });
+    if (candidates.length === 0) return;
+    // One groupBy for the whole batch, not one jobEvent.findFirst PER
+    // candidate (N+1) -- uses JobEvent's existing @@index([jobId, createdAt]).
+    // A jobId with zero JobEvent rows simply has no entry here, matching
+    // findFirst's own "returns null / falls back to job.createdAt" behavior.
+    const grouped = await this.prisma.jobEvent.groupBy({
+      by: ['jobId'],
+      where: { jobId: { in: candidates.map((job) => job.id) } },
+      _max: { createdAt: true },
+    });
+    const lastEventByJobId = new Map<string, Date>();
+    for (const row of grouped) {
+      if (row._max.createdAt) lastEventByJobId.set(row.jobId, row._max.createdAt);
+    }
     const staleMinutes = Math.round(this.staleThresholdMs / 60_000);
     for (const job of candidates) {
-      const lastEvent = await this.prisma.jobEvent.findFirst({
-        where: { jobId: job.id },
-        orderBy: { createdAt: 'desc' },
-      });
-      const lastActivity = lastEvent?.createdAt ?? job.createdAt;
+      const lastActivity = lastEventByJobId.get(job.id) ?? job.createdAt;
       if (Date.now() - lastActivity.getTime() <= this.staleThresholdMs) {
         continue;
       }
