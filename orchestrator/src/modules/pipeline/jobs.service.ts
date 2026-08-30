@@ -8,6 +8,7 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
@@ -102,6 +103,13 @@ export interface SubmitJobInput {
   // undefined for every non-batch caller, same as every other optional field
   // here -- no behavior change to any existing submit() caller.
   batchId?: string | null;
+  // Generated in the wizard's SURVEY-only "Confirm understanding" step
+  // (see DocumentOverviewService), BEFORE this Job row exists -- passed
+  // straight through here, never recomputed. Always undefined/null for
+  // BASELINE, or for a SURVEY submission whose generation call failed at
+  // wizard time (fail-open, same convention as every other optional
+  // LLM-dependent signal in this codebase).
+  documentOverview?: { synopsis: string; caveat: string | null } | null;
 }
 
 export interface JobSummary {
@@ -236,6 +244,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         iterationPath: input.iterationPath ?? null,
         originalFilename: input.filename,
         batchId: input.batchId ?? null,
+        documentOverview: (input.documentOverview ?? null) as any,
       },
     });
     // BullMQ persists job data as JSON in Redis. JSON.stringify(Buffer)

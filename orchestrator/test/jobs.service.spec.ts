@@ -4310,6 +4310,43 @@ describe('JobsService.submit', () => {
 
     expect(result).toEqual({ jobId: 'job-1' });
   });
+
+  it('persists documentOverview on the created job when provided', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const jobCreate = jest.fn().mockResolvedValue({ id: 'job-1' });
+    const prisma = {
+      job: { create: jobCreate },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.submit({
+      areaPath: 'Project\\Area1', userId: null, mode: 'survey',
+      fileBuffer: Buffer.from('doc'), filename: 'doc.docx', sourceHash: 'hash-1',
+      documentOverview: { synopsis: 'About a backplane.', caveat: null },
+    });
+
+    expect(jobCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ documentOverview: { synopsis: 'About a backplane.', caveat: null } }) }),
+    );
+  });
+
+  it('persists a null documentOverview when omitted (BASELINE, or SURVEY with no override)', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const jobCreate = jest.fn().mockResolvedValue({ id: 'job-1' });
+    const prisma = {
+      job: { create: jobCreate },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.submit({
+      areaPath: 'Project\\Area1', userId: null, mode: 'baseline',
+      fileBuffer: Buffer.from('doc'), filename: 'doc.docx', sourceHash: 'hash-1',
+    });
+
+    expect(jobCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ documentOverview: null }) }));
+  });
 });
 
 describe('JobsService.resubmit', () => {

@@ -141,6 +141,7 @@ export class JobsController {
     @Body('state') state: string | undefined,
     @Body('iterationPath') iterationPath: string | undefined,
     @Body('model') model: string | undefined,
+    @Body('documentOverview') documentOverviewRaw: string | undefined,
   ): Promise<{ jobId: string }> {
     if (!file) {
       throw new BadRequestException('file is required');
@@ -161,6 +162,20 @@ export class JobsController {
       throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
     }
     const sourceHash = createHash('sha256').update(file.buffer).digest('hex');
+    // Parsed defensively -- a malformed/unexpected shape must never fail
+    // job creation, same fail-open contract DocumentOverviewService itself
+    // already follows.
+    let documentOverview: { synopsis: string; caveat: string | null } | null = null;
+    if (documentOverviewRaw) {
+      try {
+        const parsed = JSON.parse(documentOverviewRaw);
+        if (parsed && typeof parsed.synopsis === 'string') {
+          documentOverview = { synopsis: parsed.synopsis, caveat: typeof parsed.caveat === 'string' ? parsed.caveat : null };
+        }
+      } catch {
+        documentOverview = null;
+      }
+    }
     return this.jobsService.submit({
       areaPath,
       // The submitting user's stable ADO identity (see Job.userId's own doc
@@ -176,6 +191,7 @@ export class JobsController {
       state,
       iterationPath: iterationPath ?? null,
       model,
+      documentOverview,
     });
   }
 
