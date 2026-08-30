@@ -410,6 +410,33 @@ describe('BatchService.getBatch', () => {
     expect(result?.notes.map((n) => n.kind)).toContain('files_not_submitted');
   });
 
+  it("excludes an entry (and its whole subtree) from the batch-level diffSummary counts, matching JobsService.getSummary's own exclusion rule", async () => {
+    const prisma = makePrisma();
+    prisma.jobBatch.findUnique.mockResolvedValue({
+      ...BASE_BATCH,
+      files: [makeBatchFile({ id: 'f1', ordinal: 0, jobId: 'job-1', sourceHash: 'h1' })],
+    });
+    prisma.job.findMany.mockResolvedValue([
+      {
+        id: 'job-1',
+        status: 'diff_ready',
+        dryRunDiff: [
+          { localId: 'feat-1', parentLocalId: null, action: 'create', excluded: true },
+          { localId: 'req-1', parentLocalId: 'feat-1', action: 'create' },
+          { localId: 'req-2', parentLocalId: null, action: 'reuse' },
+        ],
+        warnings: [],
+        _count: { createdItemMappings: 0 },
+      },
+    ]);
+    const service = new BatchService(prisma, {} as any, 25 * 1024 * 1024, 2, 5 * 60_000);
+
+    const result = await service.getBatch('batch-1');
+
+    expect(result?.summary.created).toBe(0);
+    expect(result?.summary.reused).toBe(1);
+  });
+
   it("reports a file as 'deleted' when its jobId no longer resolves to a real Job", async () => {
     const prisma = makePrisma();
     prisma.jobBatch.findUnique.mockResolvedValue({ ...BASE_BATCH, files: [makeBatchFile({ id: 'f1', jobId: 'job-gone' })] });

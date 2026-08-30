@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { ALLOWED_EXTENSIONS } from '../pipeline/jobs.controller';
 import type { JobsService } from '../pipeline/jobs.service';
 import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
-import { summarizeDiffEntries, type DiffSummary } from '../pipeline/diff-summary';
+import { filterExcludedDiffEntries, summarizeDiffEntries, type DiffSummary } from '../pipeline/diff-summary';
 
 // A batch file's externally-reported status: the underlying Job's own
 // status once one exists and still resolves, 'deleted' if the Job was
@@ -259,8 +259,11 @@ export class BatchService {
     });
 
     const diffSummary = jobs.reduce<DiffSummary>((acc, job) => {
-      const diff = (job.dryRunDiff as { action: string; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
-      const s = summarizeDiffEntries(diff);
+      const diff = (job.dryRunDiff as { action: string; localId: string; parentLocalId: string | null; excluded?: boolean; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
+      // Same exclusion rule as JobsService.getSummary() -- an excluded
+      // entry (or one whose ancestor is excluded) never counts toward
+      // this batch-level rollup either.
+      const s = summarizeDiffEntries(filterExcludedDiffEntries(diff));
       return { created: acc.created + s.created, reused: acc.reused + s.reused, dedupSkipped: acc.dedupSkipped + s.dedupSkipped, flagged: acc.flagged + s.flagged };
     }, { created: 0, reused: 0, dedupSkipped: 0, flagged: 0 });
 
