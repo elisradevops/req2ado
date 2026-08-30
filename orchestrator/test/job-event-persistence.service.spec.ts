@@ -11,12 +11,37 @@ function makeSubscriber() {
   };
 }
 
+// backfillMissedEvents() now scans via ioredis's own cursor-based
+// scanStream() (KEYS blocks the whole Redis instance for a full-keyspace
+// scan -- see job-event-persistence.service.ts's own comment), so every
+// fake commandClient below needs a scanStream() double instead of keys().
+// Emits its matching keys as one 'data' batch then 'end', deferred a tick
+// so all three .on() registrations (data/end/error) land first -- the
+// same event order the real ioredis stream guarantees.
+function fakeScanStream(keysForPattern: (pattern: string) => string[]) {
+  return jest.fn().mockImplementation((opts: { match: string }) => {
+    const handlers: Record<string, (...args: any[]) => void> = {};
+    const stream = {
+      on: (event: string, handler: (...args: any[]) => void) => {
+        handlers[event] = handler;
+        return stream;
+      },
+    };
+    process.nextTick(() => {
+      const keys = keysForPattern(opts.match);
+      if (keys.length > 0) handlers.data?.(keys);
+      handlers.end?.();
+    });
+    return stream;
+  });
+}
+
 // backfillMissedEvents() runs unconditionally in onModuleInit -- every test
 // below that doesn't care about backfill still needs a commandClient that
 // resolves cleanly (no keys found), or it'd throw inside that fire-and-
 // forget call and spam console.error for no reason relevant to the test.
 function makeEmptyCommandClient() {
-  return { on: jest.fn(), keys: jest.fn().mockResolvedValue([]), lrange: jest.fn(), get: jest.fn() };
+  return { on: jest.fn(), scanStream: fakeScanStream(() => []), lrange: jest.fn(), get: jest.fn() };
 }
 
 // The real 'pmessage' handler fires `void this.persist(...)` -- a
@@ -186,9 +211,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
     const missed = JSON.stringify({ type: 'narration', phase: 'describe_figure', message: 'Figure 1: no useful caption returned' });
     const commandClient = {
       on: jest.fn(),
-      keys: jest.fn().mockImplementation((pattern: string) =>
-        Promise.resolve(pattern.endsWith('narration-log') ? ['job-events:job-1:narration-log'] : []),
-      ),
+      scanStream: fakeScanStream((pattern) => (pattern.endsWith('narration-log') ? ['job-events:job-1:narration-log'] : [])),
       lrange: jest.fn().mockResolvedValue([missed]),
       get: jest.fn(),
     };
@@ -219,9 +242,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
     const already = JSON.stringify({ type: 'narration', phase: 'parse_done', message: 'Finished parsing the document' });
     const commandClient = {
       on: jest.fn(),
-      keys: jest.fn().mockImplementation((pattern: string) =>
-        Promise.resolve(pattern.endsWith('narration-log') ? ['job-events:job-2:narration-log'] : []),
-      ),
+      scanStream: fakeScanStream((pattern) => (pattern.endsWith('narration-log') ? ['job-events:job-2:narration-log'] : [])),
       lrange: jest.fn().mockResolvedValue([already]),
       get: jest.fn(),
     };
@@ -242,9 +263,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
     const subscriber = makeSubscriber();
     const commandClient = {
       on: jest.fn(),
-      keys: jest.fn().mockImplementation((pattern: string) =>
-        Promise.resolve(pattern.endsWith(':current') ? ['job-events:job-3:current'] : []),
-      ),
+      scanStream: fakeScanStream((pattern) => (pattern.endsWith(':current') ? ['job-events:job-3:current'] : [])),
       lrange: jest.fn(),
       get: jest.fn().mockResolvedValue(JSON.stringify({ stage: 'diff_ready' })),
     };
@@ -270,9 +289,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
     const subscriber = makeSubscriber();
     const commandClient = {
       on: jest.fn(),
-      keys: jest.fn().mockImplementation((pattern: string) =>
-        Promise.resolve(pattern.endsWith(':current') ? ['job-events:job-current-emitted-at:current'] : []),
-      ),
+      scanStream: fakeScanStream((pattern) => (pattern.endsWith(':current') ? ['job-events:job-current-emitted-at:current'] : [])),
       lrange: jest.fn(),
       get: jest.fn().mockResolvedValue(JSON.stringify({ stage: 'running', emittedAt: '2026-08-04 14:21:34.187' })),
     };
@@ -296,9 +313,7 @@ describe('JobEventPersistenceService.backfillMissedEvents', () => {
     const dup = JSON.stringify({ type: 'narration', phase: 'describe_figure', message: 'Figure 1: no useful caption returned' });
     const commandClient = {
       on: jest.fn(),
-      keys: jest.fn().mockImplementation((pattern: string) =>
-        Promise.resolve(pattern.endsWith('narration-log') ? ['job-events:job-4:narration-log'] : []),
-      ),
+      scanStream: fakeScanStream((pattern) => (pattern.endsWith('narration-log') ? ['job-events:job-4:narration-log'] : [])),
       lrange: jest.fn().mockResolvedValue([dup, dup]),
       get: jest.fn(),
     };

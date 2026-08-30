@@ -134,16 +134,31 @@ export class JobEventPersistenceService implements OnModuleInit {
   }
 
   async backfillMissedEvents(): Promise<void> {
-    const narrationLogKeys = await this.commandClient.keys('job-events:*:narration-log');
+    const narrationLogKeys = await this.scanKeys('job-events:*:narration-log');
     for (const key of narrationLogKeys) {
       const jobId = key.slice('job-events:'.length, key.length - ':narration-log'.length);
       if (jobId) await this.backfillJobNarrationLog(jobId, key);
     }
-    const currentKeys = await this.commandClient.keys('job-events:*:current');
+    const currentKeys = await this.scanKeys('job-events:*:current');
     for (const key of currentKeys) {
       const jobId = key.slice('job-events:'.length, key.length - ':current'.length);
       if (jobId) await this.backfillJobCurrentStage(jobId, key);
     }
+  }
+
+  // KEYS blocks Redis's single command-processing thread for the duration
+  // of a full keyspace scan (O(entire keyspace), not just matching keys) --
+  // a real risk on a production instance shared with every other job's
+  // live pub/sub traffic. SCAN (via ioredis's own cursor-based scanStream)
+  // does the same match, incrementally, without blocking other clients.
+  private scanKeys(pattern: string): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      const keys: string[] = [];
+      const stream = this.commandClient.scanStream({ match: pattern, count: 100 });
+      stream.on('data', (batch: string[]) => keys.push(...batch));
+      stream.on('end', () => resolve(keys));
+      stream.on('error', reject);
+    });
   }
 
   private async existingKeysFor(jobId: string): Promise<Set<string>> {
