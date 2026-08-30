@@ -641,8 +641,17 @@ def health() -> dict[str, bool]:
 @app.get("/ready")
 def ready() -> Response:
     chroma_ok = _vector_store.ping()
-    body = {"ok": chroma_ok, "chroma": chroma_ok}
-    if not chroma_ok:
+    # Real gap this closes: an outage of the KB store (every SURVEY job's
+    # grounding depends on it, not just dedup) had no healthcheck at all --
+    # a completed job with a silently-empty KB context was indistinguishable
+    # from "no KB attached" from the outside. Both stores are independent
+    # Chroma collections behind the same client/mode config (see
+    # KbVectorStore's own docstring) -- either one being down is a real
+    # readiness failure, not just dedup's.
+    kb_chroma_ok = _kb_vector_store.ping()
+    ok = chroma_ok and kb_chroma_ok
+    body = {"ok": ok, "chroma": chroma_ok, "kbChroma": kb_chroma_ok}
+    if not ok:
         return JSONResponse(status_code=503, content=body)
     return JSONResponse(status_code=200, content=body)
 

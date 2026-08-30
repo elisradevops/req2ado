@@ -58,6 +58,19 @@ class KbVectorStore:
         # is safe with no invalidation needed at all.
         self._collection_cache: dict[str, chromadb.Collection] = {}
 
+    def ping(self) -> bool:
+        """Cheap reachability check for /ready -- ported from dedup/
+        vector_store.py's ChromaVectorStore.ping(), which existed only for
+        the dedup store; an outage of THIS store (the one every SURVEY
+        job's KB grounding actually depends on) previously had no
+        healthcheck at all, silently indistinguishable from "no KB
+        attached". heartbeat() is Chroma's own lightweight liveness call."""
+        try:
+            self._client.heartbeat()
+            return True
+        except Exception:
+            return False
+
     def _get_collection(self, user_id: str):
         cached = self._collection_cache.get(user_id)
         if cached is not None:

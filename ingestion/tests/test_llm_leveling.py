@@ -6952,6 +6952,40 @@ def test_agentic_retrieval_grounds_the_authoring_call_too(monkeypatch) -> None:
     assert fake.author_calls[0]["kb_context"] == "Snippet text."
 
 
+def test_agentic_build_skeleton_refires_with_the_real_kb_grounded_result(monkeypatch) -> None:
+    # Real gap this closes: the in-flight build_skeleton event hardcoded
+    # kb_grounded=False (unknowable before the call -- the model decides
+    # mid-call whether to invoke query_kb at all), and was never re-fired
+    # with the real result -- the UI permanently showed "Not grounded" for
+    # this step even when retrieval succeeded.
+    import app.leveling.llm_leveling as llm_leveling_module
+
+    monkeypatch.setattr(
+        llm_leveling_module, "_resolve_caps",
+        lambda model, caps_client=None: (100, 100_000, 100_000, True),
+    )
+    monkeypatch.setattr(
+        llm_leveling_module, "retrieve_context",
+        lambda user_id, query, embed_client, vector_store, **_: (
+            "Snippet text.", [{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}]
+        ),
+    )
+    fake = FakeSectionAnalysisClient(agentic_citations=[{"source_file": "ref.docx", "similarity": 0.9, "text": "Snippet text."}])
+
+    events: list[LevelingProgress] = []
+    build_survey_tree(
+        _small_doc(), fake, user_id="u1", embed_client=object(), vector_store=object(),
+        progress_callback=lambda p: events.append(p),
+    )
+
+    build_skeleton_events = [e for e in events if e.phase == "build_skeleton"]
+    assert len(build_skeleton_events) == 2  # in-flight, then real result
+    assert build_skeleton_events[0].kb_grounded is False
+    assert build_skeleton_events[0].kb_citations == []
+    assert build_skeleton_events[1].kb_grounded is True
+    assert build_skeleton_events[1].kb_citations == [{"source_file": "ref.docx", "similarity": 0.9}]
+
+
 def test_full_two_stage_pipeline_produces_a_coherent_multi_branch_tree(monkeypatch) -> None:
     # Integration-style end-to-end guard for the whole reordered pipeline:
     # skeleton per branch -> whole-document repair -> content per branch.

@@ -2932,6 +2932,19 @@ def _build_survey_skeleton_for_branch(
                     source_file=hit["source_file"], similarity=hit["similarity"], relevance=KbCitationRelevance.RELEVANT
                 )
         kb_citations = list(best_citation_by_file.values())
+        # Real gap this closes: the in-flight _fire above hardcodes
+        # kb_grounded=False (unknowable before the call -- the model
+        # decides mid-call whether to invoke query_kb at all) and was never
+        # re-fired with the real result, so the UI permanently showed "Not
+        # grounded" for this step even when retrieval succeeded. Same
+        # in-flight-then-real-result convention as main.py's own
+        # describe_figure narration (two events: one before the call with
+        # placeholder values, one after with the truth).
+        _fire(
+            "build_skeleton",
+            kb_grounded=bool(kb_citations),
+            kb_citations_raw=[{"source_file": c.source_file, "similarity": c.similarity} for c in kb_citations],
+        )
         # Dedup by exact text (not by source_file -- a real query_kb call
         # can legitimately pull several DIFFERENT chunks from the same
         # file) so a model re-issuing an identical query across tool rounds
