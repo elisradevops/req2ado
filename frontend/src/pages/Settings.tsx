@@ -186,6 +186,8 @@ export function Settings(): React.ReactElement {
   const [isSavingThreshold, setIsSavingThreshold] = useState(false);
   const [thresholdError, setThresholdError] = useState<string | null>(null);
   const isSavingThresholdRef = useRef(false);
+  const isReconnectingRef = useRef(false);
+  const isSharePointReconnectingRef = useRef(false);
 
   useEffect(() => {
     getSharePointStatus()
@@ -212,6 +214,10 @@ export function Settings(): React.ReactElement {
   }
 
   async function handleReconnect(): Promise<void> {
+    // Synchronous ref guard, checked before any await -- same pattern as
+    // handleSaveThreshold's isSavingThresholdRef below.
+    if (isReconnectingRef.current) return;
+    isReconnectingRef.current = true;
     setIsReconnecting(true);
     setReconnectError(null);
     try {
@@ -225,6 +231,7 @@ export function Settings(): React.ReactElement {
     } catch {
       setReconnectError('Invalid ADO organization URL or Personal Access Token, or it belongs to a different ADO account.');
     } finally {
+      isReconnectingRef.current = false;
       setIsReconnecting(false);
     }
   }
@@ -236,6 +243,10 @@ export function Settings(): React.ReactElement {
   }
 
   async function handleSharePointReconnect(): Promise<void> {
+    // Synchronous ref guard, checked before any await -- same pattern as
+    // handleSaveThreshold's isSavingThresholdRef below.
+    if (isSharePointReconnectingRef.current) return;
+    isSharePointReconnectingRef.current = true;
     setIsSharePointReconnecting(true);
     setSharePointReconnectError(null);
     try {
@@ -250,6 +261,7 @@ export function Settings(): React.ReactElement {
     } catch {
       setSharePointReconnectError('SharePoint rejected that token. Check you copied the whole value — they are long.');
     } finally {
+      isSharePointReconnectingRef.current = false;
       setIsSharePointReconnecting(false);
     }
   }

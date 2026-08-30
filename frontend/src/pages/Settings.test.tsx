@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Settings } from './Settings';
 import { ToastProvider } from '../components/ToastProvider';
@@ -63,6 +63,30 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText(/invalid ado organization url or personal access token/i)).toBeInTheDocument());
   });
 
+  it('does not fire a second /auth/ado-credential call while the first reconnect is still in flight (isReconnectingRef guard -- fireEvent.click, same technique as ChatPanel.test.tsx\'s isStreamingRef test, since userEvent.click would await a re-render between clicks and prove nothing about the synchronous guard)', async () => {
+    let resolvePost: () => void = () => {};
+    vi.mocked(httpClient.post).mockImplementation(() => new Promise((resolve) => { resolvePost = () => resolve({ data: { ok: true } }); }));
+    renderPage();
+
+    await userEvent.click(screen.getByRole('button', { name: /reconnect/i }));
+    await userEvent.type(screen.getByLabelText(/personal access token/i), 'new-pat-value');
+    const reconnectButtons = screen.getAllByRole('button', { name: /^reconnect$/i });
+    const submitButton = reconnectButtons[reconnectButtons.length - 1];
+    // Both clicks are batched inside one act() so no re-render (and thus no
+    // disabled attribute) lands between them -- this is what reproduces the
+    // "second click before the first re-render" race the ref guard fixes;
+    // two sequential un-batched fireEvent.click calls would already see the
+    // button disabled by React's synchronous discrete-event flush and prove
+    // nothing about the guard itself.
+    act(() => {
+      fireEvent.click(submitButton);
+      fireEvent.click(submitButton);
+    });
+
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
+    resolvePost();
+  });
+
   describe('SharePoint integration row + Display Preferences (DESIGN.md Track B, phase B11)', () => {
     it('shows the real SharePoint connection status once it resolves', async () => {
       vi.mocked(kbApi.getSharePointStatus).mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
@@ -85,6 +109,32 @@ describe('Settings', () => {
 
       await waitFor(() => expect(kbApi.reconnectSharePoint).toHaveBeenCalledWith('new-token'));
       await waitFor(() => expect(screen.getByText(/sharepoint reconnected/i)).toBeInTheDocument());
+    });
+
+    it('does not fire a second reconnectSharePoint call while the first reconnect is still in flight (isSharePointReconnectingRef guard -- fireEvent.click, same technique as ChatPanel.test.tsx\'s isStreamingRef test)', async () => {
+      vi.mocked(kbApi.getSharePointStatus).mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
+      let resolveReconnect: () => void = () => {};
+      vi.spyOn(kbApi, 'reconnectSharePoint').mockImplementation(
+        () => new Promise((resolve) => { resolveReconnect = () => resolve({ status: 'valid', expiresInSeconds: 3600 }); }),
+      );
+      renderPage();
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeInTheDocument());
+      const reconnectButtons = screen.getAllByRole('button', { name: /^reconnect$/i });
+      await userEvent.click(reconnectButtons[reconnectButtons.length - 1]);
+      await userEvent.type(screen.getByLabelText(/sharepoint access token/i), 'new-token');
+      const submitButton = screen.getAllByRole('button', { name: /^reconnect$/i }).at(-1)!;
+      // Both clicks batched in one act() -- see the isReconnectingRef test
+      // above for why un-batched sequential fireEvent.click calls wouldn't
+      // reproduce the race (React's synchronous discrete-event flush would
+      // already disable the button between them).
+      act(() => {
+        fireEvent.click(submitButton);
+        fireEvent.click(submitButton);
+      });
+
+      expect(kbApi.reconnectSharePoint).toHaveBeenCalledTimes(1);
+      resolveReconnect();
     });
 
     it('toggles Dense View and persists it to localStorage', async () => {
