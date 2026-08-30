@@ -14,7 +14,8 @@ from PIL import Image, ImageStat
 from pypdf import PdfReader
 from pytesseract import Output
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
+from app.loaders.figure_utils import append_figure
 from app.leveling.numbering import parse_numbering, numbering_depth
 
 logger = logging.getLogger(__name__)
@@ -2061,21 +2062,17 @@ def load_pdf(
                             caption = describe_figure(pypdf_image.data)
                         except Exception:  # noqa: BLE001 -- a vision failure must not abort the whole document
                             caption = None
-                    figures.append(
-                        Figure(
-                            id=f"f{figure_id}",
-                            caption=caption,
-                            name=figure_name_by_merged_index.get(i),
-                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
-                        )
-                    )
-                    blocks.append(
-                        Block(
-                            id=f"b{block_id}",
-                            kind=BlockKind.FIGURE,
-                            text=f"[FIGURE: {caption or 'none'}]",
-                            source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=page_number),
-                        )
+                    append_figure(
+                        figures,
+                        blocks,
+                        figure_id=f"f{figure_id}",
+                        block_id=f"b{block_id}",
+                        caption=caption,
+                        document_path=path,
+                        start_offset=start,
+                        end_offset=end,
+                        page=page_number,
+                        name=figure_name_by_merged_index.get(i),
                     )
                     block_id += 1
                     figure_id += 1

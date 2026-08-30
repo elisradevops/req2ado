@@ -15,7 +15,8 @@ from docx.table import _Cell as DocxCell
 from docx.text.paragraph import Paragraph as DocxParagraph
 from PIL import Image, UnidentifiedImageError
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
+from app.loaders.figure_utils import append_figure
 from app.leveling.numbering import parse_numbering
 
 logger = logging.getLogger(__name__)
@@ -942,20 +943,15 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
             start = offset
             end = start + 1
             offset = end
-            figures.append(
-                Figure(
-                    id=f"f{figure_index}",
-                    caption=caption,
-                    source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
-                )
-            )
-            blocks.append(
-                Block(
-                    id=f"b{block_id}",
-                    kind=BlockKind.FIGURE,
-                    text=f"[FIGURE: {caption or 'none'}]",
-                    source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
-                )
+            append_figure(
+                figures,
+                blocks,
+                figure_id=f"f{figure_index}",
+                block_id=f"b{block_id}",
+                caption=caption,
+                document_path=path,
+                start_offset=start,
+                end_offset=end,
             )
             block_id += 1
             figure_index += 1
@@ -1042,20 +1038,15 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
             # collapses to one figure instead of one per page.
             continue
         caption = _describe_one_figure(rel, describe_figure)
-        figures.append(
-            Figure(
-                id=f"f{figure_index}",
-                caption=caption,
-                source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
-            )
-        )
-        blocks.append(
-            Block(
-                id=f"b{block_id}",
-                kind=BlockKind.FIGURE,
-                text=f"[FIGURE: {caption or 'none'}]",
-                source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
-            )
+        append_figure(
+            figures,
+            blocks,
+            figure_id=f"f{figure_index}",
+            block_id=f"b{block_id}",
+            caption=caption,
+            document_path=path,
+            start_offset=0,
+            end_offset=0,
         )
         block_id += 1
         figure_index += 1

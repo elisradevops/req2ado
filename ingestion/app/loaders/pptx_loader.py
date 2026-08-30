@@ -11,7 +11,8 @@ from pptx.enum.text import PP_ALIGN
 from pptx.table import _Cell as PptxCell
 from pptx.table import Table as PptxTable
 
-from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell
+from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
+from app.loaders.figure_utils import append_figure
 
 _PLACEHOLDER_TITLE_IDX = 0  # pptx.enum.shapes placeholder idx for the title placeholder
 
@@ -323,20 +324,16 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                 start = offset
                 end = start + 1
                 offset = end
-                figures.append(
-                    Figure(
-                        id=f"f{figure_index}",
-                        caption=caption,
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
-                    )
-                )
-                blocks.append(
-                    Block(
-                        id=f"b{block_id}",
-                        kind=BlockKind.FIGURE,
-                        text=f"[FIGURE: {caption or 'none'}]",
-                        source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end, page=slide_index),
-                    )
+                append_figure(
+                    figures,
+                    blocks,
+                    figure_id=f"f{figure_index}",
+                    block_id=f"b{block_id}",
+                    caption=caption,
+                    document_path=path,
+                    start_offset=start,
+                    end_offset=end,
+                    page=slide_index,
                 )
                 block_id += 1
                 figure_index += 1
