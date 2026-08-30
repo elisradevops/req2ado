@@ -1,4 +1,5 @@
 import { JobsController } from '../src/modules/pipeline/jobs.controller';
+import { BadRequestException } from '@nestjs/common';
 
 // CanonicalDoc (ingestion/app/canonical/model.py) has no top-level `sections`
 // field — only `document`, `blocks`, `tables`, `figures`. Each Block carries
@@ -634,5 +635,33 @@ describe('JobsController.getEstimate', () => {
 
     expect(etaService.estimate).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline' }));
     expect(result.mode).toBe('baseline');
+  });
+});
+
+describe('JobsController.list', () => {
+  it('parses skip/take from the query string and forwards them to JobsService.list', async () => {
+    const jobsService = { list: jest.fn().mockResolvedValue([]) };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+    await controller.list({ userId: 'user-1' } as any, { skip: '20', take: '10' });
+
+    expect(jobsService.list).toHaveBeenCalledWith('user-1', { skip: 20, take: 10 });
+  });
+
+  it('forwards undefined skip/take when the query string omits them -- byte-identical to before this fix', async () => {
+    const jobsService = { list: jest.fn().mockResolvedValue([]) };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+    await controller.list({ userId: 'user-1' } as any, {});
+
+    expect(jobsService.list).toHaveBeenCalledWith('user-1', { skip: undefined, take: undefined });
+  });
+
+  it('rejects an out-of-range take with 400 and never calls the service', async () => {
+    const jobsService = { list: jest.fn() };
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+    await expect(controller.list({ userId: 'user-1' } as any, { take: '9999' })).rejects.toThrow(BadRequestException);
+    expect(jobsService.list).not.toHaveBeenCalled();
   });
 });

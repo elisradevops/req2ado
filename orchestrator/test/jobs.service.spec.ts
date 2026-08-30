@@ -4424,7 +4424,7 @@ describe('JobsService.resubmit', () => {
 });
 
 describe('JobsService.list', () => {
-  it('lists jobs newest-first with item counts derived from dryRunDiff length and real created-item counts', async () => {
+  it('lists jobs newest-first with item counts derived from a separate raw-SQL query, not a full dryRunDiff fetch', async () => {
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -4435,7 +4435,6 @@ describe('JobsService.list', () => {
             status: 'diff_ready',
             areaPath: 'Proj\\B',
             originalFilename: 'b.docx',
-            dryRunDiff: [{}, {}, {}],
             createdAt: new Date('2026-07-09T10:00:00Z'),
             batchId: null,
             _count: { createdItemMappings: 0 },
@@ -4446,19 +4445,25 @@ describe('JobsService.list', () => {
             status: 'succeeded',
             areaPath: 'Proj\\A',
             originalFilename: 'a.docx',
-            dryRunDiff: [{}],
             createdAt: new Date('2026-07-08T10:00:00Z'),
             batchId: 'batch-1',
             _count: { createdItemMappings: 1 },
           },
         ]),
       },
+      $queryRaw: jest.fn().mockResolvedValue([
+        { id: 'j2', itemCount: 3 },
+        { id: 'j1', itemCount: 1 },
+      ]),
     };
     const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
 
     const result = await service.list();
 
     expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { createdAt: 'desc' } }));
+    const callArg = prisma.job.findMany.mock.calls[0][0];
+    expect(callArg.select).not.toHaveProperty('dryRunDiff');
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(result).toEqual([
       { id: 'j2', mode: 'survey', status: 'diff_ready', areaPath: 'Proj\\B', originalFilename: 'b.docx', itemCount: 3, createdItemCount: 0, createdAt: new Date('2026-07-09T10:00:00Z'), batchId: null },
       { id: 'j1', mode: 'baseline', status: 'succeeded', areaPath: 'Proj\\A', originalFilename: 'a.docx', itemCount: 1, createdItemCount: 1, createdAt: new Date('2026-07-08T10:00:00Z'), batchId: 'batch-1' },
@@ -4466,7 +4471,7 @@ describe('JobsService.list', () => {
   });
 
   it('scopes the query to userId when provided -- ownership, matching every per-job route', async () => {
-    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) } };
+    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) }, $queryRaw: jest.fn() };
     const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
 
     await service.list('user-1');
@@ -4475,12 +4480,40 @@ describe('JobsService.list', () => {
   });
 
   it('queries all jobs (no where filter) when userId is omitted', async () => {
-    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) } };
+    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) }, $queryRaw: jest.fn() };
     const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
 
     await service.list();
 
     expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {} }));
+  });
+
+  it('passes skip/take through to the underlying query when provided', async () => {
+    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) }, $queryRaw: jest.fn() };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.list(undefined, { skip: 20, take: 10 });
+
+    expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 20, take: 10 }));
+  });
+
+  it('omits skip/take (fetches everything) when pagination is not provided -- byte-identical to before this fix', async () => {
+    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) }, $queryRaw: jest.fn() };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.list();
+
+    expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: undefined, take: undefined }));
+  });
+
+  it('does not run the item-count query at all when there are no rows', async () => {
+    const prisma = { job: { findMany: jest.fn().mockResolvedValue([]) }, $queryRaw: jest.fn() };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    const result = await service.list();
+
+    expect(result).toEqual([]);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 });
 

@@ -171,7 +171,10 @@ describe('JobsController (e2e)', () => {
     fakeJobsService.list.mockResolvedValue([]);
     const res = await authedRequest(app.getHttpServer()).get('/jobs');
     expect(res.status).toBe(200);
-    expect(fakeJobsService.list).toHaveBeenCalledWith(TEST_USER_ID);
+    // Second arg is the (empty, since no query string was sent) parsed
+    // skip/take pagination object -- jobsListQuerySchema always produces an
+    // object, so the controller always passes one through, even when unused.
+    expect(fakeJobsService.list).toHaveBeenCalledWith(TEST_USER_ID, {});
   });
 
   it('GET /jobs/:id returns the job status', async () => {

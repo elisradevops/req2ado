@@ -23,6 +23,7 @@ import { IngestionHttpClient } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
 import { etaEstimateQuerySchema } from './eta-estimate.dto';
+import { jobsListQuerySchema } from './jobs-list.dto';
 import { EtaService, type EtaEstimate } from './eta.service';
 import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { DocumentOverviewService } from './document-overview.service';
@@ -101,8 +102,12 @@ export class JobsController {
   ) {}
 
   @Get()
-  async list(@CurrentUser() user: SessionUser): Promise<JobSummary[]> {
-    return this.jobsService.list(user.userId);
+  async list(@CurrentUser() user: SessionUser, @Query() rawQuery: unknown): Promise<JobSummary[]> {
+    const parseResult = jobsListQuerySchema.safeParse(rawQuery);
+    if (!parseResult.success) {
+      throw new BadRequestException('Invalid query: skip/take must be non-negative integers (take capped at 200)');
+    }
+    return this.jobsService.list(user.userId, parseResult.data);
   }
 
   // Shared by every per-job route below: fetches the job and throws 404

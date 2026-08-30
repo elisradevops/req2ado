@@ -598,29 +598,45 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // getById/every other per-job route below) -- undefined only in the
   // legacy pre-auth test suite's direct service calls, never in a real
   // request (the controller always resolves a session's userId first).
-  async list(userId?: string): Promise<JobSummary[]> {
+  async list(userId?: string, pagination?: { skip?: number; take?: number }): Promise<JobSummary[]> {
     const rows = await this.prisma.job.findMany({
       where: userId ? { userId } : {},
       orderBy: { createdAt: 'desc' },
+      skip: pagination?.skip,
+      take: pagination?.take,
       select: {
         id: true,
         mode: true,
         status: true,
         areaPath: true,
         originalFilename: true,
-        dryRunDiff: true,
         createdAt: true,
         batchId: true,
         _count: { select: { createdItemMappings: true } },
       },
     });
+    if (rows.length === 0) return [];
+    // itemCount previously came from selecting the full dryRunDiff JSON
+    // column (can be multi-MB on a large document) just to read its
+    // .length -- ×N retained jobs made this list endpoint transfer and
+    // JSON-parse hundreds of MB for a screen that renders a count. One
+    // small raw-SQL query computes the count IN Postgres instead; the
+    // jsonb_typeof guard mirrors dryRunDiff's own nullable-JSON contract
+    // (a job with no diff yet, or a non-array legacy value, counts as 0
+    // rather than erroring jsonb_array_length on a non-array).
+    const ids = rows.map((row) => row.id);
+    const itemCounts = await this.prisma.$queryRaw<{ id: string; itemCount: number }[]>`
+      SELECT id, CASE WHEN jsonb_typeof("dryRunDiff") = 'array' THEN jsonb_array_length("dryRunDiff") ELSE 0 END AS "itemCount"
+      FROM "Job" WHERE id = ANY(${ids})
+    `;
+    const itemCountById = new Map(itemCounts.map((row) => [row.id, Number(row.itemCount)]));
     return rows.map((row) => ({
       id: row.id,
       mode: row.mode,
       status: row.status,
       areaPath: row.areaPath,
       originalFilename: row.originalFilename,
-      itemCount: Array.isArray(row.dryRunDiff) ? row.dryRunDiff.length : 0,
+      itemCount: itemCountById.get(row.id) ?? 0,
       createdItemCount: row._count.createdItemMappings,
       createdAt: row.createdAt,
       batchId: row.batchId,
