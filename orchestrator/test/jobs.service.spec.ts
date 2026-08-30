@@ -1,4 +1,5 @@
 import { BadGatewayException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { JobsService, buildFigureAttachmentFilename } from '../src/modules/pipeline/jobs.service';
 import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
@@ -4345,7 +4346,7 @@ describe('JobsService.submit', () => {
       fileBuffer: Buffer.from('doc'), filename: 'doc.docx', sourceHash: 'hash-1',
     });
 
-    expect(jobCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ documentOverview: null }) }));
+    expect(jobCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ documentOverview: Prisma.DbNull }) }));
   });
 });
 
@@ -4393,6 +4394,32 @@ describe('JobsService.resubmit', () => {
       }),
     });
     expect(result).toEqual({ jobId: 'job-2' });
+  });
+
+  it('forwards the original job documentOverview so a resubmitted SURVEY job keeps its synopsis', async () => {
+    jest.spyOn(Queue.prototype, 'add').mockResolvedValue(undefined as any);
+    const jobCreate = jest.fn().mockResolvedValue({ id: 'job-2' });
+    const prisma = {
+      job: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', mode: 'survey',
+          originalFilename: 'doc.txt', sourceHash: 'hash-1', state: 'Approved', iterationPath: 'Iter\\1',
+          model: 'gpt-4o', documentOverview: { synopsis: 'About a backplane.', caveat: 'Unusually deep.' },
+        }),
+        create: jobCreate,
+      },
+      jobSourceFile: { findUnique: jest.fn().mockResolvedValue({ jobId: 'job-1', bytes: Buffer.from('original bytes') }) },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await service.resubmit('job-1');
+
+    expect(jobCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        documentOverview: { synopsis: 'About a backplane.', caveat: 'Unusually deep.' },
+      }),
+    });
   });
 });
 

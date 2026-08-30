@@ -7,7 +7,7 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
@@ -243,7 +243,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         iterationPath: input.iterationPath ?? null,
         originalFilename: input.filename,
         batchId: input.batchId ?? null,
-        documentOverview: (input.documentOverview ?? null) as any,
+        documentOverview: input.documentOverview
+          ? (input.documentOverview as unknown as Prisma.InputJsonValue)
+          : Prisma.DbNull,
       },
     });
     // BullMQ persists job data as JSON in Redis. JSON.stringify(Buffer)
@@ -321,6 +323,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // config default happens to be. "Resubmit" means "run this again,"
       // not "run this again under today's config."
       model: job.model ?? undefined,
+      // Same bug shape as model above: a resubmit that omits this silently
+      // drops the original run's Confirm-understanding synopsis/caveat for a
+      // SURVEY job. job.documentOverview is the ORIGINAL job's persisted
+      // value (null for BASELINE or a SURVEY job whose wizard-time
+      // generation failed) -- forwarding it, not recomputing it, matches
+      // submit()'s own doc comment: this is generated once, at wizard time,
+      // never recomputed later.
+      documentOverview: job.documentOverview as { synopsis: string; caveat: string | null } | null,
     });
   }
 
