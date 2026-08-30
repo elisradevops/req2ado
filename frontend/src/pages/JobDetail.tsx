@@ -203,6 +203,11 @@ export function JobDetail(): React.ReactElement {
   // are a different mutation class and shouldn't disable those buttons.
   const isDiffMutatingRef = useRef(false);
   const [isDiffMutating, setIsDiffMutating] = useState(false);
+  // Guards the SSE connection-error toast against firing on every single
+  // retry attempt -- EventSource retries a dropped/401'd connection
+  // forever on its own; without this a persistent outage would spam one
+  // toast per retry instead of one until the connection actually recovers.
+  const hasShownSseErrorRef = useRef(false);
 
   // Extracted so the error-state Retry button can re-run the same fetch,
   // not just the initial mount effect.
@@ -335,10 +340,12 @@ export function JobDetail(): React.ReactElement {
         id,
         config.apiBaseUrl,
         (nextStage) => {
+          hasShownSseErrorRef.current = false;
           setStage(nextStage);
           setStatus((current) => (current === 'pending' ? 'running' : current));
           if (nextStage === 'diff_ready' || nextStage === 'failed' || nextStage === 'cancelled') {
             getJob(id).then((job) => {
+              if (cancelled) return;
               setStatus(job.status);
               setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
               // The mount-time fetch (loadJob above) almost always got {}
@@ -375,10 +382,19 @@ export function JobDetail(): React.ReactElement {
               // mount-time loadJob() where a freshly-completed job's real
               // captions become available.
               setTableDescriptions(job.tableDescriptions ?? []);
+            }).catch(() => {
+              // Real gap this closes: this is the ONLY path that populates
+              // the real terminal status/diff/warnings/citations/etc. --
+              // an unhandled rejection here previously left the page stuck
+              // showing a stale "running" view forever with zero signal
+              // that anything went wrong.
+              if (cancelled) return;
+              showToast('Lost connection while finishing up -- reload the page to see the final result.', 'error');
             });
           }
         },
         (narration) => {
+          hasShownSseErrorRef.current = false;
           // chunk_warning is deliberately EXCLUDED from `narrations` --
           // that array's `.at(-1)` drives the stepper's current-phase and
           // the ticker's status sentence (JobLifecycleSteps/tickerFor), and
@@ -428,6 +444,16 @@ export function JobDetail(): React.ReactElement {
             const { warningMessage } = narration;
             setLiveWarnings((current) => (current.includes(warningMessage) ? current : [...current, warningMessage]));
           }
+        },
+        () => {
+          // Real gap this closes: EventSource retries a dropped/expired-
+          // session connection forever on its own with no signal at all --
+          // previously a silent infinite reconnect loop. One toast per
+          // outage (reset by hasShownSseErrorRef above once a real event
+          // arrives again), not one per retry attempt.
+          if (cancelled || hasShownSseErrorRef.current) return;
+          hasShownSseErrorRef.current = true;
+          showToast('Lost the live connection to this job -- reconnecting...', 'error');
         },
       );
     });

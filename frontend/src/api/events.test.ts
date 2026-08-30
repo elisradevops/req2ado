@@ -133,6 +133,23 @@ describe('subscribeToJobEvents', () => {
     errorSpy.mockRestore();
   });
 
+  it('calls onError on the native error event (previously no handling at all -- a silent infinite reconnect loop)', () => {
+    const onError = vi.fn();
+    subscribeToJobEvents('job-1', 'https://api.example', vi.fn(), undefined, onError);
+    const source = FakeEventSource.instances[0];
+
+    source.emit('error', {});
+
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw when an error event arrives and onError is omitted', () => {
+    subscribeToJobEvents('job-1', 'https://api.example', vi.fn());
+    const source = FakeEventSource.instances[0];
+
+    expect(() => source.emit('error', {})).not.toThrow();
+  });
+
   it('returns a function that closes the underlying EventSource', () => {
     const unsubscribe = subscribeToJobEvents('job-1', 'https://api.example', vi.fn());
     const source = FakeEventSource.instances[0];

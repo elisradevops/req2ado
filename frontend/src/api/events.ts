@@ -310,6 +310,14 @@ export function subscribeToJobEvents(
   baseUrl: string,
   onStage: (stage: JobStage) => void,
   onNarration?: (narration: NarrationEvent) => void,
+  // Real gap this closes: EventSource has no onerror handling at all --
+  // an expired session (401) or a dropped connection previously became a
+  // silent infinite reconnect loop (EventSource's own built-in retry keeps
+  // trying forever) with zero signal to the caller that anything was
+  // wrong. Fired on every failed attempt -- callers should debounce/only
+  // surface this once until a real event arrives again, not toast on
+  // every retry.
+  onError?: () => void,
 ): () => void {
   // withCredentials: true -- required for the session cookie to be sent at
   // all. EventSource defaults to NOT sending cookies (even same-origin in
@@ -335,6 +343,9 @@ export function subscribeToJobEvents(
       return;
     }
     onNarration?.(payload);
+  });
+  source.addEventListener('error', () => {
+    onError?.();
   });
   return () => source.close();
 }
