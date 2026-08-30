@@ -131,6 +131,48 @@ describe('DryRunService', () => {
     expect(fakeIdempotencyService.lookupMany).toHaveBeenCalledWith([{ sourceHash: 'hash1', areaPath: 'Project\\Area1' }]);
   });
 
+  it('resolves to "reuse" via the legacySourceHash fallback when only the legacy key has a mapping', async () => {
+    // Regression coverage for resolveExistingAdoId's own legacy-hash HIT
+    // path (dry-run.service.ts) -- before this task, this exact fallback
+    // was IdempotencyService.lookup()'s second findFirst and was covered by
+    // idempotency.service.spec.ts alone. DryRunService now owns its own
+    // copy of that two-tier resolution and never calls lookup() at all, so
+    // that old coverage no longer protects this path: a regression here
+    // (e.g. resolveExistingAdoId returning null instead of falling back to
+    // the legacy key) would silently duplicate every re-ingested document's
+    // whole tree in ADO -- exactly what lookup()'s own doc comment warns
+    // about -- while every other test in this file stayed green, since none
+    // of them populate the map with ONLY the legacy key.
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(
+      new Map([[idempotencyMapKey('legacy-fidelity-hash', 'Project\\Area1'), 55]]),
+    );
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'new-identity-hash',
+          legacySourceHash: 'legacy-fidelity-hash',
+          customerId: null,
+          seCoverageRef: null,
+          areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
+          tags: [],
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0].action).toBe('reuse');
+    expect(result[0].existingAdoId).toBe(55);
+  });
+
   it('marks a node as "reuse" when an existing mapping is found', async () => {
     (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(
       new Map([[idempotencyMapKey('hash1', 'Project\\Area1'), 42]]),
