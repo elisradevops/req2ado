@@ -192,6 +192,9 @@ export function NewJobWizard(): React.ReactElement {
   // stale number over a fresher one. Only the response matching the
   // request fired most recently is allowed to commit to state.
   const estimateRequestSeq = useRef(0);
+  // Same stale-response guard, separate lineage: file re-selection races
+  // are independent of the model-dropdown estimate refresh above.
+  const previewRequestSeq = useRef(0);
   // Sync guard against double-submit -- a synchronous ref checked before
   // any await (state alone is too slow: clicks before the first re-render
   // read the stale `false` from closure).
@@ -274,12 +277,17 @@ export function NewJobWizard(): React.ReactElement {
   }, [preview?.blockCount, preview?.figureCount, model]);
 
   async function handleFileSelected(selected: File): Promise<void> {
+    const seq = ++previewRequestSeq.current;
     setFile(selected);
     setPreview(null);
     setParseStatus('parsing');
     setParseError(null);
     try {
       const result = await previewJob(selected);
+      // A later file selection may have already superseded this one (a
+      // fast re-select before this request resolves) -- never let a stale
+      // response commit over a fresher one.
+      if (seq !== previewRequestSeq.current) return;
       setPreview(result);
       setParseStatus('parsed');
     } catch {
@@ -290,6 +298,7 @@ export function NewJobWizard(): React.ReactElement {
       // (a redeploy mid-request, a network blip) looked identical to the
       // app refusing to accept the file. Now also a real dropzone state
       // (FileDropzone's own `error` variant), not just an easy-to-miss toast.
+      if (seq !== previewRequestSeq.current) return;
       const message = 'Failed to parse the uploaded file. Please try again.';
       setParseStatus('error');
       setParseError(message);

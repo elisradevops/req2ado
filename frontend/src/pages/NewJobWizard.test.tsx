@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { NewJobWizard } from './NewJobWizard';
@@ -283,6 +283,61 @@ describe('NewJobWizard Step 1', () => {
     // (DESIGN.md Track B phase B14), not only the toast -- getAllByText
     // tolerates that expected duplication.
     await waitFor(() => expect(screen.getAllByText(/failed to parse the uploaded file/i).length).toBeGreaterThan(0));
+  });
+
+  it("handleFileSelected: a slower preview response for an earlier file selection cannot overwrite a faster later selection's already-shown preview", async () => {
+    // Regression (SWEEP.md): handleFileSelected had no sequence guard, so
+    // picking file A, then quickly replacing it with file B before A's
+    // previewJob() resolved, let A's stale response overwrite B's
+    // already-current preview if A resolved after B.
+    let resolveA!: (result: Awaited<ReturnType<typeof jobsApi.previewJob>>) => void;
+    const aPromise = new Promise<Awaited<ReturnType<typeof jobsApi.previewJob>>>((resolve) => {
+      resolveA = resolve;
+    });
+    const bResult = {
+      blockCount: 777, sectionCount: 3, figureCount: 888, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any;
+    vi.spyOn(jobsApi, 'previewJob').mockImplementation((file) =>
+      file.name === 'doc-a.docx' ? aPromise : Promise.resolve(bResult),
+    );
+
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+
+    // Select file A first -- fires the slower, still-pending
+    // previewJob('doc-a.docx') request.
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'doc-a.docx'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /replace/i })).toBeInTheDocument());
+
+    // Before A resolves, replace it with file B -- fires a second, faster
+    // request that resolves and paints B's preview first.
+    await userEvent.click(screen.getByRole('button', { name: /replace/i }));
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['y'], 'doc-b.docx'));
+
+    await waitFor(() => expect(screen.getByText('777')).toBeInTheDocument());
+    expect(screen.getByText('888')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled();
+
+    // Now let A's slower response resolve LAST -- it must not repaint B's
+    // already-shown preview out from under it.
+    await act(async () => {
+      resolveA({
+        blockCount: 111, sectionCount: 2, figureCount: 222, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+      } as any);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('777')).toBeInTheDocument();
+    expect(screen.getByText('888')).toBeInTheDocument();
+    expect(screen.queryByText('111')).not.toBeInTheDocument();
+    expect(screen.queryByText('222')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled();
   });
 });
 
