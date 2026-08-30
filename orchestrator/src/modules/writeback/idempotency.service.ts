@@ -1,6 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 
+// Shared key format for lookupMany's result map -- exported so a caller
+// (DryRunService today) builds identical keys when reading the map back.
+// A plain template string, not a nested Map, keeps the call site a single
+// .get() instead of a two-level lookup.
+export function idempotencyMapKey(sourceHash: string, areaPath: string): string {
+  return `${sourceHash}::${areaPath}`;
+}
+
 /**
  * Backs docs/architecture.md's idempotency key: (source_hash, area_path) ->
  * System.Id. A row existing means this exact source content, in this area
@@ -41,6 +49,25 @@ export class IdempotencyService {
       where: { sourceHash: legacySourceHash, areaPath },
     });
     return legacyRecord?.adoWorkItemId ?? null;
+  }
+
+  // Batched form of lookup() -- one findMany for the WHOLE set of
+  // (sourceHash, areaPath) pairs a caller needs, instead of one query per
+  // pair. Filters on sourceHash alone at the DB level (areaPath is matched
+  // in memory against the returned rows via idempotencyMapKey) -- correct
+  // whether or not different pairs in the same batch share an areaPath,
+  // and keeps the query itself simple (one IN clause, no OR-of-ANDs).
+  async lookupMany(keys: { sourceHash: string; areaPath: string }[]): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (keys.length === 0) return result;
+    const sourceHashes = [...new Set(keys.map((key) => key.sourceHash))];
+    const rows = await this.prisma.idempotencyMapping.findMany({
+      where: { sourceHash: { in: sourceHashes } },
+    });
+    for (const row of rows) {
+      result.set(idempotencyMapKey(row.sourceHash, row.areaPath), row.adoWorkItemId);
+    }
+    return result;
   }
 
   // upsert, not create: a plain create raced a resubmit of the same

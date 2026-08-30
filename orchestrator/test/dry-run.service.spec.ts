@@ -6,16 +6,24 @@ import {
   type TraceLink,
 } from '../src/modules/writeback/dry-run.service';
 import type { IdempotencyService } from '../src/modules/writeback/idempotency.service';
+import { idempotencyMapKey } from '../src/modules/writeback/idempotency.service';
 
 describe('DryRunService', () => {
-  const fakeIdempotencyService = { lookup: jest.fn() } as unknown as IdempotencyService;
+  const fakeIdempotencyService = { lookupMany: jest.fn() } as unknown as IdempotencyService;
+
+  beforeEach(() => {
+    // Default: no existing mapping for anything -- matches every test
+    // below that previously relied on `lookup.mockResolvedValue(null)` as
+    // its default "no match" setup. Tests that need a real match override
+    // this with their own mockResolvedValueOnce/mockResolvedValue call.
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(new Map());
+  });
 
   afterEach(() => {
     jest.clearAllMocks();
   });
 
   it('marks a node as "create" when no existing mapping is found', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -60,12 +68,11 @@ describe('DryRunService', () => {
     ]);
   });
 
-  it('passes legacySourceHash through to idempotencyService.lookup as its 3rd argument', async () => {
+  it('includes legacySourceHash as a second prefetch key when present and different from sourceHash', async () => {
     // Regression: identity_hash's migration-safety fallback (see
     // IdempotencyService.lookup's own doc comment) only works if diff()
     // actually forwards the node's legacySourceHash -- silently dropping it
     // here would make every already-ingested document duplicate on re-run.
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     await service.diff(
       [
@@ -89,18 +96,16 @@ describe('DryRunService', () => {
       ],
       fakeIdempotencyService,
     );
-    expect(fakeIdempotencyService.lookup).toHaveBeenCalledWith(
-      'new-identity-hash',
-      'Project\\Area1',
-      'legacy-fidelity-hash',
-    );
+    expect(fakeIdempotencyService.lookupMany).toHaveBeenCalledWith([
+      { sourceHash: 'new-identity-hash', areaPath: 'Project\\Area1' },
+      { sourceHash: 'legacy-fidelity-hash', areaPath: 'Project\\Area1' },
+    ]);
   });
 
-  it('passes undefined (not null) to idempotencyService.lookup when legacySourceHash is absent', async () => {
+  it('does not add a second prefetch key when legacySourceHash is absent', async () => {
     // Older/mocked node shape predating identity_hash -- must not pass a
     // literal `null` through, matching IdempotencyService.lookup's optional
     // parameter contract exactly.
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     await service.diff(
       [
@@ -123,11 +128,13 @@ describe('DryRunService', () => {
       ],
       fakeIdempotencyService,
     );
-    expect(fakeIdempotencyService.lookup).toHaveBeenCalledWith('hash1', 'Project\\Area1', undefined);
+    expect(fakeIdempotencyService.lookupMany).toHaveBeenCalledWith([{ sourceHash: 'hash1', areaPath: 'Project\\Area1' }]);
   });
 
   it('marks a node as "reuse" when an existing mapping is found', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(42);
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(
+      new Map([[idempotencyMapKey('hash1', 'Project\\Area1'), 42]]),
+    );
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -173,7 +180,9 @@ describe('DryRunService', () => {
   });
 
   it('diffs every node in a multi-node tree independently', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValueOnce(null).mockResolvedValueOnce(7);
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(
+      new Map([[idempotencyMapKey('hash2', 'Project\\Area1'), 7]]),
+    );
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -253,7 +262,6 @@ describe('DryRunService', () => {
   });
 
   it('does not call any MCP tool or perform any write — pure diff', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     await service.diff(
       [
@@ -276,14 +284,13 @@ describe('DryRunService', () => {
       ],
       fakeIdempotencyService,
     );
-    // No assertion needed beyond "this test exists and only calls lookup()"
+    // No assertion needed beyond "this test exists and only calls lookupMany()"
     // — DryRunService has no MCP client dependency at all by construction,
     // so there is nothing else it COULD call.
-    expect(fakeIdempotencyService.lookup).toHaveBeenCalledTimes(1);
+    expect(fakeIdempotencyService.lookupMany).toHaveBeenCalledTimes(1);
   });
 
   it('marks a node as "dedup_skip" when no exact-hash match exists but dedupCheck finds a duplicate', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: '123', similarity: 0.94 });
     const service = new DryRunService();
     const result = await service.diff(
@@ -338,7 +345,6 @@ describe('DryRunService', () => {
     // call and a NaN audit-table write. Same "creating a possible
     // duplicate is always safer" fail-open philosophy as a dedupCheck
     // rejection.
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: 'not-a-real-id', similarity: 0.94 });
     const service = new DryRunService();
     const result = await service.diff(
@@ -381,7 +387,6 @@ describe('DryRunService', () => {
     // a table's much higher markup-to-content ratio makes that gap far
     // worse. Proving the fix means proving BOTH sides now see the exact
     // same plain-text content, not merely that stripHtmlTags exists.
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
     const service = new DryRunService();
     const tableBearingDescription =
@@ -417,7 +422,6 @@ describe('DryRunService', () => {
   });
 
   it('marks a node as "create" when no exact-hash match exists and dedupCheck finds no duplicate', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
     const service = new DryRunService();
     const result = await service.diff(
@@ -465,7 +469,9 @@ describe('DryRunService', () => {
   });
 
   it('never calls dedupCheck for a node that already has an exact-hash reuse match', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(42);
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(
+      new Map([[idempotencyMapKey('hash1', 'Project\\Area1'), 42]]),
+    );
     const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: '999', similarity: 0.99 });
     const service = new DryRunService();
     const result = await service.diff(
@@ -496,7 +502,6 @@ describe('DryRunService', () => {
   });
 
   it('behaves byte-identically to before this task when dedupCheck is not passed at all', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -542,7 +547,6 @@ describe('DryRunService', () => {
   });
 
   it('fails OPEN: a dedupCheck that rejects does not propagate out of diff(), and the node still gets action="create"', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const dedupCheck = jest.fn().mockRejectedValue(new Error('embedding service unreachable'));
     const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const service = new DryRunService();
@@ -627,7 +631,6 @@ describe('DryRunService', () => {
   });
 
   it('carries real groundingScore/qualityScore/qualityIssues through to every action type', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -662,7 +665,6 @@ describe('DryRunService', () => {
   });
 
   it('carries a real qualityCategoryChecklist through to a create entry', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -693,7 +695,6 @@ describe('DryRunService', () => {
   });
 
   it('carries a real sourceRef/tags through to every action type', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const sourceRef = {
       documentPath: '/tmp/doc.docx', startOffset: 10, endOffset: 20, page: null,
@@ -724,7 +725,6 @@ describe('DryRunService', () => {
   });
 
   it('leaves qualityScore/qualityIssues undefined when the tree node omits them (byte-identical pre-P2c behavior)', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const nodes = [
       {
@@ -739,16 +739,12 @@ describe('DryRunService', () => {
 
   // --- perf: bounded concurrency instead of one-node-at-a-time sequential awaits ---
 
-  it('propagates an idempotencyService.lookup rejection out of diff() (fails the whole job, same as before parallelization)', async () => {
-    // Unlike dedupCheck (fail-open, tested above), a lookup failure must
-    // still abort the whole diff() call -- this is the failure-semantics
-    // guarantee that must survive the switch to mapWithConcurrency, which
-    // otherwise captures per-item exceptions into rejected results instead
-    // of letting them propagate on their own.
-    (fakeIdempotencyService.lookup as jest.Mock)
-      .mockResolvedValueOnce(null)
-      .mockRejectedValueOnce(new Error('db unreachable'))
-      .mockResolvedValueOnce(null);
+  it('propagates a lookupMany rejection out of diff() (fails the whole job)', async () => {
+    // Unlike dedupCheck (fail-open, tested above), a failed idempotency
+    // prefetch must still abort the whole diff() call -- lookupMany is a
+    // single plain await BEFORE the concurrent loop starts, so this is
+    // even more direct than the old per-node behavior it replaces.
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockRejectedValue(new Error('db unreachable'));
     const service = new DryRunService();
     const nodes = ['n0', 'n1', 'n2'].map((localId, i) => ({
       localId, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
@@ -758,41 +754,10 @@ describe('DryRunService', () => {
     await expect(service.diff(nodes as any, fakeIdempotencyService)).rejects.toThrow('db unreachable');
   });
 
-  it('returns results in the original node order regardless of concurrent resolution order', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockImplementation((sourceHash: string) => {
-      // n0's lookup resolves LAST despite being requested first -- proves
-      // the returned array order tracks input order, not completion order.
-      const delayMs = sourceHash === 'hash0' ? 30 : 5;
-      return new Promise((resolve) => setTimeout(() => resolve(null), delayMs));
-    });
-    const service = new DryRunService(3);
-    const nodes = ['n0', 'n1', 'n2', 'n3', 'n4'].map((localId, i) => ({
-      localId, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
-      sourceHash: `hash${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
-    }));
-
-    const result = await service.diff(nodes as any, fakeIdempotencyService);
-
-    expect(result.map((r) => r.localId)).toEqual(['n0', 'n1', 'n2', 'n3', 'n4']);
-  });
-
-  it('runs idempotencyService.lookup calls concurrently, not one at a time', async () => {
-    // Regression: the previous sequential `for` loop awaited each node's
-    // lookup before starting the next -- for N nodes this serializes N
-    // round trips even though every node's check is independent. Track how
-    // many lookups are in flight simultaneously to prove the new
-    // implementation actually overlaps them.
-    let inFlight = 0;
-    let maxInFlight = 0;
-    (fakeIdempotencyService.lookup as jest.Mock).mockImplementation(() => {
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      return new Promise((resolve) => setTimeout(() => {
-        inFlight -= 1;
-        resolve(null);
-      }, 10));
-    });
-    const service = new DryRunService(4);
+  it('calls idempotencyService.lookupMany exactly once for the whole batch, not once per node', async () => {
+    // Regression guard for the N+1 fix itself: the previous per-node
+    // idempotencyService.lookup call issued one DB round trip per node.
+    const service = new DryRunService();
     const nodes = Array.from({ length: 8 }, (_, i) => ({
       localId: `n${i}`, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
       sourceHash: `hash${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
@@ -800,11 +765,56 @@ describe('DryRunService', () => {
 
     await service.diff(nodes as any, fakeIdempotencyService);
 
+    expect(fakeIdempotencyService.lookupMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns results in the original node order regardless of concurrent dedupCheck resolution order', async () => {
+    // Idempotency lookups are now a synchronous map read after the single
+    // prefetch above -- the remaining per-node async work inside the
+    // concurrent loop is dedupCheck, so that is what order-preservation
+    // must survive against after this fix.
+    const dedupCheck = jest.fn((_text: string, title: string) => {
+      const delayMs = title === 'T0' ? 30 : 5;
+      return new Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>((resolve) =>
+        setTimeout(() => resolve({ isDuplicate: false, matchedItemId: null, similarity: null }), delayMs),
+      );
+    });
+    const service = new DryRunService(3);
+    const nodes = ['n0', 'n1', 'n2', 'n3', 'n4'].map((localId, i) => ({
+      localId, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
+      sourceHash: `hash${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
+    }));
+
+    const result = await service.diff(nodes as any, fakeIdempotencyService, dedupCheck);
+
+    expect(result.map((r) => r.localId)).toEqual(['n0', 'n1', 'n2', 'n3', 'n4']);
+  });
+
+  it('runs dedupCheck calls concurrently, not one at a time', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const dedupCheck = jest.fn(() => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>((resolve) =>
+        setTimeout(() => {
+          inFlight -= 1;
+          resolve({ isDuplicate: false, matchedItemId: null, similarity: null });
+        }, 10),
+      );
+    });
+    const service = new DryRunService(4);
+    const nodes = Array.from({ length: 8 }, (_, i) => ({
+      localId: `n${i}`, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
+      sourceHash: `hash${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
+    }));
+
+    await service.diff(nodes as any, fakeIdempotencyService, dedupCheck);
+
     expect(maxInFlight).toBeGreaterThan(1);
   });
 
   it('passes childType through on every action branch (create, reuse, dedup_skip)', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -827,7 +837,6 @@ describe('DryRunService', () => {
   // always iterated an empty list. One case per action branch since each
   // branch is its own object literal, not a shared code path.
   it('carries figureIds through on the "create" branch', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -844,7 +853,9 @@ describe('DryRunService', () => {
   });
 
   it('carries figureIds through on the "reuse" branch', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(42);
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(
+      new Map([[idempotencyMapKey('h0', 'Project\\Area1'), 42]]),
+    );
     const service = new DryRunService();
     const result = await service.diff(
       [
@@ -861,7 +872,6 @@ describe('DryRunService', () => {
   });
 
   it('carries figureIds through on the "dedup_skip" branch', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: '99', similarity: 0.9 });
     const service = new DryRunService();
     const result = await service.diff(
@@ -887,7 +897,6 @@ describe('DryRunService', () => {
   // dropped on the others. One case per action branch, mirroring the
   // figureIds tests exactly.
   it('carries tableIds/uncaptionedFigureIds/sectionPath/pageEnd/pageProvenance through on the "create" branch', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const sourceRef = {
       documentPath: '/tmp/doc.pdf', startOffset: 10, endOffset: 20, page: 12,
@@ -911,7 +920,9 @@ describe('DryRunService', () => {
   });
 
   it('carries tableIds/uncaptionedFigureIds/sectionPath/pageEnd/pageProvenance through on the "reuse" branch', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(42);
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(
+      new Map([[idempotencyMapKey('h0', 'Project\\Area1'), 42]]),
+    );
     const service = new DryRunService();
     const sourceRef = {
       documentPath: '/tmp/doc.pdf', startOffset: 10, endOffset: 20, page: 12,
@@ -935,7 +946,6 @@ describe('DryRunService', () => {
   });
 
   it('carries tableIds/uncaptionedFigureIds/sectionPath/pageEnd/pageProvenance through on the "dedup_skip" branch', async () => {
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: '99', similarity: 0.9 });
     const service = new DryRunService();
     const sourceRef = {
@@ -965,7 +975,6 @@ describe('DryRunService', () => {
     // pipeline.worker.ts's own comment: confirmed live, ~543 nodes, zero
     // progress signal). onProgress is optional and must not change diff()'s
     // own return value or ordering guarantees.
-    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
     const service = new DryRunService();
     const nodes = Array.from({ length: 5 }, (_, i) => ({
       localId: `n${i}`, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,

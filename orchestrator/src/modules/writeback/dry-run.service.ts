@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { IdempotencyService } from './idempotency.service';
+import { idempotencyMapKey } from './idempotency.service';
 import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
 import { stripHtmlTags } from './backfill.service';
 
@@ -349,24 +350,43 @@ export class DryRunService {
     // actually involved.
     onProgress?: (completed: number, total: number, currentTitle: string) => void,
   ): Promise<DryRunDiffEntry[]> {
+    // One batched idempotency-mapping lookup for the WHOLE tree, not one
+    // findFirst per node (N+1 -- 500-1100+ DB round trips on a large
+    // document, bounded to 8-concurrent so it doesn't stampede, but still
+    // 60-130+ sequential batches of latency). Every node's own hash, plus
+    // its legacy-hash fallback when present and different, is prefetched
+    // here; diffOneNode below reads this map synchronously instead of
+    // awaiting a per-node DB call.
+    const idempotencyKeys: { sourceHash: string; areaPath: string }[] = [];
+    for (const node of nodes) {
+      idempotencyKeys.push({ sourceHash: node.sourceHash, areaPath: node.areaPath });
+      const legacyHash = node.legacySourceHash ?? undefined;
+      if (legacyHash !== undefined && legacyHash !== node.sourceHash) {
+        idempotencyKeys.push({ sourceHash: legacyHash, areaPath: node.areaPath });
+      }
+    }
+    const idempotencyMap = await idempotencyService.lookupMany(idempotencyKeys);
+
     let completedCount = 0;
     const settled = await mapWithConcurrency(nodes, this.concurrency, async (node) => {
       try {
-        return await this.diffOneNode(node, idempotencyService, dedupCheck);
+        return await this.diffOneNode(node, idempotencyMap, dedupCheck);
       } finally {
         completedCount += 1;
         onProgress?.(completedCount, nodes.length, node.title);
       }
     });
 
-    // Preserve the exact pre-parallelization failure semantics: an
-    // unguarded idempotencyService.lookup throwing previously propagated
-    // straight out of this loop, aborting the whole diff() call (and the
-    // pipeline job with it). mapWithConcurrency instead captures a
-    // per-item exception into a rejected result rather than letting it
-    // propagate on its own -- re-throw the first one here so a DB failure
-    // still fails the job exactly as it did before, instead of silently
-    // degrading into a partial/incomplete diff.
+    // Preserve the exact pre-parallelization failure semantics: a failed
+    // idempotency lookup previously propagated straight out and aborted the
+    // whole diff() call (and the pipeline job with it) -- lookupMany above
+    // is a plain awaited call BEFORE mapWithConcurrency even starts, so a
+    // rejection there already propagates the same way, even earlier. This
+    // re-throw covers any OTHER unexpected exception inside diffOneNode
+    // (mapWithConcurrency captures per-item exceptions into a rejected
+    // result rather than letting them propagate on their own) -- re-throw
+    // the first one here so such a failure still fails the job exactly as
+    // before, instead of silently degrading into a partial/incomplete diff.
     const firstError = settled.find((r) => r.status === 'rejected');
     if (firstError && firstError.status === 'rejected') {
       throw firstError.reason;
@@ -374,17 +394,25 @@ export class DryRunService {
     return settled.map((r) => (r as { status: 'fulfilled'; value: DryRunDiffEntry }).value);
   }
 
+  // Same two-tier resolution IdempotencyService.lookup() used to do
+  // per-node (new identity_hash first, legacy fidelity_hash fallback) --
+  // now a synchronous read against the whole-batch map diff() prefetched,
+  // instead of a second DB round trip per node on a miss.
+  private resolveExistingAdoId(node: DryRunTreeNode, idempotencyMap: Map<string, number>): number | null {
+    const direct = idempotencyMap.get(idempotencyMapKey(node.sourceHash, node.areaPath));
+    if (direct !== undefined) return direct;
+    const legacyHash = node.legacySourceHash ?? undefined;
+    if (legacyHash === undefined || legacyHash === node.sourceHash) return null;
+    return idempotencyMap.get(idempotencyMapKey(legacyHash, node.areaPath)) ?? null;
+  }
+
   private async diffOneNode(
     node: DryRunTreeNode,
-    idempotencyService: IdempotencyService,
+    idempotencyMap: Map<string, number>,
     dedupCheck?: (text: string, title: string, areaPath: string) => Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }>,
   ): Promise<DryRunDiffEntry> {
     {
-      const existingAdoId = await idempotencyService.lookup(
-        node.sourceHash,
-        node.areaPath,
-        node.legacySourceHash ?? undefined,
-      );
+      const existingAdoId = this.resolveExistingAdoId(node, idempotencyMap);
       if (existingAdoId !== null) {
         return {
           localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,

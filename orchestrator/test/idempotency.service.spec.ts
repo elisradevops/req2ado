@@ -1,9 +1,10 @@
-import { IdempotencyService } from '../src/modules/writeback/idempotency.service';
+import { IdempotencyService, idempotencyMapKey } from '../src/modules/writeback/idempotency.service';
 
 describe('IdempotencyService', () => {
   const fakePrisma = {
     idempotencyMapping: {
       findFirst: jest.fn(),
+      findMany: jest.fn(),
       upsert: jest.fn(),
       deleteMany: jest.fn(),
     },
@@ -143,5 +144,46 @@ describe('IdempotencyService', () => {
     const second = await service.lookup('hash1', 'Project\\Area1');
     expect(first).toBe(7);
     expect(second).toBe(7);
+  });
+
+  describe('IdempotencyService.lookupMany', () => {
+    it('returns an empty map without querying when given no keys', async () => {
+      // @ts-expect-error -- fake Prisma client for the test
+      const service = new IdempotencyService(fakePrisma);
+      const result = await service.lookupMany([]);
+      expect(result.size).toBe(0);
+      expect(fakePrisma.idempotencyMapping.findMany).not.toHaveBeenCalled();
+    });
+
+    it('makes exactly one findMany query for the whole batch, keyed on the distinct sourceHash set', async () => {
+      fakePrisma.idempotencyMapping.findMany = jest.fn().mockResolvedValue([]);
+      // @ts-expect-error -- fake Prisma client for the test
+      const service = new IdempotencyService(fakePrisma);
+      await service.lookupMany([
+        { sourceHash: 'hash1', areaPath: 'Project\\Area1' },
+        { sourceHash: 'hash2', areaPath: 'Project\\Area1' },
+        { sourceHash: 'hash1', areaPath: 'Project\\Area2' }, // same hash, different area -- still one distinct hash
+      ]);
+      expect(fakePrisma.idempotencyMapping.findMany).toHaveBeenCalledTimes(1);
+      expect(fakePrisma.idempotencyMapping.findMany).toHaveBeenCalledWith({
+        where: { sourceHash: { in: ['hash1', 'hash2'] } },
+      });
+    });
+
+    it('builds a map keyed on the exact (sourceHash, areaPath) pair, not sourceHash alone', async () => {
+      fakePrisma.idempotencyMapping.findMany = jest.fn().mockResolvedValue([
+        { sourceHash: 'hash1', areaPath: 'Project\\Area1', adoWorkItemId: 42 },
+        { sourceHash: 'hash1', areaPath: 'Project\\Area2', adoWorkItemId: 99 },
+      ]);
+      // @ts-expect-error -- fake Prisma client for the test
+      const service = new IdempotencyService(fakePrisma);
+      const result = await service.lookupMany([
+        { sourceHash: 'hash1', areaPath: 'Project\\Area1' },
+        { sourceHash: 'hash1', areaPath: 'Project\\Area2' },
+      ]);
+      expect(result.get(idempotencyMapKey('hash1', 'Project\\Area1'))).toBe(42);
+      expect(result.get(idempotencyMapKey('hash1', 'Project\\Area2'))).toBe(99);
+      expect(result.get(idempotencyMapKey('hash1', 'Project\\Area3'))).toBeUndefined();
+    });
   });
 });
