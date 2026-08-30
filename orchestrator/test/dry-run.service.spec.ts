@@ -331,6 +331,43 @@ describe('DryRunService', () => {
     expect(dedupCheck).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1');
   });
 
+  it('falls through to "create" (not a NaN existingAdoId) when dedupCheck returns a non-numeric matchedItemId', async () => {
+    // Real gap this closes: Number('not-a-real-id') is NaN, not an error --
+    // a bad dedup-store record previously produced action: 'dedup_skip'
+    // with existingAdoId: NaN, propagating into a PATCH .../workItems/NaN
+    // call and a NaN audit-table write. Same "creating a possible
+    // duplicate is always safer" fail-open philosophy as a dedupCheck
+    // rejection.
+    (fakeIdempotencyService.lookup as jest.Mock).mockResolvedValue(null);
+    const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: 'not-a-real-id', similarity: 0.94 });
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0',
+          parentLocalId: null,
+          type: 'Requirement',
+          title: 'Title 0',
+          description: 'Desc 0',
+          sourceHash: 'hash1',
+          customerId: null,
+          seCoverageRef: null,
+          areaPath: 'Project\\Area1',
+          groundingScore: null,
+          qualityScore: null,
+          qualityIssues: [],
+          sourceRef: null,
+          tags: [],
+        },
+      ],
+      fakeIdempotencyService,
+      dedupCheck,
+    );
+    expect(result[0].action).toBe('create');
+    expect(result[0].existingAdoId).toBeNull();
+    expect(Number.isNaN(result[0].existingAdoId)).toBe(false);
+  });
+
   it('strips HTML from node.description before calling dedupCheck, matching backfill.service.ts\'s own stripping so both sides of the comparison are symmetric', async () => {
     // Regression for the asymmetry documented on stripHtmlTags and at this
     // call site: node.description is req2ado's own generated rich-text

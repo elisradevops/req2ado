@@ -412,11 +412,18 @@ export class DryRunService {
           // sharply and risk real duplicate ADO item creation for exactly
           // the requirements this feature touches.
           const dedupResult = await dedupCheck(stripHtmlTags(node.description), node.title, node.areaPath);
-          if (dedupResult.isDuplicate && dedupResult.matchedItemId !== null) {
+          const matchedAdoId = dedupResult.matchedItemId !== null ? Number(dedupResult.matchedItemId) : null;
+          // A bad dedup-store record (matchedItemId not a real numeric ADO
+          // id) must fall through to 'create' below, same "creating a
+          // possible duplicate is always safer" philosophy as this whole
+          // block -- Number.isFinite guards against Number(...) silently
+          // producing NaN here and propagating into a PATCH .../workItems/NaN
+          // call (confirm()'s adoIdByLocalId map) and a NaN audit-table write.
+          if (dedupResult.isDuplicate && matchedAdoId !== null && Number.isFinite(matchedAdoId)) {
             return {
               localId: node.localId, parentLocalId: node.parentLocalId, type: node.type,
               title: node.title, description: node.description, action: 'dedup_skip' as const,
-              existingAdoId: Number(dedupResult.matchedItemId), similarity: dedupResult.similarity,
+              existingAdoId: matchedAdoId, similarity: dedupResult.similarity,
               sourceHash: node.sourceHash, customerId: node.customerId, seCoverageRef: node.seCoverageRef, tags: node.tags,
               groundingScore: node.groundingScore, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
               qualityCategoryScores: node.qualityCategoryScores, qualityCategoryChecklist: node.qualityCategoryChecklist,
