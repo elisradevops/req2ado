@@ -11,6 +11,7 @@ import { StatePicker } from '../components/StatePicker';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { formatDestinationPreview } from '../components/DestinationBar';
 import { previewJob, submitJob, listModels, getEstimate, type EtaEstimate, type PreviewResult } from '../api/jobs';
+import { previewExposition, type DocumentOverview } from '../api/jobs';
 import { formatEtaRange } from '../utils/eta';
 import { useOrgUrl } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
@@ -30,7 +31,8 @@ import { InfoTip } from '../ui/Tooltip';
 // don't exist as separate screens, since target/options/review all live on
 // one page today. Two honest stages instead of a stage count the UI can't
 // back up.
-const WIZARD_STEPS = ['Upload document', 'Configure & review'];
+const WIZARD_STEPS_BASELINE = ['Upload document', 'Configure & review'];
+const WIZARD_STEPS_SURVEY = ['Upload document', 'Configure & review', 'Confirm understanding'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -151,7 +153,7 @@ export function NewJobWizard(): React.ReactElement {
   const navigate = useNavigate();
   const { showToast } = useToast();
   const orgUrl = useOrgUrl();
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   // Dropzone status now lives on step 1 alongside the stat tiles (DESIGN.md
@@ -169,6 +171,8 @@ export function NewJobWizard(): React.ReactElement {
   const [iterationPath, setIterationPath] = useState('');
   const [model, setModel] = useState('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [documentOverview, setDocumentOverview] = useState<DocumentOverview | null>(null);
+  const [expositionStatus, setExpositionStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   // DESIGN.md §11.2.3.d -- server-computed, both modes shown side by side
   // (ModeCards) so both are fetched regardless of which is selected.
   // undefined while in flight/not-yet-fetched; ModeCards renders '--' for
@@ -200,6 +204,23 @@ export function NewJobWizard(): React.ReactElement {
       .then(setAvailableModels)
       .catch(() => setAvailableModels([]));
   }, [mode, availableModels.length]);
+
+  // Fires the exposition call exactly once per entry into step 3 -- guarded
+  // on expositionStatus !== 'idle' so re-renders while step 3 is already
+  // loading/ready/error don't re-fire the request.
+  useEffect(() => {
+    if (step !== 3 || expositionStatus !== 'idle' || !preview) return;
+    setExpositionStatus('loading');
+    previewExposition({ documentMap: preview.documentMap, sectionCount: preview.sectionCount, depth: preview.depth })
+      .then((result) => {
+        setDocumentOverview(result);
+        setExpositionStatus('ready');
+      })
+      .catch(() => {
+        setDocumentOverview(null);
+        setExpositionStatus('error');
+      });
+  }, [step, expositionStatus, preview]);
 
   // A stale area path picked under a previous project must not be
   // submittable once the project changes -- the two are meant to stay
@@ -280,12 +301,24 @@ export function NewJobWizard(): React.ReactElement {
         state: state || undefined,
         iterationPath: iterationPath || undefined,
         model: mode === 'survey' ? model || undefined : undefined,
+        documentOverview: mode === 'survey' ? documentOverview : undefined,
       });
       navigate(`/jobs/${jobId}`);
     } catch {
       showToast('Failed to start the job. Please try again.', 'error');
       isSubmittingRef.current = false;
       setIsSubmitting(false);
+    }
+  }
+
+  // Step 2's own submit button: BASELINE creates the job directly
+  // (unchanged); SURVEY instead advances to step 3, where the real
+  // creation trigger lives.
+  function handleContinueFromConfigure(): void {
+    if (mode === 'survey') {
+      setStep(3);
+    } else {
+      void handleSubmit();
     }
   }
 
@@ -301,7 +334,7 @@ export function NewJobWizard(): React.ReactElement {
     return (
       <div className="flex flex-col gap-4">
         <PageHeader title="New Job" description="Upload a requirements document to get started" />
-        <Stepper steps={WIZARD_STEPS} activeIndex={0} />
+        <Stepper steps={mode === 'survey' ? WIZARD_STEPS_SURVEY : WIZARD_STEPS_BASELINE} activeIndex={0} />
         {/* DESIGN.md §11.1 -- "a two-pane split that owns the viewport by
             construction" -- previously a single narrow column stretched
             across AppShell's full-viewport-height <main>, reading as a
@@ -413,6 +446,44 @@ export function NewJobWizard(): React.ReactElement {
     );
   }
 
+  if (step === 3) {
+    return (
+      <div className="flex flex-col gap-4">
+        <PageHeader title="New Job" description="Confirm the AI understood this document before it runs" />
+        <Stepper steps={WIZARD_STEPS_SURVEY} activeIndex={2} />
+        <SectionCard title="Does this look right?">
+          <div className="flex flex-col gap-3">
+            {expositionStatus === 'loading' && (
+              <p className="flex items-center gap-2 text-sm text-ink-3">
+                <Spinner /> Reading the document's structure…
+              </p>
+            )}
+            {expositionStatus === 'ready' && documentOverview && (
+              <>
+                <p className="text-sm text-ink-1">{documentOverview.synopsis}</p>
+                {documentOverview.caveat && (
+                  <Alert severity="warning">{documentOverview.caveat}</Alert>
+                )}
+              </>
+            )}
+            {expositionStatus === 'error' && (
+              <p className="text-sm text-ink-3">Couldn't generate a summary — you can still continue.</p>
+            )}
+          </div>
+        </SectionCard>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button variant="outline" onClick={() => setStep(2)}>
+            ← Back to configure
+          </Button>
+          <Button onClick={handleSubmit} disabled={isSubmitting} className="ml-auto">
+            {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
+            {isSubmitting ? 'Starting…' : 'Looks right — start job'}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   // DESIGN.md §11.2.3.d -- the currently-selected mode's server-computed
   // estimate; the OTHER mode's is still fetched (see the effect above) so
   // ModeCards can show both side by side, but the footer only needs one.
@@ -421,7 +492,7 @@ export function NewJobWizard(): React.ReactElement {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="New Job" description="Review the parsed document and set where it writes to" />
-      <Stepper steps={WIZARD_STEPS} activeIndex={1} />
+      <Stepper steps={mode === 'survey' ? WIZARD_STEPS_SURVEY : WIZARD_STEPS_BASELINE} activeIndex={1} />
       {/* Two-column split (prototype's `.split`, ~1.6:1) -- left column is
           document identity + destination, right column is how-to-read +
           options + the submit action. Previously one full-width vertical
@@ -598,9 +669,9 @@ export function NewJobWizard(): React.ReactElement {
               <Lock className="h-3.5 w-3.5 flex-none" />
               Starting a job writes nothing. You approve the diff first.
             </span>
-            <Button onClick={handleSubmit} disabled={!areaPath || (hasAdoSession && !project) || isSubmitting} className="ml-auto">
-              {isSubmitting ? <Spinner /> : <Activity className="h-3.5 w-3.5" />}
-              {isSubmitting ? 'Starting…' : 'Start job'}
+            <Button onClick={handleContinueFromConfigure} disabled={!areaPath || (hasAdoSession && !project) || isSubmitting} className="ml-auto">
+              {isSubmitting ? <Spinner /> : mode === 'survey' ? <ArrowRight className="h-3.5 w-3.5" /> : <Activity className="h-3.5 w-3.5" />}
+              {isSubmitting ? 'Starting…' : mode === 'survey' ? 'Continue' : 'Start job'}
             </Button>
           </div>
         </div>

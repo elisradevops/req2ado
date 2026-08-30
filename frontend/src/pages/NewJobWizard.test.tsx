@@ -141,6 +141,7 @@ describe('NewJobWizard Step 1', () => {
     } as any);
     vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-99' });
     vi.spyOn(jobsApi, 'listModels').mockResolvedValue(['qwen2.5:1.5b']);
+    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue({ synopsis: 'A synopsis.', caveat: null });
     vi.spyOn(adoApi, 'getProjects').mockResolvedValue([{ id: '1', name: 'Project' }]);
     vi.spyOn(adoApi, 'getAreaPaths').mockResolvedValue({ path: 'Project', children: [] });
     vi.spyOn(adoApi, 'getIterationPaths').mockResolvedValue({ path: 'Project', children: [] });
@@ -167,7 +168,12 @@ describe('NewJobWizard Step 1', () => {
     await userEvent.click(screen.getByLabelText(/team project/i));
     await userEvent.click(await screen.findByRole('option', { name: 'Project' }));
     await userEvent.type(await screen.findByLabelText(/area path/i), 'Project');
-    await userEvent.click(screen.getByRole('button', { name: /start/i }));
+    // SURVEY mode's step-2 button now advances to step 3 (Confirm
+    // understanding) instead of submitting directly -- the actual
+    // submission trigger lives there now.
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /looks right/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
 
     await waitFor(() =>
       expect(jobsApi.submitJob).toHaveBeenCalledWith(
@@ -277,5 +283,118 @@ describe('NewJobWizard Step 1', () => {
     // (DESIGN.md Track B phase B14), not only the toast -- getAllByText
     // tolerates that expected duplication.
     await waitFor(() => expect(screen.getAllByText(/failed to parse the uploaded file/i).length).toBeGreaterThan(0));
+  });
+});
+
+describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
+  async function uploadAndConfigureAsSurvey(): Promise<void> {
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    const file = new File(['x'], 'req.docx');
+    const input = screen.getByLabelText(/upload/i) as HTMLInputElement;
+    await userEvent.upload(input, file);
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+  }
+
+  it('BASELINE never shows step 3 -- Start job submits directly from step 2', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 1, sectionCount: 1, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    const file = new File(['x'], 'req.docx');
+    await userEvent.upload(screen.getByLabelText(/upload/i), file);
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    // BASELINE is the default mode -- no mode selection needed.
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+
+    await userEvent.click(screen.getByRole('button', { name: /start job/i }));
+
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline', documentOverview: undefined }));
+    expect(screen.queryByText(/does this look right/i)).not.toBeInTheDocument();
+  });
+
+  it('SURVEY selection advances to step 3 and shows the generated synopsis', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue({ synopsis: 'About a backplane.', caveat: null });
+    await uploadAndConfigureAsSurvey();
+    // Continue is gated the same way BASELINE's direct Start-job submit
+    // always was (an area path is still required before advancing) --
+    // matches the other scenarios in this block.
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    await waitFor(() => expect(screen.getByText('About a backplane.')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /looks right/i })).toBeInTheDocument();
+  });
+
+  it('"Looks right -- start job" submits with the generated documentOverview', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue({ synopsis: 'About a backplane.', caveat: null });
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+    await uploadAndConfigureAsSurvey();
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(screen.getByText('About a backplane.')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'survey', documentOverview: { synopsis: 'About a backplane.', caveat: null } }),
+    );
+  });
+
+  it('"Back to configure" returns to step 2 without losing the area path', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue({ synopsis: 'About a backplane.', caveat: null });
+    await uploadAndConfigureAsSurvey();
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(screen.getByText('About a backplane.')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+
+    expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
+  });
+
+  it('exposition failure still allows the job to be created', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'previewExposition').mockRejectedValue(new Error('LLM unreachable'));
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+    await uploadAndConfigureAsSurvey();
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /start job|looks right/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /start job|looks right/i }));
+
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ documentOverview: null }));
   });
 });
