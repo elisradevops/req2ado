@@ -4625,4 +4625,41 @@ describe('JobsService.getById', () => {
 
     expect(result?.createdItemCount).toBe(3);
   });
+
+  it('returns the persisted documentOverview', async () => {
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [],
+          warnings: null, kbCitations: [], figureDescriptions: null,
+          documentOverview: { synopsis: 'About a backplane.', caveat: 'Unusually deep.' },
+          _count: { createdItemMappings: 0 },
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result?.documentOverview).toEqual({ synopsis: 'About a backplane.', caveat: 'Unusually deep.' });
+  });
+
+  it('returns null documentOverview for a BASELINE job (never attempted)', async () => {
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', mode: 'baseline', dryRunDiff: [],
+          warnings: null, kbCitations: [], figureDescriptions: null, documentOverview: null,
+          _count: { createdItemMappings: 0 },
+        }),
+      },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.getById('job-1');
+
+    expect(result?.documentOverview).toBeNull();
+  });
 });

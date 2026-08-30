@@ -342,6 +342,7 @@ export class JobsController {
     traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
     // See JobsService.getById's own doc comment.
     createdItemCount: number;
+    documentOverview: { synopsis: string; caveat: string | null } | null;
     // The SAME field (and its real allowedValues) JobsService.confirm()
     // will actually write a Requirement's classification to -- lets the
     // review UI show which of a Requirement's tags is representable BEFORE

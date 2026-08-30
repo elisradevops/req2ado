@@ -547,6 +547,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // before they click Confirm again, instead of a blind re-submit --
     // same `_count` pattern `list()` above already uses.
     createdItemCount: number;
+    documentOverview: { synopsis: string; caveat: string | null } | null;
   } | null> {
     const job = await this.prisma.job.findUnique({
       where: { id },
@@ -579,6 +580,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         referenceName: f.referenceName,
       })),
       createdItemCount: job._count.createdItemMappings,
+      documentOverview: job.documentOverview as { synopsis: string; caveat: string | null } | null,
     };
   }
 
