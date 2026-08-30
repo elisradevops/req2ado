@@ -1,4 +1,4 @@
-import { isFlaggedDiffEntry, summarizeDiffEntries } from '../src/modules/pipeline/diff-summary';
+import { buildExclusionChecker, filterExcludedDiffEntries, isFlaggedDiffEntry, summarizeDiffEntries } from '../src/modules/pipeline/diff-summary';
 
 describe('summarizeDiffEntries', () => {
   it('aggregates create/reuse/dedup_skip counts', () => {
@@ -46,5 +46,55 @@ describe('isFlaggedDiffEntry', () => {
   it('is true exactly at the quality threshold boundary (< 50)', () => {
     expect(isFlaggedDiffEntry({ groundingScore: null, qualityScore: 49 })).toBe(true);
     expect(isFlaggedDiffEntry({ groundingScore: null, qualityScore: 50 })).toBe(false);
+  });
+});
+
+describe('buildExclusionChecker / filterExcludedDiffEntries', () => {
+  const requirement = { localId: 'req-1', parentLocalId: 'feat-1', action: 'create' };
+  const feature = { localId: 'feat-1', parentLocalId: null, action: 'create', excluded: true };
+  const unrelated = { localId: 'req-2', parentLocalId: null, action: 'create' };
+
+  it('excludes a directly-excluded entry', () => {
+    const isExcluded = buildExclusionChecker([feature]);
+    expect(isExcluded(feature)).toBe(true);
+  });
+
+  it('excludes a descendant of an excluded ancestor, even though the descendant itself is not marked excluded', () => {
+    const diff = [feature, requirement];
+    const isExcluded = buildExclusionChecker(diff);
+    expect(isExcluded(requirement)).toBe(true);
+  });
+
+  it('does not exclude an unrelated entry with no excluded ancestor', () => {
+    const diff = [feature, requirement, unrelated];
+    const isExcluded = buildExclusionChecker(diff);
+    expect(isExcluded(unrelated)).toBe(false);
+  });
+
+  it('does not infinite-loop on a cyclic parentLocalId chain -- same cycle guard as confirm()\'s own isExcluded', () => {
+    const a = { localId: 'a', parentLocalId: 'b', action: 'create' };
+    const b = { localId: 'b', parentLocalId: 'a', action: 'create' };
+    const isExcluded = buildExclusionChecker([a, b]);
+    expect(isExcluded(a)).toBe(false);
+  });
+
+  it('treats an entry with no excluded field and no matching parent as not excluded (back-compat: entries predating the exclude feature)', () => {
+    const legacy = { localId: 'n0', parentLocalId: null, action: 'create' };
+    const isExcluded = buildExclusionChecker([legacy]);
+    expect(isExcluded(legacy)).toBe(false);
+  });
+
+  it('filterExcludedDiffEntries removes an excluded entry and its whole subtree, keeping unrelated entries', () => {
+    const diff = [feature, requirement, unrelated];
+    const result = filterExcludedDiffEntries(diff);
+    expect(result).toEqual([unrelated]);
+  });
+
+  it('filterExcludedDiffEntries returns every entry unchanged when nothing is excluded', () => {
+    const diff = [
+      { localId: 'n0', parentLocalId: null, action: 'create' },
+      { localId: 'n1', parentLocalId: 'n0', action: 'reuse' },
+    ];
+    expect(filterExcludedDiffEntries(diff)).toEqual(diff);
   });
 });

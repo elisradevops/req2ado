@@ -17,6 +17,46 @@ export interface DiffSummary {
   flagged: number;
 }
 
+export interface DiffEntryForExclusion {
+  localId: string;
+  parentLocalId: string | null;
+  excluded?: boolean;
+}
+
+// Same ancestry-walk exclusion rule as JobsService.confirm()'s own local
+// isExcluded() (jobs.service.ts) -- excluding a parent excludes its whole
+// subtree too, even when a descendant isn't itself marked excluded. Kept
+// as a separate, pure copy rather than refactoring confirm() (a large,
+// heavily-tested method with 4 existing call sites) to use it -- if
+// confirm()'s own exclusion semantics ever change, this copy needs the
+// same update. Generic over T so both getSummary()'s narrower diff shape
+// and BatchService's per-job diff shape can use it without widening
+// either to match the other.
+export function buildExclusionChecker<T extends DiffEntryForExclusion>(diff: T[]): (entry: T) => boolean {
+  const diffById = new Map(diff.map((entry) => [entry.localId, entry] as const));
+  return function isExcluded(entry: T): boolean {
+    let current: T | undefined = entry;
+    const visited = new Set<string>();
+    while (current) {
+      if (current.excluded) return true;
+      if (visited.has(current.localId)) return false;
+      visited.add(current.localId);
+      current = current.parentLocalId ? diffById.get(current.parentLocalId) : undefined;
+    }
+    return false;
+  };
+}
+
+// Excludes both directly-excluded entries and any entry whose ancestor is
+// excluded (see buildExclusionChecker) -- summarizeDiffEntries alone has
+// no exclusion awareness at all, so a caller that needs its counts to
+// match what a real confirm() write would actually create/reuse/skip
+// must filter through this first.
+export function filterExcludedDiffEntries<T extends DiffEntryForExclusion>(diff: T[]): T[] {
+  const isExcluded = buildExclusionChecker(diff);
+  return diff.filter((entry) => !isExcluded(entry));
+}
+
 export function isFlaggedDiffEntry(entry: { groundingScore?: number | null; qualityScore?: number | null }): boolean {
   return (
     (entry.groundingScore != null && entry.groundingScore < LOW_GROUNDING_THRESHOLD) ||
