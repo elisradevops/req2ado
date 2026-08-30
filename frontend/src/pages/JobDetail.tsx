@@ -974,7 +974,13 @@ export function JobDetail(): React.ReactElement {
     const childrenByParent = new Map<string, DryRunDiffEntry[]>();
     for (const entry of diff) {
       if (entry.parentLocalId) {
-        childrenByParent.set(entry.parentLocalId, [...(childrenByParent.get(entry.parentLocalId) ?? []), entry]);
+        // push onto the existing array, not a spread-rebuild -- the spread
+        // form copies the whole sibling array on every single insert, so a
+        // parent with M children cost O(M^2) to index despite this
+        // function's own comment claiming O(n) overall.
+        const siblings = childrenByParent.get(entry.parentLocalId);
+        if (siblings) siblings.push(entry);
+        else childrenByParent.set(entry.parentLocalId, [entry]);
       }
     }
     const cache = new Map<string, { epics: number; features: number; requirements: number }>();
