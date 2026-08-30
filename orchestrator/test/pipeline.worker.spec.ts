@@ -1726,6 +1726,12 @@ describe('runPipelineJob', () => {
       // checkpoint sits AFTER it, not as an earlier short-circuit that
       // would make this test pass for the wrong reason).
       expect(fakeDryRunService.diff).toHaveBeenCalled();
+      // Pin the exact 3-checkpoint consumption of the mock so a future
+      // change that removes/reorders a checkpoint, or a run that
+      // short-circuits earlier than expected, fails here with a direct
+      // count mismatch instead of relying only on the indirect
+      // not.toHaveBeenCalledWith assertion below.
+      expect(fakePrisma.job.findUnique).toHaveBeenCalledTimes(3);
       // Status must never be forced to 'diff_ready' -- the whole point of
       // this fix. No job.update call at all should carry status: 'diff_ready'
       // for this run.
@@ -1742,7 +1748,8 @@ describe('runPipelineJob', () => {
   describe('area-path backfill', () => {
     beforeEach(() => {
       // The cancellation describe block above persistently overrides
-      // job.findUnique to {status: 'cancelled'} on its last test, and
+      // job.findUnique to {status: 'cancelled'} from an earlier test in
+      // that block, and
       // clearAllMocks does NOT reset a mock's implementation -- restore
       // the "not cancelled" default so assertNotCancelled's checkpoint at
       // the very top of runPipelineJob doesn't short-circuit every test
