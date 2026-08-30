@@ -916,6 +916,22 @@ export async function runPipelineJob(
           )
         : verifiedDiff;
 
+    // Third and final cooperative-cancellation checkpoint. The two earlier
+    // checkpoints (before ingest(), right after level()) do not cover the
+    // dedup/verification/trace-link-resolution tail that runs between them
+    // and this write (dryRunService.diff's embed-based dedup checks,
+    // verifyExistingAdoIdsStillExist's ADO batch lookup, the stale-mapping
+    // cleanup loops, resolveCrossJobTraceLinks' cross-job WIQL queries) --
+    // real jobs have seen a 543-node embed round-trip in this window alone.
+    // Without this check, a cancel() landing anywhere in that tail (a user
+    // action, or the automated stale-job watchdog) is silently overwritten
+    // by the unconditional write below, resurrecting a job the user already
+    // cancelled. The existing catch block's JobCancelledError handling
+    // (does not overwrite status, writes an audit entry, publishes
+    // 'cancelled') already covers this throw correctly -- no other change
+    // needed.
+    await assertNotCancelled(deps.prisma, job.id);
+
     // `resolvedDiff` is a plain JSON-serializable array of DryRunDiffEntry;
     // cast past Prisma's generated InputJsonValue type (its structural check
     // does not resolve concrete array-of-interface types against the JSON

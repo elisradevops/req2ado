@@ -1691,6 +1691,52 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.ingest).not.toHaveBeenCalled();
       expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
     });
+
+    it('re-checks cancellation immediately before the final diff_ready write -- a cancel() landing during the dedup/verification/trace-link tail must not be silently overwritten', async () => {
+      // Three cooperative-cancellation checkpoints exist in a full run today:
+      // (1) before ingest() even starts, (2) right after level() resolves,
+      // (3) THIS ONE -- immediately before the final status write. The first
+      // two must see 'running' so the run actually reaches the tail this
+      // test targets; only the third (new) checkpoint sees 'cancelled'.
+      fakePrisma.job.findUnique
+        .mockResolvedValueOnce({ status: 'running' })
+        .mockResolvedValueOnce({ status: 'running' })
+        .mockResolvedValueOnce({ status: 'cancelled' });
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+
+      const result = await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+
+      expect(result).toEqual([]);
+      // The diff was actually computed (proves the tail ran and the new
+      // checkpoint sits AFTER it, not as an earlier short-circuit that
+      // would make this test pass for the wrong reason).
+      expect(fakeDryRunService.diff).toHaveBeenCalled();
+      // Status must never be forced to 'diff_ready' -- the whole point of
+      // this fix. No job.update call at all should carry status: 'diff_ready'
+      // for this run.
+      expect(fakePrisma.job.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: 'diff_ready' }) }),
+      );
+      expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
+      expect(fakePrisma.auditEntry.create).toHaveBeenCalledWith({
+        data: { jobId: 'job-1', message: 'Pipeline stopped: job was cancelled' },
+      });
+    });
   });
 
   describe('area-path backfill', () => {
