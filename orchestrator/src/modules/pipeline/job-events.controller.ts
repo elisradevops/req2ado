@@ -117,7 +117,15 @@ export class JobEventsController {
 
     const terminalStages = new Set(['diff_ready', 'failed', 'cancelled']);
     subscriber.on('message', (_channel: string, message: string) => {
-      const payload = JSON.parse(message) as { type?: string; stage?: string };
+      let payload: { type?: string; stage?: string };
+      try {
+        payload = JSON.parse(message) as { type?: string; stage?: string };
+      } catch {
+        // Malformed payload must never crash this long-lived subscriber --
+        // same fail-open convention JobEventPersistenceService.parsePayload
+        // already follows for the identical shared channel.
+        return;
+      }
       // Convention: ingestion only ever publishes `type: 'narration'` on
       // this channel; orchestrator's own JobEventsPublisher owns every
       // `stage` transition (no `type` field). Narration never ends the

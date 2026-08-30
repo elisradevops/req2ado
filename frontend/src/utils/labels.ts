@@ -100,16 +100,6 @@ export function requirementTagLabel(tag: string): QualityIssueLabel {
   return REQUIREMENT_TAG_LABELS[tag] ?? { label: tag, description: '' };
 }
 
-export const RELEVANCE_LABELS: Record<string, string> = {
-  relevant: 'Judged relevant to this requirement',
-  not_relevant: 'Judged not relevant to this requirement',
-  unknown: 'Relevance not verified',
-};
-
-export function relevanceLabel(relevance: string): string {
-  return RELEVANCE_LABELS[relevance] ?? relevance;
-}
-
 // The Job.status lifecycle (jobs.service.ts, schema.prisma) -- what each
 // stage actually means and, where relevant, what happens next.
 export const JOB_STATUS_LABELS: Record<string, { label: string; description: string }> = {

@@ -439,11 +439,12 @@ export function DiffTree({
   const allRows = useMemo(() => buildFlatRows(entries), [entries]);
 
   const rows = useMemo(() => {
+    const filterTextLower = filterText.toLowerCase();
     return allRows.filter((row) => {
       const matchesAction = !filterAction || row.entry.action === filterAction;
       const matchesText =
         !filterText ||
-        row.entry.title.toLowerCase().includes(filterText.toLowerCase()) ||
+        row.entry.title.toLowerCase().includes(filterTextLower) ||
         row.index === filterText.trim();
       if (!matchesAction || !matchesText) return false;
       // A search/filter in progress auto-expands -- hiding a real match

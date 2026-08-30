@@ -256,29 +256,6 @@ def figure_table_mapping_schema() -> dict:
     }
 
 
-def requirements_by_node_schema() -> dict:
-    """generate_requirements_for_document: a dynamic node_id-keyed object,
-    same additionalProperties shape as scores_schema, each value a list of
-    {text, tags} requirements for that node."""
-    return {
-        "name": "requirements_by_node",
-        "schema": {
-            "type": "object",
-            "additionalProperties": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string"},
-                        "tags": {"type": "array", "items": {"type": "string", "enum": _TAGS}},
-                    },
-                    "required": ["text"],
-                },
-            },
-        },
-    }
-
-
 def checklist_extraction_schema() -> dict:
     """extract_quality_checklist (app.kb.checklist_extraction): a plain
     unbounded array of strings -- the document's own quality-checklist

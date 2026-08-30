@@ -117,4 +117,3 @@ export const useJobsStore = create<JobsState>((set) => ({
 }));
 
 export const useJobs = (): JobSummary[] => useJobsStore((state) => state.jobs);
-export const useJobDetail = (id: string): JobDetail | undefined => useJobsStore((state) => state.jobDetailCache[id]);

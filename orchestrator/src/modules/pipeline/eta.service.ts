@@ -92,19 +92,19 @@ export const ETA_SHRINKAGE_K = 8;
 // a single scalar (how much slower/faster THIS model ran vs. the blended
 // estimate) earns trust faster than three regression coefficients, but one
 // lucky/unlucky run still only moves the adjustment by 1/6 (n_m=1 -> w=1/6).
-export const ETA_MODEL_SHRINKAGE_K = 5;
-export const ETA_MODEL_ADJUSTMENT_MIN = 0.5;
-export const ETA_MODEL_ADJUSTMENT_MAX = 2.0;
+const ETA_MODEL_SHRINKAGE_K = 5;
+const ETA_MODEL_ADJUSTMENT_MIN = 0.5;
+const ETA_MODEL_ADJUSTMENT_MAX = 2.0;
 
 // Trailing window for the sample query -- whichever is smaller. 90 days so
 // a GPU swap or model-lineup change fades out of the fit within a quarter,
 // not permanently; the 50-row cap so one unusually busy week can't outvote
 // three quiet months.
-export const ETA_WINDOW_DAYS = 90;
-export const ETA_WINDOW_MAX_SAMPLES = 50;
+const ETA_WINDOW_DAYS = 90;
+const ETA_WINDOW_MAX_SAMPLES = 50;
 
-export const ETA_RANGE_LOWER = 0.75;
-export const ETA_RANGE_UPPER = 1.25;
+const ETA_RANGE_LOWER = 0.75;
+const ETA_RANGE_UPPER = 1.25;
 
 const ETA_FIT_CACHE_TTL_MS = 60_000;
 
@@ -144,7 +144,7 @@ export function combinedUnit(blockCount: number, figureCount: number): number {
 // epsilon, not absolute -- Σb² scales to ~10^7 for a 682-block document, so
 // an absolute threshold would misjudge small and large documents in
 // opposite directions).
-export function solve3x3(m: number[][], rhs: number[]): number[] | null {
+function solve3x3(m: number[][], rhs: number[]): number[] | null {
   const det3 = (r: number[][]): number =>
     r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1]) -
     r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0]) +

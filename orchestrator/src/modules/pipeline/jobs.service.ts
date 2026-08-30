@@ -1482,8 +1482,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const diffById = new Map(diff.map((entry) => [entry.localId, entry] as const));
     function isExcluded(entry: (typeof diff)[number]): boolean {
       let current: typeof entry | undefined = entry;
+      const visited = new Set<string>();
       while (current) {
         if (current.excluded) return true;
+        if (visited.has(current.localId)) return false;
+        visited.add(current.localId);
         current = current.parentLocalId ? diffById.get(current.parentLocalId) : undefined;
       }
       return false;
