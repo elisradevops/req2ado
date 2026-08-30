@@ -22,7 +22,8 @@ from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_dupli
 from app.dedup.embedding_blend import blend_embeddings
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
-from app.dispatch import dispatch_by_extension
+from app.dispatch import _IMAGE_EXTENSIONS, dispatch_by_extension
+from app.loaders.pdf_loader import count_image_xobjects
 from app.kb.browse_service import FolderChildSummary, browse_shared_folder, browse_subfolder
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
@@ -732,22 +733,33 @@ async def ingest(
     # Real gap this closes (user-reported live): describe_figure narration
     # fires DURING the document walk, before the full figure list -- and so
     # its total -- is known, so every figure showed an open-ended "figure N
-    # so far" with no denominator. A cheap structural-only pre-pass
-    # (describe_figure=None below, so _describe_one_figure short-circuits
-    # before ever reading image bytes -- no vision calls) learns the real
-    # count first. Scoped to .docx for now, the reproducing case: docx
-    # parsing has no OCR step, so a second structural pass is negligible
-    # cost; pdf's OCR path does real work regardless of describe_figure, so
-    # doubling the walk there isn't free the same way -- extend per-format
-    # only if that format shows the same gap live. Only worth doing at all
-    # when a real vision walk is about to happen AND something will read the
-    # narration.
+    # so far" with no denominator. Only worth doing at all when a real
+    # vision walk is about to happen AND something will read the narration.
+    # Per-format strategy, cheapest-correct available for each:
+    # - docx/pptx: a structural-only pre-pass (describe_figure=None below,
+    #   so _describe_one_figure short-circuits before ever reading image
+    #   bytes -- no vision calls) learns the EXACT real count first.
+    #   Negligible cost -- neither format has an OCR step, so a second
+    #   structural walk is cheap.
+    # - image: a standalone image upload is unconditionally exactly one
+    #   Figure (see image_loader.load_image's own docstring) -- no walk
+    #   needed at all.
+    # - pdf: re-running the real walk would double real OCR/text-extraction
+    #   work, which is NOT free the way docx/pptx's second walk is -- see
+    #   pdf_loader.count_image_xobjects's own docstring for the cheap,
+    #   approximate (not exact) alternative used instead.
     figure_total: int | None = None
-    if vision_active and narration_publisher is not None and Path(file.filename or "").suffix.lower() == ".docx":
-        precount_doc = await run_in_threadpool(
-            dispatch_by_extension, file.filename or "", tmp_path, languages=languages, describe_figure=None,
-        )
-        figure_total = len(precount_doc.figures)
+    file_extension = Path(file.filename or "").suffix.lower()
+    if vision_active and narration_publisher is not None:
+        if file_extension in (".docx", ".pptx"):
+            precount_doc = await run_in_threadpool(
+                dispatch_by_extension, file.filename or "", tmp_path, languages=languages, describe_figure=None,
+            )
+            figure_total = len(precount_doc.figures)
+        elif file_extension in _IMAGE_EXTENSIONS:
+            figure_total = 1
+        elif file_extension == ".pdf":
+            figure_total = await run_in_threadpool(count_image_xobjects, tmp_path)
 
     describe_figure_fn = None
     # Populated below on a store() failure (figure captioned fine, but its

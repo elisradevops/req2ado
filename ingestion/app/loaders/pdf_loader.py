@@ -1448,6 +1448,26 @@ def _is_degenerate_pdf_image(pypdf_image: object) -> bool:
     return width <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX and height <= _DEGENERATE_IMAGE_MAX_DIMENSION_PX
 
 
+def count_image_xobjects(path: str) -> int:
+    """Cheap, approximate figure-count denominator for the describe_figure
+    progress narration (main.py) -- unlike docx/pptx's own structural
+    pre-pass (a full second dispatch, negligible cost since neither format
+    has an OCR step), re-running load_pdf's real walk just to learn a count
+    would double real OCR/text-extraction work, which is NOT free. This
+    instead just opens the PDF and counts image XObjects across all pages
+    via pypdf's own `page.images` -- no OCR, no pdfplumber, no rendering.
+
+    Approximate, not exact, on purpose: the real walk's dedup-hash and
+    boilerplate-header/footer suppression (see _detect_boilerplate_images)
+    can drop some of these before they ever reach `describe_figure`, so the
+    real total captioned may end up lower than this count. A denominator
+    that's occasionally an overestimate (progress reads "figure 3 of 8" but
+    only 5 ever get described) is a much smaller UX gap than PDF having no
+    denominator at all, which is the gap this closes."""
+    reader = PdfReader(path)
+    return sum(len(page.images) for page in reader.pages)
+
+
 def load_pdf(
     path: str,
     describe_figure: Callable[[bytes], str | None] | None = None,

@@ -1,8 +1,12 @@
 # ingestion/tests/test_ingest_endpoint.py
+import io
 import tempfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from PIL import Image
+from pptx import Presentation
+from pptx.util import Inches
 
 from app.config import settings
 from app.main import _figure_caption_cache_key, _rasterize_for_vision, _sniff_image_mime_type, app
@@ -628,6 +632,143 @@ def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_i
     assert table_events[0]["tableIndex"] == 1
     assert table_events[0]["tableCount"] == 1
     assert "table 1 of 1" in table_events[0]["message"]
+
+
+def test_ingest_pptx_publishes_a_real_figure_count_denominator(monkeypatch) -> None:
+    # SWEEP.md item 3: the docx-only precount above previously left pptx on
+    # the old open-ended "figure N so far" narration -- extends the same
+    # exact structural pre-pass to pptx.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+            return FigureVisionResult(significant=True, description="a red square")
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self.published: list[str] = []
+
+        def set(self, key, value, ex=None):
+            pass
+
+        def rpush(self, key, value):
+            pass
+
+        def ltrim(self, key, start, end):
+            pass
+
+        def expire(self, key, seconds):
+            pass
+
+        def publish(self, channel, payload):
+            self.published.append(payload)
+
+    monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(main_module, "_narration_redis", fake_redis)
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (20, 20), color="red").save(image_buffer, format="PNG")
+    image_buffer.seek(0)
+    slide.shapes.add_picture(image_buffer, Inches(1), Inches(1))
+    path = Path(tempfile.mkdtemp()) / "one_figure.pptx"
+    prs.save(str(path))
+
+    _upload("one_figure.pptx", path, mode="survey", job_id="job-pptx-precount")
+
+    import json
+
+    payloads = [json.loads(p) for p in fake_redis.published]
+    figure_events = [p for p in payloads if p["phase"] == "describe_figure"]
+    assert figure_events[0]["figureCount"] == 1
+    assert "figure 1 of 1" in figure_events[0]["message"]
+
+
+def test_ingest_image_publishes_a_figure_count_of_one_with_no_precount_walk(monkeypatch) -> None:
+    # A standalone image upload is unconditionally exactly one Figure (see
+    # image_loader.load_image's own docstring) -- no structural walk needed.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self.published: list[str] = []
+
+        def set(self, key, value, ex=None):
+            pass
+
+        def rpush(self, key, value):
+            pass
+
+        def ltrim(self, key, start, end):
+            pass
+
+        def expire(self, key, seconds):
+            pass
+
+        def publish(self, channel, payload):
+            self.published.append(payload)
+
+    monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(main_module, "_narration_redis", fake_redis)
+
+    _upload("sample.png", FIXTURES / "sample.png", mode="survey", job_id="job-image-precount")
+
+    import json
+
+    payloads = [json.loads(p) for p in fake_redis.published]
+    figure_events = [p for p in payloads if p["phase"] == "describe_figure"]
+    assert figure_events[0]["figureCount"] == 1
+    assert "figure 1 of 1" in figure_events[0]["message"]
+
+
+def test_ingest_pdf_publishes_an_approximate_figure_count_denominator(monkeypatch) -> None:
+    # pdf_with_figure.pdf has exactly one embedded image XObject --
+    # count_image_xobjects's cheap pass (no OCR, no full walk) must find it
+    # without re-running the real, expensive load_pdf walk.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self.published: list[str] = []
+
+        def set(self, key, value, ex=None):
+            pass
+
+        def rpush(self, key, value):
+            pass
+
+        def ltrim(self, key, start, end):
+            pass
+
+        def expire(self, key, seconds):
+            pass
+
+        def publish(self, channel, payload):
+            self.published.append(payload)
+
+    monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(main_module, "_narration_redis", fake_redis)
+
+    _upload("pdf_with_figure.pdf", FIXTURES / "pdf_with_figure.pdf", mode="survey", job_id="job-pdf-precount")
+
+    import json
+
+    payloads = [json.loads(p) for p in fake_redis.published]
+    figure_events = [p for p in payloads if p["phase"] == "describe_figure"]
+    assert figure_events[0]["figureCount"] == 1
+    assert "figure 1 of 1" in figure_events[0]["message"]
 
 
 def test_ingest_publishes_no_narration_when_job_id_is_omitted(monkeypatch) -> None:
