@@ -3854,6 +3854,87 @@ def test_build_survey_tree_kb_citations_degrade_to_unknown_when_relevance_client
     assert tree.kb_citations[0].relevance == KbCitationRelevance.UNKNOWN
 
 
+def test_build_survey_tree_fallback_path_build_skeleton_narrates_the_real_citation_not_a_fabricated_one(monkeypatch) -> None:
+    # Confirmed real bug (item 4, "fabricated citation identity"): the
+    # fallback path's build_skeleton narration used to synthesize a single
+    # fake {"source_file": "(document-level)", "similarity": 1.0} citation
+    # whenever ANY kb_context text was present, instead of reporting the
+    # real file(s) it actually came from -- rendered in the UI as if it
+    # were a genuine per-file match. Must report the real citation
+    # build_survey_tree already resolved (doc_kb_citations), not a
+    # placeholder.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    monkeypatch.setattr(
+        "app.leveling.llm_leveling.retrieve_context",
+        lambda user_id, query_text, embed_client, vector_store, **_: (
+            "injected KB text",
+            [{"source_file": "spec.docx", "distance": 0.1, "similarity": 0.9, "text": "injected KB text"}],
+        ),
+    )
+
+    events = []
+    build_survey_tree(
+        _small_doc(),
+        FakeSectionAnalysisClient(),
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        progress_callback=lambda p: events.append(p),
+    )
+
+    build_skeleton_events = [e for e in events if e.phase == "build_skeleton"]
+    assert build_skeleton_events
+    assert build_skeleton_events[0].kb_grounded is True
+    assert build_skeleton_events[0].kb_citations == [{"source_file": "spec.docx", "similarity": 0.9}]
+
+
+def test_build_survey_tree_agentic_path_scoring_kb_context_merges_always_include_with_query_kb_hits(monkeypatch) -> None:
+    # Confirmed real bug (item 4 Critical, llm_leveling.py scoring_kb_context):
+    # on the agentic path, `scoring_kb_context` used to be OVERWRITTEN by the
+    # model's own query_kb hit text, silently discarding always-include KB
+    # material that was already merged into `kb_context` -- even though that
+    # file's citation still renders in the UI as "Grounded against: <file>".
+    # Must MERGE always-include text with the query_kb hits, not replace one
+    # with the other.
+    from app.kb.kb_vector_store import KbVectorStore
+
+    def _fake_fetch_always_include_context(user_id, vector_store):
+        return "always-include KB text", [{"source_file": "always.docx", "similarity": 1.0}]
+
+    monkeypatch.setattr("app.leveling.llm_leveling.fetch_always_include_context", _fake_fetch_always_include_context)
+
+    captured: dict[str, str | None] = {}
+
+    class _CapturingScoringClient:
+        def score_requirements_for_document(
+            self,
+            descriptions_by_node_id: dict[str, str],
+            criteria_context: str | None = None,
+            kb_context: str | None = None,
+            category_checklist: list[str] | None = None,
+        ) -> dict[str, dict]:
+            captured["scoring_kb_context"] = kb_context
+            return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
+
+    fake = FakeSectionAnalysisClient(
+        agentic_nodes=[{"temp_id": "n0", "type": "Requirement", "parent_temp_id": None, "text": "The display shall support HDR.", "tags": []}],
+        agentic_citations=[{"source_file": "queried.docx", "similarity": 0.9, "text": "query_kb hit text"}],
+    )
+    build_survey_tree(
+        _small_doc(),
+        fake,
+        user_id="Project\\Area1",
+        embed_client=object(),
+        vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"),
+        model="qwen3:4b",  # confirmed live tool-capable, see _MODEL_CAPS
+        scoring_client=_CapturingScoringClient(),
+    )
+
+    assert "always-include KB text" in captured["scoring_kb_context"]
+    assert "query_kb hit text" in captured["scoring_kb_context"]
+
+
 class FakeTraceLinkInferenceClient:
     """Hand-written test double for infer_trace_links — proves build_survey_tree
     calls it exactly once per document (whole-tree, not per-node), and that

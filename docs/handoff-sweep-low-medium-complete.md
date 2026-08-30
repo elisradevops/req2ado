@@ -26,10 +26,10 @@ being made; no regressions were introduced anywhere across the whole session.
 
 Most of the ~40 fixed items are legitimate but modest (dead code, duplication,
 perf micro-fixes). These are the ones worth knowing about specifically because they're
-either genuinely surprising or were found *while* fixing something else:
+either genuinely surprising or were found _while_ fixing something else:
 
 - **`ElapsedTimer.tsx` rendered a literal `"NaN:NaN"`** for an unparseable `startedAt` —
-  found by a test written to verify a *different* component's (`ProgressBanner`) NaN guard;
+  found by a test written to verify a _different_ component's (`ProgressBanner`) NaN guard;
   the test failed against `ElapsedTimer`, not the component under test. Fixed with an
   explicit `Number.isFinite` check.
 - **`KbVectorStore`'s new collection-handle cache (ported from the dedup store) would have
@@ -71,7 +71,7 @@ either genuinely surprising or were found *while* fixing something else:
 - **`backfillMissedEvents` used Redis `KEYS`** (blocks the whole instance for a full-keyspace
   scan) — replaced with cursor-based `SCAN` via ioredis's `scanStream()`.
 
-## What was investigated and found *not* to hold up
+## What was investigated and found _not_ to hold up
 
 A recurring theme this session: several of the original audit's findings, read literally,
 turned out to be either already-fixed-by-design or actively contradicted by an existing,
@@ -93,20 +93,20 @@ investigation in `SWEEP.md`:
 
 ## What's deferred, and why (in case you pick one of these up)
 
-Every deferred item names the *shape* of a real fix, not just "this is hard":
+Every deferred item names the _shape_ of a real fix, not just "this is hard":
 
-| Item | Needs |
-|---|---|
-| `dryRunDiff` lost updates (5 call sites, not 2) | A `version` column + Prisma migration + `updateMany`-with-count-check at all 5 sites, same pattern as the Executive Triage `confirm()` fix |
-| SSE replay-then-subscribe ordering gap | A second (non-per-request) Redis client + buffer-then-merge-with-dedup logic — can't just reorder on one connection (ioredis subscriber-mode constraint) |
-| Embeddings model-version pin | A cross-service contract change — `EMBED_MODEL` never crosses the `/llm/embed` HTTP boundary into ingestion today |
-| `JobDetail.tsx` hook extraction (`useJobData`/`useJobNarration`) | Its own multi-hour session — 1625 lines, 45 `useState`, 5 `useEffect`, heavily interdependent |
-| Shared Prisma test-double factory | Its own session — `jobs.service.spec.ts` alone is 4591 lines with 136 inline mock literals, and it's the file guarding the `confirm()` duplicate-write fixes |
-| `analyze_section*` dataclass | Touches a `Protocol`, its sole implementation, and several test fakes with intentionally-divergent signatures |
-| `DiffTreeRow`/`ProgressBanner` full `React.memo` | A real prop-stability audit first — `DiffTreeRow` alone takes ~15 props, several functions/`Set`/`Map` |
-| Fabricated KB citation identity (item 4, line 86) | Same data-flow region as the still-open Critical bug below — fix together |
-| Item 5 (document-understanding UI summary) | An actual `/design` session — this document only gathered the data inventory |
-| Scoring confidence field + canary probe | Real product/UX decisions (how confidence changes the review UI; where/how a canary is injected and asserted) |
+| Item                                                             | Needs                                                                                                                                                        |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dryRunDiff` lost updates (5 call sites, not 2)                  | A `version` column + Prisma migration + `updateMany`-with-count-check at all 5 sites, same pattern as the Executive Triage `confirm()` fix                   |
+| SSE replay-then-subscribe ordering gap                           | A second (non-per-request) Redis client + buffer-then-merge-with-dedup logic — can't just reorder on one connection (ioredis subscriber-mode constraint)     |
+| Embeddings model-version pin                                     | A cross-service contract change — `EMBED_MODEL` never crosses the `/llm/embed` HTTP boundary into ingestion today                                            |
+| `JobDetail.tsx` hook extraction (`useJobData`/`useJobNarration`) | Its own multi-hour session — 1625 lines, 45 `useState`, 5 `useEffect`, heavily interdependent                                                                |
+| Shared Prisma test-double factory                                | Its own session — `jobs.service.spec.ts` alone is 4591 lines with 136 inline mock literals, and it's the file guarding the `confirm()` duplicate-write fixes |
+| `analyze_section*` dataclass                                     | Touches a `Protocol`, its sole implementation, and several test fakes with intentionally-divergent signatures                                                |
+| `DiffTreeRow`/`ProgressBanner` full `React.memo`                 | A real prop-stability audit first — `DiffTreeRow` alone takes ~15 props, several functions/`Set`/`Map`                                                       |
+| Fabricated KB citation identity (item 4, line 86)                | Same data-flow region as the still-open Critical bug below — fix together                                                                                    |
+| Item 5 (document-understanding UI summary)                       | An actual `/design` session — this document only gathered the data inventory                                                                                 |
+| Scoring confidence field + canary probe                          | Real product/UX decisions (how confidence changes the review UI; where/how a canary is injected and asserted)                                                |
 
 ## Verification
 
@@ -121,18 +121,27 @@ end of session:
   first session's own handoff, confirmed still failing identically on an unmodified branch).
 - **mcp-ado-server**: `112/112` vitest tests passing.
 
+## Addendum (third session, same day)
+
+The one still-open 🔴 Blocker this doc's own "What's next" section flagged first —
+item 4's KB-grounding merge bug at `llm_leveling.py`'s `scoring_kb_context` (agentic path
+overwrote it with query_kb hits instead of merging in the always-include text) — is now
+fixed, together with its paired fabricated-citation-identity finding (the fallback path's
+`build_skeleton` narration synthesized a fake `"(document-level)"` citation instead of the
+real per-file one), exactly as planned: both touch the same data-flow region in
+`_build_survey_skeleton_for_branch`, so they were done in one pass. 2 new regression tests;
+ingestion suite 1632/1633 (same 1 pre-existing unrelated failure as every prior session).
+See `SWEEP.md`'s Executive Triage and item 4 entries for the per-item detail — this is the
+per-item source of truth, not this addendum.
+
 ## What's next, in priority order
 
-1. **The one still-open 🔴 Blocker**: item 4's KB-grounding merge bug at
-   `llm_leveling.py:2946` (`scoring_kb_context` gets overwritten by query_kb hits instead of
-   merged with the always-include text). Small, isolated, one-line fix — this is the
-   natural next thing to pick up. Do the fabricated-citation-identity fix (line 86) in the
-   same pass; they're the same data-flow region.
-2. **The entire 🟠 High tier** — sections 2, 3, 4, 6, 7, 8a, 8b, 9, 10 all still have
+1. **The entire 🟠 High tier** — sections 2, 3, 4, 6, 7, 8a, 8b, 9, 10 all still have
    untouched High-severity items (real bugs and gaps), exactly as originally investigated.
-3. The deferred-with-reasoning items in the table above, whenever there's a dedicated
+   With the last Blocker now closed, this is the natural next thing to pick up.
+2. The deferred-with-reasoning items in the table above, whenever there's a dedicated
    session for one of them.
-4. Item 5's `/design` session, whenever there's UI design bandwidth.
+3. Item 5's `/design` session, whenever there's UI design bandwidth.
 
 `SWEEP.md`'s own "Notes for whoever picks this up next" section has been refreshed to
 match this; if you're only going to read one file before continuing, read that one — it's

@@ -2191,6 +2191,7 @@ def build_survey_tree(
             node_id_prefix="",
             tables=doc.tables, figures=doc.figures,
             supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
+            kb_context_citations=doc_kb_citations,
             list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
             global_context=single_call_front_matter_guard,
             # True precisely when the entire document was analyzed in one
@@ -2286,6 +2287,7 @@ def build_survey_tree(
                 node_id_prefix=f"br{branch_index}_",
                 tables=branch_tables[branch_index] if branch_tables is not None else None,
                 supports_tools=supports_tools, retrieve_fn=retrieve_fn, kb_context=doc_kb_context,
+                kb_context_citations=doc_kb_citations,
                 list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
                 global_context=_combine_global_context(
                     global_context, branch_index, glossary_sections, primer_context, front_matter_branch_indices,
@@ -2678,6 +2680,14 @@ def _build_survey_skeleton_for_branch(
     list_documents_fn: Callable[[], list[str]] | None = None,
     read_document_fn: Callable[[str], str | None] | None = None,
     kb_context: str | None = None,
+    # The real per-file citations `kb_context` was flattened from (see
+    # build_survey_tree's doc_kb_citations) -- used only on the non-agentic
+    # fallback path below to narrate the actual file(s) grounding this
+    # branch instead of a fabricated single "(document-level)" citation.
+    # The agentic path ignores this: it builds its own per-file citations
+    # from the model's real query_kb hits (raw_hits), which is a superset
+    # of always-include grounding already reflected in doc_kb_citations.
+    kb_context_citations: list[KbCitation] | None = None,
     global_context: str | None = None,
     read_other_section_fn: Callable[[str], str | None] | None = None,
     whole_document: bool = False,
@@ -2964,10 +2974,31 @@ def _build_survey_skeleton_for_branch(
             if hit_text and hit_text not in seen_texts:
                 seen_texts.add(hit_text)
                 unique_texts.append(hit_text)
-        scoring_kb_context = "\n\n".join(unique_texts) if unique_texts else None
+        # §item-4-Critical fix: `kb_context` (the outer param, i.e. the
+        # always-include text merged in by build_survey_tree) must be
+        # MERGED into scoring's grounding text, not replaced by it -- the
+        # model's own query_kb hits (unique_texts) are additional grounding
+        # the agentic path pulled, not a substitute for the always-include
+        # text that was already handed to it. Overwriting here silently
+        # dropped always-include grounding from authoring/scoring on any
+        # branch where the model made at least one query_kb call, even
+        # though that file's citation still renders in the UI as
+        # "Grounded against: <file> · 100%" (seeded into all_kb_citations
+        # from doc_kb_citations at the top of build_survey_tree).
+        scoring_kb_context = "\n\n".join(([kb_context] if kb_context else []) + unique_texts) or None
     else:
+        # §item-4-fabricated-citation fix: previously synthesized a single
+        # fake `{"source_file": "(document-level)", "similarity": 1.0}"`
+        # citation whenever ANY kb_context text was present, regardless of
+        # which real file(s) it actually came from -- rendered in the UI as
+        # if it were a genuine per-file match. `kb_context_citations` (the
+        # real doc_kb_citations list build_survey_tree already assembled
+        # from retrieve_context + always-include, see this function's own
+        # docstring) carries the real per-file identity, so use that
+        # instead of fabricating one.
         kb_citations_raw_dicts = (
-            [{"source_file": "(document-level)", "similarity": 1.0}] if kb_context else []
+            [{"source_file": c.source_file, "similarity": c.similarity} for c in kb_context_citations]
+            if kb_context_citations else []
         )
         _fire("build_skeleton", kb_grounded=bool(kb_context), kb_citations_raw=kb_citations_raw_dicts)
         raw_nodes, truncated = analysis_client.analyze_section_skeleton(
