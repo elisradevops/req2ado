@@ -42,6 +42,9 @@ export class IdempotencyService {
     // Skipped entirely when the two hashes are equal (an older/mocked
     // caller that never populated identity_hash, so sourceHash already IS
     // the legacy hash) to avoid a pointless duplicate query.
+    // DryRunService.resolveExistingAdoId (dry-run.service.ts) holds a
+    // synchronous copy of this same two-tier resolution rule -- a change
+    // here needs to be mirrored there too.
     if (legacySourceHash === undefined || legacySourceHash === sourceHash) {
       return null;
     }

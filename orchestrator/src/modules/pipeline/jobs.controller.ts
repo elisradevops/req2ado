@@ -105,7 +105,7 @@ export class JobsController {
   async list(@CurrentUser() user: SessionUser, @Query() rawQuery: unknown): Promise<JobSummary[]> {
     const parseResult = jobsListQuerySchema.safeParse(rawQuery);
     if (!parseResult.success) {
-      throw new BadRequestException('Invalid query: skip/take must be non-negative integers (take capped at 200)');
+      throw new BadRequestException('Invalid query: skip must be a non-negative integer; take must be an integer between 1 and 200');
     }
     return this.jobsService.list(user.userId, parseResult.data);
   }

@@ -4460,7 +4460,7 @@ describe('JobsService.list', () => {
 
     const result = await service.list();
 
-    expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: { createdAt: 'desc' } }));
+    expect(prisma.job.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }));
     const callArg = prisma.job.findMany.mock.calls[0][0];
     expect(callArg.select).not.toHaveProperty('dryRunDiff');
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);

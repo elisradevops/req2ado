@@ -796,6 +796,17 @@ describe('DryRunService', () => {
     await expect(service.diff(nodes as any, fakeIdempotencyService)).rejects.toThrow('db unreachable');
   });
 
+  it('re-throws a per-node exception captured by mapWithConcurrency (no silent partial diff)', async () => {
+    const service = new DryRunService();
+    const nodes = ['n0', 'n1'].map((localId, i) => ({
+      localId, parentLocalId: null, type: 'Requirement', title: `T${i}`, description: `D${i}`,
+      sourceHash: `hash${i}`, customerId: null, areaPath: 'Project\\Area1', tags: [],
+    }));
+    await expect(
+      service.diff(nodes as any, fakeIdempotencyService, undefined, () => { throw new Error('boom'); }),
+    ).rejects.toThrow('boom');
+  });
+
   it('calls idempotencyService.lookupMany exactly once for the whole batch, not once per node', async () => {
     // Regression guard for the N+1 fix itself: the previous per-node
     // idempotencyService.lookup call issued one DB round trip per node.

@@ -648,13 +648,13 @@ describe('JobsController.list', () => {
     expect(jobsService.list).toHaveBeenCalledWith('user-1', { skip: 20, take: 10 });
   });
 
-  it('forwards undefined skip/take when the query string omits them -- byte-identical to before this fix', async () => {
+  it('forwards an empty pagination object when the query string omits skip/take -- byte-identical to before this fix', async () => {
     const jobsService = { list: jest.fn().mockResolvedValue([]) };
     const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await controller.list({ userId: 'user-1' } as any, {});
 
-    expect(jobsService.list).toHaveBeenCalledWith('user-1', { skip: undefined, take: undefined });
+    expect(jobsService.list).toHaveBeenCalledWith('user-1', {});
   });
 
   it('rejects an out-of-range take with 400 and never calls the service', async () => {

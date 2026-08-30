@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { IdempotencyService } from './idempotency.service';
-import { idempotencyMapKey } from './idempotency.service';
+import { idempotencyMapKey, type IdempotencyService } from './idempotency.service';
 import { mapWithConcurrency } from '../pipeline/map-with-concurrency';
 import { stripHtmlTags } from './backfill.service';
 

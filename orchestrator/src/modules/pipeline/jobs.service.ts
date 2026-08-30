@@ -606,7 +606,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   async list(userId?: string, pagination?: { skip?: number; take?: number }): Promise<JobSummary[]> {
     const rows = await this.prisma.job.findMany({
       where: userId ? { userId } : {},
-      orderBy: { createdAt: 'desc' },
+      // { id: 'desc' } as a tiebreaker: createdAt alone is not unique, so
+      // with skip/take pagination, rows sharing a timestamp would have
+      // unspecified relative order between page queries -- the classic
+      // offset-pagination bug where a row can appear on two pages or be
+      // skipped entirely.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       skip: pagination?.skip,
       take: pagination?.take,
       select: {
