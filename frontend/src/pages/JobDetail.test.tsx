@@ -876,6 +876,54 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText(/failed to update/i)).toBeInTheDocument());
   });
 
+  // SWEEP.md §10 final-review fix: the backend (JobsService.getSummary/
+  // BatchService.getBatch) already excludes excluded entries from the
+  // created/reused/dedupSkipped counts, but the frontend only fetched
+  // getSummary once on mount ([id, status] effect above) and never again --
+  // so the confirm dialog's "This creates N new work item(s)" and these
+  // stat tiles kept showing the stale pre-exclusion count until a full
+  // remount. handleToggleExclude now refetches getSummary right after its
+  // setDiff call succeeds, inside the same isDiffMutatingRef-guarded try.
+  it('refetches the summary after toggling an exclusion, so the stat tiles reflect the new post-exclusion count', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-77',
+      status: 'diff_ready',
+      dryRunDiff: [
+        { localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Row one', description: '', action: 'create', customerId: null, tags: [] },
+      ],
+    } as any);
+    // First call is the mount-time [id, status] effect; second is the
+    // refetch handleToggleExclude triggers after the exclusion succeeds.
+    vi.spyOn(jobsApi, 'getSummary')
+      .mockResolvedValueOnce({ created: 5, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] })
+      .mockResolvedValueOnce({ created: 2, reused: 0, dedupSkipped: 0, flagged: 0, warnings: [] });
+    vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockResolvedValue({
+      dryRunDiff: [
+        { localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Row one', description: '', action: 'create', customerId: null, tags: [], excluded: true },
+      ],
+    } as any);
+
+    // "New" also matches a QualityBadge pill rendered elsewhere on the page
+    // -- narrow to the StatTile's own <p> label (its value is the previous
+    // sibling <p>, per StatTile.tsx's markup).
+    function newTileValue(): string | null | undefined {
+      return screen.getAllByText('New').find((el) => el.tagName === 'P')?.previousElementSibling?.textContent;
+    }
+
+    renderAt('job-77');
+    await waitFor(() => expect(screen.getByText('Row one')).toBeInTheDocument());
+    // Pre-exclusion count from the mount-time fetch.
+    await waitFor(() => expect(newTileValue()).toBe('5'));
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('checkbox', { name: /exclude row one/i }));
+
+    // Post-exclusion count from the refetch -- proves handleToggleExclude
+    // re-read getSummary rather than leaving the stale mount-time value.
+    await waitFor(() => expect(newTileValue()).toBe('2'));
+    expect(jobsApi.getSummary).toHaveBeenCalledTimes(2);
+  });
+
   it('shows an error toast reporting partial progress when bulk-exclude fails mid-loop', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-10',

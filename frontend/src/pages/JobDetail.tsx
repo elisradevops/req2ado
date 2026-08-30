@@ -783,6 +783,14 @@ export function JobDetail(): React.ReactElement {
     try {
       const result = await setDiffEntryExcluded(id, localId, excluded);
       setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
+      try {
+        setSummary(await getSummary(id));
+      } catch {
+        // Best-effort, same as the initial summary fetch -- the stat tiles
+        // and confirm dialog just keep showing the pre-exclusion count
+        // until the next successful refetch, rather than blocking the
+        // exclusion toggle (which already succeeded) on this.
+      }
     } catch {
       showToast('Failed to update — please try again.', 'error');
     } finally {
@@ -812,6 +820,13 @@ export function JobDetail(): React.ReactElement {
         const result = await setDiffEntryExcluded(id, entry.localId, excluded);
         setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
         succeeded += 1;
+      }
+      try {
+        setSummary(await getSummary(id));
+      } catch {
+        // Best-effort, same as handleToggleExclude -- the stat tiles and
+        // confirm dialog just keep showing the pre-exclusion count until
+        // the next successful refetch, rather than blocking on this.
       }
       showToast(`${excluded ? 'Excluded' : 'Included'} ${succeeded} item${succeeded === 1 ? '' : 's'}.`, 'success');
     } catch {
