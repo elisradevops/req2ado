@@ -12,6 +12,7 @@ import { StatTile } from '../ui/StatTile';
 import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
+import { TableHeaderCell } from '../ui/TableHeaderCell';
 
 function ordinal(n: number): string {
   const rem100 = n % 100;
@@ -161,10 +162,10 @@ export function BatchStatus(): React.ReactElement {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-hairline-strong">
-                <th className="px-3.5 py-2.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3">File</th>
-                <th className="px-3.5 py-2.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3">Size</th>
-                <th className="px-3.5 py-2.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3">Status</th>
-                <th className="px-3.5 py-2.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3">Detail</th>
+                <TableHeaderCell className="py-2.5">File</TableHeaderCell>
+                <TableHeaderCell className="py-2.5">Size</TableHeaderCell>
+                <TableHeaderCell className="py-2.5">Status</TableHeaderCell>
+                <TableHeaderCell className="py-2.5">Detail</TableHeaderCell>
               </tr>
             </thead>
             <tbody>

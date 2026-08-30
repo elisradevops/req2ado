@@ -1,6 +1,7 @@
 import type { ComponentType, ReactNode } from 'react';
 import { cn } from '../lib/cn';
 import { InfoTip } from './Tooltip';
+import { LABEL_MICRO } from '../utils/labelMicro';
 
 export function StatTile({
   value,
@@ -46,7 +47,7 @@ export function StatTile({
       >
         {value}
       </p>
-      <p className="flex items-center gap-1 text-micro font-semibold uppercase tracking-wide text-ink-3">
+      <p className={cn('flex items-center gap-1', LABEL_MICRO)}>
         {Icon && <Icon className="h-3.5 w-3.5 flex-none" />}
         {label}
         {hint && <InfoTip content={hint} label={`About ${typeof label === 'string' ? label : 'this number'}`} />}

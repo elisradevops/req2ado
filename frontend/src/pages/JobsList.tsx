@@ -17,6 +17,7 @@ import { InfoTip } from '../ui/Tooltip';
 import { StatTile } from '../ui/StatTile';
 import { Chip } from '../ui/Chip';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { TableHeaderCell } from '../ui/TableHeaderCell';
 import { useToast } from '../components/ToastProvider';
 import { formatRelativeTime } from '../utils/relativeTime';
 import { useDenseView, useAutoSyncLedgers } from '../store/uiPreferencesStore';
@@ -268,15 +269,15 @@ export function JobsList(): React.ReactElement {
                         matching the row below it -- sticky rows scroll over
                         body content and must not show it through. */}
                     <tr className="sticky top-0 z-10 border-b border-hairline-strong bg-surface">
-                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Document</th>
-                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Mode</th>
-                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Status</th>
-                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Items</th>
-                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Area Path</th>
-                      <th className={cn('whitespace-nowrap px-3.5 text-left text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>Created</th>
-                      <th className={cn('whitespace-nowrap px-3.5 text-right text-micro font-semibold uppercase tracking-wide text-ink-3', cellPaddingY)}>
+                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Document</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Mode</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Status</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Items</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Area Path</TableHeaderCell>
+                      <TableHeaderCell className={cn('whitespace-nowrap', cellPaddingY)}>Created</TableHeaderCell>
+                      <TableHeaderCell align="right" className={cn('whitespace-nowrap', cellPaddingY)}>
                         <span className="sr-only">Actions</span>
-                      </th>
+                      </TableHeaderCell>
                     </tr>
                   </thead>
                   <tbody>

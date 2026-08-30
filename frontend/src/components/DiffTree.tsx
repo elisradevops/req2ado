@@ -26,6 +26,7 @@ import { cn } from '../lib/cn';
 import { moveValidationReason as sharedMoveValidationReason } from '../lib/moveValidation';
 import { actionLabel } from '../utils/labels';
 import { matchesDiffFilter } from '../utils/diffFilterMatch';
+import { LABEL_MICRO } from '../utils/labelMicro';
 import { ActionBadge } from './ActionBadge';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { Checkbox } from '../ui/Checkbox';
@@ -662,7 +663,7 @@ export function DiffTree({
       {/* Sticky header row -- shares GRID_TEMPLATE with every data row below
           so columns always line up exactly. */}
       <div
-        className="grid items-center gap-2.5 border-b border-hairline bg-surface-alt px-3.5 py-1.5 text-micro font-semibold uppercase tracking-wide text-ink-3"
+        className={cn('grid items-center gap-2.5 border-b border-hairline bg-surface-alt px-3.5 py-1.5', LABEL_MICRO)}
         style={{ gridTemplateColumns: GRID_TEMPLATE_COLUMNS }}
       >
         <span />

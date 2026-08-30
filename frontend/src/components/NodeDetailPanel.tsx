@@ -16,6 +16,7 @@ import { Chip } from '../ui/Chip';
 import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
+import { LABEL_MICRO } from '../utils/labelMicro';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
 // successful rescore -- held briefly so QualityGauge can render a real
@@ -388,7 +389,7 @@ export function NodeDetailPanel({
       // footer chrome uses.
       <div className="flex min-h-full flex-col gap-5 p-5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">{entry.type}</span>
+          <span className={LABEL_MICRO}>{entry.type}</span>
           <span className="rounded-full bg-surface-alt px-2 py-0.5 text-micro font-semibold uppercase tracking-wide text-ink-2">
             Editing
           </span>
@@ -432,7 +433,7 @@ export function NodeDetailPanel({
           const editWinningTag = resolveWinningTag(draftTags, requirementClassificationField?.allowedValues);
           return (
             <div className="flex flex-col gap-1.5">
-              <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Classification</span>
+              <span className={LABEL_MICRO}>Classification</span>
               <div className="flex flex-wrap gap-1.5">
                 {Object.keys(REQUIREMENT_TAG_LABELS).map((tag) => {
                   const { label } = REQUIREMENT_TAG_LABELS[tag];
@@ -491,7 +492,7 @@ export function NodeDetailPanel({
           trace-links/sources, disconnected from what it acts on. */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
-          <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">{entry.type}</span>
+          <span className={LABEL_MICRO}>{entry.type}</span>
           <h3 className="text-title leading-snug">{entry.title}</h3>
         </div>
         {canEdit && (
@@ -571,7 +572,7 @@ export function NodeDetailPanel({
           longer needs to share a 2-column row with something else. */}
       {entry.tags && entry.tags.length > 0 && (
         <div className="flex flex-col gap-1">
-          <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">Classification</span>
+          <span className={LABEL_MICRO}>Classification</span>
           <TagChips tags={entry.tags} winningTag={resolveWinningTag(entry.tags, requirementClassificationField?.allowedValues)} />
         </div>
       )}

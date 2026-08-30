@@ -12,6 +12,8 @@ import { Card } from '../ui/Card';
 import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
 import { Markdown } from '../ui/Markdown';
+import { cn } from '../lib/cn';
+import { LABEL_MICRO } from '../utils/labelMicro';
 
 interface Proposal {
   proposedTitle: string | null;
@@ -319,7 +321,7 @@ export function ChatPanel({
                 reads as the start of this transcript rather than a
                 separate graphic. */}
             <div className="mb-2 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
-              <p className="text-micro font-semibold uppercase tracking-wide text-ink-3">Assistant</p>
+              <p className={LABEL_MICRO}>Assistant</p>
               <p className="text-sm text-ink-1">I have read this requirement. Want me to:</p>
             </div>
             <div className="ml-2.5 flex flex-col gap-1.5">
@@ -353,7 +355,7 @@ export function ChatPanel({
                 </div>
               ) : (
                 <div key={m.id} className="mb-3 max-w-[85%] border-l-2 border-hairline-strong pl-2.5">
-                  <p className="text-micro font-semibold uppercase tracking-wide text-ink-3">
+                  <p className={LABEL_MICRO}>
                     Assistant{m.model ? <> · <span className="font-mono">{m.model}</span></> : ''}
                   </p>
                   <Markdown>{m.content}</Markdown>
@@ -376,7 +378,7 @@ export function ChatPanel({
                       type="button"
                       onClick={() => setReasoningExpanded((prev) => !prev)}
                       aria-expanded={reasoningExpanded}
-                      className="flex items-center gap-1 text-micro font-semibold uppercase tracking-wide text-ink-3 hover:text-ink-2"
+                      className={cn('flex items-center gap-1', LABEL_MICRO, 'hover:text-ink-2')}
                     >
                       <ChevronRight className={`h-3 w-3 transition-transform ${reasoningExpanded ? 'rotate-90' : ''}`} />
                       Thinking

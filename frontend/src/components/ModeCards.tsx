@@ -1,5 +1,6 @@
 import { Cpu } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { LABEL_MICRO } from '../utils/labelMicro';
 import { formatEtaRange } from '../utils/eta';
 import { Select } from '../ui/Select';
 import type { EtaEstimate } from '../api/jobs';
@@ -68,7 +69,7 @@ function EstimateLine({ estimate }: { estimate: EtaEstimate | undefined }): Reac
 function SamplePreview({ sample }: { sample: (typeof MODE_COPY)['baseline' | 'survey']['sample'] }): React.ReactElement {
   return (
     <span className="block overflow-hidden rounded-sm border border-hairline bg-surface-alt">
-      <span className="block px-2.5 pt-2 pb-1 text-micro font-semibold uppercase tracking-wide text-ink-3">
+      <span className={cn('block px-2.5 pt-2 pb-1', LABEL_MICRO)}>
         What lands in Azure DevOps
       </span>
       <span className="block px-2.5 pt-0.5 pb-2.5">

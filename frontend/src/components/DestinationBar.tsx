@@ -1,6 +1,7 @@
 import { Briefcase, MapPin, CalendarRange, CircleDot, ChevronRight } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { InfoTip, Tooltip } from '../ui/Tooltip';
+import { LABEL_MICRO } from '../utils/labelMicro';
 
 // A deeply nested area/iteration path ("some area\sub area\sub sub
 // area\Customer Requirements" -- real ADO depth, not a fixture
@@ -66,7 +67,7 @@ function PathSegment({
     // overflow bug this class of fix keeps circling back to.
     <span className="hoverable-row flex min-w-0 items-center gap-1.5 rounded-sm px-1.5 py-1">
       <Icon className="h-3.5 w-3.5 flex-none text-ink-3" />
-      <span className="flex-none text-micro font-semibold uppercase tracking-wide text-ink-3">{label}</span>
+      <span className={cn('flex-none', LABEL_MICRO)}>{label}</span>
       {isUnset && hatchWhenUnset ? (
         <span
           className="h-3.5 w-12 flex-none rounded-sm border border-accent-soft-border"
@@ -161,7 +162,7 @@ export function DestinationBar({
   return (
     <div className="flex flex-col gap-1.5 rounded-sm border border-hairline-strong bg-surface-alt px-3 py-2 text-sm">
       <div className="flex items-center gap-1">
-        <span className="text-micro font-semibold uppercase tracking-wide text-ink-3">{label}</span>
+        <span className={LABEL_MICRO}>{label}</span>
         <InfoTip content="Where Confirm writes new work items. Existing items are only matched for reuse inside this exact area path." />
       </div>
       <div className="flex flex-wrap items-center gap-0.5">

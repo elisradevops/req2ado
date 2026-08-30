@@ -3,6 +3,7 @@ import { TextField, TextArea } from '../ui/TextField';
 import { Select } from '../ui/Select';
 import { Button } from '../ui/Button';
 import { MoveToPicker } from './MoveToPicker';
+import { LABEL_MICRO } from '../utils/labelMicro';
 import { canNest, canBeRoot } from '../lib/canNest';
 import type { DryRunDiffEntry } from './DiffTree';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
@@ -132,7 +133,7 @@ export function AddChildForm({
   return (
     <div className="flex flex-col gap-3 p-4">
       <div>
-        <p className="text-micro font-semibold uppercase tracking-wide text-ink-3">{parentEntry ? 'Add child item' : 'New item'}</p>
+        <p className={LABEL_MICRO}>{parentEntry ? 'Add child item' : 'New item'}</p>
         <p className="text-xs text-ink-3">Manually add another item -- it's written to ADO alongside the rest on Confirm.</p>
       </div>
       {jobMode === 'baseline' ? (

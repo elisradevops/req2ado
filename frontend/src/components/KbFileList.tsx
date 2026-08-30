@@ -8,6 +8,7 @@ import { Skeleton } from '../ui/Skeleton';
 import { Tooltip } from '../ui/Tooltip';
 import { TextField } from '../ui/TextField';
 import { Chip } from '../ui/Chip';
+import { TableHeaderCell } from '../ui/TableHeaderCell';
 import { EmptyState } from '../ui/EmptyState';
 import { cn } from '../lib/cn';
 
@@ -100,13 +101,13 @@ export function KbFileList({
           <table className="w-full text-sm">
             <thead>
               <tr>
-                <th className="sticky top-0 z-10 bg-surface-sunken px-3.5 py-2 text-left text-micro font-semibold uppercase tracking-wide text-ink-3">Name</th>
-                <th className="sticky top-0 z-10 bg-surface-sunken px-3.5 py-2 text-left text-micro font-semibold uppercase tracking-wide text-ink-3">Type</th>
-                <th className="sticky top-0 z-10 bg-surface-sunken px-3.5 py-2 text-left text-micro font-semibold uppercase tracking-wide text-ink-3">Size</th>
-                <th className="sticky top-0 z-10 bg-surface-sunken px-3.5 py-2 text-left text-micro font-semibold uppercase tracking-wide text-ink-3">Status</th>
-                <th className="sticky top-0 z-10 bg-surface-sunken px-3.5 py-2 text-right text-micro font-semibold uppercase tracking-wide text-ink-3">
+                <TableHeaderCell sticky>Name</TableHeaderCell>
+                <TableHeaderCell sticky>Type</TableHeaderCell>
+                <TableHeaderCell sticky>Size</TableHeaderCell>
+                <TableHeaderCell sticky>Status</TableHeaderCell>
+                <TableHeaderCell sticky align="right">
                   <span className="sr-only">Actions</span>
-                </th>
+                </TableHeaderCell>
               </tr>
             </thead>
             <tbody>
