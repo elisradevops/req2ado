@@ -90,6 +90,33 @@ describe('JobDetail', () => {
     expect(await screen.findAllByText('Root')).not.toHaveLength(0);
   });
 
+  it('shows a "Needs review" filter chip with the flagged count, and isolates flagged rows on click', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-40',
+      status: 'diff_ready',
+      dryRunDiff: [
+        {
+          localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Flagged epic', description: '',
+          action: 'create', customerId: null, tags: [], groundingScore: 0.1,
+        },
+        {
+          localId: 'e2', parentLocalId: null, type: 'Epic', title: 'Healthy epic', description: '',
+          action: 'create', customerId: null, tags: [], groundingScore: 0.9,
+        },
+      ],
+    } as any);
+    renderAt('job-40');
+    await waitFor(() => expect(screen.getByText('Flagged epic')).toBeInTheDocument());
+
+    expect(screen.getByRole('button', { name: /needs review/i })).toHaveTextContent('1');
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /needs review/i }));
+
+    expect(screen.getByText(/flagged/i)).toBeInTheDocument();
+    expect(screen.queryByText('Healthy epic')).not.toBeInTheDocument();
+  });
+
   it('shows a retry control for a failed trace link and calls retryTraceLinkWrite(jobId, failureId) when clicked', async () => {
     const baseJob = {
       id: 'job-20',

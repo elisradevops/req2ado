@@ -306,6 +306,29 @@ describe('DiffTree', () => {
     expect(screen.getByText('Healthy req').closest('[role="row"], div')?.parentElement).not.toHaveTextContent(/review/i);
   });
 
+  it('filterFlaggedOnly shows only flagged entries, expanding their ancestors', () => {
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+      { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Flagged req', description: '', action: 'create', customerId: null, groundingScore: 0.1 },
+      { localId: 'r2', parentLocalId: 'f1', type: 'Requirement', title: 'Healthy req', description: '', action: 'create', customerId: null, groundingScore: 0.9 },
+    ];
+    render(
+      <DiffTree
+        entries={entries}
+        selectedId={null}
+        onSelect={() => {}}
+        filterAction={null}
+        filterText=""
+        filterFlaggedOnly
+        onToggleExclude={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('Flagged req')).toBeInTheDocument();
+    expect(screen.queryByText('Healthy req')).not.toBeInTheDocument();
+  });
+
   it('ArrowDown/ArrowUp move selection between visible rows', async () => {
     const onSelect = vi.fn();
     render(

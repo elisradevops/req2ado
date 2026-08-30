@@ -371,6 +371,7 @@ export function DiffTree({
   onOpenDetails,
   filterAction,
   filterText,
+  filterFlaggedOnly = false,
   onToggleExclude,
   typeCatalog,
   categoryLabels,
@@ -391,6 +392,10 @@ export function DiffTree({
   onOpenDetails?: (localId: string) => void;
   filterAction: string | null;
   filterText: string;
+  // Isolates flagged rows (see isFlaggedDiffEntry) -- ANDed with
+  // filterAction/filterText, a separate filter dimension from action-type
+  // filtering, not a value inside filterAction's own vocabulary.
+  filterFlaggedOnly?: boolean;
   onToggleExclude: (localId: string, excluded: boolean) => void;
   // Real per-project work-item-type colors/icons, when available (see
   // useWorkItemTypeCatalog) -- undefined falls back to WorkItemTypeBadge's
@@ -439,7 +444,7 @@ export function DiffTree({
     });
   }, []);
 
-  const isFiltering = !!filterAction || !!filterText;
+  const isFiltering = !!filterAction || !!filterText || filterFlaggedOnly;
 
   // Unfiltered/uncollapsed rows -- kept separate from `rows` below so the
   // selectedId-driven effects further down can find a target's real
@@ -451,13 +456,14 @@ export function DiffTree({
     const query = filterText.trim().toLowerCase();
     return allRows.filter((row) => {
       if (!matchesDiffFilter({ action: row.entry.action, title: row.entry.title, index: row.index }, filterAction, query)) return false;
+      if (filterFlaggedOnly && !isFlaggedDiffEntry(row.entry)) return false;
       // A search/filter in progress auto-expands -- hiding a real match
       // under a collapsed ancestor would look like the filter silently
       // missed it. Collapse state only applies when browsing unfiltered.
       if (isFiltering) return true;
       return !row.ancestorIds.some((ancestorId) => collapsedIds.has(ancestorId));
     });
-  }, [allRows, filterAction, filterText, isFiltering, collapsedIds]);
+  }, [allRows, filterAction, filterText, filterFlaggedOnly, isFiltering, collapsedIds]);
 
   const indexColumnWidth = useIndexColumnWidth(allRows);
   const statusColumnWidth = useStatusColumnWidth(entries);

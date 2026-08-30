@@ -43,6 +43,8 @@ import { DiffTree, type DryRunDiffEntry } from '../components/DiffTree';
 import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { AddChildCard } from '../components/AddChildCard';
 import { applyMoveOptimistically } from '../lib/applyMove';
+import { cn } from '../lib/cn';
+import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { useToast } from '../components/ToastProvider';
 import type { KbCitation } from '../components/KbCitationChips';
 import type { TraceLinkFailure } from '../store/jobsStore';
@@ -175,6 +177,7 @@ export function JobDetail(): React.ReactElement {
   const [resubmitDialogOpen, setResubmitDialogOpen] = useState(false);
   const [filterAction, setFilterAction] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
+  const [filterFlaggedOnly, setFilterFlaggedOnly] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
   // Resolved server-side and embedded directly in the job response (see
@@ -1033,6 +1036,9 @@ export function JobDetail(): React.ReactElement {
     return result;
   }, [diff]);
 
+  // Backs the toolbar's "Needs review" chip -- see isFlaggedDiffEntry.
+  const flaggedCount = useMemo(() => diff.filter((entry) => isFlaggedDiffEntry(entry)).length, [diff]);
+
   // Same filter predicate DiffTree applies internally (see its own `rows`
   // useMemo) -- NOT collapse-aware, since collapse state is internal to
   // DiffTree and not lifted here. Good enough for "step to the next
@@ -1440,6 +1446,20 @@ export function JobDetail(): React.ReactElement {
                       <option value="reuse">Reuse</option>
                       <option value="dedup_skip">Near-duplicate</option>
                     </Select>
+                    {flaggedCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setFilterFlaggedOnly((prev) => !prev)}
+                        className={cn(
+                          'flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold',
+                          filterFlaggedOnly
+                            ? 'border-warning bg-warning-soft text-warning-ink'
+                            : 'border-warning-border bg-warning-soft text-warning',
+                        )}
+                      >
+                        ⚠ Needs review · {flaggedCount}
+                      </button>
+                    )}
                     {status === 'diff_ready' && (
                       <div className="ml-auto flex gap-2">
                         <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(true)} disabled={isDiffMutating}>
@@ -1462,6 +1482,7 @@ export function JobDetail(): React.ReactElement {
                   }}
                   filterAction={filterAction}
                   filterText={filterText}
+                  filterFlaggedOnly={filterFlaggedOnly}
                   onToggleExclude={handleToggleExclude}
                   typeCatalog={typeCatalog ?? undefined}
                   categoryLabels={categoryLabels ?? undefined}
