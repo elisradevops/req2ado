@@ -855,6 +855,20 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // isDiffMutatingRef/isDiffMutating are shared with handleToggleExclude,
+  // handleBulkExclude, and handleMoveEntry above, not just with
+  // handleAddChild below -- this serializes Save against ALL of those
+  // sibling handlers, which has two real, currently-unaddressed
+  // consequences: (1) the Bulk Include/Exclude buttons' `disabled` prop
+  // reads isDiffMutating too, so they now also disable while a save/add-
+  // child is in flight (previously they didn't); (2) if this call is
+  // skipped because a sibling handler is already in flight, it fails
+  // silently -- NodeDetailPanel's own save() exits edit mode regardless of
+  // whether this guarded call actually ran, so a typed edit could
+  // disappear from the UI with no toast in that narrow window. Known,
+  // narrow gap -- not a regression to fix reflexively; see SWEEP.md
+  // section 9 for the deferred follow-up (surface an error toast when the
+  // guard skips the call, and reconcile the Bulk buttons' disabled scope).
   async function handleSaveEdit(
     localId: string,
     patch: { title: string; description: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
@@ -937,6 +951,11 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // Same shared isDiffMutatingRef/isDiffMutating gap as handleSaveEdit
+  // above: this also serializes against handleToggleExclude,
+  // handleBulkExclude, and handleMoveEntry, so a blocked call here fails
+  // silently with no toast, and the Bulk buttons disable while an add is
+  // in flight. See handleSaveEdit's comment above for the full explanation.
   async function handleAddChild(parentLocalId: string | null, input: { type: string; title: string; description: string }): Promise<void> {
     if (!id || isDiffMutatingRef.current) return;
     isDiffMutatingRef.current = true;

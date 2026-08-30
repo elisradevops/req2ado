@@ -63,7 +63,12 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText(/invalid ado organization url or personal access token/i)).toBeInTheDocument());
   });
 
-  it('does not fire a second /auth/ado-credential call while the first reconnect is still in flight (isReconnectingRef guard -- fireEvent.click, same technique as ChatPanel.test.tsx\'s isStreamingRef test, since userEvent.click would await a re-render between clicks and prove nothing about the synchronous guard)', async () => {
+  // isReconnectingRef guard -- fireEvent.click (not userEvent.click) is used
+  // here because userEvent.click would await a re-render between the two
+  // clicks, which would already show the button disabled and prove nothing
+  // about the synchronous guard itself. Same technique as
+  // ChatPanel.test.tsx's isStreamingRef test.
+  it('does not fire a second /auth/ado-credential call while the first reconnect is still in flight', async () => {
     let resolvePost: () => void = () => {};
     vi.mocked(httpClient.post).mockImplementation(() => new Promise((resolve) => { resolvePost = () => resolve({ data: { ok: true } }); }));
     renderPage();
@@ -85,6 +90,7 @@ describe('Settings', () => {
 
     expect(httpClient.post).toHaveBeenCalledTimes(1);
     resolvePost();
+    await waitFor(() => expect(screen.getByText(/azure devops connection updated/i)).toBeInTheDocument());
   });
 
   describe('SharePoint integration row + Display Preferences (DESIGN.md Track B, phase B11)', () => {
@@ -111,7 +117,10 @@ describe('Settings', () => {
       await waitFor(() => expect(screen.getByText(/sharepoint reconnected/i)).toBeInTheDocument());
     });
 
-    it('does not fire a second reconnectSharePoint call while the first reconnect is still in flight (isSharePointReconnectingRef guard -- fireEvent.click, same technique as ChatPanel.test.tsx\'s isStreamingRef test)', async () => {
+    // isSharePointReconnectingRef guard -- fireEvent.click, same technique
+    // as ChatPanel.test.tsx's isStreamingRef test (see the
+    // isReconnectingRef test above for why fireEvent.click is required here).
+    it('does not fire a second reconnectSharePoint call while the first reconnect is still in flight', async () => {
       vi.mocked(kbApi.getSharePointStatus).mockResolvedValue({ status: 'invalid', expiresInSeconds: null });
       let resolveReconnect: () => void = () => {};
       vi.spyOn(kbApi, 'reconnectSharePoint').mockImplementation(
@@ -135,6 +144,7 @@ describe('Settings', () => {
 
       expect(kbApi.reconnectSharePoint).toHaveBeenCalledTimes(1);
       resolveReconnect();
+      await waitFor(() => expect(screen.getByText(/sharepoint reconnected/i)).toBeInTheDocument());
     });
 
     it('toggles Dense View and persists it to localStorage', async () => {

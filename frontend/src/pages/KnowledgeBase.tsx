@@ -210,7 +210,10 @@ export function KnowledgeBase(): React.ReactElement {
       setRootEntries(entries);
       // A fresh browse is a new tree -- reset all navigation/selection back
       // to root rather than pointing at a folder/file that may no longer
-      // exist under the newly-browsed link.
+      // exist under the newly-browsed link. Also bump the shared sequence
+      // counter so any in-flight navigateToFolder call is invalidated --
+      // see navigateToFolder's own comment for why this matters.
+      folderNavSeqRef.current += 1;
       setCurrentFolder(ROOT_FOLDER);
       setCenterEntries(entries);
       setSelectedFileId(null);
@@ -276,6 +279,10 @@ export function KnowledgeBase(): React.ReactElement {
   }
 
   function handleNavigateRoot(): void {
+    // Bump the shared sequence counter so any in-flight navigateToFolder
+    // call is invalidated -- otherwise its slower response could still
+    // land and repaint the center pane after we've already jumped to root.
+    folderNavSeqRef.current += 1;
     setCurrentFolder(ROOT_FOLDER);
     setCenterEntries(rootEntries);
     setSelectedFileId(null);

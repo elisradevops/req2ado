@@ -78,7 +78,12 @@ describe('Login page', () => {
     expect(useAuthStore.getState().orgUrl).toBe('https://dev.azure.com/elisradevops');
   });
 
-  it('handleLogin: ignores a rapid resubmission (double-click / Enter) while the first request is still in flight (isLoggingInRef guard -- both fireEvent.click calls batched inside one act() so no re-render, and thus no disabled attribute, lands between them; this is what reproduces the "second click before the first re-render" race the ref guard fixes, same technique as Settings.test.tsx\'s isReconnectingRef test)', async () => {
+  // isLoggingInRef guard -- both fireEvent.click calls are batched inside
+  // one act() so no re-render (and thus no disabled attribute) lands
+  // between them; this is what reproduces the "second click before the
+  // first re-render" race the ref guard fixes. Same technique as
+  // Settings.test.tsx's isReconnectingRef test.
+  it('handleLogin: ignores a rapid resubmission (double-click / Enter) while the first request is still in flight', async () => {
     let resolvePost: (value: { data: { displayName: string } }) => void;
     const postPromise = new Promise<{ data: { displayName: string } }>((resolve) => {
       resolvePost = resolve;

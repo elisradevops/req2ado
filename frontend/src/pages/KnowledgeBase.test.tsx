@@ -515,5 +515,53 @@ describe('KnowledgeBase', () => {
       expect(screen.getByText('b-nested.pdf')).toBeInTheDocument();
       expect(folderNav).toHaveTextContent('FolderB');
     });
+
+    it('handleNavigateRoot: a slower in-flight subfolder response cannot overwrite the Root breadcrumb after navigating back to Root', async () => {
+      // Same race as the navigateToFolder test above, but the second writer
+      // is handleNavigateRoot (the "Root" breadcrumb) rather than a second
+      // navigateToFolder call -- both writers share folderNavSeqRef, so
+      // navigating to Root must invalidate the still-pending subfolder
+      // request the same way a second folder click already does.
+      vi.spyOn(kbApi, 'browseSharedFolder').mockResolvedValue([
+        { id: 'd1', name: 'Subfolder', mimeType: null, sizeBytes: 0, isFolder: true, driveId: 'drive-1', alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+      ]);
+
+      let resolveSubfolder!: (entries: FolderTreeEntry[]) => void;
+      const subfolderPromise = new Promise<FolderTreeEntry[]>((resolve) => {
+        resolveSubfolder = resolve;
+      });
+      vi.spyOn(kbApi, 'browseSubfolder').mockReturnValue(subfolderPromise);
+
+      renderPage();
+      await userEvent.type(screen.getByLabelText(/sharing url/i), 'https://share.example/folder');
+      await userEvent.click(screen.getByRole('button', { name: /^browse$/i }));
+      await waitFor(() => expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0));
+
+      // Click into the subfolder -- fires the slow, still-pending request.
+      const centerRow = screen.getAllByText('Subfolder').map((el) => el.closest('tr')).find(Boolean);
+      await userEvent.click(centerRow!);
+
+      // Before the subfolder response resolves, click "Root".
+      await userEvent.click(screen.getByRole('button', { name: /^root$/i }));
+
+      const folderNav = screen.getByRole('navigation', { name: /folder/i });
+      expect(folderNav).toHaveTextContent(/root/i);
+      expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0);
+
+      // Now let the subfolder's slow response resolve LAST -- it must not
+      // repaint the center pane or its breadcrumb out from under Root's
+      // already-shown state.
+      await act(async () => {
+        resolveSubfolder([
+          { id: 'nested', name: 'nested.pdf', mimeType: null, sizeBytes: 100, isFolder: false, driveId: null, alreadyIngested: false, ingestedDocumentId: null, downloadUrl: null },
+        ]);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByText('nested.pdf')).toBeNull();
+      expect(folderNav).toHaveTextContent(/root/i);
+      expect(screen.getAllByText('Subfolder').length).toBeGreaterThan(0);
+    });
   });
 });
