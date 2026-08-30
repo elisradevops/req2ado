@@ -69,6 +69,7 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar } from './jobDetailLayout';
 import { FileX2 } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState';
+import { LABEL_MICRO } from '../utils/labelMicro';
 
 // WID 300578's own field/expected/actual can carry the item's full
 // (HTML-normalized) description -- long, and often not useful in full for
@@ -90,6 +91,7 @@ export function JobDetail(): React.ReactElement {
   const { showToast } = useToast();
   const [status, setStatus] = useState<string | null>(null);
   const [mode, setMode] = useState<string | null>(null);
+  const [documentOverview, setDocumentOverview] = useState<{ synopsis: string; caveat: string | null } | null>(null);
   const [kbCitations, setKbCitations] = useState<KbCitation[]>([]);
   // STAGE 2 mapping's own excluded lists (see jobsStore.JobDetail's own
   // comment) -- same load/refetch lifecycle as kbCitations above (only
@@ -223,6 +225,7 @@ export function JobDetail(): React.ReactElement {
         if (cancelled) return;
         setStatus(job.status);
         setMode(job.mode);
+        setDocumentOverview(job.documentOverview ?? null);
         setKbCitations(job.kbCitations ?? []);
         setExcludedFigureIds(job.excludedFigureIds ?? []);
         setExcludedTableIds(job.excludedTableIds ?? []);
@@ -1325,6 +1328,21 @@ export function JobDetail(): React.ReactElement {
             isLive={(status === 'pending' || status === 'running' || status === 'writing') && !!startedAt}
             startedAt={startedAt ?? ''}
           />
+        </div>
+      )}
+      {mode === 'survey' && documentOverview && (
+        <div className="mb-4 flex flex-col gap-2 rounded-md border border-hairline bg-surface p-3">
+          <span className={LABEL_MICRO}>Document overview</span>
+          <p className="text-sm text-ink-1">{documentOverview.synopsis}</p>
+          {documentOverview.caveat && <Alert severity="warning">{documentOverview.caveat}</Alert>}
+          <span className="text-xs text-ink-3">Generated from the document's real structure — not a literal excerpt.</span>
+        </div>
+      )}
+      {mode === 'baseline' && (
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-dashed border-hairline-strong p-3 text-xs text-ink-3">
+          <span>
+            Document overview isn't produced for BASELINE jobs — deterministic extraction, nothing to verify.
+          </span>
         </div>
       )}
       {actionableWarningCount > 0 && (

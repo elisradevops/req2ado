@@ -966,6 +966,46 @@ describe('JobDetail', () => {
     expect(screen.getByText(/diff \(0\)/i)).toBeInTheDocument();
   });
 
+  describe('Document overview', () => {
+    it('renders the Document overview card for a SURVEY job with a real documentOverview', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-50',
+        status: 'diff_ready',
+        mode: 'survey',
+        dryRunDiff: [],
+        documentOverview: { synopsis: 'About a backplane.', caveat: null },
+      } as any);
+      renderAt('job-50');
+      expect(await screen.findByText('About a backplane.')).toBeInTheDocument();
+    });
+
+    it('renders nothing for a SURVEY job whose exposition generation failed (documentOverview null)', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-51',
+        status: 'diff_ready',
+        mode: 'survey',
+        dryRunDiff: [],
+        documentOverview: null,
+      } as any);
+      renderAt('job-51');
+      await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
+      expect(screen.queryByText(/document overview/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/isn.t produced for baseline/i)).not.toBeInTheDocument();
+    });
+
+    it('renders an explicit absence note for a BASELINE job, never the card', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-52',
+        status: 'diff_ready',
+        mode: 'baseline',
+        dryRunDiff: [],
+        documentOverview: null,
+      } as any);
+      renderAt('job-52');
+      expect(await screen.findByText(/isn.t produced for baseline jobs/i)).toBeInTheDocument();
+    });
+  });
+
   // CR: reparent -- real user feedback after deploying: "where is the
   // workitem creation?" -- there was no entry point to create a new item
   // with no anchor node at all (e.g. a first top-level Epic). Reuses
