@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import { JobsController } from './jobs.controller';
+import { DocumentOverviewService } from './document-overview.service';
 import { AdoController } from './ado.controller';
 import { JobEventsController, REDIS_SUBSCRIBER_FACTORY } from './job-events.controller';
 import { JobEventPersistenceService } from './job-event-persistence.service';
@@ -28,6 +29,7 @@ import { BatchPumpService } from '../batch/batch-pump.service';
   controllers: [JobsController, AdoController, JobEventsController, BackfillController, BatchController],
   providers: [
     { provide: PrismaClient, useValue: new PrismaClient() },
+    DocumentOverviewService,
     {
       // Same erased-runtime-type / explicit-factory reasoning this module
       // already documents for IdempotencyService et al -- needed here only

@@ -25,6 +25,7 @@ import { jobFigureFileUploadSchema } from './job-figure-file.dto';
 import { etaEstimateQuerySchema } from './eta-estimate.dto';
 import { EtaService, type EtaEstimate } from './eta.service';
 import { buildDocumentMap, type DocumentMapSection } from './document-map';
+import { DocumentOverviewService } from './document-overview.service';
 import { createHash } from 'crypto';
 import { OpenWebUiClient } from '../llm/openwebui.client';
 import { LlmProxyBearerGuard } from '../llm/llm-proxy-bearer.guard';
@@ -96,6 +97,7 @@ export class JobsController {
     private readonly workItemTypeCatalogService: WorkItemTypeCatalogService,
     private readonly etaService: EtaService,
     @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
+    private readonly documentOverviewService: DocumentOverviewService,
   ) {}
 
   @Get()
@@ -259,6 +261,23 @@ export class JobsController {
       openTbdCount: doc.blocks.filter((b) => b.kind === 'open_tbd').length,
       documentMap: buildDocumentMap(doc.blocks),
     };
+  }
+
+  // No file upload here -- consumes the heading/document-map data the
+  // wizard's step-1 preview() call already returned, so this never
+  // re-parses the document. SURVEY-only from the caller's side (the
+  // wizard only calls this once SURVEY is selected); this endpoint itself
+  // has no mode check since it does nothing mode-specific.
+  @Post('preview/exposition')
+  async previewExposition(
+    @Body('documentMap') documentMap: DocumentMapSection[] | undefined,
+    @Body('sectionCount') sectionCount: number | undefined,
+    @Body('depth') depth: number | undefined,
+  ): Promise<{ synopsis: string; caveat: string | null } | null> {
+    if (!documentMap || typeof sectionCount !== 'number' || typeof depth !== 'number') {
+      return null;
+    }
+    return this.documentOverviewService.generate({ documentMap, sectionCount, depth });
   }
 
   // Re-pricing without re-uploading: the reviewer changing mode/model on

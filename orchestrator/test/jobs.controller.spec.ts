@@ -22,7 +22,7 @@ describe('JobsController.preview', () => {
     };
     const jobsService = { submit: jest.fn() };
     const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
     const result = await controller.preview(file, undefined, undefined);
@@ -65,7 +65,7 @@ describe('JobsController.preview', () => {
     };
     const jobsService = { submit: jest.fn() };
     const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 4 } as Express.Multer.File;
     const result = await controller.preview(file, undefined, undefined);
@@ -86,7 +86,7 @@ describe('JobsController.preview', () => {
   it('throws BadRequestException when no file is provided', async () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.preview(undefined, undefined, undefined)).rejects.toThrow('file is required');
     expect(ingestionClient.ingest).not.toHaveBeenCalled();
@@ -96,7 +96,7 @@ describe('JobsController.preview', () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
     const maxUploadSize = 10 * 1024 * 1024; // 10MB
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, maxUploadSize);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, maxUploadSize, {} as any);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.docx', size: 20 * 1024 * 1024 } as Express.Multer.File;
 
@@ -107,7 +107,7 @@ describe('JobsController.preview', () => {
   it('throws BadRequestException when file has unsupported extension', async () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     const file = { buffer: Buffer.from('x'), originalname: 'req.exe', size: 4 } as Express.Multer.File;
 
@@ -142,7 +142,7 @@ describe('JobsController.getById', () => {
       resolveRequirementClassificationField: jest.fn().mockResolvedValue(classificationField),
     };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -163,7 +163,7 @@ describe('JobsController.getById', () => {
   it('falls back to the identity category-label map when there is no diff yet', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, dryRunDiff: null }) };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -176,7 +176,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn() };
     const workItemTypeCatalogService = { resolve: jest.fn() };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -191,7 +191,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue(undefined) };
     const workItemTypeCatalogService = { resolve: jest.fn() };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -205,7 +205,7 @@ describe('JobsController.getById', () => {
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
     const workItemTypeCatalogService = { resolve: jest.fn().mockRejectedValue(new Error('ADO unreachable')) };
     const controller = new JobsController(
-      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024,
+      jobsService as any, {} as any, {} as any, adoCredentialResolver as any, workItemTypeCatalogService as any, {} as any, 500 * 1024 * 1024, {} as any,
     );
 
     const result = await controller.getById('job-1', TEST_USER);
@@ -224,7 +224,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n0' }]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', 'New desc', '1.1.2.2', undefined, undefined);
 
@@ -240,7 +240,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, '  1.1.2.2  ', undefined, undefined);
     expect(jobsService.editDiffEntry).toHaveBeenLastCalledWith('job-1', 'n0', expect.objectContaining({ customerId: '1.1.2.2' }));
@@ -254,7 +254,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', undefined, undefined, undefined, undefined);
 
@@ -270,7 +270,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn(),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(
       controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, 'x'.repeat(129), undefined, undefined),
@@ -283,7 +283,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined, ['functional', 'safety'], undefined);
 
@@ -298,7 +298,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn(),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(
       controller.editDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined, ['not_a_real_tag'], undefined),
@@ -311,7 +311,7 @@ describe('JobsController.editDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       editDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await controller.editDiffEntry('job-1', 'n0', TEST_USER, 'New Title', undefined, undefined, undefined, undefined);
 
@@ -328,7 +328,7 @@ describe('JobsController.moveDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       moveDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n0', parentLocalId: 'n1' }]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     const result = await controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', 'n2', 'before');
 
@@ -345,7 +345,7 @@ describe('JobsController.moveDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       moveDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await controller.moveDiffEntry('job-1', 'n0', TEST_USER, null, undefined, undefined);
 
@@ -358,7 +358,7 @@ describe('JobsController.moveDiffEntry', () => {
 
   it('rejects a missing parentLocalId (undefined is not the same as null)', async () => {
     const jobsService = { getById: jest.fn(), moveDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, undefined, undefined, undefined)).rejects.toThrow(
       'parentLocalId is required',
@@ -368,7 +368,7 @@ describe('JobsController.moveDiffEntry', () => {
 
   it('rejects an invalid placement value', async () => {
     const jobsService = { getById: jest.fn(), moveDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', undefined, 'sideways' as any)).rejects.toThrow(
       "placement must be 'before' or 'after'",
@@ -377,7 +377,7 @@ describe('JobsController.moveDiffEntry', () => {
 
   it('404s for a job that does not belong to the caller', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }), moveDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.moveDiffEntry('job-1', 'n0', TEST_USER, 'n1', undefined, undefined)).rejects.toThrow('not found');
     expect(jobsService.moveDiffEntry).not.toHaveBeenCalled();
@@ -393,7 +393,7 @@ describe('JobsController.addDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       addDiffEntry: jest.fn().mockResolvedValue([{ localId: 'n1' }]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     const result = await controller.addDiffEntry('job-1', TEST_USER, 'n0', 'Requirement', 'Title', 'Desc');
 
@@ -408,7 +408,7 @@ describe('JobsController.addDiffEntry', () => {
       getById: jest.fn().mockResolvedValue(TEST_JOB),
       addDiffEntry: jest.fn().mockResolvedValue([]),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await controller.addDiffEntry('job-1', TEST_USER, null, 'Epic', 'Title', 'Desc');
 
@@ -417,7 +417,7 @@ describe('JobsController.addDiffEntry', () => {
 
   it('rejects a missing (undefined) parentLocalId', async () => {
     const jobsService = { getById: jest.fn(), addDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.addDiffEntry('job-1', TEST_USER, undefined, 'Epic', 'Title', 'Desc')).rejects.toThrow(
       'parentLocalId (or null for the top level)',
@@ -427,7 +427,7 @@ describe('JobsController.addDiffEntry', () => {
 
   it('rejects a missing type/title/description', async () => {
     const jobsService = { getById: jest.fn(), addDiffEntry: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.addDiffEntry('job-1', TEST_USER, 'n0', undefined, 'Title', 'Desc')).rejects.toThrow(
       'parentLocalId (or null for the top level)',
@@ -440,7 +440,7 @@ describe('JobsController.listModels', () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
     const llmClient = { listModels: jest.fn().mockResolvedValue(['qwen2.5:1.5b', 'gemma4:e4b']) };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, llmClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, ingestionClient as any, llmClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     const result = await controller.listModels();
 
@@ -451,7 +451,7 @@ describe('JobsController.listModels', () => {
 describe('JobsController.uploadFigureFile', () => {
   it('stores compressed figure bytes via jobsService.storeFigureFile', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn().mockResolvedValue(undefined) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     const bytes = Buffer.from('png bytes');
     const result = await controller.uploadFigureFile('job-1', 'f3', { bytes: bytes.toString('base64'), mimeType: 'image/png' });
@@ -462,7 +462,7 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('404s for an unknown job -- never even parses the body', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue(null), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.uploadFigureFile('missing', 'f3', { bytes: 'YQ==', mimeType: 'image/png' })).rejects.toThrow('not found');
     expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
@@ -470,7 +470,7 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('rejects a body missing bytes/mimeType', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.uploadFigureFile('job-1', 'f3', { bytes: '' } as any)).rejects.toThrow('Invalid request body');
     expect(jobsService.storeFigureFile).not.toHaveBeenCalled();
@@ -478,7 +478,7 @@ describe('JobsController.uploadFigureFile', () => {
 
   it('rejects a figure over the 8MB per-figure cap', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1' }), storeFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     const oversized = Buffer.alloc(9 * 1024 * 1024, 1).toString('base64');
     await expect(controller.uploadFigureFile('job-1', 'f3', { bytes: oversized, mimeType: 'image/png' })).rejects.toThrow('exceeds');
@@ -494,7 +494,7 @@ describe('JobsController.getFigureFile', () => {
       getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }),
       getFigureFile: jest.fn().mockResolvedValue({ bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
     const res = { set: jest.fn(), send: jest.fn() };
 
     await controller.getFigureFile('job-1', 'f0', TEST_USER, res as any);
@@ -509,7 +509,7 @@ describe('JobsController.getFigureFile', () => {
       getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'user-descriptor-1' }),
       getFigureFile: jest.fn().mockResolvedValue(null),
     };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
     const res = { set: jest.fn(), send: jest.fn() };
 
     await expect(controller.getFigureFile('job-1', 'f0', TEST_USER, res as any)).rejects.toThrow('not found');
@@ -518,7 +518,7 @@ describe('JobsController.getFigureFile', () => {
 
   it('404s for a job that does not belong to the caller -- same not-403 convention as every other per-job route', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), getFigureFile: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
     const res = { set: jest.fn(), send: jest.fn() };
 
     await expect(controller.getFigureFile('job-1', 'f0', TEST_USER, res as any)).rejects.toThrow('not found');
@@ -535,7 +535,7 @@ describe('JobsController.attachFigureToAdo', () => {
       attachFigureToAdo: jest.fn().mockResolvedValue({ attached: true, adoId: 555 }),
     };
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     const result = await controller.attachFigureToAdo('job-1', 'n0', 'f0', TEST_USER);
 
@@ -547,7 +547,7 @@ describe('JobsController.attachFigureToAdo', () => {
   it('404s for a job that does not belong to the caller before resolving any credential', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), attachFigureToAdo: jest.fn() };
     const adoCredentialResolver = { resolve: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.attachFigureToAdo('job-1', 'n0', 'f0', TEST_USER)).rejects.toThrow('not found');
     expect(adoCredentialResolver.resolve).not.toHaveBeenCalled();
@@ -564,7 +564,7 @@ describe('JobsController.retryTraceLinkWrite', () => {
       retryTraceLinkWrite: jest.fn().mockResolvedValue({ written: true, sourceAdoId: 101, targetAdoId: 100 }),
     };
     const adoCredentialResolver = { resolve: jest.fn().mockResolvedValue({ orgUrl: 'https://ado.example', pat: 'x' }) };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     const result = await controller.retryTraceLinkWrite('job-1', 'failure-1', TEST_USER);
 
@@ -576,7 +576,7 @@ describe('JobsController.retryTraceLinkWrite', () => {
   it('404s for a job that does not belong to the caller before resolving any credential', async () => {
     const jobsService = { getById: jest.fn().mockResolvedValue({ id: 'job-1', userId: 'someone-else' }), retryTraceLinkWrite: jest.fn() };
     const adoCredentialResolver = { resolve: jest.fn() };
-    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024);
+    const controller = new JobsController(jobsService as any, {} as any, {} as any, adoCredentialResolver as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.retryTraceLinkWrite('job-1', 'failure-1', TEST_USER)).rejects.toThrow('not found');
     expect(adoCredentialResolver.resolve).not.toHaveBeenCalled();
@@ -594,7 +594,7 @@ describe('JobsController.retryTraceLinkWrite', () => {
 describe('JobsController.getEstimate', () => {
   it('validates the query and calls EtaService.estimate with coerced numbers', async () => {
     const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'survey', estimateMinutes: 42 }) };
-    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
 
     const result = await controller.getEstimate({ blockCount: '682', figureCount: '39', mode: 'survey', model: 'qwen2.5:32b' });
 
@@ -608,7 +608,7 @@ describe('JobsController.getEstimate', () => {
 
   it('rejects a missing/invalid mode with a 400, never a silent default', async () => {
     const etaService = { estimate: jest.fn() };
-    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.getEstimate({ blockCount: '10', figureCount: '2', mode: 'not-a-real-mode' })).rejects.toThrow('Invalid query');
     expect(etaService.estimate).not.toHaveBeenCalled();
@@ -616,7 +616,7 @@ describe('JobsController.getEstimate', () => {
 
   it('rejects a negative blockCount/figureCount', async () => {
     const etaService = { estimate: jest.fn() };
-    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
 
     await expect(controller.getEstimate({ blockCount: '-1', figureCount: '2', mode: 'survey' })).rejects.toThrow('Invalid query');
     expect(etaService.estimate).not.toHaveBeenCalled();
@@ -628,7 +628,7 @@ describe('JobsController.getEstimate', () => {
     // confirms the controller passes BASELINE through faithfully rather
     // than defaulting it to survey or dropping it.
     const etaService = { estimate: jest.fn().mockResolvedValue({ mode: 'baseline', estimateMinutes: 1 }) };
-    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024);
+    const controller = new JobsController({} as any, {} as any, {} as any, {} as any, {} as any, etaService as any, 500 * 1024 * 1024, {} as any);
 
     const result = await controller.getEstimate({ blockCount: '10', figureCount: '2', mode: 'baseline' });
 
