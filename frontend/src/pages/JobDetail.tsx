@@ -859,13 +859,18 @@ export function JobDetail(): React.ReactElement {
     localId: string,
     patch: { title: string; description: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
   ): Promise<void> {
-    if (!id) return;
+    if (!id || isDiffMutatingRef.current) return;
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
     try {
       const result = await editDiffEntry(id, localId, patch);
       setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
       showToast('Changes saved.', 'success');
     } catch {
       showToast('Failed to save changes — please try again.', 'error');
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
     }
   }
 
@@ -933,13 +938,18 @@ export function JobDetail(): React.ReactElement {
   }
 
   async function handleAddChild(parentLocalId: string | null, input: { type: string; title: string; description: string }): Promise<void> {
-    if (!id) return;
+    if (!id || isDiffMutatingRef.current) return;
+    isDiffMutatingRef.current = true;
+    setIsDiffMutating(true);
     try {
       const result = await addDiffEntry(id, { parentLocalId, ...input });
       setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
       showToast('Item added.', 'success');
     } catch {
       showToast('Failed to add item — please try again.', 'error');
+    } finally {
+      isDiffMutatingRef.current = false;
+      setIsDiffMutating(false);
     }
   }
 

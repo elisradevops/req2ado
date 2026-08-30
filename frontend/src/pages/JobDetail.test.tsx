@@ -90,6 +90,51 @@ describe('JobDetail', () => {
     expect(await screen.findAllByText('Root')).not.toHaveLength(0);
   });
 
+  // Guard added alongside handleToggleExclude/handleBulkExclude/
+  // handleMoveEntry's own isDiffMutatingRef re-entry guard (779-856 above)
+  // -- handleSaveEdit had none, so a user who re-opens Edit and clicks Save
+  // again before the first editDiffEntry request settles (NodeDetailPanel's
+  // own save() exits edit mode immediately, regardless of the request's
+  // outcome -- see NodeDetailPanel.tsx) could fire two racing saves. The
+  // never-resolving mock isolates the still-in-flight window, same
+  // technique JobDetail.optimisticMove.test.tsx already uses for
+  // moveDiffEntry.
+  it('blocks a second handleSaveEdit call while the first edit is still in flight', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-55',
+      status: 'diff_ready',
+      dryRunDiff: [
+        { localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body', action: 'create', customerId: null, tags: [] },
+      ],
+    } as any);
+    const chatApi = await import('../api/chat');
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue([]);
+    // mockClear isolates the call-count assertion below from any earlier
+    // test's editDiffEntry calls -- this file has no global clearAllMocks,
+    // so vi.mock('../api/jobs')'s shared mock functions otherwise carry
+    // call history across tests (same reasoning as DiffTree.test.tsx's own
+    // scoped mockClear calls).
+    vi.mocked(jobsApi.editDiffEntry).mockClear().mockReturnValue(new Promise(() => {}));
+
+    renderAt('job-55');
+    await waitFor(() => expect(screen.getByText('Req Title')).toBeInTheDocument());
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByText('Req Title'));
+
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    // Save exits edit mode immediately, so a second Edit->Save round is
+    // reachable through the same UI -- the guard, not the UI, must block
+    // the second underlying call.
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    await userEvent.click(screen.getByRole('button', { name: /save/i }));
+
+    expect(jobsApi.editDiffEntry).toHaveBeenCalledTimes(1);
+  });
+
   it('shows a "Needs review" filter chip with the flagged count, and isolates flagged rows on click', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-40',
@@ -1074,6 +1119,47 @@ describe('JobDetail', () => {
 
       await waitFor(() => expect(jobsApi.addDiffEntry).toHaveBeenCalledWith('job-40', { parentLocalId: null, type: 'Epic', title: 'New Epic', description: 'd' }));
       expect(await screen.findByText('New Epic')).toBeInTheDocument();
+    });
+
+    // Guard added alongside handleToggleExclude/handleBulkExclude/
+    // handleMoveEntry's own isDiffMutatingRef re-entry guard
+    // (JobDetail.tsx, 779-856) -- handleAddChild had none, so re-opening
+    // "New item" and clicking Add again before the first addDiffEntry
+    // request settles (AddChildCard's onAdd wrapper collapses the form
+    // immediately, regardless of the request's outcome -- see
+    // AddChildCard.tsx) could create two items. The never-resolving mock
+    // isolates the still-in-flight window, same technique
+    // JobDetail.optimisticMove.test.tsx already uses for moveDiffEntry.
+    it('blocks a second handleAddChild call while the first add is still in flight', async () => {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-43',
+        status: 'diff_ready',
+        mode: 'survey',
+        dryRunDiff: [],
+      } as any);
+      // mockClear isolates the call-count assertion below from the earlier
+      // "creates a root-level item via addDiffEntry" test in this same
+      // describe block -- see the mockClear comment on the handleSaveEdit
+      // guard test above for why this file needs it here.
+      vi.mocked(jobsApi.addDiffEntry).mockClear().mockReturnValue(new Promise(() => {}));
+      renderAt('job-43');
+      await waitFor(() => expect(screen.getByRole('button', { name: /^new item$/i })).toBeInTheDocument());
+
+      const { default: userEvent } = await import('@testing-library/user-event');
+      await userEvent.click(screen.getByRole('button', { name: /^new item$/i }));
+      await userEvent.type(screen.getByLabelText(/title/i), 'First Epic');
+      await userEvent.type(screen.getByLabelText(/description/i), 'd');
+      await userEvent.click(screen.getByRole('button', { name: /^add$/i }));
+
+      // The form collapses immediately after Add, so reopening it and
+      // submitting again is reachable through the same UI -- the guard,
+      // not the UI, must block the second underlying call.
+      await userEvent.click(screen.getByRole('button', { name: /^new item$/i }));
+      await userEvent.type(screen.getByLabelText(/title/i), 'Second Epic');
+      await userEvent.type(screen.getByLabelText(/description/i), 'd');
+      await userEvent.click(screen.getByRole('button', { name: /^add$/i }));
+
+      expect(jobsApi.addDiffEntry).toHaveBeenCalledTimes(1);
     });
 
     it('does not render for a BASELINE job -- no anchor-independent type model', async () => {
