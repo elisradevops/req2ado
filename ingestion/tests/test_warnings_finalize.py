@@ -99,6 +99,56 @@ def test_finalize_warnings_groups_unsupported_content_note_across_the_whole_list
     assert "2 loader diagnostic note(s)" in result[0].raw
 
 
+def test_finalize_warnings_groups_ocr_recovered_table_text_across_the_whole_list() -> None:
+    # Real gap this closes: OCR_RECOVERED_TABLE_TEXT was previously absent
+    # from this module entirely -- a scanned PDF with many OCR-recovered
+    # tables spammed one warning row per table instead of one flat bucket.
+    warnings = [
+        IntegrityWarning.make(
+            WarningKind.OCR_RECOVERED_TABLE_TEXT,
+            "Table t0 had 3 cell(s) whose text could not be extracted directly and was recovered via OCR.",
+            node_ids=["n0"],
+            detail={"tableId": "t0", "recoveredCellCount": 3},
+        ),
+        IntegrityWarning.make(
+            WarningKind.OCR_RECOVERED_TABLE_TEXT,
+            "Table t1 had 5 cell(s) whose text could not be extracted directly and was recovered via OCR.",
+            node_ids=["n1"],
+            detail={"tableId": "t1", "recoveredCellCount": 5},
+        ),
+    ]
+    result = finalize_warnings(warnings)
+    assert len(result) == 1
+    assert result[0].kind == WarningKind.OCR_RECOVERED_TABLE_TEXT
+    assert result[0].detail["mergedCount"] == 2
+    assert result[0].node_ids == ["n0", "n1"]
+    assert "2 table(s) had 8 cell(s) total" in result[0].raw
+
+
+def test_finalize_warnings_groups_external_reference_across_the_whole_list() -> None:
+    # Real gap this closes: EXTERNAL_REFERENCE was previously absent from
+    # this module entirely -- a document referencing many un-ingested
+    # external artifacts spammed one warning row per reference instead of
+    # one flat bucket.
+    warnings = [
+        IntegrityWarning.make(
+            WarningKind.EXTERNAL_REFERENCE,
+            'The "Intro" section references an external artifact (\'see Appendix A\').',
+            detail={"section": "Intro", "phrase": "see Appendix A"},
+        ),
+        IntegrityWarning.make(
+            WarningKind.EXTERNAL_REFERENCE,
+            'The "Specs" section references an external artifact (\'see ICD-001\').',
+            detail={"section": "Specs", "phrase": "see ICD-001"},
+        ),
+    ]
+    result = finalize_warnings(warnings)
+    assert len(result) == 1
+    assert result[0].kind == WarningKind.EXTERNAL_REFERENCE
+    assert result[0].detail["mergedCount"] == 2
+    assert "2 external artifact reference(s)" in result[0].raw
+
+
 def test_finalize_warnings_groups_empty_table_content_across_the_whole_list() -> None:
     # EMPTY_TABLE_CONTENT (drifted from Task 1's own UNSUPPORTED_CONTENT_NOTE
     # convention -- final whole-branch review finding) is also a flat/None

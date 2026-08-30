@@ -46,6 +46,13 @@ _GROUP_KEY_FIELD: dict[WarningKind, str | None] = {
     WarningKind.DROPPED_ROW: None,
     WarningKind.UNSUPPORTED_CONTENT_NOTE: None,
     WarningKind.EMPTY_TABLE_CONTENT: None,
+    # Real gap this closes: both were previously absent from this module
+    # entirely, so a scanned PDF with 40 recovered tables (or a document
+    # with 40 unignored external references) spammed 40 near-identical
+    # rows instead of the one flat bucket every other "N of the same thing
+    # happened" kind above already gets.
+    WarningKind.OCR_RECOVERED_TABLE_TEXT: None,
+    WarningKind.EXTERNAL_REFERENCE: None,
     # Per-ITEM, not per-node (a hallucinated mapping target names no real
     # node at all, so these records carry empty node_ids) -- one flat bucket,
     # same as every other "N of the same thing happened" kind above.
@@ -173,6 +180,21 @@ def _empty_table_content(members: list[IntegrityWarning], node_ids: list[str]) -
     )
 
 
+def _ocr_recovered_table_text(members: list[IntegrityWarning], node_ids: list[str]) -> str:
+    total_cells = sum(m.detail.get("recoveredCellCount", 0) for m in members)
+    return (
+        f"{len(members)} table(s) had {total_cells} cell(s) total whose text could not be extracted "
+        "directly and was recovered via OCR -- please spot-check against the source document."
+    )
+
+
+def _external_reference(members: list[IntegrityWarning], node_ids: list[str]) -> str:
+    return (
+        f"{len(members)} external artifact reference(s) were found that this SURVEY run did not "
+        "ingest -- consider adding them to the knowledge base."
+    )
+
+
 _SUMMARY_BUILDERS: dict[WarningKind, Callable[[list[IntegrityWarning], list[str]], str]] = {
     WarningKind.REPARENTED_TO_FEATURE: _reparented_to_feature,
     WarningKind.GROUP_REPARENTED: _group_reparented,
@@ -189,6 +211,8 @@ _SUMMARY_BUILDERS: dict[WarningKind, Callable[[list[IntegrityWarning], list[str]
     WarningKind.UNSUPPORTED_CONTENT_NOTE: _unsupported_content_note,
     WarningKind.EMPTY_TABLE_CONTENT: _empty_table_content,
     WarningKind.INVALID_MAPPING_TARGET: _invalid_mapping_target,
+    WarningKind.OCR_RECOVERED_TABLE_TEXT: _ocr_recovered_table_text,
+    WarningKind.EXTERNAL_REFERENCE: _external_reference,
 }
 
 # Sentinel distinct from a real `None` group-key-field value (which means
