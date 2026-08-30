@@ -26,6 +26,7 @@ import { cn } from '../lib/cn';
 import { moveValidationReason as sharedMoveValidationReason } from '../lib/moveValidation';
 import { actionLabel } from '../utils/labels';
 import { matchesDiffFilter } from '../utils/diffFilterMatch';
+import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { ActionBadge } from './ActionBadge';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
@@ -91,6 +92,12 @@ export interface DryRunDiffEntry {
   seCoverageRef?: string | null;
   tags?: string[];
   qualityScore?: number | null;
+  // Computed server-side alongside qualityScore (vocabulary-overlap check
+  // against the node's own source text) -- see DiffTree's own review-chip
+  // rendering and NodeDetailPanel's Grounding metric. Same nullability
+  // convention as qualityScore: absent for BASELINE and for a manually-
+  // added entry.
+  groundingScore?: number | null;
   qualityIssues?: string[];
   // Per-dimension 0-100 breakdown backing qualityScore -- a dynamic
   // key->score map (NOT a fixed 5-field shape), see ingestion's
@@ -414,7 +421,14 @@ export function DiffTree({
 }): React.ReactElement {
   // Collapsed parent nodes -- purely a display concern (not lifted to
   // JobDetail), so toggling one never touches the diff data itself.
-  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  // Starts with every Feature id collapsed (hiding its Requirement
+  // children) so a large document's tree reads as an outline first, not a
+  // wall of leaf text -- Epics stay expanded so their Features are
+  // visible immediately. Computed once, from the entries this component
+  // mounted with; toggling never re-derives it.
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(
+    () => new Set(entries.filter((entry) => entry.type === 'Feature').map((entry) => entry.localId)),
+  );
 
   const toggleCollapsed = useCallback((localId: string) => {
     setCollapsedIds((prev) => {
@@ -1057,6 +1071,11 @@ function DiffTreeRow({
           app, so not changed here) painted past the column boundary into
           the Signals column next to it. */}
       <span className="flex-none overflow-hidden">
+        {isFlaggedDiffEntry(entry) && (
+          <Chip bg="var(--color-warning-soft)" color="var(--color-warning-ink)" className="border border-warning-border">
+            ⚠ Review
+          </Chip>
+        )}
         <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} />
       </span>
 

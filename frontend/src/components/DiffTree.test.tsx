@@ -136,6 +136,9 @@ describe('DiffTree', () => {
     render(
       <DiffTree entries={withCustomerId} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
     );
+    // Child Feature starts collapsed by default -- expand it to reach its
+    // Requirement child.
+    fireEvent.click(screen.getByRole('button', { name: /expand child feature/i }));
     // The Requirement's own index (root Epic -> child Feature -> child
     // Requirement, all only children) is "1.1.1" -- present AND distinct
     // from its customerId badge "REQ-AV-014", both rendered simultaneously.
@@ -272,6 +275,35 @@ describe('DiffTree', () => {
       <DiffTree entries={ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="Child" onToggleExclude={vi.fn()} />,
     );
     expect(screen.getByText('Child Feature')).toBeInTheDocument();
+  });
+
+  it('loads with every Feature collapsed by default, hiding its Requirements', () => {
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+      { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Req 1', description: '', action: 'create', customerId: null },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    expect(screen.getByText('Epic 1')).toBeInTheDocument();
+    expect(screen.getByText('Feature 1')).toBeInTheDocument();
+    expect(screen.queryByText('Req 1')).not.toBeInTheDocument();
+  });
+
+  it('shows a review chip on a flagged entry, not on a healthy one', () => {
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+      { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Flagged req', description: '', action: 'create', customerId: null, groundingScore: 0.1 },
+      { localId: 'r2', parentLocalId: 'f1', type: 'Requirement', title: 'Healthy req', description: '', action: 'create', customerId: null, groundingScore: 0.9 },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    // Feature 1 starts collapsed (see the test above) -- expand it to reach the Requirements.
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
+
+    expect(screen.getByText('Flagged req').closest('[role="row"], div')?.parentElement).toHaveTextContent(/review/i);
+    expect(screen.getByText('Healthy req').closest('[role="row"], div')?.parentElement).not.toHaveTextContent(/review/i);
   });
 
   it('ArrowDown/ArrowUp move selection between visible rows', async () => {
@@ -492,8 +524,21 @@ function stubMoveEntryRects(): void {
 }
 
 describe('DiffTree drag-and-drop (reparent/reorder)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     itemKeyCalls.length = 0;
+    // A completed real drag in an EARLIER test schedules a document-level
+    // click-stopPropagation listener that @dnd-kit/core's own detach() only
+    // removes 50ms later (see the "does not swallow a click on an
+    // UNRELATED row" test's own comment on this same mechanism) -- and
+    // jsdom's `document` is shared across every test in this file, not
+    // reset per test. Several tests in this block now click a Feature's
+    // own expand toggle (Feature starts collapsed by default) as their
+    // FIRST interaction, which otherwise risks landing inside a still-live
+    // leftover window from the previous test's drag and being silently
+    // swallowed. Waiting it out here, once per test, keeps every test's
+    // assertions about ITS OWN click from depending on dnd-kit's internal
+    // cleanup timing.
+    await new Promise((resolve) => setTimeout(resolve, 60));
   });
 
   it('does not render draggable rows or the grip column when canMove is false/omitted', () => {
@@ -558,6 +603,9 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
+    // Feature 1 starts collapsed by default -- expand it so Req 1 (used by
+    // stubMoveEntryRects' own row-position stubbing) actually renders.
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Feature 1'); // top=40, center=60
     // Feature 1's center (60) moved to Epic 2's own center (top=160,
@@ -581,6 +629,9 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
+    // Feature 1 starts collapsed by default -- expand it so Req 1 (used by
+    // stubMoveEntryRects' own row-position stubbing) actually renders.
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Feature 2'); // top=120, center=140
     // Feature 2's center (140) moved to y=42 -- Feature 1 spans
@@ -604,6 +655,9 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
+    // Feature 1 starts collapsed by default -- expand it so Req 1 (the drop
+    // target this test needs) actually renders.
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Epic 1'); // Epic cannot nest under a Requirement, top=0, center=20
     // Req 1 spans top=80..120 -> center=100.
@@ -626,6 +680,9 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
+    // Feature 1 starts collapsed by default -- expand it so Req 1 (the
+    // descendant this test drags onto) actually renders.
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Epic 1'); // top=0, center=20
     // Req 1 (top=80..120, center=100) is a descendant of Epic 1 via Feature 1.
@@ -650,6 +707,9 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={onMove}
       />,
     );
+    // Feature 1 starts collapsed by default -- expand it so Req 1 (used by
+    // stubMoveEntryRects' own row-position stubbing) actually renders.
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Feature 1'); // top=40, center=60
     dragRow(source, { fromY: 0, toY: 180 - 60 }); // onto Epic 2's center -> 'inside'
@@ -686,6 +746,9 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
         onMove={vi.fn()}
       />,
     );
+    // Feature 1 starts collapsed by default -- expand it so Req 1 (the
+    // unrelated row clicked below) actually renders.
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     stubMoveEntryRects();
     const source = rowFor('Feature 1'); // top=40, center=60
     dragRow(source, { fromY: 0, toY: 180 - 60 }); // onto Epic 2's center -> 'inside'
@@ -710,6 +773,12 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
     render(
       <DiffTree entries={MOVE_ENTRIES} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} canMove onMove={vi.fn()} />,
     );
+    // Feature 1 starts collapsed by default -- expand it so Req 1 renders
+    // (this test asserts on its real visual-order itemKey). Clear the calls
+    // recorded by the pre-expand mount renders first, so the dedup below
+    // reflects only the fully-expanded order, not the initial collapsed one.
+    itemKeyCalls.length = 0;
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
     // useContainerHeight's mount effect calls setHeight once (jsdom's
     // getBoundingClientRect always reports 0), so the list legitimately
     // renders twice -- dedupe rather than assert an exact render count,
@@ -735,6 +804,9 @@ describe('DiffTree drag-and-drop (reparent/reorder)', () => {
     render(
       <DiffTree entries={withExcludedAncestor} selectedId={null} onSelect={vi.fn()} filterAction={null} filterText="" onToggleExclude={vi.fn()} />,
     );
+    // Feature 1 starts collapsed by default -- expand it so r1 (one of the
+    // three descendants this test counts) actually renders.
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
 
     // f1/f2/r1 are all descendants of the excluded e1 -- each gets the warning.
     expect(screen.getAllByTitle(/ancestor of this item is excluded/i)).toHaveLength(3);
