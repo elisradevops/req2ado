@@ -797,7 +797,12 @@ export function JobDetail(): React.ReactElement {
   async function handleBulkExclude(excluded: boolean): Promise<void> {
     if (!id || isDiffMutatingRef.current) return;
     const query = filterText.trim().toLowerCase();
-    const targets = diff.filter((entry) => matchesDiffFilter(entry, filterAction, query) && !!entry.excluded !== excluded);
+    const targets = diff.filter(
+      (entry) =>
+        matchesDiffFilter(entry, filterAction, query) &&
+        (!filterFlaggedOnly || isFlaggedDiffEntry(entry)) &&
+        !!entry.excluded !== excluded,
+    );
     if (targets.length === 0) return;
     isDiffMutatingRef.current = true;
     setIsDiffMutating(true);
@@ -1481,10 +1486,10 @@ export function JobDetail(): React.ReactElement {
                     {status === 'diff_ready' && (
                       <div className="ml-auto flex gap-2">
                         <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(true)} disabled={isDiffMutating}>
-                          Exclude {filterAction || filterText ? 'matching' : 'all'}
+                          Exclude {filterAction || filterText || filterFlaggedOnly ? 'matching' : 'all'}
                         </Button>
                         <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(false)} disabled={isDiffMutating}>
-                          Include {filterAction || filterText ? 'matching' : 'all'}
+                          Include {filterAction || filterText || filterFlaggedOnly ? 'matching' : 'all'}
                         </Button>
                       </div>
                     )}

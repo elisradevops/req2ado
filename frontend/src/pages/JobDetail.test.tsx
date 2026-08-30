@@ -772,6 +772,46 @@ describe('JobDetail', () => {
     expect(excludeSpy).not.toHaveBeenCalledWith('job-6', 'c', true);
   });
 
+  it('bulk-excludes only flagged rows when the "Needs review" filter is active, ignoring the rest of the diff', async () => {
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-41',
+      status: 'diff_ready',
+      dryRunDiff: [
+        {
+          localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Flagged one', description: '',
+          action: 'create', customerId: null, tags: [], groundingScore: 0.1,
+        },
+        {
+          localId: 'b', parentLocalId: null, type: 'Requirement', title: 'Flagged two', description: '',
+          action: 'create', customerId: null, tags: [], groundingScore: 0.05,
+        },
+        {
+          localId: 'c', parentLocalId: null, type: 'Requirement', title: 'Healthy one', description: '',
+          action: 'create', customerId: null, tags: [], groundingScore: 0.9,
+        },
+      ],
+    } as any);
+    const excludeSpy = vi.spyOn(jobsApi, 'setDiffEntryExcluded').mockImplementation(async (_id, localId) => ({
+      dryRunDiff: [
+        { localId: 'a', parentLocalId: null, type: 'Requirement', title: 'Flagged one', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.1, excluded: localId === 'a' },
+        { localId: 'b', parentLocalId: null, type: 'Requirement', title: 'Flagged two', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.05, excluded: localId === 'b' },
+        { localId: 'c', parentLocalId: null, type: 'Requirement', title: 'Healthy one', description: '', action: 'create', customerId: null, tags: [], groundingScore: 0.9 },
+      ],
+    }));
+
+    renderAt('job-41');
+    await waitFor(() => expect(screen.getByText('Flagged one')).toBeInTheDocument());
+
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /needs review/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^exclude matching$/i }));
+
+    await waitFor(() => expect(excludeSpy).toHaveBeenCalledTimes(2));
+    expect(excludeSpy).toHaveBeenCalledWith('job-41', 'a', true);
+    expect(excludeSpy).toHaveBeenCalledWith('job-41', 'b', true);
+    expect(excludeSpy).not.toHaveBeenCalledWith('job-41', 'c', true);
+  });
+
   it('shows an error toast when toggling exclude fails, instead of failing silently', async () => {
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
       id: 'job-9',

@@ -10,8 +10,16 @@ import { IterationPathPicker } from '../components/IterationPathPicker';
 import { StatePicker } from '../components/StatePicker';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { formatDestinationPreview } from '../components/DestinationBar';
-import { previewJob, submitJob, listModels, getEstimate, type EtaEstimate, type PreviewResult } from '../api/jobs';
-import { previewExposition, type DocumentOverview } from '../api/jobs';
+import {
+  previewJob,
+  submitJob,
+  listModels,
+  getEstimate,
+  previewExposition,
+  type EtaEstimate,
+  type PreviewResult,
+  type DocumentOverview,
+} from '../api/jobs';
 import { formatEtaRange } from '../utils/eta';
 import { useOrgUrl } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
@@ -213,8 +221,15 @@ export function NewJobWizard(): React.ReactElement {
     setExpositionStatus('loading');
     previewExposition({ documentMap: preview.documentMap, sectionCount: preview.sectionCount, depth: preview.depth })
       .then((result) => {
-        setDocumentOverview(result);
-        setExpositionStatus('ready');
+        // NestJS serializes a `null` route-handler return (the server's own
+        // documented fail-open path) as an EMPTY response body -- axios's
+        // `result` here is actually '' (falsy, not an object), not `null`.
+        // Treat any falsy/non-object result as the fail-open case so the
+        // error branch below renders instead of a 'ready' card with nothing
+        // in it.
+        const overview = result && typeof result === 'object' ? result : null;
+        setDocumentOverview(overview);
+        setExpositionStatus(overview ? 'ready' : 'error');
       })
       .catch(() => {
         setDocumentOverview(null);

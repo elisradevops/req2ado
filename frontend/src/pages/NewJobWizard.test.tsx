@@ -456,4 +456,27 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
 
     expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ documentOverview: null }));
   });
+
+  it('renders the fail-open error copy (not an empty card) when previewExposition resolves to null', async () => {
+    vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
+      blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+    } as any);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+    // The server's own documented fail-open path: DocumentOverviewService.generate
+    // returning null, which NestJS serializes to an empty body -- axios resolves
+    // rather than rejects for this case, so previewExposition resolves to null here.
+    vi.spyOn(jobsApi, 'previewExposition').mockResolvedValue(null);
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+    await uploadAndConfigureAsSurvey();
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    await waitFor(() => expect(screen.getByText(/couldn't generate a summary/i)).toBeInTheDocument());
+
+    const startButton = screen.getByRole('button', { name: /start job|looks right/i });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    await userEvent.click(startButton);
+
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(expect.objectContaining({ documentOverview: null }));
+  });
 });
