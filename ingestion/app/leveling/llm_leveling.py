@@ -59,6 +59,7 @@ from app.leveling.tree_builder import (
     _hash_description,
     _hash_identity,
     _hash_identity_for_synthesized_node,
+    _is_boilerplate_label_text,
     _is_unsupported_content_note,
     _order_key,
     _partition_tables_by_branch,
@@ -837,6 +838,15 @@ def _derive_section_label(blocks: list[Block], tables: list[Table] | None, figur
         # section label should name what the section is ABOUT (heading or
         # body text), not describe an embedded image.
         if block.kind == BlockKind.FIGURE:
+            continue
+        # Real live bug this closes (confirmed via cubeadcs_icd.pdf, whole
+        # document collapsed to one headingless branch): the first
+        # remaining block was a page-1 copyright/footer line, which this
+        # fallback then rendered verbatim as the section's own label. See
+        # _is_boilerplate_label_text's own docstring for why pdf_loader.py's
+        # recurrence-based header/footer stripping doesn't already catch
+        # every such line before it reaches here.
+        if _is_boilerplate_label_text(block):
             continue
         text = block.text.strip()
         if len(text) > _SECTION_LABEL_EXCERPT_CHARS:

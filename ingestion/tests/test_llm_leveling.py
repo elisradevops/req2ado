@@ -1532,6 +1532,40 @@ def test_render_block_line_omits_an_unsupported_content_note_block() -> None:
     assert _render_block_line(block) is None
 
 
+# --- copyright/footer-boilerplate section-label leak fix (see
+# _is_boilerplate_label_text in tree_builder.py) ---
+
+
+def test_derive_section_label_skips_a_copyright_footer_block() -> None:
+    # Real live bug, confirmed via cubeadcs_icd.pdf: the whole document
+    # collapsed into one headingless branch, and the first remaining block
+    # was a page-1 copyright/footer line -- rendered verbatim as "Section 1
+    # of 1: www.cubespace.co.za (c)2025 -- CubeSpace Satellite Systems
+    # (Pty..." in the live progress UI.
+    path = "doc.pdf"
+    blocks = [
+        Block(
+            id="b0",
+            kind=BlockKind.PARAGRAPH,
+            text="www.cubespace.co.za ©2025 – CubeSpace Satellite Systems (Pty) Ltd. All rights reserved.",
+            source_ref=_sr(path),
+        ),
+        Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall tune across 2-18 GHz.", source_ref=_sr(path)),
+    ]
+    label = _derive_section_label(blocks, tables=None, figures=None)
+    assert label == "The receiver shall tune across 2-18 GHz."
+
+
+def test_derive_section_label_does_not_skip_ordinary_body_text_without_a_copyright_marker() -> None:
+    # Pins the filter to an actual copyright marker/phrase, not e.g. any
+    # line mentioning a company name or URL -- real body text must still
+    # become the label when no copyright signal is present.
+    path = "doc.pdf"
+    blocks = [Block(id="b0", kind=BlockKind.PARAGRAPH, text="CubeSpace Satellite Systems product overview.", source_ref=_sr(path))]
+    label = _derive_section_label(blocks, tables=None, figures=None)
+    assert label == "CubeSpace Satellite Systems product overview."
+
+
 def test_render_block_line_does_not_omit_a_note_block_without_the_unsupported_prefix() -> None:
     path = "deck.pptx"
     block = Block(id="b0", kind=BlockKind.NOTE, text="Speaker note: mention Q3 roadmap.", source_ref=_sr(path))

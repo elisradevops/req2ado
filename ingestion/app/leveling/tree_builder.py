@@ -237,6 +237,26 @@ def _is_unsupported_content_note(block: Block) -> bool:
     return block.kind == BlockKind.NOTE and block.text.startswith(_UNSUPPORTED_NOTE_PREFIX)
 
 
+_COPYRIGHT_MARKER_PATTERN = re.compile(r"©|\(c\)\s*\d{4}|all rights reserved", re.IGNORECASE)
+
+
+def _is_boilerplate_label_text(block: Block) -> bool:
+    """True for a block whose text is copyright/footer boilerplate (e.g.
+    "www.example.com ©2025 -- Example Corp (Pty...") -- never legitimate
+    section-label content. pdf_loader.py's own recurrence-based
+    header/footer stripping (_detect_boilerplate_templates) only fires once
+    a line repeats across >= _BOILERPLATE_RECURRENCE_FRACTION of pages; a
+    copyright line that varies slightly per page, or sits in a document too
+    short to establish recurrence, can still reach this far as an ordinary
+    block. Real bug this closes, confirmed live (cubeadcs_icd.pdf, whole
+    document collapsed into one headingless branch): the first remaining
+    block was a page-1 copyright/footer line, which
+    _derive_section_label's fallback then rendered verbatim as the
+    section's own label ("Section 1 of 1: www.cubespace.co.za
+    ©2025 -- CubeSpace Satellite Systems (Pty...")."""
+    return bool(_COPYRIGHT_MARKER_PATTERN.search(block.text))
+
+
 def figure_id_by_block_id(doc: CanonicalDoc) -> dict[str, str]:
     """block.id -> Figure.id map, built once over a document (or residual
     document) by pairing every FIGURE-kind Block in `doc.blocks` with
