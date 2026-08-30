@@ -9,6 +9,12 @@ import { timingSafeEqual } from 'crypto';
  * attacker already knows the expected token's length (it is fixed by
  * config), so revealing it via a fast-path length mismatch leaks nothing
  * new.
+ *
+ * DUPLICATED, not imported, at
+ * mcp-ado-server/src/auth/timingSafeEqualBearer.ts — see that file's own
+ * header comment for why (same rationale as frontend/orchestrator's
+ * canNest.ts) and mcp-ado-server/test/timingSafeEqualBearer.test.ts for
+ * the drift guard.
  */
 export function timingSafeEqualBearer(actual: string, expected: string): boolean {
   const actualBuffer = Buffer.from(actual);

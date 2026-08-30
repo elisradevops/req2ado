@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Agent } from 'undici';
 import type { CanonicalDoc, WorkItemTree } from '@req2ado/shared-ts';
+import type { FolderIngestFile } from '../kb/kb.service';
 
 // undici's default headersTimeout (300s) is shorter than a real local LLM
 // can take for SURVEY mode's two sequential calls (infer_hierarchy +
@@ -374,18 +375,7 @@ export class IngestionHttpClient {
     docType: string | null,
     recursive = false,
     graphToken?: string | null,
-  ): Promise<{
-    files: {
-      file: string;
-      status: string;
-      chunksStored: number;
-      driveitemId: string | null;
-      mimeType: string | null;
-      sizeBytes: number | null;
-      reason: string | null;
-      relativePath: string | null;
-    }[];
-  }> {
+  ): Promise<{ files: FolderIngestFile[] }> {
     const response = await fetch(`${this.baseUrl}/kb/ingest-folder-url`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
