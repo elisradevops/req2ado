@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Check, Circle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useNow } from '../hooks/useNow';
@@ -843,24 +844,36 @@ function SectionStepList({
   // exactly that gap -- union both rather than relying on either alone.
   // labelsByIndex below still lives with the cap; a stale/missing section
   // label on an old row is cosmetic, not a completion regression.
-  const completedSections = new Set([
-    ...(completedSectionIndices ?? []),
-    ...narrations
-      .filter((event) => event.phase === 'section_complete' && event.branchIndex !== null)
-      .map((event) => event.branchIndex as number),
-  ]);
+  // Memoized: ProgressBanner (this component's parent) re-renders every
+  // second off its own ticking clock, which previously rebuilt this Set
+  // (and labelsByIndex below) from scratch on every single tick even
+  // though `narrations`/`completedSectionIndices` themselves usually
+  // haven't changed between ticks.
+  const completedSections = useMemo(
+    () =>
+      new Set([
+        ...(completedSectionIndices ?? []),
+        ...narrations
+          .filter((event) => event.phase === 'section_complete' && event.branchIndex !== null)
+          .map((event) => event.branchIndex as number),
+      ]),
+    [completedSectionIndices, narrations],
+  );
 
   // Accumulated from EVERY narration event seen so far, not just the
   // latest -- without this, once a section finishes and a later section's
   // event becomes `latest`, that earlier section's real name would be
   // lost, and a failed job's step list could only ever show the CURRENT
   // section's name, not which named sections it already got through.
-  const labelsByIndex = new Map<number, string>();
-  for (const event of narrations) {
-    if (event.branchIndex !== null && event.sectionLabel) {
-      labelsByIndex.set(event.branchIndex, event.sectionLabel);
+  const labelsByIndex = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const event of narrations) {
+      if (event.branchIndex !== null && event.sectionLabel) {
+        map.set(event.branchIndex, event.sectionLabel);
+      }
     }
-  }
+    return map;
+  }, [narrations]);
 
   // DESIGN.md §11.3.1 -- "This is exactly the paint
   // .hoverable-row[aria-selected='true'] produces (§6), and when §6 lands
