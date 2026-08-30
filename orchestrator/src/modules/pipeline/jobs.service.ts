@@ -8,7 +8,6 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
-import { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
