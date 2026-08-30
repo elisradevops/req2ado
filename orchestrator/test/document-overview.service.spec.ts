@@ -46,7 +46,11 @@ describe('DocumentOverviewService.generate', () => {
     });
     expect(chat).toHaveBeenCalledWith(
       expect.any(Array),
-      expect.objectContaining({ seed: 42 }),
+      // think: false is required -- a reasoning-capable model otherwise
+      // burns the whole maxTokens budget on hidden chain-of-thought and
+      // returns empty content (confirmed live against a real reasoning
+      // model backend; the mocked chat() above can't catch this on its own).
+      expect.objectContaining({ seed: 42, maxTokens: 300, think: false }),
     );
   });
 

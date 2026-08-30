@@ -59,7 +59,14 @@ export class DocumentOverviewService {
           { role: 'system', content: SYNOPSIS_SYSTEM_PROMPT },
           { role: 'user', content: `Real section headings, in document order:\n\n${headingList}` },
         ],
-        { seed: 42, maxTokens: 300 },
+        // think: false -- a reasoning-capable model otherwise burns the
+        // entire maxTokens budget on hidden chain-of-thought and returns
+        // empty content (confirmed live against qwen3.6:35b: finish_reason
+        // "length", content "", 300/300 completion tokens all reasoning).
+        // This is a plain structured single-paragraph summary with no need
+        // for multi-step reasoning, matching this codebase's own established
+        // use of think: false for exactly this class of call.
+        { seed: 42, maxTokens: 300, think: false },
       );
       const synopsis = result.content.trim();
       if (!synopsis) return null;
