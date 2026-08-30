@@ -287,6 +287,12 @@ export function NewJobWizard(): React.ReactElement {
     setPreview(null);
     setParseStatus('idle');
     setParseError(null);
+    // Without these, a stale exposition from the PREVIOUS file survives the
+    // replace (expositionStatus stays 'ready'), so step 3's effect guard
+    // (`expositionStatus !== 'idle'`) skips re-fetching for the new file and
+    // the old file's synopsis gets submitted with the new file's job.
+    setDocumentOverview(null);
+    setExpositionStatus('idle');
   }
 
   async function handleSubmit(): Promise<void> {

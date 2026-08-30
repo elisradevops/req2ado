@@ -381,6 +381,65 @@ describe('NewJobWizard Step 3 (Confirm understanding, SURVEY-only)', () => {
     expect(screen.getByLabelText(/area path/i)).toHaveValue('Project\\Area1');
   });
 
+  it('re-fetches the exposition for a replaced file instead of submitting the previous file\'s stale synopsis (regression)', async () => {
+    // Reachable sequence: reach step 3 with document A (synopsis generated,
+    // expositionStatus becomes 'ready') -> Back to configure -> Back ->
+    // Replace -> upload document B -> Configure -> Survey -> Continue.
+    // Before the fix, handleReplace() left documentOverview/expositionStatus
+    // untouched, so step 3's effect guard (`expositionStatus !== 'idle'`) saw
+    // 'ready' from document A and never re-called previewExposition for
+    // document B -- document A's stale synopsis rendered and got submitted
+    // with document B's real job.
+    vi.spyOn(jobsApi, 'previewJob')
+      .mockResolvedValueOnce({
+        blockCount: 10, sectionCount: 2, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+      } as any)
+      .mockResolvedValueOnce({
+        blockCount: 20, sectionCount: 4, figureCount: 0, depth: 1, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
+      } as any);
+    vi.spyOn(jobsApi, 'listModels').mockResolvedValue([]);
+    vi.spyOn(jobsApi, 'previewExposition')
+      .mockResolvedValueOnce({ synopsis: 'About document A.', caveat: null })
+      .mockResolvedValueOnce({ synopsis: 'About document B.', caveat: null });
+    vi.spyOn(jobsApi, 'submitJob').mockResolvedValue({ jobId: 'job-1' });
+
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+
+    // Upload document A, configure as SURVEY, advance to step 3.
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'doc-a.docx'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    await userEvent.click(screen.getByRole('radio', { name: /survey/i }));
+    await userEvent.type(screen.getByLabelText(/area path/i), 'Project\\Area1');
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(screen.getByText('About document A.')).toBeInTheDocument());
+
+    // Navigate back to step 1 (Back to configure -> Back), replace the
+    // file, and upload document B.
+    await userEvent.click(screen.getByRole('button', { name: /back to configure/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await userEvent.click(screen.getByRole('button', { name: /replace/i }));
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['y'], 'doc-b.docx'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /configure/i })).not.toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: /configure/i }));
+    await userEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    await waitFor(() => expect(screen.getByText('About document B.')).toBeInTheDocument());
+    expect(screen.queryByText('About document A.')).not.toBeInTheDocument();
+    expect(jobsApi.previewExposition).toHaveBeenCalledTimes(2);
+
+    await userEvent.click(screen.getByRole('button', { name: /looks right/i }));
+    expect(jobsApi.submitJob).toHaveBeenCalledWith(
+      expect.objectContaining({ documentOverview: { synopsis: 'About document B.', caveat: null } }),
+    );
+  });
+
   it('exposition failure still allows the job to be created', async () => {
     vi.spyOn(jobsApi, 'previewJob').mockResolvedValue({
       blockCount: 1, sectionCount: 6, figureCount: 0, depth: 2, fileType: 'docx', tableCount: 0, openTbdCount: 0, documentMap: [],
