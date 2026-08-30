@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 from pathlib import Path
 
 from app.canonical.model import CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
+from app.loaders.encoding_utils import read_text_degrading, unsupported_encoding_note
 
 
 def load_csv(path: str) -> CanonicalDoc:
@@ -19,8 +21,8 @@ def load_csv(path: str) -> CanonicalDoc:
     sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
     document = Document(path=path, format=DocumentFormat.CSV, sha256=sha256)
 
-    with file_path.open("r", encoding="utf-8-sig", newline="") as f:
-        rows = [row for row in csv.reader(f)]
+    text, had_decode_error = read_text_degrading(file_path, encoding="utf-8-sig")
+    rows = [row for row in csv.reader(io.StringIO(text, newline=""))]
 
     # A malformed/inconsistent CSV can have ragged row lengths (unlike a
     # real table) -- the pre-TableCell `rows: list[list[str]]` shape
@@ -40,4 +42,5 @@ def load_csv(path: str) -> CanonicalDoc:
         caption=file_path.stem,
         source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
     )
-    return CanonicalDoc(document=document, tables=[table])
+    blocks = [unsupported_encoding_note(path, "b0", "utf-8-sig")] if had_decode_error else []
+    return CanonicalDoc(document=document, blocks=blocks, tables=[table])

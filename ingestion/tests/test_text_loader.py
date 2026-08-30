@@ -33,6 +33,28 @@ def test_load_txt_sha256_is_populated() -> None:
     assert len(doc.document.sha256) == 64
 
 
+def test_load_txt_degrades_instead_of_raising_on_non_utf8_bytes(tmp_path: Path) -> None:
+    # Real regression: a Hebrew CP1255 .txt file previously raised
+    # UnicodeDecodeError (read_text(encoding="utf-8") has no errors=) and
+    # aborted ingestion entirely -- against this codebase's own
+    # degrade-don't-raise discipline.
+    path = tmp_path / "hebrew.txt"
+    path.write_bytes("שלום עולם".encode("cp1255"))
+    doc = load_txt(str(path))  # must not raise
+    note_blocks = [b for b in doc.blocks if b.kind == BlockKind.NOTE]
+    assert len(note_blocks) == 1
+    assert note_blocks[0].text.startswith("[UNSUPPORTED:")
+
+
+def test_load_markdown_degrades_instead_of_raising_on_non_utf8_bytes(tmp_path: Path) -> None:
+    path = tmp_path / "hebrew.md"
+    path.write_bytes("# שלום עולם".encode("cp1255"))
+    doc = load_markdown(str(path))  # must not raise
+    note_blocks = [b for b in doc.blocks if b.kind == BlockKind.NOTE]
+    assert len(note_blocks) == 1
+    assert note_blocks[0].text.startswith("[UNSUPPORTED:")
+
+
 def test_load_markdown_duplicated_heading_gets_distinct_offsets(tmp_path: Path) -> None:
     # Regression test: load_markdown previously used `text.index(content)`
     # (always searching from position 0), so a heading/paragraph repeated
