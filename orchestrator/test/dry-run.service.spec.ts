@@ -1033,6 +1033,23 @@ describe('resolveCrossJobTraceLinks', () => {
 
     expect(result[0].resolutionStatus).toBe('unresolved');
   });
+
+  it('queries a target customer-id only once even when multiple links share it', async () => {
+    // Real perf gap this closes: several requirements in one document can
+    // all reference the same external item -- each previously issued its
+    // own sequential WIQL query for the identical customer-id.
+    const links: TraceLink[] = [
+      { sourceLocalId: 'n1', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'crossJob', targetCustomerId: 'REQ-SHARED', resolutionStatus: 'pending' },
+      { sourceLocalId: 'n2', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'crossJob', targetCustomerId: 'REQ-SHARED', resolutionStatus: 'pending' },
+      { sourceLocalId: 'n3', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covers', targetKind: 'crossJob', targetCustomerId: 'REQ-SHARED', resolutionStatus: 'pending' },
+    ];
+    const queryByCustomerId = jest.fn().mockResolvedValue([555]);
+
+    const result = await resolveCrossJobTraceLinks(links, queryByCustomerId);
+
+    expect(queryByCustomerId).toHaveBeenCalledTimes(1);
+    expect(result.every((link) => link.resolvedAdoId === 555 && link.resolutionStatus === 'resolved')).toBe(true);
+  });
 });
 
 function _entry(overrides: Partial<DryRunDiffEntry>): DryRunDiffEntry {

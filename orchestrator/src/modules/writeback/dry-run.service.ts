@@ -217,24 +217,37 @@ export async function resolveCrossJobTraceLinks(
   links: TraceLink[],
   queryByCustomerId: (customerId: string) => Promise<number[]>,
 ): Promise<TraceLink[]> {
-  const results: TraceLink[] = [];
+  // Real perf gap this closes: links sharing the same target customer-id
+  // (a real, common case -- several requirements in one document can all
+  // reference the same external item) each issued their own sequential
+  // WIQL query. Dedupe the distinct target set first, then resolve all of
+  // them concurrently -- same "collect the distinct set, one batched/
+  // concurrent resolution pass" shape as this module's own existingAdoId
+  // re-verification just below.
+  const distinctCustomerIds = new Set<string>();
   for (const link of links) {
-    if (link.targetKind !== 'crossJob' || link.targetCustomerId === undefined) {
-      results.push(link);
-      continue;
-    }
-    try {
-      const ids = await queryByCustomerId(link.targetCustomerId);
-      if (ids.length === 1) {
-        results.push({ ...link, resolvedAdoId: ids[0], resolutionStatus: 'resolved' });
-      } else {
-        results.push({ ...link, resolutionStatus: 'unresolved' });
-      }
-    } catch {
-      results.push({ ...link, resolutionStatus: 'unresolved' });
+    if (link.targetKind === 'crossJob' && link.targetCustomerId !== undefined) {
+      distinctCustomerIds.add(link.targetCustomerId);
     }
   }
-  return results;
+  const idsByCustomerId = new Map<string, number[] | null>();
+  await Promise.all(
+    Array.from(distinctCustomerIds).map(async (customerId) => {
+      try {
+        idsByCustomerId.set(customerId, await queryByCustomerId(customerId));
+      } catch {
+        idsByCustomerId.set(customerId, null);
+      }
+    }),
+  );
+  return links.map((link) => {
+    if (link.targetKind !== 'crossJob' || link.targetCustomerId === undefined) return link;
+    const ids = idsByCustomerId.get(link.targetCustomerId);
+    if (ids && ids.length === 1) {
+      return { ...link, resolvedAdoId: ids[0], resolutionStatus: 'resolved' as const };
+    }
+    return { ...link, resolutionStatus: 'unresolved' as const };
+  });
 }
 
 /**
