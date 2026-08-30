@@ -475,6 +475,27 @@ def test_purge_user_does_not_affect_other_users() -> None:
         assert store.list_documents("user-b") == ["doc.txt"]
 
 
+def test_upsert_after_purge_is_queryable_again() -> None:
+    # Regression guard for the collection-handle cache (ported from
+    # dedup/vector_store.py): purge_user() drops the whole Chroma
+    # collection, not just its items, so a stale cached handle from before
+    # the purge would silently operate against a deleted collection on the
+    # next upsert/query for the same user_id.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp)
+        store.upsert_chunk(
+            chunk_id="source-1:doc.txt:0", embedding=[1.0, 0.0, 0.0], text="t", user_id="user-old",
+            source_file="doc.txt", source_id="source-1", chunk_index=0, file_hash="hash-1",
+        )
+        store.query("user-old", embedding=[1.0, 0.0, 0.0], top_k=5)  # populates the collection-handle cache
+        store.purge_user("user-old")
+        store.upsert_chunk(
+            chunk_id="source-2:doc2.txt:0", embedding=[0.0, 1.0, 0.0], text="t2", user_id="user-old",
+            source_file="doc2.txt", source_id="source-2", chunk_index=0, file_hash="hash-2",
+        )
+        assert store.list_documents("user-old") == ["doc2.txt"]
+
+
 def test_list_documents_stops_at_the_document_ceiling(monkeypatch) -> None:
     import app.kb.kb_vector_store as kb_vector_store_module
 

@@ -51,12 +51,23 @@ class KbVectorStore:
             self._client = chromadb.HttpClient(host=host, port=port)
         else:
             self._client = chromadb.PersistentClient(path=persist_path)
+        # Perf fix ported from dedup/vector_store.py's ChromaVectorStore
+        # (2026-08-01): get_or_create_collection is a Chroma round trip:
+        # the collection handle itself never goes stale (a client-side
+        # reference, not a snapshot of contents), so caching it per user
+        # is safe with no invalidation needed at all.
+        self._collection_cache: dict[str, chromadb.Collection] = {}
 
     def _get_collection(self, user_id: str):
-        return self._client.get_or_create_collection(
+        cached = self._collection_cache.get(user_id)
+        if cached is not None:
+            return cached
+        collection = self._client.get_or_create_collection(
             name=_kb_collection_name_for_user(user_id),
             metadata={"hnsw:space": "cosine"},
         )
+        self._collection_cache[user_id] = collection
+        return collection
 
     def upsert_chunk(
         self,
@@ -216,6 +227,11 @@ class KbVectorStore:
             self._client.delete_collection(name=_kb_collection_name_for_user(user_id))
         except chromadb.errors.NotFoundError:
             pass
+        # The cached handle (if any) now points at a deleted collection --
+        # unlike dedup's ChromaVectorStore, this store can drop a whole
+        # collection, not just individual items, so the collection-handle
+        # cache needs this one invalidation dedup's own cache never does.
+        self._collection_cache.pop(user_id, None)
 
     def get_document(self, user_id: str, source_file: str) -> tuple[str | None, bool]:
         """Reassembles ONE previously-ingested document's FULL text by
