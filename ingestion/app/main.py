@@ -5,6 +5,7 @@ import logging
 import tempfile
 import time
 from pathlib import Path
+from typing import cast
 
 import redis
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -311,7 +312,15 @@ def _describe_figure(
     # when the figure is significant AND the model actually produced one.
     # Callers that don't care about it (every 1-arg caller above) simply
     # never read that key; this function never requires it to be present.
-    caption_status_out: dict[str, str] | None = None,
+    #
+    # Also carries "rasterized_bytes" (bytes, not str -- see this dict's
+    # widened type) on a cache MISS only: the same rasterized bytes this
+    # function computes below for the vision call itself, so a caller that
+    # ALSO needs rasterized bytes afterward (main.py's figure-file storage
+    # path) can reuse them instead of paying for a second, redundant
+    # rasterization of the same image. Absent on a cache HIT (rasterization
+    # never ran) -- that caller must still rasterize its own copy then.
+    caption_status_out: dict[str, str | bytes] | None = None,
 ) -> str | None:
     # SCOPE NOTE (KB ingestion): this function is shared by SURVEY-mode
     # /ingest AND the three KB-ingestion routes below (/kb/ingest-url,
@@ -370,6 +379,8 @@ def _describe_figure(
         logger.warning("Figure-caption cache read failed -- falling through to a live vision call", exc_info=True)
 
     describe_bytes, mime_type = _rasterize_for_vision(image_bytes)
+    if caption_status_out is not None:
+        caption_status_out["rasterized_bytes"] = describe_bytes
     result = _vision_client.describe_figure(describe_bytes, mime_type, document_context)
     if result is None:
         # The vision client's single "ambiguous result" outcome: a totally
@@ -817,7 +828,7 @@ async def ingest(
             # it's a plain in-process argument, never a URL query key of its
             # own -- passing primer_context's value into it here is the one
             # place that boundary rename happens.
-            caption_status_out: dict[str, str] = {}
+            caption_status_out: dict[str, str | bytes] = {}
             caption = _describe_figure(image_bytes, primer_context, caption_status_out)
             # index-1 matches the loader's own f"f{figure_index}" id scheme --
             # see the fuller invariant comment on the figure-file-storage use
@@ -827,9 +838,9 @@ async def ingest(
             # all, independent of whether figure-file storage is configured.
             figure_id = f"f{index - 1}"
             if "status" in caption_status_out:
-                figure_caption_status[figure_id] = caption_status_out["status"]
+                figure_caption_status[figure_id] = cast(str, caption_status_out["status"])
             if "title" in caption_status_out:
-                figure_title[figure_id] = caption_status_out["title"]
+                figure_title[figure_id] = cast(str, caption_status_out["title"])
             if narration_publisher is not None:
                 # caption is None exactly when the vision model judged this
                 # figure non-significant (or vision failed) -- both cases
@@ -874,9 +885,19 @@ async def ingest(
             # but compress_figure_for_storage (Pillow-only, no EMF/WMF
             # support) silently failed on the un-converted original bytes,
             # so a real, successfully-described figure was never storable.
+            # `caption_status_out["rasterized_bytes"]` carries those SAME
+            # bytes out when _describe_figure actually rasterized (a cache
+            # miss) -- reused here instead of a second, redundant
+            # rasterization of the same image. Absent on a cache hit
+            # (rasterization never ran that time), so this still falls back
+            # to rasterizing its own copy in that case.
             if job_id is not None and _figure_file_client is not None:
                 try:
-                    rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
+                    cached_rasterized = caption_status_out.get("rasterized_bytes")
+                    if isinstance(cached_rasterized, bytes):
+                        rasterized_bytes = cached_rasterized
+                    else:
+                        rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
                     compressed = compress_figure_for_storage(rasterized_bytes)
                     if compressed is not None:
                         _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])

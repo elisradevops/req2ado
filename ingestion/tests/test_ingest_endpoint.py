@@ -1114,7 +1114,13 @@ def test_figure_storage_uses_the_same_rasterized_bytes_as_captioning_not_the_ori
     # regardless of the fixture's real (raster) content.
     monkeypatch.setattr(main_module, "_sniff_image_mime_type", lambda _b: None)
     monkeypatch.setattr(main_module, "sniff_vector_image_extension", lambda _b: ".emf")
-    monkeypatch.setattr(main_module, "convert_vector_image_to_png", lambda _b, _ext: fake_converted_bytes)
+    convert_calls: list[bytes] = []
+
+    def _fake_convert(image_bytes: bytes, _ext: str) -> bytes:
+        convert_calls.append(image_bytes)
+        return fake_converted_bytes
+
+    monkeypatch.setattr(main_module, "convert_vector_image_to_png", _fake_convert)
     monkeypatch.setattr(main_module, "compress_figure_for_storage", _fake_compress_for_storage)
 
     _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", job_id="job-figure-storage-test")
@@ -1123,3 +1129,8 @@ def test_figure_storage_uses_the_same_rasterized_bytes_as_captioning_not_the_ori
     _job_id, _figure_id, stored_bytes, stored_mime_type = captured_store_calls[0]
     assert stored_bytes == fake_converted_bytes  # the RASTERIZED bytes, not sample.docx's original figure bytes
     assert stored_mime_type == "image/png"
+    # Real gap this guards against: the storage call previously rasterized
+    # its OWN copy of the same figure (a second, redundant conversion)
+    # instead of reusing the bytes _describe_figure already computed for
+    # captioning -- this figure must only ever be converted once.
+    assert len(convert_calls) == 1
