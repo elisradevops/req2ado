@@ -31,78 +31,6 @@ def test_model_property_is_none_when_no_override_was_configured() -> None:
     assert client.model is None
 
 
-def test_generate_requirements_parses_valid_json_response() -> None:
-    response_json = {
-        "content": '[{"text": "The unit shall survive a 1m drop.", "tags": ["safety"]}]'
-    }
-    client = OrchestratorLlmClient(
-        base_url="http://orchestrator.internal", bearer_token="test-bearer"
-    )
-    client._transport = _mock_transport(response_json)  # test-only seam, see implementation
-
-    result = client.generate_requirements("The unit must survive being dropped.")
-    assert result == [{"text": "The unit shall survive a 1m drop.", "tags": ["safety"]}]
-
-
-def test_generate_requirements_sends_temperature_zero() -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        import json
-
-        body = json.loads(request.content)
-        captured["temperature"] = body["temperature"]
-        return httpx.Response(200, json={"content": "[]"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.generate_requirements("some block")
-    assert captured["temperature"] == 0
-
-
-def test_generate_requirements_raises_on_malformed_json_content() -> None:
-    response_json = {"content": "not valid json"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport(response_json)
-
-    with pytest.raises(ValueError, match="malformed"):
-        client.generate_requirements("some block")
-
-
-def test_generate_requirements_raises_on_non_200_response() -> None:
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": "[]"}, expected_status=401)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        client.generate_requirements("some block")
-
-
-def test_generate_requirements_strips_a_markdown_json_fence() -> None:
-    # Regression: unlike infer_hierarchy/generate_requirements_for_document/
-    # score_requirements_for_document, this method previously called
-    # json.loads directly without _strip_json_fence -- a local model
-    # fencing THIS response (the same model behavior every other method
-    # already tolerates) would have raised a spurious "malformed JSON" error.
-    requirements = [{"text": "The unit shall survive a 1m drop.", "tags": ["safety"]}]
-    response_json = {"content": "```json\n" + json.dumps(requirements) + "\n```"}
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport(response_json)
-
-    result = client.generate_requirements("The unit must survive being dropped.")
-    assert result == requirements
-
-
-def test_generate_requirements_handles_an_empty_array_response() -> None:
-    # A block that yields no formal requirement (e.g. pure boilerplate) is a
-    # legitimate, non-error response -- must not raise or synthesize a
-    # placeholder entry.
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = _mock_transport({"content": "[]"})
-
-    assert client.generate_requirements("Table of Contents") == []
-
-
 def test_score_requirements_for_document_sends_all_descriptions_in_one_call() -> None:
     call_count = {"n": 0}
     response_body = {"n0": {"score": 85, "issues": []}, "n1": {"score": 40, "issues": ["ambiguous", "vague_term"]}}
@@ -617,28 +545,6 @@ def test_infer_trace_links_prompt_mentions_external_customer_cited_targets() -> 
 
     system_prompt = captured["system_prompt"].lower()
     assert "external" in system_prompt or "customer" in system_prompt
-
-
-def test_generate_requirements_never_sends_response_schema_to_avoid_gbnf_array_wedge() -> None:
-    # A top-level array schema over branch-sized content hit Ollama's
-    # GBNF grammar-cost cliff live (server-wide wedge, ollama/ollama#1910) --
-    # this must stay omitted. Defended by tag filtering in llm_leveling.py.
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "[]"})
-
-    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
-    client._transport = httpx.MockTransport(handler)
-
-    client.generate_requirements("some block")
-
-    assert "responseSchema" not in captured["body"]
-    # Unconstrained since no response_format -- capped so a reasoning
-    # model's unbounded chain-of-thought can't run away (observed live:
-    # 40+ minute single calls with no cap).
-    assert captured["body"]["maxTokens"] == 20000
 
 
 def test_score_requirements_for_document_includes_an_issues_enum_schema_with_additional_properties() -> None:

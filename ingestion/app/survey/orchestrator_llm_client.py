@@ -843,15 +843,15 @@ def _with_kb_context_as_scoring_rubric(
 
 
 class OrchestratorLlmClient:
-    """First REAL (non-fake) implementation of SurveyRequirementClient. Calls
-    the orchestrator's POST /llm/chat proxy (Part A of this phase) — NEVER
-    calls Open WebUI/Ollama directly, per the 'backend proxy, redact-first'
-    architecture boundary in docs/architecture.md's Locked Decisions.
+    """SURVEY mode's real LLM client. Calls the orchestrator's POST
+    /llm/chat proxy — NEVER calls Open WebUI/Ollama directly, per the
+    'backend proxy, redact-first' architecture boundary in
+    docs/architecture.md's Locked Decisions.
 
-    The system prompt instructs the model to return a strict JSON array of
-    {text, tags} objects; a malformed response raises ValueError rather than
-    silently returning an empty/wrong result, since a caller acting on
-    invalid generated requirements is worse than a loud failure."""
+    Every method's system prompt instructs the model to return strict JSON;
+    a malformed response raises ValueError rather than silently returning
+    an empty/wrong result, since a caller acting on invalid LLM output is
+    worse than a loud failure."""
 
     def __init__(
         self,
@@ -955,27 +955,6 @@ class OrchestratorLlmClient:
                 time.sleep(_CHAT_RETRY_BACKOFF_SECONDS[attempt])
         assert response is not None  # loop always runs >=1 iteration
         return response
-
-    def generate_requirements(self, block_text: str) -> list[dict]:
-        system_prompt = load_prompt("generate_requirements")
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": block_text},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            # No response_format here: a top-level array schema (even a
-            # small-output one, since grammar cost is schema-declared, not
-            # output-driven) hit Ollama's GBNF grammar-cost cliff live --
-            # see _response_schemas.py's module docstring.
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        parsed = _parse_json_object(content)
-        return parsed
 
     def infer_trace_links(
         self,

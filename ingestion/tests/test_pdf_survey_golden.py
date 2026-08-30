@@ -2,11 +2,11 @@
 # fixture regression coverage for Tasks 2-3's real PDF segmentation/heading
 # behavior flowing all the way through to SURVEY-mode tree building.
 #
-# Neither pre-existing golden-fixture file covers this: tests/test_survey_golden.py
-# exercises build_survey_requirements (an older, unrelated function, not
-# build_survey_tree); tests/test_fidelity_golden.py exercises build_baseline_tree
-# in BASELINE mode, not SURVEY branch/token-estimate stability (confirmed by
-# reading both files in full). Tasks 2-3 replaced PDF's old one-page-blob
+# No pre-existing golden-fixture file covers this: tests/test_fidelity_golden.py
+# exercises build_baseline_tree in BASELINE mode, not SURVEY branch/
+# token-estimate stability (confirmed by reading it in full; the other
+# candidate, test_survey_golden.py, exercised a since-deleted dead code
+# path -- see SWEEP.md item 1). Tasks 2-3 replaced PDF's old one-page-blob
 # PARAGRAPH output with real HEADING/PARAGRAPH segmentation and header/footer
 # suppression -- this changes per-block token counts and heading counts, which
 # feed directly into build_survey_tree's whole-document-fits gate and its
