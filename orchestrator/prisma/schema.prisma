@@ -129,6 +129,15 @@ model Job {
   // jobs predate these columns, same convention as warnings/figureDescriptions.
   excludedFigureIds Json?
   excludedTableIds  Json?
+  // Whole-document synopsis generated once, at job creation time, in the
+  // New Job Wizard's SURVEY-only "Confirm understanding" step -- BEFORE
+  // this Job row even exists (see DocumentOverviewService). Shape:
+  // { synopsis: string, caveat: string | null }. Always null for BASELINE
+  // (never attempted) and for a SURVEY job whose generation call failed at
+  // wizard time (fails open, same convention as every other optional
+  // LLM-dependent signal in this codebase) -- the two cases are
+  // distinguished client-side by Job.mode, not by this column's nullness.
+  documentOverview Json?
   // Telemetry for the SURVEY cost estimate (DESIGN.md §11.2.3) -- lets the
   // ETA be computed from this deployment's own real completed-job
   // durations instead of a hand-picked constant (two of which were tried
