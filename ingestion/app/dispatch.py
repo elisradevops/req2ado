@@ -1,12 +1,13 @@
 # ingestion/app/dispatch.py
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Callable
 
 from fastapi import HTTPException
 
-from app.canonical.model import CanonicalDoc
+from app.canonical.model import BlockKind, CanonicalDoc
 from app.loaders.csv_loader import load_csv
 from app.loaders.docx_loader import load_docx
 from app.loaders.image_loader import load_image
@@ -18,6 +19,30 @@ from app.loaders.xlsx_loader import load_xlsx
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 _SUPPORTED_EXTENSIONS = {".txt", ".md", ".docx", ".xlsx", ".pdf", ".pptx", ".csv", ".rtf", *_IMAGE_EXTENSIONS}
+
+# Mirrors ocr.py's own _OPEN_TBD_PATTERN exactly (kept in sync by eye --
+# both are one line) -- that module was the ONLY place this classification
+# ever ran, so it silently never fired for docx/txt/xlsx-cell/native-text
+# PDF content, even though the pattern itself has nothing OCR-specific
+# about it. Applying it here, once, to every loader's own PARAGRAPH blocks
+# closes that gap universally instead of teaching each loader its own copy.
+_OPEN_TBD_PATTERN = re.compile(r"\b(OPEN|TBD)\b[:\s]", re.IGNORECASE)
+
+
+def _classify_open_tbd_paragraphs(doc: CanonicalDoc) -> CanonicalDoc:
+    """Reclassifies a PARAGRAPH block as OPEN_TBD when its text matches an
+    "OPEN:"/"TBD:" marker -- previously only ever applied to OCR-recovered
+    text (ocr.py), never to a docx/txt/native-text-PDF paragraph containing
+    the exact same marker. Scoped to PARAGRAPH only, matching ocr.py's own
+    reclassification rule exactly (it only ever turns a would-be PARAGRAPH
+    into OPEN_TBD, never a HEADING/NOTE/FIGURE/LIST_ITEM) -- xlsx/csv table
+    cells have no BlockKind concept at all (TableCell carries no `kind`
+    field), so this can't reach that content; a real gap, but a separate,
+    larger data-model question, not a bug in this pass."""
+    for block in doc.blocks:
+        if block.kind == BlockKind.PARAGRAPH and _OPEN_TBD_PATTERN.search(block.text):
+            block.kind = BlockKind.OPEN_TBD
+    return doc
 
 
 def _normalize_document_identity(doc: CanonicalDoc, filename: str) -> CanonicalDoc:
@@ -76,4 +101,5 @@ def dispatch_by_extension(
         doc = load_image(tmp_path, describe_figure=describe_figure)
     else:
         doc = load_pdf_with_ocr_fallback(tmp_path, languages=languages, describe_figure=describe_figure)
+    doc = _classify_open_tbd_paragraphs(doc)
     return _normalize_document_identity(doc, filename)
