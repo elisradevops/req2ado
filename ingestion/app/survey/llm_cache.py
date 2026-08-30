@@ -51,13 +51,19 @@ class LlmResponseCache:
             logger.warning("LlmResponseCache.set failed, result will not be cached", exc_info=True)
 
 
-def cache_key(operation: str, model: str | None, num_ctx: int | None, top_k: int | None, min_p: float | None, *parts: object) -> str:
+def cache_key(
+    operation: str, model: str | None, num_ctx: int | None, top_k: int | None, min_p: float | None,
+    seed: int | None, *parts: object,
+) -> str:
     """Stable cache key covering every input that can change an LLM call's
     output -- not just the prompt/section text. Two identical texts scored
-    under a different model/num_ctx/top_k/min_p must never collide, so all
-    four are folded into the key alongside the call's own arguments."""
+    under a different model/num_ctx/top_k/min_p/seed must never collide, so
+    all five are folded into the key alongside the call's own arguments."""
     payload = json.dumps(
-        {"operation": operation, "model": model, "num_ctx": num_ctx, "top_k": top_k, "min_p": min_p, "parts": parts},
+        {
+            "operation": operation, "model": model, "num_ctx": num_ctx, "top_k": top_k, "min_p": min_p,
+            "seed": seed, "parts": parts,
+        },
         sort_keys=True,
         default=str,
     )

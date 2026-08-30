@@ -84,6 +84,20 @@ def test_load_xlsx_format_is_xlsx() -> None:
     assert doc.blocks == []
 
 
+def test_load_xlsx_each_sheet_gets_a_distinct_source_ref_offset() -> None:
+    # Real bug this closes: every sheet previously got the hardcoded
+    # SourceRef(start_offset=0, end_offset=0), so tree_builder._hash_identity
+    # (which hashes only document_path+start_offset+end_offset, deliberately
+    # NOT description) produced the IDENTICAL hash for every sheet in a
+    # multi-sheet workbook -- BASELINE's idempotency lookup then silently
+    # resolved sheet 2+'s "create" to sheet 1's own ADO work item, collapsing
+    # the whole workbook into one item.
+    doc = load_xlsx(str(FIXTURES / "sample.xlsx"))
+    assert len(doc.tables) == 2
+    offsets = [(t.source_ref.start_offset, t.source_ref.end_offset) for t in doc.tables]
+    assert len(set(offsets)) == len(offsets), f"sheets must not share a (start, end) offset pair: {offsets}"
+
+
 def test_load_xlsx_horizontal_merge_sets_colspan_and_spans_none(tmp_path: Path) -> None:
     doc = load_xlsx(str(_build_styled_xlsx(tmp_path)))
     table = doc.tables[0]

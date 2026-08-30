@@ -1398,11 +1398,22 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // set via setDiffEntryExcluded below -- either mechanism can drop a node.
     selectedLocalIds?: string[],
   ): Promise<{ status: string; createdCount: number }> {
-    const job = await this.prisma.job.findUnique({ where: { id } });
-    if (!job || job.status !== 'diff_ready') {
+    // Atomic claim: findUnique+update below raced two concurrent confirms
+    // (two tabs, a client timeout+retry, or an automation caller) past the
+    // status check before either wrote 'writing', so both built identical
+    // toCreate sets and both wrote the same items to ADO. updateMany's
+    // where-clause is evaluated by Postgres as part of the single UPDATE,
+    // so only the first caller's claim can ever match count: 1.
+    const claim = await this.prisma.job.updateMany({
+      where: { id, status: 'diff_ready' },
+      data: { status: 'writing' },
+    });
+    if (claim.count === 0) {
+      const job = await this.prisma.job.findUnique({ where: { id } });
+      if (!job) throw new Error(`Job ${id} not found`);
       throw new Error(`Job ${id} is not in a confirmable state`);
     }
-    await this.prisma.job.update({ where: { id }, data: { status: 'writing' } });
+    const job = (await this.prisma.job.findUnique({ where: { id } }))!;
     // Previously confirm() had no JobEventsPublisher at all -- structurally
     // incapable of publishing anything, and JobDetail.tsx had no render
     // branch for status === 'writing' either (contrast with the explicit
@@ -1748,17 +1759,21 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           }
         }
         const created = await this.mcpClient.createWorkItem(realType(entry.type), fields, credential);
-        await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id);
         // Durable resume state (P4b): written immediately, not batched at
         // the end of the create loop, so a LATER item in this same
         // mapWithConcurrency batch failing doesn't lose the fact that THIS
         // one was already created -- the next confirm() retry will see this
-        // row and skip re-creating it.
+        // row and skip re-creating it. Written BEFORE idempotencyService.record
+        // -- record() can throw on its unique constraint (a concurrent
+        // resubmit computing the same sourceHash), and this mapping is what
+        // lets a retry recognize the ADO item already exists instead of
+        // orphaning it with no local record at all.
         await this.prisma.createdItemMapping.upsert({
           where: { jobId_localId: { jobId: id, localId: entry.localId } },
           create: { jobId: id, localId: entry.localId, adoWorkItemId: created.id },
           update: { adoWorkItemId: created.id },
         });
+        await this.idempotencyService.record(entry.sourceHash, job.areaPath, created.id);
         createProgress += 1;
         void this.jobEventsPublisher?.publishNarration(id, {
           phase: 'writing',

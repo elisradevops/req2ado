@@ -113,4 +113,37 @@ describe('retryWithBackoff', () => {
     expect(result).toBe('ok');
     expect(fn).toHaveBeenCalledTimes(2);
   });
+
+  describe('retryOnNoResponse: false (non-idempotent create/upload calls)', () => {
+    it('does NOT retry a lost response with `.request` set (e.g. createWorkItem)', async () => {
+      // A committed-but-response-lost POST would otherwise create ANOTHER
+      // work item on retry, with no local record to detect the duplicate.
+      const fn = vi.fn().mockRejectedValue({ request: {} });
+      await expect(retryWithBackoff(fn, { baseDelayMs: 1, retryOnNoResponse: false })).rejects.toMatchObject({
+        request: {},
+      });
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT retry a transient network error with no response (e.g. ECONNRESET)', async () => {
+      const fn = vi.fn().mockRejectedValue({ request: {}, code: 'ECONNRESET', message: 'socket hang up' });
+      await expect(retryWithBackoff(fn, { baseDelayMs: 1, retryOnNoResponse: false })).rejects.toMatchObject({
+        code: 'ECONNRESET',
+      });
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('still retries a real HTTP response status (e.g. 503) even with retryOnNoResponse: false', async () => {
+      // The flag only governs the no-response-at-all ambiguity -- a real
+      // 5xx/429 response means the server actually answered, and that
+      // status-based retry reasoning is unaffected.
+      const fn = vi
+        .fn()
+        .mockRejectedValueOnce({ response: { status: 503 } })
+        .mockResolvedValueOnce('ok');
+      const result = await retryWithBackoff(fn, { baseDelayMs: 1, retryOnNoResponse: false });
+      expect(result).toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+  });
 });

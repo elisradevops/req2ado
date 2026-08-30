@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Protocol
 
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 
 from app.dedup.embedding_blend import blend_embeddings
 from app.dedup.vector_store import ChromaVectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class DuplicateJudgeClient(Protocol):
@@ -49,6 +52,10 @@ class DuplicateCheckResult(BaseModel):
     # see WHY a match was kept or downgraded, not just the raw boolean.
     # None means the judge never ran (no client supplied, or the embedding
     # itself said not-duplicate) -- distinct from an empty/absent verdict.
+    # "judge_failed" means it ran but raised -- is_duplicate is the
+    # embedding's own unverified verdict in that case, not a real judge
+    # confirmation; a caller/UI should treat this differently from a real
+    # "redundant"/"contradictory"/"distinct" verdict.
     judge_verdict: str | None = None
 
 
@@ -109,9 +116,16 @@ def check_for_duplicates(
     failure mode); 'redundant'/'contradictory' both count as a real
     duplicate HERE (this call only answers "does this ADO item already
     exist," not conflict semantics -- see conflict_detection.py for that).
-    Same fail-open convention as every other optional client in this
-    codebase: a judge exception, or no matched_document to judge against,
-    leaves the embedding's own verdict standing."""
+    A judge exception, or no matched_document to judge against, leaves the
+    embedding's own verdict standing -- UNLIKE every other fail-open path in
+    this codebase, this is the unsafe direction: leaving is_duplicate=True
+    means a real requirement is silently never created in ADO (confirm()
+    skips 'create' for a dedup_skip match), while the reviewer sees a
+    confident "near-duplicate" badge with no indication the judge never
+    actually confirmed it. judge_verdict is set to "judge_failed" (distinct
+    from None, which means the judge never ran at all) so this is at least
+    visible downstream, and the failure is logged -- every other optional
+    client in this module already does both."""
     title_embedding, description_embedding = embed_client.embed([title, text])
     embedding = blend_embeddings(title_embedding, description_embedding)
     nearest = vector_store.query_nearest(embedding, area_path=area_path)
@@ -130,8 +144,9 @@ def check_for_duplicates(
             judge_verdict = result.get("verdict")
             if judge_verdict == "distinct":
                 is_duplicate = False
-        except Exception:
-            judge_verdict = None
+        except Exception as exc:  # noqa: BLE001 - see this function's own docstring
+            logger.warning("Dedup judge call failed, embedding verdict (is_duplicate=%s) stands unverified: %s", is_duplicate, exc)
+            judge_verdict = "judge_failed"
 
     return DuplicateCheckResult(
         is_duplicate=is_duplicate,

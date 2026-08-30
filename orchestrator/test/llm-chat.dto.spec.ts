@@ -32,6 +32,28 @@ describe('llmChatRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts an optional seed (deterministic sampling)', () => {
+    // Real bug this closes: this field previously did not exist at all --
+    // a caller sending `seed` had it silently dropped before it ever
+    // reached openwebui.client.ts (which already forwards it when present).
+    const result = llmChatRequestSchema.safeParse({
+      messages: [{ role: 'user', content: 'hi' }],
+      seed: 42,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.seed).toBe(42);
+    }
+  });
+
+  it('rejects a non-integer seed', () => {
+    const result = llmChatRequestSchema.safeParse({
+      messages: [{ role: 'user', content: 'hi' }],
+      seed: 42.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('accepts optional topK/minP (Gemma4 repetition-collapse mitigation)', () => {
     const result = llmChatRequestSchema.safeParse({
       messages: [{ role: 'user', content: 'hi' }],

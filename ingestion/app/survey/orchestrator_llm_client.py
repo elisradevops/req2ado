@@ -861,6 +861,20 @@ class OrchestratorLlmClient:
         num_ctx: int | None = None,
         top_k: int | None = None,
         min_p: float | None = None,
+        # Defaults to a fixed value (unlike num_ctx/top_k/min_p above, which
+        # default to None/opt-in) -- pinning the sampler's RNG has no
+        # downside/cost tradeoff the way a larger context window or a
+        # model-specific repetition mitigation does, so every construction
+        # site gets it automatically rather than needing to opt in one by
+        # one. Real gap this closes: NO call site anywhere in this module
+        # set a seed before this, and temperature=0 alone does not give
+        # run-to-run determinism under llama.cpp/Ollama (batch/KV-cache
+        # nondeterminism + tie-breaking) -- confirmed via the orchestrator's
+        # own openwebui.client.ts, which already forwards `seed` into the
+        # request but had nothing upstream of it ever supplying one. Pass
+        # seed=None explicitly to opt OUT for a caller that genuinely wants
+        # varied sampling (none exists today).
+        seed: int | None = 42,
         # S11: caches analyze_section/score_requirements_for_document/
         # score_epics_and_features_for_document -- see LlmResponseCache's own
         # docstring. None (the default) disables caching entirely, matching
@@ -901,6 +915,7 @@ class OrchestratorLlmClient:
         # behavior exactly.
         self._top_k = top_k
         self._min_p = min_p
+        self._seed = seed
         self._cache = cache
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
@@ -997,6 +1012,7 @@ class OrchestratorLlmClient:
             # tree (nodes_json above), the largest single payload in this
             # module, making it the most exposed call to that truncation.
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
             # Relationship inference over already-generated nodes is
             # structured extraction, not open-ended reasoning -- same
             # confirmed-live finding (3-10x wall-clock cost, no accuracy
@@ -1043,7 +1059,7 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "score_requirements_for_document", self._model, self._num_ctx, self._top_k, self._min_p,
+                "score_requirements_for_document", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
                 descriptions_by_node_id, criteria_context, kb_context, category_checklist,
             )
             cached = self._cache.get(key)
@@ -1168,6 +1184,7 @@ class OrchestratorLlmClient:
             # model at all, so those node_ids can never appear in its
             # response no matter how well-behaved the model is.
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         # Perf-investigation instrumentation (2026-08-01): wall time + payload
         # size per call, logged at call granularity -- lets a real job's logs
@@ -1227,6 +1244,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": 2000,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1314,6 +1332,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": 2000,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1371,7 +1390,7 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "score_epics_and_features_for_document", self._model, self._num_ctx, self._top_k, self._min_p,
+                "score_epics_and_features_for_document", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
                 nodes_by_id,
             )
             cached = self._cache.get(key)
@@ -1390,6 +1409,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         # Same perf-investigation instrumentation as
         # score_requirements_for_document -- see its own comment.
@@ -1442,6 +1462,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1488,6 +1509,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1532,6 +1554,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1558,6 +1581,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1592,6 +1616,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1631,6 +1656,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1670,6 +1696,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1710,6 +1737,7 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
         response.raise_for_status()
@@ -1783,6 +1811,7 @@ class OrchestratorLlmClient:
             # real content constraint.
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
             # Binary relevant/not_relevant judgment per snippet -- structured
             # classification, not open-ended reasoning. Same confirmed-live
             # finding as every other non-conversational call in this module.
@@ -1846,7 +1875,7 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "analyze_section", self._model, self._num_ctx, self._top_k, self._min_p,
+                "analyze_section", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
                 section_text, kb_context, whole_document, topic_count, table_group_hints, expected_root_count,
             )
             cached = self._cache.get(key)
@@ -1880,6 +1909,7 @@ class OrchestratorLlmClient:
             # this finding was actually tested against.
             "think": False,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
         }
@@ -2060,7 +2090,7 @@ class OrchestratorLlmClient:
                 # production with a 24h TTL -- a pre-change entry would
                 # replay the old absolute-level behavior for a full day if
                 # this key stayed unchanged.
-                "analyze_section_skeleton.v4", self._model, self._num_ctx, self._top_k, self._min_p,
+                "analyze_section_skeleton.v4", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
                 section_text, kb_context, whole_document, topic_count, table_group_hints, expected_root_count,
                 requirement_row_hints, heading_type_hints,
             )
@@ -2092,6 +2122,7 @@ class OrchestratorLlmClient:
             # same holistic-JSON-extraction work minus the content half.
             "think": False,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
         }
@@ -2228,7 +2259,7 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "author_content", self._model, self._num_ctx, self._top_k, self._min_p,
+                "author_content", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
                 section_text, skeleton_nodes, kb_context,
             )
             cached = self._cache.get(key)
@@ -2260,6 +2291,7 @@ class OrchestratorLlmClient:
             # already in the prompt, not open-ended reasoning.
             "think": False,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
         }
@@ -2331,7 +2363,7 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
-                "map_figures_tables", self._model, self._num_ctx, self._top_k, self._min_p,
+                "map_figures_tables", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
                 candidates, items,
             )
             cached = self._cache.get(key)
@@ -2356,6 +2388,7 @@ class OrchestratorLlmClient:
             # the prompt, not open-ended reasoning.
             "think": False,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
         }
@@ -2464,6 +2497,7 @@ class OrchestratorLlmClient:
                 **({"numCtx": self._num_ctx} if self._num_ctx else {}),
                 **({"topK": self._top_k} if self._top_k else {}),
                 **({"minP": self._min_p} if self._min_p else {}),
+                **({"seed": self._seed} if self._seed is not None else {}),
             }
             response = self._post_chat(payload)
             response.raise_for_status()

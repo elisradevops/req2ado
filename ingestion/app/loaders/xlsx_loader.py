@@ -438,7 +438,17 @@ def load_xlsx(path: str) -> CanonicalDoc:
                 caption=sheet_name,
                 column_widths=column_widths,
                 border_style=border_style,
-                source_ref=SourceRef(document_path=path, start_offset=0, end_offset=0),
+                # start/end_offset=sheet_index -- NOT a hardcoded (0, 0).
+                # Real bug this closes: tree_builder._hash_identity hashes
+                # only document_path+start_offset+end_offset (description is
+                # deliberately excluded, see its own docstring), so every
+                # sheet in a multi-sheet workbook previously hashed
+                # IDENTICALLY -- BASELINE's idempotency lookup (keyed on
+                # this hash) then resolved sheets 2..N to sheet 1's own ADO
+                # work item, silently collapsing an entire workbook into one
+                # item. Same running-offset-per-table convention
+                # pptx_loader.py already uses for the identical reason.
+                source_ref=SourceRef(document_path=path, start_offset=sheet_index, end_offset=sheet_index + 1),
             )
         )
 

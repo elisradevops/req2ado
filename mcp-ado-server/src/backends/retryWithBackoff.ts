@@ -52,19 +52,30 @@ function isRetryableAdo400(response: { status?: number; data?: unknown } | undef
   return typeof detail === 'string' && RETRYABLE_ADO_400_CODES.some((code) => detail.startsWith(code));
 }
 
-function isRetryable(error: unknown): boolean {
+// A response-loss case (no HTTP response ever arrived: a bare `.request`,
+// or a transport code like ECONNRESET/ETIMEDOUT) is genuinely ambiguous --
+// the request may have been dispatched AND committed server-side before the
+// response was lost. For a GET/PATCH-style call that is safe to retry
+// blindly (idempotent, or PATCH's own 409-based "definitely didn't land"
+// argument above). For a non-idempotent create/upload POST it is not: a
+// committed-but-response-lost create means every retry creates ANOTHER ADO
+// work item (or attachment), and since the resulting duplicate never
+// reaches CreatedItemMapping/IdempotencyMapping, req2ado has no way to
+// detect or clean it up afterward. Real bug this closes -- confirmed via
+// code reading, not yet reproduced live (response loss on a committed POST
+// is inherently hard to trigger on demand).
+function isRetryable(error: unknown, retryOnNoResponse: boolean): boolean {
   const err = error as { response?: { status?: number; data?: unknown }; request?: unknown; code?: string };
   const status = err?.response?.status;
   if (status !== undefined) {
     return RETRYABLE_STATUSES.has(status) || isRetryableAdo400(err.response);
   }
   // No HTTP response at all: axios sets `.request` whenever a request was
-  // actually dispatched (vs. e.g. a config error thrown before send), which
-  // means this is a transient network failure, not a client/auth problem.
+  // actually dispatched (vs. e.g. a config error thrown before send).
   if (err?.request !== undefined) {
-    return true;
+    return retryOnNoResponse;
   }
-  return err?.code !== undefined && RETRYABLE_NETWORK_CODES.has(err.code);
+  return retryOnNoResponse && err?.code !== undefined && RETRYABLE_NETWORK_CODES.has(err.code);
 }
 
 /**
@@ -95,10 +106,11 @@ function delayWithJitter(attempt: number, baseDelayMs: number): number {
 
 export async function retryWithBackoff<T>(
   fn: () => Promise<T>,
-  opts: { maxRetries?: number; baseDelayMs?: number } = {},
+  opts: { maxRetries?: number; baseDelayMs?: number; retryOnNoResponse?: boolean } = {},
 ): Promise<T> {
   const maxRetries = opts.maxRetries ?? 5;
   const baseDelayMs = opts.baseDelayMs ?? 200;
+  const retryOnNoResponse = opts.retryOnNoResponse ?? true;
 
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -106,7 +118,7 @@ export async function retryWithBackoff<T>(
       return await fn();
     } catch (error) {
       lastError = error;
-      if (!isRetryable(error) || attempt === maxRetries) {
+      if (!isRetryable(error, retryOnNoResponse) || attempt === maxRetries) {
         throw error;
       }
       const delay = retryAfterMs(error) ?? delayWithJitter(attempt, baseDelayMs);

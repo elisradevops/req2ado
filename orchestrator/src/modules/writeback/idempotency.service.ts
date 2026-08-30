@@ -43,8 +43,19 @@ export class IdempotencyService {
     return legacyRecord?.adoWorkItemId ?? null;
   }
 
+  // upsert, not create: a plain create raced a resubmit of the same
+  // document confirming concurrently (both computing the same sourceHash
+  // before either recorded it) and threw the @@unique([sourceHash, areaPath])
+  // constraint AFTER the real ADO item was already created by
+  // JobsService#confirm -- with CreatedItemMapping now written first (see
+  // confirm()'s own comment), that failure left an orphaned ADO item with
+  // no idempotency row, so every retry re-created it again, unbounded.
   async record(sourceHash: string, areaPath: string, adoWorkItemId: number): Promise<void> {
-    await this.prisma.idempotencyMapping.create({ data: { sourceHash, areaPath, adoWorkItemId } });
+    await this.prisma.idempotencyMapping.upsert({
+      where: { sourceHash_areaPath: { sourceHash, areaPath } },
+      create: { sourceHash, areaPath, adoWorkItemId },
+      update: { adoWorkItemId },
+    });
   }
 
   // Called when DryRunService.verifyExistingAdoIdsStillExist proves a

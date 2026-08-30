@@ -4,7 +4,7 @@ describe('IdempotencyService', () => {
   const fakePrisma = {
     idempotencyMapping: {
       findFirst: jest.fn(),
-      create: jest.fn(),
+      upsert: jest.fn(),
       deleteMany: jest.fn(),
     },
   };
@@ -39,12 +39,18 @@ describe('IdempotencyService', () => {
     });
   });
 
-  it('record creates a new mapping row', async () => {
+  it('record upserts a new mapping row, keyed on the compound (sourceHash, areaPath) unique', async () => {
+    // upsert, not create: a plain create would throw on a concurrent
+    // resubmit racing another confirm() to record the same (sourceHash,
+    // areaPath) pair -- see record()'s own doc comment for the orphaned
+    // ADO item this closes.
     // @ts-expect-error -- fake Prisma client for the test
     const service = new IdempotencyService(fakePrisma);
     await service.record('hash1', 'Project\\Area1', 42);
-    expect(fakePrisma.idempotencyMapping.create).toHaveBeenCalledWith({
-      data: { sourceHash: 'hash1', areaPath: 'Project\\Area1', adoWorkItemId: 42 },
+    expect(fakePrisma.idempotencyMapping.upsert).toHaveBeenCalledWith({
+      where: { sourceHash_areaPath: { sourceHash: 'hash1', areaPath: 'Project\\Area1' } },
+      create: { sourceHash: 'hash1', areaPath: 'Project\\Area1', adoWorkItemId: 42 },
+      update: { adoWorkItemId: 42 },
     });
   });
 
@@ -122,8 +128,10 @@ describe('IdempotencyService', () => {
     // @ts-expect-error -- fake Prisma client for the test
     const service = new IdempotencyService(fakePrisma);
     await service.record('new-identity-hash', 'Project\\Area1', 42);
-    expect(fakePrisma.idempotencyMapping.create).toHaveBeenCalledWith({
-      data: { sourceHash: 'new-identity-hash', areaPath: 'Project\\Area1', adoWorkItemId: 42 },
+    expect(fakePrisma.idempotencyMapping.upsert).toHaveBeenCalledWith({
+      where: { sourceHash_areaPath: { sourceHash: 'new-identity-hash', areaPath: 'Project\\Area1' } },
+      create: { sourceHash: 'new-identity-hash', areaPath: 'Project\\Area1', adoWorkItemId: 42 },
+      update: { adoWorkItemId: 42 },
     });
   });
 

@@ -37,6 +37,7 @@ export class LlmController {
     const result = await this.llmClient.chat(body.messages, {
       ...(body.model !== undefined ? { model: body.model } : {}),
       ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
+      ...(body.seed !== undefined ? { seed: body.seed } : {}),
       ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
       ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
       ...(body.numCtx !== undefined ? { numCtx: body.numCtx } : {}),
@@ -76,6 +77,7 @@ export class LlmController {
       for await (const chunk of this.llmClient.streamChat(body.messages, {
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
+        ...(body.seed !== undefined ? { seed: body.seed } : {}),
         ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
         ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
       })) {

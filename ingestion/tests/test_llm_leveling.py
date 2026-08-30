@@ -6026,6 +6026,60 @@ def test_detect_conflicting_duplicates_clusters_a_terse_fragment_with_its_formal
         assert RequirementQualityIssue.CONFLICTING_VALUE in node.quality_issues
 
 
+def test_detect_conflicting_duplicates_clusters_correctly_at_scale_vectorized_vs_pairwise() -> None:
+    # Regression for the O(n^2) pure-Python -> vectorized-matmul rewrite:
+    # proves the matrix-based similarity computation produces the IDENTICAL
+    # union-find clustering the old per-pair _cosine_similarity loop did,
+    # not just for a hand-picked 2-node case (the tests above) but across
+    # enough nodes that a real indexing mistake in the matrix rewrite (e.g.
+    # a transposed axis, an off-by-one in the upper-triangle loop) would
+    # show up as nodes clustering with the wrong group or not at all.
+    #
+    # Group A (10 nodes) and Group C (5 nodes) sit at cosine 0.9 to each
+    # other (over the 0.85 threshold) and must merge into ONE 15-node
+    # cluster. Group B (15 nodes) is orthogonal to both (cosine 0.0) and
+    # must never merge with them -- proving the matrix correctly keeps
+    # dissimilar rows/columns apart, not just correctly merges similar ones.
+    vec_a = [1.0, 0.0]
+    vec_b = [0.0, 1.0]
+    vec_c = [0.9, (1 - 0.9**2) ** 0.5]  # cosine 0.9 to vec_a
+    assert _cosine_similarity(vec_a, vec_c) >= _DUPLICATE_CLUSTER_COSINE_THRESHOLD
+    assert _cosine_similarity(vec_a, vec_b) < _DUPLICATE_CLUSTER_COSINE_THRESHOLD
+
+    nodes = []
+    embedding_by_text: dict[str, list[float]] = {}
+    for i in range(10):
+        text = f"Group A statement {i}"
+        embedding_by_text[text] = vec_a
+        nodes.append(_req_node(f"a{i}", text, title=text))
+    for i in range(15):
+        text = f"Group B statement {i}"
+        embedding_by_text[text] = vec_b
+        nodes.append(_req_node(f"b{i}", text, title=text))
+    for i in range(5):
+        text = f"Group C statement {i}"
+        embedding_by_text[text] = vec_c
+        nodes.append(_req_node(f"c{i}", text, title=text))
+
+    embed_client = _FakeEmbedClientForConflicts(embedding_by_text)
+    verdict = {"verdict": "redundant", "conflicting_values": []}
+    conflict_client = _FakeConflictClient(verdict)
+    warnings: list[IntegrityWarning] = []
+
+    _detect_conflicting_duplicates(nodes, embed_client, conflict_client, warnings)
+
+    # Exactly 2 clusters found (A+C merged, B separate) -- if the matrix
+    # rewrite had a bug, this would either fragment into more/smaller
+    # clusters (missed real similarities) or produce one giant cluster
+    # (a stray always-true comparison merging everything).
+    assert len(conflict_client.calls) == 2
+    clustered_id_sets = [set(call.keys()) for call in conflict_client.calls]
+    a_and_c_ids = {f"a{i}" for i in range(10)} | {f"c{i}" for i in range(5)}
+    b_ids = {f"b{i}" for i in range(15)}
+    assert a_and_c_ids in clustered_id_sets
+    assert b_ids in clustered_id_sets
+
+
 def test_detect_conflicting_duplicates_does_not_cluster_unrelated_bodies_under_one_shared_title() -> None:
     # Over-clustering safety net for the title+description blend: two nodes
     # legitimately carry the SAME title over totally unrelated bodies (a

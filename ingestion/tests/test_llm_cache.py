@@ -25,26 +25,27 @@ class _FakeRedis:
 
 
 def test_cache_key_differs_by_operation() -> None:
-    assert cache_key("op_a", "model", None, None, None, "same text") != cache_key("op_b", "model", None, None, None, "same text")
+    assert cache_key("op_a", "model", None, None, None, None, "same text") != cache_key("op_b", "model", None, None, None, None, "same text")
 
 
 def test_cache_key_differs_by_model() -> None:
-    assert cache_key("op", "model-a", None, None, None, "text") != cache_key("op", "model-b", None, None, None, "text")
+    assert cache_key("op", "model-a", None, None, None, None, "text") != cache_key("op", "model-b", None, None, None, None, "text")
 
 
-def test_cache_key_differs_by_num_ctx_top_k_min_p() -> None:
-    base = cache_key("op", "model", 8192, 40, 0.1, "text")
-    assert base != cache_key("op", "model", 4096, 40, 0.1, "text")
-    assert base != cache_key("op", "model", 8192, 20, 0.1, "text")
-    assert base != cache_key("op", "model", 8192, 40, 0.5, "text")
+def test_cache_key_differs_by_num_ctx_top_k_min_p_seed() -> None:
+    base = cache_key("op", "model", 8192, 40, 0.1, 42, "text")
+    assert base != cache_key("op", "model", 4096, 40, 0.1, 42, "text")
+    assert base != cache_key("op", "model", 8192, 20, 0.1, 42, "text")
+    assert base != cache_key("op", "model", 8192, 40, 0.5, 42, "text")
+    assert base != cache_key("op", "model", 8192, 40, 0.1, 7, "text")
 
 
 def test_cache_key_differs_by_parts() -> None:
-    assert cache_key("op", "model", None, None, None, "text a") != cache_key("op", "model", None, None, None, "text b")
+    assert cache_key("op", "model", None, None, None, None, "text a") != cache_key("op", "model", None, None, None, None, "text b")
 
 
 def test_cache_key_is_stable_for_identical_inputs() -> None:
-    assert cache_key("op", "model", 8192, 40, 0.1, "text", {"a": 1}) == cache_key("op", "model", 8192, 40, 0.1, "text", {"a": 1})
+    assert cache_key("op", "model", 8192, 40, 0.1, 42, "text", {"a": 1}) == cache_key("op", "model", 8192, 40, 0.1, 42, "text", {"a": 1})
 
 
 def test_get_returns_none_on_a_miss() -> None:

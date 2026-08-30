@@ -385,6 +385,29 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'llama3.1', stream: true }));
   });
 
+  it('streamChat forwards seed when provided, and omits it otherwise (same pinned-sampling passthrough as chat())', async () => {
+    const client = new OpenWebUiClient(config);
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: 'hi' } }] };
+    }
+    const fakeCreate = jest.fn().mockResolvedValue(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _ of client.streamChat([{ role: 'user', content: 'hi' }], { seed: 0 })) {
+      // drain
+    }
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ seed: 0 }));
+
+    fakeCreate.mockResolvedValue(fakeStream());
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _ of client.streamChat([{ role: 'user', content: 'hi' }])) {
+      // drain
+    }
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
+  });
+
   it('streamChat yields a reasoning model\'s chain-of-thought on a separate field from content', async () => {
     const client = new OpenWebUiClient(config);
     async function* fakeStream() {

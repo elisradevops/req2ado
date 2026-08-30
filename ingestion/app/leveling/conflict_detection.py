@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+import numpy as np
+
 from app.dedup.embedding_blend import blend_embeddings
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.workitem.model import IntegrityWarning, RequirementQualityIssue, WarningKind, WorkItemNode, WorkItemType
@@ -130,9 +132,32 @@ def _detect_conflicting_duplicates(
         for title_embedding, description_embedding in zip(title_embeddings, description_embeddings)
     ]
 
-    # Union-find over cosine-similar pairs -- O(n^2) pairwise comparisons
-    # is acceptable here (pure arithmetic, no LLM/network call per pair;
-    # runs once over a job's own Requirement count, typically hundreds).
+    # Union-find over cosine-similar pairs. The O(n^2) PAIR COUNT is
+    # unavoidable (every Requirement must be compared against every other),
+    # but the arithmetic itself doesn't have to be: this used to call
+    # _cosine_similarity (pure-Python, and redundantly recomputing both
+    # vectors' norms on EVERY pair even though blend_embeddings already
+    # returns unit-normalized vectors -- provably always 1.0) once per pair
+    # in a Python-level loop. Real cost this closes, confirmed live: at
+    # n=500 requirements this was minutes of single-threaded interpreter
+    # time inside a job. Computing the full similarity matrix as one
+    # vectorized matmul (numpy is already a transitive dependency via
+    # chromadb) turns that into a single sub-millisecond BLAS call; the
+    # remaining Python loop below is just cheap float comparisons + union-
+    # find bookkeeping, not per-pair arithmetic.
+    embeddings_matrix = np.asarray(embeddings, dtype=np.float64)
+    norms = np.linalg.norm(embeddings_matrix, axis=1, keepdims=True)
+    zero_norm = (norms == 0).flatten()
+    # Matches _cosine_similarity's own norm_a==0-or-norm_b==0 -> 0.0
+    # short-circuit -- a genuinely zero-vector embedding (never seen live,
+    # but defensively handled the same way the old pairwise function did)
+    # must never divide by zero or be silently treated as maximally similar.
+    normalized = embeddings_matrix / np.where(norms == 0, 1.0, norms)
+    similarity_matrix = normalized @ normalized.T
+    if zero_norm.any():
+        similarity_matrix[zero_norm, :] = 0.0
+        similarity_matrix[:, zero_norm] = 0.0
+
     parent = list(range(len(requirement_nodes)))
 
     def find(i: int) -> int:
@@ -148,8 +173,7 @@ def _detect_conflicting_duplicates(
 
     for i in range(len(requirement_nodes)):
         for j in range(i + 1, len(requirement_nodes)):
-            similarity = _cosine_similarity(embeddings[i], embeddings[j])
-            if similarity >= _DUPLICATE_CLUSTER_COSINE_THRESHOLD:
+            if similarity_matrix[i, j] >= _DUPLICATE_CLUSTER_COSINE_THRESHOLD:
                 union(i, j)
 
     clusters: dict[int, list[int]] = {}

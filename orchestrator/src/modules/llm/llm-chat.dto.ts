@@ -38,6 +38,13 @@ export const llmChatRequestSchema = z.object({
   messages: z.array(chatMessageSchema).min(1),
   model: z.string().optional(),
   temperature: z.number().min(0).max(2).optional(),
+  // Real gap this closes: openwebui.client.ts's own request builder already
+  // spreads a `seed` into the Ollama payload when given one, but nothing in
+  // this DTO ever carried one from a caller -- so a seed sent from
+  // ingestion's LLM client was silently dropped before it ever reached
+  // openwebui.client.ts, and every call site ran on the backend's default
+  // (non-deterministic) seed regardless of temperature=0.
+  seed: z.number().int().optional(),
   responseSchema: z
     .object({
       name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),

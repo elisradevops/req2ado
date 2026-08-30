@@ -35,13 +35,21 @@ import type { WarningRecord } from '../writeback/dry-run.service';
 import { Public } from '../auth/public.decorator';
 import { VALID_REQUIREMENT_TAGS } from '../../config/requirement-type-fields';
 
-// Matches ingestion/app/loaders/*.py's actually-implemented loaders — txt,
-// md, docx, pdf (incl. scanned/OCR, same extension), xlsx. Not a security
-// boundary against malicious file CONTENT (that's ingestion's own parsing
-// robustness), only a cheap reject-obviously-wrong-format-early gate.
-// Exported for reuse by BatchController/BatchService (NEW-05) -- a batch
-// file must be validated against the exact same rules as a single-file
-// submit(), not a second hand-maintained copy of them.
+// A DELIBERATE SUBSET of ingestion/app/dispatch.py's own _SUPPORTED_EXTENSIONS
+// (which also accepts .pptx/.csv/.rtf/images -- used by the KB ingest path,
+// where a wider range of reference material is a reasonable, lower-risk
+// feature since KB ingestion never writes back to ADO). Job creation is
+// intentionally narrower, restricted to the formats this pipeline is
+// actually tested/hardened for end to end. This used to claim (falsely) to
+// "match ingestion's loaders" -- it never did; see
+// allowed-extensions.drift-guard.spec.ts for the mechanical check that this
+// subset relationship holds, so it can't silently drift further without a
+// test failure. Not a security boundary against malicious file CONTENT
+// (that's ingestion's own parsing robustness), only a cheap
+// reject-obviously-wrong-format-early gate. Exported for reuse by
+// BatchController/BatchService (NEW-05) -- a batch file must be validated
+// against the exact same rules as a single-file submit(), not a second
+// hand-maintained copy of them.
 export const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xlsx']);
 
 // Customer ID (per-Requirement source reference, e.g. "1.1.2.2") stays a

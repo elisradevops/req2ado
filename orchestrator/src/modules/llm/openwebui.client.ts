@@ -150,6 +150,9 @@ export class OpenWebUiClient implements LlmClient {
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       stream: true as const,
       ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      // See chat()'s own seed comment -- only sent when a caller explicitly
+      // asks for pinned sampling.
+      ...(opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
     });

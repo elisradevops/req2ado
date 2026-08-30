@@ -371,7 +371,16 @@ def test_judge_client_contradictory_verdict_also_keeps_the_duplicate_flag() -> N
         assert result.judge_verdict == "contradictory"
 
 
-def test_judge_client_exception_falls_back_to_the_embedding_only_verdict() -> None:
+def test_judge_client_exception_falls_back_to_the_embedding_only_verdict_but_is_marked_unverified(caplog) -> None:
+    # Real bug this closes: a judge exception previously left judge_verdict
+    # at None -- IDENTICAL to "the judge never ran at all" -- so a reviewer
+    # (or the orchestrator) had no way to tell "embedding said duplicate,
+    # judge confirmed it" from "embedding said duplicate, judge was DOWN and
+    # this was never actually verified." is_duplicate=True still stands (the
+    # embedding's own verdict), but judge_verdict must now be distinguishable
+    # and the failure must be logged -- this is the one fail-open path in
+    # the codebase whose unsafe direction is silently DROPPING a real
+    # requirement (confirm() skips 'create' for a dedup_skip match).
     class RaisingJudgeClient:
         def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
             raise RuntimeError("LLM unreachable")
@@ -381,17 +390,19 @@ def test_judge_client_exception_falls_back_to_the_embedding_only_verdict() -> No
         store.upsert("existing-item", [1.0, 0.0], area_path="Project\\Area1", document="shall support terrestrial broadcast")
 
         embed_client = FakeEmbedClient({"shall support terrestrial broadcast input": [1.0, 0.0]})
-        result = check_for_duplicates(
-            text="shall support terrestrial broadcast input",
-            title="shall support terrestrial broadcast input",
-            item_id="candidate-item",
-            area_path="Project\\Area1",
-            embed_client=embed_client,
-            vector_store=store,
-            judge_client=RaisingJudgeClient(),
-        )
+        with caplog.at_level("WARNING"):
+            result = check_for_duplicates(
+                text="shall support terrestrial broadcast input",
+                title="shall support terrestrial broadcast input",
+                item_id="candidate-item",
+                area_path="Project\\Area1",
+                embed_client=embed_client,
+                vector_store=store,
+                judge_client=RaisingJudgeClient(),
+            )
         assert result.is_duplicate is True
-        assert result.judge_verdict is None
+        assert result.judge_verdict == "judge_failed"
+        assert any("judge" in record.message.lower() for record in caplog.records)
 
 
 def test_judge_client_is_never_called_when_the_embedding_itself_says_not_duplicate() -> None:

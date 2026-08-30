@@ -2712,14 +2712,14 @@ def test_analyze_section_skeleton_cache_key_changed_with_the_prompt_and_schema_c
     from app.survey.llm_cache import cache_key
 
     key = cache_key(
-        "analyze_section_skeleton.v2", "model", 4096, 40, 0.05,
+        "analyze_section_skeleton.v2", "model", 4096, 40, 0.05, None,
         "text", None, False, None, None, None, None,
     )
     # A same-arguments key computed under the OLD operation string must
     # differ -- proves a pre-existing 24h-TTL cache entry from before this
     # change cannot be replayed as a hit against the new prompt/schema.
     old_key = cache_key(
-        "analyze_section_skeleton", "model", 4096, 40, 0.05,
+        "analyze_section_skeleton", "model", 4096, 40, 0.05, None,
         "text", None, False, None, None, None,
     )
     assert key != old_key

@@ -168,10 +168,18 @@ export class RealAdoBackend implements AdoBackend {
   async createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord> {
     const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${this.config.adoProject}/_apis/wit/workitems/$${input.type}${versionQueryParam(version)}`;
-    const response = await retryWithBackoff(() =>
-      this.httpClient.post(url, toJsonPatch(input.fields), {
-        headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' },
-      }),
+    // retryOnNoResponse: false -- this create is not idempotent. A lost
+    // response after ADO already committed the work item means a blind
+    // retry creates ANOTHER one, and since the duplicate never reaches
+    // CreatedItemMapping/IdempotencyMapping, req2ado has no way to detect
+    // or clean it up afterward. Unlike PATCH-based relation writes, a POST
+    // create has no "definitely didn't land" guarantee to retry on.
+    const response = await retryWithBackoff(
+      () =>
+        this.httpClient.post(url, toJsonPatch(input.fields), {
+          headers: { Authorization: this.authHeader(), 'Content-Type': 'application/json-patch+json' },
+        }),
+      { retryOnNoResponse: false },
     );
     return {
       id: response.data.id,
@@ -481,10 +489,18 @@ export class RealAdoBackend implements AdoBackend {
     // indicated a Content-Type of ... which is not supported." `mimeType` is
     // still needed on the SECOND call below (the AttachedFile relation ADO
     // stores against the work item), just never as this upload's own header.
-    const uploadResponse = await retryWithBackoff(() =>
-      this.httpClient.post(uploadUrl, Buffer.from(dataBase64, 'base64'), {
-        headers: { Authorization: this.authHeader(), 'Content-Type': 'application/octet-stream' },
-      }),
+    // retryOnNoResponse: false -- same non-idempotency reasoning as
+    // createWorkItem above: a lost response after ADO already stored the
+    // attachment bytes would otherwise upload it again on retry, with no
+    // local record of the duplicate to clean up. The second call (linking
+    // the relation via PATCH) keeps the default -- it inherits the
+    // module-level 409 "definitely didn't land" reasoning.
+    const uploadResponse = await retryWithBackoff(
+      () =>
+        this.httpClient.post(uploadUrl, Buffer.from(dataBase64, 'base64'), {
+          headers: { Authorization: this.authHeader(), 'Content-Type': 'application/octet-stream' },
+        }),
+      { retryOnNoResponse: false },
     );
     const attachmentUrl = uploadResponse.data.url as string;
     const workItemUrl = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitems/${workItemId}${versionQueryParam(version)}`;

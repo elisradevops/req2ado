@@ -63,6 +63,7 @@ describe('JobsService.confirm', () => {
     const record = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
@@ -100,6 +101,7 @@ describe('JobsService.confirm', () => {
     const record = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
@@ -148,6 +150,7 @@ describe('JobsService.confirm', () => {
     const record = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
@@ -192,6 +195,7 @@ describe('JobsService.confirm', () => {
     const record = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
@@ -232,6 +236,7 @@ describe('JobsService.confirm', () => {
     const record = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
@@ -279,6 +284,7 @@ describe('JobsService.confirm', () => {
     const discoverWorkItemTypeCategories = jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'User Story' });
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
@@ -313,6 +319,7 @@ describe('JobsService.confirm', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -346,6 +353,7 @@ describe('JobsService.confirm', () => {
       .mockResolvedValue(['System.Title', 'System.Description', 'Custom.CustomerRequirementId']);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -391,6 +399,7 @@ describe('JobsService.confirm', () => {
     const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description', 'Custom.CustomerRequirementId']);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -432,6 +441,7 @@ describe('JobsService.confirm', () => {
     const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -472,6 +482,7 @@ describe('JobsService.confirm', () => {
     const discoverFields = jest.fn().mockResolvedValue(['Custom.OrgSpecificCustomerRef']);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -507,6 +518,7 @@ describe('JobsService.confirm', () => {
       .mockResolvedValue(['System.Title', 'System.Description', 'Custom.SourceDocument']);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -552,6 +564,7 @@ describe('JobsService.confirm', () => {
     const discoverFields = jest.fn().mockResolvedValue(['System.Title', 'System.Description']);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -597,6 +610,7 @@ describe('JobsService.confirm', () => {
     const discoverFields = jest.fn().mockResolvedValue(['Custom.SourceDocument']);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -639,6 +653,7 @@ describe('JobsService.confirm', () => {
     ]);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -682,6 +697,7 @@ describe('JobsService.confirm', () => {
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
           dryRunDiff: [
@@ -729,6 +745,7 @@ describe('JobsService.confirm', () => {
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
           dryRunDiff: [
@@ -768,6 +785,7 @@ describe('JobsService.confirm', () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 206 });
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -803,6 +821,7 @@ describe('JobsService.confirm', () => {
     const upsertDedupEntriesBatch = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -841,6 +860,7 @@ describe('JobsService.confirm', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -881,6 +901,7 @@ describe('JobsService.confirm', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -928,6 +949,7 @@ describe('JobsService.confirm', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -974,6 +996,7 @@ describe('JobsService.confirm', () => {
     const upsertDedupEntriesBatch = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1015,6 +1038,7 @@ describe('JobsService.confirm', () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 300 });
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'New', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1049,6 +1073,7 @@ describe('JobsService.confirm', () => {
     const upsertDedupEntriesBatch = jest.fn().mockRejectedValue(new Error('ingestion unreachable'));
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1083,6 +1108,7 @@ describe('JobsService.confirm', () => {
     const createWorkItem = jest.fn().mockRejectedValue(new Error('ADO connectionData validation failed: 401'));
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1122,6 +1148,7 @@ describe('JobsService.confirm', () => {
       .mockRejectedValueOnce(new Error('ADO unreachable'));
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1155,6 +1182,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const upsert = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1187,6 +1215,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 999 });
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1225,6 +1254,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1259,6 +1289,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1300,6 +1331,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1334,6 +1366,7 @@ describe('JobsService.confirm — row deselect', () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 500 });
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1367,6 +1400,7 @@ describe('JobsService.confirm — row deselect', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1398,6 +1432,7 @@ describe('JobsService.confirm — row deselect', () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 502 });
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -1429,6 +1464,7 @@ describe('JobsService.reject', () => {
   it('rejects a diff_ready job and records an audit entry', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready' }),
         update: jest.fn().mockResolvedValue(undefined),
       },
@@ -1799,6 +1835,7 @@ describe('JobsService.setDiffEntryExcluded', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready',
@@ -1846,6 +1883,7 @@ describe('JobsService.editDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
         update,
       },
@@ -1862,6 +1900,7 @@ describe('JobsService.editDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
         update,
       },
@@ -1878,6 +1917,7 @@ describe('JobsService.editDiffEntry', () => {
     const withCustomerId = { ...baseEntry, customerId: '1.1.2.2' };
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [withCustomerId] }),
         update,
       },
@@ -1908,6 +1948,7 @@ describe('JobsService.editDiffEntry', () => {
     const withCustomerId = { ...baseEntry, customerId: '1.1.2.2' };
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [withCustomerId] }),
         update,
       },
@@ -1935,6 +1976,7 @@ describe('JobsService.editDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
         update,
       },
@@ -1957,6 +1999,7 @@ describe('JobsService.editDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
         update,
       },
@@ -2035,6 +2078,7 @@ describe('JobsService.rescoreDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: 'qwen3.6:35b', dryRunDiff: [staleEntry] }),
         update,
       },
@@ -2062,6 +2106,7 @@ describe('JobsService.rescoreDiffEntry', () => {
     };
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: 'qwen3.6:35b', dryRunDiff: [entryWithChecklist] }),
         update: jest.fn().mockResolvedValue(undefined),
       },
@@ -2080,6 +2125,7 @@ describe('JobsService.rescoreDiffEntry', () => {
     const neverScored = { ...staleEntry, qualityScore: null, qualityCategoryScores: null, qualityStale: undefined };
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: null, model: null, dryRunDiff: [neverScored] }),
         update: jest.fn().mockResolvedValue(undefined),
       },
@@ -2103,6 +2149,7 @@ describe('JobsService.rescoreDiffEntry', () => {
     const scoredSibling = { ...staleEntry, localId: 'n1', qualityCategoryScores: { Necessary: 90, Verifiable: 70 } };
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [ownNeverScored, scoredSibling] }),
         update: jest.fn().mockResolvedValue(undefined),
       },
@@ -2143,6 +2190,7 @@ describe('JobsService.rescoreDiffEntry', () => {
     const update = jest.fn();
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
         update,
       },
@@ -2164,6 +2212,7 @@ describe('JobsService.rescoreDiffEntry', () => {
     const update = jest.fn();
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
         update,
       },
@@ -2190,6 +2239,7 @@ describe('JobsService.rescoreDiffEntry', () => {
     const update = jest.fn();
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
         update,
       },
@@ -2220,6 +2270,7 @@ describe('JobsService.addDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'baseline', dryRunDiff: [parent] }),
         update,
       },
@@ -2256,6 +2307,7 @@ describe('JobsService.addDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [surveyParent] }),
         update,
       },
@@ -2309,6 +2361,7 @@ describe('JobsService.addDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [manualParent] }),
         update,
       },
@@ -2340,6 +2393,7 @@ describe('JobsService.addDiffEntry', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [] }),
         update,
       },
@@ -2579,6 +2633,7 @@ describe('JobsService.confirm — exclusion', () => {
     const createWorkItem = jest.fn();
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -2615,6 +2670,7 @@ describe('JobsService.confirm — trace links', () => {
     const linkWorkItems = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -2651,6 +2707,7 @@ describe('JobsService.confirm — trace links', () => {
     const linkWorkItems = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -2687,6 +2744,7 @@ describe('JobsService.confirm — trace links', () => {
     const linkWorkItems = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -2724,6 +2782,7 @@ describe('JobsService.confirm — trace links', () => {
     const linkWorkItems = jest.fn().mockRejectedValue(new Error('ADO rejected the rel'));
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -2766,6 +2825,7 @@ describe('JobsService.confirm — trace links', () => {
       .mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -2838,6 +2898,7 @@ describe('JobsService.confirm — trace links', () => {
     });
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -2884,6 +2945,7 @@ describe('JobsService.confirm — trace links', () => {
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
           dryRunDiff: [
@@ -2936,6 +2998,7 @@ describe('JobsService.confirm — trace links', () => {
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
           dryRunDiff: [
@@ -2988,6 +3051,7 @@ describe('JobsService.confirm — trace links', () => {
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
           dryRunDiff: [
@@ -3035,6 +3099,7 @@ describe('JobsService.confirm — figure attachments', () => {
     const figureFileDelete = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3072,6 +3137,7 @@ describe('JobsService.confirm — figure attachments', () => {
     const figureFileDelete = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3120,6 +3186,7 @@ describe('JobsService.confirm — figure attachments', () => {
     const figureFileDelete = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3155,6 +3222,7 @@ describe('JobsService.confirm — figure attachments', () => {
     const figureFileFindMany = jest.fn().mockResolvedValue([]);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3188,6 +3256,7 @@ describe('JobsService.confirm — figure attachments', () => {
     const figureFileDelete = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3222,6 +3291,7 @@ describe('JobsService.confirm — figure attachments', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3254,6 +3324,7 @@ describe('JobsService.confirm — figure attachments', () => {
     const uploadAttachment = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3311,6 +3382,7 @@ describe('JobsService.confirm — figure attachments', () => {
     const figureFileDelete = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3360,6 +3432,7 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3409,6 +3482,7 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3447,6 +3521,7 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
     const jobUpdate = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3510,6 +3585,7 @@ describe('JobsService.confirm — sibling creation order', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3572,6 +3648,7 @@ describe('JobsService.confirm — sibling creation order', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3620,6 +3697,7 @@ describe('JobsService.confirm — sibling creation order', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
           dryRunDiff: [
@@ -3863,6 +3941,7 @@ describe('JobsService.attachFigureToAdo', () => {
     const figureFileDelete = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           dryRunDiff: [
@@ -3889,6 +3968,7 @@ describe('JobsService.attachFigureToAdo', () => {
     const figureFileDelete = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           dryRunDiff: [
@@ -3919,6 +3999,7 @@ describe('JobsService.attachFigureToAdo', () => {
     const uploadAttachment = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           dryRunDiff: [
@@ -3943,6 +4024,7 @@ describe('JobsService.attachFigureToAdo', () => {
     const uploadAttachment = jest.fn().mockResolvedValue(undefined);
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           dryRunDiff: [
@@ -3968,6 +4050,7 @@ describe('JobsService.attachFigureToAdo', () => {
   it('throws BadRequestException when the entry has no resolved ADO id yet', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           dryRunDiff: [
@@ -3999,6 +4082,7 @@ describe('JobsService.attachFigureToAdo', () => {
   it('throws NotFoundException when the figure was never stored or already attached', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           dryRunDiff: [
@@ -4045,6 +4129,7 @@ describe('JobsService.retryTraceLinkWrite', () => {
         findMany: jest.fn().mockResolvedValue([remainingFailure]),
       },
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           warnings: [
@@ -4104,6 +4189,7 @@ describe('JobsService.retryTraceLinkWrite', () => {
         findMany: jest.fn().mockResolvedValue([]),
       },
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           warnings: [
@@ -4249,6 +4335,7 @@ describe('JobsService.resubmit', () => {
     const jobCreate = jest.fn().mockResolvedValue({ id: 'job-2' });
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', customerId: 'CUST-1', mode: 'survey',
           originalFilename: 'doc.txt', sourceHash: 'hash-1', state: 'Approved', iterationPath: 'Iter\\1',
@@ -4276,6 +4363,7 @@ describe('JobsService.list', () => {
   it('lists jobs newest-first with item counts derived from dryRunDiff length and real created-item counts', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findMany: jest.fn().mockResolvedValue([
           {
             id: 'j2',
@@ -4336,6 +4424,7 @@ describe('JobsService.getById', () => {
   it('returns kbCitations alongside the existing job fields', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready',
@@ -4383,6 +4472,7 @@ describe('JobsService.getById', () => {
   it('returns traceLinkFailures shaped for the frontend (id/sourceLocalId/sourceAdoId/targetAdoId/referenceName only, no error/createdAt/jobId)', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready',
@@ -4423,6 +4513,7 @@ describe('JobsService.getById', () => {
   it('returns persisted excludedFigureIds/excludedTableIds when the columns have real data', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready',
@@ -4448,6 +4539,7 @@ describe('JobsService.getById', () => {
   it('returns persisted figureDescriptions when the column has real data', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready',
@@ -4477,6 +4569,7 @@ describe('JobsService.getById', () => {
   it('returns a nonzero createdItemCount for a diff_ready job with durable partial-write state (300577)', async () => {
     const prisma = {
       job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready',

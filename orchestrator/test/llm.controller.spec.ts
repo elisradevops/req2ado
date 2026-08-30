@@ -43,6 +43,15 @@ describe('LlmController', () => {
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { numCtx: 28000 });
   });
 
+  it('threads an explicit seed from the request body into llmClient.chat', async () => {
+    const chat = jest.fn().mockResolvedValue('reply');
+    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], seed: 42 });
+
+    expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { seed: 42 });
+  });
+
   it('threads explicit topK/minP from the request body into llmClient.chat', async () => {
     const chat = jest.fn().mockResolvedValue('reply');
     const controller = new LlmController({ chat, listModels: jest.fn() } as any);
@@ -109,6 +118,19 @@ describe('LlmController', () => {
 
     expect(written).toEqual([`${JSON.stringify({ delta: 'Hel' })}\n`, `${JSON.stringify({ delta: 'lo' })}\n`]);
     expect(res.end).toHaveBeenCalled();
+  });
+
+  it('threads an explicit seed from the request body into llmClient.streamChat', async () => {
+    async function* fakeDeltas() {
+      yield { content: 'Hi' };
+    }
+    const streamChat = jest.fn().mockReturnValue(fakeDeltas());
+    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const res = { setHeader: jest.fn(), write: jest.fn(), end: jest.fn(), on: jest.fn() };
+
+    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }], seed: 42 }, res as any);
+
+    expect(streamChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { seed: 42 });
   });
 
   it('writes reasoningDelta (not delta) for a reasoning-model chunk, keeping the two fields distinct on the wire', async () => {
