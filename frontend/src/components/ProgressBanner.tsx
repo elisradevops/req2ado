@@ -352,6 +352,12 @@ export function ProgressBanner({
   // tail phase (see isTailPhase above) -- honest silence beats a fake number.
   let etaText: string | null = null;
   if (mode === 'survey' && latest && completedUnits !== undefined && progressTotal) {
+    // An unparseable startedAt (new Date(...).getTime() -> NaN) already
+    // fell through to the >= 15_000 check below evaluating false, so this
+    // never crashed/rendered a literal NaN -- but it relied on that
+    // NaN-comparison coincidence rather than an explicit check, and only
+    // matters on the non-deterministic_subtree branch (which doesn't read
+    // startedAt at all). Number.isFinite here makes the guard intentional.
     const elapsedMs =
       detSubtreeWindowKey !== undefined
         ? tickingNow - detSubtreeWindowStartedAt
@@ -364,7 +370,7 @@ export function ProgressBanner({
       detSubtreeWindowKey !== undefined
         ? completedUnits - (detSubtreeBaselineUnits ?? completedUnits)
         : completedUnits;
-    if (witnessedUnits >= 1 && elapsedMs >= 15_000) {
+    if (witnessedUnits >= 1 && elapsedMs >= 15_000 && Number.isFinite(elapsedMs)) {
       const msPerUnit = elapsedMs / witnessedUnits;
       const remainingUnits = Math.max(0, progressTotal - completedUnits);
       etaText = `~${formatDuration(msPerUnit * remainingUnits)} left`;

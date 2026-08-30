@@ -1,6 +1,10 @@
 import { useNow } from '../hooks/useNow';
 
 function formatElapsed(ms: number): string {
+  // An unparseable startedAt (new Date(...).getTime() -> NaN) previously
+  // rendered the literal string "NaN:NaN" -- Math.floor/toString/padStart
+  // all pass a NaN straight through without ever throwing.
+  if (!Number.isFinite(ms)) return '00:00';
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);

@@ -18,6 +18,15 @@ function bandFor(score: number): (typeof BANDS)[number] {
   return BANDS.find((band) => score <= band.max) ?? BANDS[BANDS.length - 1];
 }
 
+// A NaN/Infinity score (a malformed API response) previously passed
+// through Math.max(0, Math.min(100, value)) unchanged -- Math.min/max
+// with a NaN operand always returns NaN, rendering a literal "NaN" in the
+// UI and an invalid `width: NaN%` inline style. Falls back to 0 (the
+// bottom of the scale) rather than guessing a more "average" default.
+function clampScore(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+}
+
 // An issue code maps to at most one category (categoryForIssueCode), so a
 // single pass fully partitions a code list. Codes with no category match
 // (either genuinely unmapped, or there's no categoryScores at all to match
@@ -176,7 +185,7 @@ function CategoryRow({
   expanded: boolean;
   onToggle: () => void;
 }): React.ReactElement {
-  const clamped = Math.max(0, Math.min(100, value));
+  const clamped = clampScore(value);
   const color = categoryColor(clamped);
   const crossing = previousValue !== undefined ? bandCrossingText(clamped, previousValue) : null;
   return (
@@ -291,10 +300,9 @@ export function QualityGauge({
   // extra call needed).
   previousIssues?: string[];
 }): React.ReactElement {
-  const clamped = Math.max(0, Math.min(100, score));
+  const clamped = clampScore(score);
   const band = bandFor(clamped);
-  const clampedPreviousScore =
-    previousScore != null ? Math.max(0, Math.min(100, previousScore)) : undefined;
+  const clampedPreviousScore = previousScore != null ? clampScore(previousScore) : undefined;
   const headlineCrossing =
     clampedPreviousScore !== undefined ? bandCrossingText(clamped, clampedPreviousScore) : null;
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());

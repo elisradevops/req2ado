@@ -62,10 +62,14 @@ export function KbCitationChips({ citations }: { citations: KbCitation[] | undef
       {(citations ?? []).map((citation) => {
         const presentation = RELEVANCE_PRESENTATION[citation.relevance];
         const Icon = presentation.Icon;
+        // A malformed/missing similarity value must not render a literal
+        // "NaN%" in the tooltip -- NaN.toFixed(0) returns the string "NaN",
+        // not an error, so this needs its own explicit guard.
+        const similarityPercent = Number.isFinite(citation.similarity) ? `${(citation.similarity * 100).toFixed(0)}%` : 'unknown';
         return (
           <Tooltip
             key={citation.sourceFile}
-            content={`${presentation.tooltipLabel} -- retrieval text-overlap score: ${(citation.similarity * 100).toFixed(0)}% (not a relevance measure; this KB doc is a process/style guide, so overlap with a specific technical requirement is naturally low even when the guidance applies)`}
+            content={`${presentation.tooltipLabel} -- retrieval text-overlap score: ${similarityPercent} (not a relevance measure; this KB doc is a process/style guide, so overlap with a specific technical requirement is naturally low even when the guidance applies)`}
           >
             <Chip bg={presentation.bg} color={presentation.color} className="border" style={{ borderColor: presentation.border }}>
               {Icon && <Icon className="h-3 w-3" />}

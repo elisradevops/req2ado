@@ -35,6 +35,24 @@ describe('ProgressBanner', () => {
     expect(screen.getByText(/~.+ left/i)).toBeInTheDocument();
   });
 
+  it('shows "Estimating..." (never a literal NaN) for an unparseable startedAt', () => {
+    // Real gap this closes: new Date(startedAt).getTime() on an unparseable
+    // string is NaN -- previously relied on that NaN failing the >= 15_000
+    // comparison by coincidence rather than an explicit guard.
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="not-a-real-date"
+        mode="survey"
+        narrations={[
+          { phase: 'analyze_section', branchIndex: 1, branchCount: 4, blocksDone: 100, blocksTotal: 400, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.getByText('Estimating time left…')).toBeInTheDocument();
+    expect(screen.queryByText(/nan/i)).not.toBeInTheDocument();
+  });
+
   it('never shows a fabricated "~0s left" during the detect_conflicts/regroup_roots/trace-link tail phases', () => {
     // Confirmed real bug (screenshot): these whole-document tail phases
     // report blocksDone === blocksTotal (every section is already finished

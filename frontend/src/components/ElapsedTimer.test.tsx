@@ -19,4 +19,12 @@ describe('ElapsedTimer', () => {
     });
     expect(screen.getByText('00:10')).toBeInTheDocument();
   });
+
+  it('renders 00:00 (never a literal "NaN:NaN") for an unparseable startedAt', () => {
+    // Real gap this closes: new Date(startedAt).getTime() on an
+    // unparseable string is NaN, which previously passed straight through
+    // Math.floor/toString/padStart into the literal string "NaN:NaN".
+    render(<ElapsedTimer startedAt="not-a-real-date" />);
+    expect(screen.getByText('00:00')).toBeInTheDocument();
+  });
 });
