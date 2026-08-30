@@ -23,6 +23,7 @@ const ALLOWLISTED_FILES = new Set([
   'utils/tagColors.ts', // 11 requirement-tag colors, no equivalent token exists
   'components/WorkItemTypeBadge.tsx', // Azure DevOps' OWN official work-item-type colors + an rgba() alpha-compositing helper for live ADO-fetched colors, not hardcoded chrome
   'components/FileTypeIcon.tsx', // per-file-extension icon colors (docx/pdf/xlsx/etc.), same genre as tagColors
+  'utils/neutralColor.ts', // the single shared "no per-key color match" fallback; WorkItemTypeBadge's hexToRgba() does real hex arithmetic on it, so it must stay a literal hex, not a var() token
 ]);
 
 // Recorded per-file hex-literal counts as of the last deliberate check-in.

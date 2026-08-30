@@ -161,3 +161,13 @@ export const JOB_STATUS_LABELS: Record<string, { label: string; description: str
 export function jobStatusLabel(status: string): { label: string; description: string } {
   return JOB_STATUS_LABELS[status] ?? { label: status, description: '' };
 }
+
+// A diff entry's action, as plain display text -- shared by ActionBadge
+// (renders it inside a Chip) and DiffTree's Status column-width measurer
+// (needs the exact same string to measure the widest real label), so the
+// two can never silently drift on what "the label" actually is.
+export function actionLabel(entry: { action: 'create' | 'reuse' | 'dedup_skip'; existingAdoId?: number | null }): string {
+  if (entry.action === 'create') return 'New';
+  if (entry.action === 'reuse') return `Links to WI-${entry.existingAdoId ?? '?'}`;
+  return entry.existingAdoId != null ? `Near-duplicate of WI-${entry.existingAdoId}` : 'Near-duplicate';
+}

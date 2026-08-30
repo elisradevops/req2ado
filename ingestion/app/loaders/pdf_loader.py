@@ -939,8 +939,11 @@ def _line_size(line: dict) -> float:
 
 
 def _line_is_bold(line: dict) -> bool:
-    """Same 'first non-whitespace char wins' convention as `_line_size`,
-    reusing this file's existing `_fontname_is_bold`."""
+    """First non-whitespace char wins -- unlike `_line_size` (which moved to
+    a modal/most-common convention, see its own docstring for why), this
+    function was never given the equivalent fix. Currently harmless: its
+    result is computed but not read by any caller today. Reusing this
+    file's existing `_fontname_is_bold`."""
     for ch in line.get("chars", []):
         if (ch.get("text") or "").strip():
             return _fontname_is_bold(ch.get("fontname"))

@@ -1,5 +1,6 @@
 import { FiletypeDoc, FiletypeDocx, FiletypeMd, FiletypePdf, FiletypeTxt, FiletypeXls, FiletypeXlsx } from 'react-bootstrap-icons';
 import { cn } from '../lib/cn';
+import { NEUTRAL_FALLBACK_COLOR } from '../utils/neutralColor';
 
 // Bootstrap Icons' dedicated filetype-* glyphs (via react-bootstrap-icons) --
 // each extension gets its own real pictogram (a "W" mark for docx, a grid
@@ -20,7 +21,7 @@ const FILE_TYPE_CONFIG: Record<string, { icon: typeof FiletypePdf; color: string
 
 function configFor(extension: string): { icon: typeof FiletypePdf; color: string; label: string } {
   const key = extension.replace(/^\./, '').toLowerCase();
-  return FILE_TYPE_CONFIG[key] ?? { icon: FiletypeTxt, color: '#64748B', label: key.toUpperCase() };
+  return FILE_TYPE_CONFIG[key] ?? { icon: FiletypeTxt, color: NEUTRAL_FALLBACK_COLOR, label: key.toUpperCase() };
 }
 
 export function FileTypeIcon({ extension, className }: { extension: string; className?: string }): React.ReactElement {

@@ -1,5 +1,6 @@
 import { Chip } from '../ui/Chip';
 import { buildWorkItemUrl } from '../utils/adoLinks';
+import { actionLabel } from '../utils/labels';
 
 // Soft bordered status pills (not solid fills) -- matches the approved
 // diff-tree mockup: "New" / "Links to WI-####" / "Near-duplicate of
@@ -42,13 +43,14 @@ export function ActionBadge({
     // plain status text and gets the same neutral palette dedup_skip's own
     // non-link chip below already uses.
     const isLink = existingAdoId != null && !!orgUrl;
+    const label = actionLabel({ action, existingAdoId });
     const chip = isLink ? (
       <Chip bg="#EAF0FB" color="var(--color-accent)" className="border border-[#C3D2ED]">
-        {`Links to WI-${existingAdoId ?? '?'}`}
+        {label}
       </Chip>
     ) : (
       <Chip bg="var(--color-surface-alt)" color="var(--color-ink-3)" className="border border-hairline-strong">
-        {`Links to WI-${existingAdoId ?? '?'}`}
+        {label}
       </Chip>
     );
     if (!isLink) return chip;
@@ -66,7 +68,7 @@ export function ActionBadge({
   }
   const chip = (
     <Chip bg="var(--color-surface-alt)" color="var(--color-ink-3)" className="border border-hairline-strong">
-      {existingAdoId != null ? `Near-duplicate of WI-${existingAdoId}` : 'Near-duplicate'}
+      {actionLabel({ action, existingAdoId })}
     </Chip>
   );
   if (existingAdoId == null || !orgUrl) return chip;

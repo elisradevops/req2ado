@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
-import { Info, TriangleAlert, CircleCheck, CircleX } from 'lucide-react';
+import { CircleX } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { SEVERITY_ICON } from './severityIcons';
 
 export type AlertSeverity = 'info' | 'warning' | 'success' | 'error';
 
@@ -9,13 +10,6 @@ const SEVERITY_CLASSES: Record<AlertSeverity, string> = {
   warning: 'bg-warning-soft border-warning-border text-warning-ink',
   success: 'bg-ok-soft border-ok-border text-ok-ink',
   error: 'bg-danger-soft border-danger-border text-danger-ink',
-};
-
-const SEVERITY_ICON: Record<AlertSeverity, typeof Info> = {
-  info: Info,
-  warning: TriangleAlert,
-  success: CircleCheck,
-  error: CircleX,
 };
 
 export function Alert({

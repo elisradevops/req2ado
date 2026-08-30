@@ -60,6 +60,7 @@ import { TextField } from '../ui/TextField';
 import { Select } from '../ui/Select';
 import { CollapsibleWarnings } from '../components/CollapsibleWarnings';
 import { normalizeWarning, type WarningRecord } from '../utils/warnings';
+import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
@@ -764,11 +765,7 @@ export function JobDetail(): React.ReactElement {
   async function handleBulkExclude(excluded: boolean): Promise<void> {
     if (!id || isDiffMutatingRef.current) return;
     const query = filterText.trim().toLowerCase();
-    const targets = diff.filter((entry) => {
-      const matchesAction = !filterAction || entry.action === filterAction;
-      const matchesText = !query || entry.title.toLowerCase().includes(query);
-      return matchesAction && matchesText && !!entry.excluded !== excluded;
-    });
+    const targets = diff.filter((entry) => matchesDiffFilter(entry, filterAction, query) && !!entry.excluded !== excluded);
     if (targets.length === 0) return;
     isDiffMutatingRef.current = true;
     setIsDiffMutating(true);
@@ -1011,11 +1008,7 @@ export function JobDetail(): React.ReactElement {
   // prev/next is an acceptable simplification, not a correctness bug.
   const filteredForNav = useMemo(() => {
     const query = filterText.trim().toLowerCase();
-    return diff.filter((entry) => {
-      const matchesAction = !filterAction || entry.action === filterAction;
-      const matchesText = !query || entry.title.toLowerCase().includes(query);
-      return matchesAction && matchesText;
-    });
+    return diff.filter((entry) => matchesDiffFilter(entry, filterAction, query));
   }, [diff, filterAction, filterText]);
 
   function handleNavigateDialog(direction: 'prev' | 'next'): void {

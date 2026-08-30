@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { moveValidationReason as sharedMoveValidationReason } from '../lib/moveValidation';
+import { actionLabel } from '../utils/labels';
+import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { ActionBadge } from './ActionBadge';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { Checkbox } from '../ui/Checkbox';
@@ -291,15 +293,7 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
     const font = `600 12px ${fontFamily}`;
     let widest = 0;
     for (const entry of entries) {
-      const label =
-        entry.action === 'create'
-          ? 'New'
-          : entry.action === 'reuse'
-            ? `Links to WI-${entry.existingAdoId ?? '?'}`
-            : entry.existingAdoId != null
-              ? `Near-duplicate of WI-${entry.existingAdoId}`
-              : 'Near-duplicate';
-      widest = Math.max(widest, measureTextWidth(label, font));
+      widest = Math.max(widest, measureTextWidth(actionLabel(entry), font));
     }
     // Chip's own horizontal padding+border (px-2 + 1px border each side =
     // 18px) plus a small buffer so text never sits flush against the
@@ -439,14 +433,9 @@ export function DiffTree({
   const allRows = useMemo(() => buildFlatRows(entries), [entries]);
 
   const rows = useMemo(() => {
-    const filterTextLower = filterText.toLowerCase();
+    const query = filterText.trim().toLowerCase();
     return allRows.filter((row) => {
-      const matchesAction = !filterAction || row.entry.action === filterAction;
-      const matchesText =
-        !filterText ||
-        row.entry.title.toLowerCase().includes(filterTextLower) ||
-        row.index === filterText.trim();
-      if (!matchesAction || !matchesText) return false;
+      if (!matchesDiffFilter({ action: row.entry.action, title: row.entry.title, index: row.index }, filterAction, query)) return false;
       // A search/filter in progress auto-expands -- hiding a real match
       // under a collapsed ancestor would look like the filter silently
       // missed it. Collapse state only applies when browsing unfiltered.

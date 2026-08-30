@@ -18,6 +18,43 @@ function bandFor(score: number): (typeof BANDS)[number] {
   return BANDS.find((band) => score <= band.max) ?? BANDS[BANDS.length - 1];
 }
 
+// An issue code maps to at most one category (categoryForIssueCode), so a
+// single pass fully partitions a code list. Codes with no category match
+// (either genuinely unmapped, or there's no categoryScores at all to match
+// against) collect into `other` rather than being silently dropped. Shared
+// by both the "currently flagged" and "cleared by a rescore" partitions
+// below -- same grouping rule, applied to two different code lists.
+function partitionByCategory(codes: string[], categoryScores: QualityCategoryScores | null | undefined): { byCategory: Map<string, string[]>; other: string[] } {
+  const byCategory = new Map<string, string[]>();
+  const other: string[] = [];
+  for (const code of codes) {
+    const category = categoryScores ? categoryForIssueCode(code) : null;
+    const categoryKeyMatch = category && Object.keys(categoryScores ?? {}).some((k) => k.toLowerCase() === category);
+    if (category && categoryKeyMatch) {
+      const key = Object.keys(categoryScores ?? {}).find((k) => k.toLowerCase() === category)!;
+      byCategory.set(key, [...(byCategory.get(key) ?? []), code]);
+    } else {
+      other.push(code);
+    }
+  }
+  return { byCategory, other };
+}
+
+// The `Cleared: <flag>` list rendered both under a category row (next to
+// its own crossing text) and standalone under "Other flags" -- identical
+// markup, different surrounding context.
+function ClearedList({ codes }: { codes: string[] }): React.ReactElement {
+  return (
+    <>
+      {codes.map((code) => (
+        <p key={code} className="text-micro text-ink-3">
+          Cleared: {qualityIssueLabel(code).label}
+        </p>
+      ))}
+    </>
+  );
+}
+
 // A dynamic key->0-100-score map, NOT a fixed 5-field shape -- see
 // ingestion's quality_category_scores docstring (app.workitem.model). When
 // an org has ingested its own quality-checklist standard into the
@@ -187,11 +224,7 @@ function CategoryRow({
       {(crossing || clearedCodes.length > 0) && (
         <div className="flex flex-col gap-0.5 pl-5 pt-0.5">
           {crossing && <p className="text-micro text-ink-2">{crossing}</p>}
-          {clearedCodes.map((code) => (
-            <p key={code} className="text-micro text-ink-3">
-              Cleared: {qualityIssueLabel(code).label}
-            </p>
-          ))}
+          <ClearedList codes={clearedCodes} />
         </div>
       )}
       {/* Same always-mounted grid-row disclosure CollapsibleWarnings
@@ -275,24 +308,10 @@ export function QualityGauge({
     });
   }
 
-  // Grouped once per render, not per row -- an issue code maps to at most
-  // one category (categoryForIssueCode), so a single pass over
-  // qualityIssues fully partitions them. Codes with no category match
-  // (either genuinely unmapped, or this item has no categoryScores at all
-  // to match against) collect into "Other flags" below rather than being
-  // silently dropped.
-  const issuesByCategory = new Map<string, string[]>();
-  const otherIssues: string[] = [];
-  for (const code of qualityIssues ?? []) {
-    const category = categoryScores ? categoryForIssueCode(code) : null;
-    const categoryKeyMatch = category && Object.keys(categoryScores ?? {}).some((k) => k.toLowerCase() === category);
-    if (category && categoryKeyMatch) {
-      const key = Object.keys(categoryScores ?? {}).find((k) => k.toLowerCase() === category)!;
-      issuesByCategory.set(key, [...(issuesByCategory.get(key) ?? []), code]);
-    } else {
-      otherIssues.push(code);
-    }
-  }
+  // Grouped once per render, not per row -- see partitionByCategory's own
+  // doc comment. Codes with no category match collect into "Other flags"
+  // below rather than being silently dropped.
+  const { byCategory: issuesByCategory, other: otherIssues } = partitionByCategory(qualityIssues ?? [], categoryScores);
 
   // Same partition, but for codes CLEARED by a rescore (present in
   // previousIssues, absent from qualityIssues now) -- grouped identically
@@ -300,18 +319,7 @@ export function QualityGauge({
   // never a guessed one.
   const currentIssueSet = new Set(qualityIssues ?? []);
   const clearedCodes = (previousIssues ?? []).filter((code) => !currentIssueSet.has(code));
-  const clearedByCategory = new Map<string, string[]>();
-  const clearedOther: string[] = [];
-  for (const code of clearedCodes) {
-    const category = categoryScores ? categoryForIssueCode(code) : null;
-    const categoryKeyMatch = category && Object.keys(categoryScores ?? {}).some((k) => k.toLowerCase() === category);
-    if (category && categoryKeyMatch) {
-      const key = Object.keys(categoryScores ?? {}).find((k) => k.toLowerCase() === category)!;
-      clearedByCategory.set(key, [...(clearedByCategory.get(key) ?? []), code]);
-    } else {
-      clearedOther.push(code);
-    }
-  }
+  const { byCategory: clearedByCategory, other: clearedOther } = partitionByCategory(clearedCodes, categoryScores);
 
   // req2ado's own display thresholds, not an ADO/LLM-defined scale --
   // matches the semantic-token family each band already keys off (ok/
@@ -414,11 +422,7 @@ export function QualityGauge({
       )}
       {clearedOther.length > 0 && (
         <div className={cn('flex flex-col gap-0.5', otherIssues.length === 0 && 'mt-1 border-t border-hairline pt-2')}>
-          {clearedOther.map((code) => (
-            <p key={code} className="text-micro text-ink-3">
-              Cleared: {qualityIssueLabel(code).label}
-            </p>
-          ))}
+          <ClearedList codes={clearedOther} />
         </div>
       )}
     </div>

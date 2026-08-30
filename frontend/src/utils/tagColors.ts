@@ -1,3 +1,5 @@
+import { NEUTRAL_FALLBACK_COLOR } from './neutralColor';
+
 const TAG_COLORS: Record<string, string> = {
   functional: '#2563eb',
   non_functional: '#7c3aed',
@@ -13,5 +15,5 @@ const TAG_COLORS: Record<string, string> = {
 };
 
 export function tagColor(tag: string): string {
-  return TAG_COLORS[tag] ?? '#64748b';
+  return TAG_COLORS[tag] ?? NEUTRAL_FALLBACK_COLOR;
 }

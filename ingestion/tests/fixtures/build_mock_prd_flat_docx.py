@@ -16,6 +16,8 @@ from pathlib import Path
 
 from docx import Document as DocxDocument
 
+from _docx_helpers import add_requirements_table
+
 doc = DocxDocument()
 
 doc.add_heading("Product Requirements Document", level=0)  # python-docx's "Title" style
@@ -23,44 +25,33 @@ doc.add_paragraph("Mock / Anonymized Test Data")
 doc.add_paragraph("Customer ID: 000")
 
 
-def _add_requirements_table(doc: DocxDocument, prefix: str, rows: list[tuple[str, str]]) -> None:
-    table = doc.add_table(rows=1, cols=3)
-    header = table.rows[0].cells
-    header[0].text, header[1].text, header[2].text = "#", "Parameter", "Requirement / Value"
-    for i, (parameter, requirement) in enumerate(rows):
-        cells = table.add_row().cells
-        cells[0].text = f"{prefix}-{i:03d}#"
-        cells[1].text = parameter
-        cells[2].text = requirement
-
-
 doc.add_heading("Synchronization", level=2)
-_add_requirements_table(doc, "P-SENSOR", [
+add_requirements_table(doc, "P-SENSOR", [
     ("Time sync source", "The system shall synchronize to Standard-XX within N ms."),
     ("Sync accuracy", "Timing accuracy shall be better than X microseconds."),
     ("Sync interval", "Re-synchronization shall occur every N seconds."),
 ])
 
 doc.add_heading("Target Data report", level=2)
-_add_requirements_table(doc, "P-TGT", [
+add_requirements_table(doc, "P-TGT", [
     ("Report rate", "The system shall report target data at a rate of N Hz."),
     ("Report latency", "Report latency shall not exceed N ms end to end."),
 ])
 
 doc.add_heading("Target tracking", level=2)
-_add_requirements_table(doc, "P-TRK", [
+add_requirements_table(doc, "P-TRK", [
     ("Target tracking count", "The system shall track up to N simultaneous targets."),
     ("Track update rate", "Track updates shall occur at a rate of N Hz."),
 ])
 
 doc.add_heading("SW Safety", level=2)
-_add_requirements_table(doc, "P-SAF", [
+add_requirements_table(doc, "P-SAF", [
     ("Safety standard compliance", "The software shall comply with safety standard XYZ."),
     ("Watchdog reset time", "The watchdog shall reset the system within N ms of a fault."),
 ])
 
 doc.add_heading("Connectors", level=2)
-_add_requirements_table(doc, "P-CON", [
+add_requirements_table(doc, "P-CON", [
     ("Power connector type", "The power connector shall be of type XYZ."),
     ("Main connector pin count", "The main connector shall have N pins."),
 ])

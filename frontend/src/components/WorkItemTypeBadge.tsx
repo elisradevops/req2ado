@@ -1,6 +1,7 @@
 import { Award, Trophy, ListCheck, Circle } from 'react-bootstrap-icons';
 import { Chip } from '../ui/Chip';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
+import { NEUTRAL_FALLBACK_COLOR } from '../utils/neutralColor';
 
 function hexToRgba(hex: string, alpha: number): string {
   const clean = hex.replace('#', '');
@@ -35,7 +36,7 @@ const TYPE_ICON: Record<string, typeof Award> = {
 };
 
 function fallbackColor(type: string): string {
-  return TYPE_COLOR[type] ?? '#64748B';
+  return TYPE_COLOR[type] ?? NEUTRAL_FALLBACK_COLOR;
 }
 
 function fallbackIcon(type: string): typeof Award {

@@ -1,9 +1,8 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
 import { Toast as RadixToast } from 'radix-ui';
-import { CircleCheck, CircleX, Info, TriangleAlert, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { cn } from '../lib/cn';
-
-type Severity = 'error' | 'info' | 'success' | 'warning';
+import { SEVERITY_ICON, type Severity } from '../ui/severityIcons';
 
 interface ToastItem {
   id: number;
@@ -16,13 +15,6 @@ interface ToastContextValue {
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
-
-const SEVERITY_ICON: Record<Severity, typeof Info> = {
-  info: Info,
-  success: CircleCheck,
-  warning: TriangleAlert,
-  error: CircleX,
-};
 
 const SEVERITY_ICON_CLASS: Record<Severity, string> = {
   info: 'text-info',
