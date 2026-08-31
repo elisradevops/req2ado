@@ -2009,17 +2009,17 @@ describe('JobsService.editDiffEntry', () => {
   });
 
   it('rejects setting customerId on an Epic or Feature entry', async () => {
-    const update = jest.fn();
+    const updateMany = jest.fn();
     const epicEntry = { ...baseEntry, type: 'Epic' };
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [epicEntry] }), update },
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [epicEntry] }), updateMany },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     await expect(service.editDiffEntry('job-1', 'n0', { customerId: '1' })).rejects.toThrow(
       'customerId can only be set on a Requirement entry',
     );
-    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   it('leaves customerId untouched when the patch omits it entirely', async () => {
@@ -2041,14 +2041,14 @@ describe('JobsService.editDiffEntry', () => {
 
   it('rejects editing a reuse entry', async () => {
     const reuseEntry = { ...baseEntry, action: 'reuse', existingAdoId: 42 };
-    const update = jest.fn();
+    const updateMany = jest.fn();
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [reuseEntry] }), update },
+      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [reuseEntry] }), updateMany },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     await expect(service.editDiffEntry('job-1', 'n0', { title: 'New' })).rejects.toThrow('only create entries can be edited');
-    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   it('preserves description when only title is supplied in the patch', async () => {
@@ -2097,7 +2097,11 @@ describe('JobsService.editDiffEntry', () => {
     const scoredEntry = { ...baseEntry, qualityScore: 60, qualityCategoryScores: { clarity: 60 } };
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }), update },
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }),
+        update,
+      },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
@@ -2111,7 +2115,11 @@ describe('JobsService.editDiffEntry', () => {
     const scoredEntry = { ...baseEntry, qualityScore: 60, qualityCategoryScores: { clarity: 60 } };
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }), update },
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }),
+        update,
+      },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
@@ -2123,7 +2131,11 @@ describe('JobsService.editDiffEntry', () => {
   it('does not mark qualityStale on a description change when the entry was never scored', async () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }), update },
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
+        update,
+      },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
@@ -2136,12 +2148,65 @@ describe('JobsService.editDiffEntry', () => {
     const scoredEntry = { ...baseEntry, qualityScore: 60 };
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }), update },
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }),
+        update,
+      },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     const result = await service.editDiffEntry('job-1', 'n0', { description: 'Old desc' });
 
+    expect(result[0].qualityStale).toBeUndefined();
+  });
+
+  it('re-reads and re-applies its patch when a concurrent write landed first -- the other client\'s edit survives', async () => {
+    // Client A excluded a DIFFERENT node (n1) and bumped the row to
+    // diffVersion 1 between this call's read and its write. This edit of
+    // n0's title must be re-applied on top of A's array, not overwrite it.
+    const n0 = { ...baseEntry };
+    const n1 = { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'Other', description: 'other desc', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null };
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...n0 }, { ...n1 }] })
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff: [{ ...n0 }, { ...n1, excluded: true }] });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { title: 'New title' });
+
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    expect(result.find((e) => e.localId === 'n0')!.title).toBe('New title');
+    expect(result.find((e) => e.localId === 'n1')!.excluded).toBe(true);
+  });
+
+  it('recomputes qualityStale against the freshly-read description on a retry, not the stale one', async () => {
+    // The staleness rule (CR-7d) is "only a real description CHANGE marks
+    // the gauge stale." On a retry that rule must be re-evaluated against
+    // whatever the winning writer left behind: here client A already set
+    // n0's description to the exact text this patch is trying to write, so
+    // by the time this call's retry runs there is no longer any change to
+    // mark stale -- and qualityStale must stay false.
+    const scored = { ...baseEntry, description: 'old desc', qualityScore: 40 };
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...scored }] })
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff: [{ ...scored, description: 'new desc' }] });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.editDiffEntry('job-1', 'n0', { description: 'new desc' });
+
+    expect(result[0].description).toBe('new desc');
     expect(result[0].qualityStale).toBeUndefined();
   });
 });

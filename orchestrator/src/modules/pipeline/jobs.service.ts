@@ -732,69 +732,64 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     localId: string,
     patch: { title?: string; description?: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
   ): Promise<DryRunDiffEntry[]> {
-    const job = await this.prisma.job.findUnique({ where: { id } });
-    if (!job) throw new NotFoundException(`Job ${id} not found`);
-    if (job.status !== 'diff_ready') {
-      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
-    }
-    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
-    const index = diff.findIndex((entry) => entry.localId === localId);
-    if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
-    if (diff[index].action !== 'create') {
-      throw new BadRequestException('only create entries can be edited');
-    }
-    // A patch key present with an explicit `undefined` value (as sent by the
-    // controller for a caller who never mentioned that field) must not
-    // overwrite the existing value — only apply keys the caller actually set.
-    const definedPatch: {
-      title?: string;
-      description?: string;
-      customerId?: string | null;
-      tags?: string[];
-      seCoverageRef?: string | null;
-    } = {};
-    if (patch.title !== undefined) definedPatch.title = patch.title;
-    if (patch.description !== undefined) definedPatch.description = patch.description;
-    if (patch.customerId !== undefined) {
-      // Customer ID is a per-Requirement, document-derived attribute --
-      // Epic/Feature must never carry one, matching the same type gate
-      // confirm() itself enforces at ADO-write time (jobs.service.ts's
-      // create-loop). Rejecting here, not silently ignoring, since a
-      // caller attempting this is almost certainly a UI bug, not a
-      // legitimate no-op.
-      if (diff[index].type !== 'Requirement') {
-        throw new BadRequestException('customerId can only be set on a Requirement entry');
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      if (diff[index].action !== 'create') {
+        throw new BadRequestException('only create entries can be edited');
       }
-      definedPatch.customerId = patch.customerId;
-    }
-    if (patch.tags !== undefined) {
-      // Same reasoning and same rejection (not silent ignore) as customerId
-      // immediately above -- classification is a per-Requirement attribute,
-      // matching confirm()'s own Requirement-only write gate.
-      if (diff[index].type !== 'Requirement') {
-        throw new BadRequestException('tags can only be set on a Requirement entry');
+      // A patch key present with an explicit `undefined` value (as sent by the
+      // controller for a caller who never mentioned that field) must not
+      // overwrite the existing value — only apply keys the caller actually set.
+      const definedPatch: {
+        title?: string;
+        description?: string;
+        customerId?: string | null;
+        tags?: string[];
+        seCoverageRef?: string | null;
+      } = {};
+      if (patch.title !== undefined) definedPatch.title = patch.title;
+      if (patch.description !== undefined) definedPatch.description = patch.description;
+      if (patch.customerId !== undefined) {
+        // Customer ID is a per-Requirement, document-derived attribute --
+        // Epic/Feature must never carry one, matching the same type gate
+        // confirm() itself enforces at ADO-write time (jobs.service.ts's
+        // create-loop). Rejecting here, not silently ignoring, since a
+        // caller attempting this is almost certainly a UI bug, not a
+        // legitimate no-op.
+        if (diff[index].type !== 'Requirement') {
+          throw new BadRequestException('customerId can only be set on a Requirement entry');
+        }
+        definedPatch.customerId = patch.customerId;
       }
-      definedPatch.tags = patch.tags;
-    }
-    if (patch.seCoverageRef !== undefined) {
-      // Same reasoning and same rejection as customerId/tags above.
-      if (diff[index].type !== 'Requirement') {
-        throw new BadRequestException('seCoverageRef can only be set on a Requirement entry');
+      if (patch.tags !== undefined) {
+        // Same reasoning and same rejection (not silent ignore) as customerId
+        // immediately above -- classification is a per-Requirement attribute,
+        // matching confirm()'s own Requirement-only write gate.
+        if (diff[index].type !== 'Requirement') {
+          throw new BadRequestException('tags can only be set on a Requirement entry');
+        }
+        definedPatch.tags = patch.tags;
       }
-      definedPatch.seCoverageRef = patch.seCoverageRef;
-    }
-    // CR-7d rescore: quality scoring judges `description` text only (see
-    // ingestion's _apply_quality_scores) -- a title-only edit changes
-    // nothing the score was judged against, so only a real description
-    // change marks the gauge stale. Only meaningful for an entry that was
-    // actually scored before (qualityScore != null) -- an Epic/Feature or
-    // never-scored Requirement has nothing to go stale.
-    const descriptionChanged =
-      definedPatch.description !== undefined && definedPatch.description !== diff[index].description;
-    const staleness = descriptionChanged && diff[index].qualityScore != null ? { qualityStale: true } : {};
-    diff[index] = { ...diff[index], ...definedPatch, ...staleness };
-    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
-    return diff;
+      if (patch.seCoverageRef !== undefined) {
+        // Same reasoning and same rejection as customerId/tags above.
+        if (diff[index].type !== 'Requirement') {
+          throw new BadRequestException('seCoverageRef can only be set on a Requirement entry');
+        }
+        definedPatch.seCoverageRef = patch.seCoverageRef;
+      }
+      // CR-7d rescore: quality scoring judges `description` text only (see
+      // ingestion's _apply_quality_scores) -- a title-only edit changes
+      // nothing the score was judged against, so only a real description
+      // change marks the gauge stale. Only meaningful for an entry that was
+      // actually scored before (qualityScore != null) -- an Epic/Feature or
+      // never-scored Requirement has nothing to go stale.
+      const descriptionChanged =
+        definedPatch.description !== undefined && definedPatch.description !== diff[index].description;
+      const staleness = descriptionChanged && diff[index].qualityScore != null ? { qualityStale: true } : {};
+      diff[index] = { ...diff[index], ...definedPatch, ...staleness };
+      return diff;
+    });
   }
 
   // CR-7d rescore: re-judges ONE Requirement entry's CURRENT description
