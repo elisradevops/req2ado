@@ -18,7 +18,7 @@ describe('JobsController.preview', () => {
           { kind: 'figure' },
         ],
         figures: [{ id: 'fig-1' }, { id: 'fig-2' }],
-        tables: [{ id: 'tbl-1' }],
+        tables: [{ id: 'tbl-1', cells: [[{}, {}], [{}, {}]] }],
       }),
     };
     const jobsService = { submit: jest.fn() };
@@ -35,7 +35,14 @@ describe('JobsController.preview', () => {
     // DESIGN.md §11.2.3.d -- estimate() is called with the real parsed
     // counts and defaults mode to 'baseline' when the caller (here, and
     // NewJobWizard.tsx before the user picks anything) hasn't specified one.
-    expect(etaService.estimate).toHaveBeenCalledWith({ mode: 'baseline', blockCount: 5, figureCount: 2, model: undefined });
+    expect(etaService.estimate).toHaveBeenCalledWith({
+      mode: 'baseline',
+      blockCount: 5,
+      figureCount: 2,
+      model: undefined,
+      tableCount: 1,
+      cellCount: 4,
+    });
     expect(result).toEqual({
       blockCount: 5,
       sectionCount: 2,

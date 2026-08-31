@@ -1,6 +1,7 @@
 import {
   EtaService,
   bootstrapMinutes,
+  bootstrapMinutesForTables,
   fitOls3,
   fitOls2,
   blend,
@@ -52,6 +53,20 @@ describe('bootstrapMinutes', () => {
 
   it('never returns something absurd for a tiny document', () => {
     expect(bootstrapMinutes(0, 0)).toBe(BOOTSTRAP_BASE_MINUTES);
+  });
+});
+
+describe('bootstrapMinutesForTables', () => {
+  it('returns a positive estimate that grows with more tables and cells', () => {
+    const small = bootstrapMinutesForTables(1, 10);
+    const large = bootstrapMinutesForTables(5, 200);
+    expect(small).toBeGreaterThan(0);
+    expect(large).toBeGreaterThan(small);
+  });
+
+  it('returns the base minutes alone for a table-only doc with a single tiny table', () => {
+    const estimate = bootstrapMinutesForTables(1, 4);
+    expect(estimate).toBeGreaterThanOrEqual(BOOTSTRAP_BASE_MINUTES);
   });
 });
 
@@ -213,6 +228,16 @@ describe('EtaService', () => {
 
     const result = await service.estimate({ mode: 'survey', blockCount: 100000, figureCount: 5000 });
     expect(result.estimateMinutes).toBeGreaterThan(40);
+  });
+
+  it('excludes (blockCount=0, figureCount=0) samples from the block/figure regression query', async () => {
+    const prisma = fakePrisma([]);
+    const service = new EtaService(prisma, 'default-model');
+
+    await service.estimate({ mode: 'survey', blockCount: 10, figureCount: 2 });
+
+    const whereArg = prisma.job.findMany.mock.calls[0][0].where;
+    expect(whereArg.NOT).toEqual({ blockCount: 0, figureCount: 0 });
   });
 
   it('the sample query carries NO status predicate -- rejected jobs ran the full pipeline and must count', async () => {

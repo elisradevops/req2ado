@@ -130,6 +130,21 @@ export function bootstrapMinutes(blockCount: number, figureCount: number): numbe
   return BOOTSTRAP_BASE_MINUTES + blockCount * BOOTSTRAP_MINUTES_PER_BLOCK + figureCount * BOOTSTRAP_MINUTES_PER_FIGURE;
 }
 
+// Independent from bootstrapMinutes/fitOls3's block/figure regression --
+// deliberately NOT folded into a 4-parameter joint fit (adding a 4th
+// regressor to fitOls3 would need a 4x4 solve, is far more prone to the
+// degenerate/collinear-inputs failure this file's comments already flag at
+// 3 params, and a table-only document's (blockCount=0, figureCount=0) shape
+// means the two feature families never co-occur in one real sample anyway).
+// Used only when blockCount and figureCount are both 0 but a real table
+// count is available (see estimate()'s branch below).
+const BOOTSTRAP_MINUTES_PER_TABLE = 0.5;
+const BOOTSTRAP_MINUTES_PER_CELL = 0.02;
+
+export function bootstrapMinutesForTables(tableCount: number, cellCount: number): number {
+  return BOOTSTRAP_BASE_MINUTES + tableCount * BOOTSTRAP_MINUTES_PER_TABLE + cellCount * BOOTSTRAP_MINUTES_PER_CELL;
+}
+
 // The single combined predictor fitOls2 falls back to -- one function, used
 // by the fit itself AND by every site that evaluates that fit, so a change
 // to the ratio can never land in one of the three and not the others.
@@ -265,7 +280,14 @@ export class EtaService {
     private readonly defaultModel: string,
   ) {}
 
-  async estimate(params: { mode: 'baseline' | 'survey'; blockCount: number; figureCount: number; model?: string }): Promise<EtaEstimate> {
+  async estimate(params: {
+    mode: 'baseline' | 'survey';
+    blockCount: number;
+    figureCount: number;
+    model?: string;
+    tableCount?: number;
+    cellCount?: number;
+  }): Promise<EtaEstimate> {
     if (params.mode === 'baseline') {
       // BASELINE never calls a model at all -- no query, no floor (the
       // floor exists to keep a SURVEY estimate from reading as
@@ -285,6 +307,7 @@ export class EtaService {
     }
 
     const { blockCount, figureCount } = params;
+    const { tableCount = 0, cellCount = 0 } = params;
     // Empty/unspecified model resolves to the configured default BEFORE the
     // per-model cohort lookup -- otherwise "Default", the single most
     // common wizard selection, would permanently read as zero history even
@@ -293,7 +316,10 @@ export class EtaService {
     const model = params.model && params.model.length > 0 ? params.model : this.defaultModel;
 
     const cached = await this.loadFit();
-    const bootstrap = bootstrapMinutes(blockCount, figureCount);
+    const bootstrap =
+      blockCount === 0 && figureCount === 0 && tableCount > 0
+        ? bootstrapMinutesForTables(tableCount, cellCount)
+        : bootstrapMinutes(blockCount, figureCount);
 
     let fitted: number;
     let n: number;
@@ -392,6 +418,13 @@ export class EtaService {
         diffReadyAt: { not: null, gte: windowStart },
         blockCount: { not: null },
         figureCount: { not: null },
+        // A table-only-format job (xlsx/csv) legitimately has blockCount=0 AND
+        // figureCount=0 -- a real, non-degenerate sample for ITS OWN format's
+        // eventual table-aware estimate (see bootstrapMinutesForTables), but a
+        // polluting (0,0) outlier for THIS regression, which predicts minutes
+        // from block/figure counts alone and has no way to explain a table-only
+        // job's real duration from zero of both inputs.
+        NOT: { blockCount: 0, figureCount: 0 },
       },
       orderBy: { diffReadyAt: 'desc' },
       take: ETA_WINDOW_MAX_SAMPLES,

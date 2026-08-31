@@ -154,6 +154,8 @@ model Job {
   // fit trains on the identical quantity it predicts against.
   blockCount       Int?
   figureCount      Int?
+  tableCount       Int?
+  cellCount        Int?
   // The EFFECTIVE model this job ran under (job.model ?? the orchestrator's
   // configured default), not the raw per-job override alone -- an override
   // is null for every job that used the default, which would make the

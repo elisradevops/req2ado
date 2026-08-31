@@ -262,11 +262,15 @@ export class JobsController {
     const fileType = ext.slice(1).toLowerCase();
     const blockCount = doc.blocks.length;
     const figureCount = doc.figures.length;
+    const tableCount = doc.tables.length;
+    const cellCount = doc.tables.reduce((n, t) => n + t.cells.reduce((rn, row) => rn + row.length, 0), 0);
     const estimate = await this.etaService.estimate({
       mode: (mode as 'baseline' | 'survey' | undefined) ?? 'baseline',
       blockCount,
       figureCount,
       model,
+      tableCount,
+      cellCount,
     });
     return {
       blockCount,
@@ -275,7 +279,7 @@ export class JobsController {
       depth: headingLevels.length > 0 ? Math.max(...headingLevels) : 0,
       fileType,
       estimate,
-      tableCount: doc.tables.length,
+      tableCount,
       // A bare "TBD"/open placeholder left in the source text -- a real,
       // pre-existing content gap worth flagging before the reviewer commits
       // to a mode, not something SURVEY/BASELINE processing introduces.

@@ -978,6 +978,8 @@ export async function runPipelineJob(
         // figureCount mean something preview() cannot compute.
         blockCount: (doc.blocks ?? []).length,
         figureCount: (doc.figures ?? []).length,
+        tableCount: (doc.tables ?? []).length,
+        cellCount: (doc.tables ?? []).reduce((n, t) => n + (t.cells ?? []).reduce((rn, row) => rn + row.length, 0), 0),
         diffReadyAt: new Date(),
       },
     });

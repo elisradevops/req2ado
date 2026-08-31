@@ -239,11 +239,13 @@ describe('runPipelineJob', () => {
         excludedFigureIds: [],
         excludedTableIds: [],
         // ETA telemetry write path (DESIGN.md §11.2.3.b) -- blockCount/
-        // figureCount default to 0 here since the mocked ingest() response
-        // has neither `blocks` nor `figures` populated (both fall through
-        // the `?? []` guard).
+        // figureCount/tableCount/cellCount default to 0 here since the
+        // mocked ingest() response has neither `blocks`, `figures` nor
+        // `tables` populated (all fall through the `?? []` guard).
         blockCount: 0,
         figureCount: 0,
+        tableCount: 0,
+        cellCount: 0,
         diffReadyAt: expect.any(Date),
       },
     });
@@ -806,6 +808,8 @@ describe('runPipelineJob', () => {
         excludedTableIds: ['tbl-1'],
         blockCount: 0,
         figureCount: 0,
+        tableCount: 0,
+        cellCount: 0,
         diffReadyAt: expect.any(Date),
       },
     });
@@ -1330,6 +1334,8 @@ describe('runPipelineJob', () => {
         excludedTableIds: [],
         blockCount: 0,
         figureCount: 0,
+        tableCount: 0,
+        cellCount: 0,
         diffReadyAt: expect.any(Date),
       },
     });
