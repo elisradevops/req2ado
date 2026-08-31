@@ -883,13 +883,16 @@ describe('OpenWebUiClient.uploadFile', () => {
     global.fetch = jest.fn();
   });
 
-  it('uploads a file and returns its id', async () => {
+  it('uploads a file, requesting processing, and returns its id', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ id: 'file-123' }) });
     const client = new OpenWebUiClient(config);
     const id = await client.uploadFile(Buffer.from('pdf bytes'), 'doc.pdf');
     expect(id).toBe('file-123');
+    // ?process=true is required -- confirmed via the real Open WebUI UI's
+    // own Network tab; without it, upload succeeds but the file is never
+    // run through text-extraction/chunking (open-webui/open-webui#13600).
     expect(global.fetch).toHaveBeenCalledWith(
-      'http://localhost:3000/api/v1/files/',
+      'http://localhost:3000/api/v1/files/?process=true',
       expect.objectContaining({ method: 'POST' }),
     );
   });
@@ -901,9 +904,9 @@ describe('OpenWebUiClient.uploadFile', () => {
   });
 
   it('strips the /ollama proxy sub-path, not just /v1, when LLM_BASE_URL points through Open WebUI\'s Ollama-compat proxy', async () => {
-    // Regression: confirmed live against a real deployment
-    // (LLM_BASE_URL=http://host:3000/ollama/v1, the actual production
-    // config) that the old bare `.replace(/\/v1\/?$/, '')` left /ollama in
+    // Regression: confirmed live against a real dev deployment
+    // (LLM_BASE_URL=http://host:3000/ollama/v1, where Ollama is genuinely
+    // connected) that the old bare `.replace(/\/v1\/?$/, '')` left /ollama in
     // place, producing http://host:3000/ollama/api/v1/files/ -- a URL that
     // returns a real 405 (a route exists, just not this one), not the
     // native file API at all. The primer's fail-open design swallowed this
@@ -911,7 +914,26 @@ describe('OpenWebUiClient.uploadFile', () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ id: 'file-123' }) });
     const client = new OpenWebUiClient({ ...config, LLM_BASE_URL: 'http://host:3000/ollama/v1' });
     await client.uploadFile(Buffer.from('pdf bytes'), 'doc.pdf');
-    expect(global.fetch).toHaveBeenCalledWith('http://host:3000/api/v1/files/', expect.objectContaining({ method: 'POST' }));
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://host:3000/api/v1/files/?process=true',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('strips the /api OpenAI-compat proxy sub-path, not just /v1, when LLM_BASE_URL points at Open WebUI with Ollama disabled', async () => {
+    // Regression: confirmed live against a real production deployment
+    // (Ollama integration disabled at the platform level) that
+    // LLM_BASE_URL=http://host:3000/api/v1 is the correct, working shape
+    // there -- openWebUiAppRoot() must strip the /api segment too, or every
+    // native-surface call (this one included) ends up hitting a doubled
+    // .../api/api/v1/files/ path.
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ id: 'file-123' }) });
+    const client = new OpenWebUiClient({ ...config, LLM_BASE_URL: 'http://host:3000/api/v1' });
+    await client.uploadFile(Buffer.from('pdf bytes'), 'doc.pdf');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://host:3000/api/v1/files/?process=true',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });
 
@@ -1115,6 +1137,18 @@ describe('OpenWebUiClient.chatWithFullFileContext', () => {
   it('strips the /ollama proxy sub-path, not just /v1, matching uploadFile\'s own routing fix', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
     const client = new OpenWebUiClient({ ...config, LLM_BASE_URL: 'http://host:3000/ollama/v1' });
+    await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://host:3000/api/chat/completions');
+  });
+
+  it('strips the /api OpenAI-compat proxy sub-path too, matching uploadFile\'s own routing fix', async () => {
+    // Regression: confirmed live against a real production deployment
+    // (Ollama integration disabled) that .../api/v1 is the correct
+    // LLM_BASE_URL shape there -- openWebUiAppRoot() must strip /api or
+    // this lands on .../api/api/chat/completions instead.
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
+    const client = new OpenWebUiClient({ ...config, LLM_BASE_URL: 'http://host:3000/api/v1' });
     await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
     const [url] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://host:3000/api/chat/completions');

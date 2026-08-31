@@ -5,6 +5,18 @@ metadata:
   namespace: req2ado
 data:
   # --- LLM (Open WebUI or Ollama's OpenAI-compatible endpoint) ---
+  # LLM_BASE_URL shape depends on the actual backend and, for Open WebUI,
+  # whether its Ollama integration is enabled -- there is no single correct
+  # value:
+  #   - Raw Ollama (this example):        http://<host>:11434/v1
+  #   - Open WebUI, Ollama integration ON:  http://<host>:3000/ollama/v1
+  #   - Open WebUI, Ollama integration OFF: http://<host>:3000/api/v1
+  # Confirmed live against a real production Open WebUI instance: with the
+  # Ollama integration disabled at the platform level, the /ollama/v1 shape
+  # silently returns an empty model list and every chat call fails, while
+  # /api/v1 (Open WebUI's own first-class OpenAI-compatible REST namespace)
+  # works reliably. If pointing at Open WebUI, confirm which shape applies
+  # before deploying -- see openwebui.client.ts's openWebUiAppRoot() comment.
   LLM_BASE_URL: "http://ollama.req2ado.svc.cluster.local:11434/v1"
   LLM_CHAT_MODEL: "llama3.1"
   EMBED_TRANSPORT: "ollama"
