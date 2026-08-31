@@ -97,6 +97,41 @@ describe('JobsService.confirm', () => {
     expect(linkParentChild).toHaveBeenCalledWith(101, 100, undefined);
   });
 
+  it('throws and reverts status back to diff_ready (not stuck in writing) when adoProject is null -- the write-path hard-fail this column exists to enforce', async () => {
+    const createWorkItem = jest.fn();
+    const updateSpy = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          status: 'diff_ready',
+          state: 'Proposed',
+          areaPath: 'Project\\Area1',
+          adoProject: null,
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: updateSpy,
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockResolvedValue(undefined) } as any,
+      'redis://unused',
+    );
+
+    await expect(service.confirm('job-1')).rejects.toThrow(/has no adoProject set/);
+
+    expect(createWorkItem).not.toHaveBeenCalled();
+    expect(updateSpy).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'diff_ready' } });
+  });
+
   it('publishes a writing stage and per-sub-phase narration when a JobEventsPublisher is provided', async () => {
     // Regression coverage: previously JobsService held no
     // JobEventsPublisher at all, so confirm() was structurally incapable
@@ -4475,6 +4510,29 @@ describe('JobsService.attachFigureToAdo', () => {
     const service = new JobsService(prisma as any, { uploadAttachment: jest.fn() } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
 
     await expect(service.attachFigureToAdo('job-1', 'n0', 'f0')).rejects.toThrow('not found');
+  });
+
+  it('throws the adoProject hard-fail only after entry/figure are confirmed to exist, not before -- a caller asking about a missing entry or figure must see THAT error, not a generic one', async () => {
+    const uploadAttachment = jest.fn();
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1',
+          adoProject: null,
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
+          ],
+        }),
+      },
+      jobFigureFile: {
+        findUnique: jest.fn().mockResolvedValue({ id: 'jff-1', jobId: 'job-1', figureId: 'f0', bytes: Buffer.from('png bytes'), mimeType: 'image/png' }),
+      },
+    };
+    const service = new JobsService(prisma as any, { uploadAttachment } as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
+
+    await expect(service.attachFigureToAdo('job-1', 'n0', 'f0')).rejects.toThrow(/has no adoProject set/);
+    expect(uploadAttachment).not.toHaveBeenCalled();
   });
 });
 
