@@ -44,6 +44,20 @@ def test_infer_trace_links_v2_prompt_includes_native_type_preference_instruction
     assert "use one only when no native type fits as well" in result
 
 
+def test_infer_trace_links_v3_prompt_requires_object_wrapper_and_evidence_quote() -> None:
+    # C1 fix: v2 still told the model to return a bare JSON array, never
+    # updated when trace_links_schema()/infer_trace_links moved to the
+    # object-wrapped {"links": [...]} shape with a required evidence_quote
+    # field (see _response_schemas.trace_links_schema and
+    # trace_links.py's evidence-quote validation). v3 must actually ask
+    # for what the code now requires.
+    result = load_prompt("infer_trace_links", catalog_lines="- Some.Ref (\"Some Name\")")
+    assert "'links' array" in result
+    assert "'evidence_quote'" in result
+    assert "exact, verbatim, character-for-character" in result
+    assert "will be discarded" in result
+
+
 def test_score_requirements_for_document_prompt() -> None:
     result = load_prompt("score_requirements_for_document", category_instruction="X-CATEGORY-Y ", node_count="7")
     assert "X-CATEGORY-Y " in result

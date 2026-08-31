@@ -433,6 +433,18 @@ def _apply_parent_summary_pass(
                 node.title = raw_title.strip()
             if isinstance(raw_description, str) and raw_description.strip():
                 description = raw_description.strip()
+                # Captured BEFORE the table-embed loop below -- scoring must
+                # compare the model's own summary prose against descendant
+                # text, not the summary plus a re-embedded table's raw HTML
+                # (that table's cell vocabulary was folded into THIS node's
+                # own span, never any descendant leaf's, so it cannot
+                # legitimately overlap with payload_by_id's descendant
+                # requirement_descriptions -- scoring against it after the
+                # embed systematically deflates the score for every
+                # table-bearing parent). Mirrors _apply_synthesis_pass's own
+                # pre-embed scoring (that function scores the raw LLM text
+                # before any later mutation too).
+                summary_text = description
                 # This pass replaces the whole description with a fresh
                 # synthesized summary -- but any table already folded into
                 # this node's span (see _detect_deterministic_subtrees'
@@ -466,8 +478,12 @@ def _apply_parent_summary_pass(
                 # (see that function's docstring for the original
                 # diagnosis: grounding_score is always 1.0 by construction
                 # if never recomputed against independent source text).
+                # Scored against summary_text (captured above, pre-table-
+                # embed), NOT node.description -- see this block's own
+                # summary_text comment for why post-embed scoring would be
+                # wrong.
                 node.grounding_score = _grounding_score(
-                    node.description, "\n\n".join(payload_by_id[node_id]["requirement_descriptions"])
+                    summary_text, "\n\n".join(payload_by_id[node_id]["requirement_descriptions"])
                 )
 
 

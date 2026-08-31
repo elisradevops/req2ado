@@ -364,6 +364,50 @@ def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_
     assert "Figure" not in feature.description
 
 
+def test_apply_parent_summary_pass_grounding_score_is_not_deflated_by_reembedded_table_html() -> None:
+    # M1: grounding_score must be computed against the summary text captured
+    # BEFORE the table-HTML re-embed loop runs, not the final post-embed
+    # description -- a re-embedded table's cell content was folded into
+    # THIS node's own span (never any descendant leaf's), so by
+    # construction it cannot overlap with descendant requirement text; if
+    # scoring ran after the embed, that irrelevant table vocabulary would
+    # dilute the ratio and systematically deflate the score for every
+    # table-bearing parent. The summary text below shares real vocabulary
+    # with the descendant requirement's own text ("clamp input over 28V"),
+    # so the score should be identical whether or not an unrelated table
+    # gets folded in afterward.
+    summary_text = "The system shall clamp input over 28V."
+
+    class FakeParentSummaryClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            return {node_id: {"title": entry["title"], "description": summary_text} for node_id, entry in nodes_by_id.items()}
+
+    nodes_without_table = _epic_feature_requirement_nodes()
+    warnings: list[str] = []
+    feature_without_table = next(n for n in nodes_without_table if n.type == WorkItemType.FEATURE)
+    _apply_parent_summary_pass(nodes_without_table, [feature_without_table.local_id], FakeParentSummaryClient(), warnings)
+
+    nodes_with_table = _epic_feature_requirement_nodes()
+    feature_with_table = next(n for n in nodes_with_table if n.type == WorkItemType.FEATURE)
+    table = Table(
+        id="t1",
+        cells=[[TableCell(text="Zebra"), TableCell(text="Nebula Quasar Combobulator")]],
+        source_ref=_sr(),
+    )
+    table_html = _table_to_html(table)
+    assert table_html  # sanity: this fixture table really does produce real HTML
+    feature_with_table.table_ids = [table.id]
+    _apply_parent_summary_pass(
+        nodes_with_table, [feature_with_table.local_id], FakeParentSummaryClient(), warnings,
+        tables_by_id={table.id: table},
+    )
+
+    assert warnings == []
+    assert table_html in feature_with_table.description  # sanity: table really got embedded
+    assert feature_with_table.grounding_score == feature_without_table.grounding_score
+    assert feature_with_table.grounding_score > 0.0
+
+
 def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_direct_child() -> None:
     # Real hierarchy rule (id_hierarchy.classify_by_nesting's own
     # docstring): "a Requirement MAY be a child of a Requirement

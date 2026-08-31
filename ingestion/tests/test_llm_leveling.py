@@ -3993,6 +3993,27 @@ def test_infer_trace_links_for_nodes_drops_a_link_whose_evidence_quote_is_not_in
     assert links == []
 
 
+def test_infer_trace_links_for_nodes_drops_a_link_whose_evidence_quote_is_not_a_string() -> None:
+    # M2: the schema's `evidence_quote` field is only best-effort-enforced
+    # (a schema-rejecting Ollama version degrades to a schema-less retry --
+    # see the stale-prompt fix this shares its root cause with), so the
+    # model can return a non-string evidence_quote (e.g. a list) despite
+    # the schema. `x not in <str>` on a non-string `x` raises TypeError,
+    # which nothing in the surrounding per-link loop catches -- this must
+    # be rejected via the same fail-open-per-entry path as every other
+    # malformed-link case, not propagate and abort the whole call.
+    nodes = [
+        _req_node("n0", "The system shall support HDR."),
+        _req_node("n1", "The customer requires high dynamic range video."),
+    ]
+    client = FakeTraceLinkInferenceClient(
+        results=[{"source_node_id": "n0", "reference_name": "Affects", "target_ref": "n1", "evidence_quote": ["not", "a", "string"]}]
+    )
+    warnings: list = []
+    links = _infer_trace_links_for_nodes(nodes, client, [], warnings, None, 0, 0)
+    assert links == []
+
+
 def test_build_survey_tree_without_link_type_client_leaves_trace_links_empty() -> None:
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     assert tree.trace_links == []

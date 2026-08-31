@@ -161,7 +161,7 @@ def _infer_trace_links_for_nodes(
         # philosophy as every other validation check in this loop.
         evidence_quote = raw_link.get("evidence_quote")
         source_text = text_by_node_id.get(source_node_id, "")
-        if not evidence_quote or evidence_quote not in source_text:
+        if not isinstance(evidence_quote, str) or not evidence_quote or evidence_quote not in source_text:
             logger.warning("Trace-link inference proposed a link with no valid evidence quote, skipped: %r", raw_link)
             continue
         if source_node_id not in node_by_local_id:

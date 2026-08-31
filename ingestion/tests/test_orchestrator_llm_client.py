@@ -1095,14 +1095,18 @@ def test_assign_leftover_roots_parses_a_valid_response() -> None:
 
 
 def test_infer_trace_links_sends_response_schema_even_with_a_nonempty_catalog() -> None:
-    # Same GBNF array-wedge risk as infer_hierarchy (up to ~200 nodes across
-    # a whole tree). Must stay omitted regardless of catalog size --
-    # defended by the reference_name-not-in-catalog filter in llm_leveling.py.
+    # Same call this repo once avoided a maxItems-bounded top-level array
+    # schema for (the GBNF array-wedge risk, up to ~200 nodes across a
+    # whole tree) -- but a schema IS now sent regardless of catalog size,
+    # via trace_links_schema()'s object-wrapped {"links": [...]} shape
+    # (no maxItems, so it doesn't hit that cost). The reference_name-not-
+    # in-catalog filter in llm_leveling.py stays as defense-in-depth on
+    # top of this.
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "[]"})
+        return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
@@ -1192,7 +1196,7 @@ def test_infer_trace_links_sends_response_schema_when_catalog_is_empty() -> None
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "[]"})
+        return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
