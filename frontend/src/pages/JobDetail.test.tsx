@@ -133,6 +133,10 @@ describe('JobDetail', () => {
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
     expect(jobsApi.editDiffEntry).toHaveBeenCalledTimes(1);
+    // SWEEP.md section 9 follow-up: the guard skipping the call must not be
+    // silent -- NodeDetailPanel's own save() exits edit mode regardless, so
+    // without a toast the user has no idea the second save never happened.
+    await waitFor(() => expect(screen.getByText(/another change is still saving/i)).toBeInTheDocument());
   });
 
   it('shows a "Needs review" filter chip with the flagged count, and isolates flagged rows on click', async () => {
@@ -1208,6 +1212,8 @@ describe('JobDetail', () => {
       await userEvent.click(screen.getByRole('button', { name: /^add$/i }));
 
       expect(jobsApi.addDiffEntry).toHaveBeenCalledTimes(1);
+      // Same silent-skip gap as handleSaveEdit's guard test above.
+      await waitFor(() => expect(screen.getByText(/another change is still saving/i)).toBeInTheDocument());
     });
 
     it('does not render for a BASELINE job -- no anchor-independent type model', async () => {

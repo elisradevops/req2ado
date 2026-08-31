@@ -873,22 +873,23 @@ export function JobDetail(): React.ReactElement {
   // isDiffMutatingRef/isDiffMutating are shared with handleToggleExclude,
   // handleBulkExclude, and handleMoveEntry above, not just with
   // handleAddChild below -- this serializes Save against ALL of those
-  // sibling handlers, which has two real, currently-unaddressed
-  // consequences: (1) the Bulk Include/Exclude buttons' `disabled` prop
-  // reads isDiffMutating too, so they now also disable while a save/add-
-  // child is in flight (previously they didn't); (2) if this call is
-  // skipped because a sibling handler is already in flight, it fails
-  // silently -- NodeDetailPanel's own save() exits edit mode regardless of
-  // whether this guarded call actually ran, so a typed edit could
-  // disappear from the UI with no toast in that narrow window. Known,
-  // narrow gap -- not a regression to fix reflexively; see SWEEP.md
-  // section 9 for the deferred follow-up (surface an error toast when the
-  // guard skips the call, and reconcile the Bulk buttons' disabled scope).
+  // sibling handlers, which has one remaining, currently-unaddressed
+  // consequence: the Bulk Include/Exclude buttons' `disabled` prop reads
+  // isDiffMutating too, so they now also disable while a save/add-child is
+  // in flight (previously they didn't). Reconciling that disabled scope is
+  // a separate, larger change (SWEEP.md section 9) -- not attempted here.
   async function handleSaveEdit(
     localId: string,
     patch: { title: string; description: string; customerId?: string | null; tags?: string[]; seCoverageRef?: string | null },
   ): Promise<void> {
-    if (!id || isDiffMutatingRef.current) return;
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      // NodeDetailPanel's own save() exits edit mode regardless of whether
+      // this guarded call actually runs, so without this toast a typed
+      // edit could silently disappear from the UI (SWEEP.md section 9).
+      showToast('Try again — another change is still saving.', 'error');
+      return;
+    }
     isDiffMutatingRef.current = true;
     setIsDiffMutating(true);
     try {
@@ -968,11 +969,14 @@ export function JobDetail(): React.ReactElement {
 
   // Same shared isDiffMutatingRef/isDiffMutating gap as handleSaveEdit
   // above: this also serializes against handleToggleExclude,
-  // handleBulkExclude, and handleMoveEntry, so a blocked call here fails
-  // silently with no toast, and the Bulk buttons disable while an add is
-  // in flight. See handleSaveEdit's comment above for the full explanation.
+  // handleBulkExclude, and handleMoveEntry, so the Bulk buttons disable
+  // while an add is in flight. See handleSaveEdit's comment above.
   async function handleAddChild(parentLocalId: string | null, input: { type: string; title: string; description: string }): Promise<void> {
-    if (!id || isDiffMutatingRef.current) return;
+    if (!id) return;
+    if (isDiffMutatingRef.current) {
+      showToast('Try again — another change is still saving.', 'error');
+      return;
+    }
     isDiffMutatingRef.current = true;
     setIsDiffMutating(true);
     try {
