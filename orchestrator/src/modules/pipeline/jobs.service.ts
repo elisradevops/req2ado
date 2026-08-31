@@ -130,6 +130,64 @@ export interface JobSummary {
   batchId: string | null;
 }
 
+export interface JobDetail {
+  id: string;
+  status: string;
+  mode: string;
+  dryRunDiff: unknown;
+  // Union with `string` is the back-compat seam: a job persisted before
+  // the structured-warnings migration still has a literal string[] in its
+  // Json? column -- see CollapsibleWarnings.tsx's normalizeWarning for
+  // where that legacy shape gets reclassified into a WarningRecord.
+  warnings: (WarningRecord | string)[];
+  kbCitations: unknown;
+  // {figureIndex, figureId, name, caption}[] -- see Job.figureDescriptions'
+  // schema.prisma doc comment. Defaults to [] for a historical job (null
+  // column), same convention as warnings above. `name` is the document's
+  // own figure title (Task 5); a historical job's entries predate this
+  // field and will simply have it undefined, read as absent by callers.
+  figureDescriptions: { figureIndex: number; figureId: string; name: string | null; caption: string | null }[];
+  // {tableId, caption}[] -- see Job.tableDescriptions' schema.prisma doc
+  // comment. Defaults to [] for a historical job (null column), same
+  // convention as figureDescriptions above.
+  tableDescriptions: { tableId: string; caption: string }[];
+  // Doc-wide figure/table ids the mapping stage judged decorative/
+  // irrelevant, or that failed mapping (see Job.excludedFigureIds/
+  // excludedTableIds' schema.prisma doc comment). Defaults to [] for a
+  // historical job (null column) or a job predating this column, same
+  // convention as warnings/figureDescriptions above.
+  excludedFigureIds: string[];
+  excludedTableIds: string[];
+  createdAt: Date;
+  areaPath: string;
+  // Real Job columns (schema.prisma) that were fetched here all along
+  // (findUnique with no select clause) but silently dropped by this
+  // method's own narrow return object -- the frontend's DestinationBar
+  // never had a value to render, showing "not set" and "—" regardless of
+  // what a job was actually configured with.
+  iterationPath: string | null;
+  state: string;
+  originalFilename: string;
+  userId: string | null;
+  // Task 4: exposes JobTraceLinkFailure rows so the client can tell a
+  // written trace link from a failed one (today TraceLinkChips renders
+  // both identically) and offer a retry (POST
+  // :id/trace-links/:failureId/retry, retryTraceLinkWrite above). `error`/
+  // `createdAt`/`jobId` are omitted -- not needed by the frontend, which
+  // only needs this row's own id (to call the retry endpoint) plus enough
+  // fields to match it to the trace link it renders.
+  traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
+  // Count of durable CreatedItemMapping rows (see confirm()'s resume
+  // support, P4b) -- for a 'diff_ready' job, a nonzero count means a
+  // PRIOR confirm() attempt already wrote some items before failing
+  // (confirm()'s own catch reverts status to 'diff_ready', see its doc
+  // comment). Lets JobDetail show the reviewer what's already written
+  // before they click Confirm again, instead of a blind re-submit --
+  // same `_count` pattern `list()` above already uses.
+  createdItemCount: number;
+  documentOverview: { synopsis: string; caveat: string | null } | null;
+}
+
 @Injectable()
 export class JobsService implements OnModuleInit, OnModuleDestroy {
   private readonly queue: Queue;
@@ -505,65 +563,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       : `${sourceRef.documentPath}#offset=${range}`;
   }
 
-  async getById(
-    id: string,
-  ): Promise<{
-    id: string;
-    status: string;
-    mode: string;
-    dryRunDiff: unknown;
-    // Union with `string` is the back-compat seam: a job persisted before
-    // the structured-warnings migration still has a literal string[] in its
-    // Json? column -- see CollapsibleWarnings.tsx's normalizeWarning for
-    // where that legacy shape gets reclassified into a WarningRecord.
-    warnings: (WarningRecord | string)[];
-    kbCitations: unknown;
-    // {figureIndex, figureId, name, caption}[] -- see Job.figureDescriptions'
-    // schema.prisma doc comment. Defaults to [] for a historical job (null
-    // column), same convention as warnings above. `name` is the document's
-    // own figure title (Task 5); a historical job's entries predate this
-    // field and will simply have it undefined, read as absent by callers.
-    figureDescriptions: { figureIndex: number; figureId: string; name: string | null; caption: string | null }[];
-    // {tableId, caption}[] -- see Job.tableDescriptions' schema.prisma doc
-    // comment. Defaults to [] for a historical job (null column), same
-    // convention as figureDescriptions above.
-    tableDescriptions: { tableId: string; caption: string }[];
-    // Doc-wide figure/table ids the mapping stage judged decorative/
-    // irrelevant, or that failed mapping (see Job.excludedFigureIds/
-    // excludedTableIds' schema.prisma doc comment). Defaults to [] for a
-    // historical job (null column) or a job predating this column, same
-    // convention as warnings/figureDescriptions above.
-    excludedFigureIds: string[];
-    excludedTableIds: string[];
-    createdAt: Date;
-    areaPath: string;
-    // Real Job columns (schema.prisma) that were fetched here all along
-    // (findUnique with no select clause) but silently dropped by this
-    // method's own narrow return object -- the frontend's DestinationBar
-    // never had a value to render, showing "not set" and "—" regardless of
-    // what a job was actually configured with.
-    iterationPath: string | null;
-    state: string;
-    originalFilename: string;
-    userId: string | null;
-    // Task 4: exposes JobTraceLinkFailure rows so the client can tell a
-    // written trace link from a failed one (today TraceLinkChips renders
-    // both identically) and offer a retry (POST
-    // :id/trace-links/:failureId/retry, retryTraceLinkWrite above). `error`/
-    // `createdAt`/`jobId` are omitted -- not needed by the frontend, which
-    // only needs this row's own id (to call the retry endpoint) plus enough
-    // fields to match it to the trace link it renders.
-    traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
-    // Count of durable CreatedItemMapping rows (see confirm()'s resume
-    // support, P4b) -- for a 'diff_ready' job, a nonzero count means a
-    // PRIOR confirm() attempt already wrote some items before failing
-    // (confirm()'s own catch reverts status to 'diff_ready', see its doc
-    // comment). Lets JobDetail show the reviewer what's already written
-    // before they click Confirm again, instead of a blind re-submit --
-    // same `_count` pattern `list()` above already uses.
-    createdItemCount: number;
-    documentOverview: { synopsis: string; caveat: string | null } | null;
-  } | null> {
+  async getById(id: string): Promise<JobDetail | null> {
     const job = await this.prisma.job.findUnique({
       where: { id },
       include: { traceLinkFailures: true, _count: { select: { createdItemMappings: true } } },

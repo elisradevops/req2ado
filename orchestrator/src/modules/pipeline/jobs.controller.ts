@@ -18,7 +18,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
 import type { Response } from 'express';
-import { JobsService, JobSummary } from './jobs.service';
+import { JobsService, JobSummary, type JobDetail } from './jobs.service';
 import { IngestionHttpClient } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
@@ -321,41 +321,23 @@ export class JobsController {
   async getById(
     @Param('id') id: string,
     @CurrentUser() user: SessionUser,
-  ): Promise<{
-    id: string;
-    status: string;
-    mode: string;
-    dryRunDiff: unknown;
-    warnings: (WarningRecord | string)[];
-    kbCitations: unknown;
-    figureDescriptions: { figureIndex: number; figureId: string; name: string | null; caption: string | null }[];
-    tableDescriptions: { tableId: string; caption: string }[];
-    excludedFigureIds: string[];
-    excludedTableIds: string[];
-    createdAt: Date;
-    areaPath: string;
-    iterationPath: string | null;
-    state: string;
-    originalFilename: string;
-    workItemTypeCatalog: Record<string, WorkItemTypeCatalogEntry>;
-    // Category ('Epic'/'Feature'/'Requirement') -> this project's real ADO
-    // type name, for DISPLAY LABELS only (AddChildForm's type picker) --
-    // see WorkItemTypeCatalogService.resolveCategoryLabels's own doc
-    // comment. Defaults to the identity map when there's no diff yet.
-    workItemTypeCategoryLabels: Record<'Epic' | 'Feature' | 'Requirement', string>;
-    // Task 4: see JobsService.getById's own doc comment.
-    traceLinkFailures: { id: string; sourceLocalId: string; sourceAdoId: number; targetAdoId: number; referenceName: string }[];
-    // See JobsService.getById's own doc comment.
-    createdItemCount: number;
-    documentOverview: { synopsis: string; caveat: string | null } | null;
-    // The SAME field (and its real allowedValues) JobsService.confirm()
-    // will actually write a Requirement's classification to -- lets the
-    // review UI show which of a Requirement's tags is representable BEFORE
-    // commit. null when there's no diff yet, no credential, or resolution
-    // fails (best-effort, see WorkItemTypeCatalogService.
-    // resolveRequirementClassificationField's own doc comment).
-    requirementClassificationField: { referenceName: string; allowedValues: string[] } | null;
-  }> {
+  ): Promise<
+    Omit<JobDetail, 'userId'> & {
+      workItemTypeCatalog: Record<string, WorkItemTypeCatalogEntry>;
+      // Category ('Epic'/'Feature'/'Requirement') -> this project's real ADO
+      // type name, for DISPLAY LABELS only (AddChildForm's type picker) --
+      // see WorkItemTypeCatalogService.resolveCategoryLabels's own doc
+      // comment. Defaults to the identity map when there's no diff yet.
+      workItemTypeCategoryLabels: Record<'Epic' | 'Feature' | 'Requirement', string>;
+      // The SAME field (and its real allowedValues) JobsService.confirm()
+      // will actually write a Requirement's classification to -- lets the
+      // review UI show which of a Requirement's tags is representable BEFORE
+      // commit. null when there's no diff yet, no credential, or resolution
+      // fails (best-effort, see WorkItemTypeCatalogService.
+      // resolveRequirementClassificationField's own doc comment).
+      requirementClassificationField: { referenceName: string; allowedValues: string[] } | null;
+    }
+  > {
     // userId is internal (ownership only) -- strip it before returning so
     // the response shape stays exactly what it was before ownership
     // scoping existed.
