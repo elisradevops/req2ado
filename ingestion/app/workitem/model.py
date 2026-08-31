@@ -92,6 +92,32 @@ class RequirementQualityIssue(str, Enum):
     CONFLICTING_VALUE = "conflicting_value"
 
 
+class QualityConfidence(str, Enum):
+    """How sure the scoring model is about the quality_score it just gave --
+    the abstain channel the scoring prompt previously had none of (SWEEP.md
+    section 7). The batched scoring prompt forces an answer for EVERY one of
+    exactly N input items ("Return exactly __NODE_COUNT__ entries"), which
+    is the right instruction for coverage but leaves a model with no way to
+    say "this input isn't something I can judge" -- so it fabricates a
+    plausible number instead, indistinguishable from a real judgment.
+
+    Deliberately a closed 3-value enum, not a second 0-100 number: the
+    point is routing an item to a human, and a second continuous score
+    would be a second thing to calibrate and a second thing a reviewer can
+    misread against `score`.
+
+    LOW does NOT invalidate the score or exclude the item from any
+    aggregate -- the score is still the model's best answer and is still
+    displayed. It only sets the existing `flagged` review bit (see
+    orchestrator's diff-summary.ts / frontend's diffFlagging.ts
+    isFlaggedDiffEntry), exactly the way a low grounding_score or a low
+    quality_score already does."""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class RequirementTag(str, Enum):
     FUNCTIONAL = "functional"
     NON_FUNCTIONAL = "non_functional"
@@ -272,6 +298,15 @@ class WorkItemNode(BaseModel):
     # definition (including every SURVEY node when no scoring_client was
     # supplied at all, or the grounding document defined no checklist).
     quality_category_checklist: dict[str, str] | None = None
+    # SWEEP.md section 7's abstain channel -- how sure the scoring model was
+    # about quality_score above (see QualityConfidence's own docstring for
+    # why a closed 3-value enum, and why LOW flags for review rather than
+    # invalidating or excluding anything). None for BASELINE, for any SURVEY
+    # node when no scoring_client was supplied, and -- distinctly -- when the
+    # model's response carried no usable confidence value at all (see
+    # scoring._parse_confidence for why that case is NOT treated as HIGH and
+    # NOT treated as a review signal).
+    quality_confidence: QualityConfidence | None = None
     # Internal-only, never serialized (exclude=True) -- deterministic-
     # hierarchy path only (see id_hierarchy.HierarchyRow.needs_synthesis's
     # own docstring for the per-root-subtree gate that sets this). Signals

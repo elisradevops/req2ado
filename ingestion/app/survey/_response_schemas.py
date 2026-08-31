@@ -47,11 +47,12 @@ Ollama version is in use at the time.
 """
 from __future__ import annotations
 
-from app.workitem.model import RequirementQualityIssue, RequirementTag, WorkItemType
+from app.workitem.model import QualityConfidence, RequirementQualityIssue, RequirementTag, WorkItemType
 
 _TAGS = [t.value for t in RequirementTag]
 _ISSUES = [t.value for t in RequirementQualityIssue]
 _TYPES = [t.value for t in WorkItemType]
+_CONFIDENCE = [c.value for c in QualityConfidence]
 
 
 def scores_schema() -> dict:
@@ -71,7 +72,12 @@ def scores_schema() -> dict:
     accept regardless of what the prompt asked for. Same dynamic-key
     pattern this module's header docstring already established to dodge
     Ollama's bounded-array grammar-cost cliff -- a dynamic OBJECT schema,
-    unlike a bounded ARRAY, has never shown that cost."""
+    unlike a bounded ARRAY, has never shown that cost.
+
+    'confidence' is the abstain channel added for SWEEP.md section 7 -- see
+    QualityConfidence's own docstring (app.workitem.model) for why a closed
+    3-value enum rather than a second number, and why a 'low' value flags an
+    item for review without excluding it from any aggregate."""
     return {
         "name": "scores_by_node",
         "schema": {
@@ -85,8 +91,17 @@ def scores_schema() -> dict:
                         "type": "object",
                         "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 100},
                     },
+                    # SWEEP.md section 7's abstain channel: a closed 3-value
+                    # enum (see QualityConfidence, app.workitem.model), in
+                    # `required` on purpose -- an optional field on a call
+                    # whose prompt already demands exactly N entries would
+                    # just be omitted every time. A scalar enum inside an
+                    # existing additionalProperties object adds no bounded
+                    # repetition, so this does NOT reintroduce the grammar-
+                    # cost cliff this module's header docstring documents.
+                    "confidence": {"type": "string", "enum": _CONFIDENCE},
                 },
-                "required": ["score", "issues", "categoryScores"],
+                "required": ["score", "issues", "categoryScores", "confidence"],
             },
         },
     }

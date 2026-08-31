@@ -130,6 +130,10 @@ export interface WorkItemNode {
   quality_category_checklist?: {
     [k: string]: string;
   } | null;
+  /**
+   * SURVEY-only: how sure the scoring model was about quality_score ('high'|'medium'|'low'). Null for BASELINE, when no scoring_client was supplied, or when the model's response carried no usable confidence value. A 'low' value flags the item for human review (see isFlaggedDiffEntry) but never invalidates the score or excludes it from any aggregate.
+   */
+  quality_confidence?: 'high' | 'medium' | 'low' | null;
 }
 export interface IntegrityWarning {
   /**

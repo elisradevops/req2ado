@@ -32,7 +32,7 @@ from app.leveling.narration_publisher import LevelingProgress
 from app.leveling.table_groups import TableGroupInfo
 from app.leveling.trace_links import _infer_trace_links_for_nodes
 from app.workitem.model import KbCitationRelevance
-from app.workitem.model import IntegrityWarning, RequirementQualityIssue, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
+from app.workitem.model import IntegrityWarning, QualityConfidence, RequirementQualityIssue, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
 
 def _sr(path: str) -> SourceRef:
@@ -3115,6 +3115,32 @@ def test_build_survey_tree_rejects_boolean_score_values() -> None:
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n0"].quality_score is None  # bool is rejected despite isinstance(True, int) == True
     assert by_id["n1"].quality_score == 85
+
+
+def test_low_confidence_is_copied_onto_every_duplicate_description_node(monkeypatch) -> None:
+    # The dedup fan-out in _score_all_requirements copies the
+    # representative's result onto every node sharing its exact description
+    # text. A scored field that isn't copied there stays None on every
+    # duplicate -- invisible in a single-node test, wrong on real documents
+    # that restate content (a body section plus its appendix duplicate).
+    # br0_n1/br1_n1 share IDENTICAL description text (FakeSectionAnalysisClient's
+    # default fixture, see the "only one representative sent" test below),
+    # which is what triggers the fan-out at all.
+    class _LowConfidenceScoringClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            return {
+                node_id: {"score": 90, "issues": [], "categoryScores": {"clarity": 90}, "confidence": "low"}
+                for node_id in descriptions_by_node_id
+            }
+
+    _force_multi_branch(monkeypatch)
+    tree = build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), _LowConfidenceScoringClient())
+
+    requirement_nodes = [n for n in tree.nodes if n.type is WorkItemType.REQUIREMENT]
+    assert len(requirement_nodes) >= 2
+    assert all(n.quality_confidence is QualityConfidence.LOW for n in requirement_nodes)
+    # The score itself is untouched by low confidence.
+    assert all(n.quality_score == 90 for n in requirement_nodes)
 
 
 def test_build_survey_tree_calls_scoring_once_for_the_whole_document_not_once_per_branch(monkeypatch) -> None:

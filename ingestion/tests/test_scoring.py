@@ -1,4 +1,5 @@
 from app.leveling.scoring import _match_category_checklist, score_single_requirement_text
+from app.workitem.model import QualityConfidence
 
 
 class _FakeScoringClient:
@@ -27,7 +28,7 @@ def test_returns_parsed_score_issues_and_category_scores() -> None:
         },
     )
 
-    score, issues, category_scores = score_single_requirement_text(
+    score, issues, category_scores, _confidence = score_single_requirement_text(
         "The system shall do x.", client, None, None, None,
     )
 
@@ -36,6 +37,43 @@ def test_returns_parsed_score_issues_and_category_scores() -> None:
     # dropped, same tolerant philosophy as _apply_quality_scores.
     assert issues == ["vague_term"]
     assert category_scores == {"clarity": 60}
+
+
+def test_confidence_round_trips_through_single_requirement_scoring() -> None:
+    client = _FakeScoringClient({"adhoc": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}, "confidence": "low"}})
+
+    score, issues, category_scores, confidence = score_single_requirement_text(
+        "The system shall do a thing.", client, None, None, None,
+    )
+
+    assert score == 80
+    assert confidence is QualityConfidence.LOW
+    # The score is NOT invalidated or dropped by low confidence -- see
+    # QualityConfidence's own docstring. Everything else is untouched.
+    assert issues == []
+    assert category_scores == {"clarity": 80}
+
+
+def test_missing_confidence_falls_back_to_none_without_crashing() -> None:
+    # responseSchema is best-effort in this system (an Ollama version that
+    # rejects response_format degrades to a schema-less retry), so an entry
+    # with no 'confidence' key at all is a REAL, expected shape -- it must
+    # parse to None, not raise, exactly like a missing categoryScores does.
+    client = _FakeScoringClient({"adhoc": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}}})
+
+    _, _, _, confidence = score_single_requirement_text("The system shall do a thing.", client, None, None, None)
+
+    assert confidence is None
+
+
+def test_unknown_confidence_value_falls_back_to_none() -> None:
+    # A model that answers "very high" / 0.9 / None must not crash the
+    # batch or smuggle an off-vocabulary value into WorkItemNode -- same
+    # closed-vocabulary tolerance as the 'issues' filter right beside it.
+    for bad in ["very high", "LOW ", 0.9, None, ["low"]]:
+        client = _FakeScoringClient({"adhoc": {"score": 80, "issues": [], "categoryScores": {}, "confidence": bad}})
+        _, _, _, confidence = score_single_requirement_text("x shall y.", client, None, None, None)
+        assert confidence is None, f"expected None for {bad!r}"
 
 
 def test_sends_the_single_description_under_an_adhoc_key() -> None:
@@ -58,7 +96,7 @@ def test_sends_the_single_description_under_an_adhoc_key() -> None:
 def test_missing_score_entry_returns_none_score_and_empty_issues() -> None:
     client = _FakeScoringClient({})  # the LLM returned no entry for "adhoc" at all
 
-    score, issues, category_scores = score_single_requirement_text(
+    score, issues, category_scores, _confidence = score_single_requirement_text(
         "The system shall do x.", client, None, None, None,
     )
 
@@ -70,7 +108,7 @@ def test_missing_score_entry_returns_none_score_and_empty_issues() -> None:
 def test_malformed_score_out_of_range_falls_back_to_none() -> None:
     client = _FakeScoringClient({"adhoc": {"score": 150, "issues": [], "categoryScores": None}})
 
-    score, _issues, _category_scores = score_single_requirement_text(
+    score, _issues, _category_scores, _confidence = score_single_requirement_text(
         "The system shall do x.", client, None, None, None,
     )
 
@@ -83,7 +121,7 @@ def test_boolean_score_is_rejected_same_as_batched_scoring() -> None:
     # already has for the batched path.
     client = _FakeScoringClient({"adhoc": {"score": True, "issues": [], "categoryScores": None}})
 
-    score, _issues, _category_scores = score_single_requirement_text(
+    score, _issues, _category_scores, _confidence = score_single_requirement_text(
         "The system shall do x.", client, None, None, None,
     )
 

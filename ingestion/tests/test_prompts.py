@@ -65,6 +65,32 @@ def test_score_requirements_for_document_prompt() -> None:
     assert "Return exactly 7 entries in your response" in result
 
 
+def test_score_requirements_v2_prompt_permits_low_confidence_instead_of_guessing() -> None:
+    # SWEEP.md section 7: v1 demanded exactly N answers with no abstain
+    # channel at all, so a model handed an unjudgeable input had to
+    # fabricate a plausible score. v2 keeps the exactly-N coverage
+    # requirement (that instruction fixed a real, separate observed failure
+    # -- the "returned no valid score for N node(s)" warning) and adds a
+    # confidence field so the model can answer without pretending to be
+    # sure.
+    result = load_prompt(
+        "score_requirements_for_document",
+        category_instruction="'categoryScores' -- TEST.\n",
+        node_count="7",
+    )
+    assert "'confidence'" in result
+    assert "'high', 'medium', or 'low'" in result
+    assert "do not invent a confident-looking score" in result
+    # The exactly-N coverage instruction must SURVIVE the version bump --
+    # confidence is an addition, not a replacement for it.
+    assert result.count("exactly 7 node_id(s)") == 1
+    assert "Return exactly 7 entries" in result
+    # And the pre-existing markers must both still be substitutable, or
+    # load_prompt raises.
+    assert "__NODE_COUNT__" not in result
+    assert "__CATEGORY_INSTRUCTION__" not in result
+
+
 def test_score_epics_and_features_for_document_prompt() -> None:
     result = load_prompt("score_epics_and_features_for_document", node_count="9")
     assert "The input contains exactly 9 node_id(s)." in result

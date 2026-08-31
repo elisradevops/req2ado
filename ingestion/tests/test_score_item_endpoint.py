@@ -77,6 +77,35 @@ def test_score_item_forces_the_supplied_category_checklist_as_the_exact_key_set(
     assert response.json()["quality_category_scores"] == {"Necessary": 80, "Verifiable": 70}
 
 
+def test_score_item_returns_quality_confidence(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = json.dumps(
+            {"adhoc": {"score": 72, "issues": ["ambiguous"], "categoryScores": {"clarity": 70}, "confidence": "low"}},
+        )
+        return httpx.Response(200, json={"content": content})
+
+    _patch_llm(monkeypatch, handler)
+
+    response = client.post("/score-item", json={"description": "The system shall be fast."})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["quality_confidence"] == "low"
+    assert body["quality_score"] == 72
+
+
+def test_score_item_confidence_is_null_when_the_model_said_nothing_usable(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = json.dumps({"adhoc": {"score": 72, "issues": [], "categoryScores": None}})
+        return httpx.Response(200, json={"content": content})
+
+    _patch_llm(monkeypatch, handler)
+
+    body = client.post("/score-item", json={"description": "The system shall be fast."}).json()
+
+    assert body["quality_confidence"] is None
+
+
 def test_score_item_rejects_a_blank_description() -> None:
     response = client.post("/score-item", json={"description": "   "})
     assert response.status_code == 400

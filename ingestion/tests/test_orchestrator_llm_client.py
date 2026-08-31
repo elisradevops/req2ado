@@ -606,6 +606,22 @@ def test_score_requirements_for_document_includes_an_issues_enum_schema_with_add
     assert set(issues_enum) == {i.value for i in RequirementQualityIssue}
 
 
+def test_scores_schema_declares_a_closed_confidence_enum() -> None:
+    from app.survey._response_schemas import scores_schema
+    from app.workitem.model import QualityConfidence
+
+    entry = scores_schema()["schema"]["additionalProperties"]
+    assert entry["properties"]["confidence"] == {
+        "type": "string",
+        "enum": [c.value for c in QualityConfidence],
+    }
+    # Required alongside score/issues/categoryScores -- the model always has
+    # to say how sure it is, and "high" is a perfectly good answer. An
+    # optional field would be silently omitted on every response and the
+    # abstain channel would never actually get used.
+    assert "confidence" in entry["required"]
+
+
 def test_score_requirements_for_document_schema_allows_dynamic_category_scores() -> None:
     # Confirmed real gap fixed here: categoryScores was previously a FIXED
     # 5-property schema, which could never accept an org's own ingested KB

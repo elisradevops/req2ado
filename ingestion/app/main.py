@@ -1448,6 +1448,11 @@ class ScoreItemResponse(BaseModel):
     quality_score: int | None
     quality_issues: list[str]
     quality_category_scores: dict[str, int] | None
+    # SWEEP.md section 7's abstain channel, serialized as its plain string
+    # value ('high'|'medium'|'low') rather than the enum -- this is the JSON
+    # response the orchestrator's IngestionHttpClient.scoreItem parses. null
+    # when the model said nothing usable (see scoring._parse_confidence).
+    quality_confidence: str | None
 
 
 @app.post("/score-item", response_model=ScoreItemResponse)
@@ -1478,11 +1483,12 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx,
         top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
     )
-    score, issues, category_scores = score_single_requirement_text(
+    score, issues, category_scores, confidence = score_single_requirement_text(
         body.description, client, _get_criteria_retriever(), kb_context, body.category_checklist,
     )
     return ScoreItemResponse(
         quality_score=score, quality_issues=issues, quality_category_scores=category_scores,
+        quality_confidence=confidence.value if confidence is not None else None,
     )
 
 

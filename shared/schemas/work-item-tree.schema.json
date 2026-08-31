@@ -139,6 +139,11 @@
           "type": ["object", "null"],
           "additionalProperties": { "type": "string" },
           "description": "Per-category citation text backing a subset of quality_category_scores' keys -- maps a category key to the org's own ingested quality-checklist document's stated definition for it, when one was found (see KbVectorStore.get_quality_checklist_definitions). Not all-or-nothing like quality_category_scores: a category absent from this map is a real, expected case (no KB standard at all, or the org's document states no separate definition for that one category), not a parse failure. Null when nothing matched."
+        },
+        "quality_confidence": {
+          "type": ["string", "null"],
+          "enum": ["high", "medium", "low", null],
+          "description": "SURVEY-only: how sure the scoring model was about quality_score ('high'|'medium'|'low'). Null for BASELINE, when no scoring_client was supplied, or when the model's response carried no usable confidence value. A 'low' value flags the item for human review (see isFlaggedDiffEntry) but never invalidates the score or excludes it from any aggregate."
         }
       }
     },

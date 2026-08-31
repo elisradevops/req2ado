@@ -13,6 +13,7 @@ from app.workitem.model import (
     IntegrityWarning,
     KbCitation,
     QualityCategoryScores,
+    QualityConfidence,
     RequirementQualityIssue,
     WarningKind,
     WorkItemNode,
@@ -293,6 +294,7 @@ def _score_all_requirements(
                 duplicate.quality_issues = representative.quality_issues
                 duplicate.quality_category_scores = representative.quality_category_scores
                 duplicate.quality_category_checklist = representative.quality_category_checklist
+                duplicate.quality_confidence = representative.quality_confidence
         issues_found = sum(len(node.quality_issues) for node in chunk)
         nodes_done = chunk_index * _SCORING_CHUNK_NODE_COUNT + len(chunk)
         _fire(
@@ -462,7 +464,7 @@ def score_single_requirement_text(
     criteria_retriever: CriteriaRetriever | None,
     kb_context: str | None,
     category_checklist: list[str] | None,
-) -> tuple[int | None, list[str], "QualityCategoryScores | None"]:
+) -> tuple[int | None, list[str], "QualityCategoryScores | None", "QualityConfidence | None"]:
     """CR-7d rescore: the single ad-hoc-string counterpart to
     _apply_quality_scores below, for re-judging ONE already-formalized
     requirement's current title+description after a manual/AI-chat edit --
@@ -476,7 +478,12 @@ def score_single_requirement_text(
     docstring for why this is a genuine determinism guarantee, not just a
     hint. Passing None (e.g. the item was never successfully scored before)
     falls back to that method's own kb_context-derived/fixed-5-dimension
-    behavior, same as a first-time scoring pass would."""
+    behavior, same as a first-time scoring pass would.
+
+    Returns (score, issues, category_scores, confidence) -- the 4th element
+    is SWEEP.md section 7's abstain channel (see QualityConfidence,
+    app.workitem.model), parsed with the same tolerance as everything else
+    here: a missing/malformed value is None, never a crash."""
     criteria_context = None
     if criteria_retriever is not None and description.strip():
         criteria = criteria_retriever.retrieve(description)
@@ -486,7 +493,7 @@ def score_single_requirement_text(
     )
     entry = scores_by_id.get("adhoc")
     if not isinstance(entry, dict):
-        return None, [], None
+        return None, [], None, None
     valid_issue_values = {i.value for i in RequirementQualityIssue}
     raw_score = entry.get("score")
     score = (
@@ -496,7 +503,7 @@ def score_single_requirement_text(
     )
     issues = sorted({issue for issue in entry.get("issues", []) if issue in valid_issue_values})
     category_scores = _parse_category_scores(entry.get("categoryScores"))
-    return score, issues, category_scores
+    return score, issues, category_scores, _parse_confidence(entry.get("confidence"))
 
 
 def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
@@ -523,6 +530,27 @@ def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
             return None
         values[key] = value
     return values
+
+
+def _parse_confidence(raw: object) -> QualityConfidence | None:
+    """Tolerant of a missing, non-string, or off-vocabulary 'confidence'
+    value -- returns None, never raises, same closed-vocabulary philosophy
+    as the `issues` filter and the same "one malformed field never crashes
+    the batch" rule as _parse_category_scores above.
+
+    None means "the model said nothing usable about its confidence", which
+    is deliberately NOT the same as HIGH and deliberately NOT treated as a
+    review signal: `responseSchema` is best-effort in this system (an
+    Ollama version that rejects response_format degrades to a schema-less
+    retry, see _response_schemas.py's header), so a missing value is far
+    more likely a transport/degradation artifact than a real judgment, and
+    flagging every item on a degraded run would drown the real signal."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        return QualityConfidence(raw)
+    except ValueError:
+        return None
 
 
 def _match_category_checklist(
@@ -639,6 +667,7 @@ def _apply_quality_scores(
         node.quality_category_checklist = _match_category_checklist(
             node.quality_category_scores, category_checklist_definitions,
         )
+        node.quality_confidence = _parse_confidence(entry.get("confidence"))
 
     missing_nodes = [node for node in nodes if node.quality_score is None]
     missing_or_invalid = [node.local_id for node in missing_nodes]
