@@ -2,15 +2,14 @@ import '@testing-library/jest-dom';
 import { configure } from '@testing-library/react';
 
 // Default asyncUtilTimeout (1000ms) for findBy*/waitFor is tuned for a fast
-// local machine -- this repo's own CI (first real run: 2026-08-31) surfaced
-// intermittent findByRole timeouts in JobDetail.test.tsx that never
-// reproduce locally (confirmed: 5/5 clean local runs of the same file, same
-// tests, no flake), consistent with GitHub Actions' shared/throttled vCPU
-// runners needing more wall-clock time for the same React
-// render+effect+portal-mount work, not a real product race. Widened
-// globally rather than per-test since the specific test that times out
-// varies run to run -- it's the runner's speed variance, not one test's
-// logic.
+// local machine. This repo's own CI (first real run: 2026-08-31) surfaced
+// intermittent findByRole/waitFor timeouts in a rotating set of frontend
+// tests -- root-caused (see vitest.config.ts's testTimeout comment) to real
+// CPU contention on a resource-constrained runner, not any specific test's
+// logic: reproduced live in a deliberately oversubscribed container where a
+// DIFFERENT unrelated test timed out each run. Widened alongside
+// testTimeout so the inner findBy*/waitFor budget doesn't become the
+// binding constraint once the outer per-test budget was raised.
 configure({ asyncUtilTimeout: 5000 });
 
 // jsdom has no ResizeObserver -- DiffTree's VariableSizeList row measurement
