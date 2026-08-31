@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import time
-from typing import Callable
+from typing import Any, Callable
 
 import httpx
 from json_repair import repair_json
@@ -963,7 +963,7 @@ class OrchestratorLlmClient:
         *,
         schema: dict | None = None,
         max_tokens: int = _MAX_OUTPUT_TOKENS,
-    ) -> object:
+    ) -> Any:
         """Shared payload-envelope + response-parsing shape for this class's
         simple, single-shot structured-extraction calls (schema in, JSON
         object/array out, no caching, no tracing span, no truncation
