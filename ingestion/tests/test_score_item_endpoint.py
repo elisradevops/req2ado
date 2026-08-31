@@ -96,3 +96,41 @@ def test_score_item_without_user_id_never_attempts_kb_retrieval(monkeypatch) -> 
 
     response = client.post("/score-item", json={"description": "The system shall be fast."})
     assert response.status_code == 200
+
+
+def test_score_item_client_gets_the_survey_sampling_constants_and_a_resolved_num_ctx(monkeypatch) -> None:
+    # The sibling topK/minP fix landed in score_requirements_for_document
+    # (which this route reaches via score_single_requirement_text) but was
+    # silently inert here, because this route's own client was constructed
+    # with neither option -- SWEEP.md section 6's third un-configured
+    # construction site. Unlike main.py's two module-level singletons, this
+    # client has a real per-job model (body.model), so num_ctx is
+    # resolvable too, exactly the way /level already resolves it.
+    from app import main as main_module
+
+    captured: dict = {}
+    original_init = OrchestratorLlmClient.__init__
+
+    def patched_init(self, base_url, bearer_token, model=None, num_ctx=None, top_k=None, min_p=None, seed=42, cache=None):
+        # Record only the REAL client (the one carrying sampling options);
+        # /level's own probe_client pattern constructs a throwaway first.
+        captured.setdefault("calls", []).append({"model": model, "num_ctx": num_ctx, "top_k": top_k, "min_p": min_p})
+        original_init(self, base_url, bearer_token, model=model)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            content = json.dumps({"adhoc": {"score": 70, "issues": [], "categoryScores": {"clarity": 70}}})
+            return httpx.Response(200, json={"content": content})
+
+        self._transport = httpx.MockTransport(handler)
+
+    monkeypatch.setattr(OrchestratorLlmClient, "__init__", patched_init)
+    monkeypatch.setattr("app.main.settings.llm_proxy_bearer", "test-bearer")
+
+    response = client.post("/score-item", json={"description": "The system shall be fast.", "model": "some-unknown-model"})
+
+    assert response.status_code == 200
+    real_call = captured["calls"][-1]
+    assert real_call["top_k"] == main_module._SURVEY_TOP_K
+    assert real_call["min_p"] == main_module._SURVEY_MIN_P
+    assert real_call["model"] == "some-unknown-model"
+    assert isinstance(real_call["num_ctx"], int) and real_call["num_ctx"] > 0

@@ -1457,7 +1457,27 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
     kb_context = None
     if body.user_id:
         kb_context, _ = retrieve_context(body.user_id, body.description, _embed_client, _kb_vector_store)
-    client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model)
+    # Mirrors /level's own construct-probe-then-construct-real pattern (see
+    # that route's comment for why _resolve_caps's optional live /api/show
+    # lookup must be threadpool-dispatched, not run inline in an async
+    # route). Unlike main.py's two module-level singleton clients -- which
+    # genuinely have no per-job model to probe against, and are documented
+    # as correctly-by-design without numCtx -- this route DOES carry a real
+    # model (body.model), so the same caps resolution applies directly.
+    # top_k/min_p are the same model-independent Gemma4 repetition-collapse
+    # mitigation constants every other correctly-configured client gets;
+    # without them the sibling topK/minP forwarding fix inside
+    # score_requirements_for_document (which this route reaches via
+    # score_single_requirement_text) was silently inert on this route.
+    probe_client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model,
+        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    num_ctx = (await run_in_threadpool(_resolve_caps, body.model, probe_client)).context_budget_tokens
+    client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
     score, issues, category_scores = score_single_requirement_text(
         body.description, client, _get_criteria_retriever(), kb_context, body.category_checklist,
     )
