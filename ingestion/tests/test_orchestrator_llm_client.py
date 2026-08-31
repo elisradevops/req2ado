@@ -470,6 +470,26 @@ def test_extract_quality_checklist_definitions_raises_on_a_non_object_response()
         client.extract_quality_checklist_definitions("text", ["Necessary"])
 
 
+def test_infer_trace_links_now_sends_a_response_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"links": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.infer_trace_links([], [])
+
+    assert "responseSchema" in captured["body"]
+    schema = captured["body"]["responseSchema"]["schema"]
+    assert schema["type"] == "object"
+    assert schema["properties"]["links"]["type"] == "array"
+    assert "maxItems" not in schema["properties"]["links"]
+    assert "evidence_quote" in schema["properties"]["links"]["items"]["required"]
+
+
 def test_infer_trace_links_sends_nodes_and_catalog_returns_parsed_links() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -479,7 +499,7 @@ def test_infer_trace_links_sends_nodes_and_catalog_returns_parsed_links() -> Non
             200,
             json={
                 "content": json.dumps(
-                    [{"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}]
+                    {"links": [{"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}]}
                 )
             },
         )
@@ -519,7 +539,7 @@ def test_infer_trace_links_parses_json_prefaced_with_unfenced_conversational_pro
     # "malformed JSON in LLM response content: 'Based'".
     link = {"source_node_id": "1", "target_ref": "0", "reference_name": "Elisra.CoveredBy-Forward"}
     preamble = "Based on the provided nodes, here are the inferred links:\n\n"
-    unfenced_prefaced_content = preamble + json.dumps([link])
+    unfenced_prefaced_content = preamble + json.dumps({"links": [link]})
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = _mock_transport({"content": unfenced_prefaced_content})
 
@@ -532,7 +552,7 @@ def test_infer_trace_links_with_no_catalog_still_sends_a_valid_request() -> None
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         assert body["messages"][1]["content"]  # user content present
-        return httpx.Response(200, json={"content": "[]"})
+        return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
@@ -1074,7 +1094,7 @@ def test_assign_leftover_roots_parses_a_valid_response() -> None:
     assert result["assignments"] == {"n2": "regroup_synth_group_0"}
 
 
-def test_infer_trace_links_never_sends_response_schema_even_with_a_nonempty_catalog() -> None:
+def test_infer_trace_links_sends_response_schema_even_with_a_nonempty_catalog() -> None:
     # Same GBNF array-wedge risk as infer_hierarchy (up to ~200 nodes across
     # a whole tree). Must stay omitted regardless of catalog size --
     # defended by the reference_name-not-in-catalog filter in llm_leveling.py.
@@ -1093,7 +1113,7 @@ def test_infer_trace_links_never_sends_response_schema_even_with_a_nonempty_cata
     ]
     client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=catalog)
 
-    assert "responseSchema" not in captured["body"]
+    assert "responseSchema" in captured["body"]
     assert captured["body"]["maxTokens"] == 20000
 
 
@@ -1109,7 +1129,7 @@ def test_infer_trace_links_disables_reasoning_and_forwards_num_ctx_when_configur
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"content": "[]"})
+        return httpx.Response(200, json={"content": json.dumps({"links": []})})
 
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer", num_ctx=32768)
     client._transport = httpx.MockTransport(handler)
@@ -1167,7 +1187,7 @@ def test_judge_kb_relevance_parses_the_verdict_map_and_includes_an_enum_schema()
     assert user_content["snippets"]["0"]["source_file"] == "relevant.docx"
 
 
-def test_infer_trace_links_omits_response_schema_when_catalog_is_empty() -> None:
+def test_infer_trace_links_sends_response_schema_when_catalog_is_empty() -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1179,7 +1199,7 @@ def test_infer_trace_links_omits_response_schema_when_catalog_is_empty() -> None
 
     client.infer_trace_links(nodes=[{"node_id": "0", "type": "Requirement", "title": "t", "text": "x"}], link_type_catalog=[])
 
-    assert "responseSchema" not in captured["body"]
+    assert "responseSchema" in captured["body"]
 
 
 def test_infer_trace_links_orders_catalog_native_types_first() -> None:

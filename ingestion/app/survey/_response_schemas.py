@@ -13,7 +13,8 @@ these schemas tighten output, they do not gate it. Every consumer keeps its
 existing defensive fallback as defense-in-depth.
 
 IMPORTANT -- why there is no schema here for infer_hierarchy/
-infer_trace_links/generate_requirements (single-block): all three would
+generate_requirements (single-block) (infer_trace_links now has one, see
+trace_links_schema() below): these would
 need a TOP-LEVEL ARRAY schema sized to real branch content (up to
 _MAX_SURVEY_BRANCH_BLOCK_COUNT=200 items). Observed live: Ollama's GBNF
 grammar-constrained decoding (llama.cpp under the hood, confirmed NOT
@@ -142,6 +143,41 @@ def section_analysis_schema() -> dict:
                 }
             },
             "required": ["nodes"],
+        },
+    }
+
+
+def trace_links_schema() -> dict:
+    """infer_trace_links: whole-document trace/coverage link inference.
+    Wrapped in an object with one 'links' array (NOT a top-level array) and
+    deliberately NO maxItems -- see this module's header docstring: the
+    same grammar-cost cliff section_analysis_schema() already dodges this
+    way. 'evidence_quote' is required and validated by the caller
+    (trace_links.py's _infer_trace_links_for_nodes) as a literal substring
+    of the source node's own text -- this schema only constrains SHAPE
+    (the field must exist and be a string), not content; the substring
+    check is a real anti-hallucination guard this repo previously had none
+    of for this call."""
+    return {
+        "name": "trace_links",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "links": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_node_id": {"type": "string"},
+                            "reference_name": {"type": "string"},
+                            "target_ref": {"type": "string"},
+                            "evidence_quote": {"type": "string"},
+                        },
+                        "required": ["source_node_id", "reference_name", "target_ref", "evidence_quote"],
+                    },
+                }
+            },
+            "required": ["links"],
         },
     }
 

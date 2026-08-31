@@ -31,6 +31,7 @@ from app.survey._response_schemas import (
     section_skeleton_schema,
     synthesis_schema,
     title_tags_schema,
+    trace_links_schema,
 )
 from app.config import settings
 from app.survey.llm_cache import LlmResponseCache, cache_key
@@ -1008,20 +1009,24 @@ class OrchestratorLlmClient:
         nodes_json = json.dumps(nodes)
         system_prompt = load_prompt("infer_trace_links", catalog_lines=catalog_lines)
         system_prompt = _with_kb_context(system_prompt, kb_context)
-        # No response_format/schema: same top-level-array grammar-cost cliff
-        # as infer_hierarchy -- see _response_schemas.py's module docstring.
-        # Defended by the existing reference_name-not-in-catalog filter in
-        # llm_leveling.py instead. numCtx IS forwarded (via _chat_json, when
-        # configured) -- this call serializes EVERY node in the whole tree
-        # (nodes_json above), the largest single payload in this module,
-        # making it the most exposed call to Ollama's silent prompt
-        # truncation without an explicit num_ctx (see LlmChatOptions.numCtx's
-        # own doc comment). think=False: relationship inference over
-        # already-generated nodes is structured extraction, not open-ended
-        # reasoning -- same confirmed-live finding (3-10x wall-clock cost, no
-        # accuracy benefit) as analyze_section/analyze_section_agentic and
+        # Now schema-constrained via trace_links_schema() -- wrapped in an
+        # object ({"links": [...]}), not a top-level array, to avoid the
+        # same grammar-cost cliff documented in _response_schemas.py's
+        # module docstring (a maxItems-bounded top-level array wedged the
+        # server for 10+ minutes on a real ~200-item branch; this schema
+        # has no maxItems, same as section_analysis_schema()). numCtx IS
+        # forwarded (via _chat_json, when configured) -- this call
+        # serializes EVERY node in the whole tree (nodes_json above), the
+        # largest single payload in this module, making it the most
+        # exposed call to Ollama's silent prompt truncation without an
+        # explicit num_ctx (see LlmChatOptions.numCtx's own doc comment).
+        # think=False: relationship inference over already-generated nodes
+        # is structured extraction, not open-ended reasoning -- same
+        # confirmed-live finding (3-10x wall-clock cost, no accuracy
+        # benefit) as analyze_section/analyze_section_agentic and
         # score_requirements_for_document.
-        return self._chat_json(system_prompt, nodes_json, schema=None)
+        result = self._chat_json(system_prompt, nodes_json, schema=trace_links_schema())
+        return result.get("links", []) if isinstance(result, dict) else []
 
     def score_requirements_for_document(
         self,

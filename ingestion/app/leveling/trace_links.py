@@ -135,6 +135,7 @@ def _infer_trace_links_for_nodes(
         )
         raw_links = []
     catalog_by_ref = {entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog}
+    text_by_node_id = {n["node_id"]: n["text"] for n in llm_nodes}
     for raw_link in raw_links:
         # Confirmed real job failure (live SURVEY run): the model can return
         # a syntactically-valid JSON list where most entries are proper
@@ -150,6 +151,19 @@ def _infer_trace_links_for_nodes(
         source_node_id = raw_link.get("source_node_id")
         reference_name = raw_link.get("reference_name")
         target_ref = raw_link.get("target_ref")
+        # Real anti-hallucination guard (SWEEP.md section 7's "highest-
+        # leverage fix in the whole audit"): a proposed link with no
+        # evidence quote, or a quote that isn't a literal substring of the
+        # exact text this call sent the model (llm_nodes' stripped text,
+        # not the raw node.description -- see this function's own
+        # llm_nodes construction comment for why), has no verifiable
+        # textual basis and is dropped here, same fail-open-per-entry
+        # philosophy as every other validation check in this loop.
+        evidence_quote = raw_link.get("evidence_quote")
+        source_text = text_by_node_id.get(source_node_id, "")
+        if not evidence_quote or evidence_quote not in source_text:
+            logger.warning("Trace-link inference proposed a link with no valid evidence quote, skipped: %r", raw_link)
+            continue
         if source_node_id not in node_by_local_id:
             continue
         if catalog and reference_name not in valid_reference_names:

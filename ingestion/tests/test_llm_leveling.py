@@ -28,6 +28,7 @@ from app.leveling.llm_leveling import (
 )
 from app.leveling.narration_publisher import LevelingProgress
 from app.leveling.table_groups import TableGroupInfo
+from app.leveling.trace_links import _infer_trace_links_for_nodes
 from app.workitem.model import KbCitationRelevance
 from app.workitem.model import IntegrityWarning, RequirementQualityIssue, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
@@ -3975,6 +3976,23 @@ class FakeTraceLinkInferenceClient:
         return self._results
 
 
+def test_infer_trace_links_for_nodes_drops_a_link_whose_evidence_quote_is_not_in_the_source_node_text() -> None:
+    # Real anti-hallucination guard (SWEEP.md section 7): a proposed link
+    # whose evidence_quote isn't a literal substring of the SOURCE node's
+    # own text has no verifiable textual basis and must be dropped, same
+    # fail-open-per-entry philosophy as every other check in this loop.
+    nodes = [
+        _req_node("n0", "The system shall support HDR."),
+        _req_node("n1", "The customer requires high dynamic range video."),
+    ]
+    client = FakeTraceLinkInferenceClient(
+        results=[{"source_node_id": "n0", "reference_name": "Affects", "target_ref": "n1", "evidence_quote": "text that does not appear anywhere in n0"}]
+    )
+    warnings: list = []
+    links = _infer_trace_links_for_nodes(nodes, client, [], warnings, None, 0, 0)
+    assert links == []
+
+
 def test_build_survey_tree_without_link_type_client_leaves_trace_links_empty() -> None:
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient())
     assert tree.trace_links == []
@@ -4058,7 +4076,7 @@ def test_build_survey_tree_skips_a_non_object_trace_link_entry_without_crashing(
     # philosophy.
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related"},
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "Requirement A"},
             "a malformed bare string entry",
         ]
     )
@@ -4209,8 +4227,8 @@ def test_build_survey_tree_drops_a_trace_link_between_a_node_and_its_own_parent(
     catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "n0", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n1"},
-            {"source_node_id": "n1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n0"},
+            {"source_node_id": "n0", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n1", "evidence_quote": "Display"},
+            {"source_node_id": "n1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n0", "evidence_quote": "support HDR"},
         ]
     )
     tree = build_survey_tree(
@@ -4223,7 +4241,7 @@ def test_build_survey_tree_drops_a_trace_link_between_a_node_and_its_own_parent(
 def test_build_survey_tree_drops_a_self_referencing_trace_link() -> None:
     catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "n1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n1"}]
+        results=[{"source_node_id": "n1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "n1", "evidence_quote": "support HDR"}]
     )
     tree = build_survey_tree(
         _small_doc(), FakeSectionAnalysisClient(),
@@ -4239,7 +4257,7 @@ def test_build_survey_tree_keeps_a_trace_link_between_non_hierarchy_related_node
     # parent) are a legitimate trace/coverage relationship and must survive.
     catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "s1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "s2"}]
+        results=[{"source_node_id": "s1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "s2", "evidence_quote": "Requirement A"}]
     )
     tree = build_survey_tree(
         _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
@@ -4303,7 +4321,7 @@ def test_build_survey_tree_resolves_intra_job_link_target() -> None:
     # pair -- see _SIBLING_NODES' own comment for why this test can't use
     # _DEFAULT_NODES' n0/n1 anymore.
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related"}]
+        results=[{"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "Requirement A"}]
     )
     tree = build_survey_tree(
         _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
@@ -4319,7 +4337,7 @@ def test_build_survey_tree_resolves_intra_job_link_target() -> None:
 
 def test_build_survey_tree_treats_a_non_node_id_target_ref_as_cross_job_customer_id() -> None:
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "n1", "target_ref": "REQ-SYS-012", "reference_name": "Elisra.CoveredBy-Reverse"}]
+        results=[{"source_node_id": "n1", "target_ref": "REQ-SYS-012", "reference_name": "Elisra.CoveredBy-Reverse", "evidence_quote": "support HDR"}]
     )
     tree = build_survey_tree(
         _small_doc(), FakeSectionAnalysisClient(),
@@ -4334,8 +4352,8 @@ def test_build_survey_tree_treats_a_non_node_id_target_ref_as_cross_job_customer
 def test_build_survey_tree_drops_a_link_with_a_reference_name_not_in_the_catalog() -> None:
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "Hallucinated.NotReal"},
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related"},
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "Hallucinated.NotReal", "evidence_quote": "Requirement A"},
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "Requirement A"},
         ]
     )
     catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
@@ -4349,7 +4367,7 @@ def test_build_survey_tree_drops_a_link_with_a_reference_name_not_in_the_catalog
 
 def test_build_survey_tree_drops_a_link_whose_source_node_id_does_not_exist() -> None:
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "does-not-exist", "target_ref": "n0", "reference_name": "System.LinkTypes.Related"}]
+        results=[{"source_node_id": "does-not-exist", "target_ref": "n0", "reference_name": "System.LinkTypes.Related", "evidence_quote": "Display"}]
     )
     tree = build_survey_tree(
         _small_doc(), FakeSectionAnalysisClient(),
@@ -5929,7 +5947,7 @@ def test_build_survey_tree_infers_trace_links_on_the_pure_deterministic_path() -
     # (root -> its own child), which the parent/child redundancy filter
     # below now correctly drops on its own merits.
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "det0_h1_1", "reference_name": "Rel", "target_ref": "det0_h1_2"}]
+        results=[{"source_node_id": "det0_h1_1", "reference_name": "Rel", "target_ref": "det0_h1_2", "evidence_quote": "do A"}]
     )
     catalog = [{"reference_name": "Rel", "name": "Related", "semantic_hint": None}]
     tree = build_survey_tree(
