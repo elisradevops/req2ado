@@ -552,6 +552,11 @@ def _apply_synthesis_pass(
     subtree_index: int | None = None,
     subtree_count: int | None = None,
     subtree_label_prefix: str | None = None,
+    # How many of this pass's independent chunks may be in flight at once
+    # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
+    # is the byte-identical previous behavior: one chunk at a time, on the
+    # calling thread, with no ThreadPoolExecutor constructed at all.
+    chunk_concurrency: int = 1,
 ) -> None:
     """Fail-open, same convention as `_apply_title_tag_pass`: any exception
     or malformed/partial response leaves a flagged node's verbatim
@@ -569,7 +574,18 @@ def _apply_synthesis_pass(
     (captured before this pass overwrites `description`), not a
     self-comparison -- fixes a real pre-existing gap where this field was
     always 1.0 by construction (`_grounding_score(description,
-    description)`) and carried no information for these nodes."""
+    description)`) and carried no information for these nodes.
+
+    Chunks may run concurrently, bounded by `chunk_concurrency` (see
+    _apply_title_tag_pass's own identical treatment). One behavior change
+    came with it, deliberately: each item's `context` payload is now built
+    ONCE above the chunk loop, so it always reflects ancestors' pre-pass
+    titles. Previously it was built per chunk, inside the loop, and this
+    pass mutates `node.title` -- so a flagged node nested under ANOTHER
+    flagged node received its ancestor's freshly-synthesized title as
+    context or its original one purely depending on which chunk the
+    ancestor landed in. The hoisted form is chunk-independent and applies
+    identically at chunk_concurrency=1."""
     if not leaf_node_ids:
         return
     by_id = {n.local_id: n for n in nodes}
@@ -589,6 +605,28 @@ def _apply_synthesis_pass(
         return " > ".join(reversed(labels))
 
     total_chunks = -(-len(leaf_node_ids) // _SYNTHESIS_CHUNK_SIZE)  # ceil division, no float rounding
+    # Payloads built HERE, above the chunk loop -- not inside it as before.
+    # `context` reads ancestors' node.title, which this pass itself mutates
+    # below, so building per chunk inside the loop made a node's context
+    # depend on which chunk its ancestor happened to land in. Hoisting makes
+    # every context come from pre-pass titles, on a single code path (this
+    # applies at chunk_concurrency=1 too -- no divergent serial/concurrent
+    # behavior). Deliberate, strictly-more-deterministic change; pinned by
+    # test_apply_synthesis_pass_context_is_built_from_pre_pass_titles_not_a_prior_chunks_output.
+    payload_by_id = {
+        node_id: {
+            "text": original_text_by_id[node_id],
+            "context": _parent_chain_context(by_id[node_id]),
+        }
+        for node_id in leaf_node_ids
+    }
+
+    # PHASE 1 -- chunk construction and ALL pre-dispatch narration, on the
+    # calling thread, in document order (see _apply_title_tag_pass's own
+    # identical structure and llm_leveling._map_figures_tables_to_nodes'
+    # _fire_map_scope comment for why narration never moves into a worker).
+    chunk_payloads: list[dict[str, dict]] = []
+    chunk_id_lists: list[list[str]] = []
     for start in range(0, len(leaf_node_ids), _SYNTHESIS_CHUNK_SIZE):
         chunk_ids = leaf_node_ids[start : start + _SYNTHESIS_CHUNK_SIZE]
         if progress_callback is not None:
@@ -607,19 +645,23 @@ def _apply_synthesis_pass(
                     ),
                 )
             )
-        items_by_id = {
-            node_id: {
-                "text": original_text_by_id[node_id],
-                "context": _parent_chain_context(by_id[node_id]),
-            }
-            for node_id in chunk_ids
-        }
-        try:
-            result = synthesis_client.synthesize_leaf_requirements(items_by_id)
-        except Exception as exc:
+        chunk_id_lists.append(chunk_ids)
+        chunk_payloads.append({node_id: payload_by_id[node_id] for node_id in chunk_ids})
+
+    # PHASE 2 -- only the client call leaves the calling thread.
+    outcomes = run_chunks_bounded(
+        chunk_payloads,
+        lambda items_by_id: synthesis_client.synthesize_leaf_requirements(items_by_id),
+        chunk_concurrency,
+    )
+
+    # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
+    for outcome in outcomes:
+        chunk_ids = chunk_id_lists[outcome.index]
+        if outcome.error is not None:
             message = (
                 f"Requirement-text synthesis call failed for {len(chunk_ids)} flagged fragment "
-                f"leaf node(s) -- kept their verbatim source text exactly as extracted: {exc}"
+                f"leaf node(s) -- kept their verbatim source text exactly as extracted: {outcome.error}"
             )
             warnings.append(
                 IntegrityWarning.make(
@@ -638,6 +680,7 @@ def _apply_synthesis_pass(
                     )
                 )
             continue
+        result = outcome.value or {}
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:

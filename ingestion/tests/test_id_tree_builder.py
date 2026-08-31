@@ -1027,3 +1027,145 @@ def test_apply_title_tag_pass_one_failing_chunk_still_applies_the_others_under_c
     assert nodes[151].title != "Enhanced"
     assert len(warnings) == 1
     assert any(e.phase == "chunk_warning" for e in fired)
+
+
+def test_apply_synthesis_pass_runs_chunks_concurrently() -> None:
+    import threading
+    import time
+
+    from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
+
+    seen: set[str] = set()
+    lock = threading.Lock()
+
+    class ThreadRecordingClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            with lock:
+                seen.add(threading.current_thread().name)
+            time.sleep(0.05)
+            return {node_id: {"text": "The system shall X."} for node_id in items_by_id}
+
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+
+    _apply_synthesis_pass(
+        nodes, [n.local_id for n in nodes], ThreadRecordingClient(), [], chunk_concurrency=3,
+    )
+
+    assert len(seen) > 1
+
+
+def test_apply_synthesis_pass_output_is_identical_serial_vs_concurrent() -> None:
+    import time
+
+    from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
+
+    class OrderSensitiveClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            if "det0_1" in items_by_id:
+                time.sleep(0.2)
+            return {
+                node_id: {"text": f"The system shall handle {node_id}.", "title": f"T {node_id}", "tags": []}
+                for node_id in items_by_id
+            }
+
+    def run(concurrency: int):
+        nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+        warnings: list = []
+        _apply_synthesis_pass(
+            nodes, [n.local_id for n in nodes], OrderSensitiveClient(), warnings,
+            chunk_concurrency=concurrency,
+        )
+        return (
+            [(n.local_id, n.title, n.description, n.grounding_score, n.fidelity_hash) for n in nodes],
+            [w.raw for w in warnings],
+        )
+
+    assert run(1) == run(4)
+
+
+def test_apply_synthesis_pass_narrates_chunks_in_document_order_under_concurrency() -> None:
+    import time
+
+    from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
+
+    class SlowFirstChunkClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            if "det0_1" in items_by_id:
+                time.sleep(0.2)
+            return {node_id: {"text": "The system shall X."} for node_id in items_by_id}
+
+    fired: list = []
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+
+    _apply_synthesis_pass(
+        nodes, [n.local_id for n in nodes], SlowFirstChunkClient(), [],
+        progress_callback=fired.append, chunk_concurrency=4,
+    )
+
+    labels = [e.subtree_label for e in fired if e.phase == "deterministic_subtree"]
+    assert [label.split("(chunk ")[1] for label in labels] == ["1 of 3)", "2 of 3)", "3 of 3)"]
+    assert [e.blocks_done for e in fired if e.phase == "deterministic_subtree"] == [0, 150, 300]
+
+
+def test_apply_synthesis_pass_context_is_built_from_pre_pass_titles_not_a_prior_chunks_output() -> None:
+    # Deliberate, documented behavior change (see this plan's design
+    # decisions): payload construction is hoisted above the chunk loop, so a
+    # node's `context` string is always built from titles as they were
+    # BEFORE this pass ran -- never from an ancestor's freshly-synthesized
+    # title, which previously depended on which chunk that ancestor landed
+    # in. Single code path: this holds at chunk_concurrency=1 too.
+    from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
+
+    captured: list[dict] = []
+
+    class RecordingClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            captured.append(dict(items_by_id))
+            return {node_id: {"text": "The system shall X.", "title": "REWRITTEN"} for node_id in items_by_id}
+
+    # An ancestor Requirement with a nested child Requirement -- both flagged
+    # for synthesis, and forced into different chunks by padding between them.
+    rows = [_row("Power stuff", "Requirement", None, "1", has_shall=True)]
+    rows += [
+        _row(f"Filler {i}", "Requirement", 0, f"1.{i + 1}", has_shall=True)
+        for i in range(200)
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
+    ancestor_id = nodes[0].local_id
+    descendant_id = nodes[-1].local_id
+
+    _apply_synthesis_pass(
+        nodes, [n.local_id for n in nodes], RecordingClient(), [], chunk_concurrency=1,
+    )
+
+    # The descendant is in chunk 1; the ancestor was rewritten to "REWRITTEN"
+    # by chunk 0. Its context must still carry the ORIGINAL ancestor title.
+    descendant_payload = next(c[descendant_id] for c in captured if descendant_id in c)
+    assert "REWRITTEN" not in descendant_payload["context"]
+    assert nodes[0].title == "REWRITTEN"  # the mutation itself still happened
+    assert ancestor_id  # referenced so the id is asserted to exist
+
+
+def test_apply_synthesis_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> None:
+    from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
+
+    class SecondChunkRaisesClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            if "det0_151" in items_by_id:
+                raise RuntimeError("boom")
+            return {node_id: {"text": "The system shall X."} for node_id in items_by_id}
+
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+    warnings: list = []
+    fired: list = []
+
+    _apply_synthesis_pass(
+        nodes, [n.local_id for n in nodes], SecondChunkRaisesClient(), warnings,
+        progress_callback=fired.append, chunk_concurrency=4,
+    )
+
+    assert nodes[0].description == "The system shall X."
+    assert nodes[319].description == "The system shall X."
+    assert nodes[151].description != "The system shall X."
+    assert len(warnings) == 1
+    assert any(e.phase == "chunk_warning" for e in fired)
