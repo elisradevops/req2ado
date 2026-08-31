@@ -167,8 +167,20 @@ export class JobEventsController {
       // the just-subscribed connection above -- once subscribed, that
       // connection can't issue any other command.
       const current = await this.redisCommandClient.get(`job-events:${id}:current`);
+      // Replay writes go straight to res.write, NOT through dispatch() --
+      // preserving this route's pre-existing behavior of never ending the
+      // stream off a replayed stage, only a LIVE one. (A reconnect to an
+      // already-terminal job leaves the stream open rather than closing it
+      // immediately; that is unchanged by this fix and out of this item's
+      // scope, which is the race window during subscribe, not replay-of-a-
+      // finished-job semantics.) `replayed` still collects every raw string
+      // written here, since the live buffer below must be deduped against
+      // it regardless of how it was written.
       const replayed: string[] = [];
-      if (current) replayed.push(current);
+      if (current) {
+        replayed.push(current);
+        res.write(`event: stage\ndata: ${current}\n\n`);
+      }
       // Same replay-on-reconnect pattern as the stage's :current key above,
       // for ingestion's narration events (see NarrationPublisher, Python
       // side) -- published to the SAME channel this controller subscribes to,
@@ -180,9 +192,10 @@ export class JobEventsController {
       // history client-side even though the job kept progressing
       // server-side.
       const narrationLog = await this.redisCommandClient.lrange(`job-events:${id}:narration-log`, 0, -1);
-      replayed.push(...narrationLog);
-
-      for (const raw of replayed) dispatch(raw);
+      for (const narration of narrationLog) {
+        replayed.push(narration);
+        res.write(`event: narration\ndata: ${narration}\n\n`);
+      }
 
       // Deliver whatever arrived on the live channel while the two reads
       // above were in flight, minus whatever of it already appeared in the
