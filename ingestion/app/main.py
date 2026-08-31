@@ -473,7 +473,25 @@ def _caption_and_store_one_figure(
     it safe to run on a worker thread: it returns everything the caller
     needs as plain data instead."""
     caption_status_out: dict[str, str | bytes] = {}
-    caption = _describe_figure(image_bytes, document_context, caption_status_out)
+    # Fail-soft per figure, and NOT optional: before captioning moved out of
+    # the parse walk, every loader wrapped its own describe_figure call in
+    # exactly this try/except ("a vision failure must not abort the whole
+    # document" -- see docx_loader._describe_rel and its three siblings), so a
+    # 5xx/timeout/malformed response from the vision service left ONE figure
+    # uncaptioned and the document still ingested. This function now runs
+    # OUTSIDE those loaders, so without this the same exception escapes the
+    # worker, propagates out of future.result()/the dispatch loop, and 500s
+    # the entire /ingest request. Storage is deliberately skipped in this
+    # branch too -- the pre-move code path piggybacked storage on the very
+    # same call the loader's except swallowed, so a failed caption never
+    # attempted a store either.
+    try:
+        caption = _describe_figure(image_bytes, document_context, caption_status_out)
+    except Exception:  # noqa: BLE001 -- one figure's vision failure must not abort the whole document
+        logger.warning("Vision captioning failed for %s -- figure left uncaptioned", figure_id, exc_info=True)
+        return FigureCaptionOutcome(
+            figure_id=figure_id, caption=None, status="vision_failed", title=None, storage_failed=False,
+        )
     status = cast(str, caption_status_out["status"]) if "status" in caption_status_out else None
     title = cast(str, caption_status_out["title"]) if "title" in caption_status_out else None
 
@@ -945,10 +963,12 @@ async def ingest(
     # pass below). The collector deliberately does NOTHING but record and
     # return None: the loaders' own lockstep-append invariant means the Nth
     # call corresponds to figure id f"f{N-1}", so recording in call order is
-    # all the id bookkeeping this needs. Every loader is already proven to
-    # work correctly with a caption-less callback -- the docx/pptx figure
-    # precount pass above runs the very same loaders with
-    # describe_figure=None and produces the identical figure list and ids.
+    # all the id bookkeeping this needs. Returning None is safe for every
+    # loader: each one already treats a None caption as the normal
+    # "uncaptioned figure" outcome (that is exactly what it gets when vision
+    # is disabled and describe_figure is None at all, and what its own
+    # per-figure except returns on a vision failure), so the figure list and
+    # the ids it produces are identical either way.
     collected_figure_bytes: list[bytes] = []
     if vision_active:
 
@@ -974,12 +994,13 @@ async def ingest(
         # Real page numbers for a docx's own blocks/tables/figures -- a docx
         # carries none in its own file format (see docx_pagination.py's own
         # module docstring; pagination is a rendering-time computation, not
-        # document structure). Deliberately called HERE, not inside
-        # load_docx/dispatch_by_extension themselves: this exact
-        # dispatch_by_extension call is ALSO made a second time above (the
-        # figure-count precount pass, .docx-only) -- annotating inside
-        # either loader-level function would double the (expensive)
-        # docx->PDF conversion cost for a vision-active docx job. Needs
+        # document structure). Deliberately called HERE, at the route level,
+        # rather than inside load_docx/dispatch_by_extension themselves:
+        # this is an OPTIONAL, route-gated enrichment (the
+        # docx_page_alignment_enabled kill switch below, plus its own
+        # narration events) that pays an expensive docx->PDF conversion, so
+        # it stays a decision /ingest makes once per request instead of a
+        # cost every caller of the loaders silently inherits. Needs
         # `tmp_path` (still on disk -- the `finally` below hasn't run yet
         # ), not `doc.document.path` (dispatch_by_extension already
         # rewrote every SourceRef.document_path to the ORIGINAL filename by
@@ -1028,15 +1049,18 @@ async def ingest(
     # narration below, both of which read what it produces.
     #
     # Three parts, and the split is the whole correctness story:
-    #  - DISPATCH, on this thread: fire each figure's "starting" narration
-    #    in document order, then submit its work unit.
+    #  - DISPATCH, on this thread: submit every figure's work unit, then walk
+    #    the results in submission order, firing each figure's "starting"
+    #    narration LAZILY -- immediately before that figure's own result is
+    #    consumed, never all up front (see the loop's own comment).
     #  - WORKERS: _caption_and_store_one_figure and nothing else. It has no
     #    shared-state mutation and no narration by construction (see its own
     #    docstring), which is what makes it safe here -- and it keeps
     #    captioning and figure-file storage together, so the
     #    rasterized-bytes reuse a prior fix introduced still holds.
-    #  - COLLECT, on this thread, BY SUBMISSION INDEX (never completion
-    #    order): fire each figure's "captioned" narration, populate the
+    #  - MERGE, on this thread, BY SUBMISSION INDEX (never completion order)
+    #    and one figure at a time as its result arrives: fire that figure's
+    #    "captioned" narration, populate the
     #    caption_status/title side channels, append storage failures, and
     #    reassign onto the tree. Everything user-visible therefore comes out
     #    in document order: ProgressBanner derives its overall percentage
@@ -1084,27 +1108,10 @@ async def ingest(
                 job_id,
             )
 
-        caption_concurrency = settings.vision_caption_concurrency
-        if caption_concurrency <= 1 or len(collected_figure_bytes) <= 1:
-            # Byte-identical to this pass's pre-concurrency form: one figure
-            # at a time, in document order, with no ThreadPoolExecutor
-            # constructed at all -- zero new risk for every deployment that
-            # hasn't opted into concurrency. Same guard shape
-            # llm_leveling.py's own branch/batch fan-outs use.
-            for figure_position in range(len(collected_figure_bytes)):
-                _publish_figure_start(figure_position)
-                figure_outcomes.append(_caption_one(figure_position))
-        else:
-            with ThreadPoolExecutor(max_workers=caption_concurrency) as executor:
-                futures = []
-                for figure_position in range(len(collected_figure_bytes)):
-                    _publish_figure_start(figure_position)
-                    futures.append(executor.submit(_caption_one, figure_position))
-                # Collected by INDEX (list position of the future), never by
-                # completion order.
-                figure_outcomes = [future.result() for future in futures]
-
-        for outcome in figure_outcomes:
+        def _merge_one(outcome: FigureCaptionOutcome) -> None:
+            """Everything one finished figure changes, all on the CALLING
+            thread and all at the moment that figure's result is consumed."""
+            figure_outcomes.append(outcome)
             if outcome.status is not None:
                 figure_caption_status[outcome.figure_id] = outcome.status
             if outcome.title is not None:
@@ -1131,6 +1138,37 @@ async def ingest(
                         figure_caption_status=outcome.status,
                     )
                 )
+
+        caption_concurrency = settings.vision_caption_concurrency
+        if caption_concurrency <= 1 or len(collected_figure_bytes) <= 1:
+            # Byte-identical to this pass's pre-concurrency form: one figure
+            # at a time, in document order, with no ThreadPoolExecutor
+            # constructed at all -- zero new risk for every deployment that
+            # hasn't opted into concurrency. Same guard shape
+            # llm_leveling.py's own branch/batch fan-outs use.
+            for figure_position in range(len(collected_figure_bytes)):
+                _publish_figure_start(figure_position)
+                _merge_one(_caption_one(figure_position))
+        else:
+            with ThreadPoolExecutor(max_workers=caption_concurrency) as executor:
+                futures = [
+                    executor.submit(_caption_one, figure_position)
+                    for figure_position in range(len(collected_figure_bytes))
+                ]
+                # Consumed by INDEX (list position of the future), never by
+                # completion order -- and each figure's "starting" event is
+                # published LAZILY, immediately before its own result is
+                # pulled, exactly as bounded_chunks.run_chunks_bounded's
+                # generator lets its callers do. Publishing all the starts up
+                # front instead (which this loop used to do) fires the whole
+                # phase's narration back-to-back in microseconds: the progress
+                # bar jumps to ~100% of the figure phase and then freezes for
+                # the entire pass, and every caption lands in one burst at the
+                # end. Same regression, same fix, as the chunked-pass
+                # narration a sibling sweep item already corrected.
+                for figure_position, future in enumerate(futures):
+                    _publish_figure_start(figure_position)
+                    _merge_one(future.result())
         _reassign_figure_captions(doc, figure_outcomes)
 
     doc.failed_figure_storage_ids = failed_figure_ids

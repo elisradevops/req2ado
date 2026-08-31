@@ -10,9 +10,11 @@ Redis, so a shared context would let one test read another's cached caption.
 
 import threading
 import time
+import uuid
+
+import pytest
 
 from app.vision.orchestrator_vision_client import FigureVisionResult
-
 from tests.test_ingest_caption_status import FIXTURES, _upload
 
 MULTI_FIGURE_FIXTURE_NAME = "multi_figure.docx"
@@ -42,7 +44,13 @@ def test_captioning_runs_figures_concurrently(monkeypatch) -> None:
 
     _upload(
         MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
-        primer_context="captioning-concurrency-thread-names",
+        # uuid, not a fixed literal: the caption cache key is
+        # (prompt version, image sha256, document_context sha256) with a
+        # 7-day TTL against a real Redis, so a fixed context makes the SECOND
+        # run of this test a pure cache hit -- no vision call, no threads, and
+        # the concurrency assertion below would pass vacuously. Unique per
+        # invocation keeps the test genuinely rerunnable.
+        primer_context=f"captioning-concurrency-thread-names-{uuid.uuid4()}",
     )
 
     assert len(seen) > 1
@@ -160,6 +168,88 @@ def test_captioning_narrates_figures_in_document_order_under_concurrency(monkeyp
     assert starts == sorted(starts)
     assert dones == sorted(dones)
     assert starts == dones  # one start and one done per figure, same order
+
+
+@pytest.mark.parametrize("concurrency", [1, 4])
+def test_a_raising_vision_call_leaves_one_figure_uncaptioned(monkeypatch, concurrency) -> None:
+    # Before captioning moved out of the parse walk, each loader's own
+    # per-figure try/except swallowed anything the vision call raised (HTTP
+    # 5xx via raise_for_status, a timeout, a malformed body) and the document
+    # still ingested with that one figure uncaptioned. The post-parse pass
+    # runs outside those loaders, so the same exception would otherwise
+    # escape the worker and 500 the whole /ingest request. Both concurrency
+    # branches are exercised: the bug was present in each.
+    import app.main as main_module
+
+    class _RaisingVisionClient:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+            raise RuntimeError("vision service is down")
+
+    monkeypatch.setattr(main_module, "_vision_client", _RaisingVisionClient())
+    monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", concurrency)
+
+    # _upload asserts HTTP 200 -- a propagated exception fails right here.
+    result = _upload(
+        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        primer_context=f"captioning-vision-raises-{uuid.uuid4()}",
+    )
+
+    assert result["figures"]
+    assert all(f["caption"] is None for f in result["figures"])
+    assert all(f["caption_status"] == "vision_failed" for f in result["figures"])
+
+
+@pytest.mark.parametrize("concurrency", [1, 4])
+def test_figure_narration_stream_is_incremental_and_monotonic(monkeypatch, concurrency) -> None:
+    # The user-visible property is about the SINGLE stream the frontend sees:
+    # ProgressBanner reads completedUnits off the LAST narration event's
+    # figureIndex and NarrationEvent carries no sequence field, so the
+    # starting/captioned events INTERLEAVED must never move the index
+    # backwards. Partitioning into starts and dones and sorting each (as the
+    # sibling document-order test does) cannot see the real regression: firing
+    # every start up front, or every done in one burst at the end, leaves both
+    # partitions perfectly sorted while the combined stream reads
+    # 1, 2, ..., N, 1, 2, ..., N -- a bar that jumps to 100% of the phase in
+    # microseconds and then freezes for the whole pass.
+    import app.main as main_module
+
+    published: list = []
+
+    class _SlowFirstFigureVisionClient:
+        def __init__(self) -> None:
+            self._first_seen: bytes | None = None
+
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+            if self._first_seen is None:
+                self._first_seen = image_bytes
+            if image_bytes == self._first_seen:
+                time.sleep(0.2)
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    class _RecordingNarrationPublisher:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def publish(self, progress) -> None:
+            published.append(progress)
+
+    monkeypatch.setattr(main_module, "_vision_client", _SlowFirstFigureVisionClient())
+    monkeypatch.setattr(main_module, "NarrationPublisher", _RecordingNarrationPublisher)
+    monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", concurrency)
+
+    result = _upload(
+        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        job_id="job-caption-narration-monotonic",
+        primer_context=f"captioning-narration-monotonic-{uuid.uuid4()}",
+    )
+
+    combined = [e.figure_index for e in published if e.phase == "describe_figure"]
+    assert len(combined) == 2 * len(result["figures"])  # one start + one done per figure
+    assert combined == sorted(combined), f"figure narration moved backwards: {combined}"
+    # And each figure's own pair is adjacent -- i.e. the captioned event for
+    # figure i arrives before figure i+1's starting event, which is what makes
+    # the progress genuinely incremental rather than one final burst.
+    assert combined == [i // 2 + 1 for i in range(len(combined))]
 
 
 def test_storage_failures_are_recorded_in_figure_id_order_under_concurrency(monkeypatch) -> None:

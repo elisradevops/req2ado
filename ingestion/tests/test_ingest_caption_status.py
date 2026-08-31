@@ -4,6 +4,7 @@
 # "vision_failed") -- and CanonicalDoc.vision_active (sub-fix i) records
 # whether vision ran for this document at all. Mirrors
 # test_ingest_figure_storage.py's own TestClient conventions.
+import uuid
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -308,7 +309,11 @@ def test_figure_captioning_happens_after_parsing_not_during_it(monkeypatch) -> N
 
     _upload(
         "sample.docx", FIXTURES / "sample.docx", mode="survey",
-        primer_context="captioning-after-parsing",
+        # uuid, not a fixed literal: the caption cache key includes this
+        # context and lives for 7 days in a real Redis, so a fixed value makes
+        # every rerun a cache hit -- no vision call at all, and the
+        # "vision in events" assertion below would fail spuriously.
+        primer_context=f"captioning-after-parsing-{uuid.uuid4()}",
     )
 
     assert "vision" in events
