@@ -2684,23 +2684,23 @@ describe('JobsService.moveDiffEntry', () => {
   // prisma.job.update and so has no real-world equivalent to leak from.
   function makeService(dryRunDiff: unknown[], opts?: { status?: string; mapping?: { linked: boolean } | null }) {
     const clonedDiff = JSON.parse(JSON.stringify(dryRunDiff));
-    const update = jest.fn().mockResolvedValue(undefined);
-    const findUnique = jest.fn().mockResolvedValue({ id: 'job-1', status: opts?.status ?? 'diff_ready', dryRunDiff: clonedDiff });
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const findUnique = jest.fn().mockResolvedValue({ id: 'job-1', status: opts?.status ?? 'diff_ready', diffVersion: 0, dryRunDiff: clonedDiff });
     const mappingFindUnique = jest.fn().mockResolvedValue(opts?.mapping ?? null);
     const prisma = {
-      job: { findUnique, update },
+      job: { findUnique, updateMany },
       createdItemMapping: { findUnique: mappingFindUnique },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
-    return { service, update, mappingFindUnique };
+    return { service, updateMany, mappingFindUnique };
   }
 
   it('reparents a Feature under a different Epic', async () => {
-    const { service, update } = makeService([epic1, epic2, feature1, feature2, requirement1]);
+    const { service, updateMany } = makeService([epic1, epic2, feature1, feature2, requirement1]);
     const result = await service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' });
     const moved = result.find((e) => e.localId === 'f1')!;
     expect(moved.parentLocalId).toBe('e2');
-    expect(update).toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalled();
   });
 
   it('moves a node to the top level when parentLocalId is null and its category allows root', async () => {
@@ -2837,6 +2837,54 @@ describe('JobsService.moveDiffEntry', () => {
     // immediately, and f2 (still under e1) is unaffected.
     expect(result.find((e) => e.localId === 'f1')!.parentLocalId).toBe('e2');
     expect(result.find((e) => e.localId === 'f2')!.parentLocalId).toBe('e1');
+  });
+
+  it('re-applies the move against the fresh array when a concurrent write landed first -- the other client\'s edit survives', async () => {
+    // Client A excluded r1 and bumped the row to diffVersion 1 between this
+    // call's read and its write. This reparent of f1 must be re-applied on
+    // top of A's array. Each findUnique returns a FRESHLY cloned array --
+    // moveDiffEntry mutates in place (splice + entry.parentLocalId = ...),
+    // and real Prisma deserializes a JSON column afresh on every query, so
+    // sharing one object graph across attempts would both hide the bug and
+    // leak this test's mutations, exactly as makeService's own comment
+    // above documents.
+    const fixture = [epic1, epic2, feature1, feature2, requirement1];
+    const clone = (extra?: (rows: any[]) => void) => {
+      const rows = JSON.parse(JSON.stringify(fixture));
+      extra?.(rows);
+      return rows;
+    };
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: clone() })
+      .mockResolvedValueOnce({
+        id: 'job-1',
+        status: 'diff_ready',
+        diffVersion: 1,
+        dryRunDiff: clone((rows) => {
+          rows.find((r: any) => r.localId === 'r1').excluded = true;
+        }),
+      });
+    const mappingFindUnique = jest.fn().mockResolvedValue(null);
+    const prisma = {
+      job: { findUnique, updateMany },
+      createdItemMapping: { findUnique: mappingFindUnique },
+    };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' });
+
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    // The already-linked guard is a pre-read, issued once, not per retry.
+    expect(mappingFindUnique).toHaveBeenCalledTimes(1);
+    expect(result.find((e) => e.localId === 'f1')!.parentLocalId).toBe('e2');
+    expect(result.find((e) => e.localId === 'r1')!.excluded).toBe(true);
   });
 });
 

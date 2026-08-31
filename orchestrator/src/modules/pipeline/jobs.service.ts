@@ -1004,27 +1004,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
   // Reparent (parentLocalId alone) and/or reorder among siblings
   // (anchorLocalId + placement, parentLocalId unchanged for a pure reorder).
-  // Every check below is local to dryRunDiff + one Prisma read -- no MCP
-  // client call, so this endpoint has no network round-trip and no 500
-  // surface. See DESIGN.md §11.5 for the UI this backs.
+  // Every check below is local to dryRunDiff plus two Prisma reads (the
+  // already-linked mapping guard and the version-guarded row read, which
+  // re-reads on a lost concurrency race) -- no MCP client call, so this
+  // endpoint still has no network round-trip and no 500 surface. See
+  // DESIGN.md §11.5 for the UI this backs.
   async moveDiffEntry(
     id: string,
     localId: string,
     input: { parentLocalId: string | null; anchorLocalId?: string | null; placement?: 'before' | 'after' },
   ): Promise<DryRunDiffEntry[]> {
-    const job = await this.prisma.job.findUnique({ where: { id } });
-    if (!job) throw new NotFoundException(`Job ${id} not found`);
-    if (job.status !== 'diff_ready') {
-      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
-    }
-    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
-    const entry = diff.find((e) => e.localId === localId);
-    if (!entry) throw new NotFoundException(`Diff entry ${localId} not found`);
-    const newParent = input.parentLocalId !== null ? diff.find((e) => e.localId === input.parentLocalId) : null;
-    if (input.parentLocalId !== null && !newParent) {
-      throw new NotFoundException(`Diff entry ${input.parentLocalId} not found`);
-    }
-
     // Two distinct rules here, not one -- audited end-to-end (see DESIGN.md
     // §11.5's "already in ADO" badge) to confirm this is the complete
     // policy, not just what happened to be reachable:
@@ -1052,6 +1041,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     //    real hierarchy moves with it. See DiffTree.tsx's badge for the one
     //    thing this move DOES still affect for real: a brand-new item
     //    placed as this entry's child links for real, on confirm.
+    //
+    // SWEEP.md 8a: hoisted above the version-guarded read below because
+    // that guard's mutator is synchronous and because this lookup is keyed
+    // on { jobId, localId } alone -- it does not depend on the diff array,
+    // so issuing it once rather than once per retry attempt changes nothing
+    // about what it checks.
     const mapping = await this.prisma.createdItemMapping.findUnique({
       where: { jobId_localId: { jobId: id, localId } },
     });
@@ -1059,67 +1054,75 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       throw new ConflictException(`Diff entry ${localId} is already linked in Azure DevOps and cannot be reparented`);
     }
 
-    // Cycle guard -- confirm()'s own isExcluded() walks parentLocalId
-    // ancestry with no cycle check and would infinite-loop in production on
-    // a cyclic tree; this is the one place a cycle could be introduced.
-    if (input.parentLocalId !== null) {
-      let cursor: DryRunDiffEntry | undefined = newParent ?? undefined;
-      while (cursor) {
-        if (cursor.localId === localId) {
-          throw new BadRequestException('cannot move an item inside its own descendant');
+    return this.mutateDiffVersioned(id, (diff) => {
+      const entry = diff.find((e) => e.localId === localId);
+      if (!entry) throw new NotFoundException(`Diff entry ${localId} not found`);
+      const newParent = input.parentLocalId !== null ? diff.find((e) => e.localId === input.parentLocalId) : null;
+      if (input.parentLocalId !== null && !newParent) {
+        throw new NotFoundException(`Diff entry ${input.parentLocalId} not found`);
+      }
+
+      // Cycle guard -- confirm()'s own isExcluded() walks parentLocalId
+      // ancestry with no cycle check and would infinite-loop in production on
+      // a cyclic tree; this is the one place a cycle could be introduced.
+      if (input.parentLocalId !== null) {
+        let cursor: DryRunDiffEntry | undefined = newParent ?? undefined;
+        while (cursor) {
+          if (cursor.localId === localId) {
+            throw new BadRequestException('cannot move an item inside its own descendant');
+          }
+          cursor = cursor.parentLocalId ? diff.find((e) => e.localId === cursor!.parentLocalId) : undefined;
         }
-        cursor = cursor.parentLocalId ? diff.find((e) => e.localId === cursor!.parentLocalId) : undefined;
       }
-    }
 
-    // Tier rule -- same-tier (e.g. Epic under Epic) is intentionally
-    // ALLOWED here (see DESIGN.md §11.5's `same tier` badge) even though
-    // it's flagged client-side; only an actual tier violation is rejected.
-    if (newParent) {
-      if (!canNest(entry.type, newParent.type)) {
-        throw new BadRequestException(`a ${entry.type} cannot be nested under a ${newParent.type}`);
+      // Tier rule -- same-tier (e.g. Epic under Epic) is intentionally
+      // ALLOWED here (see DESIGN.md §11.5's `same tier` badge) even though
+      // it's flagged client-side; only an actual tier violation is rejected.
+      if (newParent) {
+        if (!canNest(entry.type, newParent.type)) {
+          throw new BadRequestException(`a ${entry.type} cannot be nested under a ${newParent.type}`);
+        }
+      } else {
+        const anyEpicExists = diff.some((e) => e.type === 'Epic');
+        if (!canBeRoot(entry.type, anyEpicExists)) {
+          throw new BadRequestException(`a ${entry.type} cannot be a top-level item here`);
+        }
       }
-    } else {
-      const anyEpicExists = diff.some((e) => e.type === 'Epic');
-      if (!canBeRoot(entry.type, anyEpicExists)) {
-        throw new BadRequestException(`a ${entry.type} cannot be a top-level item here`);
+
+      const fromIndex = diff.indexOf(entry);
+      diff.splice(fromIndex, 1);
+      entry.parentLocalId = input.parentLocalId;
+
+      let insertAt: number;
+      if (input.anchorLocalId) {
+        const anchorIndex = diff.findIndex((e) => e.localId === input.anchorLocalId);
+        if (anchorIndex === -1) throw new NotFoundException(`Diff entry ${input.anchorLocalId} not found`);
+        // CR: reparent review fix -- the anchor must actually be a sibling
+        // under the requested parentLocalId. DiffTree.tsx always supplies a
+        // real sibling as the anchor, so this wasn't reachable from the
+        // shipped UI, but nothing previously stopped a malformed/stale
+        // request from splicing an entry into an arbitrary array position
+        // relative to unrelated nodes (harmless to tree structure -- render
+        // groups strictly by parentLocalId -- but a confusing sibling order
+        // for the true siblings).
+        if (diff[anchorIndex].parentLocalId !== input.parentLocalId) {
+          throw new BadRequestException(`Diff entry ${input.anchorLocalId} is not a sibling under the requested parent`);
+        }
+        insertAt = input.placement === 'before' ? anchorIndex : anchorIndex + 1;
+      } else {
+        // No explicit sibling anchor -- land after the new parent's last
+        // existing child (or at the end, for a root move) rather than ahead
+        // of siblings that were already there.
+        let lastSiblingIndex = -1;
+        diff.forEach((e, i) => {
+          if (e.parentLocalId === input.parentLocalId) lastSiblingIndex = i;
+        });
+        insertAt = lastSiblingIndex === -1 ? diff.length : lastSiblingIndex + 1;
       }
-    }
+      diff.splice(insertAt, 0, entry);
 
-    const fromIndex = diff.indexOf(entry);
-    diff.splice(fromIndex, 1);
-    entry.parentLocalId = input.parentLocalId;
-
-    let insertAt: number;
-    if (input.anchorLocalId) {
-      const anchorIndex = diff.findIndex((e) => e.localId === input.anchorLocalId);
-      if (anchorIndex === -1) throw new NotFoundException(`Diff entry ${input.anchorLocalId} not found`);
-      // CR: reparent review fix -- the anchor must actually be a sibling
-      // under the requested parentLocalId. DiffTree.tsx always supplies a
-      // real sibling as the anchor, so this wasn't reachable from the
-      // shipped UI, but nothing previously stopped a malformed/stale
-      // request from splicing an entry into an arbitrary array position
-      // relative to unrelated nodes (harmless to tree structure -- render
-      // groups strictly by parentLocalId -- but a confusing sibling order
-      // for the true siblings).
-      if (diff[anchorIndex].parentLocalId !== input.parentLocalId) {
-        throw new BadRequestException(`Diff entry ${input.anchorLocalId} is not a sibling under the requested parent`);
-      }
-      insertAt = input.placement === 'before' ? anchorIndex : anchorIndex + 1;
-    } else {
-      // No explicit sibling anchor -- land after the new parent's last
-      // existing child (or at the end, for a root move) rather than ahead
-      // of siblings that were already there.
-      let lastSiblingIndex = -1;
-      diff.forEach((e, i) => {
-        if (e.parentLocalId === input.parentLocalId) lastSiblingIndex = i;
-      });
-      insertAt = lastSiblingIndex === -1 ? diff.length : lastSiblingIndex + 1;
-    }
-    diff.splice(insertAt, 0, entry);
-
-    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
-    return diff;
+      return diff;
+    });
   }
 
   async getSummary(id: string): Promise<{
