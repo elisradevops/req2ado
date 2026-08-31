@@ -5,7 +5,7 @@ import logging
 import tempfile
 import time
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 
 import redis
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -426,6 +426,96 @@ def _describe_figure(
     return result.description if result.significant else None
 
 
+class FigureCaptionOutcome(NamedTuple):
+    """One figure's complete captioning result, as plain data returned to
+    the calling thread.
+
+    Everything /ingest needs to reassign onto the already-parsed
+    CanonicalDoc, and nothing else -- so this work unit can run on a worker
+    thread (see the post-parse captioning pass below) while every mutation,
+    every narration publish, and every append to failed_figure_ids happens
+    on the calling thread in figure-id order.
+
+    `status` mirrors _describe_figure's caption_status_out["status"]
+    ("insignificant" | "vision_failed" | None) and `title` its ["title"] --
+    see Figure.caption_status' own docstring for what each means.
+    `storage_failed` is the figure-file storage best-effort outcome; the
+    caller folds it into CanonicalDoc.failed_figure_storage_ids, whose ORDER
+    is user-visible (the orchestrator turns the list into a WarningRecord)."""
+
+    figure_id: str
+    caption: str | None
+    status: str | None
+    title: str | None
+    storage_failed: bool
+
+
+def _caption_and_store_one_figure(
+    figure_id: str,
+    image_bytes: bytes,
+    document_context: str | None,
+    job_id: str | None,
+) -> FigureCaptionOutcome:
+    """One figure's vision caption AND its figure-file storage, deliberately
+    in ONE function.
+
+    Splitting these two apart would reintroduce the "figure bytes rasterized
+    twice per figure" bug a prior sweep item already closed: _describe_figure
+    publishes the bytes it rasterized for the vision call out through
+    caption_status_out["rasterized_bytes"] (on a cache MISS only), and the
+    storage call below reads them back instead of paying for a second,
+    redundant rasterization of the same image. That side channel lives for
+    exactly one invocation of this function, so captioning and storage must
+    stay co-located -- storage on the other side of a thread or phase
+    boundary would have nothing to read and would silently rasterize again.
+
+    Contains NO narration and NO shared-state mutation, which is what makes
+    it safe to run on a worker thread: it returns everything the caller
+    needs as plain data instead."""
+    caption_status_out: dict[str, str | bytes] = {}
+    caption = _describe_figure(image_bytes, document_context, caption_status_out)
+    status = cast(str, caption_status_out["status"]) if "status" in caption_status_out else None
+    title = cast(str, caption_status_out["title"]) if "title" in caption_status_out else None
+
+    # Captured for every figure regardless of relevance -- figure_ids
+    # relevance isn't known until /level runs (see llm_leveling.py's
+    # analyze_section), so everything is stored now and pruned down later
+    # (pipeline.worker.ts, once the real WorkItemTree exists). Best-effort:
+    # any failure here (network, oversized bytes compress_figure_for_storage
+    # can't open even after rasterization) must never fail the captioning it
+    # is piggybacking on -- a figure that doesn't get stored simply won't be
+    # attachable/viewable later. Uses the SAME rasterized bytes
+    # _describe_figure (above) used for captioning -- not the original
+    # `image_bytes` -- confirmed real gap: an EMF/WMF figure captioned fine
+    # here but compress_figure_for_storage (Pillow-only, no EMF/WMF support)
+    # silently failed on the un-converted original bytes, so a real,
+    # successfully-described figure was never storable.
+    # `caption_status_out["rasterized_bytes"]` carries those SAME bytes out
+    # when _describe_figure actually rasterized (a cache miss) -- reused here
+    # instead of a second, redundant rasterization of the same image. Absent
+    # on a cache hit (rasterization never ran that time), so this still falls
+    # back to rasterizing its own copy in that case.
+    storage_failed = False
+    if job_id is not None and _figure_file_client is not None:
+        try:
+            cached_rasterized = caption_status_out.get("rasterized_bytes")
+            if isinstance(cached_rasterized, bytes):
+                rasterized_bytes = cached_rasterized
+            else:
+                rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
+            compressed = compress_figure_for_storage(rasterized_bytes)
+            if compressed is not None:
+                _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
+        except Exception:
+            logger.warning(
+                "Figure-file storage failed for %s -- it will not be attachable in ADO", figure_id, exc_info=True
+            )
+            storage_failed = True
+    return FigureCaptionOutcome(
+        figure_id=figure_id, caption=caption, status=status, title=title, storage_failed=storage_failed,
+    )
+
+
 # Lazily constructed (NOT at import time, unlike _vector_store above) --
 # CriteriaRetriever's constructor makes a real embed() HTTP call to embed
 # the corpus, and eagerly doing that at module-import time would make every
@@ -841,31 +931,41 @@ async def ingest(
                         figure_index=index, figure_count=figure_total,
                     )
                 )
+            # index-1 matches the loader's own f"f{figure_index}" id scheme --
+            # every loader (docx/pptx/pdf) calls describe_figure exactly once
+            # per figure, immediately before appending that figure with a
+            # 0-based sequential id, in the same order (the lockstep-append
+            # invariant llm_leveling.py's figure_id_by_block_id mapping also
+            # relies on). Every skip gate in every loader runs BEFORE this
+            # call and returns without touching either counter, so the two
+            # never drift.
+            figure_id = f"f{index - 1}"
             # primer_context is the outer ingest() route param (closed over
             # by this nested function); _describe_figure's OWN parameter is
             # named document_context (see main.py's _describe_figure) since
             # it's a plain in-process argument, never a URL query key of its
             # own -- passing primer_context's value into it here is the one
             # place that boundary rename happens.
-            caption_status_out: dict[str, str | bytes] = {}
-            caption = _describe_figure(image_bytes, primer_context, caption_status_out)
-            # index-1 matches the loader's own f"f{figure_index}" id scheme --
-            # see the fuller invariant comment on the figure-file-storage use
-            # of this same computation below. Computed unconditionally (not
-            # only inside the job_id/_figure_file_client gate below) since
-            # Figure.caption_status must be populated whenever vision ran at
-            # all, independent of whether figure-file storage is configured.
-            figure_id = f"f{index - 1}"
-            if "status" in caption_status_out:
-                figure_caption_status[figure_id] = cast(str, caption_status_out["status"])
-            if "title" in caption_status_out:
-                figure_title[figure_id] = cast(str, caption_status_out["title"])
+            outcome = _caption_and_store_one_figure(figure_id, image_bytes, primer_context, job_id)
+            # Computed unconditionally (not only inside the job_id/
+            # _figure_file_client gate) since Figure.caption_status must be
+            # populated whenever vision ran at all, independent of whether
+            # figure-file storage is configured.
+            if outcome.status is not None:
+                figure_caption_status[figure_id] = outcome.status
+            if outcome.title is not None:
+                figure_title[figure_id] = outcome.title
+            if outcome.storage_failed:
+                failed_figure_ids.append(figure_id)
             if narration_publisher is not None:
                 # caption is None exactly when the vision model judged this
                 # figure non-significant (or vision failed) -- both cases
                 # get the same honest "nothing here" narration copy, same
                 # spirit as the retired sentinel's display translation.
-                display_caption = caption if caption is not None else "this figure has no discernible technical content"
+                display_caption = (
+                    outcome.caption if outcome.caption is not None
+                    else "this figure has no discernible technical content"
+                )
                 narration_publisher.publish(
                     LevelingProgress(
                         phase="describe_figure",
@@ -881,51 +981,10 @@ async def ingest(
                         # path already applies via Boolean(caption) -- see
                         # LevelingProgress.figure_caption_status's own
                         # docstring for the live-confirmed bug this closes.
-                        figure_caption_status=caption_status_out.get("status"),
+                        figure_caption_status=outcome.status,
                     )
                 )
-            # Captured for every figure regardless of relevance -- figure_ids
-            # relevance isn't known until /level runs (see llm_leveling.py's
-            # analyze_section), so everything is stored now and pruned down
-            # later (pipeline.worker.ts, once the real WorkItemTree exists).
-            # index-1 matches the loader's own f"f{figure_index}" id scheme
-            # exactly: every loader (docx/pptx/pdf) calls describe_figure
-            # exactly once per figure, immediately before appending that
-            # figure with a 0-based sequential id, in the same order -- the
-            # same lockstep-append invariant llm_leveling.py's
-            # figure_id_by_block_id mapping already relies on. Best-effort:
-            # any failure here (network, oversized bytes compress_figure_
-            # for_storage can't open even after rasterization) must never
-            # fail the describe_figure call it's piggybacking on -- a
-            # figure that doesn't get stored simply won't be attachable/
-            # viewable later. Uses the SAME rasterized bytes _describe_figure
-            # (above) used for captioning -- not the original `image_bytes`
-            # -- confirmed real gap: an EMF/WMF figure captioned fine here
-            # but compress_figure_for_storage (Pillow-only, no EMF/WMF
-            # support) silently failed on the un-converted original bytes,
-            # so a real, successfully-described figure was never storable.
-            # `caption_status_out["rasterized_bytes"]` carries those SAME
-            # bytes out when _describe_figure actually rasterized (a cache
-            # miss) -- reused here instead of a second, redundant
-            # rasterization of the same image. Absent on a cache hit
-            # (rasterization never ran that time), so this still falls back
-            # to rasterizing its own copy in that case.
-            if job_id is not None and _figure_file_client is not None:
-                try:
-                    cached_rasterized = caption_status_out.get("rasterized_bytes")
-                    if isinstance(cached_rasterized, bytes):
-                        rasterized_bytes = cached_rasterized
-                    else:
-                        rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
-                    compressed = compress_figure_for_storage(rasterized_bytes)
-                    if compressed is not None:
-                        _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
-                except Exception:
-                    logger.warning(
-                        "Figure-file storage failed for %s -- it will not be attachable in ADO", figure_id, exc_info=True
-                    )
-                    failed_figure_ids.append(figure_id)
-            return caption
+            return outcome.caption
 
         describe_figure_fn = _describe_figure_with_progress
 

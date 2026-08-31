@@ -1134,3 +1134,100 @@ def test_figure_storage_uses_the_same_rasterized_bytes_as_captioning_not_the_ori
     # instead of reusing the bytes _describe_figure already computed for
     # captioning -- this figure must only ever be converted once.
     assert len(convert_calls) == 1
+
+
+def test_figure_bytes_are_rasterized_exactly_once_per_figure(monkeypatch) -> None:
+    # Guards the prior sweep fix ("Figure bytes rasterized twice per figure")
+    # with a CALL COUNT, not just a bytes-identity assertion: the caption
+    # call and the storage call must share one rasterization via
+    # caption_status_out["rasterized_bytes"]. This is the assertion that
+    # would catch a restructuring which split captioning and storage apart,
+    # since the storage side would then have no side-channel to read and
+    # would silently rasterize its own second copy.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    class _FakeFigureFileClient:
+        def store(self, job_id: str, figure_id: str, image_bytes: bytes, mime_type: str) -> None:
+            return None
+
+    rasterize_calls: list[bytes] = []
+    original_rasterize = main_module._rasterize_for_vision
+
+    def counting_rasterize(image_bytes: bytes):
+        rasterize_calls.append(image_bytes)
+        return original_rasterize(image_bytes)
+
+    monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
+    monkeypatch.setattr(main_module, "_figure_file_client", _FakeFigureFileClient())
+    monkeypatch.setattr(main_module, "_rasterize_for_vision", counting_rasterize)
+    monkeypatch.setattr(main_module, "compress_figure_for_storage", lambda b: (b, "image/png"))
+
+    result = _upload(
+        "sample.docx", FIXTURES / "sample.docx", mode="survey",
+        job_id="job-rasterize-once", primer_context="rasterize-once-call-count",
+    )
+
+    # sample.docx has exactly one figure; one rasterization total, shared by
+    # the caption call and the storage call.
+    assert len(result["figures"]) == 1
+    assert len(rasterize_calls) == 1
+
+
+def test_caption_and_store_one_figure_returns_a_complete_outcome(monkeypatch) -> None:
+    # Direct unit test of the extracted work unit, independent of the route.
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+            return FigureVisionResult(significant=True, description="prose about the figure", title="Short Title")
+
+    stored: list[tuple[str, str]] = []
+
+    class _FakeFigureFileClient:
+        def store(self, job_id: str, figure_id: str, image_bytes: bytes, mime_type: str) -> None:
+            stored.append((job_id, figure_id))
+
+    monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
+    monkeypatch.setattr(main_module, "_figure_file_client", _FakeFigureFileClient())
+    monkeypatch.setattr(main_module, "compress_figure_for_storage", lambda b: (b, "image/png"))
+
+    outcome = main_module._caption_and_store_one_figure(
+        "f0", b"\x89PNG\r\n\x1a\nfake", "unit-test-caption-and-store", "job-unit",
+    )
+
+    assert outcome.figure_id == "f0"
+    assert outcome.caption == "prose about the figure"
+    assert outcome.status is None
+    assert outcome.title == "Short Title"
+    assert outcome.storage_failed is False
+    assert stored == [("job-unit", "f0")]
+
+
+def test_caption_and_store_one_figure_flags_a_storage_failure_without_losing_the_caption(monkeypatch) -> None:
+    import app.main as main_module
+
+    class _FakeVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+            return FigureVisionResult(significant=True, description="prose about the figure")
+
+    class _RaisingFigureFileClient:
+        def store(self, job_id: str, figure_id: str, image_bytes: bytes, mime_type: str) -> None:
+            raise RuntimeError("storage is down")
+
+    monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
+    monkeypatch.setattr(main_module, "_figure_file_client", _RaisingFigureFileClient())
+    monkeypatch.setattr(main_module, "compress_figure_for_storage", lambda b: (b, "image/png"))
+
+    outcome = main_module._caption_and_store_one_figure(
+        "f3", b"\x89PNG\r\n\x1a\nfake", "unit-test-storage-failure", "job-unit",
+    )
+
+    # Storage is best-effort: the caption still comes back, the failure is
+    # reported as a flag for the caller to fold into
+    # CanonicalDoc.failed_figure_storage_ids.
+    assert outcome.caption == "prose about the figure"
+    assert outcome.storage_failed is True
