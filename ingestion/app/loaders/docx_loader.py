@@ -899,16 +899,25 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                 # real author-written title just because it doesn't start with the
                 # word "Figure".
                 figures[-1].name = extract_figure_title(content) or content
-                if figures[-1].caption is None:
-                    # No vision prose exists for this figure (BASELINE mode,
-                    # vision disabled, or a failed/skipped vision call) -- the
-                    # author's own caption is then the ONLY description
-                    # available, so it must still reach the rendered block
-                    # text instead of the "[FIGURE: none]" placeholder that
-                    # tree_builder.py's _figure_line silently drops. This
-                    # never touches Figure.caption itself (still correctly
-                    # reserved for real vision prose only, see the comment
-                    # above).
+                if describe_figure is None:
+                    # Vision was never wired up for this load at all
+                    # (BASELINE mode, or vision disabled) -- the author's own
+                    # caption is then the ONLY description that will ever
+                    # exist for this figure, so it must reach the rendered
+                    # block text instead of the "[FIGURE: none]" placeholder
+                    # that tree_builder.py's _figure_line silently drops.
+                    # Deliberately NOT gated on `figures[-1].caption is None`:
+                    # _describe_one_figure collapses "never configured",
+                    # "raised", and "returned nothing" all to None, and the
+                    # last of those is how a vision-judged-INSIGNIFICANT
+                    # figure arrives here. Promoting that case would rewrite
+                    # block.text and thereby make _figure_line report the
+                    # figure as captioned -- structurally removing it from
+                    # insignificant_figure_ids/uncaptioned_figure_ids, which
+                    # are only ever populated inside _figure_line's
+                    # no-caption branch (SWEEP.md section 3). This never
+                    # touches Figure.caption itself, still reserved for real
+                    # vision prose only (see the comment above).
                     blocks[-1].text = f"[FIGURE: {content}]"
             else:
                 heading_level = _heading_level_for_paragraph(paragraph)

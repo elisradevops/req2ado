@@ -1363,6 +1363,46 @@ def test_load_docx_caption_falls_back_to_the_raw_line_as_name_when_it_does_not_m
     assert figure_block.text == "[FIGURE: Power distribution overview]"
 
 
+def test_load_docx_does_not_backfill_the_caption_into_block_text_when_vision_ran_and_declined() -> None:
+    # SWEEP.md section 3: the M1 caption fix gated on `figures[-1].caption is
+    # None`, which cannot tell "vision was never configured" from "vision ran
+    # and returned nothing" -- and the latter is how an INSIGNIFICANT figure
+    # (vision explicitly judged it not worth showing to the model) reaches
+    # this code. Backfilling block.text there falsely promotes the figure out
+    # of insignificant_figure_ids/uncaptioned_figure_ids, because
+    # tree_builder._figure_line reads block.text and those two lists are
+    # populated only inside its "no caption" branch. The gate must key on
+    # whether vision RAN at all.
+    from docx import Document as DocxDocument
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        doc = DocxDocument()
+        image_path = tmp_path / "decorative.png"
+        Image.new("RGB", (20, 20), color="green").save(image_path)
+        doc.add_picture(str(image_path))
+        caption_paragraph = doc.add_paragraph("Figure 1: Decorative divider.")
+        caption_paragraph.style = doc.styles["Caption"]
+
+        out_path = tmp_path / "insignificant_with_caption.docx"
+        doc.save(str(out_path))
+        # Vision IS configured and DOES run -- it just returns nothing, the
+        # exact shape an "insignificant" verdict takes by the time it reaches
+        # docx_loader (Figure.caption_status is assigned later, in main.py).
+        result = load_docx(str(out_path), describe_figure=lambda _b: None)
+
+    # The author's own title still names the figure -- that half of the M1
+    # fix is correct and must not regress.
+    assert result.figures[0].name == "Decorative divider."
+    assert result.figures[0].caption is None
+    # But block.text must stay at the placeholder, so _figure_line still
+    # reports this figure as uncaptioned and the insignificant/uncaptioned
+    # id lists stay reachable for it.
+    figure_block = next(b for b in result.blocks if b.kind == BlockKind.FIGURE)
+    assert figure_block.text == "[FIGURE: none]"
+
+
 def test_load_docx_emits_a_note_block_for_an_altchunk_instead_of_silently_dropping_it() -> None:
     from docx import Document as DocxDocument
     from docx.oxml import parse_xml
