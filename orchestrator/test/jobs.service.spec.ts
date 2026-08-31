@@ -1872,7 +1872,7 @@ describe('JobsService.setDiffEntryExcluded', () => {
 
     expect(result[0].excluded).toBe(true);
     expect(updateMany).toHaveBeenCalledWith({
-      where: { id: 'job-1', diffVersion: 0 },
+      where: { id: 'job-1', status: 'diff_ready', diffVersion: 0 },
       data: { dryRunDiff: [expect.objectContaining({ localId: 'n0', excluded: true })], diffVersion: { increment: 1 } },
     });
   });
@@ -1928,13 +1928,44 @@ describe('JobsService.setDiffEntryExcluded', () => {
     expect(findUnique).toHaveBeenCalledTimes(2);
     expect(updateMany).toHaveBeenCalledTimes(2);
     // Each attempt guards on the version it actually read, not a constant.
-    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
-    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 1 });
     expect(updateMany.mock.calls[1][0].data.diffVersion).toEqual({ increment: 1 });
     // Both edits survive. Before this fix, n1 would come back undefined --
     // client B's stale array had no record of A's edit at all.
     expect(result.find((e) => e.localId === 'n0')!.excluded).toBe(true);
     expect(result.find((e) => e.localId === 'n1')!.excluded).toBe(true);
+  });
+
+  // SWEEP.md 8a review (C1): the guarded write must carry
+  // `status: 'diff_ready'` in its WHERE clause, not rely on the read-time
+  // status check alone -- that read is check-then-act and racy. confirm()
+  // atomically claims status:'writing' and then refreshes dryRunDiff after
+  // its ADO writes WITHOUT bumping diffVersion (by design, see
+  // schema.prisma's diffVersion comment). So a review-tree edit whose read
+  // predates that claim would, on diffVersion alone, still match and
+  // overwrite confirm()'s post-ADO refresh with a stale array -- exactly
+  // the "stale diff clobbers an ADO write" class this whole item closes.
+  // With the status predicate on the write, that write matches zero rows,
+  // the retry re-reads, sees the new status, and 409s instead.
+  it('refuses to write when the job left diff_ready between attempts -- the status predicate is on the WRITE', async () => {
+    const entry = { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null };
+    // Same diffVersion both times: the version guard alone CANNOT tell these
+    // two reads apart, which is the whole point -- only the status can.
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...entry }] })
+      // confirm() claimed the job in between.
+      .mockResolvedValueOnce({ id: 'job-1', status: 'writing', diffVersion: 0, dryRunDiff: [{ ...entry }] });
+    const updateMany = jest.fn().mockResolvedValueOnce({ count: 0 });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.setDiffEntryExcluded('job-1', 'n0', true)).rejects.toThrow('not in a diff-editable state');
+    // Attempt 1's write guarded on the status it read; attempt 2 never wrote
+    // at all (a second updateMany call would return undefined and throw).
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 0 });
+    expect(findUnique).toHaveBeenCalledTimes(2);
   });
 
   it('gives up with a conflict after the retry budget is exhausted, without writing a stale array', async () => {
@@ -2099,7 +2130,7 @@ describe('JobsService.editDiffEntry', () => {
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [scoredEntry] }),
         update,
       },
     };
@@ -2117,7 +2148,7 @@ describe('JobsService.editDiffEntry', () => {
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [scoredEntry] }),
         update,
       },
     };
@@ -2133,7 +2164,7 @@ describe('JobsService.editDiffEntry', () => {
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [baseEntry] }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [baseEntry] }),
         update,
       },
     };
@@ -2150,7 +2181,7 @@ describe('JobsService.editDiffEntry', () => {
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', dryRunDiff: [scoredEntry] }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [scoredEntry] }),
         update,
       },
     };
@@ -2180,8 +2211,8 @@ describe('JobsService.editDiffEntry', () => {
     const result = await service.editDiffEntry('job-1', 'n0', { title: 'New title' });
 
     expect(updateMany).toHaveBeenCalledTimes(2);
-    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
-    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 1 });
     expect(result.find((e) => e.localId === 'n0')!.title).toBe('New title');
     expect(result.find((e) => e.localId === 'n1')!.excluded).toBe(true);
   });
@@ -2430,13 +2461,45 @@ describe('JobsService.rescoreDiffEntry', () => {
     // The whole point of hoisting the call out of the retried region.
     expect(scoreItem).toHaveBeenCalledTimes(1);
     expect(updateMany).toHaveBeenCalledTimes(2);
-    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
-    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 1 });
     const rescored = result.find((e) => e.localId === 'n0')!;
     expect(rescored.qualityScore).toBe(82);
     expect(rescored.qualityStale).toBe(false);
     // The other client's edit survives.
     expect(result.find((e) => e.localId === 'n1')!.excluded).toBe(true);
+  });
+
+  // SWEEP.md 8a review (M1): the mutator re-validates localId / action /
+  // type against the freshly-read array, but NOT the description -- the one
+  // thing the score is actually ABOUT. The /score-item call takes seconds;
+  // a concurrent editDiffEntry landing in that window means the returned
+  // number judged text that is no longer there, and writing it with
+  // qualityStale: false launders a stale score as fresh -- precisely what
+  // DESIGN.md §11.4.4 forbids ("a failed rescore must never launder a stale
+  // number into a fresh-looking one"), and what the BadGateway-on-null-score
+  // path above already protects against for the other failure mode.
+  it('refuses to write the score when the description changed while the LLM call was in flight', async () => {
+    const findUnique = jest
+      .fn()
+      // Phase 1 reads the description that is actually sent to the LLM.
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, diffVersion: 0, dryRunDiff: [{ ...staleEntry, description: 'the text that was scored' }] })
+      // Another client edited the description while /score-item was in
+      // flight. Same localId, still a create Requirement -- every existing
+      // re-validation passes; only the description tells them apart.
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, diffVersion: 1, dryRunDiff: [{ ...staleEntry, description: 'edited out from under the rescore' }] });
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const scoreItem = jest.fn().mockResolvedValue({ qualityScore: 91, qualityIssues: [], qualityCategoryScores: { clarity: 95 } });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    const err = await service.rescoreDiffEntry('job-1', 'n0').then(() => null, (e: Error) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect(err!.message).toContain('The description changed while the rescore was in flight');
+    // The LLM was asked about the ORIGINAL text, and the stale score for it
+    // never reached the database -- the entry keeps its old score and its
+    // qualityStale flag.
+    expect(scoreItem.mock.calls[0][0]).toBe('the text that was scored');
+    expect(updateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -2600,7 +2663,7 @@ describe('JobsService.addDiffEntry', () => {
     const prisma = {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [] }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 0, mode: 'survey', dryRunDiff: [] }),
         update,
       },
     };
@@ -2653,8 +2716,8 @@ describe('JobsService.addDiffEntry', () => {
     const result = await service.addDiffEntry('job-1', { parentLocalId: 'e1', type: 'Feature', title: 'client B feature', description: 'b' });
 
     expect(updateMany).toHaveBeenCalledTimes(2);
-    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
-    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 1 });
     // Three entries, not two: the epic, A's add, and this one.
     expect(result).toHaveLength(3);
     expect(result.some((e) => e.title === 'client A feature')).toBe(true);
@@ -2781,6 +2844,27 @@ describe('JobsService.moveDiffEntry', () => {
     await expect(service.moveDiffEntry('job-1', 'e1', { parentLocalId: 'e2' })).rejects.toThrow('diff-editable');
   });
 
+  // SWEEP.md 8a review (O1): pins the already-linked-BEFORE-status check
+  // ordering. Hoisting the createdItemMapping lookup above the guarded read
+  // (so it is issued once rather than once per retry attempt -- it is keyed
+  // on { jobId, localId } alone and does not depend on the diff array) moved
+  // it ahead of the diff-editable-state check. Both rejections are
+  // legitimate, so the deviation is accepted, not a bug -- but nothing was
+  // pinning WHICH message a caller hitting both conditions sees, leaving the
+  // ordering free to flip back silently on the next refactor.
+  it('surfaces "already linked" over "not diff-editable" when a not-diff_ready job\'s entry is also already linked', async () => {
+    const { service } = makeService([epic1, epic2, feature1], {
+      status: 'writing',
+      mapping: { linked: true },
+    });
+    const err = await service
+      .moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' })
+      .then(() => null, (e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain('already linked');
+    expect(err!.message).not.toContain('diff-editable');
+  });
+
   it('rejects a nonexistent entry', async () => {
     const { service } = makeService([epic1, epic2]);
     await expect(service.moveDiffEntry('job-1', 'bogus', { parentLocalId: 'e2' })).rejects.toThrow('not found');
@@ -2879,8 +2963,8 @@ describe('JobsService.moveDiffEntry', () => {
     const result = await service.moveDiffEntry('job-1', 'f1', { parentLocalId: 'e2' });
 
     expect(updateMany).toHaveBeenCalledTimes(2);
-    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
-    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 1 });
     // The already-linked guard is a pre-read, issued once, not per retry.
     expect(mappingFindUnique).toHaveBeenCalledTimes(1);
     expect(result.find((e) => e.localId === 'f1')!.parentLocalId).toBe('e2');

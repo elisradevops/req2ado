@@ -111,8 +111,12 @@ model Job {
   // pipeline.worker.ts's final status:'diff_ready' write (which is what
   // CREATES the diff_ready state, so none of the five can precede it) and
   // confirm()'s post-ADO-write refresh (confirm() atomically claims
-  // status:'writing' first, and all five methods reject any status other
-  // than 'diff_ready', so they are structurally locked out of racing it).
+  // status:'writing' first, and mutateDiffVersioned's conditional
+  // updateMany carries `status: 'diff_ready'` in its own WHERE clause
+  // alongside the version, so a mutation that read the row before that
+  // claim matches zero rows and is locked out of clobbering the refresh).
+  // The enforcement is that WRITE predicate, NOT the earlier read-time
+  // status check -- that read is check-then-act and racy on its own.
   // resubmit() creates a whole new Job row rather than returning this one
   // to diff_ready. A NEW writer of dryRunDiff must re-check that reasoning.
   diffVersion      Int       @default(0)

@@ -27,13 +27,6 @@ import { normalizeAdoStoredHtml, toAdoDescriptionHtml } from './description-html
 import type { JobEventsPublisher } from './job-events.publisher';
 import { canNest, canBeRoot } from './canNest';
 
-// Task 6: mimeType -> file extension for the ADO attachment filename below
-// -- JobFigureFile.mimeType is whatever ingestion's own image-sniffing
-// reported (see main.py's _sniff_image_mime_type / _rasterize_for_vision),
-// so this must cover every raster format ingestion can actually produce,
-// not just PNG. Falls back to 'png' for an unrecognized mimeType, matching
-// the extension every figure was hardcoded to before this task -- an
-// unrecognized type is no worse off than the old behavior.
 // SWEEP.md 8a -- how many times mutateDiffVersioned() re-reads and
 // re-applies a mutation that lost its optimistic-concurrency race. Two
 // concurrent human reviewers collide on a single attempt with vanishing
@@ -42,6 +35,13 @@ import { canNest, canBeRoot } from './canNest';
 // off is more honest than spinning.
 const DIFF_WRITE_MAX_ATTEMPTS = 3;
 
+// Task 6: mimeType -> file extension for the ADO attachment filename below
+// -- JobFigureFile.mimeType is whatever ingestion's own image-sniffing
+// reported (see main.py's _sniff_image_mime_type / _rasterize_for_vision),
+// so this must cover every raster format ingestion can actually produce,
+// not just PNG. Falls back to 'png' for an unrecognized mimeType, matching
+// the extension every figure was hardcoded to before this task -- an
+// unrecognized type is no worse off than the old behavior.
 const FIGURE_MIME_TO_EXTENSION: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -708,7 +708,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
       const next = mutate(diff, job);
       const written = await this.prisma.job.updateMany({
-        where: { id, diffVersion: job.diffVersion },
+        // `status: 'diff_ready'` belongs on the WRITE, not just on the read
+        // above: the read is check-then-act, so without it a mutation whose
+        // read happened before confirm() atomically claimed status:'writing'
+        // could still match on diffVersion alone and clobber confirm()'s
+        // post-ADO dryRunDiff refresh (which deliberately does NOT bump
+        // diffVersion -- see schema.prisma's diffVersion comment) with a
+        // stale array. On count === 0 the retry loop re-reads, sees the new
+        // status, and throws the not-diff-editable ConflictException.
+        where: { id, status: 'diff_ready', diffVersion: job.diffVersion },
         data: { dryRunDiff: next as any, diffVersion: { increment: 1 } },
       });
       if (written.count === 1) return next;
@@ -840,10 +848,17 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // document -- nothing to reuse either way, same failure mode a
     // persisted-but-never-written column would also hit).
     const categoryChecklist = this.resolveCategoryChecklist(diff, index);
+    // The exact text the LLM is about to judge. Re-checked against the
+    // freshly-read array inside the mutator below: the /score-item call takes
+    // seconds, and a concurrent editDiffEntry landing in that window would
+    // otherwise have this score written against text it never saw, with
+    // qualityStale: false -- laundering a stale number as fresh, the very
+    // thing DESIGN.md §11.4.4 forbids.
+    const scoredDescription = diff[index].description;
     let result: { qualityScore: number | null; qualityIssues: string[]; qualityCategoryScores: Record<string, number> | null };
     try {
       result = await this.ingestionClient.scoreItem(
-        diff[index].description,
+        scoredDescription,
         categoryChecklist,
         job.userId ?? undefined,
         job.model ?? undefined,
@@ -902,6 +917,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       }
       if (freshDiff[freshIndex].type !== 'Requirement') {
         throw new BadRequestException('only Requirement entries can be rescored');
+      }
+      if (freshDiff[freshIndex].description !== scoredDescription) {
+        throw new ConflictException(
+          'The description changed while the rescore was in flight -- the item was left unchanged.',
+        );
       }
       freshDiff[freshIndex] = {
         ...freshDiff[freshIndex],
