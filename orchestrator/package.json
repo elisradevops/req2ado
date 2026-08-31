@@ -4,6 +4,7 @@
   "private": true,
   "description": "req2ado orchestrator API — app auth/RBAC, LLM redaction proxy, job queue, ADO REST client, Prisma/Postgres",
   "scripts": {
+    "postinstall": "prisma generate",
     "build": "nest build",
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
