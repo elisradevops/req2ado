@@ -57,6 +57,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      # ingestion/Dockerfile installs these for the same reason: real,
+      # non-mocked OCR/PDF tests call the actual pdfinfo/pdftoppm (poppler)
+      # and tesseract CLIs, not fakes -- confirmed live (missing entirely on
+      # a stock hosted runner, 9 failures, all tracing back to
+      # PDFInfoNotInstalledError/TesseractError). tesseract-ocr-heb
+      # specifically for the one real (non-mocked) Hebrew OCR test --
+      # Debian's tesseract-ocr package ships eng+osd only.
+      - name: Install OCR/PDF system dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils tesseract-ocr tesseract-ocr-heb
       - run: pip install -e ".[dev]"
       - run: pytest
 
@@ -101,3 +110,18 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install -e ".[dev]"
       - run: bash scripts/run-golden-e2e.sh --baseline-only
+      # The script's own service logs (orchestrator/pipeline-worker/ingestion)
+      # only ever live at a mktemp'd /tmp path on the ephemeral runner -- gone
+      # the moment the job ends, so a failure here previously left NO detail
+      # more specific than "FAILED. Logs preserved at: <path>" in the CI
+      # console. Confirmed live: root-causing one real failure required a
+      # full local repro since the actual error (a missing required field in
+      # the script's own job-submit call) was only ever in that lost log.
+      - name: Upload golden-e2e service logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-e2e-logs
+          path: /tmp/req2ado-e2e-logs.*/*
+          if-no-files-found: ignore
+          retention-days: 7

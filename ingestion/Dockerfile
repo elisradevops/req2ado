@@ -20,7 +20,7 @@ WORKDIR /app
 # long document using any of these common Office defaults.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       tesseract-ocr poppler-utils libreoffice-draw libreoffice-writer \
+       tesseract-ocr tesseract-ocr-heb poppler-utils libreoffice-draw libreoffice-writer \
        fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./

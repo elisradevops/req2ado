@@ -22,7 +22,13 @@ def _upload(filename: str, path: Path, **extra_params: object) -> dict:
 
 
 class _FakeVisionClient:
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+    def describe_figure(
+        self,
+        image_bytes: bytes,
+        mime_type: str | None = None,
+        document_context: str | None = None,
+        user_id: str | None = None,
+    ) -> FigureVisionResult | None:
         return FigureVisionResult(significant=True, description="a real caption")
 
 

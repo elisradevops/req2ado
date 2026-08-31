@@ -315,6 +315,12 @@ if ! grep -q "listening for jobs" "$LOG_DIR/pipeline-worker.log" 2>/dev/null; th
 fi
 
 AREA_PATH="Project\\GoldenE2E"
+# jobs.controller.ts requires adoProject explicitly since commit fce89dc
+# (ADO project moved from a server-wide default to an explicit per-job
+# column) -- the real UI (NewJobWizard.tsx/BatchJobWizard.tsx) already
+# sends it; this script fell behind. Must match AREA_PATH's own first
+# `\`-delimited segment, same validation jobs.controller.ts applies.
+ADO_PROJECT="Project"
 
 # ---------------------------------------------------------------------------
 # 7b. Log in -- every route below is behind the global session AuthGuard.
@@ -362,7 +368,8 @@ poll_job_status() {
 log "Submitting job #1 (baseline fixture)"
 JOB1_RESPONSE="$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
   -F "file=@${FIXTURE}" \
-  -F "areaPath=${AREA_PATH}")"
+  -F "areaPath=${AREA_PATH}" \
+  -F "adoProject=${ADO_PROJECT}")"
 JOB1_ID="$(echo "$JOB1_RESPONSE" | jq -r '.jobId')"
 log "Job #1 id: $JOB1_ID"
 
@@ -399,7 +406,8 @@ fi
 log "Submitting job #2 (identical fixture, same areaPath, no customerId — idempotency re-run check)"
 JOB2_RESPONSE="$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
   -F "file=@${FIXTURE}" \
-  -F "areaPath=${AREA_PATH}")"
+  -F "areaPath=${AREA_PATH}" \
+  -F "adoProject=${ADO_PROJECT}")"
 JOB2_ID="$(echo "$JOB2_RESPONSE" | jq -r '.jobId')"
 log "Job #2 id: $JOB2_ID"
 
@@ -442,6 +450,7 @@ log "Submitting job #3 (SURVEY mode, informal fixture)"
 JOB3_RESPONSE=$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
   -F "file=@${ROOT_DIR}/docs/golden-e2e-survey-fixture.txt" \
   -F "areaPath=${AREA_PATH}" \
+  -F "adoProject=${ADO_PROJECT}" \
   -F "mode=survey")
 JOB3_ID="$(echo "$JOB3_RESPONSE" | jq -r '.jobId')"
 log "Job #3 id: $JOB3_ID"
@@ -471,7 +480,8 @@ fi
 log "Submitting job #4 (BASELINE mode, near-duplicate of job #1's fixture — dedup check)"
 JOB4_RESPONSE="$(curl -sf -b "$COOKIE_JAR" -X POST "http://localhost:${ORCH_PORT}/jobs" \
   -F "file=@${ROOT_DIR}/docs/golden-e2e-near-duplicate-fixture.txt" \
-  -F "areaPath=${AREA_PATH}")"
+  -F "areaPath=${AREA_PATH}" \
+  -F "adoProject=${ADO_PROJECT}")"
 JOB4_ID="$(echo "$JOB4_RESPONSE" | jq -r '.jobId')"
 log "Job #4 id: $JOB4_ID"
 
