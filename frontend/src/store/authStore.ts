@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useLlmConnectionStore } from './llmConnectionStore';
 
 // v2: the PAT is no longer held here at all -- the orchestrator vaults it
 // server-side (credential-vault.service.ts) at login/reconnect time and
@@ -42,6 +43,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: () => {
     sessionStorage.removeItem(STORAGE_KEY);
     set({ orgUrl: null, displayName: null, userId: null });
+    // A different user logging into the same tab must not inherit the
+    // previous user's cached Open WebUI configured state.
+    useLlmConnectionStore.getState().reset();
   },
 }));
 

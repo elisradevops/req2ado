@@ -2,7 +2,9 @@ import { BadRequestException, Controller, Get, Param, Post, Body } from '@nestjs
 import { z } from 'zod';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
-import { OpenWebUiClient } from '../llm/openwebui.client';
+import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { SessionUser } from '../auth/session.service';
 
 const chatTurnRequestSchema = z.object({
   message: z.string().min(1),
@@ -14,12 +16,19 @@ export class ChatController {
   constructor(
     private readonly chatService: ChatService,
     private readonly chatGateway: ChatGateway,
-    private readonly llmClient: OpenWebUiClient,
+    private readonly clientFactory: OpenWebUiClientFactory,
   ) {}
 
+  // Filtered through listSelectableModels() (base models only, see B2's own
+  // doc comment on that method) but kept on the pre-existing {models:
+  // string[]} wire shape -- this picker only ever needed model ids, and
+  // changing the shape would require an unrelated frontend rewrite outside
+  // this fix's scope.
   @Get('chat/models')
-  async models(): Promise<{ models: string[] }> {
-    return { models: await this.llmClient.listModels() };
+  async models(@CurrentUser() user: SessionUser): Promise<{ models: string[] }> {
+    const client = await this.clientFactory.getClientFor(user.userId);
+    const models = await client.listSelectableModels();
+    return { models: models.map((m) => m.id) };
   }
 
   @Post('jobs/:jobId/diff/:localId/chat')

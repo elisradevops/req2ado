@@ -45,6 +45,11 @@ describe('runPipelineJob', () => {
     pollFileProcessed: jest.fn(),
     chatWithFullFileContext: jest.fn(),
     deleteFile: jest.fn(),
+    // resolveDefaultChatModel() reads this off the per-user resolved client
+    // when job.model is unset -- matches the 'gemma4:12b' every fixture in
+    // this file passes as defaultLlmModel, so existing assertions on the
+    // level()/ingest() calls' model argument don't need to change.
+    chatModel: 'gemma4:12b',
   };
   const fakePrimerCacheRedis = { get: jest.fn(), set: jest.fn() };
 
@@ -1313,6 +1318,67 @@ describe('runPipelineJob', () => {
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [] }, 'survey', undefined, [], 'qwen2.5:1.5b', 'job-1', undefined);
   });
 
+  it("resolves an unset job.model to the SUBMITTING USER'S OWN default chat model, not deps.defaultLlmModel -- a stale global default here would size ingestion's /level caps budget for a different model than the one the real per-user chat() call actually uses", async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+    const getClientFor = jest.fn().mockResolvedValue({ chatModel: 'per-user-default-model' });
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        openWebUiClientFactory: { getClientFor } as any,
+        // A genuinely DIFFERENT value than the per-user client's chatModel
+        // above -- proves resolution prefers the per-user profile, not
+        // this stale global fallback.
+        defaultLlmModel: 'stale-global-default',
+      },
+    );
+
+    expect(getClientFor).toHaveBeenCalledWith('user-1');
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+      { blocks: [] }, 'survey', 'user-1', [], 'per-user-default-model', 'job-1', undefined,
+    );
+    expect(fakePrisma.job.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ model: 'per-user-default-model' }) }),
+    );
+  });
+
+  it('falls open to deps.defaultLlmModel when the per-user client cannot be resolved for an unset job.model', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+    const getClientFor = jest.fn().mockRejectedValue(new Error('no profile configured'));
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        openWebUiClientFactory: { getClientFor } as any,
+        defaultLlmModel: 'stale-global-default',
+      },
+    );
+
+    expect(fakeIngestionClient.level).toHaveBeenCalledWith(
+      { blocks: [] }, 'survey', 'user-1', [], 'stale-global-default', 'job-1', undefined,
+    );
+  });
+
   it('passes job.id through to ingestionClient.level as the 7th argument (SURVEY narration threading)', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
@@ -1990,7 +2056,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2001,13 +2067,13 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
 
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
       );
       expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalledWith(bigFileBuffer, 'x.pdf');
       // chatWithFullFileContext, NOT chat() -- chat() goes through the
@@ -2032,7 +2098,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2043,13 +2109,13 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
 
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', undefined,
       );
     });
 
@@ -2057,7 +2123,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue('cached primer text');
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2068,14 +2134,14 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
 
       expect(fakeOpenWebUiClient.uploadFile).not.toHaveBeenCalled();
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'cached primer text',
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'cached primer text',
       );
     });
 
@@ -2092,7 +2158,7 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
@@ -2119,7 +2185,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2130,7 +2196,7 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
@@ -2148,7 +2214,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2159,7 +2225,7 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
@@ -2183,7 +2249,7 @@ describe('runPipelineJob', () => {
 
       try {
         await runPipelineJob(
-          { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+          { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: 'user-1', mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
           {
             ingestionClient: fakeIngestionClient as any,
             dryRunService: fakeDryRunService as any,
@@ -2194,7 +2260,7 @@ describe('runPipelineJob', () => {
             backfillService: fakeBackfillService as any,
             adoCredentialResolver: fakeAdoCredentialResolver as any,
             defaultLlmModel: 'gemma4:12b',
-            openWebUiClient: fakeOpenWebUiClient as any,
+            openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
             primerCacheRedis: fakePrimerCacheRedis as any,
           },
         );
@@ -2211,7 +2277,7 @@ describe('runPipelineJob', () => {
 
       // Still fails open -- the job itself is unaffected.
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        bigDoc, 'survey', undefined, [], 'gemma4:12b', 'job-1', undefined,
+        bigDoc, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', undefined,
       );
     });
 
@@ -2230,7 +2296,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: 'user-1', mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2241,14 +2307,14 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
 
       expect(fakeOpenWebUiClient.uploadFile).toHaveBeenCalled();
       expect(fakeIngestionClient.level).toHaveBeenCalledWith(
-        { blocks: [{ id: 'b0', text: 'x' }] }, 'survey', undefined, [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
+        { blocks: [{ id: 'b0', text: 'x' }] }, 'survey', 'user-1', [], 'gemma4:12b', 'job-1', 'This is an avionics ICD.',
       );
     });
 
@@ -2270,7 +2336,7 @@ describe('runPipelineJob', () => {
       });
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: 'user-1', mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2281,7 +2347,7 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
@@ -2299,7 +2365,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: 'user-1', mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2310,7 +2376,7 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );
@@ -2331,7 +2397,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: 'user-1', mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2342,7 +2408,7 @@ describe('runPipelineJob', () => {
           backfillService: fakeBackfillService as any,
           adoCredentialResolver: fakeAdoCredentialResolver as any,
           defaultLlmModel: 'gemma4:12b',
-          openWebUiClient: fakeOpenWebUiClient as any,
+          openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) } as any,
           primerCacheRedis: fakePrimerCacheRedis as any,
         },
       );

@@ -1,6 +1,19 @@
 import 'reflect-metadata';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { LlmController } from '../src/modules/llm/llm.controller';
+
+const USER_ID = 'user-1';
+
+// clientFactory.getClientFor(userId) resolves to `client` for every userId
+// -- these tests aren't exercising per-user resolution itself (that's
+// openwebui-client.factory.spec.ts's job), just that LlmController threads
+// the X-Req2Ado-User-Id header through to resolveClient() and then calls
+// through to whatever client comes back.
+function makeController(client: Record<string, jest.Mock>) {
+  const getClientFor = jest.fn().mockResolvedValue(client);
+  const controller = new LlmController({ getClientFor } as any);
+  return { controller, getClientFor };
+}
 
 describe('LlmController @SkipThrottle', () => {
   it('is exempt from the global ThrottlerGuard (§16 -- internal bearer-guarded traffic, not public; the agentic KB loop fires several /llm/embed calls per branch)', () => {
@@ -16,85 +29,96 @@ describe('LlmController @SkipThrottle', () => {
 });
 
 describe('LlmController', () => {
+  it('rejects with UnauthorizedException when the X-Req2Ado-User-Id header is absent', async () => {
+    const { controller } = makeController({ chat: jest.fn() });
+    await expect(controller.chat({ messages: [{ role: 'user', content: 'hi' }] }, undefined)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('rejects with UnauthorizedException when the header names a user with no configured connection', async () => {
+    const getClientFor = jest.fn().mockRejectedValue(new Error('no profile'));
+    const controller = new LlmController({ getClientFor } as any);
+    await expect(controller.chat({ messages: [{ role: 'user', content: 'hi' }] }, USER_ID)).rejects.toThrow(UnauthorizedException);
+  });
+
   it('threads an explicit model from the request body into llmClient.chat', async () => {
     const chat = jest.fn().mockResolvedValue('reply');
-    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+    const { controller } = makeController({ chat });
 
-    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], model: 'qwen2.5:14b' });
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], model: 'qwen2.5:14b' }, USER_ID);
 
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { model: 'qwen2.5:14b' });
   });
 
   it('omits model from opts when not provided in the request body', async () => {
     const chat = jest.fn().mockResolvedValue('reply');
-    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+    const { controller } = makeController({ chat });
 
-    await controller.chat({ messages: [{ role: 'user', content: 'hi' }] });
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }] }, USER_ID);
 
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], {});
   });
 
   it('threads an explicit numCtx from the request body into llmClient.chat', async () => {
     const chat = jest.fn().mockResolvedValue('reply');
-    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+    const { controller } = makeController({ chat });
 
-    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], numCtx: 28000 });
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], numCtx: 28000 }, USER_ID);
 
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { numCtx: 28000 });
   });
 
   it('threads an explicit seed from the request body into llmClient.chat', async () => {
     const chat = jest.fn().mockResolvedValue('reply');
-    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+    const { controller } = makeController({ chat });
 
-    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], seed: 42 });
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], seed: 42 }, USER_ID);
 
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { seed: 42 });
   });
 
   it('threads explicit topK/minP from the request body into llmClient.chat', async () => {
     const chat = jest.fn().mockResolvedValue('reply');
-    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+    const { controller } = makeController({ chat });
 
-    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], topK: 50, minP: 0.05 });
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], topK: 50, minP: 0.05 }, USER_ID);
 
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { topK: 50, minP: 0.05 });
   });
 
   it('threads an explicit think from the request body into llmClient.chat', async () => {
     const chat = jest.fn().mockResolvedValue('reply');
-    const controller = new LlmController({ chat, listModels: jest.fn() } as any);
+    const { controller } = makeController({ chat });
 
-    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], think: false });
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], think: false }, USER_ID);
 
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { think: false });
   });
 
   it('throws BadRequestException on an invalid body', async () => {
-    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn() } as any);
-    await expect(controller.chat({})).rejects.toThrow(BadRequestException);
+    const { controller } = makeController({ chat: jest.fn() });
+    await expect(controller.chat({}, USER_ID)).rejects.toThrow(BadRequestException);
   });
 
   it('POST /llm/show forwards the model and returns llmClient.showModel()', async () => {
     const showModel = jest.fn().mockResolvedValue({ contextLength: 32000, capabilities: ['completion', 'tools'] });
-    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), showModel } as any);
+    const { controller } = makeController({ showModel });
 
-    const result = await controller.show({ model: 'qwen3.6:35b' });
+    const result = await controller.show({ model: 'qwen3.6:35b' }, USER_ID);
 
     expect(showModel).toHaveBeenCalledWith('qwen3.6:35b');
     expect(result).toEqual({ contextLength: 32000, capabilities: ['completion', 'tools'] });
   });
 
   it('POST /llm/show throws BadRequestException when model is missing', async () => {
-    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), showModel: jest.fn() } as any);
-    await expect(controller.show({})).rejects.toThrow(BadRequestException);
+    const { controller } = makeController({ showModel: jest.fn() });
+    await expect(controller.show({}, USER_ID)).rejects.toThrow(BadRequestException);
   });
 
   it('GET /llm/models returns the catalog from llmClient.listModels()', async () => {
     const listModels = jest.fn().mockResolvedValue(['llama3.1', 'qwen2.5:14b']);
-    const controller = new LlmController({ chat: jest.fn(), listModels } as any);
+    const { controller } = makeController({ listModels });
 
-    const result = await controller.models();
+    const result = await controller.models(USER_ID);
 
     expect(result).toEqual({ models: ['llama3.1', 'qwen2.5:14b'] });
   });
@@ -105,7 +129,7 @@ describe('LlmController', () => {
       yield { content: 'lo' };
     }
     const streamChat = jest.fn().mockReturnValue(fakeDeltas());
-    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const { controller } = makeController({ streamChat });
     const written: string[] = [];
     const res = {
       setHeader: jest.fn(),
@@ -114,7 +138,7 @@ describe('LlmController', () => {
       on: jest.fn(),
     };
 
-    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, res as any);
+    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, res as any, USER_ID);
 
     expect(written).toEqual([`${JSON.stringify({ delta: 'Hel' })}\n`, `${JSON.stringify({ delta: 'lo' })}\n`]);
     expect(res.end).toHaveBeenCalled();
@@ -125,10 +149,10 @@ describe('LlmController', () => {
       yield { content: 'Hi' };
     }
     const streamChat = jest.fn().mockReturnValue(fakeDeltas());
-    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const { controller } = makeController({ streamChat });
     const res = { setHeader: jest.fn(), write: jest.fn(), end: jest.fn(), on: jest.fn() };
 
-    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }], seed: 42 }, res as any);
+    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }], seed: 42 }, res as any, USER_ID);
 
     expect(streamChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { seed: 42 });
   });
@@ -138,12 +162,13 @@ describe('LlmController', () => {
       yield { content: 'Hi' };
     }
     const streamChat = jest.fn().mockReturnValue(fakeDeltas());
-    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const { controller } = makeController({ streamChat });
     const res = { setHeader: jest.fn(), write: jest.fn(), end: jest.fn(), on: jest.fn() };
 
     await controller.chatStream(
       { messages: [{ role: 'user', content: 'hi' }], numCtx: 28000, topK: 50, minP: 0.05, think: false },
       res as any,
+      USER_ID,
     );
 
     expect(streamChat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], {
@@ -160,7 +185,7 @@ describe('LlmController', () => {
       yield { content: 'Sure.' };
     }
     const streamChat = jest.fn().mockReturnValue(fakeChunks());
-    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const { controller } = makeController({ streamChat });
     const written: string[] = [];
     const res = {
       setHeader: jest.fn(),
@@ -169,7 +194,7 @@ describe('LlmController', () => {
       on: jest.fn(),
     };
 
-    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, res as any);
+    await controller.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, res as any, USER_ID);
 
     expect(written).toEqual([`${JSON.stringify({ reasoningDelta: 'Hmm, ' })}\n`, `${JSON.stringify({ delta: 'Sure.' })}\n`]);
   });
@@ -188,7 +213,7 @@ describe('LlmController', () => {
       yield { content: 'd' };
     }
     const streamChat = jest.fn().mockReturnValue(fakeDeltas());
-    const controller = new LlmController({ chat: jest.fn(), listModels: jest.fn(), streamChat } as any);
+    const { controller } = makeController({ streamChat });
     const written: string[] = [];
     let closeCallback: (() => void) | undefined;
     const res = {
@@ -200,7 +225,7 @@ describe('LlmController', () => {
       }),
     };
 
-    const streamPromise = controller.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, res as any);
+    const streamPromise = controller.chatStream({ messages: [{ role: 'user', content: 'hi' }] }, res as any, USER_ID);
 
     // Wait for the generator to pause after yielding 'a' and 'b'.
     await new Promise((resolve) => setImmediate(resolve));
@@ -224,16 +249,19 @@ describe('LlmController', () => {
   });
 
   it('threads an explicit responseSchema from the request body into llmClient.vision', async () => {
-    const llmClient = { vision: jest.fn().mockResolvedValue('a description') };
-    const controller = new LlmController(llmClient as any);
+    const vision = jest.fn().mockResolvedValue('a description');
+    const { controller } = makeController({ vision });
 
-    await controller.vision({
-      prompt: 'describe this figure',
-      images: [Buffer.from('img').toString('base64')],
-      responseSchema: { name: 'figure_significance', schema: { type: 'object' } },
-    });
+    await controller.vision(
+      {
+        prompt: 'describe this figure',
+        images: [Buffer.from('img').toString('base64')],
+        responseSchema: { name: 'figure_significance', schema: { type: 'object' } },
+      },
+      USER_ID,
+    );
 
-    expect(llmClient.vision).toHaveBeenCalledWith(
+    expect(vision).toHaveBeenCalledWith(
       'describe this figure',
       [Buffer.from('img')],
       expect.objectContaining({ responseSchema: { name: 'figure_significance', schema: { type: 'object' } } }),

@@ -2,11 +2,17 @@ import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { WsAdapter } from '@nestjs/platform-ws';
-import { OpenWebUiClient } from '../src/modules/llm/openwebui.client';
+import { OpenWebUiClientFactory } from '../src/modules/llm/openwebui-client.factory';
 
 describe('LlmController (e2e)', () => {
   let app: INestApplication;
   const fakeOpenWebUiClient = { chat: jest.fn(), embed: jest.fn(), vision: jest.fn() };
+  // getClientFor resolves to the same fake client for any userId -- these
+  // tests aren't exercising per-user resolution itself (that's
+  // llm-config.resolver.spec.ts/openwebui-client.factory.spec.ts's job),
+  // just that LlmController threads the X-Req2Ado-User-Id header through
+  // to whatever client the factory returns.
+  const fakeClientFactory = { getClientFor: jest.fn().mockResolvedValue(fakeOpenWebUiClient) };
 
   beforeAll(async () => {
     process.env.DATABASE_URL = 'postgresql://req2ado:req2ado@localhost:5432/req2ado';
@@ -21,8 +27,8 @@ describe('LlmController (e2e)', () => {
 
     const { AppModule } = await import('../src/app.module');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(OpenWebUiClient)
-      .useValue(fakeOpenWebUiClient)
+      .overrideProvider(OpenWebUiClientFactory)
+      .useValue(fakeClientFactory)
       .compile();
     app = moduleRef.createNestApplication();
     app.useWebSocketAdapter(new WsAdapter(app));
@@ -35,6 +41,7 @@ describe('LlmController (e2e)', () => {
 
   afterEach(() => {
     jest.clearAllMocks();
+    fakeClientFactory.getClientFor.mockResolvedValue(fakeOpenWebUiClient);
   });
 
   it('returns 401 with no Authorization header', async () => {
@@ -60,11 +67,30 @@ describe('LlmController (e2e)', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns the chat content on a valid request with the correct bearer', async () => {
+  it('returns 401 with a correct bearer but no X-Req2Ado-User-Id header', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/llm/chat')
+      .set('Authorization', 'Bearer test-llm-proxy-bearer')
+      .send({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 when the header names a user with no Open WebUI connection configured', async () => {
+    fakeClientFactory.getClientFor.mockRejectedValueOnce(new Error('no profile'));
+    const res = await request(app.getHttpServer())
+      .post('/llm/chat')
+      .set('Authorization', 'Bearer test-llm-proxy-bearer')
+      .set('X-Req2Ado-User-Id', 'user-1')
+      .send({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns the chat content on a valid request with the correct bearer and user id', async () => {
     fakeOpenWebUiClient.chat.mockResolvedValue({ content: 'The unit shall survive a 1m drop.' });
     const res = await request(app.getHttpServer())
       .post('/llm/chat')
       .set('Authorization', 'Bearer test-llm-proxy-bearer')
+      .set('X-Req2Ado-User-Id', 'user-1')
       .send({ messages: [{ role: 'user', content: 'summarize the drop spec' }] });
     expect(res.status).toBe(201);
     expect(res.body).toEqual({ content: 'The unit shall survive a 1m drop.' });
@@ -75,6 +101,7 @@ describe('LlmController (e2e)', () => {
     await request(app.getHttpServer())
       .post('/llm/chat')
       .set('Authorization', 'Bearer test-llm-proxy-bearer')
+      .set('X-Req2Ado-User-Id', 'user-1')
       .send({ messages: [{ role: 'user', content: 'hi' }], temperature: 0 });
     expect(fakeOpenWebUiClient.chat).toHaveBeenCalledWith(
       [{ role: 'user', content: 'hi' }],
@@ -101,6 +128,7 @@ describe('LlmController (e2e)', () => {
       const res = await request(app.getHttpServer())
         .post('/llm/embed')
         .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .set('X-Req2Ado-User-Id', 'user-1')
         .send({ texts: ['The unit shall survive a drop.'] });
       expect(res.status).toBe(201);
       expect(res.body).toEqual({ embeddings: [[0.1, 0.2, 0.3]] });
@@ -128,6 +156,7 @@ describe('LlmController (e2e)', () => {
       const res = await request(app.getHttpServer())
         .post('/llm/vision')
         .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .set('X-Req2Ado-User-Id', 'user-1')
         .send({ prompt: 'describe this figure', images: [Buffer.from('fake-png-bytes').toString('base64')] });
       expect(res.status).toBe(201);
       expect(res.body).toEqual({ description: 'A block diagram showing power distribution.' });
@@ -143,6 +172,7 @@ describe('LlmController (e2e)', () => {
       await request(app.getHttpServer())
         .post('/llm/vision')
         .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .set('X-Req2Ado-User-Id', 'user-1')
         .send({ prompt: 'describe', images: ['aGVsbG8='], model: 'llava' });
       expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { model: 'llava' });
     });
@@ -152,6 +182,7 @@ describe('LlmController (e2e)', () => {
       await request(app.getHttpServer())
         .post('/llm/vision')
         .set('Authorization', 'Bearer test-llm-proxy-bearer')
+        .set('X-Req2Ado-User-Id', 'user-1')
         .send({ prompt: 'describe', images: ['aGVsbG8='], mimeType: 'image/jpeg' });
       expect(fakeOpenWebUiClient.vision).toHaveBeenCalledWith('describe', [Buffer.from('hello')], { mimeType: 'image/jpeg' });
     });

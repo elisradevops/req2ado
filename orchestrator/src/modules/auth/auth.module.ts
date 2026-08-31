@@ -8,6 +8,7 @@ import { SessionService } from './session.service';
 import { AuthGuard } from './auth.guard';
 import { CredentialVaultService } from './credential-vault.service';
 import { AdoCredentialResolver } from './ado-credential.resolver';
+import { LlmConfigResolver } from './llm-config.resolver';
 
 /**
  * Real server sessions (Session table, httpOnly cookie) layered on top of
@@ -35,7 +36,8 @@ import { AdoCredentialResolver } from './ado-credential.resolver';
         new CredentialVaultService(prisma, config.get<string>('CREDENTIAL_ENC_KEY')!, config.get<string>('CREDENTIAL_ENC_KEY_PREVIOUS')),
     },
     AdoCredentialResolver,
+    LlmConfigResolver,
   ],
-  exports: [AdoPatProvider, SessionService, AuthGuard, CredentialVaultService, AdoCredentialResolver],
+  exports: [AdoPatProvider, SessionService, AuthGuard, CredentialVaultService, AdoCredentialResolver, LlmConfigResolver],
 })
 export class AuthModule {}

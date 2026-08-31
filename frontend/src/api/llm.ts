@@ -1,8 +1,8 @@
 import { httpClient } from './httpClient';
 
 export interface LlmStatus {
-  status: 'reachable' | 'unreachable';
-  latencyMs: number;
+  status: 'reachable' | 'unreachable' | 'not_configured';
+  latencyMs: number | null;
 }
 
 export async function getLlmStatus(): Promise<LlmStatus> {

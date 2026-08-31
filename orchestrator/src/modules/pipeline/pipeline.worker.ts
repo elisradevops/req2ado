@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
-import type { OpenWebUiClient } from '../llm/openwebui.client';
+import type { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
 import { resolveCrossJobTraceLinks, verifyExistingAdoIdsStillExist, type WarningRecord } from '../writeback/dry-run.service';
 import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service';
 import type { IdempotencyService } from '../writeback/idempotency.service';
@@ -147,18 +147,33 @@ export interface PipelineWorkerDeps {
   // /level's own behavior is exactly what it always was before this field
   // existed. Also skipped whenever either is absent even for a real SURVEY
   // job, so a deployment can opt out entirely by just not wiring these two.
-  openWebUiClient?: OpenWebUiClient;
+  //
+  // A per-user, per-request-resolved factory, NOT a shared client instance
+  // -- this worker is a BullMQ sandboxed process that can run jobs from
+  // DIFFERENT users back to back (or, with sufficient concurrency, close
+  // together); a single shared OpenWebUiClient would serve every job with
+  // whichever user's token it was originally constructed from, silently
+  // leaking one user's Open WebUI credential/model into another user's
+  // job. See openwebui-client.factory.ts's own doc comment for the same
+  // hazard this factory pattern exists to close everywhere else.
+  openWebUiClientFactory?: OpenWebUiClientFactory;
   primerCacheRedis?: PrimerCacheRedis;
-  // The orchestrator's own configured LLM_CHAT_MODEL -- when job.model is
-  // unset (the wizard's "Default" option), this worker previously sent
-  // `undefined` straight through to ingestion's /level route, and
-  // ingestion's _resolve_caps(None) has NO way to know what "the
-  // orchestrator's default" actually resolves to -- it silently fell back
-  // to the smallest/most-conservative caps (supports_tools=False, a 28k
-  // token budget) even for a model that genuinely supports tool-calling
-  // and a much larger context. Resolving to this concrete name here (see
-  // runPipelineJob's own model resolution below) means ingestion always
-  // receives a real, known model string for a SURVEY job.
+  // LAST-RESORT fallback only, when job.model is unset (the wizard's
+  // "Default" option) AND the per-user default can't be resolved (no
+  // job.userId, no openWebUiClientFactory wired, or the user's profile was
+  // removed after submit but before this ran). The PRIMARY source for
+  // "job.model unset" is now the submitting user's own configured default
+  // chat model, resolved via openWebUiClientFactory above (see
+  // runPipelineJob's own model resolution) -- not this field. Before
+  // per-user LLM credentials existed, this WAS the primary source (one
+  // shared LLM_CHAT_MODEL env var); keeping it only as a fallback avoids a
+  // real mismatch bug the per-user migration would otherwise introduce:
+  // without it, job.model unset would resolve the REAL chat() call to the
+  // user's own default (openwebui.client.ts's chat() already falls back to
+  // its own per-user this.config.LLM_CHAT_MODEL) while sizing ingestion's
+  // /level caps budget AND recording Job.model telemetry against a
+  // DIFFERENT (stale, global) model name -- ingestion's _resolve_caps(name)
+  // has no way to know what actually ran.
   defaultLlmModel: string;
   // Settings window (NEW-07) -- optional, same graceful-degrade convention
   // as openWebUiClient/primerCacheRedis above: an older/mocked deps object
@@ -369,6 +384,27 @@ interface LeveledWarning {
  * `ingestionClient.level()`, which defaults to 'baseline' — no BASELINE-path
  * behavior changes as a result.
  */
+// job.model unset resolves to the SUBMITTING USER's own configured default
+// chat model -- the same value openwebui.client.ts's chat() already falls
+// back to internally, so ingestion's /level caps-sizing and Job.model
+// telemetry can't drift from what actually ran (see PipelineWorkerDeps.
+// defaultLlmModel's own doc comment for the mismatch this closes). Falls
+// open to deps.defaultLlmModel only when per-user resolution genuinely
+// isn't possible (no job.userId, no factory wired, or the profile vanished
+// between submit and run) -- a real SURVEY job from a currently-logged-in
+// user always has both, per the first-login configuration gate.
+async function resolveDefaultChatModel(job: PipelineJobInput, deps: PipelineWorkerDeps): Promise<string> {
+  if (job.userId && deps.openWebUiClientFactory) {
+    try {
+      const client = await deps.openWebUiClientFactory.getClientFor(job.userId);
+      return client.chatModel;
+    } catch {
+      // Falls through to deps.defaultLlmModel below.
+    }
+  }
+  return deps.defaultLlmModel;
+}
+
 export async function runPipelineJob(
   job: PipelineJobInput,
   deps: PipelineWorkerDeps,
@@ -380,14 +416,14 @@ export async function runPipelineJob(
     // 'cancelled' instead. Without this check the line below would
     // immediately clobber that back to 'running'.
     await assertNotCancelled(deps.prisma, job.id);
-    // job.model ?? deps.defaultLlmModel (see PipelineWorkerDeps.defaultLlmModel's
-    // doc comment) -- always a concrete model name, never undefined. Hoisted
-    // here (was resolved later, just before the /level call) so the SAME
-    // binding can be persisted as Job.model below -- DESIGN.md §11.2.3.b:
-    // written at pending->running, not diff_ready, so a job that fails
-    // mid-/level (the longest, most failure-prone stage) still records what
-    // it ran under, and a later resubmit() has something real to read.
-    const model = job.model ?? deps.defaultLlmModel;
+    // job.model ?? resolveDefaultChatModel(...) -- always a concrete model
+    // name, never undefined. Hoisted here (was resolved later, just before
+    // the /level call) so the SAME binding can be persisted as Job.model
+    // below -- DESIGN.md §11.2.3.b: written at pending->running, not
+    // diff_ready, so a job that fails mid-/level (the longest, most
+    // failure-prone stage) still records what it ran under, and a later
+    // resubmit() has something real to read.
+    const model = job.model ?? (await resolveDefaultChatModel(job, deps));
     // Real lifecycle: 'pending' (set on submit) -> 'running' (here) ->
     // 'diff_ready'/'failed'. Without this write the Job row sits at
     // 'pending' for the entire worker run, so the frontend's
@@ -396,9 +432,10 @@ export async function runPipelineJob(
     //
     // startedAt/model here are the ETA telemetry's write path (DESIGN.md
     // §11.2.3.b) -- model is null for BASELINE, which never calls an LLM at
-    // all; deps.defaultLlmModel is always a non-empty string regardless of
-    // mode, so without this guard every BASELINE row would falsely record
-    // a model it never used.
+    // all; `model` above is always a non-empty string regardless of mode
+    // (resolveDefaultChatModel's own fallback chain never returns empty),
+    // so without this guard every BASELINE row would falsely record a
+    // model it never used.
     await deps.prisma.job.update({
       where: { id: job.id },
       data: { status: 'running', startedAt: new Date(), model: job.mode === 'survey' ? model : null },
@@ -453,10 +490,16 @@ export async function runPipelineJob(
     // proceeds without this one optional orientation hint, same as it
     // always has.
     let primerContext: string | undefined;
-    if (job.mode === 'survey' && deps.openWebUiClient && deps.primerCacheRedis) {
-      const openWebUiClient = deps.openWebUiClient;
+    if (job.mode === 'survey' && deps.openWebUiClientFactory && deps.primerCacheRedis && job.userId) {
+      const openWebUiClientFactory = deps.openWebUiClientFactory;
       const primerCacheRedis = deps.primerCacheRedis;
       try {
+        // Resolved fresh per job from job.userId -- never cached/reused
+        // across jobs at this call site itself (the factory has its own
+        // internal per-user cache, keyed correctly). See
+        // PipelineWorkerDeps.openWebUiClientFactory's own doc comment for
+        // why a shared client instance here would be a credential leak.
+        const openWebUiClient = await openWebUiClientFactory.getClientFor(job.userId);
         const contentHash = crypto.createHash('sha256').update(job.fileBuffer).digest('hex');
         const cacheKey = `primer:${model}:${contentHash}`;
         const cached = await primerCacheRedis.get(cacheKey);

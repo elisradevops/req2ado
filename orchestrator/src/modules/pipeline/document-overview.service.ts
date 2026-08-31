@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { OpenWebUiClient } from '../llm/openwebui.client';
+import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
 import type { DocumentMapSection } from './document-map';
 
 export interface DocumentOverview {
@@ -43,10 +43,15 @@ Do not mention structural concerns, formatting, or how deep/fragmented the docum
 
 @Injectable()
 export class DocumentOverviewService {
-  constructor(private readonly llmClient: OpenWebUiClient) {}
+  constructor(private readonly clientFactory: OpenWebUiClientFactory) {}
 
-  async generate(input: { documentMap: DocumentMapSection[]; sectionCount: number; depth: number }): Promise<DocumentOverview | null> {
+  // userId resolves this call's Open WebUI client -- a user with no
+  // connection configured yet falls into the same catch block below and
+  // returns null, matching this feature's existing fail-open contract
+  // (the exposition synopsis is a nice-to-have preview, never a blocker).
+  async generate(input: { documentMap: DocumentMapSection[]; sectionCount: number; depth: number }, userId: string): Promise<DocumentOverview | null> {
     try {
+      const llmClient = await this.clientFactory.getClientFor(userId);
       const caveat = computeDeterministicCaveat(input.sectionCount, input.depth, input.documentMap);
       const headings = input.documentMap
         .slice(0, MAX_HEADINGS_IN_PROMPT)
@@ -54,7 +59,7 @@ export class DocumentOverviewService {
       const remaining = input.documentMap.length - headings.length;
       const headingList =
         remaining > 0 ? [...headings, `…and ${remaining} more sections`].join('\n') : headings.join('\n');
-      const result = await this.llmClient.chat(
+      const result = await llmClient.chat(
         [
           { role: 'system', content: SYNOPSIS_SYSTEM_PROMPT },
           { role: 'user', content: `Real section headings, in document order:\n\n${headingList}` },

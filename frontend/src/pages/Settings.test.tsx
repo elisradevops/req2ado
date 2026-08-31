@@ -7,10 +7,12 @@ import { useAuthStore } from '../store/authStore';
 import { httpClient } from '../api/httpClient';
 import * as kbApi from '../api/kb';
 import * as settingsApi from '../api/settings';
+import * as llmConnectionApi from '../api/llmConnection';
 
 vi.mock('../api/httpClient', () => ({ httpClient: { post: vi.fn() } }));
 vi.mock('../api/kb');
 vi.mock('../api/settings');
+vi.mock('../api/llmConnection');
 
 function renderPage(): void {
   useAuthStore.getState().login('https://ado.example', 'Jane Doe', 'user-descriptor-1');
@@ -27,6 +29,7 @@ describe('Settings', () => {
     vi.spyOn(kbApi, 'getSharePointStatus').mockResolvedValue({ status: 'valid', expiresInSeconds: 2820 });
     vi.spyOn(settingsApi, 'getAppSettings').mockResolvedValue({ dedupThreshold: 0.9 });
     vi.spyOn(settingsApi, 'updateAppSettings').mockResolvedValue({ dedupThreshold: 0.9 });
+    vi.spyOn(llmConnectionApi, 'getLlmConnection').mockResolvedValue({ configured: false });
   });
 
   it('shows the signed-in identity and current org URL', () => {
@@ -222,6 +225,62 @@ describe('Settings', () => {
 
       await waitFor(() => expect(screen.getByText(/couldn't load the current threshold/i)).toBeInTheDocument());
       expect(await findThresholdField()).toBeDisabled();
+    });
+  });
+
+  describe('Open WebUI integration row + dialog', () => {
+    it('shows "Not configured" when the caller has no vaulted connection', async () => {
+      renderPage();
+      await waitFor(() => expect(screen.getByText('Open WebUI')).toBeInTheDocument());
+      expect(screen.getByText('Not configured')).toBeInTheDocument();
+    });
+
+    it('shows the connected chat model once a connection is configured', async () => {
+      vi.spyOn(llmConnectionApi, 'getLlmConnection').mockResolvedValue({ configured: true, chatModel: 'qwen2.5:14b' });
+      renderPage();
+      await waitFor(() => expect(screen.getByText(/connected · qwen2.5:14b/i)).toBeInTheDocument());
+    });
+
+    it('loads the model catalog for a pasted token and saves the selected chat/vision models', async () => {
+      vi.spyOn(llmConnectionApi, 'getLlmConnectionModels').mockResolvedValue([
+        { id: 'qwen2.5:14b', name: 'qwen2.5:14b', vision: false },
+        { id: 'gemma4:e4b', name: 'gemma4:e4b', vision: true },
+      ]);
+      vi.spyOn(llmConnectionApi, 'setLlmConnection').mockResolvedValue(undefined);
+      renderPage();
+
+      await waitFor(() => expect(screen.getByText('Open WebUI')).toBeInTheDocument());
+      const configureButtons = screen.getAllByRole('button', { name: /^configure$/i });
+      await userEvent.click(configureButtons[configureButtons.length - 1]);
+      await userEvent.type(screen.getByLabelText(/open webui api token/i), 'sk-test-token');
+      await userEvent.click(screen.getByRole('button', { name: /load models/i }));
+
+      await waitFor(() => expect(llmConnectionApi.getLlmConnectionModels).toHaveBeenCalledWith('sk-test-token'));
+      // Select is a Radix combobox+listbox, not a native <select> -- see
+      // ProjectPicker.test.tsx's own comment for why this is open-then-
+      // click-option rather than userEvent.selectOptions.
+      await userEvent.click(screen.getByLabelText(/chat model/i));
+      await userEvent.click(await screen.findByRole('option', { name: 'qwen2.5:14b' }));
+      await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+      await waitFor(() =>
+        expect(llmConnectionApi.setLlmConnection).toHaveBeenCalledWith('sk-test-token', 'qwen2.5:14b', undefined),
+      );
+      await waitFor(() => expect(screen.getByText(/open webui connection saved/i)).toBeInTheDocument());
+    });
+
+    it('shows an inline error and does not save when the pasted token fails validation', async () => {
+      vi.spyOn(llmConnectionApi, 'getLlmConnectionModels').mockRejectedValue(new Error('401'));
+      renderPage();
+
+      await waitFor(() => expect(screen.getByText('Open WebUI')).toBeInTheDocument());
+      const configureButtons = screen.getAllByRole('button', { name: /^configure$/i });
+      await userEvent.click(configureButtons[configureButtons.length - 1]);
+      await userEvent.type(screen.getByLabelText(/open webui api token/i), 'bad-token');
+      await userEvent.click(screen.getByRole('button', { name: /load models/i }));
+
+      await waitFor(() => expect(screen.getByText(/could not validate this token/i)).toBeInTheDocument());
+      expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
     });
   });
 });

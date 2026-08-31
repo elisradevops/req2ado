@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Post, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { llmChatRequestSchema } from './llm-chat.dto';
@@ -7,7 +7,7 @@ import { llmShowRequestSchema } from './llm-show.dto';
 import { llmVisionRequestSchema } from './llm-vision.dto';
 import type { LlmToolCall } from './llm-client.interface';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
-import { OpenWebUiClient } from './openwebui.client';
+import { OpenWebUiClientFactory } from './openwebui-client.factory';
 import { Public } from '../auth/public.decorator';
 
 // Every route here is internal service-to-service traffic already gated by
@@ -25,16 +25,39 @@ import { Public } from '../auth/public.decorator';
 @Controller('llm')
 @UseGuards(LlmProxyBearerGuard)
 export class LlmController {
-  constructor(private readonly llmClient: OpenWebUiClient) {}
+  constructor(private readonly clientFactory: OpenWebUiClientFactory) {}
+
+  // The X-Req2Ado-User-Id header carries the submitting user's identity on
+  // every ingestion-originated call -- ingestion already receives job.userId
+  // (see ingestionClient.level()'s own call site in pipeline.worker.ts) and
+  // forwards it here so each job's LLM traffic resolves to that user's own
+  // Open WebUI token/model, not a shared global one (removed, see B7).
+  // Rejected outright when absent or unknown, rather than falling back to
+  // any shared default -- that fallback is exactly the bug per-user
+  // credentials exist to close.
+  private async resolveClient(userId: string | undefined) {
+    if (!userId) {
+      throw new UnauthorizedException('X-Req2Ado-User-Id header is required');
+    }
+    try {
+      return await this.clientFactory.getClientFor(userId);
+    } catch {
+      throw new UnauthorizedException(`No Open WebUI connection configured for user ${userId}`);
+    }
+  }
 
   @Post('chat')
-  async chat(@Body() rawBody: unknown): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string }> {
+  async chat(
+    @Body() rawBody: unknown,
+    @Headers('x-req2ado-user-id') userId: string | undefined,
+  ): Promise<{ content: string; toolCalls?: LlmToolCall[]; finishReason?: string }> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
     }
     const body = parseResult.data;
-    const result = await this.llmClient.chat(body.messages, {
+    const llmClient = await this.resolveClient(userId);
+    const result = await llmClient.chat(body.messages, {
       ...(body.model !== undefined ? { model: body.model } : {}),
       ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
       ...(body.seed !== undefined ? { seed: body.seed } : {}),
@@ -51,12 +74,17 @@ export class LlmController {
   }
 
   @Post('chat/stream')
-  async chatStream(@Body() rawBody: unknown, @Res() res: Response): Promise<void> {
+  async chatStream(
+    @Body() rawBody: unknown,
+    @Res() res: Response,
+    @Headers('x-req2ado-user-id') userId: string | undefined,
+  ): Promise<void> {
     const parseResult = llmChatRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: messages must be a non-empty array');
     }
     const body = parseResult.data;
+    const llmClient = await this.resolveClient(userId);
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Transfer-Encoding', 'chunked');
     // "Stop generating" support: when the downstream caller (ingestion)
@@ -74,7 +102,7 @@ export class LlmController {
       clientDisconnected = true;
     });
     try {
-      for await (const chunk of this.llmClient.streamChat(body.messages, {
+      for await (const chunk of llmClient.streamChat(body.messages, {
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
         ...(body.seed !== undefined ? { seed: body.seed } : {}),
@@ -101,18 +129,23 @@ export class LlmController {
   }
 
   @Get('models')
-  async models(): Promise<{ models: string[] }> {
-    const models = await this.llmClient.listModels();
+  async models(@Headers('x-req2ado-user-id') userId: string | undefined): Promise<{ models: string[] }> {
+    const llmClient = await this.resolveClient(userId);
+    const models = await llmClient.listModels();
     return { models };
   }
 
   @Post('embed')
-  async embed(@Body() rawBody: unknown): Promise<{ embeddings: number[][] }> {
+  async embed(
+    @Body() rawBody: unknown,
+    @Headers('x-req2ado-user-id') userId: string | undefined,
+  ): Promise<{ embeddings: number[][] }> {
     const parseResult = llmEmbedRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: texts must be a non-empty array of strings');
     }
-    const embeddings = await this.llmClient.embed(parseResult.data.texts);
+    const llmClient = await this.resolveClient(userId);
+    const embeddings = await llmClient.embed(parseResult.data.texts);
     return { embeddings };
   }
 
@@ -122,16 +155,23 @@ export class LlmController {
   // maintained table with a real measurement of THIS model's actual
   // context length/capabilities.
   @Post('show')
-  async show(@Body() rawBody: unknown): Promise<{ contextLength: number | null; capabilities: string[] }> {
+  async show(
+    @Body() rawBody: unknown,
+    @Headers('x-req2ado-user-id') userId: string | undefined,
+  ): Promise<{ contextLength: number | null; capabilities: string[] }> {
     const parseResult = llmShowRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: model must be a non-empty string');
     }
-    return this.llmClient.showModel(parseResult.data.model);
+    const llmClient = await this.resolveClient(userId);
+    return llmClient.showModel(parseResult.data.model);
   }
 
   @Post('vision')
-  async vision(@Body() rawBody: unknown): Promise<{ description: string }> {
+  async vision(
+    @Body() rawBody: unknown,
+    @Headers('x-req2ado-user-id') userId: string | undefined,
+  ): Promise<{ description: string }> {
     const parseResult = llmVisionRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: prompt and a non-empty images array (base64) are required');
@@ -145,7 +185,8 @@ export class LlmController {
             ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
           }
         : undefined;
-    const description = await this.llmClient.vision(body.prompt, body.images.map((image) => Buffer.from(image, 'base64')), opts);
+    const llmClient = await this.resolveClient(userId);
+    const description = await llmClient.vision(body.prompt, body.images.map((image) => Buffer.from(image, 'base64')), opts);
     return { description };
   }
 }

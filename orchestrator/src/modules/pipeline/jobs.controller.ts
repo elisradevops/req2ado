@@ -28,7 +28,7 @@ import { EtaService, type EtaEstimate } from './eta.service';
 import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { DocumentOverviewService } from './document-overview.service';
 import { createHash } from 'crypto';
-import { OpenWebUiClient } from '../llm/openwebui.client';
+import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
 import { LlmProxyBearerGuard } from '../llm/llm-proxy-bearer.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
@@ -93,7 +93,7 @@ export class JobsController {
   constructor(
     private readonly jobsService: JobsService,
     private readonly ingestionClient: IngestionHttpClient,
-    private readonly llmClient: OpenWebUiClient,
+    private readonly clientFactory: OpenWebUiClientFactory,
     private readonly adoCredentialResolver: AdoCredentialResolver,
     private readonly workItemTypeCatalogService: WorkItemTypeCatalogService,
     private readonly etaService: EtaService,
@@ -126,10 +126,16 @@ export class JobsController {
   // Deliberately separate from /llm/models (LlmController), which is
   // guarded by LlmProxyBearerGuard for service-to-service use only and
   // isn't reachable from a browser session.
+  // Filtered through listSelectableModels() (base models only, see B2's own
+  // doc comment on that method) but kept on the pre-existing {models:
+  // string[]} wire shape -- this picker only ever needed model ids, and
+  // changing the shape would require an unrelated frontend rewrite outside
+  // this fix's scope.
   @Get('models')
-  async listModels(): Promise<{ models: string[] }> {
-    const models = await this.llmClient.listModels();
-    return { models };
+  async listModels(@CurrentUser() user: SessionUser): Promise<{ models: string[] }> {
+    const client = await this.clientFactory.getClientFor(user.userId);
+    const models = await client.listSelectableModels();
+    return { models: models.map((m) => m.id) };
   }
 
   @Post()
@@ -308,6 +314,7 @@ export class JobsController {
   // has no mode check since it does nothing mode-specific.
   @Post('preview/exposition')
   async previewExposition(
+    @CurrentUser() user: SessionUser,
     @Body('documentMap') documentMap: DocumentMapSection[] | undefined,
     @Body('sectionCount') sectionCount: number | undefined,
     @Body('depth') depth: number | undefined,
@@ -315,7 +322,7 @@ export class JobsController {
     if (!documentMap || !Array.isArray(documentMap) || typeof sectionCount !== 'number' || typeof depth !== 'number') {
       return null;
     }
-    return this.documentOverviewService.generate({ documentMap, sectionCount, depth });
+    return this.documentOverviewService.generate({ documentMap, sectionCount, depth }, user.userId);
   }
 
   // Re-pricing without re-uploading: the reviewer changing mode/model on

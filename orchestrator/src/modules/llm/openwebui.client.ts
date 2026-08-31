@@ -122,9 +122,70 @@ export class OpenWebUiClient implements LlmClient {
     }
   }
 
+  // Read-only accessor for this instance's own default chat model -- built
+  // per-user from the caller's vaulted profile (see
+  // openwebui-client.factory.ts's getClientFor), NOT the retired global
+  // LLM_CHAT_MODEL env var. pipeline.worker.ts reads this to resolve the
+  // SAME model name both the real chat() call (which already falls back to
+  // this.config.LLM_CHAT_MODEL internally when opts.model is unset) and
+  // ingestion's /level caps-sizing + Job.model telemetry use, so a job
+  // with no explicit job.model override can't silently size its context
+  // budget for a different model than the one actually doing the work.
+  get chatModel(): string {
+    return this.config.LLM_CHAT_MODEL;
+  }
+
   async listModels(): Promise<string[]> {
     const page = await this.openai.models.list();
     return page.data.map((m) => m.id);
+  }
+
+  // Base-model-only catalog for user-facing model pickers (the per-user
+  // Open WebUI connection form, and the existing per-job Job.model override
+  // -- both now draw from this single filtered source). Built on the
+  // native /api/models surface, NOT the OpenAI SDK's models.list() (used by
+  // listModels()/checkHealth() above): confirmed live that /api/models is
+  // the only source carrying preset/base_model_id and
+  // info.meta.capabilities.vision, and that it's already permission-scoped
+  // to the caller's own token (an access_grants field was present on every
+  // entry in a live probe).
+  //
+  // Filters out Open WebUI presets/agents (a `preset: true` flag, or a
+  // truthy `info.base_model_id` meaning this entry is a saved
+  // configuration layered on a real model, not a base model itself) --
+  // confirmed live and dangerous, not hypothetical: a preset carries its
+  // own baked-in system prompt and tool stack, and at least one real
+  // preset on a live instance silently ignored a caller-supplied system
+  // message entirely, returning a fully-formed but completely unrelated
+  // response as a clean 200 OK. req2ado's extraction pipeline parses model
+  // output programmatically at temperature 0 -- a hijacking preset would
+  // corrupt a job silently, with no error to point at.
+  //
+  // `token`, when supplied, overrides this.config.LLM_API_KEY for this
+  // call only -- needed for POST /llm/connection's validate-before-store
+  // flow, which must list models using a token that isn't vaulted yet.
+  async listSelectableModels(token?: string): Promise<{ id: string; name: string; vision: boolean }[]> {
+    const response = await fetch(`${this.openWebUiAppRoot()}/api/models`, {
+      headers: { Authorization: `Bearer ${token ?? this.config.LLM_API_KEY ?? ''}` },
+    });
+    if (!response.ok) {
+      throw new Error(`OpenWebUiClient.listSelectableModels failed: ${response.status}`);
+    }
+    const body = (await response.json()) as {
+      data: {
+        id: string;
+        name?: string;
+        preset?: boolean;
+        info?: { base_model_id?: string | null; meta?: { capabilities?: { vision?: boolean } } };
+      }[];
+    };
+    return body.data
+      .filter((model) => model.preset !== true && !model.info?.base_model_id)
+      .map((model) => ({
+        id: model.id,
+        name: model.name ?? model.id,
+        vision: model.info?.meta?.capabilities?.vision ?? false,
+      }));
   }
 
   // Cheap reachability probe for the sidebar's connection-status LED --

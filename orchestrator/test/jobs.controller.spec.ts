@@ -444,14 +444,20 @@ describe('JobsController.addDiffEntry', () => {
 });
 
 describe('JobsController.listModels', () => {
-  it('returns the model list from the LLM client, unauthenticated (browser-reachable, unlike /llm/models)', async () => {
+  it("returns the caller's filtered, selectable model list (session-authenticated, unlike /llm/models)", async () => {
     const jobsService = { submit: jest.fn() };
     const ingestionClient = { ingest: jest.fn() };
-    const llmClient = { listModels: jest.fn().mockResolvedValue(['qwen2.5:1.5b', 'gemma4:e4b']) };
-    const controller = new JobsController(jobsService as any, ingestionClient as any, llmClient as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+    const listSelectableModels = jest.fn().mockResolvedValue([
+      { id: 'qwen2.5:1.5b', name: 'qwen2.5:1.5b', vision: false },
+      { id: 'gemma4:e4b', name: 'gemma4:e4b', vision: true },
+    ]);
+    const clientFactory = { getClientFor: jest.fn().mockResolvedValue({ listSelectableModels }) };
+    const controller = new JobsController(jobsService as any, ingestionClient as any, clientFactory as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
-    const result = await controller.listModels();
+    const user = { userId: 'user-1', displayName: 'User One' } as any;
+    const result = await controller.listModels(user);
 
+    expect(clientFactory.getClientFor).toHaveBeenCalledWith('user-1');
     expect(result).toEqual({ models: ['qwen2.5:1.5b', 'gemma4:e4b'] });
   });
 });

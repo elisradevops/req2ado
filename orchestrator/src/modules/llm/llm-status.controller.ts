@@ -1,9 +1,11 @@
 import { Controller, Get } from '@nestjs/common';
-import { OpenWebUiClient } from './openwebui.client';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { SessionUser } from '../auth/session.service';
+import { OpenWebUiClientFactory } from './openwebui-client.factory';
 
 export interface LlmStatus {
-  status: 'reachable' | 'unreachable';
-  latencyMs: number;
+  status: 'reachable' | 'unreachable' | 'not_configured';
+  latencyMs: number | null;
 }
 
 // Deliberately a SEPARATE controller from LlmController, not a new route on
@@ -17,10 +19,19 @@ export interface LlmStatus {
 // and 'status' doesn't collide with any of LlmController's own routes.
 @Controller('llm')
 export class LlmStatusController {
-  constructor(private readonly llmClient: OpenWebUiClient) {}
+  constructor(private readonly clientFactory: OpenWebUiClientFactory) {}
 
+  // Unlike LlmController.resolveClient(), a user with no Open WebUI
+  // connection configured yet is not an error here -- this is a status
+  // check the sidebar polls on every page, including before first-login
+  // configuration, so it must degrade to a status value, never throw/401.
   @Get('status')
-  async getStatus(): Promise<LlmStatus> {
-    return this.llmClient.checkHealth();
+  async getStatus(@CurrentUser() user: SessionUser): Promise<LlmStatus> {
+    try {
+      const client = await this.clientFactory.getClientFor(user.userId);
+      return await client.checkHealth();
+    } catch {
+      return { status: 'not_configured', latencyMs: null };
+    }
   }
 }

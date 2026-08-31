@@ -11,7 +11,8 @@ import { McpClient } from './mcp.client';
 import { runPipelineJob, type PipelineJobInput } from './pipeline.worker';
 import { CredentialVaultService } from '../auth/credential-vault.service';
 import { AdoCredentialResolver } from '../auth/ado-credential.resolver';
-import { OpenWebUiClient } from '../llm/openwebui.client';
+import { LlmConfigResolver } from '../auth/llm-config.resolver';
+import { OpenWebUiClientFactory, type OpenWebUiGlobalConfig } from '../llm/openwebui-client.factory';
 import { SettingsService } from '../settings/settings.service';
 
 /**
@@ -59,15 +60,17 @@ const adoCredentialResolver = new AdoCredentialResolver(credentialVault);
 // per-process-singleton pattern every other client here follows.
 const settingsService = new SettingsService(prisma);
 // Phase 6c: whole-document AI context primer (see pipeline.worker.ts's own
-// primer wiring block). Same config fields llm.module.ts's OpenWebUiClient
-// factory already uses -- this child process has no NestJS DI container of
-// its own (see this file's own doc comment above), so it's constructed
-// directly here, same as every other client above.
-const openWebUiClient = new OpenWebUiClient({
+// primer wiring block). A per-user, per-job factory now -- NOT a single
+// shared OpenWebUiClient -- since this sandboxed child process can run
+// jobs from different users, and a shared client would leak whichever
+// user's token it was first constructed with into every other user's job
+// (see PipelineWorkerDeps.openWebUiClientFactory's own doc comment).
+// Same config fields llm.module.ts's own useFactory provider builds; this
+// child process has no NestJS DI container of its own (see this file's own
+// doc comment above), so it's constructed directly here, same as every
+// other client above.
+const openWebUiGlobalConfig: OpenWebUiGlobalConfig = {
   LLM_BASE_URL: config.LLM_BASE_URL,
-  LLM_API_KEY: config.LLM_API_KEY,
-  LLM_CHAT_MODEL: config.LLM_CHAT_MODEL,
-  LLM_VISION_MODEL: config.LLM_VISION_MODEL,
   LLM_TRUSTED_LOCAL: config.LLM_TRUSTED_LOCAL,
   EMBED_TRANSPORT: config.EMBED_TRANSPORT,
   EMBED_BASE_URL: config.EMBED_BASE_URL,
@@ -77,7 +80,9 @@ const openWebUiClient = new OpenWebUiClient({
   FILES_UPLOAD_PATH: config.FILES_UPLOAD_PATH,
   FILES_STATUS_PATH: config.FILES_STATUS_PATH,
   LLM_REQUEST_TIMEOUT_MS: config.LLM_REQUEST_TIMEOUT_MS,
-});
+};
+const llmConfigResolver = new LlmConfigResolver(credentialVault);
+const openWebUiClientFactory = new OpenWebUiClientFactory(openWebUiGlobalConfig, llmConfigResolver);
 // Dedicated connection for the primer's content-hash cache -- this child
 // process has no NestJS DI container of its own (see this file's own doc
 // comment above) and there's no existing general-purpose Redis command
@@ -104,7 +109,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     backfillService,
     adoCredentialResolver,
     defaultLlmModel: config.LLM_CHAT_MODEL,
-    openWebUiClient,
+    openWebUiClientFactory,
     primerCacheRedis: primerCacheRedis as any,
     settingsService,
     ocrLanguages: config.OCR_LANGUAGES,

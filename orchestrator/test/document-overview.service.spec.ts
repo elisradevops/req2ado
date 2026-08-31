@@ -1,8 +1,15 @@
 import { computeDeterministicCaveat, DocumentOverviewService } from '../src/modules/pipeline/document-overview.service';
 import type { DocumentMapSection } from '../src/modules/pipeline/document-map';
 
+const USER_ID = 'user-1';
+
 function section(blockCount: number): DocumentMapSection {
   return { number: null, title: 'Section', blockCount, figureCount: 0 };
+}
+
+function serviceWithChat(chat: jest.Mock) {
+  const getClientFor = jest.fn().mockResolvedValue({ chat });
+  return new DocumentOverviewService({ getClientFor } as any);
 }
 
 describe('computeDeterministicCaveat', () => {
@@ -35,10 +42,10 @@ describe('computeDeterministicCaveat', () => {
 describe('DocumentOverviewService.generate', () => {
   it('returns a synopsis with the deterministic caveat attached', async () => {
     const chat = jest.fn().mockResolvedValue({ content: 'This document specifies interface requirements for a backplane.' });
-    const service = new DocumentOverviewService({ chat } as any);
+    const service = serviceWithChat(chat);
 
     const documentMap = Array.from({ length: 6 }, () => section(10));
-    const result = await service.generate({ documentMap, sectionCount: 6, depth: 2 });
+    const result = await service.generate({ documentMap, sectionCount: 6, depth: 2 }, USER_ID);
 
     expect(result).toEqual({
       synopsis: 'This document specifies interface requirements for a backplane.',
@@ -56,30 +63,39 @@ describe('DocumentOverviewService.generate', () => {
 
   it('fails open to null when the LLM call throws', async () => {
     const chat = jest.fn().mockRejectedValue(new Error('backend unreachable'));
-    const service = new DocumentOverviewService({ chat } as any);
+    const service = serviceWithChat(chat);
 
-    const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 });
+    const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
 
     expect(result).toBeNull();
   });
 
   it('fails open to null when the LLM returns empty content', async () => {
     const chat = jest.fn().mockResolvedValue({ content: '   ' });
-    const service = new DocumentOverviewService({ chat } as any);
+    const service = serviceWithChat(chat);
 
-    const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 });
+    const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
+
+    expect(result).toBeNull();
+  });
+
+  it('fails open to null when the caller has no Open WebUI connection configured', async () => {
+    const getClientFor = jest.fn().mockRejectedValue(new Error('no profile'));
+    const service = new DocumentOverviewService({ getClientFor } as any);
+
+    const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
 
     expect(result).toBeNull();
   });
 
   it('fails open to null when documentMap is malformed and computeDeterministicCaveat throws synchronously', async () => {
     const chat = jest.fn().mockResolvedValue({ content: 'unused' });
-    const service = new DocumentOverviewService({ chat } as any);
+    const service = serviceWithChat(chat);
 
     // A malformed shape (null instead of an array) makes computeDeterministicCaveat's
     // own .filter() throw a TypeError before any LLM call is even attempted --
     // this must degrade to null via the surrounding try/catch, not propagate.
-    const result = await service.generate({ documentMap: null as any, sectionCount: 1, depth: 1 });
+    const result = await service.generate({ documentMap: null as any, sectionCount: 1, depth: 1 }, USER_ID);
 
     expect(result).toBeNull();
     expect(chat).not.toHaveBeenCalled();
@@ -87,7 +103,7 @@ describe('DocumentOverviewService.generate', () => {
 
   it('caps the heading list sent to the LLM and appends a trailing count for the rest', async () => {
     const chat = jest.fn().mockResolvedValue({ content: 'A large fragmented document.' });
-    const service = new DocumentOverviewService({ chat } as any);
+    const service = serviceWithChat(chat);
 
     const documentMap = Array.from({ length: 200 }, (_, i) => ({
       number: null,
@@ -96,7 +112,7 @@ describe('DocumentOverviewService.generate', () => {
       figureCount: 0,
     }));
 
-    await service.generate({ documentMap, sectionCount: 200, depth: 2 });
+    await service.generate({ documentMap, sectionCount: 200, depth: 2 }, USER_ID);
 
     const userMessage = chat.mock.calls[0][0].find((m: { role: string }) => m.role === 'user');
     expect(userMessage.content).toContain('Section 150');

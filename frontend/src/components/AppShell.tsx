@@ -63,12 +63,13 @@ function sharePointDetail(status: SharePointStatus | null): string {
 }
 
 function llmConnectionState(status: LlmStatus['status'] | undefined): { tone: string; live: boolean } {
-  return connectionDotState(status, (s) => s !== 'reachable', () => false);
+  return connectionDotState(status, (s) => s === 'unreachable', (s) => s === 'not_configured');
 }
 
 function llmDetail(status: LlmStatus | null): string {
   if (!status) return 'Checking…';
   if (status.status === 'reachable') return `Connected, ${status.latencyMs}ms`;
+  if (status.status === 'not_configured') return 'Not configured';
   return "Can't reach the LLM backend";
 }
 
@@ -160,7 +161,7 @@ export function AppShell({ children }: { children: ReactNode }): React.ReactElem
       .catch(() => setSharePointStatus({ status: 'unreachable', expiresInSeconds: null }));
     getLlmStatus()
       .then(setLlmStatus)
-      .catch(() => setLlmStatus({ status: 'unreachable', latencyMs: 0 }));
+      .catch(() => setLlmStatus({ status: 'unreachable', latencyMs: null }));
   }, []);
 
   // Revokes the real server session FIRST (a DELETE against the Session

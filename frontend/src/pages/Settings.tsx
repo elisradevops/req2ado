@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { httpClient } from '../api/httpClient';
 import { getSharePointStatus, reconnectSharePoint, type SharePointStatus } from '../api/kb';
 import { getAppSettings, updateAppSettings } from '../api/settings';
+import { getLlmConnection, getLlmConnectionModels, setLlmConnection, type LlmConnectionStatus, type LlmSelectableModel } from '../api/llmConnection';
+import { useLlmConnectionStore } from '../store/llmConnectionStore';
 import { useAuthStore, useDisplayName, useOrgUrl, useUserId } from '../store/authStore';
 import { useDenseView, useAutoSyncLedgers, useUiPreferencesStore } from '../store/uiPreferencesStore';
 import { useToast } from '../components/ToastProvider';
@@ -15,6 +17,7 @@ import { Spinner } from '../ui/Spinner';
 import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
 import { Switch } from '../ui/Switch';
+import { Select } from '../ui/Select';
 import { Skeleton } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
 
@@ -178,6 +181,18 @@ export function Settings(): React.ReactElement {
   const [isSharePointReconnecting, setIsSharePointReconnecting] = useState(false);
   const [sharePointReconnectError, setSharePointReconnectError] = useState<string | null>(null);
 
+  const [llmConnection, setLlmConnectionState] = useState<LlmConnectionStatus | null>(null);
+  const [llmDialogOpen, setLlmDialogOpen] = useState(false);
+  const [llmToken, setLlmToken] = useState('');
+  const [llmModels, setLlmModels] = useState<LlmSelectableModel[]>([]);
+  const [llmChatModel, setLlmChatModel] = useState('');
+  const [llmVisionModel, setLlmVisionModel] = useState('');
+  const [isLoadingLlmModels, setIsLoadingLlmModels] = useState(false);
+  const [isSavingLlmConnection, setIsSavingLlmConnection] = useState(false);
+  const [llmConnectionError, setLlmConnectionError] = useState<string | null>(null);
+  const isLoadingLlmModelsRef = useRef(false);
+  const isSavingLlmConnectionRef = useRef(false);
+
   // Draft (what's in the field) vs saved (what the server last confirmed) --
   // the pair is what makes the Save button honest about being dirty.
   const [thresholdPercent, setThresholdPercent] = useState('');
@@ -193,6 +208,12 @@ export function Settings(): React.ReactElement {
     getSharePointStatus()
       .then(setSharePointStatus)
       .catch(() => setSharePointStatus({ status: 'unreachable', expiresInSeconds: null }));
+  }, []);
+
+  useEffect(() => {
+    getLlmConnection()
+      .then(setLlmConnectionState)
+      .catch(() => setLlmConnectionState({ configured: false }));
   }, []);
 
   useEffect(() => {
@@ -266,6 +287,68 @@ export function Settings(): React.ReactElement {
     }
   }
 
+  function openLlmDialog(): void {
+    setLlmToken('');
+    setLlmModels([]);
+    setLlmChatModel(llmConnection?.chatModel ?? '');
+    setLlmVisionModel(llmConnection?.visionModel ?? '');
+    setLlmConnectionError(null);
+    setLlmDialogOpen(true);
+    // Prefills the dropdowns from the caller's already-stored token (if
+    // any), so re-opening this dialog to change just the model doesn't
+    // force pasting the token again just to see the options -- Save itself
+    // still requires re-entering it, same convention as the ADO/SharePoint
+    // reconnect dialogs above.
+    if (llmConnection?.configured) {
+      setIsLoadingLlmModels(true);
+      getLlmConnectionModels()
+        .then(setLlmModels)
+        .catch(() => undefined)
+        .finally(() => setIsLoadingLlmModels(false));
+    }
+  }
+
+  async function handleLoadLlmModels(): Promise<void> {
+    if (isLoadingLlmModelsRef.current || !llmToken.trim()) return;
+    isLoadingLlmModelsRef.current = true;
+    setIsLoadingLlmModels(true);
+    setLlmConnectionError(null);
+    try {
+      const models = await getLlmConnectionModels(llmToken.trim());
+      setLlmModels(models);
+    } catch {
+      setLlmConnectionError('Could not validate this token against Open WebUI. Check it is correct and try again.');
+    } finally {
+      isLoadingLlmModelsRef.current = false;
+      setIsLoadingLlmModels(false);
+    }
+  }
+
+  async function handleSaveLlmConnection(): Promise<void> {
+    if (isSavingLlmConnectionRef.current) return;
+    isSavingLlmConnectionRef.current = true;
+    setIsSavingLlmConnection(true);
+    setLlmConnectionError(null);
+    try {
+      await setLlmConnection(llmToken.trim(), llmChatModel, llmVisionModel || undefined);
+      const status = await getLlmConnection();
+      setLlmConnectionState(status);
+      // Flips RouteGuard's cached gate state directly -- without this, a
+      // user who just configured their connection here would still get
+      // bounced back to /settings by the gate's stale `configured: false`
+      // the instant they click any other nav link, since RouteGuard only
+      // re-checks once per session, not on every navigation.
+      useLlmConnectionStore.getState().setConfigured(status.configured);
+      showToast('Open WebUI connection saved.', 'success');
+      setLlmDialogOpen(false);
+    } catch {
+      setLlmConnectionError('Could not save this connection. Check the token and selected models and try again.');
+    } finally {
+      isSavingLlmConnectionRef.current = false;
+      setIsSavingLlmConnection(false);
+    }
+  }
+
   async function handleSaveThreshold(): Promise<void> {
     // Synchronous ref guard, checked before any await -- setIsSavingThreshold
     // hasn't re-rendered yet for a second click in the same tick.
@@ -332,6 +415,15 @@ export function Settings(): React.ReactElement {
                   tone={sharePointCopy.tone}
                   reason={sharePointCopy.reason}
                   onAction={openSharePointReconnect}
+                />
+              )}
+              {llmConnection && (
+                <IntegrationRow
+                  icon={<span className="text-xs font-bold">AI</span>}
+                  name="Open WebUI"
+                  detail={llmConnection.configured ? `Connected · ${llmConnection.chatModel}` : 'Not configured'}
+                  tone={llmConnection.configured ? 'ok' : 'dim'}
+                  onAction={openLlmDialog}
                 />
               )}
             </div>
@@ -447,6 +539,84 @@ export function Settings(): React.ReactElement {
       >
         <TextField label="SharePoint access token" type="password" value={sharePointToken} onChange={(e) => setSharePointToken(e.target.value)} fullWidth />
         {sharePointReconnectError && <p className="text-sm text-danger">{sharePointReconnectError}</p>}
+      </Dialog>
+
+      <Dialog
+        open={llmDialogOpen}
+        onOpenChange={setLlmDialogOpen}
+        title="Configure Open WebUI"
+        description="Your own API token and default models -- used for every job you submit and for chat. Never shared with other users."
+        footer={
+          <>
+            <span className="ml-auto" />
+            <Button variant="ghost" onClick={() => setLlmDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveLlmConnection}
+              disabled={!llmToken.trim() || !llmChatModel || llmModels.length === 0 || isSavingLlmConnection}
+            >
+              {isSavingLlmConnection && <Spinner />}
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="flex items-end gap-1.5">
+          <TextField
+            label="Open WebUI API token"
+            type="password"
+            value={llmToken}
+            onChange={(e) => setLlmToken(e.target.value)}
+            fullWidth
+          />
+          <Button variant="outline" size="sm" onClick={handleLoadLlmModels} disabled={!llmToken.trim() || isLoadingLlmModels}>
+            {isLoadingLlmModels && <Spinner />}
+            Load models
+          </Button>
+        </div>
+        <Select
+          label="Chat model"
+          value={llmChatModel}
+          onChange={(e) => setLlmChatModel(e.target.value)}
+          disabled={llmModels.length === 0}
+          fullWidth
+        >
+          <option value="">Select a model…</option>
+          {llmModels.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+              {m.vision ? ' (vision-capable)' : ''}
+            </option>
+          ))}
+        </Select>
+        <Select
+          label="Vision model"
+          labelExtra={
+            <InfoTip content="Used to describe figures/diagrams. Leave unset if your chat model above is already vision-capable -- it will be used for both." />
+          }
+          value={llmVisionModel}
+          onChange={(e) => setLlmVisionModel(e.target.value)}
+          disabled={llmModels.length === 0}
+          fullWidth
+        >
+          <option value="">
+            {llmModels.find((m) => m.id === llmChatModel)?.vision ? 'Use chat model (vision-capable)' : 'Same as chat model'}
+          </option>
+          {llmModels
+            .filter((m) => m.vision)
+            .map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+        </Select>
+        {llmChatModel && !llmModels.find((m) => m.id === llmChatModel)?.vision && !llmVisionModel && (
+          <p className="text-xs text-warning-ink">
+            Your chat model doesn't support vision. Figure/diagram descriptions will be skipped unless you select a vision model above.
+          </p>
+        )}
+        {llmConnectionError && <p className="text-sm text-danger">{llmConnectionError}</p>}
       </Dialog>
     </div>
   );
