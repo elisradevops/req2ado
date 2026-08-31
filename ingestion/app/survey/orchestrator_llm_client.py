@@ -984,6 +984,8 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": max_tokens,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"topK": self._top_k} if self._top_k else {}),
+            **({"minP": self._min_p} if self._min_p else {}),
             **({"seed": self._seed} if self._seed is not None else {}),
         }
         response = self._post_chat(payload)
@@ -1180,6 +1182,8 @@ class OrchestratorLlmClient:
             # model at all, so those node_ids can never appear in its
             # response no matter how well-behaved the model is.
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"topK": self._top_k} if self._top_k else {}),
+            **({"minP": self._min_p} if self._min_p else {}),
             **({"seed": self._seed} if self._seed is not None else {}),
         }
         # Perf-investigation instrumentation (2026-08-01): wall time + payload
@@ -1379,6 +1383,8 @@ class OrchestratorLlmClient:
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"topK": self._top_k} if self._top_k else {}),
+            **({"minP": self._min_p} if self._min_p else {}),
             **({"seed": self._seed} if self._seed is not None else {}),
         }
         # Same perf-investigation instrumentation as

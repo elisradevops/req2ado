@@ -168,6 +168,24 @@ def test_score_requirements_for_document_omits_num_ctx_when_not_configured() -> 
     assert "numCtx" not in captured["body"]
 
 
+def test_score_requirements_for_document_forwards_top_k_and_min_p_when_configured() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", top_k=50, min_p=0.05
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"n0": "text"})
+
+    assert captured["body"]["topK"] == 50
+    assert captured["body"]["minP"] == 0.05
+
+
 def test_score_requirements_for_document_prompt_states_the_exact_expected_entry_count() -> None:
     # Regression guard, same confirmed-live pattern as _whole_document_hint/
     # _branch_topic_hint: a concrete, countable completeness instruction,
@@ -758,6 +776,24 @@ def test_score_epics_and_features_for_document_parses_valid_response() -> None:
     assert result["n0"]["categoryScores"] == {"scopeCoherence": 90, "outcomeClarity": 80}
 
 
+def test_score_epics_and_features_for_document_forwards_top_k_and_min_p_when_configured() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", top_k=50, min_p=0.05
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "text"}})
+
+    assert captured["body"]["topK"] == 50
+    assert captured["body"]["minP"] == 0.05
+
+
 def test_chat_json_sends_the_expected_payload_shape_with_schema() -> None:
     captured: dict = {}
 
@@ -780,6 +816,40 @@ def test_chat_json_sends_the_expected_payload_shape_with_schema() -> None:
     assert captured["body"]["maxTokens"] == _MAX_OUTPUT_TOKENS
     assert captured["body"]["seed"] == 42  # client's own default
     assert result == {"ok": True}
+
+
+def test_chat_json_forwards_top_k_and_min_p_when_configured() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"ok": True})})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer", top_k=50, min_p=0.05
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    client._chat_json("system prompt", "user content")
+
+    assert captured["body"]["topK"] == 50
+    assert captured["body"]["minP"] == 0.05
+
+
+def test_chat_json_omits_top_k_and_min_p_when_not_configured() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"ok": True})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client._chat_json("system prompt", "user content")
+
+    assert "topK" not in captured["body"]
+    assert "minP" not in captured["body"]
 
 
 def test_chat_json_omits_response_schema_when_none() -> None:
