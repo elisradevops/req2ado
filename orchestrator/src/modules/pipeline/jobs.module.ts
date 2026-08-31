@@ -5,7 +5,7 @@ import Redis from 'ioredis';
 import { JobsController } from './jobs.controller';
 import { DocumentOverviewService } from './document-overview.service';
 import { AdoController } from './ado.controller';
-import { JobEventsController, REDIS_SUBSCRIBER_FACTORY } from './job-events.controller';
+import { JobEventsController, REDIS_COMMAND_CLIENT, REDIS_SUBSCRIBER_FACTORY } from './job-events.controller';
 import { JobEventPersistenceService } from './job-event-persistence.service';
 import { StaleJobWatchdogService } from './stale-job-watchdog.service';
 import { JobRetentionService } from './job-retention.service';
@@ -157,6 +157,27 @@ import { BatchPumpService } from '../batch/batch-pump.service';
       provide: REDIS_SUBSCRIBER_FACTORY,
       inject: [ConfigService],
       useFactory: (config: ConfigService) => () => new Redis(config.get<string>('REDIS_URL')!),
+    },
+    {
+      // SWEEP.md section 8a: JobEventsController.streamEvents now subscribes
+      // BEFORE running its replay reads (GET :current / LRANGE
+      // :narration-log), so those reads can no longer share the
+      // per-connection subscriber above once it's subscribed -- an ioredis
+      // client in subscriber mode can't issue any other command. This is a
+      // single SHARED connection across every open SSE stream in the
+      // process (never per-request, unlike REDIS_SUBSCRIBER_FACTORY above),
+      // matching the exact two-connection split JobEventPersistenceService
+      // already uses below. It only ever issues one GET plus one LRANGE per
+      // SSE open, which ioredis happily interleaves across concurrent
+      // callers on one connection.
+      provide: REDIS_COMMAND_CLIENT,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redis = new Redis(config.get<string>('REDIS_URL')!);
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        redis.on('error', (err) => console.error('JobEventsController command-client Redis error:', err));
+        return redis;
+      },
     },
     {
       // TWO dedicated connections, not one -- the first is psubscribe'd for
