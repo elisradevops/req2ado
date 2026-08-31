@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Folder, ChevronRight, Plus, Trash2 } from 'lucide-react';
-import { extensionOf } from './SharePointFolderTree';
+import { extensionOf } from '../utils/extension';
 import type { FolderTreeEntry } from '../api/kb';
 import { formatFileSize } from '../utils/fileSize';
-import { FileTypeIcon } from './FileTypeIcon';
+import { FileTypeIcon, fileTypeLabel } from './FileTypeIcon';
 import { Spinner } from '../ui/Spinner';
 import { Skeleton } from '../ui/Skeleton';
 import { Tooltip } from '../ui/Tooltip';
@@ -141,7 +141,7 @@ export function KbFileList({
                         {entry.isFolder && <ChevronRight className="h-3.5 w-3.5 flex-none text-ink-3" />}
                       </span>
                     </td>
-                    <td className="px-3.5 py-2 text-ink-3">{entry.isFolder ? 'Folder' : extensionOf(entry.name).toUpperCase()}</td>
+                    <td className="px-3.5 py-2 text-ink-3">{entry.isFolder ? 'Folder' : fileTypeLabel(extensionOf(entry.name))}</td>
                     <td className="px-3.5 py-2 font-mono text-xs tabular-nums text-ink-3">{entry.isFolder ? '—' : formatFileSize(entry.sizeBytes)}</td>
                     <td className="px-3.5 py-2">
                       {!entry.isFolder && (

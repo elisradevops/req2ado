@@ -4,6 +4,7 @@ import { cn } from '../lib/cn';
 import { FileTypeIcon } from './FileTypeIcon';
 import { Button } from '../ui/Button';
 import { formatFileSize } from '../utils/fileSize';
+import { extensionOf } from '../utils/extension';
 
 // Same accepted-format set as FileDropzone.tsx's single-file wizard --
 // kept as a separate literal (not imported) since the two components are
@@ -11,11 +12,6 @@ import { formatFileSize } from '../utils/fileSize';
 // this today.
 const ACCEPTED_EXTENSIONS = '.txt,.md,.docx,.pdf,.xlsx';
 const SUPPORTED_TYPES = ['docx', 'pdf', 'xlsx', 'txt', 'md'];
-
-function extensionOf(filename: string): string {
-  const dotIndex = filename.lastIndexOf('.');
-  return dotIndex >= 0 ? filename.slice(dotIndex).toLowerCase() : '';
-}
 
 function isSupported(filename: string): boolean {
   return ACCEPTED_EXTENSIONS.split(',').includes(extensionOf(filename));
@@ -165,7 +161,7 @@ export function MultiFileDropzone({
         <ul className="flex flex-col gap-1">
           {files.map((file, index) => (
             <li key={`${file.name}-${index}`} className="flex items-center gap-2 rounded-sm border border-hairline bg-surface px-2.5 py-1.5">
-              <FileTypeIcon extension={extensionOf(file.name).replace('.', '')} className="h-5 w-5 flex-none" />
+              <FileTypeIcon extension={extensionOf(file.name)} className="h-5 w-5 flex-none" />
               <span className="min-w-0 flex-1 truncate text-sm">{file.name}</span>
               <span className="flex-none font-mono text-meta text-ink-3">{formatFileSize(file.size)}</span>
               <Button size="sm" variant="ghost" aria-label={`Remove ${file.name}`} onClick={() => onFileRemoved(index)} disabled={disabled}>

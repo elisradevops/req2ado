@@ -8,11 +8,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { useToast } from './ToastProvider';
 import { cn } from '../lib/cn';
 import { formatFileSize } from '../utils/fileSize';
-
-export function extensionOf(name: string): string {
-  const dot = name.lastIndexOf('.');
-  return dot === -1 ? '' : name.slice(dot + 1);
-}
+import { extensionOf } from '../utils/extension';
 
 // One row, recursively rendering its own children once expanded --
 // children are fetched lazily (only when the user actually expands a

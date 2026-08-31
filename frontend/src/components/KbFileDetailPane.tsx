@@ -1,5 +1,5 @@
 import { FileText } from 'lucide-react';
-import { extensionOf } from './SharePointFolderTree';
+import { extensionOf } from '../utils/extension';
 import { FileTypeIcon, fileTypeLabel } from './FileTypeIcon';
 import { formatFileSize } from '../utils/fileSize';
 import { Button } from '../ui/Button';
