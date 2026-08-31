@@ -295,7 +295,9 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
     # pagination source -- not an approximation needing a provenance tag.
     for slide_index, slide in enumerate(presentation.slides, start=1):
         title_shape = slide.shapes.title
-        for shape in slide.shapes:
+
+        def _process_shape(shape) -> None:
+            nonlocal block_id, offset, figure_index, table_index
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                 if _is_degenerate_pptx_image(shape):
                     # Not a real figure -- see _is_degenerate_pptx_image's
@@ -304,12 +306,12 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                     # a picture at all), so no vision call, no Figure, no
                     # [FIGURE: ...] placeholder block, and no gap in the
                     # remaining figure ids.
-                    continue
+                    return
                 image_bytes = shape.image.blob
                 image_hash = hashlib.sha256(image_bytes).hexdigest()
                 if image_hash in seen_figure_hashes:
                     # Gap C -- see seen_figure_hashes' own comment above.
-                    continue
+                    return
                 caption = None
                 if describe_figure is not None:
                     try:
@@ -338,7 +340,7 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                 block_id += 1
                 figure_index += 1
                 seen_figure_hashes.add(image_hash)
-                continue
+                return
 
             if shape.has_table:
                 pptx_table = shape.table
@@ -379,10 +381,21 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                     )
                 )
                 table_index += 1
-                continue
+                return
+
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                # A group shape's own .shapes exposes the identical
+                # collection interface as a slide's top-level shapes --
+                # recursing here means a picture/table/text box nested
+                # inside a group (or a group nested inside a group) is
+                # reached the same way a top-level one is, instead of
+                # vanishing with zero trace.
+                for child_shape in shape.shapes:
+                    _process_shape(child_shape)
+                return
 
             if not shape.has_text_frame:
-                continue
+                return
             is_title = title_shape is not None and shape.shape_id == title_shape.shape_id
             for paragraph in shape.text_frame.paragraphs:
                 content = "".join(run.text for run in paragraph.runs).strip() or paragraph.text.strip()
@@ -401,6 +414,9 @@ def load_pptx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                     )
                 )
                 block_id += 1
+
+        for shape in slide.shapes:
+            _process_shape(shape)
 
         if slide.has_notes_slide:
             notes = slide.notes_slide.notes_text_frame.text.strip()

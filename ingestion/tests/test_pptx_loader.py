@@ -516,3 +516,75 @@ def test_load_pptx_table_style_provenance_is_none_not_heuristic(tmp_path: Path) 
     # PDF's geometric/font-weight inference, never used here.
     doc = load_pptx(_build_pptx_with_simple_table(tmp_path))
     assert doc.tables[0].style_provenance is None
+
+
+def test_load_pptx_descends_into_a_group_shape_to_find_a_picture(tmp_path: Path) -> None:
+    # A picture nested inside a GroupShape must not vanish with zero trace
+    # -- mirrors test_load_pptx_captions_embedded_pictures' own fixture
+    # pattern (BytesIO PNG, blank layout) but adds the picture to a group's
+    # own `.shapes` instead of the slide's.
+    from io import BytesIO
+
+    from PIL import Image
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])  # blank layout
+    group = slide.shapes.add_group_shape([])
+    image_buffer = BytesIO()
+    Image.new("RGB", (100, 100), color="green").save(image_buffer, format="PNG")
+    image_buffer.seek(0)
+    group.shapes.add_picture(image_buffer, Inches(1), Inches(1))
+    path = tmp_path / "grouped_picture.pptx"
+    presentation.save(str(path))
+
+    doc = load_pptx(str(path))
+
+    assert len(doc.figures) == 1
+
+
+def test_load_pptx_descends_into_a_group_shape_to_find_a_table(tmp_path: Path) -> None:
+    # A table nested inside a GroupShape must not vanish with zero trace.
+    # NOTE: python-pptx 1.0.2's GroupShapes has no add_table() (verified
+    # live -- AttributeError), unlike its add_picture()/add_group_shape(),
+    # so the fixture is built by adding the table at the slide level via
+    # the normal add_table() and then moving its underlying XML element
+    # into the group's own spTree -- confirmed live (including a full
+    # save/reload roundtrip) to produce a GroupShape whose `.shapes`
+    # yields a child with shape_type TABLE and has_table True, which is
+    # exactly the shape the loader's recursive descent needs to see.
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])  # blank layout
+    group = slide.shapes.add_group_shape([])
+    table_shape = slide.shapes.add_table(1, 2, Inches(1), Inches(1), Inches(3), Inches(1))
+    slide.shapes._spTree.remove(table_shape._element)
+    group.shapes._spTree.append(table_shape._element)
+    path = tmp_path / "grouped_table.pptx"
+    presentation.save(str(path))
+
+    doc = load_pptx(str(path))
+
+    assert len(doc.tables) == 1
+
+
+def test_load_pptx_descends_into_a_nested_group_shape(tmp_path: Path) -> None:
+    # A group nested inside another group (two levels deep) must still be
+    # reached -- proves the descent is recursive, not a single extra level
+    # of unrolled iteration.
+    from io import BytesIO
+
+    from PIL import Image
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])  # blank layout
+    outer_group = slide.shapes.add_group_shape([])
+    inner_group = outer_group.shapes.add_group_shape([])
+    image_buffer = BytesIO()
+    Image.new("RGB", (100, 100), color="green").save(image_buffer, format="PNG")
+    image_buffer.seek(0)
+    inner_group.shapes.add_picture(image_buffer, Inches(1), Inches(1))
+    path = tmp_path / "nested_group.pptx"
+    presentation.save(str(path))
+
+    doc = load_pptx(str(path))
+
+    assert len(doc.figures) == 1
