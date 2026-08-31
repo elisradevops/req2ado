@@ -13,17 +13,28 @@ const LOW_GROUNDING_THRESHOLD = 0.2;
 // would under-flag real fabrication there (SWEEP.md section 7, item 2).
 const PARENT_LOW_GROUNDING_THRESHOLD = 0.35;
 const LOW_QUALITY_THRESHOLD = 50;
+// SWEEP.md section 7: the scoring model's own abstain channel (see
+// ingestion's QualityConfidence docstring, app/workitem/model.py). A 'low'
+// value means the model told us it couldn't really judge this item -- which
+// is exactly a "a human should look at this" signal, so it piggybacks on the
+// existing flagged mechanism rather than getting a UI surface of its own.
+// Deliberately does NOT exclude the item from any count: the score is still
+// the model's best answer and is still displayed, same as a low-grounding or
+// low-quality item already is.
+const LOW_CONFIDENCE = 'low';
 
 export function isFlaggedDiffEntry(entry: {
   type?: string;
   groundingScore?: number | null;
   qualityScore?: number | null;
+  qualityConfidence?: string | null;
 }): boolean {
   const groundingThreshold = entry.type === 'Epic' || entry.type === 'Feature'
     ? PARENT_LOW_GROUNDING_THRESHOLD
     : LOW_GROUNDING_THRESHOLD;
   return (
     (entry.groundingScore != null && entry.groundingScore < groundingThreshold) ||
-    (entry.qualityScore != null && entry.qualityScore < LOW_QUALITY_THRESHOLD)
+    (entry.qualityScore != null && entry.qualityScore < LOW_QUALITY_THRESHOLD) ||
+    entry.qualityConfidence === LOW_CONFIDENCE
   );
 }

@@ -25,4 +25,18 @@ describe('isFlaggedDiffEntry', () => {
   it('does not flag a Requirement with the same grounding score that would flag an Epic', () => {
     expect(isFlaggedDiffEntry({ type: 'Requirement', groundingScore: 0.3, qualityScore: 100 })).toBe(false);
   });
+
+  it('flags a low-confidence entry whose scores are otherwise fine', () => {
+    expect(isFlaggedDiffEntry({ groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low' })).toBe(true);
+  });
+
+  it('does not flag high or medium confidence', () => {
+    expect(isFlaggedDiffEntry({ groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'high' })).toBe(false);
+    expect(isFlaggedDiffEntry({ groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'medium' })).toBe(false);
+  });
+
+  it('does not flag an absent or null confidence value', () => {
+    expect(isFlaggedDiffEntry({ groundingScore: 0.9, qualityScore: 95, qualityConfidence: null })).toBe(false);
+    expect(isFlaggedDiffEntry({ groundingScore: 0.9, qualityScore: 95 })).toBe(false);
+  });
 });

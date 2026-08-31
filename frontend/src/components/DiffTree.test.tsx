@@ -306,6 +306,22 @@ describe('DiffTree', () => {
     expect(screen.getByText('Healthy req').closest('[role="row"], div')?.parentElement).not.toHaveTextContent(/review/i);
   });
 
+  it('shows a review chip on a low-confidence row with otherwise healthy scores', () => {
+    // SWEEP.md section 7: the whole point of the UX decision -- low
+    // confidence reuses the EXISTING review chip rather than getting its
+    // own badge.
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+      { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Unsure req', description: '', action: 'create', customerId: null, groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low' },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
+
+    expect(screen.getByText('Unsure req').closest('[role="row"], div')?.parentElement).toHaveTextContent(/review/i);
+  });
+
   it('filterFlaggedOnly shows only flagged entries, hiding unflagged rows including ancestors', () => {
     const entries: DryRunDiffEntry[] = [
       { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },

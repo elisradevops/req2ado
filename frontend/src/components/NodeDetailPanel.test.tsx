@@ -1107,4 +1107,20 @@ describe('NodeDetailPanel', () => {
     expect(screen.getByText('0.30')).toBeInTheDocument();
     expect(screen.queryByText(/low/i)).not.toBeInTheDocument();
   });
+
+  it('does not mark the Grounding metric low just because qualityConfidence is low', () => {
+    // NodeDetailPanel:285 intentionally nulls qualityScore when reusing
+    // isFlaggedDiffEntry to compute isLowGrounding -- it wants ONLY the
+    // Epic/Feature-aware grounding threshold. qualityConfidence must stay
+    // out of that object literal for the same reason: a well-grounded node
+    // must not render its Grounding number as low because the model was
+    // unsure about the item's quality score.
+    const requirementEntry: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: null, groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low',
+    };
+    renderPanel(<NodeDetailPanel entry={requirementEntry} />);
+    expect(screen.getByText('0.90')).toBeInTheDocument();
+    expect(screen.queryByText(/low/i)).not.toBeInTheDocument();
+  });
 });

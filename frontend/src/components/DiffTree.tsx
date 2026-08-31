@@ -115,6 +115,13 @@ export interface DryRunDiffEntry {
   // or the org's document states no separate definition for that one
   // category), not a parse failure -- see QualityGauge.categoryDescription.
   qualityCategoryChecklist?: Record<string, string> | null;
+  // SWEEP.md section 7: how sure the scoring model was about qualityScore
+  // (see ingestion's QualityConfidence docstring). 'low' sets the existing
+  // ⚠ Review chip and the "Needs review" filter via isFlaggedDiffEntry --
+  // there is deliberately no separate confidence UI surface. Absent for
+  // BASELINE, for a manually-added entry, and for any job persisted before
+  // this field existed.
+  qualityConfidence?: 'high' | 'medium' | 'low' | null;
   // CR-7d rescore: true from the moment a description edit invalidates the
   // score above until a successful rescore clears it -- the last-known
   // numbers are KEPT (never zeroed), only their freshness is in question.
