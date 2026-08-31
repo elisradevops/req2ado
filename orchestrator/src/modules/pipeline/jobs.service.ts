@@ -1060,7 +1060,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   } | null> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
-    const diff = (job.dryRunDiff as { action: string; localId: string; parentLocalId: string | null; excluded?: boolean; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
+    const diff = (job.dryRunDiff as { action: string; type: string; localId: string; parentLocalId: string | null; excluded?: boolean; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
     return {
       // Excluded entries (and their whole subtree) must never count toward
       // "N new work items" -- confirm() itself skips them entirely (see

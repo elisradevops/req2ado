@@ -291,6 +291,29 @@ def test_apply_parent_summary_pass_replaces_verbatim_title_and_gives_a_distinct_
     assert epic.title != epic.description
 
 
+def test_apply_parent_summary_pass_recomputes_grounding_score_against_descendant_text_not_a_self_comparison() -> None:
+    # Descendant requirement text shares almost no vocabulary with the
+    # synthesized summary the FakeParentSummaryClient returns -- if
+    # grounding_score were still a frozen self-comparison (the pre-fix
+    # bug, mirroring the same one already fixed in _apply_synthesis_pass),
+    # it would stay at 1.0 regardless of this mismatch.
+    class FakeParentSummaryClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            return {
+                node_id: {"title": f"Synthesized: {entry['title']}", "description": "A synthesized capability summary."}
+                for node_id, entry in nodes_by_id.items()
+            }
+
+    nodes = _epic_feature_requirement_nodes()
+    warnings: list[str] = []
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+
+    _apply_parent_summary_pass(nodes, [feature.local_id], FakeParentSummaryClient(), warnings)
+
+    assert warnings == []
+    assert feature.grounding_score < 1.0
+
+
 def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_not_figure_captions() -> None:
     # Real, root-caused bug (confirmed live against a real SURVEY job): the
     # heading-span-claiming loop in _detect_deterministic_subtrees folds a

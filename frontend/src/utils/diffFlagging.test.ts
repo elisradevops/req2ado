@@ -17,4 +17,12 @@ describe('isFlaggedDiffEntry', () => {
   it('is false when both scores are healthy', () => {
     expect(isFlaggedDiffEntry({ groundingScore: 0.9, qualityScore: 95 })).toBe(false);
   });
+
+  it('flags an Epic with a grounding score below the higher parent threshold but above the base threshold', () => {
+    expect(isFlaggedDiffEntry({ type: 'Epic', groundingScore: 0.3, qualityScore: 100 })).toBe(true);
+  });
+
+  it('does not flag a Requirement with the same grounding score that would flag an Epic', () => {
+    expect(isFlaggedDiffEntry({ type: 'Requirement', groundingScore: 0.3, qualityScore: 100 })).toBe(false);
+  });
 });

@@ -459,6 +459,16 @@ def _apply_parent_summary_pass(
                         description = assemble_description(description, table_html)
                 node.description = description
                 node.fidelity_hash = _hash_description(node.description)
+                # Recompute against the real descendant requirement text
+                # (already collected into payload_by_id above), not a
+                # self-comparison -- mirrors _apply_synthesis_pass's own
+                # identical fix for the sibling LLM-authored-parent path
+                # (see that function's docstring for the original
+                # diagnosis: grounding_score is always 1.0 by construction
+                # if never recomputed against independent source text).
+                node.grounding_score = _grounding_score(
+                    node.description, "\n\n".join(payload_by_id[node_id]["requirement_descriptions"])
+                )
 
 
 class SynthesisClient(Protocol):
