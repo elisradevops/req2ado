@@ -88,6 +88,34 @@ model Job {
   followUp         Boolean   @default(false)
   originalFilename String
   dryRunDiff       Json?
+  // Optimistic-concurrency guard for dryRunDiff ONLY (SWEEP.md section 8a)
+  // -- deliberately not a whole-row version, hence diffVersion and not
+  // version. All five review-tree mutation endpoints
+  // (setDiffEntryExcluded / editDiffEntry / rescoreDiffEntry /
+  // addDiffEntry / moveDiffEntry, all in jobs.service.ts) are
+  // read-modify-write over this whole JSON array, so two clients editing
+  // DIFFERENT nodes concurrently both read the same array and the later
+  // write silently discarded the earlier one -- with both callers getting a
+  // 200. JobsService.mutateDiffVersioned() now reads this value alongside
+  // the array and writes back through a conditional
+  // updateMany({ where: { id, diffVersion } }) with { increment: 1 }, so a
+  // stale write matches zero rows and is re-applied against the fresh
+  // array instead of clobbering.
+  //
+  // NOT NULL DEFAULT 0, breaking this model's dominant
+  // nullable-for-historical-rows convention on purpose: a version whose
+  // value can be null has no meaningful comparison in a WHERE clause, and
+  // the default backfills every existing row in the same ALTER statement.
+  //
+  // Deliberately NOT bumped by the two other writers of dryRunDiff --
+  // pipeline.worker.ts's final status:'diff_ready' write (which is what
+  // CREATES the diff_ready state, so none of the five can precede it) and
+  // confirm()'s post-ADO-write refresh (confirm() atomically claims
+  // status:'writing' first, and all five methods reject any status other
+  // than 'diff_ready', so they are structurally locked out of racing it).
+  // resubmit() creates a whole new Job row rather than returning this one
+  // to diff_ready. A NEW writer of dryRunDiff must re-check that reasoning.
+  diffVersion      Int       @default(0)
   state            String    @default("Proposed")
   iterationPath    String?
   // {sourceFile, similarity, relevance}[] -- structured citations (was a
