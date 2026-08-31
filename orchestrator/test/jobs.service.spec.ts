@@ -2598,7 +2598,11 @@ describe('JobsService.addDiffEntry', () => {
   it('allows a root-level Feature in a SURVEY job when no Epic exists yet', async () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = {
-      job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [] }), update },
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', mode: 'survey', dryRunDiff: [] }),
+        update,
+      },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
@@ -2627,6 +2631,37 @@ describe('JobsService.addDiffEntry', () => {
     await expect(
       service.addDiffEntry('job-1', { parentLocalId: null, type: 'Epic', title: 'X', description: 'Y' }),
     ).rejects.toThrow('existing parent');
+  });
+
+  it('re-appends against the fresh array when a concurrent write landed first -- the other client\'s new entry survives', async () => {
+    // Client A added its own child and bumped the row to diffVersion 1
+    // between this call's read and its write. This add must land ON TOP of
+    // A's array -- the pre-fix behavior overwrote it, so A's brand-new item
+    // vanished from the review tree while A's request had returned 200.
+    const epic = { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null };
+    const clientAsAdd = { localId: 'manual-1-111', parentLocalId: 'e1', type: 'Feature', title: 'client A feature', description: 'a', action: 'create', existingAdoId: null, sourceHash: 'ha', customerId: null, isManual: true };
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', mode: 'survey', diffVersion: 0, dryRunDiff: [{ ...epic }] })
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', mode: 'survey', diffVersion: 1, dryRunDiff: [{ ...epic }, { ...clientAsAdd }] });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.addDiffEntry('job-1', { parentLocalId: 'e1', type: 'Feature', title: 'client B feature', description: 'b' });
+
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    // Three entries, not two: the epic, A's add, and this one.
+    expect(result).toHaveLength(3);
+    expect(result.some((e) => e.title === 'client A feature')).toBe(true);
+    expect(result.some((e) => e.title === 'client B feature')).toBe(true);
+    // localId is derived from the FRESH array's length, so it cannot
+    // collide with the entry A appended at the same index.
+    expect(result[2].localId).not.toBe(clientAsAdd.localId);
   });
 });
 

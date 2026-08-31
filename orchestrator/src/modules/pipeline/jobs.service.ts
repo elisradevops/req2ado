@@ -927,85 +927,79 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     id: string,
     input: { parentLocalId: string | null; type: string; title: string; description: string },
   ): Promise<DryRunDiffEntry[]> {
-    const job = await this.prisma.job.findUnique({ where: { id } });
-    if (!job) throw new NotFoundException(`Job ${id} not found`);
-    if (job.status !== 'diff_ready') {
-      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
-    }
-    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    return this.mutateDiffVersioned(id, (diff, job) => {
+      let parentEntry: DryRunDiffEntry | undefined;
+      if (input.parentLocalId !== null) {
+        parentEntry = diff.find((entry) => entry.localId === input.parentLocalId);
+        if (!parentEntry) throw new NotFoundException(`Diff entry ${input.parentLocalId} not found`);
+      }
 
-    let parentEntry: DryRunDiffEntry | undefined;
-    if (input.parentLocalId !== null) {
-      parentEntry = diff.find((entry) => entry.localId === input.parentLocalId);
-      if (!parentEntry) throw new NotFoundException(`Diff entry ${input.parentLocalId} not found`);
-    }
-
-    if (job.mode === 'baseline') {
-      // BASELINE has no root-creation concept -- every BASELINE item's type
-      // is inherited from a real parent's own childType; there is no
-      // top-level type to infer without one, so a null parentLocalId is
-      // simply not a valid request here (the frontend's AddChildForm never
-      // offers root placement in BASELINE mode -- see its own doc comment).
-      if (!parentEntry) {
-        throw new BadRequestException('a BASELINE job requires an existing parent to add a child under');
+      if (job.mode === 'baseline') {
+        // BASELINE has no root-creation concept -- every BASELINE item's type
+        // is inherited from a real parent's own childType; there is no
+        // top-level type to infer without one, so a null parentLocalId is
+        // simply not a valid request here (the frontend's AddChildForm never
+        // offers root placement in BASELINE mode -- see its own doc comment).
+        if (!parentEntry) {
+          throw new BadRequestException('a BASELINE job requires an existing parent to add a child under');
+        }
+        // A manually-added entry's childType is ALWAYS null (never recomputed
+        // by ingestion -- see the newEntry literal below), so in BASELINE mode
+        // the childType-equality check just below can never be satisfied by
+        // any real type string. Without this explicit case the caller would
+        // only ever see "does not match the required child type 'null'",
+        // which reads as a caller bug rather than what it actually is: a
+        // manually-added parent's allowed child type is fundamentally
+        // undetermined in a BASELINE job (there's no per-node inference to
+        // read a childType from). SURVEY mode has no such gap -- its branch
+        // below validates by category via canNest, which manual parents
+        // participate in exactly like any other node.
+        if (parentEntry.isManual) {
+          throw new BadRequestException('cannot add a child under a manually-added entry in a BASELINE job');
+        }
+        if (input.type !== parentEntry.childType) {
+          throw new BadRequestException(`type '${input.type}' does not match the required child type '${parentEntry.childType}'`);
+        }
+      } else if (parentEntry) {
+        // CR: reparent -- was a flat `['Epic','Feature','Requirement'].includes()`
+        // membership check with no relationship to the parent's type at all,
+        // e.g. a SURVEY job could add an Epic as a child of a Requirement. Now
+        // routes through the same canNest tier rule the move endpoint uses, so
+        // this path and moveDiffEntry share one definition of "valid parent."
+        if (!canNest(input.type, parentEntry.type)) {
+          throw new BadRequestException(`a ${input.type} cannot be added under a ${parentEntry.type}`);
+        }
+      } else {
+        // CR: reparent -- root creation in SURVEY mode, mirroring
+        // moveDiffEntry's own canBeRoot check (root_regrouping.py's rule: the
+        // top category, or a Feature when the document has no Epic at all).
+        const anyEpicExists = diff.some((entry) => entry.type === 'Epic');
+        if (!canBeRoot(input.type, anyEpicExists)) {
+          throw new BadRequestException(`a ${input.type} cannot be a top-level item here`);
+        }
       }
-      // A manually-added entry's childType is ALWAYS null (never recomputed
-      // by ingestion -- see the newEntry literal below), so in BASELINE mode
-      // the childType-equality check just below can never be satisfied by
-      // any real type string. Without this explicit case the caller would
-      // only ever see "does not match the required child type 'null'",
-      // which reads as a caller bug rather than what it actually is: a
-      // manually-added parent's allowed child type is fundamentally
-      // undetermined in a BASELINE job (there's no per-node inference to
-      // read a childType from). SURVEY mode has no such gap -- its branch
-      // below validates by category via canNest, which manual parents
-      // participate in exactly like any other node.
-      if (parentEntry.isManual) {
-        throw new BadRequestException('cannot add a child under a manually-added entry in a BASELINE job');
-      }
-      if (input.type !== parentEntry.childType) {
-        throw new BadRequestException(`type '${input.type}' does not match the required child type '${parentEntry.childType}'`);
-      }
-    } else if (parentEntry) {
-      // CR: reparent -- was a flat `['Epic','Feature','Requirement'].includes()`
-      // membership check with no relationship to the parent's type at all,
-      // e.g. a SURVEY job could add an Epic as a child of a Requirement. Now
-      // routes through the same canNest tier rule the move endpoint uses, so
-      // this path and moveDiffEntry share one definition of "valid parent."
-      if (!canNest(input.type, parentEntry.type)) {
-        throw new BadRequestException(`a ${input.type} cannot be added under a ${parentEntry.type}`);
-      }
-    } else {
-      // CR: reparent -- root creation in SURVEY mode, mirroring
-      // moveDiffEntry's own canBeRoot check (root_regrouping.py's rule: the
-      // top category, or a Feature when the document has no Epic at all).
-      const anyEpicExists = diff.some((entry) => entry.type === 'Epic');
-      if (!canBeRoot(input.type, anyEpicExists)) {
-        throw new BadRequestException(`a ${input.type} cannot be a top-level item here`);
-      }
-    }
-    const sourceHash = createHash('sha256').update(input.description).digest('hex');
-    const newEntry: DryRunDiffEntry = {
-      localId: `manual-${diff.length}-${Date.now()}`,
-      parentLocalId: input.parentLocalId,
-      type: input.type,
-      title: input.title,
-      description: input.description,
-      action: 'create',
-      existingAdoId: null,
-      similarity: null,
-      sourceHash,
-      customerId: null,
-      seCoverageRef: null,
-      tags: [],
-      qualityScore: null,
-      qualityIssues: [],
-      childType: null,
-      isManual: true,
-    };
-    const updated = [...diff, newEntry];
-    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: updated as any } });
-    return updated;
+      const sourceHash = createHash('sha256').update(input.description).digest('hex');
+      const newEntry: DryRunDiffEntry = {
+        localId: `manual-${diff.length}-${Date.now()}`,
+        parentLocalId: input.parentLocalId,
+        type: input.type,
+        title: input.title,
+        description: input.description,
+        action: 'create',
+        existingAdoId: null,
+        similarity: null,
+        sourceHash,
+        customerId: null,
+        seCoverageRef: null,
+        tags: [],
+        qualityScore: null,
+        qualityIssues: [],
+        childType: null,
+        isManual: true,
+      };
+      const updated = [...diff, newEntry];
+      return updated;
+    });
   }
 
   // Reparent (parentLocalId alone) and/or reorder among siblings
