@@ -16,6 +16,24 @@ jobs:
   node:
     name: Node (frontend / orchestrator / mcp-ado-server)
     runs-on: ubuntu-latest
+    # orchestrator/test/health.e2e-spec.ts boots the full AppModule, which
+    # eagerly constructs real (non-lazyConnect) ioredis clients for
+    # JobEventsPublisher/JobEventsController/JobEventPersistenceService --
+    # same image docker-compose.yml's own redis service uses. Postgres is
+    # NOT needed here: PrismaClient connects lazily on first query, and
+    # nothing in this job's test suites (including that e2e spec, which only
+    # hits the dependency-free GET /health liveness check, not /ready)
+    # actually queries it.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
