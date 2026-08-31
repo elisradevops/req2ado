@@ -2331,19 +2331,18 @@ describe('JobsService.rescoreDiffEntry', () => {
   });
 
   it('propagates an ingestion failure and never writes a fabricated fresh score', async () => {
-    const update = jest.fn();
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateMany,
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
-        update,
       },
     };
     const scoreItem = jest.fn().mockRejectedValue(new Error('ingestion unreachable'));
     const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
 
     await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow('ingestion unreachable');
-    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   // Confirmed real bug found+fixed during the review-fix pass: a bare
@@ -2353,12 +2352,11 @@ describe('JobsService.rescoreDiffEntry', () => {
   // dependency in its own request/response cycle, unlike editDiffEntry/
   // addDiffEntry (pure DB/array operations, nothing to fail this way).
   it('maps a real IngestionHttpError to a BadGatewayException, preserving the real reason', async () => {
-    const update = jest.fn();
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateMany,
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
-        update,
       },
     };
     const scoreItem = jest.fn().mockRejectedValue(new IngestionHttpError(503, 'Ingestion /score-item request failed: LLM backend unreachable'));
@@ -2366,7 +2364,7 @@ describe('JobsService.rescoreDiffEntry', () => {
 
     await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow(BadGatewayException);
     await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow('LLM backend unreachable');
-    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   // Confirmed real bug found+fixed during the review-fix pass: ingestion's
@@ -2380,12 +2378,11 @@ describe('JobsService.rescoreDiffEntry', () => {
   // "a failed rescore must never launder a stale number into a
   // fresh-looking one." Untested before this fix.
   it('treats a 200-OK-but-null rescore result as a failure -- never overwrites the last real score', async () => {
-    const update = jest.fn();
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateMany,
         findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, dryRunDiff: [staleEntry] }),
-        update,
       },
     };
     const scoreItem = jest.fn().mockResolvedValue({ qualityScore: null, qualityIssues: [], qualityCategoryScores: null });
@@ -2394,7 +2391,7 @@ describe('JobsService.rescoreDiffEntry', () => {
     await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow(BadGatewayException);
     // The entry (and its qualityStale flag) is never written -- the old
     // score of 40 stays exactly as it was, not overwritten with null.
-    expect(update).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects when the job is not in a diff-editable state', async () => {
@@ -2404,6 +2401,42 @@ describe('JobsService.rescoreDiffEntry', () => {
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     await expect(service.rescoreDiffEntry('job-1', 'n0')).rejects.toThrow('not in a diff-editable state');
+  });
+
+  it('calls ingestion exactly once across a lost race and re-applies the same score to the fresh array', async () => {
+    // The retry must NOT re-run the LLM call: it costs money, takes
+    // seconds, and can return a DIFFERENT score per invocation, which
+    // would make the persisted number depend on retry luck. The score is
+    // obtained once, before the guarded write; only the re-apply retries.
+    const scoredEntry = { ...staleEntry };
+    const other = { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'Other', description: 'other', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null };
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const findUnique = jest
+      .fn()
+      // Phase 1's unguarded validation/context read.
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, diffVersion: 0, dryRunDiff: [{ ...scoredEntry }, { ...other }] })
+      // The guarded read for attempt 1.
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, diffVersion: 0, dryRunDiff: [{ ...scoredEntry }, { ...other }] })
+      // Attempt 2 sees what the other client landed on n1.
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: null, diffVersion: 1, dryRunDiff: [{ ...scoredEntry }, { ...other, excluded: true }] });
+    const scoreItem = jest.fn().mockResolvedValue({ qualityScore: 82, qualityIssues: [], qualityCategoryScores: { clarity: 90 } });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    const result = await service.rescoreDiffEntry('job-1', 'n0');
+
+    // The whole point of hoisting the call out of the retried region.
+    expect(scoreItem).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    const rescored = result.find((e) => e.localId === 'n0')!;
+    expect(rescored.qualityScore).toBe(82);
+    expect(rescored.qualityStale).toBe(false);
+    // The other client's edit survives.
+    expect(result.find((e) => e.localId === 'n1')!.excluded).toBe(true);
   });
 });
 

@@ -801,6 +801,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // reverting its own optimistic "Re-checking" UI state back to Stale; this
   // method never writes a fabricated fresh score on failure.
   async rescoreDiffEntry(id: string, localId: string): Promise<DryRunDiffEntry[]> {
+    // SWEEP.md 8a: this read is deliberately NOT the version-guarded one.
+    // It exists only to validate the request and gather the LLM call's
+    // context (userId/model/category checklist) -- i.e. to decide whether
+    // to spend an ingestion /score-item call at all. The guarded read
+    // happens inside mutateDiffVersioned below, and every check made here
+    // is re-made there against the freshly-read array. The LLM call must
+    // sit OUTSIDE the retried region: it costs money, takes seconds, and
+    // can return a different score per invocation, so re-running it per
+    // retry would make the persisted number depend on retry luck.
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) throw new NotFoundException(`Job ${id} not found`);
     if (job.status !== 'diff_ready') {
@@ -877,15 +886,32 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // Reusing the old map is still correct, not stale: resolveCategoryChecklist
     // guarantees this rescore is judged against the SAME category key set,
     // so whichever keys already had a matched citation still do.
-    diff[index] = {
-      ...diff[index],
-      qualityScore: result.qualityScore,
-      qualityIssues: result.qualityIssues,
-      qualityCategoryScores: result.qualityCategoryScores,
-      qualityStale: false,
-    };
-    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
-    return diff;
+    // Re-validate against the FRESHLY-read array, not the phase-1 one: a
+    // retry must never apply this score to a localId that no longer exists
+    // or to an entry another client meanwhile turned into a non-create /
+    // non-Requirement. resolveCategoryChecklist is deliberately NOT
+    // re-resolved here -- it fixed the rubric the already-returned score
+    // was judged against, and re-resolving it against a fresh array could
+    // pick a different sibling's key set, which is exactly the "two
+    // different rubrics" hazard its own doc comment above exists to stop.
+    return this.mutateDiffVersioned(id, (freshDiff) => {
+      const freshIndex = freshDiff.findIndex((entry) => entry.localId === localId);
+      if (freshIndex === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      if (freshDiff[freshIndex].action !== 'create') {
+        throw new BadRequestException('only create entries can be rescored');
+      }
+      if (freshDiff[freshIndex].type !== 'Requirement') {
+        throw new BadRequestException('only Requirement entries can be rescored');
+      }
+      freshDiff[freshIndex] = {
+        ...freshDiff[freshIndex],
+        qualityScore: result.qualityScore,
+        qualityIssues: result.qualityIssues,
+        qualityCategoryScores: result.qualityCategoryScores,
+        qualityStale: false,
+      };
+      return freshDiff;
+    });
   }
 
   private resolveCategoryChecklist(diff: DryRunDiffEntry[], index: number): string[] | null {
