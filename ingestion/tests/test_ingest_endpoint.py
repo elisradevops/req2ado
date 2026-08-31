@@ -728,10 +728,13 @@ def test_ingest_image_publishes_a_figure_count_of_one_with_no_precount_walk(monk
     assert "figure 1 of 1" in figure_events[0]["message"]
 
 
-def test_ingest_pdf_publishes_an_approximate_figure_count_denominator(monkeypatch) -> None:
-    # pdf_with_figure.pdf has exactly one embedded image XObject --
-    # count_image_xobjects's cheap pass (no OCR, no full walk) must find it
-    # without re-running the real, expensive load_pdf walk.
+def test_ingest_pdf_publishes_the_exact_figure_count_denominator(monkeypatch) -> None:
+    # pdf_with_figure.pdf has exactly one embedded image XObject. This used
+    # to be an APPROXIMATE precount via count_image_xobjects (a cheap pass
+    # avoiding a second, expensive load_pdf walk) -- since figure captioning
+    # moved to a post-parse pass (SWEEP 8b), the denominator is now simply
+    # the number of figures the single real parse actually collected, exact
+    # for every format including pdf.
     import app.main as main_module
 
     class _FakeVisionClient:

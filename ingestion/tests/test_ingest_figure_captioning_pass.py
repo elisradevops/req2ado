@@ -230,3 +230,66 @@ def test_figure_bytes_are_still_rasterized_exactly_once_per_figure_under_concurr
     )
 
     assert len(rasterize_calls) == len(result["figures"])
+
+
+def test_figure_count_narration_is_the_exact_collected_count(monkeypatch) -> None:
+    # The two-phase split makes the denominator exact for EVERY format:
+    # figure_count is now len(collected bytes) rather than a per-format
+    # precount that was exact for docx/pptx, hardcoded 1 for images, and
+    # explicitly approximate for pdf.
+    import app.main as main_module
+
+    published: list = []
+
+    class _VisionClient:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    class _RecordingNarrationPublisher:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def publish(self, progress) -> None:
+            published.append(progress)
+
+    monkeypatch.setattr(main_module, "_vision_client", _VisionClient())
+    monkeypatch.setattr(main_module, "NarrationPublisher", _RecordingNarrationPublisher)
+
+    result = _upload(
+        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        job_id="job-exact-figure-count", primer_context="captioning-exact-figure-count",
+    )
+
+    real_count = len(result["figures"])
+    figure_events = [e for e in published if e.phase == "describe_figure"]
+    assert figure_events
+    assert all(e.figure_count == real_count for e in figure_events)
+
+
+def test_a_vision_active_docx_is_parsed_exactly_once(monkeypatch) -> None:
+    # The docx/pptx figure-precount pass was a SECOND full document walk,
+    # needed only because the figure total wasn't knowable during inline
+    # captioning. With captioning moved after parsing it is redundant, and
+    # deleting it means a vision-active docx is dispatched exactly once.
+    import app.main as main_module
+
+    dispatch_calls: list[str] = []
+    original_dispatch = main_module.dispatch_by_extension
+
+    def counting_dispatch(filename, path, **kwargs):
+        dispatch_calls.append(filename)
+        return original_dispatch(filename, path, **kwargs)
+
+    class _VisionClient:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    monkeypatch.setattr(main_module, "dispatch_by_extension", counting_dispatch)
+    monkeypatch.setattr(main_module, "_vision_client", _VisionClient())
+
+    _upload(
+        "sample.docx", FIXTURES / "sample.docx", mode="survey",
+        job_id="job-single-parse", primer_context="captioning-single-parse",
+    )
+
+    assert len(dispatch_calls) == 1
