@@ -604,21 +604,30 @@ def _reassign_figure_captions(doc: CanonicalDoc, outcomes: list[FigureCaptionOut
 # network error) degrades to ungrounded scoring (criteria_retriever=None)
 # rather than failing the whole SURVEY job -- same "fail open" philosophy
 # as the dedup check in dry-run.service.ts.
-_criteria_retriever: CriteriaRetriever | None = None
-_criteria_retriever_build_attempted = False
+# Keyed by user_id (None included -- a caller with no identity still gets
+# its own cache slot) rather than a single global instance: the orchestrator
+# now requires X-Req2Ado-User-Id on every /llm/embed call with no shared/
+# global fallback credential, so the one-time corpus embed a CriteriaRetriever
+# does at construction must run under a REAL user's own Open WebUI
+# connection, not a "whichever request happens to build it first" identity.
+# Each user's own retriever is still built and cached exactly once (the
+# corpus is static, tiny, and cheap to re-embed once per user) -- the
+# resolve-once-per-key pattern OpenWebUiClientFactory already uses for the
+# same reason.
+_criteria_retrievers: dict[str | None, CriteriaRetriever | None] = {}
+_criteria_retrievers_build_attempted: set[str | None] = set()
 
 
-def _get_criteria_retriever() -> CriteriaRetriever | None:
-    global _criteria_retriever, _criteria_retriever_build_attempted
-    if _criteria_retriever_build_attempted:
-        return _criteria_retriever
-    _criteria_retriever_build_attempted = True
+def _get_criteria_retriever(user_id: str | None) -> CriteriaRetriever | None:
+    if user_id in _criteria_retrievers_build_attempted:
+        return _criteria_retrievers[user_id]
+    _criteria_retrievers_build_attempted.add(user_id)
     try:
-        _criteria_retriever = CriteriaRetriever(_embed_client)
+        _criteria_retrievers[user_id] = CriteriaRetriever(_embed_client, user_id=user_id)
     except Exception:
-        logger.warning("Failed to build CriteriaRetriever -- SURVEY quality scoring will run ungrounded", exc_info=True)
-        _criteria_retriever = None
-    return _criteria_retriever
+        logger.warning("Failed to build CriteriaRetriever for user_id=%s -- SURVEY quality scoring will run ungrounded", user_id, exc_info=True)
+        _criteria_retrievers[user_id] = None
+    return _criteria_retrievers[user_id]
 
 
 def _build_survey_tree_with_scoring(
@@ -668,7 +677,7 @@ def _build_survey_tree_with_scoring(
             doc,
             analysis_client=client,
             scoring_client=client,
-            criteria_retriever=_get_criteria_retriever(),
+            criteria_retriever=_get_criteria_retriever(user_id),
             user_id=user_id,
             embed_client=_embed_client,
             vector_store=_kb_vector_store,
@@ -753,10 +762,18 @@ class DedupUpsertRequest(BaseModel):
     text: str
     title: str
     area_path: str
+    # See DedupCheckRequest.user_id's own doc comment -- same purpose, this
+    # route's own /llm/embed call needs it to resolve a per-user connection.
+    user_id: str | None = None
 
 
 class DedupUpsertBatchRequest(BaseModel):
     items: list[DedupUpsertRequest]
+    # Batch-wide, not per-item -- every item in one batch upsert comes from
+    # the SAME job's confirm() run (see JobsService.confirm() /
+    # ingestion-http.client.ts's upsertDedupEntriesBatch), so one shared
+    # user_id for the whole request is correct, not a per-item field.
+    user_id: str | None = None
 
 
 class DedupDeleteRequest(BaseModel):
@@ -908,11 +925,13 @@ async def ingest(
     # orchestrator's /llm/vision proxy should use for this request's figure
     # captioning (see OrchestratorVisionClient.describe_figure's own
     # X-Req2Ado-User-Id doc comment). Same optional query-param convention as
-    # job_id/primer_context above. The orchestrator's own ingestion-http
-    # client does not send this today (this parse-phase /ingest call predates
-    # per-user credentials) -- None here degrades to "no identity available,"
-    # not a fabricated fallback, and the orchestrator's own 401 on /llm/vision
-    # is the correct, honest failure signal for that case.
+    # job_id/primer_context above. Sent by every real job submission
+    # (ingestion-http.client.ts's ingest(), threading job.userId through
+    # pipeline.worker.ts) -- omitted only for a caller with genuinely no
+    # user context (e.g. /jobs/preview, which sets skip_vision anyway, so
+    # vision never fires there). None here degrades to "no identity
+    # available," not a fabricated fallback, and the orchestrator's own 401
+    # on /llm/vision is the correct, honest failure signal for that case.
     user_id: str | None = None,
 ) -> CanonicalDoc:
     # skip_vision: /jobs/preview (orchestrator) only needs blockCount/
@@ -1509,7 +1528,7 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
     )
     score, issues, category_scores, confidence = score_single_requirement_text(
-        body.description, client, _get_criteria_retriever(), kb_context, body.category_checklist,
+        body.description, client, _get_criteria_retriever(body.user_id), kb_context, body.category_checklist,
         user_id=body.user_id,
     )
     return ScoreItemResponse(
@@ -1541,7 +1560,7 @@ async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
 
 @app.post("/dedup/upsert")
 async def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
-    title_embedding, description_embedding = _embed_client.embed([body.title, body.text])
+    title_embedding, description_embedding = _embed_client.embed([body.title, body.text], user_id=body.user_id)
     embedding = blend_embeddings(title_embedding, description_embedding)
     # document=body.text: stores the item's original text alongside its
     # embedding, so a future check_for_duplicates call can run its
@@ -1570,7 +1589,9 @@ async def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     if not body.items:
         return {"ok": True}
     n = len(body.items)
-    embeddings = _embed_client.embed([item.title for item in body.items] + [item.text for item in body.items])
+    embeddings = _embed_client.embed(
+        [item.title for item in body.items] + [item.text for item in body.items], user_id=body.user_id,
+    )
     title_embeddings, description_embeddings = embeddings[:n], embeddings[n:]
     blended_embeddings = [
         blend_embeddings(title_embedding, description_embedding)

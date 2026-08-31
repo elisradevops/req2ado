@@ -27,12 +27,25 @@ class OrchestratorEmbedClient:
         self._bearer_token = bearer_token
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
+        """`user_id` -- the orchestrator now requires an X-Req2Ado-User-Id
+        header identifying which user's vaulted Open WebUI credential to
+        use for /llm/embed (no shared/global fallback credential exists any
+        more); a request with a valid bearer token but a missing/unknown
+        header is rejected with 401. Must be a per-call parameter, never
+        stored on `self`, for the same reason documented on
+        OrchestratorLlmClient._post_chat: this class is constructed as a
+        module-level singleton (main.py's `_embed_client`) shared across
+        every concurrent request the process handles. Omitted from the
+        header entirely when falsy, never sent as an empty string."""
+        headers = {"Authorization": f"Bearer {self._bearer_token}"}
+        if user_id:
+            headers["X-Req2Ado-User-Id"] = user_id
         with httpx.Client(transport=self._transport, timeout=_EMBED_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/embed",
                 json={"texts": texts},
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
+                headers=headers,
             )
         response.raise_for_status()
         return response.json()["embeddings"]

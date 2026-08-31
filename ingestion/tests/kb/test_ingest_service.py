@@ -23,7 +23,7 @@ def _fake_doc(text: str) -> CanonicalDoc:
 
 
 class FakeEmbedClient:
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
         return [[1.0, 0.0, 0.0] for _ in texts]
 
 

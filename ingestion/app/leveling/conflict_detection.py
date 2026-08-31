@@ -121,7 +121,8 @@ def _detect_conflicting_duplicates(
     try:
         raw_embeddings = embed_client.embed(
             [n.title or n.description for n in requirement_nodes]
-            + [n.description for n in requirement_nodes]
+            + [n.description for n in requirement_nodes],
+            user_id=user_id,
         )
     except Exception as exc:
         logger.warning("Duplicate-cluster embedding failed, skipping conflict detection: %s", exc)

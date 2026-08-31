@@ -174,7 +174,7 @@ def _store_document(
     # intact and the stored file_hash still reflects the last successfully
     # embedded version, so a retry re-ingests cleanly rather than leaving a
     # partially-overwritten document.
-    embedded = [(chunk, embed_client.embed([chunk.text])[0]) for chunk in chunks]
+    embedded = [(chunk, embed_client.embed([chunk.text], user_id=user_id)[0]) for chunk in chunks]
 
     vector_store.delete_file_chunks(user_id, name, item_id)
     for chunk, embedding in embedded:

@@ -10,7 +10,7 @@ class FakeEmbedClient:
         self._raises = raises
         self.calls: list[list[str]] = []
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
         self.calls.append(texts)
         if self._raises:
             raise self._raises

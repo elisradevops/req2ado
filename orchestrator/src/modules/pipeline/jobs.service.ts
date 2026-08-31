@@ -2072,7 +2072,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // for scattered individual items) is easier to notice and re-run.
       if (dedupUpsertItems.length > 0) {
         try {
-          await this.ingestionClient.upsertDedupEntriesBatch(dedupUpsertItems);
+          await this.ingestionClient.upsertDedupEntriesBatch(dedupUpsertItems, job.userId ?? undefined);
         } catch (error) {
           // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
           console.error(`Dedup batch upsert failed for ${dedupUpsertItems.length} newly-created item(s):`, error);

@@ -1069,10 +1069,46 @@ describe('JobsService.confirm', () => {
     await service.confirm('job-1');
 
     expect(upsertDedupEntriesBatch).toHaveBeenCalledTimes(1);
-    expect(upsertDedupEntriesBatch).toHaveBeenCalledWith([
-      { itemId: '500', text: 'D', title: 'T', areaPath: 'Project\\Area1' },
-      { itemId: '501', text: 'D2', title: 'T2', areaPath: 'Project\\Area1' },
-    ]);
+    expect(upsertDedupEntriesBatch).toHaveBeenCalledWith(
+      [
+        { itemId: '500', text: 'D', title: 'T', areaPath: 'Project\\Area1' },
+        { itemId: '501', text: 'D2', title: 'T2', areaPath: 'Project\\Area1' },
+      ],
+      undefined,
+    );
+  });
+
+  it("forwards job.userId to upsertDedupEntriesBatch, so ingestion's /dedup/upsert-batch embed() call resolves the submitting user's own Open WebUI connection", async () => {
+    const createWorkItem = jest.fn().mockResolvedValueOnce({ id: 500 });
+    const upsertDedupEntriesBatch = jest.fn().mockResolvedValue(undefined);
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1',
+          dryRunDiff: [
+            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          ],
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
+      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    };
+    const service = new JobsService(
+      prisma as any,
+      { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
+      { record: jest.fn() } as any,
+      { upsertDedupEntriesBatch } as any,
+      'redis://unused',
+    );
+
+    await service.confirm('job-1');
+
+    expect(upsertDedupEntriesBatch).toHaveBeenCalledWith(
+      [{ itemId: '500', text: 'D', title: 'T', areaPath: 'Project\\Area1' }],
+      'user-1',
+    );
   });
 
   it('writes a configured initial state instead of the hardcoded "Proposed" default', async () => {

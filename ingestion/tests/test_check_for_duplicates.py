@@ -12,7 +12,7 @@ class FakeEmbedClient:
     def __init__(self, text_to_vector: dict[str, list[float]]) -> None:
         self._text_to_vector = text_to_vector
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
         return [self._text_to_vector[text] for text in texts]
 
 

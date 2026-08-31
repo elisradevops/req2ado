@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmbedClient(Protocol):
-    def embed(self, texts: list[str]) -> list[list[float]]: ...
+    def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]: ...
 
 
 def retrieve_context(
@@ -37,7 +37,7 @@ def retrieve_context(
     here; this is the single seam that makes KB failure non-fatal for
     callers."""
     try:
-        [embedding] = embed_client.embed([query_text])
+        [embedding] = embed_client.embed([query_text], user_id=user_id)
         hits = vector_store.query(user_id, embedding, top_k)
     except Exception as exc:  # noqa: BLE001 - retrieval must never fail a SURVEY job
         logger.warning("KB retrieval failed for user_id=%s: %s", user_id, exc)

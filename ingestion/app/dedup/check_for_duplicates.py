@@ -129,7 +129,7 @@ def check_for_duplicates(
     from None, which means the judge never ran at all) so this is at least
     visible downstream, and the failure is logged -- every other optional
     client in this module already does both."""
-    title_embedding, description_embedding = embed_client.embed([title, text])
+    title_embedding, description_embedding = embed_client.embed([title, text], user_id=user_id)
     embedding = blend_embeddings(title_embedding, description_embedding)
     nearest = vector_store.query_nearest(embedding, area_path=area_path)
     if nearest is None:

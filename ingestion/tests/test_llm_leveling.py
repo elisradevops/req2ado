@@ -3775,7 +3775,7 @@ def test_build_survey_tree_end_to_end_injects_real_ingested_kb_chunk() -> None:
     )
 
     class _FakeEmbedClient:
-        def embed(self, texts: list[str]) -> list[list[float]]:
+        def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
             return [[1.0, 0.0, 0.0]]
 
     fake = FakeSectionAnalysisClient()
@@ -6021,7 +6021,7 @@ def test_build_survey_tree_retrieves_kb_context_on_the_pure_deterministic_path()
     )
 
     class _FakeEmbedClient:
-        def embed(self, texts: list[str]) -> list[list[float]]:
+        def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
             return [[1.0, 0.0, 0.0]]
 
     tree = build_survey_tree(
@@ -6081,7 +6081,7 @@ class _FakeEmbedClientForConflicts:
         self._embedding_by_text = embedding_by_text
         self.calls: list[list[str]] = []
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
         self.calls.append(list(texts))
         return [self._embedding_by_text[t] for t in texts]
 
@@ -6198,7 +6198,7 @@ def test_detect_conflicting_duplicates_never_clusters_dissimilar_nodes() -> None
 
 def test_detect_conflicting_duplicates_is_fail_open_on_embed_error() -> None:
     class RaisingEmbedClient:
-        def embed(self, texts: list[str]) -> list[list[float]]:
+        def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
             raise RuntimeError("boom")
 
     nodes = [_req_node("n0", "A"), _req_node("n1", "B")]

@@ -290,11 +290,11 @@ export class IngestionHttpClient {
     return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
   }
 
-  async upsertDedupEntry(itemId: string, text: string, title: string, areaPath: string): Promise<void> {
+  async upsertDedupEntry(itemId: string, text: string, title: string, areaPath: string, userId?: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/dedup/upsert`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item_id: itemId, text, title, area_path: areaPath }),
+      body: JSON.stringify({ item_id: itemId, text, title, area_path: areaPath, ...(userId ? { user_id: userId } : {}) }),
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /dedup/upsert request failed: ${await _readErrorDetail(response)}`);
@@ -306,14 +306,18 @@ export class IngestionHttpClient {
    * embed() round-trip for all of them, instead of confirm()'s previous
    * per-node loop triggering one /dedup/upsert (and one embed() call) per
    * item. A no-op for an empty list (never makes the HTTP call at all).
+   * `userId` is batch-wide (every item comes from the same job's confirm()
+   * run) -- needed so ingestion's /llm/embed call can resolve the
+   * submitting user's own Open WebUI connection.
    */
-  async upsertDedupEntriesBatch(items: { itemId: string; text: string; title: string; areaPath: string }[]): Promise<void> {
+  async upsertDedupEntriesBatch(items: { itemId: string; text: string; title: string; areaPath: string }[], userId?: string): Promise<void> {
     if (items.length === 0) return;
     const response = await fetch(`${this.baseUrl}/dedup/upsert-batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         items: items.map((item) => ({ item_id: item.itemId, text: item.text, title: item.title, area_path: item.areaPath })),
+        ...(userId ? { user_id: userId } : {}),
       }),
     });
     if (!response.ok) {
