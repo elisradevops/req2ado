@@ -42,14 +42,11 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 // is the direct payoff: no more per-row measurement (MeasuredRow/sizeMap/
 // resetAfterIndex) since a single-line row never wraps.
 //
-// 48, not 40 -- the Flags cell can show TWO chips at once (the "⚠ Review"
-// flag plus an action badge), stacked vertically (see that cell's own
-// comment below). Bumped uniformly for every row, not per-row: this stays
-// a single fixed height for the whole list, just a taller one, so it does
-// NOT reintroduce the per-row measurement this comment already rejected --
-// only the two-chip case actually uses the extra room; a one-chip/no-chip
-// row just centers with a bit more breathing space.
-const ROW_HEIGHT = 48;
+// Back to 40 (was briefly bumped to 48 to stack the flagged chip above the
+// action badge) -- the flagged signal is a fixed-size icon now, not a text
+// chip (see the Flags cell's own comment below), so it fits on the same
+// line as the action badge and never needs a second line.
+const ROW_HEIGHT = 40;
 
 // Fallback index-column width when the document is unavailable (e.g.
 // SSR/tests) -- matches the approved design's own fallback.
@@ -1092,24 +1089,22 @@ function DiffTreeRow({
           app, so not changed here) painted past the column boundary into
           the Signals column next to it.
 
-          flex-col, not the old implicit inline flow -- when BOTH the
-          flagged chip and the action badge are present, they stack
-          vertically (ROW_HEIGHT was bumped to fit two short chip lines,
-          see its own comment) instead of competing for the same 100px on
-          one line, which is what previously clipped/overlapped one or the
-          other (confirmed live: "⚠ Review" got cut to "⚠ Revie" with the
-          action badge overlapping it). items-end matches the header's own
-          justify-end alignment for this column. */}
-      <span className="flex flex-none flex-col items-end gap-0.5 overflow-hidden">
+          The flagged signal is a plain icon, not a text chip -- matches
+          this row's own existing vocabulary for a quick-glance signal
+          (same shape as the Lock/EyeOff icons above and the Signals
+          column's issue-count icon just right of this cell), and, unlike
+          a text chip, has a fixed small width that always fits next to
+          the action badge on one line. The previous "⚠ Review" text chip
+          in this same fixed-width, right-aligned, overflow-hidden cell
+          was itself often wider than the column -- confirmed live: its
+          left edge (the ⚠ glyph and the pill's own curved left end) got
+          clipped off, not just the two-chip crowding a stacked layout
+          fixed separately. An icon has no "too wide" case to clip. */}
+      <span className="flex flex-none items-center justify-end gap-1 overflow-hidden">
         {isFlaggedDiffEntry(entry) && (
-          <Chip
-            bg="var(--color-warning-soft)"
-            color="var(--color-warning-ink)"
-            className="border border-warning-border"
-            title={flaggedDiffEntryReason(entry) ?? undefined}
-          >
-            ⚠ Review
-          </Chip>
+          <span className="flex flex-none items-center text-warning" title={flaggedDiffEntryReason(entry) ?? 'Needs review'}>
+            <TriangleAlert className="h-3.5 w-3.5" />
+          </span>
         )}
         <ActionBadge action={entry.action} existingAdoId={entry.existingAdoId} orgUrl={orgUrl} project={project} />
       </span>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { forwardRef } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
@@ -302,21 +302,28 @@ describe('DiffTree', () => {
     // Feature 1 starts collapsed (see the test above) -- expand it to reach the Requirements.
     fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
 
-    expect(screen.getByText('Flagged req').closest('[role="row"], div')?.parentElement).toHaveTextContent(/review/i);
-    expect(screen.getByText('Healthy req').closest('[role="row"], div')?.parentElement).not.toHaveTextContent(/review/i);
-    // The chip's title must name the actual reason (low grounding here), not
+    // The flagged signal is an icon (title attribute), not chip text -- see
+    // the Flags cell's own comment in DiffTree.tsx for why a text chip was
+    // replaced with a fixed-size icon.
+    const flaggedRow = screen.getByText('Flagged req').closest('[role="row"], div')?.parentElement as HTMLElement;
+    const healthyRow = screen.getByText('Healthy req').closest('[role="row"], div')?.parentElement as HTMLElement;
+    expect(within(flaggedRow).getByTitle(/low grounding/i)).toBeInTheDocument();
+    expect(within(healthyRow).queryByTitle(/review/i)).not.toBeInTheDocument();
+    // The icon's title must name the actual reason (low grounding here), not
     // a generic message -- distinguishes this from the low-confidence-only
-    // case below, which gets a different title from the same chip element.
+    // case below, which gets a different title from the same icon element.
     expect(screen.getByTitle(/low grounding/i)).toBeInTheDocument();
   });
 
-  it('renders BOTH the review chip and the action badge in full, stacked, when a row is flagged and reuses an existing item -- neither clips or overlaps the other', () => {
-    // Regression guard: the Flags cell used to lay both chips out on one
-    // line in a fixed-width, overflow-hidden track -- when both were
-    // present (a flagged row that also reuses/near-duplicates an existing
-    // ADO item), they didn't both fit and one visibly clipped/overlapped
-    // the other (confirmed live: "⚠ Review" got cut to "⚠ Revie" with the
-    // action badge overlapping it).
+  it('renders BOTH the flagged icon and the full action badge text when a row is flagged and reuses an existing item -- neither clips the other', () => {
+    // Regression guard: the Flags cell used to render the flagged signal as
+    // a right-aligned text chip ("⚠ Review") in a fixed-width,
+    // overflow-hidden track -- whenever its own rendered width exceeded the
+    // column (routine, not just in the two-signal case), its LEFT edge
+    // (the ⚠ glyph and the pill's rounded corner) clipped off, confirmed
+    // live. Replaced with a fixed-size icon (see the Flags cell's own
+    // comment in DiffTree.tsx) specifically because an icon has no
+    // "too wide for the column" case to clip.
     const entries: DryRunDiffEntry[] = [
       { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
       { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
@@ -336,17 +343,12 @@ describe('DiffTree', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
 
-    // Both chips' full, untruncated text must be present as their own DOM
-    // text content, not a clipped fragment of either.
-    expect(screen.getByText('⚠ Review')).toBeInTheDocument();
-    expect(screen.getByText('Links to WI-12345')).toBeInTheDocument();
-    // Structurally stacked (flex-col), not competing on one line -- both
-    // chips share the same Flags cell container.
-    const reviewChip = screen.getByText('⚠ Review');
-    const actionBadge = screen.getByText('Links to WI-12345');
-    const flagsCell = reviewChip.closest('.flex-col');
-    expect(flagsCell).not.toBeNull();
-    expect(actionBadge.closest('.flex-col')).toBe(flagsCell);
+    const row = screen.getByText('Flagged reused req').closest('[role="row"], div')?.parentElement as HTMLElement;
+    // The flagged icon (title carries the reason) and the action badge's
+    // full, untruncated text both present in the same row -- not a clipped
+    // fragment of either.
+    expect(within(row).getByTitle(/low grounding/i)).toBeInTheDocument();
+    expect(within(row).getByText('Links to WI-12345')).toBeInTheDocument();
   });
 
   it('shows a review chip on a low-confidence row with otherwise healthy scores', () => {
@@ -362,11 +364,11 @@ describe('DiffTree', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
 
-    expect(screen.getByText('Unsure req').closest('[role="row"], div')?.parentElement).toHaveTextContent(/review/i);
-    // Grounding and quality are both healthy here -- the chip's title must
+    const row = screen.getByText('Unsure req').closest('[role="row"], div')?.parentElement as HTMLElement;
+    // Grounding and quality are both healthy here -- the icon's title must
     // name the confidence-specific reason, not the low-grounding/low-quality
-    // wording the other flagged case gets from the same chip element.
-    expect(screen.getByTitle(/model was unsure/i)).toBeInTheDocument();
+    // wording the other flagged case gets from the same icon element.
+    expect(within(row).getByTitle(/model was unsure/i)).toBeInTheDocument();
   });
 
   it('filterFlaggedOnly shows only flagged entries, hiding unflagged rows including ancestors', () => {
