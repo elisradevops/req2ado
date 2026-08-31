@@ -546,6 +546,11 @@ def _build_survey_tree_with_scoring(
             # own docstring) into a coherent hierarchy, structure-only.
             grouping_client=client,
             branch_concurrency=settings.survey_branch_concurrency,
+            # Chunk-level counterpart, independent dial (the two never
+            # compound -- see Settings.survey_chunk_concurrency's own
+            # comment). Default 1 = the previous strictly-sequential
+            # behavior for all five chunked enhancement passes.
+            chunk_concurrency=settings.survey_chunk_concurrency,
             primer_context=primer_context,
             # Same client, implements TitleDistillationClient directly --
             # 300553's smart-title fallback: a stage-1 title too generic/

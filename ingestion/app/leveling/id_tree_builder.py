@@ -775,6 +775,10 @@ def build_hierarchy_subtree(
     # (2/3): a heading's own row.parent_index chain already reaches all the
     # way to a true document root with nothing else to prepend.
     section_path_root: str | None = None,
+    # Forwarded unchanged to _apply_synthesis_pass/_apply_title_tag_pass
+    # below -- see app.config.Settings.survey_chunk_concurrency. 1 (the
+    # default) is the byte-identical previous behavior.
+    chunk_concurrency: int = 1,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning]]:
     """Constructs real WorkItemNodes from an already-hierarchy-resolved
     `rows` list (see `id_hierarchy.HierarchyRow`'s own docstring -- every
@@ -999,6 +1003,7 @@ def build_hierarchy_subtree(
             nodes, synthesis_leaf_ids, synthesis_client, warnings,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label_prefix=subtree_label,
+            chunk_concurrency=chunk_concurrency,
         )
         synthesized_ids = set(synthesis_leaf_ids)
 
@@ -1008,6 +1013,7 @@ def build_hierarchy_subtree(
             nodes, leaf_node_ids, title_tag_client, warnings,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label_prefix=subtree_label,
+            chunk_concurrency=chunk_concurrency,
         )
 
     # parent_summary_client (Epic/Feature title+description enhancement) is

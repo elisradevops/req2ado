@@ -2442,6 +2442,49 @@ class _PerSectionSectionAnalysisClient:
         )
 
 
+def test_build_survey_tree_chunk_concurrency_produces_the_same_tree_as_serial(monkeypatch) -> None:
+    # End-to-end guard for the chunk_concurrency feature, the exact
+    # counterpart of test_build_survey_tree_concurrent_branches_produce_the_
+    # same_tree_as_sequential above: running the chunked enhancement passes
+    # concurrently must never change WHAT gets built, only how long it takes.
+    _force_multi_branch(monkeypatch)
+    doc = _two_branch_doc()
+
+    serial = build_survey_tree(doc, _PerSectionSectionAnalysisClient(), chunk_concurrency=1)
+    concurrent = build_survey_tree(doc, _PerSectionSectionAnalysisClient(), chunk_concurrency=4)
+
+    assert [(n.local_id, n.title, n.description) for n in serial.nodes] == [
+        (n.local_id, n.title, n.description) for n in concurrent.nodes
+    ]
+    assert [w.raw for w in serial.warnings] == [w.raw for w in concurrent.warnings]
+
+
+def test_build_survey_tree_forwards_chunk_concurrency_to_the_deterministic_passes(monkeypatch) -> None:
+    # Proves the parameter is actually THREADED, not merely accepted and
+    # dropped -- the failure mode a signature-only change would leave behind.
+    import app.leveling.id_tree_builder as id_tree_builder_module
+
+    seen: list[int] = []
+    original = id_tree_builder_module._apply_title_tag_pass
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("chunk_concurrency", 1))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(id_tree_builder_module, "_apply_title_tag_pass", spy)
+
+    class TitleTagClient:
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            return {node_id: {"title": "T", "tags": []} for node_id in texts_by_row_id}
+
+    build_survey_tree(
+        _structural_heading_doc(), FakeSectionAnalysisClient(),
+        title_tag_client=TitleTagClient(), chunk_concurrency=7,
+    )
+
+    assert seen and all(value == 7 for value in seen)
+
+
 def test_build_survey_tree_concurrent_branches_produce_the_same_tree_as_sequential(monkeypatch) -> None:
     # Regression guard for the branch_concurrency feature: running branches
     # concurrently must never change WHAT gets built, only how long it

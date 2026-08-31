@@ -1167,6 +1167,9 @@ def _apply_det_parent_summary(
     model: str | None = None,
     progress_callback: ProgressCallback | None = None,
     tables_by_id: dict[str, Table] | None = None,
+    # Forwarded unchanged to _apply_parent_summary_pass -- see
+    # app.config.Settings.survey_chunk_concurrency.
+    chunk_concurrency: int = 1,
 ) -> None:
     """Runs the Epic/Feature title+description enhancement pass over EVERY
     deterministic subtree at once, only after all of them (and every
@@ -1201,7 +1204,7 @@ def _apply_det_parent_summary(
     _apply_parent_summary_pass(
         det_nodes, parent_ids, parent_summary_client, det_warnings,
         token_budget=token_budget, progress_callback=progress_callback,
-        tables_by_id=tables_by_id,
+        tables_by_id=tables_by_id, chunk_concurrency=chunk_concurrency,
     )
 
 
@@ -1220,6 +1223,11 @@ def _detect_deterministic_subtrees(
     # hasn't been updated, e.g. an older test) simply skips figure
     # attribution below -- every other deterministic behavior is unchanged.
     figure_id_by_block_id: dict[str, str] | None = None,
+    # Forwarded unchanged to every chunked pass this function reaches
+    # (build_hierarchy_subtree's title/tag + synthesis passes, and
+    # _apply_det_parent_summary's parent-summary pass) -- see
+    # app.config.Settings.survey_chunk_concurrency.
+    chunk_concurrency: int = 1,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning], CanonicalDoc]:
     """Detects and builds every deterministic hierarchy subtree this
     document's own structure already encodes -- a 2-column dotted-ID
@@ -1301,6 +1309,7 @@ def _detect_deterministic_subtrees(
             # caption-or-id-fallback convention _build_headingless_tree's
             # own per-table title already uses.
             section_path_root=table.caption or f"Table {table.id}",
+            chunk_concurrency=chunk_concurrency,
         )
         # Every node in this subtree came from THIS one Table -- unlike a
         # heading-derived node, which can fold zero or more Tables into its
@@ -1337,6 +1346,7 @@ def _detect_deterministic_subtrees(
             heading_rows, f"det{subtree_index}_", title_tag_client, synthesis_client,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label="Heading hierarchy",
+            chunk_concurrency=chunk_concurrency,
         )
         # See the table-subtree call site's identical comment above.
         _repair_requirement_hierarchy(nodes, f"det{subtree_index}_", build_warnings)
@@ -1530,7 +1540,7 @@ def _detect_deterministic_subtrees(
     if not claimed_heading_block_ids and not claimed_table_ids:
         _apply_det_parent_summary(
             det_nodes, det_warnings, parent_summary_client, model, progress_callback,
-            tables_by_id={t.id: t for t in doc.tables},
+            tables_by_id={t.id: t for t in doc.tables}, chunk_concurrency=chunk_concurrency,
         )
         return det_nodes, det_warnings, doc
 
@@ -1561,7 +1571,7 @@ def _detect_deterministic_subtrees(
 
     _apply_det_parent_summary(
         det_nodes, det_warnings, parent_summary_client, model, progress_callback,
-        tables_by_id={t.id: t for t in doc.tables},
+        tables_by_id={t.id: t for t in doc.tables}, chunk_concurrency=chunk_concurrency,
     )
     return det_nodes, det_warnings, llm_doc
 
@@ -1634,6 +1644,16 @@ def build_survey_tree(
     # _author_branch_content's own use of this for the real quality gate and
     # distill_survey_title for the actual correction call.
     title_distillation_client: TitleDistillationClient | None = None,
+    # How many of a chunked LLM enhancement pass's independent chunks may
+    # be in flight at once, for all five of them: the deterministic path's
+    # title/tag, requirement-synthesis and Epic/Feature parent-summary
+    # passes, plus both whole-document quality-scoring passes. See
+    # app.config.Settings.survey_chunk_concurrency for the operator
+    # guidance and for why this is a SEPARATE dial from branch_concurrency
+    # above (the two never compound -- no chunked pass runs inside a branch
+    # worker). 1 (the default) is byte-identical to the previous
+    # strictly-sequential behavior.
+    chunk_concurrency: int = 1,
 ) -> WorkItemTree:
     """SURVEY-mode leveling entry point. Splits the document into top-level
     branches (_split_into_branches, the same depth-1-heading split
@@ -1848,6 +1868,7 @@ def build_survey_tree(
         doc, title_tag_client, synthesis_client, parent_summary_client, model,
         progress_callback=progress_callback,
         figure_id_by_block_id=figure_id_by_block_id,
+        chunk_concurrency=chunk_concurrency,
     )
 
     if llm_doc.blocks == [] and llm_doc.tables == [] and llm_doc.figures == []:
@@ -1926,10 +1947,11 @@ def build_survey_tree(
                     requirement_nodes, scoring_client, all_warnings, criteria_retriever,
                     doc_kb_context, doc_kb_citations, progress_callback, model_name,
                     len(det_nodes), 0, category_checklist, category_checklist_definitions,
+                    chunk_concurrency=chunk_concurrency,
                 )
             _score_epics_and_features(
                 all_nodes, scoring_client, all_warnings, progress_callback, model_name,
-                len(det_nodes), 0, debug_capture=debug_capture,
+                len(det_nodes), 0, debug_capture=debug_capture, chunk_concurrency=chunk_concurrency,
             )
 
         _detect_conflicting_duplicates(
@@ -2523,6 +2545,7 @@ def build_survey_tree(
                 requirement_nodes, scoring_client, all_warnings, criteria_retriever,
                 combined_kb_context, deduped_citations, progress_callback, model_name, blocks_total,
                 len(branches), category_checklist, category_checklist_definitions,
+                chunk_concurrency=chunk_concurrency,
             )
         # Separate rubric/prompt from Requirement scoring above -- see
         # OrchestratorLlmClient.score_epics_and_features_for_document's own
@@ -2532,7 +2555,7 @@ def build_survey_tree(
         # there's nothing of that type either.
         _score_epics_and_features(
             all_nodes, scoring_client, all_warnings, progress_callback, model_name, blocks_total, len(branches),
-            debug_capture=debug_capture,
+            debug_capture=debug_capture, chunk_concurrency=chunk_concurrency,
         )
 
     _detect_conflicting_duplicates(
