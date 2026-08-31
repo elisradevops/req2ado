@@ -41,7 +41,15 @@ import type { WorkItemTypeCatalogEntry } from '../api/ado';
 // trace link chips, KB citations) moved into NodeDetailDialog. Fixed height
 // is the direct payoff: no more per-row measurement (MeasuredRow/sizeMap/
 // resetAfterIndex) since a single-line row never wraps.
-const ROW_HEIGHT = 40;
+//
+// 48, not 40 -- the Flags cell can show TWO chips at once (the "⚠ Review"
+// flag plus an action badge), stacked vertically (see that cell's own
+// comment below). Bumped uniformly for every row, not per-row: this stays
+// a single fixed height for the whole list, just a taller one, so it does
+// NOT reintroduce the per-row measurement this comment already rejected --
+// only the two-chip case actually uses the extra room; a one-chip/no-chip
+// row just centers with a bit more breathing space.
+const ROW_HEIGHT = 48;
 
 // Fallback index-column width when the document is unavailable (e.g.
 // SSR/tests) -- matches the approved design's own fallback.
@@ -1077,13 +1085,22 @@ function DiffTreeRow({
         </span>
       </div>
 
-      {/* overflow-hidden -- this span IS the 108px grid track (the row is a
+      {/* overflow-hidden -- this span IS the 100px grid track (the row is a
           CSS grid, not flex), so it already clips anything wider. Without
           it, a long reuse/dedup_skip label ("Near-duplicate of WI-12345")
           on Chip's own whitespace-nowrap (shared by every Chip usage in the
           app, so not changed here) painted past the column boundary into
-          the Signals column next to it. */}
-      <span className="flex-none overflow-hidden">
+          the Signals column next to it.
+
+          flex-col, not the old implicit inline flow -- when BOTH the
+          flagged chip and the action badge are present, they stack
+          vertically (ROW_HEIGHT was bumped to fit two short chip lines,
+          see its own comment) instead of competing for the same 100px on
+          one line, which is what previously clipped/overlapped one or the
+          other (confirmed live: "⚠ Review" got cut to "⚠ Revie" with the
+          action badge overlapping it). items-end matches the header's own
+          justify-end alignment for this column. */}
+      <span className="flex flex-none flex-col items-end gap-0.5 overflow-hidden">
         {isFlaggedDiffEntry(entry) && (
           <Chip
             bg="var(--color-warning-soft)"

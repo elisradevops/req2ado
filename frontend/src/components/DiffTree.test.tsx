@@ -310,6 +310,45 @@ describe('DiffTree', () => {
     expect(screen.getByTitle(/low grounding/i)).toBeInTheDocument();
   });
 
+  it('renders BOTH the review chip and the action badge in full, stacked, when a row is flagged and reuses an existing item -- neither clips or overlaps the other', () => {
+    // Regression guard: the Flags cell used to lay both chips out on one
+    // line in a fixed-width, overflow-hidden track -- when both were
+    // present (a flagged row that also reuses/near-duplicates an existing
+    // ADO item), they didn't both fit and one visibly clipped/overlapped
+    // the other (confirmed live: "⚠ Review" got cut to "⚠ Revie" with the
+    // action badge overlapping it).
+    const entries: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+      {
+        localId: 'r1',
+        parentLocalId: 'f1',
+        type: 'Requirement',
+        title: 'Flagged reused req',
+        description: '',
+        action: 'reuse',
+        existingAdoId: 12345,
+        customerId: null,
+        groundingScore: 0.1,
+      },
+    ];
+    render(<DiffTree entries={entries} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
+
+    // Both chips' full, untruncated text must be present as their own DOM
+    // text content, not a clipped fragment of either.
+    expect(screen.getByText('⚠ Review')).toBeInTheDocument();
+    expect(screen.getByText('Links to WI-12345')).toBeInTheDocument();
+    // Structurally stacked (flex-col), not competing on one line -- both
+    // chips share the same Flags cell container.
+    const reviewChip = screen.getByText('⚠ Review');
+    const actionBadge = screen.getByText('Links to WI-12345');
+    const flagsCell = reviewChip.closest('.flex-col');
+    expect(flagsCell).not.toBeNull();
+    expect(actionBadge.closest('.flex-col')).toBe(flagsCell);
+  });
+
   it('shows a review chip on a low-confidence row with otherwise healthy scores', () => {
     // SWEEP.md section 7: the whole point of the UX decision -- low
     // confidence reuses the EXISTING review chip rather than getting its
