@@ -1,3 +1,4 @@
+import dataclasses
 import re
 import threading
 import time
@@ -5,6 +6,7 @@ import time
 import pytest
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
+from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.leveling.conflict_detection import _DUPLICATE_CLUSTER_COSINE_THRESHOLD, _cosine_similarity
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
@@ -185,9 +187,10 @@ class FakeSectionAnalysisClient:
     `calls` records the STAGE 1 (skeleton) fallback-path call and
     `agentic_calls` the STAGE 1 tool-capable one -- tracked separately so
     tests can assert build_survey_tree's §5c gate picked the right one.
-    Stage 1 is where every steering parameter (whole_document/topic_count/
-    table_group_hints/expected_root_count) now lands, since every one of them
-    steers a structural decision. `author_calls` records STAGE 3 separately.
+    Stage 1 is where every steering parameter lands, since every one of
+    them steers a structural decision -- they arrive as one
+    SectionAnalysisOptions and are recorded under the single "options" key
+    (see app/section_analysis_options.py). `author_calls` records STAGE 3 separately.
     `legacy_calls` covers the pre-split analyze_section/analyze_section_agentic
     methods, which build_survey_tree no longer calls at all."""
 
@@ -227,27 +230,18 @@ class FakeSectionAnalysisClient:
         return self._agentic_nodes, self._agentic_citations, self._truncated
 
     def analyze_section_skeleton(
-        self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
-        topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
-        heading_type_hints: list[tuple[str, str]] | None = None,
+        self, section_text: str, kb_context: str | None = None, *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], bool]:
         self.calls.append({
-            "section_text": section_text, "kb_context": kb_context,
-            "whole_document": whole_document, "topic_count": topic_count,
-            "table_group_hints": table_group_hints,
-            "expected_root_count": expected_root_count,
-            "requirement_row_hints": requirement_row_hints,
-            "heading_type_hints": heading_type_hints,
+            "section_text": section_text, "kb_context": kb_context, "options": options,
         })
         return _skeleton_of(self._nodes), self._truncated
 
     def analyze_section_skeleton_agentic(
         self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
-        read_other_section_fn=None, whole_document: bool = False, topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
-        heading_type_hints: list[tuple[str, str]] | None = None,
+        read_other_section_fn=None, *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], list[dict], bool]:
         self.agentic_calls.append(
             {
@@ -256,12 +250,7 @@ class FakeSectionAnalysisClient:
                 "list_documents_fn": list_documents_fn,
                 "read_document_fn": read_document_fn,
                 "read_other_section_fn": read_other_section_fn,
-                "whole_document": whole_document,
-                "topic_count": topic_count,
-                "table_group_hints": table_group_hints,
-                "expected_root_count": expected_root_count,
-                "requirement_row_hints": requirement_row_hints,
-                "heading_type_hints": heading_type_hints,
+                "options": options,
             }
         )
         return _skeleton_of(self._agentic_nodes), self._agentic_citations, self._truncated
@@ -546,8 +535,8 @@ def test_requirement_rows_raise_the_node_count_floor_and_are_named_in_the_hint()
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["topic_count"] == 1 + 3  # 1 heading + 3 identified rows
-    assert fake.calls[0]["requirement_row_hints"] == [
+    assert fake.calls[0]["options"].topic_count == 1 + 3  # 1 heading + 3 identified rows
+    assert fake.calls[0]["options"].requirement_row_hints == [
         ("P-SENSOR-001#", "The system shall synchronize to Standard-XX within N ms."),
         ("P-SENSOR-002#", "Timing accuracy shall be better than X µs."),
         ("P-SENSOR-003#", "Re-synchronization shall occur every N seconds."),
@@ -569,8 +558,8 @@ def test_supplementary_table_contributes_no_requirement_row_hints_and_no_new_flo
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["topic_count"] == 1  # heading only, exactly as before this feature existed
-    assert fake.calls[0]["requirement_row_hints"] is None
+    assert fake.calls[0]["options"].topic_count == 1  # heading only, exactly as before this feature existed
+    assert fake.calls[0]["options"].requirement_row_hints is None
 
 
 def test_unclaimed_identified_requirement_rows_are_reported() -> None:
@@ -656,8 +645,8 @@ def test_requirement_row_hints_are_scoped_per_branch(monkeypatch) -> None:
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
     assert len(fake.calls) == 2
-    branch_a_codes = {code for code, _ in (fake.calls[0]["requirement_row_hints"] or [])}
-    branch_b_codes = {code for code, _ in (fake.calls[1]["requirement_row_hints"] or [])}
+    branch_a_codes = {code for code, _ in (fake.calls[0]["options"].requirement_row_hints or [])}
+    branch_b_codes = {code for code, _ in (fake.calls[1]["options"].requirement_row_hints or [])}
     assert branch_a_codes.isdisjoint(branch_b_codes)
     assert branch_a_codes | branch_b_codes == {"SECA-001", "SECA-002", "SECB-001", "SECB-002"}
 
@@ -1057,7 +1046,7 @@ def test_build_survey_tree_passes_whole_document_true_for_a_single_call_document
     # global_context stays None, so whole_document must be True.
     fake = FakeSectionAnalysisClient()
     build_survey_tree(_small_doc(), fake)
-    assert fake.calls[0]["whole_document"] is True
+    assert fake.calls[0]["options"].whole_document is True
 
 
 def test_build_survey_tree_passes_zero_topic_count_for_a_headingless_document() -> None:
@@ -1068,7 +1057,7 @@ def test_build_survey_tree_passes_zero_topic_count_for_a_headingless_document() 
     # back to the qualitative-only hint".
     fake = FakeSectionAnalysisClient()
     build_survey_tree(_small_doc(), fake)
-    assert fake.calls[0]["topic_count"] == 0
+    assert fake.calls[0]["options"].topic_count == 0
 
 
 def test_build_survey_tree_passes_the_real_heading_count_as_topic_count() -> None:
@@ -1090,8 +1079,8 @@ def test_build_survey_tree_passes_the_real_heading_count_as_topic_count() -> Non
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["whole_document"] is True  # small enough to still fit in one call
-    assert fake.calls[0]["topic_count"] == 3
+    assert fake.calls[0]["options"].whole_document is True  # small enough to still fit in one call
+    assert fake.calls[0]["options"].topic_count == 3
 
 
 def test_build_survey_tree_passes_whole_document_false_for_a_multi_branch_document(monkeypatch) -> None:
@@ -1101,7 +1090,7 @@ def test_build_survey_tree_passes_whole_document_false_for_a_multi_branch_docume
     _force_multi_branch(monkeypatch)
     fake = FakeSectionAnalysisClient()
     build_survey_tree(_two_branch_doc(), fake)
-    assert all(call["whole_document"] is False for call in fake.calls)
+    assert all(call["options"].whole_document is False for call in fake.calls)
 
 
 def test_build_survey_tree_passes_a_per_branch_topic_count_on_the_multi_branch_path(monkeypatch) -> None:
@@ -1116,7 +1105,7 @@ def test_build_survey_tree_passes_a_per_branch_topic_count_on_the_multi_branch_p
     fake = FakeSectionAnalysisClient()
     build_survey_tree(_two_branch_doc(), fake)
     assert len(fake.calls) == 2
-    assert all(call["topic_count"] == 1 for call in fake.calls)
+    assert all(call["options"].topic_count == 1 for call in fake.calls)
 
 
 def test_build_document_outline_lists_every_heading_in_a_merged_branch(monkeypatch) -> None:
@@ -1204,8 +1193,8 @@ def test_topic_count_counts_numbered_pseudo_headings_on_the_whole_document_path(
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["whole_document"] is True
-    assert fake.calls[0]["topic_count"] == 2
+    assert fake.calls[0]["options"].whole_document is True
+    assert fake.calls[0]["options"].topic_count == 2
 
 
 def test_topic_count_counts_numbered_pseudo_headings_on_the_multi_branch_path(monkeypatch) -> None:
@@ -1230,7 +1219,7 @@ def test_topic_count_counts_numbered_pseudo_headings_on_the_multi_branch_path(mo
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["topic_count"] == 2  # "1 Display" AND "1.1 Resolution", not just 0
+    assert fake.calls[0]["options"].topic_count == 2  # "1 Display" AND "1.1 Resolution", not just 0
 
 
 def test_build_document_outline_shows_a_synthesized_number_label_when_present(monkeypatch) -> None:
@@ -1664,7 +1653,7 @@ def test_build_survey_tree_applies_the_front_matter_guard_on_the_single_call_pat
     tree = build_survey_tree(doc, fake)
 
     assert len(fake.calls) == 1  # genuinely the single-call path, not a multi-branch run
-    assert fake.calls[0]["whole_document"] is True  # the guard must NOT flip this flag
+    assert fake.calls[0]["options"].whole_document is True  # the guard must NOT flip this flag
     assert "typical front-matter" in fake.calls[0]["section_text"]
     assert "1 Introduction" in fake.calls[0]["section_text"]
     # Advisory only -- the model's nodes still reach the tree unchanged.
@@ -1716,8 +1705,8 @@ def test_build_survey_tree_builds_a_qualifying_table_deterministically() -> None
     tree = build_survey_tree(doc, fake)
     # table_group_hints/topic_count's table contribution no longer fires --
     # llm_doc.tables is empty by the time the LLM path runs.
-    assert fake.calls[0]["topic_count"] == 0
-    assert fake.calls[0]["table_group_hints"] is None
+    assert fake.calls[0]["options"].topic_count == 0
+    assert fake.calls[0]["options"].table_group_hints is None
     group_node = next(n for n in tree.nodes if n.title == "External Source Detection")
     assert group_node.type == WorkItemType.FEATURE
     children = [n for n in tree.nodes if n.parent_local_id == group_node.local_id]
@@ -1805,8 +1794,8 @@ def test_build_survey_tree_does_not_count_a_one_child_group_toward_topic_count()
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["topic_count"] == 0  # zero headings, no qualifying group -- unchanged
-    assert fake.calls[0]["table_group_hints"] is None
+    assert fake.calls[0]["options"].topic_count == 0  # zero headings, no qualifying group -- unchanged
+    assert fake.calls[0]["options"].table_group_hints is None
 
 
 def test_build_survey_tree_ignores_a_non_conforming_table_for_topic_count() -> None:
@@ -1816,8 +1805,8 @@ def test_build_survey_tree_ignores_a_non_conforming_table_for_topic_count() -> N
     doc = _small_doc().model_copy(update={"tables": [_table_with_group([["a", "b"]])]})
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["topic_count"] == 0
-    assert fake.calls[0]["table_group_hints"] is None
+    assert fake.calls[0]["options"].topic_count == 0
+    assert fake.calls[0]["options"].table_group_hints is None
 
 
 def test_build_survey_tree_scopes_table_group_floor_per_branch(monkeypatch) -> None:
@@ -1871,10 +1860,10 @@ def test_build_survey_tree_scopes_table_group_floor_per_branch(monkeypatch) -> N
     # branch's LLM call -- table_group_hints/the table's own topic_count
     # contribution no longer fire; each branch's own heading is the only
     # remaining contribution.
-    assert fake.calls[0]["table_group_hints"] is None
-    assert fake.calls[1]["table_group_hints"] is None
-    assert fake.calls[0]["topic_count"] == 1
-    assert fake.calls[1]["topic_count"] == 1
+    assert fake.calls[0]["options"].table_group_hints is None
+    assert fake.calls[1]["options"].table_group_hints is None
+    assert fake.calls[0]["options"].topic_count == 1
+    assert fake.calls[1]["options"].topic_count == 1
     assert {n.title for n in tree.nodes if n.type == WorkItemType.FEATURE} >= {"Display Group", "Audio Group"}
 
 
@@ -1902,7 +1891,7 @@ def test_build_survey_tree_derives_expected_root_count_from_top_level_groups() -
     )
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(doc, fake)
-    assert fake.calls[0]["expected_root_count"] is None
+    assert fake.calls[0]["options"].expected_root_count is None
     det_roots = [
         n for n in tree.nodes
         if n.parent_local_id is None and n.title in ("Television Receiver", "Remote Control")
@@ -1927,7 +1916,7 @@ def test_build_survey_tree_leaves_expected_root_count_none_with_a_single_top_lev
     )
     fake = FakeSectionAnalysisClient()
     build_survey_tree(doc, fake)
-    assert fake.calls[0]["expected_root_count"] is None
+    assert fake.calls[0]["options"].expected_root_count is None
 
 
 def test_build_survey_tree_builds_the_group_deterministically_regardless_of_llm_output() -> None:
@@ -2147,8 +2136,8 @@ def test_build_survey_tree_passes_whole_document_true_on_the_agentic_path_too(mo
         vector_store=KbVectorStore(persist_path="/tmp/unused-in-this-test"), model="qwen3:4b",
     )
     assert len(fake.agentic_calls) == 1
-    assert fake.agentic_calls[0]["whole_document"] is True
-    assert fake.agentic_calls[0]["topic_count"] == 0  # _small_doc() has no headings
+    assert fake.agentic_calls[0]["options"].whole_document is True
+    assert fake.agentic_calls[0]["options"].topic_count == 0  # _small_doc() has no headings
 
 
 def test_read_document_fn_appends_a_truncation_marker_when_the_document_was_capped(monkeypatch, tmp_path) -> None:
@@ -4472,10 +4461,8 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
             return [line for line in own_text.strip().split("\n") if line]
 
         def analyze_section_skeleton(
-            self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
-            topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-            expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
-            heading_type_hints: list[tuple[str, str]] | None = None,
+            self, section_text: str, kb_context: str | None = None, *,
+            options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
         ) -> tuple[list[dict], bool]:
             self.call_count += 1
             return [
@@ -5105,7 +5092,7 @@ def test_document_that_fits_context_but_exceeds_coverage_budget_is_chunked() -> 
     fake = FakeSectionAnalysisClient()
     build_survey_tree(_doc_between_coverage_and_context_budget(with_headings=True), fake, model="gemma4:e4b")
     assert len(fake.calls) > 1
-    assert all(call["whole_document"] is False for call in fake.calls)
+    assert all(call["options"].whole_document is False for call in fake.calls)
 
 
 def test_large_headingless_document_is_window_chunked() -> None:
@@ -5116,7 +5103,7 @@ def test_large_headingless_document_is_window_chunked() -> None:
     fake = FakeSectionAnalysisClient()
     build_survey_tree(_doc_between_coverage_and_context_budget(with_headings=False), fake, model="gemma4:e4b")
     assert len(fake.calls) > 1
-    assert all(call["whole_document"] is False for call in fake.calls)
+    assert all(call["options"].whole_document is False for call in fake.calls)
 
 
 def test_small_document_stays_single_call_and_byte_identical_with_named_model() -> None:
@@ -5126,7 +5113,7 @@ def test_small_document_stays_single_call_and_byte_identical_with_named_model() 
     fake = FakeSectionAnalysisClient()
     tree = build_survey_tree(_small_doc(), fake, model="gemma4:e4b")
     assert len(fake.calls) == 1
-    assert fake.calls[0]["whole_document"] is True
+    assert fake.calls[0]["options"].whole_document is True
     assert {node.local_id for node in tree.nodes} == {"n0", "n1"}
 
 
@@ -6845,16 +6832,24 @@ def test_skeleton_stage_carries_every_structural_steering_parameter() -> None:
     build_survey_tree(_small_doc(), fake)
 
     assert len(fake.calls) == 1
-    assert set(fake.calls[0]) == {
-        "section_text", "kb_context", "whole_document", "topic_count",
-        "table_group_hints", "expected_root_count", "requirement_row_hints",
-        "heading_type_hints",
+    # Post-refactor shape: the payload/path parameters stay standalone,
+    # the six structural steering hints arrive as one SectionAnalysisOptions
+    # (see app/section_analysis_options.py). Asserting the recorded key set
+    # AND the options field set together keeps this test's original
+    # guarantee -- that every structural steering parameter reaches stage 1
+    # and none of them leaks into stage 3 -- with nothing weakened.
+    assert set(fake.calls[0]) == {"section_text", "kb_context", "options"}
+    assert {f.name for f in dataclasses.fields(fake.calls[0]["options"])} == {
+        "whole_document", "topic_count", "table_group_hints", "expected_root_count",
+        "requirement_row_hints", "heading_type_hints",
     }
     # Deliberately unchanged: 'customer_id' is stage 1's own concern (it's
     # read from the SKELETON entry, see _validated_skeleton_customer_id) --
     # stage 3 never receives or produces it, so this set staying exactly
     # {section_text, skeleton_nodes, kb_context} is itself the assertion
-    # that customer_id did NOT leak into content authoring.
+    # that customer_id did NOT leak into content authoring. Stage 3 takes
+    # no steering hints at all, so author_content is untouched by the
+    # options refactor.
     assert set(fake.author_calls[0]) == {"section_text", "skeleton_nodes", "kb_context"}
 
 
@@ -6892,7 +6887,7 @@ def test_skeleton_stage_receives_the_documents_own_heading_1_and_2_outline() -> 
     build_survey_tree(doc, fake)
 
     assert len(fake.calls) == 1
-    assert fake.calls[0]["heading_type_hints"] == [
+    assert fake.calls[0]["options"].heading_type_hints == [
         ("Alpha Domain", "Epic"), ("Alpha Feature", "Feature"),
         ("Beta Domain", "Epic"), ("Beta Feature", "Feature"),
     ]
@@ -6934,7 +6929,7 @@ def test_skeleton_stage_names_no_epic_for_a_flat_single_tier_document() -> None:
     build_survey_tree(doc, fake)
 
     assert len(fake.calls) == 1
-    assert fake.calls[0]["heading_type_hints"] == [("Alpha Feature", "Feature"), ("Beta Feature", "Feature")]
+    assert fake.calls[0]["options"].heading_type_hints == [("Alpha Feature", "Feature"), ("Beta Feature", "Feature")]
 
 
 def test_content_stage_is_given_the_already_decided_skeleton() -> None:

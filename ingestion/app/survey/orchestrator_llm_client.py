@@ -12,6 +12,7 @@ from json_repair import repair_json
 
 from app.otel import get_tracer
 from app.prompts import load_prompt
+from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 
 from app.survey._response_schemas import (
     checklist_definitions_schema,
@@ -1878,12 +1879,8 @@ class OrchestratorLlmClient:
         self,
         section_text: str,
         kb_context: str | None = None,
-        whole_document: bool = False,
-        topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
-        requirement_row_hints: list[tuple[str, str]] | None = None,
-        heading_type_hints: list[tuple[str, str]] | None = None,
+        *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], bool]:
         """STAGE 1 of the two-stage SURVEY generation split: the STRUCTURE
         half of what analyze_section used to decide in one call. Given the
@@ -1899,27 +1896,16 @@ class OrchestratorLlmClient:
 
         Every steering parameter analyze_section takes is kept and means
         exactly the same thing here, because every one of them steers a
-        STRUCTURAL decision: `whole_document`/`topic_count` are node-COUNT
-        floors, `table_group_hints` names which groups must each become
-        their own node AND with which type, `expected_root_count` is the
-        multi-root permission, `requirement_row_hints` names which source
-        table rows each carry their own literal requirement identifier and
-        must therefore each become their own Requirement node (see
-        _requirement_row_hint's own docstring -- confirmed real gap, live:
-        a 3-column requirements table with no dotted-numeric id was never
-        counted in topic_count's own floor at all, and the model silently
-        merged multiple such rows into fewer nodes); `heading_type_hints`
-        names the document's own real heading outline and the Epic/Feature
-        type each one must become, derived from the document's own
-        relative nesting shape rather than any absolute heading level (see
-        _heading_outline_hint's own docstring -- confirmed real gap, live:
-        several real top-tier heading sections analyzed in one call
-        collapsed under a single Epic instead of each becoming its own).
-        `kb_context` (the non-tool-capable
-        path's pre-computed once-per-document string) is threaded in with
-        the same soft framing analyze_section uses -- domain material can
-        genuinely inform where a node boundary belongs, not just how a
-        requirement is worded.
+        STRUCTURAL decision -- they now arrive bundled as `options` (see
+        app.section_analysis_options.SectionAnalysisOptions, which
+        documents each field, including the two this method adds over
+        analyze_section: `requirement_row_hints` and `heading_type_hints`,
+        each a confirmed-live gap, not a speculative knob).
+        `kb_context` (the non-tool-capable path's pre-computed
+        once-per-document string) stays a standalone parameter and is
+        threaded in with the same soft framing analyze_section uses --
+        domain material can genuinely inform where a node boundary
+        belongs, not just how a requirement is worded.
 
         This is the FALLBACK path for models without tool-calling support;
         tool-capable models use analyze_section_skeleton_agentic instead.
@@ -1938,24 +1924,32 @@ class OrchestratorLlmClient:
                 # production with a 24h TTL -- a pre-change entry would
                 # replay the old absolute-level behavior for a full day if
                 # this key stayed unchanged.
+                #
+                # The six steering fields are unpacked individually rather
+                # than passed as one `options` part on purpose: cache_key
+                # serializes its *parts with default=str, so handing it the
+                # dataclass would stringify the instance's repr and change
+                # EVERY key -- invalidating a live production cache for no
+                # reason. Field order here is load-bearing.
                 "analyze_section_skeleton.v4", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
-                section_text, kb_context, whole_document, topic_count, table_group_hints, expected_root_count,
-                requirement_row_hints, heading_type_hints,
+                section_text, kb_context, options.whole_document, options.topic_count,
+                options.table_group_hints, options.expected_root_count,
+                options.requirement_row_hints, options.heading_type_hints,
             )
             cached = self._cache.get(key)
             if cached is not None:
                 logger.info("analyze_section_skeleton: cache hit, skipping LLM call")
                 return cached["nodes"], cached["truncated"]
         system_prompt = _with_kb_context(
-            _section_skeleton_system_prompt(expected_root_count), kb_context
+            _section_skeleton_system_prompt(options.expected_root_count), kb_context
         )
-        if whole_document:
-            system_prompt += _whole_document_hint(topic_count)
-        elif topic_count is not None:
-            system_prompt += _branch_topic_hint(topic_count)
-        system_prompt += _table_group_hint(table_group_hints)
-        system_prompt += _requirement_row_hint(requirement_row_hints)
-        system_prompt += _heading_outline_hint(heading_type_hints)
+        if options.whole_document:
+            system_prompt += _whole_document_hint(options.topic_count)
+        elif options.topic_count is not None:
+            system_prompt += _branch_topic_hint(options.topic_count)
+        system_prompt += _table_group_hint(options.table_group_hints)
+        system_prompt += _requirement_row_hint(options.requirement_row_hints)
+        system_prompt += _heading_outline_hint(options.heading_type_hints)
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1986,7 +1980,7 @@ class OrchestratorLlmClient:
         truncated = body.get("finishReason") == "length"
         logger.warning(
             "analyze_section_skeleton result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
-            len(nodes), body.get("finishReason"), truncated, topic_count,
+            len(nodes), body.get("finishReason"), truncated, options.topic_count,
         )
         # Never cache a truncated result -- same reasoning as analyze_section's
         # own identical guard.
@@ -2001,12 +1995,8 @@ class OrchestratorLlmClient:
         list_documents_fn: Callable[[], list[str]] | None = None,
         read_document_fn: Callable[[str], str | None] | None = None,
         read_other_section_fn: Callable[[str], str | None] | None = None,
-        whole_document: bool = False,
-        topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
-        requirement_row_hints: list[tuple[str, str]] | None = None,
-        heading_type_hints: list[tuple[str, str]] | None = None,
+        *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], list[dict], bool]:
         """Tool-calling variant of analyze_section_skeleton, standing in the
         same relation to it that analyze_section_agentic does to
@@ -2026,14 +2016,14 @@ class OrchestratorLlmClient:
         query_kb hit actually retrieved across all rounds, and the same
         final-round length-cap signal analyze_section_agentic reports."""
         tools, tool_hint = _agentic_tools_and_hint(list_documents_fn, read_document_fn, read_other_section_fn)
-        system_prompt = _section_skeleton_system_prompt(expected_root_count) + tool_hint
-        if whole_document:
-            system_prompt += _whole_document_hint(topic_count)
-        elif topic_count is not None:
-            system_prompt += _branch_topic_hint(topic_count)
-        system_prompt += _table_group_hint(table_group_hints)
-        system_prompt += _requirement_row_hint(requirement_row_hints)
-        system_prompt += _heading_outline_hint(heading_type_hints)
+        system_prompt = _section_skeleton_system_prompt(options.expected_root_count) + tool_hint
+        if options.whole_document:
+            system_prompt += _whole_document_hint(options.topic_count)
+        elif options.topic_count is not None:
+            system_prompt += _branch_topic_hint(options.topic_count)
+        system_prompt += _table_group_hint(options.table_group_hints)
+        system_prompt += _requirement_row_hint(options.requirement_row_hints)
+        system_prompt += _heading_outline_hint(options.heading_type_hints)
         citations: list[dict] = []
         content, truncated, rounds_exhausted = self._run_agentic_rounds(
             system_prompt, section_text, section_skeleton_schema(), tools,
@@ -2044,7 +2034,7 @@ class OrchestratorLlmClient:
             nodes = _nodes_from_parsed(_parse_json_object(content))
             logger.warning(
                 "analyze_section_skeleton_agentic result: node_count=%d truncated=%s query_kb_calls=%d topic_count=%r",
-                len(nodes), truncated, len(citations), topic_count,
+                len(nodes), truncated, len(citations), options.topic_count,
             )
             return nodes, citations, truncated
         if rounds_exhausted:
@@ -2053,15 +2043,15 @@ class OrchestratorLlmClient:
                 _MAX_TOOL_ROUNDS,
             )
             return [], citations, False
-        # Forward requirement_row_hints/heading_type_hints into the degraded
-        # fallback too, same as table_group_hints/expected_root_count already
-        # are -- easy to miss since this branch is reached only on a weak/
-        # misbehaving tool-capable model, exactly where these steering hints
-        # matter most.
+        # Forward every steering hint into the degraded fallback too --
+        # easy to miss since this branch is reached only on a weak/
+        # misbehaving tool-capable model, exactly where these hints matter
+        # most. `options=options` reproduces today's full forwarding
+        # (contrast analyze_section_agentic's own fallback, which forwards
+        # only two of its four hints -- a pre-existing asymmetry this
+        # refactor deliberately preserves rather than silently changing).
         fallback_nodes, fallback_truncated = self.analyze_section_skeleton(
-            section_text, kb_context=None, whole_document=whole_document, topic_count=topic_count,
-            table_group_hints=table_group_hints, expected_root_count=expected_root_count,
-            requirement_row_hints=requirement_row_hints, heading_type_hints=heading_type_hints,
+            section_text, kb_context=None, options=options,
         )
         return fallback_nodes, citations, fallback_truncated
 

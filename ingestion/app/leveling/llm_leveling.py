@@ -18,6 +18,7 @@ from app.distillation.survey_title import TitleDistillationClient, distill_surve
 from app.kb.kb_vector_store import _MAX_DOCUMENT_CHUNKS as _KB_GET_DOCUMENT_MAX_CHUNKS
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import fetch_always_include_context, retrieve_context
+from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.leveling.conflict_detection import (
     ConflictJudgeClient,
     _detect_conflicting_duplicates,
@@ -569,36 +570,32 @@ class SectionAnalysisClient(Protocol):
         expected_root_count: int | None = None,
     ) -> tuple[list[dict], list[dict], bool]: ...
 
-    # STAGE 1 -- same parameters as analyze_section/analyze_section_agentic
-    # above, every one of which steers a structural decision (node-count
-    # floors, which table groups must each get their own node and with what
-    # type, whether a real multi-root document is expected), PLUS
-    # `requirement_row_hints`: (code, label) pairs for this section's own
-    # qualifying requirement-list table rows (see
-    # requirement_rows.qualifying_requirement_rows) -- names which source
-    # rows each carry their own literal requirement identifier and must
-    # therefore each become their own Requirement node, counted in
-    # topic_count's own floor; and `heading_type_hints`: (title, type) pairs
-    # for this section's own real heading outline (see
-    # heading_outline.heading_outline_entries) -- names each Epic/Feature-
-    # typed heading and the type it must become, derived from the
-    # document's own relative nesting shape (never an absolute heading
-    # level), so a document with several real top-tier heading sections
-    # analyzed in one call doesn't collapse them all under a single Epic.
-    # Returns skeleton entries {temp_id, type,
-    # parent_temp_id, title, customer_id} -- no text, no tags, no figure/
-    # table ids; `customer_id` is the one deliberate exception (see
-    # section_skeleton_schema's own docstring).
+    # STAGE 1 -- structure only. Every prompt-steering hint that shaped
+    # analyze_section's own structural decisions now arrives as one
+    # SectionAnalysisOptions (see app.section_analysis_options, which
+    # documents each field and why bundling them is safe: all six steer a
+    # STRUCTURAL decision -- node-count floors, which table groups and
+    # requirement rows must each get their own node and with what type,
+    # whether a real multi-root document is expected, the document's own
+    # relative heading outline -- and every one is consumed only by
+    # prompt-suffix assembly plus the response cache key).
+    #
+    # `section_text`, `kb_context` and the agentic variant's
+    # `retrieve_fn`/`list_documents_fn`/`read_document_fn`/
+    # `read_other_section_fn` stay standalone: they are the payload, the
+    # path-defining pre-computed context, and injected capability closures
+    # respectively -- different kinds of input from a prompt hint.
+    #
+    # Returns skeleton entries {temp_id, type, parent_temp_id, title,
+    # customer_id} -- no text, no tags, no figure/table ids; `customer_id`
+    # is the one deliberate exception (see section_skeleton_schema's own
+    # docstring).
     def analyze_section_skeleton(
         self,
         section_text: str,
         kb_context: str | None = None,
-        whole_document: bool = False,
-        topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
-        requirement_row_hints: list[tuple[str, str]] | None = None,
-        heading_type_hints: list[tuple[str, str]] | None = None,
+        *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], bool]: ...
 
     def analyze_section_skeleton_agentic(
@@ -608,12 +605,8 @@ class SectionAnalysisClient(Protocol):
         list_documents_fn: Callable[[], list[str]] | None = None,
         read_document_fn: Callable[[str], str | None] | None = None,
         read_other_section_fn: Callable[[str], str | None] | None = None,
-        whole_document: bool = False,
-        topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
-        requirement_row_hints: list[tuple[str, str]] | None = None,
-        heading_type_hints: list[tuple[str, str]] | None = None,
+        *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], list[dict], bool]: ...
 
     # STAGE 3 -- `skeleton_nodes` maps each node's own local_id to
@@ -2966,13 +2959,25 @@ def _build_survey_skeleton_for_branch(
     # orchestrator_llm_client._root_count_clause's own docstring.
     top_level_group_count = sum(1 for g in (table_groups or []) if g.is_top_level)
     expected_root_count = top_level_group_count if top_level_group_count >= 2 else None
+    # Both branches below steer the model identically -- the agentic/
+    # fallback split is about HOW context is retrieved, never about which
+    # structural hints apply -- so build the hint bundle once. (Before this
+    # was one object, the two calls restated the same six keyword arguments
+    # and could drift; see SWEEP.md section 2's own item on this.)
+    section_analysis_options = SectionAnalysisOptions(
+        whole_document=whole_document,
+        topic_count=topic_count,
+        table_group_hints=table_group_hints,
+        expected_root_count=expected_root_count,
+        requirement_row_hints=requirement_row_hints,
+        heading_type_hints=heading_type_hint_pairs,
+    )
     if supports_tools and retrieve_fn is not None:
         _fire("build_skeleton", kb_grounded=False, kb_citations_raw=[])
         raw_nodes, raw_hits, truncated = analysis_client.analyze_section_skeleton_agentic(
             section_text, retrieve_fn, list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
-            read_other_section_fn=read_other_section_fn, whole_document=whole_document, topic_count=topic_count,
-            table_group_hints=table_group_hints, expected_root_count=expected_root_count,
-            requirement_row_hints=requirement_row_hints, heading_type_hints=heading_type_hint_pairs,
+            read_other_section_fn=read_other_section_fn,
+            options=section_analysis_options,
         )
         # The model chose to pull and use these snippets itself, so relevance
         # verification (kb_relevance_client) doesn't apply on this path --
@@ -3049,10 +3054,8 @@ def _build_survey_skeleton_for_branch(
         )
         _fire("build_skeleton", kb_grounded=bool(kb_context), kb_citations_raw=kb_citations_raw_dicts)
         raw_nodes, truncated = analysis_client.analyze_section_skeleton(
-            section_text, kb_context=kb_context, whole_document=whole_document,
-            topic_count=topic_count, table_group_hints=table_group_hints,
-            expected_root_count=expected_root_count, requirement_row_hints=requirement_row_hints,
-            heading_type_hints=heading_type_hint_pairs,
+            section_text, kb_context=kb_context,
+            options=section_analysis_options,
         )
         kb_citations = []  # doc-level citations are collected once in build_survey_tree, not per-branch
 

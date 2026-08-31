@@ -8,6 +8,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import app.survey.orchestrator_llm_client as orchestrator_llm_client_module
+from app.section_analysis_options import SectionAnalysisOptions
 from app.survey.orchestrator_llm_client import _MAX_OUTPUT_TOKENS, OrchestratorLlmClient
 from app.workitem.model import RequirementQualityIssue
 
@@ -1880,7 +1881,10 @@ def test_analyze_section_skeleton_prompt_names_every_identified_heading() -> Non
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton(
-        "Some section text.", heading_type_hints=[("Target Handling", "Epic"), ("Target tracking", "Feature")],
+        "Some section text.",
+        options=SectionAnalysisOptions(
+            heading_type_hints=[("Target Handling", "Epic"), ("Target tracking", "Feature")],
+        ),
     )
 
     system_prompt = captured["body"]["messages"][0]["content"]
@@ -1917,11 +1921,13 @@ def test_analyze_section_skeleton_cache_key_covers_the_heading_type_hints() -> N
 
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section_skeleton("Some section text.", heading_type_hints=[("A", "Epic")])
-    client.analyze_section_skeleton("Some section text.", heading_type_hints=[("B", "Epic")])
+    opts_a = SectionAnalysisOptions(heading_type_hints=[("A", "Epic")])
+    opts_b = SectionAnalysisOptions(heading_type_hints=[("B", "Epic")])
+    client.analyze_section_skeleton("Some section text.", options=opts_a)
+    client.analyze_section_skeleton("Some section text.", options=opts_b)
     assert call_count["n"] == 2  # different hints -- cache must not conflate them
 
-    client.analyze_section_skeleton("Some section text.", heading_type_hints=[("A", "Epic")])
+    client.analyze_section_skeleton("Some section text.", options=opts_a)
     assert call_count["n"] == 2  # same hints as the first call -- real cache hit
 
 
@@ -1940,7 +1946,7 @@ def test_analyze_section_skeleton_agentic_forwards_heading_type_hints_into_its_d
 
     client.analyze_section_skeleton_agentic(
         "Some section text.", lambda query: (None, []),
-        heading_type_hints=[("Target Handling", "Epic")],
+        options=SectionAnalysisOptions(heading_type_hints=[("Target Handling", "Epic")]),
     )
 
     system_prompt = captured["body"]["messages"][0]["content"]
@@ -2691,8 +2697,11 @@ def test_analyze_section_skeleton_prompt_carries_the_structural_steering_paramet
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton(
-        "Some section text.", kb_context="Reference material.", whole_document=True, topic_count=7,
-        table_group_hints=[("Media Buttons", "Feature")], expected_root_count=2,
+        "Some section text.", kb_context="Reference material.",
+        options=SectionAnalysisOptions(
+            whole_document=True, topic_count=7,
+            table_group_hints=[("Media Buttons", "Feature")], expected_root_count=2,
+        ),
     )
 
     system_prompt = captured["body"]["messages"][0]["content"]
@@ -2715,7 +2724,10 @@ def test_analyze_section_skeleton_prompt_names_every_identified_requirement_row(
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_skeleton(
-        "Some section text.", requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+        "Some section text.",
+        options=SectionAnalysisOptions(
+            requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+        ),
     )
 
     system_prompt = captured["body"]["messages"][0]["content"]
@@ -2754,11 +2766,13 @@ def test_analyze_section_skeleton_cache_key_covers_the_requirement_row_hints() -
 
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section_skeleton("Some section text.", requirement_row_hints=[("P-SENSOR-001#", "Time sync source")])
-    client.analyze_section_skeleton("Some section text.", requirement_row_hints=[("P-SENSOR-002#", "Sync accuracy")])
+    row_opts_1 = SectionAnalysisOptions(requirement_row_hints=[("P-SENSOR-001#", "Time sync source")])
+    row_opts_2 = SectionAnalysisOptions(requirement_row_hints=[("P-SENSOR-002#", "Sync accuracy")])
+    client.analyze_section_skeleton("Some section text.", options=row_opts_1)
+    client.analyze_section_skeleton("Some section text.", options=row_opts_2)
     assert call_count["n"] == 2  # different hints -- cache must not conflate them
 
-    client.analyze_section_skeleton("Some section text.", requirement_row_hints=[("P-SENSOR-001#", "Time sync source")])
+    client.analyze_section_skeleton("Some section text.", options=row_opts_1)
     assert call_count["n"] == 2  # same hints as the first call -- real cache hit
 
 
@@ -2798,7 +2812,9 @@ def test_analyze_section_skeleton_agentic_forwards_requirement_row_hints_into_it
 
     client.analyze_section_skeleton_agentic(
         "Some section text.", lambda query: (None, []),
-        requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+        options=SectionAnalysisOptions(
+            requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+        ),
     )
 
     system_prompt = captured["body"]["messages"][0]["content"]
@@ -3384,12 +3400,14 @@ def test_analyze_section_skeleton_fully_steered_payload_is_unchanged() -> None:
     client.analyze_section_skeleton(
         "Some section text.",
         kb_context="Reference material from doc-a.docx",
-        whole_document=True,
-        topic_count=7,
-        table_group_hints=[("Media Buttons", "Feature")],
-        expected_root_count=2,
-        requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
-        heading_type_hints=[("Target Handling", "Epic")],
+        options=SectionAnalysisOptions(
+            whole_document=True,
+            topic_count=7,
+            table_group_hints=[("Media Buttons", "Feature")],
+            expected_root_count=2,
+            requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+            heading_type_hints=[("Target Handling", "Epic")],
+        ),
     )
 
     body = captured["body"]
@@ -3455,12 +3473,14 @@ def test_analyze_section_skeleton_fully_steered_cache_key_is_unchanged() -> None
     client.analyze_section_skeleton(
         "Some section text.",
         kb_context="Reference material from doc-a.docx",
-        whole_document=True,
-        topic_count=7,
-        table_group_hints=[("Media Buttons", "Feature")],
-        expected_root_count=2,
-        requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
-        heading_type_hints=[("Target Handling", "Epic")],
+        options=SectionAnalysisOptions(
+            whole_document=True,
+            topic_count=7,
+            table_group_hints=[("Media Buttons", "Feature")],
+            expected_root_count=2,
+            requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+            heading_type_hints=[("Target Handling", "Epic")],
+        ),
     )
 
     assert recorded["key"] == expected
