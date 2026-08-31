@@ -316,14 +316,22 @@ describe('DiffTree', () => {
   });
 
   it('renders BOTH the flagged icon and the full action badge text when a row is flagged and reuses an existing item -- neither clips the other', () => {
-    // Regression guard: the Flags cell used to render the flagged signal as
-    // a right-aligned text chip ("⚠ Review") in a fixed-width,
-    // overflow-hidden track -- whenever its own rendered width exceeded the
-    // column (routine, not just in the two-signal case), its LEFT edge
-    // (the ⚠ glyph and the pill's rounded corner) clipped off, confirmed
-    // live. Replaced with a fixed-size icon (see the Flags cell's own
-    // comment in DiffTree.tsx) specifically because an icon has no
-    // "too wide for the column" case to clip.
+    // Regression guard, two bugs deep on this same cell:
+    // 1. The flagged signal used to render as a right-aligned text chip
+    //    ("⚠ Review") in the Status track, sharing it with ActionBadge --
+    //    whenever the combined width exceeded the track, its LEFT edge
+    //    (the ⚠ glyph and the pill's rounded corner) clipped off, confirmed
+    //    live. Replaced with a fixed-size icon for exactly this reason.
+    // 2. The icon was then moved INTO the Status track (still sharing it
+    //    with ActionBadge) -- confirmed live this doesn't clip, but
+    //    useStatusColumnWidth measures one GLOBAL width from every row's
+    //    action label, so reserving icon space there widened the Status
+    //    column for every row, including unflagged ones, producing a
+    //    visible gap before "New" on rows with no icon at all. The icon
+    //    belongs in the Flags/Signals track instead (see that cell's own
+    //    comment in DiffTree.tsx) -- a per-item quality signal, not part of
+    //    what Confirm will do with the item, and a track ActionBadge never
+    //    shares width with.
     const entries: DryRunDiffEntry[] = [
       { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
       { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
@@ -347,8 +355,19 @@ describe('DiffTree', () => {
     // The flagged icon (title carries the reason) and the action badge's
     // full, untruncated text both present in the same row -- not a clipped
     // fragment of either.
-    expect(within(row).getByTitle(/low grounding/i)).toBeInTheDocument();
-    expect(within(row).getByText('Links to WI-12345')).toBeInTheDocument();
+    const flagIcon = within(row).getByTitle(/low grounding/i);
+    const statusChip = within(row).getByText('Links to WI-12345');
+    expect(flagIcon).toBeInTheDocument();
+    expect(statusChip).toBeInTheDocument();
+    // The two are in DIFFERENT top-level grid cells (Status vs Flags) --
+    // sharing one is what forced the global Status-column-width regression
+    // above.
+    const cells = Array.from(row.children);
+    const statusCellIndex = cells.findIndex((c) => c.contains(statusChip));
+    const flagsCellIndex = cells.findIndex((c) => c.contains(flagIcon));
+    expect(statusCellIndex).toBeGreaterThanOrEqual(0);
+    expect(flagsCellIndex).toBeGreaterThanOrEqual(0);
+    expect(statusCellIndex).not.toBe(flagsCellIndex);
   });
 
   it('shows a review chip on a low-confidence row with otherwise healthy scores', () => {
