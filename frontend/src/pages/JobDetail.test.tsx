@@ -1288,8 +1288,13 @@ describe('JobDetail', () => {
       await waitFor(() => expect(screen.getByRole('tablist')).toBeInTheDocument());
       // "New" also matches the filter Select's <option> -- getAllByText
       // tolerates that expected duplication (the StatTile label is the
-      // second match).
-      expect(screen.getAllByText('New').length).toBeGreaterThan(1);
+      // second match). The stat tiles come from a SEPARATE getSummary
+      // effect/promise chain than the tablist (fed by getJob) -- waiting
+      // only for the tablist and then asserting synchronously left a real
+      // gap where the tiles hadn't rendered yet, confirmed live (CI-only,
+      // never reproduced locally): "New" matched only the Select option,
+      // not yet the tile.
+      await waitFor(() => expect(screen.getAllByText('New').length).toBeGreaterThan(1));
       // ProgressBanner (the RunDetail panel) only ever renders for
       // running/writing -- diff_ready is a human decision point, not a
       // running process.

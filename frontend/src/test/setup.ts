@@ -7,10 +7,16 @@ import { configure } from '@testing-library/react';
 // tests -- root-caused (see vitest.config.ts's testTimeout comment) to real
 // CPU contention on a resource-constrained runner, not any specific test's
 // logic: reproduced live in a deliberately oversubscribed container where a
-// DIFFERENT unrelated test timed out each run. Widened alongside
-// testTimeout so the inner findBy*/waitFor budget doesn't become the
-// binding constraint once the outer per-test budget was raised.
-configure({ asyncUtilTimeout: 5000 });
+// DIFFERENT unrelated test timed out each run.
+//
+// First widened to 5000ms, but that created a NEW, real race: ToastProvider
+// renders with a 4400ms auto-dismiss duration, so a 5000ms findBy*/waitFor
+// window can watch a real toast appear AND fully disappear before deciding
+// it was never there -- confirmed live as the cause of a CI-only failure
+// ("shows an error toast when toggling exclude fails"), independent of any
+// CPU contention. 3000ms keeps real headroom over the 1000ms default for
+// contention while staying safely under every toast's 4400ms shelf life.
+configure({ asyncUtilTimeout: 3000 });
 
 // jsdom has no ResizeObserver -- DiffTree's VariableSizeList row measurement
 // (see DiffTree.tsx's MeasuredRow) requires one to exist at all, even though
