@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import { JobsService, buildFigureAttachmentFilename } from '../src/modules/pipeline/jobs.service';
 import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
+import { makeConfirmPrismaMock } from './helpers/prismaMock';
 
 describe('buildFigureAttachmentFilename', () => {
   it('builds a sanitized, figure-numbered filename from a real name', () => {
@@ -1181,20 +1182,15 @@ describe('JobsService.confirm resume (P4b)', () => {
   it('writes a CreatedItemMapping row immediately after each successful create', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 100 });
     const upsert = jest.fn().mockResolvedValue(undefined);
-    const prisma = {
-      job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
-          dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
-          ],
-        }),
-        update: jest.fn().mockResolvedValue(undefined),
+    const prisma = makeConfirmPrismaMock(
+      {
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        dryRunDiff: [
+          { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+        ],
       },
-      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
-      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert, update: jest.fn().mockResolvedValue(undefined) },
-    };
+      { createdItemMapping: { upsert } },
+    );
     const service = new JobsService(
       prisma as any,
       { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
@@ -1214,25 +1210,16 @@ describe('JobsService.confirm resume (P4b)', () => {
 
   it('skips re-creating a localId that already has a CreatedItemMapping row from a prior attempt', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 999 });
-    const prisma = {
-      job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
-          dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
-            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
-          ],
-        }),
-        update: jest.fn().mockResolvedValue(undefined),
+    const prisma = makeConfirmPrismaMock(
+      {
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        dryRunDiff: [
+          { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+        ],
       },
-      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
-      createdItemMapping: {
-        findMany: jest.fn().mockResolvedValue([{ localId: 'n0', adoWorkItemId: 100, linked: false }]),
-        upsert: jest.fn().mockResolvedValue(undefined),
-        update: jest.fn().mockResolvedValue(undefined),
-      },
-    };
+      { createdItemMapping: { findMany: jest.fn().mockResolvedValue([{ localId: 'n0', adoWorkItemId: 100, linked: false }]) } },
+    );
     const service = new JobsService(
       prisma as any,
       { createWorkItem, linkParentChild: jest.fn(), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
@@ -1253,25 +1240,16 @@ describe('JobsService.confirm resume (P4b)', () => {
   it('links a resumed parent to a newly-created child using the resumed ADO id', async () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 200 });
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
-    const prisma = {
-      job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
-          dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
-            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
-          ],
-        }),
-        update: jest.fn().mockResolvedValue(undefined),
+    const prisma = makeConfirmPrismaMock(
+      {
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        dryRunDiff: [
+          { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+        ],
       },
-      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
-      createdItemMapping: {
-        findMany: jest.fn().mockResolvedValue([{ localId: 'n0', adoWorkItemId: 500, linked: false }]),
-        upsert: jest.fn().mockResolvedValue(undefined),
-        update: jest.fn().mockResolvedValue(undefined),
-      },
-    };
+      { createdItemMapping: { findMany: jest.fn().mockResolvedValue([{ localId: 'n0', adoWorkItemId: 500, linked: false }]) } },
+    );
     const service = new JobsService(
       prisma as any,
       { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
@@ -1288,28 +1266,23 @@ describe('JobsService.confirm resume (P4b)', () => {
   it('does not re-link a localId already marked linked=true from a prior attempt', async () => {
     const createWorkItem = jest.fn();
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
-    const prisma = {
-      job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
-          dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
-            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
-          ],
-        }),
-        update: jest.fn().mockResolvedValue(undefined),
+    const prisma = makeConfirmPrismaMock(
+      {
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        dryRunDiff: [
+          { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+        ],
       },
-      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
-      createdItemMapping: {
-        findMany: jest.fn().mockResolvedValue([
-          { localId: 'n0', adoWorkItemId: 500, linked: true },
-          { localId: 'n1', adoWorkItemId: 600, linked: true },
-        ]),
-        upsert: jest.fn().mockResolvedValue(undefined),
-        update: jest.fn().mockResolvedValue(undefined),
+      {
+        createdItemMapping: {
+          findMany: jest.fn().mockResolvedValue([
+            { localId: 'n0', adoWorkItemId: 500, linked: true },
+            { localId: 'n1', adoWorkItemId: 600, linked: true },
+          ]),
+        },
       },
-    };
+    );
     const service = new JobsService(
       prisma as any,
       { createWorkItem, linkParentChild, discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
@@ -1330,21 +1303,16 @@ describe('JobsService.confirm resume (P4b)', () => {
       .mockResolvedValueOnce({ id: 100 }) // parent
       .mockResolvedValueOnce({ id: 101 }); // child
     const update = jest.fn().mockResolvedValue(undefined);
-    const prisma = {
-      job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
-          dryRunDiff: [
-            { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
-            { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
-          ],
-        }),
-        update: jest.fn().mockResolvedValue(undefined),
+    const prisma = makeConfirmPrismaMock(
+      {
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        dryRunDiff: [
+          { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
+          { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
+        ],
       },
-      auditEntry: { create: jest.fn().mockResolvedValue(undefined) },
-      createdItemMapping: { findMany: jest.fn().mockResolvedValue([]), upsert: jest.fn().mockResolvedValue(undefined), update },
-    };
+      { createdItemMapping: { update } },
+    );
     const service = new JobsService(
       prisma as any,
       { createWorkItem, linkParentChild: jest.fn().mockResolvedValue(undefined), discoverWorkItemTypeCategories: jest.fn().mockResolvedValue({ Epic: 'Epic', Feature: 'Feature', Requirement: 'Requirement' }) } as any,
