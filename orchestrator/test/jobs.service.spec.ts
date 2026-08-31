@@ -7,6 +7,21 @@ import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 import { makeConfirmPrismaMock } from './helpers/prismaMock';
 
+// JobsService's constructor eagerly creates a REAL bullmq Queue (see
+// jobs.service.ts) against whatever redisUrl it's given -- every `new
+// JobsService(...)` below passes the placeholder 'redis://unused', intending
+// it to be inert, but bullmq's Queue attempts a real ioredis connection
+// regardless of the URL's validity. That connection error is asynchronous
+// and outlives the test that triggered it, so it was surfacing as a leaked
+// "Cannot log after tests are done" failure misattributed to whichever spec
+// file happened to be running when it fired -- confirmed live in CI, where
+// (unlike a local dev machine with docker-compose's Redis on localhost:6379)
+// nothing is listening. Auto-mocking bullmq removes the real connection
+// entirely; Queue.prototype spies further down in this file still work
+// against the auto-mocked prototype the same way they did against the real
+// one.
+jest.mock('bullmq');
+
 describe('buildFigureAttachmentFilename', () => {
   it('builds a sanitized, figure-numbered filename from a real name', () => {
     expect(buildFigureAttachmentFilename('f11', 'CubeConnect PCB (PC104 Variants) – Interior (Back) View', 'image/jpeg')).toBe(
