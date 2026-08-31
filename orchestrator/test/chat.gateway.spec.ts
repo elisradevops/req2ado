@@ -9,14 +9,14 @@ function makeSocket() {
 
 describe('ChatGateway', () => {
   it('subscribes to chat:* on construction', async () => {
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn() };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn() };
     new ChatGateway(subscriber as any, { persistAssistantTurn: jest.fn() } as any, fakeSessionService as any);
     expect(subscriber.psubscribe).toHaveBeenCalledWith('chat:*');
   });
 
   it('relays a pmessage only to sockets in the matching room', async () => {
     const handlers: Record<string, (...args: any[]) => void> = {};
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn((event, cb) => (handlers[event] = cb)) };
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn: jest.fn() } as any, fakeSessionService as any);
 
     const socketA = makeSocket();
@@ -31,7 +31,7 @@ describe('ChatGateway', () => {
   });
 
   it('closes a connection missing jobId/localId query params', async () => {
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn() };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn() };
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn: jest.fn() } as any, fakeSessionService as any);
     const socket = makeSocket();
 
@@ -42,7 +42,7 @@ describe('ChatGateway', () => {
 
   it('removes a disconnected socket from its room so a later relay no longer reaches it', async () => {
     const handlers: Record<string, (...args: any[]) => void> = {};
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn((event, cb) => (handlers[event] = cb)) };
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn: jest.fn() } as any, fakeSessionService as any);
     const socket = makeSocket();
     await gateway.handleConnection(socket as any, { url: '/chat?jobId=job-1&localId=n0', headers: AUTHED_HEADERS } as any);
@@ -55,7 +55,7 @@ describe('ChatGateway', () => {
 
   it('calls chatService.persistAssistantTurn when a done event is relayed', async () => {
     const handlers: Record<string, (...args: any[]) => void> = {};
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn((event, cb) => (handlers[event] = cb)) };
     const persistAssistantTurn = jest.fn().mockResolvedValue(undefined);
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn } as any, fakeSessionService as any);
     const socket = makeSocket();
@@ -69,7 +69,7 @@ describe('ChatGateway', () => {
 
   it('does not call persistAssistantTurn for a chunk or error event', async () => {
     const handlers: Record<string, (...args: any[]) => void> = {};
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn((event, cb) => (handlers[event] = cb)) };
     const persistAssistantTurn = jest.fn();
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn } as any, fakeSessionService as any);
     const socket = makeSocket();
@@ -84,7 +84,7 @@ describe('ChatGateway', () => {
   it('force-emits an error and clears the timer entry when a turn times out with no terminal event', async () => {
     jest.useFakeTimers();
     const handlers: Record<string, (...args: any[]) => void> = {};
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn((event, cb) => (handlers[event] = cb)) };
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn: jest.fn() } as any, fakeSessionService as any);
     const socket = makeSocket();
     await gateway.handleConnection(socket as any, { url: '/chat?jobId=job-1&localId=n0', headers: AUTHED_HEADERS } as any);
@@ -99,7 +99,7 @@ describe('ChatGateway', () => {
   it('does not fire the timeout after a done event already arrived', async () => {
     jest.useFakeTimers();
     const handlers: Record<string, (...args: any[]) => void> = {};
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn((event, cb) => (handlers[event] = cb)) };
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn: jest.fn().mockResolvedValue(undefined) } as any, fakeSessionService as any);
     const socket = makeSocket();
     await gateway.handleConnection(socket as any, { url: '/chat?jobId=job-1&localId=n0', headers: AUTHED_HEADERS } as any);
@@ -116,7 +116,7 @@ describe('ChatGateway', () => {
   it('drops a real done event that arrives after the turn already timed out (no re-relay, no persist)', async () => {
     jest.useFakeTimers();
     const handlers: Record<string, (...args: any[]) => void> = {};
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn((event, cb) => (handlers[event] = cb)) };
     const persistAssistantTurn = jest.fn().mockResolvedValue(undefined);
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn } as any, fakeSessionService as any);
     const socket = makeSocket();
@@ -142,7 +142,7 @@ describe('ChatGateway', () => {
   it('resets the timed-out marker for a channel when a new turn starts, so the next turn relays normally', async () => {
     jest.useFakeTimers();
     const handlers: Record<string, (...args: any[]) => void> = {};
-    const subscriber = { psubscribe: jest.fn(), on: jest.fn((event, cb) => (handlers[event] = cb)) };
+    const subscriber = { psubscribe: jest.fn().mockResolvedValue(undefined), on: jest.fn((event, cb) => (handlers[event] = cb)) };
     const persistAssistantTurn = jest.fn().mockResolvedValue(undefined);
     const gateway = new ChatGateway(subscriber as any, { persistAssistantTurn } as any, fakeSessionService as any);
     const socket = makeSocket();

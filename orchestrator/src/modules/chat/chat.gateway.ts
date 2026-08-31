@@ -64,7 +64,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     // one dedicated Redis connection per open chat — deliberate deviation
     // from the SSE precedent (job-events.controller.ts), see
     // docs/superpowers/specs/2026-07-15-p3b-ai-assist-chat-design.md §6.
-    this.subscriber.psubscribe('chat:*');
+    // .catch() is required, not cosmetic: if onModuleDestroy's
+    // subscriber.disconnect() (below) runs while this psubscribe is still
+    // queued (offline, not yet connected), ioredis rejects it with
+    // "Connection is closed." -- an unhandled rejection that crashes the
+    // process under Node 22's default --unhandled-rejections=throw.
+    // Confirmed live: this is exactly what made
+    // orchestrator/test/health.e2e-spec.ts (which boots and immediately
+    // tears down the full AppModule) intermittently exit 1 in CI despite
+    // its own single assertion passing -- a race, not a real handler
+    // error, so caught-and-logged (not rethrown) is correct here, same
+    // as job-events.controller.ts's own `.catch(() => undefined)`
+    // precedent for its analogous teardown-time subscriber calls.
+    void this.subscriber.psubscribe('chat:*').catch((err) => {
+      this.logger.error(`chat psubscribe failed: ${err}`);
+    });
     this.subscriber.on('pmessage', (_pattern: string, channel: string, message: string) => {
       this.relay(channel, message);
     });
