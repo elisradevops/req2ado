@@ -52,6 +52,7 @@ _GROUP_KEY_FIELD: dict[WarningKind, str | None] = {
     # rows instead of the one flat bucket every other "N of the same thing
     # happened" kind above already gets.
     WarningKind.OCR_RECOVERED_TABLE_TEXT: None,
+    WarningKind.NESTED_TABLE_DROPPED: None,
     WarningKind.EXTERNAL_REFERENCE: None,
     # Per-ITEM, not per-node (a hallucinated mapping target names no real
     # node at all, so these records carry empty node_ids) -- one flat bucket,
@@ -188,6 +189,14 @@ def _ocr_recovered_table_text(members: list[IntegrityWarning], node_ids: list[st
     )
 
 
+def _nested_table_dropped(members: list[IntegrityWarning], node_ids: list[str]) -> str:
+    total_cells = sum(m.detail.get("droppedCellCount", 0) for m in members)
+    return (
+        f"{len(members)} table(s) had {total_cells} cell(s) total containing a nested table whose "
+        "content was not extracted -- please check the source document(s) manually."
+    )
+
+
 def _external_reference(members: list[IntegrityWarning], node_ids: list[str]) -> str:
     return (
         f"{len(members)} external artifact reference(s) were found that this SURVEY run did not "
@@ -212,6 +221,7 @@ _SUMMARY_BUILDERS: dict[WarningKind, Callable[[list[IntegrityWarning], list[str]
     WarningKind.EMPTY_TABLE_CONTENT: _empty_table_content,
     WarningKind.INVALID_MAPPING_TARGET: _invalid_mapping_target,
     WarningKind.OCR_RECOVERED_TABLE_TEXT: _ocr_recovered_table_text,
+    WarningKind.NESTED_TABLE_DROPPED: _nested_table_dropped,
     WarningKind.EXTERNAL_REFERENCE: _external_reference,
 }
 

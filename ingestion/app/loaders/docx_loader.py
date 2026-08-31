@@ -633,8 +633,7 @@ def _extract_table_cells(docx_table: DocxTable) -> list[list[TableCell | None]]:
                 continue
             cell = DocxCell(tc, docx_table)
             cell_text = cell.text.strip()
-            if cell.tables:
-                cell_text = f"{cell_text}\n[UNSUPPORTED: nested table]".strip()
+            has_nested_table = bool(cell.tables)
             row_cells[tc.grid_offset] = TableCell(
                 text=cell_text,
                 colspan=tc.grid_span,
@@ -644,6 +643,7 @@ def _extract_table_cells(docx_table: DocxTable) -> list[list[TableCell | None]]:
                 align=_cell_alignment(tc),
                 background_color=_cell_background_color(tc),
                 text_color=_cell_text_color(cell),
+                nested_table_dropped=has_nested_table,
             )
         grid.append(row_cells)
     return grid

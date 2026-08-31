@@ -136,6 +136,16 @@ class TableCell(BaseModel):
     # tree_builder.py/llm_leveling.py turn a table with any True cell into
     # one IntegrityWarning(WarningKind.OCR_RECOVERED_TABLE_TEXT).
     ocr_recovered: bool = False
+    # Set when this cell's own DOCX markup contains a nested table --
+    # tables-within-tables have no representation in the canonical model
+    # (TableCell.text is plain text, not a place to embed a second grid),
+    # so the nested table's own content is not extracted at all. This
+    # field is the bridge value CanonicalDoc needs (same convention as
+    # ocr_recovered just above); tree_builder.py/llm_leveling.py turn a
+    # table with any True cell into one IntegrityWarning
+    # (WarningKind.NESTED_TABLE_DROPPED) instead of leaking a literal
+    # marker string into the cell's own rendered text.
+    nested_table_dropped: bool = False
 
 
 class Table(BaseModel):

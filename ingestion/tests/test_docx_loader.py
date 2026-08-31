@@ -1429,10 +1429,8 @@ def test_load_docx_flags_an_ole_object_and_does_not_emit_its_icon_as_a_phantom_f
     assert result.figures == []
 
 
-def test_load_docx_flags_a_nested_table_in_a_cell_instead_of_silently_losing_it() -> None:
+def test_load_docx_flags_a_nested_table_via_a_boolean_field_instead_of_a_literal_string() -> None:
     from docx import Document as DocxDocument
-
-    from app.canonical.model import plain_text_rows
 
     doc = DocxDocument()
     outer_table = doc.add_table(rows=1, cols=2)
@@ -1445,13 +1443,12 @@ def test_load_docx_flags_a_nested_table_in_a_cell_instead_of_silently_losing_it(
         result = load_docx(str(out_path))
 
     assert len(result.tables) == 1
-    rows = plain_text_rows(result.tables[0])
-    assert rows[0][0] == "Outer cell A"
-    assert rows[0][1] == "[UNSUPPORTED: nested table]"
-    # The marker lands on the real TableCell object too (not just the
-    # plain_text_rows projection) -- spans/bold/etc. are untouched by this
-    # fix, only .text changes.
-    assert result.tables[0].cells[0][1].text == "[UNSUPPORTED: nested table]"
+    outer_cell = result.tables[0].cells[0][0]
+    nested_cell = result.tables[0].cells[0][1]
+    assert outer_cell.text == "Outer cell A"
+    assert outer_cell.nested_table_dropped is False
+    assert nested_cell.text == ""
+    assert nested_cell.nested_table_dropped is True
 
 
 def test_load_docx_flags_text_box_content_instead_of_silently_dropping_it() -> None:

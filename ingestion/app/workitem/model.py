@@ -366,6 +366,13 @@ class WarningKind(str, Enum):
     # One warning per TABLE with any such cell, not per cell -- matches
     # this codebase's established table/section-level dedup convention.
     OCR_RECOVERED_TABLE_TEXT = "ocr_recovered_table_text"
+    # DOCX-only: a table had 1+ cell whose own markup contained a nested
+    # table, whose content could not be represented in the canonical model
+    # and was therefore dropped entirely (see TableCell.nested_table_dropped,
+    # docx_loader.py's _extract_table_cells). One warning per TABLE with any
+    # such cell, not per cell -- same dedup convention as
+    # OCR_RECOVERED_TABLE_TEXT just above.
+    NESTED_TABLE_DROPPED = "nested_table_dropped"
     # Tree-level (never per-node): one or more Requirement nodes have no
     # real, document-authored Customer ID / source-requirement-number (see
     # WorkItemNode.customer_id's own docstring) -- e.g. the document's
@@ -452,6 +459,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.INVALID_MAPPING_TARGET: WarningSeverity.NEEDS_REVIEW,
     WarningKind.MAPPING_CALL_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.OCR_RECOVERED_TABLE_TEXT: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.NESTED_TABLE_DROPPED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.MISSING_SOURCE_REFERENCE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.SURVEY_TITLE_DISTILLED: WarningSeverity.AUTO_FIXED,
     WarningKind.DUPLICATE_CUSTOMER_ID: WarningSeverity.NEEDS_REVIEW,

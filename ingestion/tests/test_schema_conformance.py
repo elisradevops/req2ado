@@ -151,3 +151,28 @@ def test_schema_rejects_a_non_boolean_ocr_recovered(schema) -> None:
     ]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_accepts_a_nested_table_dropped_cell(schema) -> None:
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["tables"] = [
+        {
+            "id": "t0",
+            "cells": [[{"text": "Outer", "nested_table_dropped": True}, {"text": "Alpha", "nested_table_dropped": False}]],
+            "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
+        }
+    ]
+    jsonschema.validate(instance=doc, schema=schema)
+
+
+def test_schema_rejects_a_non_boolean_nested_table_dropped(schema) -> None:
+    doc = load_txt(str(FIXTURES / "sample.txt")).model_dump(mode="json")
+    doc["tables"] = [
+        {
+            "id": "t0",
+            "cells": [[{"text": "Outer", "nested_table_dropped": "yes"}]],
+            "source_ref": {"document_path": "x", "start_offset": 0, "end_offset": 1},
+        }
+    ]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=doc, schema=schema)

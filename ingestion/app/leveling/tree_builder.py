@@ -484,6 +484,24 @@ def _ocr_recovered_table_warning(table: Table, node_ids: list[str]) -> Integrity
     )
 
 
+def _nested_table_dropped_warning(table: Table, node_ids: list[str]) -> IntegrityWarning | None:
+    """One warning for this table if it has any cell whose nested table was
+    dropped (TableCell.nested_table_dropped, set by docx_loader.py's
+    _extract_table_cells), None otherwise -- same one-warning-per-table,
+    called-at-the-single-BASELINE-fold-site shape as
+    _ocr_recovered_table_warning just above."""
+    dropped_count = sum(1 for row in table.cells for cell in row if cell is not None and cell.nested_table_dropped)
+    if dropped_count == 0:
+        return None
+    return IntegrityWarning.make(
+        WarningKind.NESTED_TABLE_DROPPED,
+        f"Table {table.id} had {dropped_count} cell(s) containing a nested table whose content "
+        "was not extracted -- please check the source document manually.",
+        node_ids=node_ids,
+        detail={"tableId": table.id, "droppedCellCount": dropped_count},
+    )
+
+
 def _order_key(ref: SourceRef) -> tuple[int, int]:
     """Document-order sort key comparable across a Block and a Table within
     the SAME loader run. Offsets are NOT globally comparable on their own --
@@ -693,6 +711,9 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
             ocr_warning = _ocr_recovered_table_warning(table, node_ids=[node_id])
             if ocr_warning is not None:
                 warnings.append(ocr_warning)
+            nested_table_warning = _nested_table_dropped_warning(table, node_ids=[node_id])
+            if nested_table_warning is not None:
+                warnings.append(nested_table_warning)
     return WorkItemTree(nodes=nodes, warnings=finalize_warnings(warnings))
 
 
@@ -932,6 +953,7 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                     open_node.source_ref = _widen_page_end(open_node.source_ref, table.source_ref)
                     open_node.table_ids.append(table.id)
                     ocr_warning = _ocr_recovered_table_warning(table, node_ids=[open_node.local_id])
+                    nested_table_warning = _nested_table_dropped_warning(table, node_ids=[open_node.local_id])
                 else:
                     if orphan_source_ref is None:
                         orphan_source_ref = table.source_ref
@@ -946,8 +968,11 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                         )
                     )
                     ocr_warning = _ocr_recovered_table_warning(table, node_ids=[])
+                    nested_table_warning = _nested_table_dropped_warning(table, node_ids=[])
                 if ocr_warning is not None:
                     warnings.append(ocr_warning)
+                if nested_table_warning is not None:
+                    warnings.append(nested_table_warning)
                 continue
 
             assert block is not None

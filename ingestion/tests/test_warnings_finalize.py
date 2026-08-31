@@ -125,6 +125,32 @@ def test_finalize_warnings_groups_ocr_recovered_table_text_across_the_whole_list
     assert "2 table(s) had 8 cell(s) total" in result[0].raw
 
 
+def test_finalize_warnings_groups_nested_table_dropped_across_the_whole_list() -> None:
+    # Real gap this closes: NESTED_TABLE_DROPPED was previously absent from
+    # this module entirely -- a DOCX with many nested-table-dropped cells
+    # spammed one warning row per table instead of one flat bucket.
+    warnings = [
+        IntegrityWarning.make(
+            WarningKind.NESTED_TABLE_DROPPED,
+            "Table t0 had 1 cell(s) containing a nested table whose content was not extracted.",
+            node_ids=["n0"],
+            detail={"tableId": "t0", "droppedCellCount": 1},
+        ),
+        IntegrityWarning.make(
+            WarningKind.NESTED_TABLE_DROPPED,
+            "Table t1 had 2 cell(s) containing a nested table whose content was not extracted.",
+            node_ids=["n1"],
+            detail={"tableId": "t1", "droppedCellCount": 2},
+        ),
+    ]
+    result = finalize_warnings(warnings)
+    assert len(result) == 1
+    assert result[0].kind == WarningKind.NESTED_TABLE_DROPPED
+    assert result[0].detail["mergedCount"] == 2
+    assert result[0].node_ids == ["n0", "n1"]
+    assert "2 table(s) had 3 cell(s) total" in result[0].raw
+
+
 def test_finalize_warnings_groups_external_reference_across_the_whole_list() -> None:
     # Real gap this closes: EXTERNAL_REFERENCE was previously absent from
     # this module entirely -- a document referencing many un-ingested

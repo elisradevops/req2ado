@@ -798,6 +798,30 @@ def _ocr_recovered_table_warnings(tables: list[Table] | None, section_label: str
     return out
 
 
+def _nested_table_dropped_warnings(tables: list[Table] | None, section_label: str | None) -> list[IntegrityWarning]:
+    """One warning per table in this branch with 1+ cell whose nested table
+    was dropped (TableCell.nested_table_dropped) -- mirrors
+    _ocr_recovered_table_warnings exactly (same branch-wide scan, same
+    call-site convention, see that function's own docstring for why this
+    shape differs from tree_builder.py's single-table BASELINE
+    counterpart)."""
+    section_ref = f'The "{section_label}" section' if section_label else "This section"
+    out: list[IntegrityWarning] = []
+    for table in tables or []:
+        dropped_count = sum(1 for row in table.cells for cell in row if cell is not None and cell.nested_table_dropped)
+        if dropped_count == 0:
+            continue
+        out.append(
+            IntegrityWarning.make(
+                WarningKind.NESTED_TABLE_DROPPED,
+                f"{section_ref} contains a table ({table.id}) with {dropped_count} cell(s) containing a "
+                "nested table whose content was not extracted -- please check the source document manually.",
+                detail={"section": section_label or "(root)", "tableId": table.id, "droppedCellCount": dropped_count},
+            )
+        )
+    return out
+
+
 _SECTION_LABEL_EXCERPT_CHARS = 60
 
 
@@ -3357,6 +3381,7 @@ def _build_survey_skeleton_for_branch(
     warnings.extend(_referenced_attachment_warnings(section_text, section_label))
     warnings.extend(_unsupported_content_warnings(blocks, section_label))
     warnings.extend(_ocr_recovered_table_warnings(tables, section_label))
+    warnings.extend(_nested_table_dropped_warnings(tables, section_label))
 
     return _BranchSkeleton(
         nodes=nodes,

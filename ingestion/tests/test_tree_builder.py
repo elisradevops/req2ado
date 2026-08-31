@@ -1819,6 +1819,82 @@ def test_headingless_table_only_doc_with_an_ocr_recovered_cell_emits_a_warning()
     assert tree.warnings[0].detail == {"tableId": "t0", "recoveredCellCount": 1}
 
 
+def test_table_with_a_nested_table_dropped_cell_emits_a_warning_attributed_to_the_open_node() -> None:
+    path = "table_nested.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19)),
+            Block(id="b1", kind=BlockKind.HEADING, heading_level=2, text="Variant Table", source_ref=_sr(path, 20, 33)),
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="Outer A", nested_table_dropped=True), TableCell(text="Alpha")]],
+                source_ref=_sr(path, 34, 35),
+            )
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    parent = next(n for n in tree.nodes if n.title == "Variant Table")
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].kind == WarningKind.NESTED_TABLE_DROPPED
+    assert tree.warnings[0].node_ids == [parent.local_id]
+    assert tree.warnings[0].detail == {"tableId": "t0", "droppedCellCount": 1}
+
+
+def test_table_with_no_nested_tables_dropped_emits_no_such_warning() -> None:
+    path = "table_no_nested.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19))],
+        tables=[Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr(path, 20, 21))],
+    )
+    tree = build_baseline_tree(doc)
+    assert not any(w.kind == WarningKind.NESTED_TABLE_DROPPED for w in tree.warnings)
+
+
+def test_an_orphaned_table_with_a_nested_table_dropped_cell_emits_a_warning_with_no_node_ids() -> None:
+    path = "orphan_table_nested.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 20, 39))],
+        tables=[Table(id="t0", cells=[[TableCell(text="Outer A", nested_table_dropped=True)]], source_ref=_sr(path, 0, 1))],
+    )
+    tree = build_baseline_tree(doc)
+    nested_warnings = [w for w in tree.warnings if w.kind == WarningKind.NESTED_TABLE_DROPPED]
+    assert len(nested_warnings) == 1
+    assert nested_warnings[0].node_ids == []
+
+
+def test_headingless_table_only_doc_with_a_nested_table_dropped_cell_emits_a_warning() -> None:
+    # Mirrors test_table_with_a_nested_table_dropped_cell_emits_a_warning_attributed_to_the_open_node
+    # above, but for _build_headingless_tree's SEPARATE table-folding code
+    # path (reached when doc.blocks is empty and doc.tables is not). That
+    # path builds its own node per table rather than folding into an
+    # already-open node from the main structured walk, so it must bridge
+    # TableCell.nested_table_dropped into a warning independently -- proving
+    # it isn't silently skipped there.
+    path = "headingless_table_nested.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="Outer A", nested_table_dropped=True), TableCell(text="Alpha")]],
+                source_ref=_sr(path, 0, 1),
+            )
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    node = next(n for n in tree.nodes if n.table_ids == ["t0"])
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].kind == WarningKind.NESTED_TABLE_DROPPED
+    assert tree.warnings[0].node_ids == [node.local_id]
+    assert tree.warnings[0].detail == {"tableId": "t0", "droppedCellCount": 1}
+
+
 def test_a_real_ocr_recovered_pdf_table_produces_the_expected_warning_end_to_end() -> None:
     from pathlib import Path
 

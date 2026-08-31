@@ -16,6 +16,7 @@ from app.leveling.llm_leveling import (
     _grounding_score,
     _group_label_became_a_node,
     _mapping_items_for_branch,
+    _nested_table_dropped_warnings,
     _ocr_recovered_table_warnings,
     _regroup_disconnected_roots,
     _render_block_line,
@@ -1618,6 +1619,30 @@ def test_ocr_recovered_table_warnings_emits_one_warning_per_table_with_a_recover
 def test_ocr_recovered_table_warnings_is_empty_without_any_recovered_cell() -> None:
     tables = [Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x"))]
     assert _ocr_recovered_table_warnings(tables, section_label=None) == []
+
+
+def test_nested_table_dropped_warnings_emits_one_warning_per_table_with_a_dropped_cell() -> None:
+    tables = [
+        Table(id="t0", cells=[[TableCell(text="Outer", nested_table_dropped=True), TableCell(text="Other")]], source_ref=_sr("x")),
+        Table(id="t1", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x")),
+        Table(
+            id="t2",
+            cells=[[TableCell(text="A", nested_table_dropped=True), TableCell(text="B", nested_table_dropped=True)]],
+            source_ref=_sr("x"),
+        ),
+    ]
+    warnings = _nested_table_dropped_warnings(tables, section_label="Power Distribution")
+    assert len(warnings) == 2
+    by_table_id = {w.detail["tableId"]: w for w in warnings}
+    assert by_table_id["t0"].kind == WarningKind.NESTED_TABLE_DROPPED
+    assert by_table_id["t0"].detail == {"section": "Power Distribution", "tableId": "t0", "droppedCellCount": 1}
+    assert by_table_id["t2"].detail["droppedCellCount"] == 2
+    assert "t1" not in by_table_id
+
+
+def test_nested_table_dropped_warnings_is_empty_without_any_dropped_cell() -> None:
+    tables = [Table(id="t0", cells=[[TableCell(text="Rail"), TableCell(text="Voltage")]], source_ref=_sr("x"))]
+    assert _nested_table_dropped_warnings(tables, section_label=None) == []
 
 
 def test_build_survey_tree_applies_the_front_matter_guard_on_the_single_call_path() -> None:
