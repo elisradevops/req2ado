@@ -16,13 +16,19 @@ metadata:
   name: mcp-ado-server
   namespace: req2ado
 spec:
-  # NOTE: the pipeline worker's background jobs (discoverLinkTypes/
-  # discoverFields/queryIds calls made without a per-request user PAT) 401
-  # against a real ADO backend regardless of replica count here -- a known,
-  # accepted limitation (see the other req2ado repo's P4a handoff notes on
-  # threading a worker credential through the job queue). Only confirm()'s
-  # synchronous, request-scoped calls (which DO carry the submitting user's
-  # PAT via headers) work against ADO_BACKEND=real today.
+  # NOTE (updated -- the claim below was stale): pipeline.worker.ts
+  # resolves the submitting user's vaulted PAT once per job
+  # (job.userId ? adoCredentialResolver.resolve(job.userId) : undefined)
+  # and threads it through every one of its own ADO calls
+  # (discoverLinkTypes/discoverFields/getWorkItemsBatch/queryIds) -- these
+  # do NOT 401 against a real ADO backend for any job with a resolved
+  # userId, which every job submitted through the current auth flow has.
+  # The remaining real gap is narrow: a job predating the userId column
+  # (userId === null, historical rows only) resolves no credential and its
+  # background ADO reads will 401 against ADO_BACKEND=real -- same
+  # degraded-but-expected behavior those rows already have for KB
+  # grounding (see Job.userId's own schema.prisma doc comment). confirm()'s
+  # synchronous, request-scoped calls are unaffected either way.
   replicas: 2
   selector:
     matchLabels:

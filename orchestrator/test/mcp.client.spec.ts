@@ -39,6 +39,16 @@ describe('McpClient', () => {
     expect(JSON.parse(options.body)).toEqual({ type: 'Requirement', fields: { 'System.Title': 'Test' } });
   });
 
+  it('createWorkItem forwards project when given (per-job ADO project override) -- the one write op that was previously missing this', async () => {
+    mockJsonResponse({ id: 42 });
+
+    const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
+    await client.createWorkItem('Requirement', { 'System.Title': 'Test' }, 'OtherProject');
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({ type: 'Requirement', fields: { 'System.Title': 'Test' }, project: 'OtherProject' });
+  });
+
   it('linkParentChild POSTs to the ado_link_parent_child operation', async () => {
     mockJsonResponse({ ok: true });
 
@@ -62,6 +72,16 @@ describe('McpClient', () => {
     expect(JSON.parse(options.body)).toEqual({ workItemType: 'Requirement' });
   });
 
+  it('discoverFields forwards project when given', async () => {
+    mockJsonResponse(['System.Title']);
+
+    const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
+    await client.discoverFields('Requirement', 'OtherProject');
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({ workItemType: 'Requirement', project: 'OtherProject' });
+  });
+
   it('discoverFieldsDetailed POSTs to ado_discover_fields_detailed and parses the descriptor list', async () => {
     mockJsonResponse([
       { referenceName: 'System.Title', allowedValues: [], alwaysRequired: false },
@@ -78,6 +98,16 @@ describe('McpClient', () => {
     const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://mcp.internal/api/ado/ado_discover_fields_detailed');
     expect(JSON.parse(options.body)).toEqual({ workItemType: 'Requirement' });
+  });
+
+  it('discoverFieldsDetailed forwards project when given', async () => {
+    mockJsonResponse([]);
+
+    const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
+    await client.discoverFieldsDetailed('Requirement', 'OtherProject');
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({ workItemType: 'Requirement', project: 'OtherProject' });
   });
 
   it('queryIds POSTs to ado_query_ids with the given field match, omitting project when not given', async () => {
@@ -155,6 +185,44 @@ describe('McpClient', () => {
     expect(result).toEqual(linkTypes);
   });
 
+  it('discoverLinkTypes forwards project when given, for parity with the other discover* methods', async () => {
+    mockJsonResponse([]);
+
+    const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
+    await client.discoverLinkTypes('OtherProject');
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://mcp.internal/api/ado/ado_discover_link_types');
+    expect(JSON.parse(options.body)).toEqual({ project: 'OtherProject' });
+  });
+
+  it('uploadAttachment POSTs to ado_upload_attachment with the given arguments', async () => {
+    mockJsonResponse({ ok: true });
+
+    const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
+    await client.uploadAttachment(42, 'figure.png', 'ZmFrZQ==', 'image/png');
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://mcp.internal/api/ado/ado_upload_attachment');
+    expect(JSON.parse(options.body)).toEqual({ workItemId: 42, fileName: 'figure.png', dataBase64: 'ZmFrZQ==', mimeType: 'image/png' });
+  });
+
+  it('uploadAttachment forwards project when given (per-job ADO project override) -- another write op that was previously missing this', async () => {
+    mockJsonResponse({ ok: true });
+
+    const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
+    await client.uploadAttachment(42, 'figure.png', 'ZmFrZQ==', 'image/png', 'OtherProject');
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({
+      workItemId: 42,
+      fileName: 'figure.png',
+      dataBase64: 'ZmFrZQ==',
+      mimeType: 'image/png',
+      project: 'OtherProject',
+    });
+  });
+
   it('createWorkItem throws the real error message when the response is not ok', async () => {
     // Regression (carried over from the MCP version): the ADO-detail error
     // message (mcp-ado-server's adoErrorMessage, e.g. a real TF400xxx code)
@@ -218,7 +286,7 @@ describe('McpClient', () => {
     mockJsonResponse({ id: 1 });
 
     const client = new McpClient('http://mcp.internal/api/ado', 'test-bearer');
-    await client.createWorkItem('Requirement', {}, { orgUrl: 'https://ado.example.com/tfs', pat: 'secret-pat' });
+    await client.createWorkItem('Requirement', {}, undefined, { orgUrl: 'https://ado.example.com/tfs', pat: 'secret-pat' });
 
     const [, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(options.headers).toEqual({

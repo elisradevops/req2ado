@@ -15,6 +15,7 @@ describe('BatchController.submit', () => {
       [makeFile('a.txt'), makeFile('b.txt')],
       USER,
       'Project\\Area1',
+      undefined,
       'survey',
       undefined,
       undefined,
@@ -39,7 +40,7 @@ describe('BatchController.submit', () => {
     const batchService = { submitBatch: jest.fn().mockResolvedValue({ batchId: 'batch-1', filesAccepted: 1, filesRejected: 0 }) };
     const controller = new BatchController(batchService as any, 25);
 
-    await controller.submit([makeFile('a.txt')], USER, 'Project\\Area1', undefined, undefined, undefined, undefined);
+    await controller.submit([makeFile('a.txt')], USER, 'Project\\Area1', undefined, undefined, undefined, undefined, undefined);
 
     expect(batchService.submitBatch).toHaveBeenCalledWith(expect.objectContaining({ mode: 'baseline' }));
   });
@@ -49,7 +50,7 @@ describe('BatchController.submit', () => {
     const controller = new BatchController(batchService as any, 25);
 
     await expect(
-      controller.submit([makeFile('a.txt')], USER, 'Project\\Area1', 'bogus', undefined, undefined, undefined),
+      controller.submit([makeFile('a.txt')], USER, 'Project\\Area1', undefined, 'bogus', undefined, undefined, undefined),
     ).rejects.toThrow(/mode must be/i);
     expect(batchService.submitBatch).not.toHaveBeenCalled();
   });
@@ -58,7 +59,7 @@ describe('BatchController.submit', () => {
     const batchService = { submitBatch: jest.fn() };
     const controller = new BatchController(batchService as any, 25);
 
-    await expect(controller.submit([], USER, 'Project\\Area1', undefined, undefined, undefined, undefined)).rejects.toThrow(
+    await expect(controller.submit([], USER, 'Project\\Area1', undefined, undefined, undefined, undefined, undefined)).rejects.toThrow(
       /at least one file/i,
     );
     expect(batchService.submitBatch).not.toHaveBeenCalled();
@@ -69,7 +70,7 @@ describe('BatchController.submit', () => {
     const controller = new BatchController(batchService as any, 25);
 
     await expect(
-      controller.submit([makeFile('a.txt')], USER, undefined, undefined, undefined, undefined, undefined),
+      controller.submit([makeFile('a.txt')], USER, undefined, undefined, undefined, undefined, undefined, undefined),
     ).rejects.toThrow(/areaPath is required/i);
   });
 
@@ -82,6 +83,7 @@ describe('BatchController.submit', () => {
         [makeFile('a.txt'), makeFile('b.txt'), makeFile('c.txt')],
         USER,
         'Project\\Area1',
+        undefined,
         undefined,
         undefined,
         undefined,

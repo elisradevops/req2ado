@@ -55,6 +55,7 @@ describe('BatchService.submitBatch', () => {
       data: {
         userId: 'user-1',
         areaPath: 'Project\\Area1',
+        adoProject: null,
         mode: 'baseline',
         state: null,
         iterationPath: null,

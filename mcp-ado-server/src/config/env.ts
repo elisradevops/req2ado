@@ -5,10 +5,17 @@
  * never hardcode org URLs, project names, or credentials here.
  */
 export interface AdoMcpConfig {
-  /** On-prem ADO/TFS org base URL, e.g. https://tfs.internal/tfs/Collection */
-  adoBaseUrl: string;
-  /** Target project name. */
-  adoProject: string;
+  /**
+   * Optional fallback project, used ONLY when a caller omits the per-request
+   * `project` override. Confirmed dead for normal operation: the
+   * orchestrator now threads the job's real ADO project through every
+   * single call (see mcp.client.ts and jobs.service.ts) -- this is defense
+   * against a caller that somehow forgets to, not a real configured
+   * default. Optional/unset is fine; a request with no project anywhere
+   * fails loudly (a malformed "undefined" URL segment ADO itself rejects)
+   * rather than silently resolving against the wrong project.
+   */
+  adoProject?: string;
   /**
    * api-version fallback ladder, tried in order. Confirmed against a real
    * on-prem Azure DevOps Server 2022.1: its GA REST API tops out at 7.0 —
@@ -46,8 +53,7 @@ export function loadConfig(): AdoMcpConfig {
   const backend = (process.env.ADO_BACKEND ?? 'mock') as 'real' | 'mock';
 
   return {
-    adoBaseUrl: backend === 'real' ? requireEnv('ADO_BASE_URL') : (process.env.ADO_BASE_URL ?? ''),
-    adoProject: backend === 'real' ? requireEnv('ADO_PROJECT') : (process.env.ADO_PROJECT ?? ''),
+    adoProject: process.env.ADO_PROJECT,
     apiVersionLadder: (process.env.ADO_API_VERSION_LADDER ?? '7.1,7.0,5.1,none').split(','),
     caCertPath: process.env.ADO_CA_CERT,
     batchSize: Number(process.env.ADO_BATCH_SIZE ?? 200),

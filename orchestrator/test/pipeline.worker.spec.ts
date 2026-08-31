@@ -60,7 +60,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([{ localId: 'n0', action: 'create', existingAdoId: null }]);
 
     const result = await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from('text'), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from('text'), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -87,7 +87,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from('text'), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from('text'), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -122,7 +122,7 @@ describe('runPipelineJob', () => {
 
     await expect(
       runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -144,7 +144,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -181,7 +181,7 @@ describe('runPipelineJob', () => {
     ]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -215,7 +215,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -262,7 +262,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -291,7 +291,7 @@ describe('runPipelineJob', () => {
 
     await expect(
       runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -323,7 +323,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -370,7 +370,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -419,7 +419,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -501,7 +501,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -562,7 +562,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -606,7 +606,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -643,7 +643,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -679,7 +679,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -708,7 +708,7 @@ describe('runPipelineJob', () => {
 
     await expect(
       runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -742,7 +742,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -798,7 +798,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -889,7 +889,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -945,7 +945,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -985,7 +985,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1013,7 +1013,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1047,7 +1047,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1085,7 +1085,7 @@ describe('runPipelineJob', () => {
     fakeIngestionClient.checkDuplicate.mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1116,7 +1116,7 @@ describe('runPipelineJob', () => {
     const fakeSettingsService = { get: jest.fn().mockResolvedValue({ dedupThreshold: 0.75 }) };
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1147,7 +1147,7 @@ describe('runPipelineJob', () => {
     const fakeSettingsService = { get: jest.fn().mockRejectedValue(new Error('DB unreachable')) };
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1175,7 +1175,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1198,7 +1198,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1226,7 +1226,7 @@ describe('runPipelineJob', () => {
 
     await expect(
       runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1250,7 +1250,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-descriptor-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-descriptor-1', mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1273,7 +1273,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1296,7 +1296,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt', model: 'qwen2.5:1.5b' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt', model: 'qwen2.5:1.5b' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1319,7 +1319,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-xyz', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-xyz', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1348,7 +1348,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1399,7 +1399,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1444,7 +1444,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1486,7 +1486,7 @@ describe('runPipelineJob', () => {
     fakeMcpClient.getWorkItemsBatch.mockResolvedValueOnce([{ id: 42 }, { id: 43 }]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1514,7 +1514,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([{ localId: 'n0', action: 'create', existingAdoId: null, similarity: null }]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1543,7 +1543,7 @@ describe('runPipelineJob', () => {
     fakeMcpClient.getWorkItemsBatch.mockResolvedValueOnce([{ id: 42 }]);
 
     const result = await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1581,7 +1581,7 @@ describe('runPipelineJob', () => {
     fakeMcpClient.getWorkItemsBatch.mockRejectedValueOnce(new Error('ADO unreachable'));
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1621,7 +1621,7 @@ describe('runPipelineJob', () => {
     fakeDryRunService.diff.mockResolvedValue([]);
 
     await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1664,7 +1664,7 @@ describe('runPipelineJob', () => {
     fakeIngestionClient.deleteDedupEntry.mockRejectedValueOnce(new Error('Ingestion unreachable'));
 
     const result = await runPipelineJob(
-      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
       {
         ingestionClient: fakeIngestionClient as any,
         dryRunService: fakeDryRunService as any,
@@ -1694,7 +1694,7 @@ describe('runPipelineJob', () => {
       fakePrisma.job.findUnique.mockResolvedValue({ status: 'cancelled' });
 
       const result = await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1723,7 +1723,7 @@ describe('runPipelineJob', () => {
       fakePrisma.job.findUnique.mockResolvedValue({ status: 'cancelled' });
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1757,7 +1757,7 @@ describe('runPipelineJob', () => {
       fakeDryRunService.diff.mockResolvedValue([]);
 
       const result = await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1816,7 +1816,7 @@ describe('runPipelineJob', () => {
       fakePrisma.job.updateMany.mockResolvedValue({ count: 0 });
 
       const result = await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1873,7 +1873,7 @@ describe('runPipelineJob', () => {
       fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1900,7 +1900,7 @@ describe('runPipelineJob', () => {
       });
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1925,7 +1925,7 @@ describe('runPipelineJob', () => {
       });
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1947,7 +1947,7 @@ describe('runPipelineJob', () => {
       fakeBackfillService.backfillAreaPath.mockRejectedValueOnce(new Error('ADO unreachable'));
 
       const result = await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -1990,7 +1990,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2032,7 +2032,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2057,7 +2057,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue('cached primer text');
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2081,7 +2081,7 @@ describe('runPipelineJob', () => {
 
     it('never attempts the primer for a BASELINE job, even with primer deps wired and a large document -- BASELINE never calls an LLM', async () => {
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'baseline', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2119,7 +2119,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2148,7 +2148,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2183,7 +2183,7 @@ describe('runPipelineJob', () => {
 
       try {
         await runPipelineJob(
-          { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
+          { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: bigFileBuffer, filename: 'x.pdf' },
           {
             ingestionClient: fakeIngestionClient as any,
             dryRunService: fakeDryRunService as any,
@@ -2230,7 +2230,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2270,7 +2270,7 @@ describe('runPipelineJob', () => {
       });
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2299,7 +2299,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,
@@ -2331,7 +2331,7 @@ describe('runPipelineJob', () => {
       fakePrimerCacheRedis.get.mockResolvedValue(null);
 
       await runPipelineJob(
-        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: null, userId: null, mode: 'survey', fileBuffer: Buffer.from('x'), filename: 'x.pdf' },
         {
           ingestionClient: fakeIngestionClient as any,
           dryRunService: fakeDryRunService as any,

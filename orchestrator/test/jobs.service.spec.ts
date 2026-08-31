@@ -71,6 +71,7 @@ describe('JobsService.confirm', () => {
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
           areaPath: 'Project\\Area1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -109,6 +110,7 @@ describe('JobsService.confirm', () => {
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
           areaPath: 'Project\\Area1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           ],
@@ -158,6 +160,7 @@ describe('JobsService.confirm', () => {
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
           areaPath: 'Project\\Area1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           ],
@@ -203,6 +206,7 @@ describe('JobsService.confirm', () => {
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
           areaPath: 'Project\\Area1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Only node', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           ],
@@ -244,6 +248,7 @@ describe('JobsService.confirm', () => {
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
           areaPath: 'Project\\Area1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Only node', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           ],
@@ -292,6 +297,7 @@ describe('JobsService.confirm', () => {
           id: 'job-1',
           status: 'diff_ready', state: 'Proposed',
           areaPath: 'AgileProject\\Area1',
+          adoProject: 'AgileProject',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -324,7 +330,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'reuse', existingAdoId: 42, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -358,7 +364,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1', sourceRef: null, tags: [] },
           ],
@@ -379,7 +385,7 @@ describe('JobsService.confirm', () => {
 
     await service.confirm('job-1');
 
-    expect(discoverFields).toHaveBeenCalledWith('Requirement', undefined);
+    expect(discoverFields).toHaveBeenCalledWith('Requirement', 'Project', undefined);
     expect(createWorkItem).toHaveBeenCalledWith(
       'Requirement',
       {
@@ -389,6 +395,7 @@ describe('JobsService.confirm', () => {
         'System.AreaPath': 'Project\\Area1',
         'Custom.CustomerRequirementId': 'CUST-1',
       },
+      'Project',
       undefined,
     );
   });
@@ -404,7 +411,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'e0', parentLocalId: null, type: 'Epic', title: 'E', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1', sourceRef: null, tags: [] },
             { localId: 'f0', parentLocalId: 'e0', type: 'Feature', title: 'F', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: 'CUST-1', sourceRef: null, tags: [] },
@@ -428,7 +435,7 @@ describe('JobsService.confirm', () => {
 
     // Only ever resolved for Requirement -- one call, not three.
     expect(discoverFields).toHaveBeenCalledTimes(1);
-    expect(discoverFields).toHaveBeenCalledWith('Requirement', undefined);
+    expect(discoverFields).toHaveBeenCalledWith('Requirement', 'Project', undefined);
     const epicCall = createWorkItem.mock.calls.find((c) => c[0] === 'Epic')!;
     const featureCall = createWorkItem.mock.calls.find((c) => c[0] === 'Feature')!;
     const requirementCall = createWorkItem.mock.calls.find((c) => c[0] === 'Requirement')!;
@@ -446,7 +453,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1', sourceRef: null, tags: [] },
           ],
@@ -475,6 +482,7 @@ describe('JobsService.confirm', () => {
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
       },
+      'Project',
       undefined,
     );
     expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty('System.Tags');
@@ -487,7 +495,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: 'CUST-1', sourceRef: null, tags: [] },
           ],
@@ -523,7 +531,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
@@ -558,6 +566,7 @@ describe('JobsService.confirm', () => {
         'System.AreaPath': 'Project\\Area1',
         'Custom.SourceDocument': '/tmp/doc.docx#offset=10-20',
       },
+      'Project',
       undefined,
     );
   });
@@ -569,7 +578,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
@@ -603,6 +612,7 @@ describe('JobsService.confirm', () => {
         'System.State': 'Proposed',
         'System.AreaPath': 'Project\\Area1',
       },
+      'Project',
       undefined,
     );
     expect(createWorkItem.mock.calls[0][1]).not.toHaveProperty('System.Tags');
@@ -615,7 +625,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
@@ -658,7 +668,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
@@ -702,7 +712,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', warnings: [],
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
@@ -750,7 +760,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', warnings: [],
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
@@ -790,7 +800,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
@@ -826,7 +836,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             // A probable duplicate of an existing ADO item — must be skipped like 'reuse',
             // but its match is NOT a certainty, so it must never be re-parented.
@@ -865,7 +875,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             // A probable duplicate that would otherwise be re-parented under the new n0 —
@@ -906,7 +916,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             // An exact-hash match to an item already created (and already
@@ -954,7 +964,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Original Parent', description: 'd0', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n2', parentLocalId: null, type: 'Feature', title: 'New Parent', description: 'd2', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h2', customerId: null, sourceRef: null, tags: [] },
@@ -1001,7 +1011,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'T2', description: 'D2', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -1043,7 +1053,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'New', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'New', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           ],
@@ -1067,6 +1077,7 @@ describe('JobsService.confirm', () => {
     expect(createWorkItem).toHaveBeenCalledWith(
       'Requirement',
       expect.objectContaining({ 'System.State': 'New' }),
+      'Project',
       undefined,
     );
   });
@@ -1078,7 +1089,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           ],
@@ -1113,7 +1124,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, similarity: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           ],
@@ -1153,7 +1164,7 @@ describe('JobsService.confirm', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n1', parentLocalId: null, type: 'Feature', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -1185,7 +1196,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const upsert = jest.fn().mockResolvedValue(undefined);
     const prisma = makeConfirmPrismaMock(
       {
-        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
         dryRunDiff: [
           { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
         ],
@@ -1213,7 +1224,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const createWorkItem = jest.fn().mockResolvedValue({ id: 999 });
     const prisma = makeConfirmPrismaMock(
       {
-        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
         dryRunDiff: [
           { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -1234,7 +1245,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     // Only 'n1' gets created this call -- 'n0' was resumed from the prior
     // attempt's mapping, not re-created.
     expect(createWorkItem).toHaveBeenCalledTimes(1);
-    expect(createWorkItem).toHaveBeenCalledWith('Requirement', expect.objectContaining({ 'System.Title': 'B' }), undefined);
+    expect(createWorkItem).toHaveBeenCalledWith('Requirement', expect.objectContaining({ 'System.Title': 'B' }), 'Project', undefined);
     expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
   });
 
@@ -1243,7 +1254,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = makeConfirmPrismaMock(
       {
-        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
         dryRunDiff: [
           { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -1269,7 +1280,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const linkParentChild = jest.fn().mockResolvedValue(undefined);
     const prisma = makeConfirmPrismaMock(
       {
-        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
         dryRunDiff: [
           { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -1306,7 +1317,7 @@ describe('JobsService.confirm resume (P4b)', () => {
     const update = jest.fn().mockResolvedValue(undefined);
     const prisma = makeConfirmPrismaMock(
       {
-        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+        id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
         dryRunDiff: [
           { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
           { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -1338,7 +1349,7 @@ describe('JobsService.confirm — row deselect', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -1362,7 +1373,7 @@ describe('JobsService.confirm — row deselect', () => {
 
     expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
     expect(createWorkItem).toHaveBeenCalledTimes(1);
-    expect(createWorkItem).toHaveBeenCalledWith('Requirement', expect.objectContaining({ 'System.Title': 'A' }), undefined);
+    expect(createWorkItem).toHaveBeenCalledWith('Requirement', expect.objectContaining({ 'System.Title': 'A' }), 'Project', undefined);
   });
 
   it('does not link a child to a parent that was deselected (parent never gets an ADO id)', async () => {
@@ -1372,7 +1383,7 @@ describe('JobsService.confirm — row deselect', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -1404,7 +1415,7 @@ describe('JobsService.confirm — row deselect', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'A', description: 'dA', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, sourceRef: null, tags: [] },
             { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'B', description: 'dB', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, sourceRef: null, tags: [] },
@@ -2998,7 +3009,7 @@ describe('JobsService.confirm — exclusion', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, excluded: true },
             { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, excluded: false },
@@ -3035,7 +3046,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
             {
@@ -3072,7 +3083,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null,
@@ -3109,7 +3120,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             {
               localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null,
@@ -3147,7 +3158,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
             {
@@ -3190,7 +3201,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
             {
@@ -3263,7 +3274,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'F', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [
               { sourceLocalId: 'n0', referenceName: 'Elisra.CoveredBy-Forward', displayName: 'Covered by', targetKind: 'intraJob', targetLocalId: 'n1', resolutionStatus: 'pending' },
@@ -3310,7 +3321,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', warnings: [],
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
             {
@@ -3363,7 +3374,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', warnings: [],
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
             {
@@ -3416,7 +3427,7 @@ describe('JobsService.confirm — trace links', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', warnings: [],
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project', warnings: [],
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Sys Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, traceLinks: [] },
             {
@@ -3464,7 +3475,7 @@ describe('JobsService.confirm — figure attachments', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
@@ -3488,7 +3499,7 @@ describe('JobsService.confirm — figure attachments', () => {
 
     const result = await service.confirm('job-1');
 
-    expect(uploadAttachment).toHaveBeenCalledWith(100, 'f0.png', Buffer.from('png bytes').toString('base64'), 'image/png', undefined);
+    expect(uploadAttachment).toHaveBeenCalledWith(100, 'f0.png', Buffer.from('png bytes').toString('base64'), 'image/png', 'Project', undefined);
     expect(figureFileDelete).toHaveBeenCalledWith({ where: { id: 'jff-1' } });
     expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
   });
@@ -3502,7 +3513,7 @@ describe('JobsService.confirm — figure attachments', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f11'] },
           ],
@@ -3537,6 +3548,7 @@ describe('JobsService.confirm — figure attachments', () => {
       'Figure-12-CubeConnect-PCB-PC104-Variants-Interior-Back-View.jpg',
       Buffer.from('jpeg bytes').toString('base64'),
       'image/jpeg',
+      'Project',
       undefined,
     );
     expect(figureFileDelete).toHaveBeenCalledWith({ where: { id: 'jff-11' } });
@@ -3551,7 +3563,7 @@ describe('JobsService.confirm — figure attachments', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: [] },
           ],
@@ -3587,7 +3599,7 @@ describe('JobsService.confirm — figure attachments', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
           ],
@@ -3621,7 +3633,7 @@ describe('JobsService.confirm — figure attachments', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
@@ -3656,7 +3668,7 @@ describe('JobsService.confirm — figure attachments', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'] },
           ],
@@ -3689,7 +3701,7 @@ describe('JobsService.confirm — figure attachments', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Excluded', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0'], excluded: true },
             { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'Included', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null, figureIds: ['f1'] },
@@ -3718,7 +3730,7 @@ describe('JobsService.confirm — figure attachments', () => {
     await service.confirm('job-1');
 
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
-    expect(uploadAttachment).toHaveBeenCalledWith(100, 'f1.png', Buffer.from('included').toString('base64'), 'image/png', undefined);
+    expect(uploadAttachment).toHaveBeenCalledWith(100, 'f1.png', Buffer.from('included').toString('base64'), 'image/png', 'Project', undefined);
   });
 
   it('serializes figure attachments to the SAME ADO work item, never running two concurrently', async () => {
@@ -3747,7 +3759,7 @@ describe('JobsService.confirm — figure attachments', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'F', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, figureIds: ['f0', 'f1', 'f2'] },
           ],
@@ -3797,7 +3809,7 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
             { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null },
@@ -3847,7 +3859,7 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
             { localId: 'n1', parentLocalId: 'n0', type: 'Requirement', title: 'Child', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null },
@@ -3886,7 +3898,7 @@ describe('JobsService.confirm — dryRunDiff refresh on success', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
             { localId: 'n1', parentLocalId: null, type: 'Requirement', title: 'Reused', description: 'd1', action: 'reuse', existingAdoId: 555, sourceHash: 'h1', customerId: null },
@@ -3950,7 +3962,7 @@ describe('JobsService.confirm — sibling creation order', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'p0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hp', customerId: null },
             { localId: 'n0', parentLocalId: 'p0', type: 'Requirement', title: 'Child 0', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
@@ -4013,7 +4025,7 @@ describe('JobsService.confirm — sibling creation order', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'p0', parentLocalId: null, type: 'Feature', title: 'Parent0', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hp0', customerId: null },
             { localId: 'p1', parentLocalId: null, type: 'Feature', title: 'Parent1', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hp1', customerId: null },
@@ -4062,7 +4074,7 @@ describe('JobsService.confirm — sibling creation order', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1',
+          id: 'job-1', status: 'diff_ready', state: 'Proposed', areaPath: 'Project\\Area1', adoProject: 'Project',
           dryRunDiff: [
             { localId: 'p0', parentLocalId: null, type: 'Feature', title: 'Parent', description: 'd', action: 'create', existingAdoId: null, sourceHash: 'hp', customerId: null },
             { localId: 'n0', parentLocalId: 'p0', type: 'Requirement', title: 'Child 0', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
@@ -4307,6 +4319,7 @@ describe('JobsService.attachFigureToAdo', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
           ],
@@ -4321,7 +4334,7 @@ describe('JobsService.attachFigureToAdo', () => {
 
     const result = await service.attachFigureToAdo('job-1', 'n0', 'f0', { orgUrl: 'https://ado.example', pat: 'x' });
 
-    expect(uploadAttachment).toHaveBeenCalledWith(555, 'f0.png', Buffer.from('png bytes').toString('base64'), 'image/png', { orgUrl: 'https://ado.example', pat: 'x' });
+    expect(uploadAttachment).toHaveBeenCalledWith(555, 'f0.png', Buffer.from('png bytes').toString('base64'), 'image/png', 'Project', { orgUrl: 'https://ado.example', pat: 'x' });
     expect(figureFileDelete).toHaveBeenCalledWith({ where: { id: 'jff-1' } });
     expect(result).toEqual({ attached: true, adoId: 555 });
   });
@@ -4334,6 +4347,7 @@ describe('JobsService.attachFigureToAdo', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'reuse', existingAdoId: 555, sourceHash: 'h0', customerId: null },
           ],
@@ -4354,6 +4368,7 @@ describe('JobsService.attachFigureToAdo', () => {
       'Figure-1-Panel-Layout-Diagram.png',
       Buffer.from('png bytes').toString('base64'),
       'image/png',
+      'Project',
       { orgUrl: 'https://ado.example', pat: 'x' },
     );
   });
@@ -4365,6 +4380,7 @@ describe('JobsService.attachFigureToAdo', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'dedup_skip', existingAdoId: 777, sourceHash: 'h0', customerId: null },
           ],
@@ -4379,7 +4395,7 @@ describe('JobsService.attachFigureToAdo', () => {
 
     const result = await service.attachFigureToAdo('job-1', 'n0', 'f0');
 
-    expect(uploadAttachment).toHaveBeenCalledWith(777, 'f0.png', expect.any(String), 'image/png', undefined);
+    expect(uploadAttachment).toHaveBeenCalledWith(777, 'f0.png', expect.any(String), 'image/png', 'Project', undefined);
     expect(result.adoId).toBe(777);
   });
 
@@ -4390,6 +4406,7 @@ describe('JobsService.attachFigureToAdo', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
+          adoProject: 'Project',
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Req', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
           ],
@@ -4406,7 +4423,7 @@ describe('JobsService.attachFigureToAdo', () => {
     const result = await service.attachFigureToAdo('job-1', 'n0', 'f0');
 
     expect(prisma.createdItemMapping.findUnique).toHaveBeenCalledWith({ where: { jobId_localId: { jobId: 'job-1', localId: 'n0' } } });
-    expect(uploadAttachment).toHaveBeenCalledWith(321, 'f0.png', expect.any(String), 'image/png', undefined);
+    expect(uploadAttachment).toHaveBeenCalledWith(321, 'f0.png', expect.any(String), 'image/png', 'Project', undefined);
     expect(result.adoId).toBe(321);
   });
 
@@ -4629,7 +4646,7 @@ describe('JobsService.submit', () => {
     );
 
     await service.submit({
-      areaPath: 'Project\\Area1', userId: null, mode: 'baseline',
+      areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline',
       fileBuffer: Buffer.from('small file'), filename: 'doc.txt', sourceHash: 'hash-1',
     });
 
@@ -4650,7 +4667,7 @@ describe('JobsService.submit', () => {
     );
 
     await service.submit({
-      areaPath: 'Project\\Area1', userId: null, mode: 'baseline',
+      areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline',
       fileBuffer: Buffer.from('a file bigger than 5 bytes'), filename: 'doc.txt', sourceHash: 'hash-1',
     });
 
@@ -4667,7 +4684,7 @@ describe('JobsService.submit', () => {
     const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
 
     const result = await service.submit({
-      areaPath: 'Project\\Area1', userId: null, mode: 'baseline',
+      areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline',
       fileBuffer: Buffer.from('small file'), filename: 'doc.txt', sourceHash: 'hash-1',
     });
 
@@ -4684,7 +4701,7 @@ describe('JobsService.submit', () => {
     const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
 
     await service.submit({
-      areaPath: 'Project\\Area1', userId: null, mode: 'survey',
+      areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey',
       fileBuffer: Buffer.from('doc'), filename: 'doc.docx', sourceHash: 'hash-1',
       documentOverview: { synopsis: 'About a backplane.', caveat: null },
     });
@@ -4704,7 +4721,7 @@ describe('JobsService.submit', () => {
     const service = new JobsService(prisma as any, {} as any, { record: jest.fn() } as any, {} as any, 'redis://unused');
 
     await service.submit({
-      areaPath: 'Project\\Area1', userId: null, mode: 'baseline',
+      areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline',
       fileBuffer: Buffer.from('doc'), filename: 'doc.docx', sourceHash: 'hash-1',
     });
 
@@ -4737,7 +4754,7 @@ describe('JobsService.resubmit', () => {
       job: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', customerId: 'CUST-1', mode: 'survey',
+          id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', customerId: 'CUST-1', mode: 'survey',
           originalFilename: 'doc.txt', sourceHash: 'hash-1', state: 'Approved', iterationPath: 'Iter\\1',
         }),
         create: jobCreate,
@@ -4751,7 +4768,7 @@ describe('JobsService.resubmit', () => {
 
     expect(jobCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        areaPath: 'Project\\Area1', userId: 'user-1', mode: 'survey',
+        areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey',
         state: 'Approved', iterationPath: 'Iter\\1', originalFilename: 'doc.txt', sourceHash: 'hash-1',
       }),
     });
@@ -4764,7 +4781,7 @@ describe('JobsService.resubmit', () => {
     const prisma = {
       job: {
         findUnique: jest.fn().mockResolvedValue({
-          id: 'job-1', areaPath: 'Project\\Area1', userId: 'user-1', mode: 'survey',
+          id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey',
           originalFilename: 'doc.txt', sourceHash: 'hash-1', state: 'Approved', iterationPath: 'Iter\\1',
           model: 'gpt-4o', documentOverview: { synopsis: 'About a backplane.', caveat: 'Unusually deep.' },
         }),
@@ -4796,6 +4813,7 @@ describe('JobsService.list', () => {
             mode: 'survey',
             status: 'diff_ready',
             areaPath: 'Proj\\B',
+            adoProject: 'Proj',
             originalFilename: 'b.docx',
             createdAt: new Date('2026-07-09T10:00:00Z'),
             batchId: null,
@@ -4806,6 +4824,7 @@ describe('JobsService.list', () => {
             mode: 'baseline',
             status: 'succeeded',
             areaPath: 'Proj\\A',
+            adoProject: 'Proj',
             originalFilename: 'a.docx',
             createdAt: new Date('2026-07-08T10:00:00Z'),
             batchId: 'batch-1',

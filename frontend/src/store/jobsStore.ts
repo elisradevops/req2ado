@@ -63,6 +63,11 @@ export interface JobDetail {
   documentOverview?: { synopsis: string; caveat: string | null } | null;
   createdAt: string;
   areaPath: string;
+  // The ADO project this job writes into (Job.adoProject) -- lets
+  // JobDetail.tsx read the real column instead of re-deriving it from
+  // areaPath client-side. Optional/nullable: a historical job the backfill
+  // migration somehow missed.
+  adoProject?: string | null;
   // Both real Job columns (schema.prisma), already present on every GET
   // /jobs/:id response body -- were simply never declared here, so
   // JobDetail.tsx had no typed way to read them and never wired them into

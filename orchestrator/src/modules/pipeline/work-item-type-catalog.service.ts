@@ -92,7 +92,7 @@ export class WorkItemTypeCatalogService {
   ): Promise<{ referenceName: string; allowedValues: string[] } | null> {
     try {
       const categoryLabels = await this.resolveCategoryLabels(project, credential);
-      const fields = await this.mcpClient.discoverFieldsDetailed(categoryLabels.Requirement, credential);
+      const fields = await this.mcpClient.discoverFieldsDetailed(categoryLabels.Requirement, project, credential);
       for (const candidate of this.requirementTypeFieldCandidates) {
         const match = fields.find((f) => f.referenceName === candidate);
         if (match) {

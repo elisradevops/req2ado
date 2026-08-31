@@ -10,7 +10,6 @@ vi.mock('fs', () => ({ readFileSync: vi.fn() }));
 const credential: AdoCredential = { orgUrl: 'https://tfs.internal/tfs/Collection', pat: 'fake-pat' };
 
 const testConfig: AdoMcpConfig = {
-  adoBaseUrl: 'https://tfs.internal/tfs/Collection',
   adoProject: 'MyProject',
   apiVersionLadder: ['7.1'],
   batchSize: 200,
@@ -120,6 +119,64 @@ describe('resolveApiVersion', () => {
     expect(getSpy.mock.calls[0][0]).toContain('api-version=7.1');
     expect(getSpy.mock.calls[1][0]).toContain('api-version=7.1');
   });
+
+  it("RealAdoBackend's api-version probe itself targets the per-request project, not config.adoProject", async () => {
+    // Discriminating regression test for a real gap found while wiring the
+    // per-project fix: every RealAdoBackend method computed its own `proj`
+    // (project ?? config.adoProject) for its real endpoint URL, but called
+    // `getApiVersion()` with NO argument -- so the api-version LADDER PROBE
+    // itself always ran against config.adoProject's URL regardless of which
+    // project the call was actually scoped to. Asserts on the FIRST get
+    // call (the probe) specifically, not the second (the real endpoint) --
+    // every pre-existing "overrides config.adoProject" test in this file
+    // only checked the second call and would not have caught this.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({ status: 200, data: { name: 'OtherProject', children: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.readAreaPaths(5, 'OtherProject');
+
+    const probeUrl = getSpy.mock.calls[0][0] as string;
+    expect(probeUrl).toContain('/OtherProject/_apis/wit/fields');
+    expect(probeUrl).not.toContain('/MyProject/');
+  });
+});
+
+describe('RealAdoBackend.resolveProject (fail-loud on a missing project)', () => {
+  it('throws a clear error rather than silently building a URL with "undefined" when neither a per-request project nor config.adoProject is set', async () => {
+    const noDefaultConfig: AdoMcpConfig = { ...testConfig, adoProject: undefined };
+    const backend = new RealAdoBackend(noDefaultConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi.spyOn(httpClient, 'get');
+    const postSpy = vi.spyOn(httpClient, 'post');
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await expect(backend.createWorkItem({ type: 'Requirement', fields: {} })).rejects.toThrow(
+      /No ADO project resolved/,
+    );
+    // Confirms this fails BEFORE any real HTTP call, not on a malformed response.
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it('still falls back to config.adoProject when no per-request project is given and a default IS configured', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { id: 1, fields: {} } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.createWorkItem({ type: 'Requirement', fields: {} });
+
+    expect(postSpy.mock.calls[0][0]).toContain(`/${testConfig.adoProject}/_apis/wit/workitems/$Requirement`);
+  });
 });
 
 describe('RealAdoBackend.createWorkItem', () => {
@@ -153,6 +210,28 @@ describe('RealAdoBackend.createWorkItem', () => {
 
     const result = await backend.createWorkItem({ type: 'Epic', fields: {} });
     expect(result.parentId).toBeNull();
+  });
+
+  it('targets the per-request project, not config.adoProject, when one is passed', async () => {
+    // Discriminating test: config.adoProject ('MyProject') and the passed
+    // project ('OtherProject') are deliberately DIFFERENT values here -- a
+    // test asserting against config.adoProject with no override supplied
+    // would pass even if this parameter were silently ignored. This is the
+    // real bug the project param exists to fix: a job whose area path
+    // belongs to a different project than the server's configured default
+    // must have its work item created into ITS OWN project, not the
+    // server-wide default.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} }); // api-version probe
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValueOnce({ status: 200, data: { id: 7, fields: {} } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.createWorkItem({ type: 'Requirement', fields: {} }, 'OtherProject');
+
+    expect(postSpy.mock.calls[0][0]).toContain('/OtherProject/_apis/wit/workitems/$Requirement');
+    expect(postSpy.mock.calls[0][0]).not.toContain('/MyProject/');
   });
 });
 
@@ -525,6 +604,24 @@ describe('RealAdoBackend.discoverFields', () => {
     const result = await backend.discoverFields('Requirement');
     expect(result).toEqual(['System.Title', 'Custom.CustomerRequirementId', 'Microsoft.VSTS.CMMI.RequirementType']);
   });
+
+  it('targets the per-request project, not config.adoProject, when one is passed', async () => {
+    // Discriminating: config.adoProject and the passed project deliberately
+    // differ -- see createWorkItem's own identical-shaped test for why.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} })
+      .mockResolvedValueOnce({ status: 200, data: { count: 0, value: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.discoverFields('Requirement', 'OtherProject');
+
+    expect(getSpy.mock.calls[1][0]).toContain('/OtherProject/_apis/wit/workitemtypes/Requirement/fields');
+    expect(getSpy.mock.calls[1][0]).not.toContain('/MyProject/');
+  });
 });
 
 describe('RealAdoBackend.discoverFieldsDetailed', () => {
@@ -584,6 +681,24 @@ describe('RealAdoBackend.discoverFieldsDetailed', () => {
     expect(url).toContain('/fields?$expand=allowedValues');
     expect(url).not.toContain('&&');
     expect(url).not.toMatch(/\?.*&\$expand/);
+  });
+
+  it('targets the per-request project, not config.adoProject, when one is passed', async () => {
+    // Discriminating: config.adoProject and the passed project deliberately
+    // differ -- see createWorkItem's own identical-shaped test for why.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} })
+      .mockResolvedValueOnce({ status: 200, data: { count: 0, value: [] } });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.discoverFieldsDetailed('Requirement', 'OtherProject');
+
+    expect(getSpy.mock.calls[1][0]).toContain('/OtherProject/_apis/wit/workitemtypes/Requirement/fields');
+    expect(getSpy.mock.calls[1][0]).not.toContain('/MyProject/');
   });
 });
 
@@ -853,6 +968,25 @@ describe('RealAdoBackend.uploadAttachment', () => {
     expect(postSpy.mock.calls[0][0]).toContain(`fileName=${encodeURIComponent('figure f0 (rev 2).png')}`);
   });
 
+  it('targets the per-request project, not config.adoProject, when one is passed', async () => {
+    // Discriminating: config.adoProject and the passed project deliberately
+    // differ -- see createWorkItem's own identical-shaped test for why.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
+    const postSpy = vi
+      .spyOn(httpClient, 'post')
+      .mockResolvedValueOnce({ status: 200, data: { id: 'attachment-guid', url: 'https://tfs.internal/tfs/Collection/_apis/wit/attachments/attachment-guid' } });
+    vi.spyOn(httpClient, 'patch').mockResolvedValueOnce({ status: 200, data: {} });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.uploadAttachment(1, 'fig.png', Buffer.from('x').toString('base64'), 'image/png', 'OtherProject');
+
+    expect(postSpy.mock.calls[0][0]).toContain('/OtherProject/_apis/wit/attachments');
+    expect(postSpy.mock.calls[0][0]).not.toContain('/MyProject/');
+  });
+
   it('retries the upload on a 429 before succeeding', async () => {
     const backend = new RealAdoBackend(testConfig, credential);
     const httpClient = axios.create();
@@ -867,6 +1001,48 @@ describe('RealAdoBackend.uploadAttachment', () => {
 
     await backend.uploadAttachment(1, 'fig.png', Buffer.from('x').toString('base64'), 'image/png');
     expect(postSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('RealAdoBackend.discoverLinkTypes', () => {
+  it('accepts an optional project param for interface parity but does not scope the URL to it -- workitemrelationtypes is collection-level', async () => {
+    // Unlike createWorkItem/discoverFields/discoverFieldsDetailed/
+    // uploadAttachment, there is no wrong-project bug to fix here: real
+    // ADO's workitemrelationtypes endpoint has no {project}/ segment at
+    // all, so a project override genuinely has nowhere to apply. This test
+    // documents that deliberately, rather than leaving it unverified.
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    const getSpy = vi
+      .spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} }) // api-version probe
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { value: [{ referenceName: 'System.LinkTypes.Hierarchy-Reverse', name: 'Parent' }] },
+      });
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    await backend.discoverLinkTypes('OtherProject');
+
+    const url = getSpy.mock.calls[1][0] as string;
+    expect(url).toContain('/_apis/wit/workitemrelationtypes');
+    expect(url).not.toContain('OtherProject');
+    expect(url).not.toContain('MyProject');
+  });
+
+  it('falls back to the seed catalog when the live call fails', async () => {
+    const backend = new RealAdoBackend(testConfig, credential);
+    const httpClient = axios.create();
+    vi.spyOn(httpClient, 'get')
+      .mockResolvedValueOnce({ status: 200, data: {} })
+      .mockRejectedValueOnce(new Error('network error'));
+    // @ts-expect-error -- injecting the spied client
+    backend.httpClient = httpClient;
+
+    const result = await backend.discoverLinkTypes();
+
+    expect(result.length).toBeGreaterThan(0);
   });
 });
 

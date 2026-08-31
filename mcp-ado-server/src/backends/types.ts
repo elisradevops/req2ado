@@ -85,7 +85,16 @@ export interface AdoFieldDescriptor {
 
 export interface AdoBackend {
   ping(): Promise<{ ok: true; backend: 'mock' | 'real' }>;
-  createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord>;
+  /**
+   * `project`, when supplied, overrides the backend's configured default
+   * project for this call only -- same convention as readAreaPaths/
+   * readIterationPaths/readStates. Confirmed real bug (fixed): this was
+   * previously the one write-path operation with no project override at
+   * all, so a job whose area path belonged to a different project than the
+   * server's configured default had its work item CREATED into the wrong
+   * project while reads against the same job correctly used the right one.
+   */
+  createWorkItem(input: CreateWorkItemInput, project?: string): Promise<WorkItemRecord>;
   getWorkItem(id: number): Promise<WorkItemRecord | null>;
   /**
    * Bulk read, chunked at the backend's own batch size (config.batchSize,
@@ -119,7 +128,11 @@ export interface AdoBackend {
    * candidate-list algorithm (Phase 4/7). The priority-list matching logic
    * itself lives in the caller (see Task 9's write-back driver), not here.
    */
-  discoverFields(workItemType: string): Promise<string[]>;
+  // `project`, when supplied, overrides the backend's configured default --
+  // same convention as readAreaPaths et al. Was previously missing here,
+  // so a job outside the server's default project resolved field/picklist
+  // metadata against the WRONG project's process template.
+  discoverFields(workItemType: string, project?: string): Promise<string[]>;
   /**
    * Same field-discovery scope as discoverFields, but with each field's
    * picklist metadata included -- the missing capability that previously
@@ -127,9 +140,10 @@ export interface AdoBackend {
    * Microsoft.VSTS.CMMI.RequirementType) to either skip it or risk a 400 on
    * any org whose allowed values didn't match an assumed taxonomy. A
    * sibling to discoverFields, not a replacement -- existing callers that
-   * only need field names keep using the cheaper call.
+   * only need field names keep using the cheaper call. `project` optional
+   * override, same convention as discoverFields above.
    */
-  discoverFieldsDetailed(workItemType: string): Promise<AdoFieldDescriptor[]>;
+  discoverFieldsDetailed(workItemType: string, project?: string): Promise<AdoFieldDescriptor[]>;
   /** Updates (merges) fields on an existing work item without changing its type or parent link. */
   setFields(id: number, fields: Record<string, string>): Promise<void>;
   /**
@@ -165,7 +179,11 @@ export interface AdoBackend {
    * always returns the seed catalog — good enough to exercise the tool
    * contract without a real ADO server.
    */
-  discoverLinkTypes(): Promise<AdoLinkType[]>;
+  // `project` optional override, same convention as the other discover*
+  // operations. Was previously missing here, so a job outside the server's
+  // default project resolved link types against the WRONG project's
+  // process template.
+  discoverLinkTypes(project?: string): Promise<AdoLinkType[]>;
   /**
    * Lists work-item types defined by the target project's actual process
    * template (Agile/CMMI/Scrum/Basic/custom), each with its real color and
@@ -200,5 +218,8 @@ export interface AdoBackend {
    * ends up attached, not the two-step REST mechanics. `dataBase64` mirrors
    * getWorkItemIcon's convention (MCP tool results are text-only).
    */
-  uploadAttachment(workItemId: number, fileName: string, dataBase64: string, mimeType: string): Promise<void>;
+  // `project` optional override, same convention as createWorkItem. Was
+  // previously missing here, so an attachment could be created into the
+  // wrong project's attachment store on a job outside the server's default.
+  uploadAttachment(workItemId: number, fileName: string, dataBase64: string, mimeType: string, project?: string): Promise<void>;
 }

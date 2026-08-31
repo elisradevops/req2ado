@@ -321,6 +321,7 @@ export function NewJobWizard(): React.ReactElement {
       const { jobId } = await submitJob({
         file,
         areaPath,
+        adoProject: project || undefined,
         mode,
         state: state || undefined,
         iterationPath: iterationPath || undefined,

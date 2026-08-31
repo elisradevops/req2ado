@@ -3,6 +3,7 @@ import { httpClient } from './httpClient';
 export interface SubmitBatchParams {
   files: File[];
   areaPath: string;
+  adoProject?: string;
   mode: 'baseline' | 'survey';
   state?: string;
   iterationPath?: string;
@@ -21,6 +22,7 @@ export async function submitBatch(params: SubmitBatchParams): Promise<SubmitBatc
     form.append('files', file);
   }
   form.append('areaPath', params.areaPath);
+  if (params.adoProject) form.append('adoProject', params.adoProject);
   form.append('mode', params.mode);
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);

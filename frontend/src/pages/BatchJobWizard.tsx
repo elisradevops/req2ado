@@ -71,6 +71,7 @@ export function BatchJobWizard(): React.ReactElement {
       const { batchId } = await submitBatch({
         files,
         areaPath,
+        adoProject: project || undefined,
         mode,
         state: state || undefined,
         iterationPath: iterationPath || undefined,

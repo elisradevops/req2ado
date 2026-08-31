@@ -37,7 +37,7 @@ export class MockAdoBackend implements AdoBackend {
     return { ok: true, backend: 'mock' };
   }
 
-  async createWorkItem(input: CreateWorkItemInput): Promise<WorkItemRecord> {
+  async createWorkItem(input: CreateWorkItemInput, _project?: string): Promise<WorkItemRecord> {
     const stmt = this.db.prepare(
       'INSERT INTO work_items (type, fields, parent_id) VALUES (?, ?, NULL)',
     );
@@ -68,7 +68,13 @@ export class MockAdoBackend implements AdoBackend {
     // real backend is what actually needs to write the relation.
   }
 
-  async uploadAttachment(_workItemId: number, _fileName: string, _dataBase64: string, _mimeType: string): Promise<void> {
+  async uploadAttachment(
+    _workItemId: number,
+    _fileName: string,
+    _dataBase64: string,
+    _mimeType: string,
+    _project?: string,
+  ): Promise<void> {
     // No-op, same reasoning as linkWorkItems above -- the mock's flat schema
     // has nowhere to record an attachment relation.
   }
@@ -102,7 +108,7 @@ export class MockAdoBackend implements AdoBackend {
     this.db.prepare('UPDATE work_items SET fields = ? WHERE id = ?').run(JSON.stringify(merged), id);
   }
 
-  async discoverFields(_workItemType: string): Promise<string[]> {
+  async discoverFields(_workItemType: string, _project?: string): Promise<string[]> {
     // Hardcoded, realistic field set for off-network dev/tests — good enough
     // to exercise the Customer ID candidate-matching logic without a real
     // ADO server. Includes one of the three real candidate names so callers
@@ -117,7 +123,7 @@ export class MockAdoBackend implements AdoBackend {
     ];
   }
 
-  async discoverFieldsDetailed(workItemType: string): Promise<AdoFieldDescriptor[]> {
+  async discoverFieldsDetailed(workItemType: string, _project?: string): Promise<AdoFieldDescriptor[]> {
     // Same field set as discoverFields, plus realistic picklist metadata for
     // the one field that actually has any (Microsoft.VSTS.CMMI.
     // RequirementType) -- the real 9-value CMMI taxonomy, confirmed against
@@ -204,7 +210,7 @@ export class MockAdoBackend implements AdoBackend {
     return { contentType: 'image/svg+xml', dataBase64: Buffer.from(svg, 'utf-8').toString('base64') };
   }
 
-  async discoverLinkTypes(): Promise<AdoLinkType[]> {
+  async discoverLinkTypes(_project?: string): Promise<AdoLinkType[]> {
     return SEED_LINK_TYPES;
   }
 }

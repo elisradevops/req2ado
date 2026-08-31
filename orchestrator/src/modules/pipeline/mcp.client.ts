@@ -125,12 +125,20 @@ export class McpClient {
     return (await response.json()) as T;
   }
 
+  // project: threads the job's real ADO project through instead of relying
+  // on mcp-ado-server's single server-wide ADO_PROJECT env var -- same
+  // reasoning as queryIds' own doc comment below. This was the one WRITE
+  // operation missing this override entirely: a job whose area path
+  // belonged to a different project than the server's configured default
+  // had its work item CREATED into the wrong project, while reads against
+  // the same job (queryIds et al) correctly used the right one.
   async createWorkItem(
     type: string,
     fields: Record<string, string>,
+    project?: string,
     credential?: AdoRequestCredential,
   ): Promise<{ id: number }> {
-    return this.call('ado_create_work_item', { type, fields }, credential);
+    return this.call('ado_create_work_item', { type, fields, project }, credential);
   }
 
   async linkParentChild(childId: number, parentId: number, credential?: AdoRequestCredential): Promise<void> {
@@ -146,8 +154,12 @@ export class McpClient {
     await this.call('ado_link_work_items', { fromId, toId, referenceName }, credential);
   }
 
-  async discoverLinkTypes(credential?: AdoRequestCredential): Promise<AdoLinkType[]> {
-    return this.call('ado_discover_link_types', {}, credential);
+  // project: accepted for parity with the other discover* methods, though
+  // the real endpoint behind this is collection-level (link types aren't
+  // actually per-project) -- see mcp-ado-server's RealAdoBackend.
+  // discoverLinkTypes for why.
+  async discoverLinkTypes(project?: string, credential?: AdoRequestCredential): Promise<AdoLinkType[]> {
+    return this.call('ado_discover_link_types', { project }, credential);
   }
 
   async readAreaPaths(depth: number, project?: string, credential?: AdoRequestCredential): Promise<unknown> {
@@ -178,16 +190,24 @@ export class McpClient {
     return this.call('ado_discover_projects', {}, credential);
   }
 
-  async discoverFields(workItemType: string, credential?: AdoRequestCredential): Promise<string[]> {
-    return this.call('ado_discover_fields', { workItemType }, credential);
+  // project: overrides mcp-ado-server's configured default -- was
+  // previously missing here, so a job outside the server's default project
+  // resolved field metadata against the WRONG project's process template.
+  async discoverFields(workItemType: string, project?: string, credential?: AdoRequestCredential): Promise<string[]> {
+    return this.call('ado_discover_fields', { workItemType, project }, credential);
   }
 
   // Sibling to discoverFields, for callers that need a field's picklist
   // allowedValues (e.g. resolving Microsoft.VSTS.CMMI.RequirementType) --
   // see ado_discover_fields_detailed's own description for why this can't
-  // just be a shape change to discoverFields itself.
-  async discoverFieldsDetailed(workItemType: string, credential?: AdoRequestCredential): Promise<AdoFieldDescriptor[]> {
-    return this.call('ado_discover_fields_detailed', { workItemType }, credential);
+  // just be a shape change to discoverFields itself. project: same override
+  // as discoverFields above.
+  async discoverFieldsDetailed(
+    workItemType: string,
+    project?: string,
+    credential?: AdoRequestCredential,
+  ): Promise<AdoFieldDescriptor[]> {
+    return this.call('ado_discover_fields_detailed', { workItemType, project }, credential);
   }
 
   async getWorkItemsBatch(
@@ -207,14 +227,18 @@ export class McpClient {
     return this.call('ado_query_ids', { fieldMatch, project }, credential);
   }
 
+  // project: overrides mcp-ado-server's configured default -- was
+  // previously missing here, so an attachment could be created into the
+  // wrong project's attachment store on a job outside the server's default.
   async uploadAttachment(
     workItemId: number,
     fileName: string,
     dataBase64: string,
     mimeType: string,
+    project?: string,
     credential?: AdoRequestCredential,
   ): Promise<void> {
-    await this.call('ado_upload_attachment', { workItemId, fileName, dataBase64, mimeType }, credential);
+    await this.call('ado_upload_attachment', { workItemId, fileName, dataBase64, mimeType, project }, credential);
   }
 
 }

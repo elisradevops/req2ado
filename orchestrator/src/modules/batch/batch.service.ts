@@ -98,6 +98,8 @@ export interface SubmitBatchFileInput {
 export interface SubmitBatchInput {
   userId: string;
   areaPath: string;
+  // Optional/nullable, same convention as Job's own SubmitJobInput.adoProject.
+  adoProject?: string | null;
   mode: 'baseline' | 'survey';
   state?: string | null;
   iterationPath?: string | null;
@@ -177,6 +179,7 @@ export class BatchService {
         data: {
           userId: input.userId,
           areaPath: input.areaPath,
+          adoProject: input.adoProject ?? null,
           mode: input.mode,
           state: input.state ?? null,
           iterationPath: input.iterationPath ?? null,
@@ -477,6 +480,7 @@ export class BatchService {
         }
         const { jobId } = await this.jobsService.submit({
           areaPath: file.batch.areaPath,
+          adoProject: file.batch.adoProject,
           userId: file.batch.userId,
           mode: file.batch.mode as 'baseline' | 'survey',
           fileBuffer: Buffer.from(blob.bytes),

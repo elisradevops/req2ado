@@ -84,6 +84,12 @@ export function buildFigureAttachmentFilename(figureId: string, name: string | n
 
 export interface SubmitJobInput {
   areaPath: string;
+  // The ADO project this job writes into -- see Job.adoProject's own
+  // schema.prisma doc comment. Optional/nullable, same convention as
+  // batchId/documentOverview/model below -- omitted means null, which
+  // hard-fails once it reaches confirm()'s actual write path (never
+  // silently defaulted there).
+  adoProject?: string | null;
   // The submitting user's stable ADO identity -- the Knowledge Base scope
   // key ingestion's /level uses for KB grounding, kept separate from
   // areaPath (ADO write-back destination + idempotency key only). Nullable:
@@ -168,6 +174,11 @@ export interface JobDetail {
   excludedTableIds: string[];
   createdAt: Date;
   areaPath: string;
+  // The ADO project this job writes into -- see Job.adoProject's own
+  // schema.prisma doc comment. Exposed so the frontend can derive its
+  // "team project" display value from the real column instead of
+  // re-deriving it from areaPath client-side.
+  adoProject: string | null;
   // Real Job columns (schema.prisma) that were fetched here all along
   // (findUnique with no select clause) but silently dropped by this
   // method's own narrow return object -- the frontend's DestinationBar
@@ -309,6 +320,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         status: 'pending',
         sourceHash: input.sourceHash,
         areaPath: input.areaPath,
+        adoProject: input.adoProject ?? null,
         userId: input.userId,
         state: input.state ?? this.initialState,
         iterationPath: input.iterationPath ?? null,
@@ -334,6 +346,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       {
         id: job.id,
         areaPath: input.areaPath,
+        adoProject: input.adoProject ?? null,
         userId: input.userId,
         mode: input.mode,
         fileBufferBase64: input.fileBuffer.toString('base64'),
@@ -377,6 +390,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     }
     return this.submit({
       areaPath: job.areaPath,
+      adoProject: job.adoProject,
       userId: job.userId,
       mode: job.mode as 'baseline' | 'survey',
       fileBuffer: Buffer.from(sourceFile.bytes),
@@ -443,11 +457,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   private async fieldsFor(
     fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
     workItemType: string,
+    project: string,
     credential?: { orgUrl: string; pat: string },
   ): Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]> {
     let pending = fieldsByType.get(workItemType);
     if (!pending) {
-      pending = this.mcpClient.discoverFieldsDetailed(workItemType, credential);
+      pending = this.mcpClient.discoverFieldsDetailed(workItemType, project, credential);
       fieldsByType.set(workItemType, pending);
     }
     return pending;
@@ -466,9 +481,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   private async resolveCustomerIdField(
     fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
     workItemType: string,
+    project: string,
     credential?: { orgUrl: string; pat: string },
   ): Promise<string | null> {
-    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, credential)).map((f) => f.referenceName);
+    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, project, credential)).map((f) => f.referenceName);
     return this.customerIdFieldCandidates.find((candidate) => availableFields.includes(candidate)) ?? null;
   }
 
@@ -486,10 +502,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   private async resolveSourceRefField(
     fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
     workItemType: string,
+    project: string,
     credential?: { orgUrl: string; pat: string },
   ): Promise<string | null> {
     const candidates = ['Custom.SourceReference', 'Custom.SourceDocument', 'Custom.TraceabilityRef'];
-    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, credential)).map((f) => f.referenceName);
+    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, project, credential)).map((f) => f.referenceName);
     return candidates.find((candidate) => availableFields.includes(candidate)) ?? null;
   }
 
@@ -503,9 +520,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   private async resolveSeCoverageRefField(
     fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
     workItemType: string,
+    project: string,
     credential?: { orgUrl: string; pat: string },
   ): Promise<string | null> {
-    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, credential)).map((f) => f.referenceName);
+    const availableFields = (await this.fieldsFor(fieldsByType, workItemType, project, credential)).map((f) => f.referenceName);
     return this.seCoverageRefFieldCandidates.find((candidate) => availableFields.includes(candidate)) ?? null;
   }
 
@@ -519,9 +537,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   private async resolveRequirementTypeField(
     fieldsByType: Map<string, Promise<{ referenceName: string; allowedValues: string[]; alwaysRequired: boolean }[]>>,
     workItemType: string,
+    project: string,
     credential?: { orgUrl: string; pat: string },
   ): Promise<{ referenceName: string; allowedValues: string[] } | null> {
-    const fields = await this.fieldsFor(fieldsByType, workItemType, credential);
+    const fields = await this.fieldsFor(fieldsByType, workItemType, project, credential);
     for (const candidate of this.requirementTypeFieldCandidates) {
       const match = fields.find((f) => f.referenceName === candidate);
       if (match) {
@@ -591,6 +610,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       excludedTableIds: (job.excludedTableIds as string[] | null) ?? [],
       createdAt: job.createdAt,
       areaPath: job.areaPath,
+      adoProject: job.adoProject,
       iterationPath: job.iterationPath,
       state: job.state,
       originalFilename: job.originalFilename,
@@ -1458,6 +1478,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (!figureFile) {
       throw new NotFoundException(`Figure ${figureId} not found for job ${jobId}`);
     }
+    // Write path -- hard-fail rather than falling back, same reasoning as
+    // confirm()'s own adoProject check. Deliberately checked here, after
+    // every more-specific 404/400 above: a caller asking about a
+    // nonexistent entry/figure should see THAT error, not a generic
+    // can't-write-at-all error that has nothing to do with what they asked.
+    if (!job.adoProject) {
+      throw new Error(`Job ${jobId} has no adoProject set -- cannot write to ADO without a resolved target project`);
+    }
 
     // Task 6: figure's own name (Task 5), looked up from the SAME
     // figureDescriptions array getJob exposes to the frontend -- job was
@@ -1471,6 +1499,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       buildFigureAttachmentFilename(figureId, figureName, figureFile.mimeType),
       Buffer.from(figureFile.bytes).toString('base64'),
       figureFile.mimeType,
+      job.adoProject,
       credential,
     );
     // Same delete-on-success bookkeeping as confirm()'s own attach phase --
@@ -1779,6 +1808,18 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // itself stays the internal category label everywhere else (map keys,
       // sourceRefFieldByType, etc.), since translation only matters at the ADO
       // wire boundary.
+      // Explicit column, not areaPath.split('\\')[0] -- the derivation is a
+      // correct VALUE but recomputing it per call site is exactly how this
+      // project param went missing from several ADO write operations in the
+      // first place (see Job.adoProject's own schema.prisma doc comment).
+      // Hard-fail rather than falling back to any global/derived default:
+      // this is the write path, and the migration backfilled every
+      // historical row, so a null here means a genuinely inconsistent row,
+      // not an ordinary one.
+      if (!job.adoProject) {
+        throw new Error(`Job ${id} has no adoProject set -- cannot write to ADO without a resolved target project`);
+      }
+      const project = job.adoProject;
       let realType: (type: string) => string = (type) => type;
       if (toCreate.length > 0) {
         await this.jobEventsPublisher?.publishNarration(id, {
@@ -1788,7 +1829,6 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           blocksTotal: toCreate.length,
           message: 'Resolving work-item type/field configuration for this project',
         });
-        const project = job.areaPath.split('\\')[0];
         const workItemTypeCategories = await this.mcpClient.discoverWorkItemTypeCategories(project, credential);
         realType = (type: string): string => workItemTypeCategories[type as keyof typeof workItemTypeCategories] ?? type;
       }
@@ -1806,14 +1846,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // below.
       for (const entry of toCreate) {
         if (entry.type === 'Requirement' && entry.customerId != null && !customerIdFieldByType.has(entry.type)) {
-          customerIdFieldByType.set(entry.type, await this.resolveCustomerIdField(fieldsByType, realType(entry.type), credential));
+          customerIdFieldByType.set(entry.type, await this.resolveCustomerIdField(fieldsByType, realType(entry.type), project, credential));
         }
         if (entry.sourceRef != null && !sourceRefFieldByType.has(entry.type)) {
-          sourceRefFieldByType.set(entry.type, await this.resolveSourceRefField(fieldsByType, realType(entry.type), credential));
+          sourceRefFieldByType.set(entry.type, await this.resolveSourceRefField(fieldsByType, realType(entry.type), project, credential));
         }
         // Requirement-only, same reasoning as Customer ID above.
         if (entry.type === 'Requirement' && entry.seCoverageRef != null && !seCoverageRefFieldByType.has(entry.type)) {
-          seCoverageRefFieldByType.set(entry.type, await this.resolveSeCoverageRefField(fieldsByType, realType(entry.type), credential));
+          seCoverageRefFieldByType.set(entry.type, await this.resolveSeCoverageRefField(fieldsByType, realType(entry.type), project, credential));
         }
         // Requirement-only, same reasoning as Customer ID above: classification
         // (entry.tags) is a per-Requirement attribute (see Phase 3's ingestion-side
@@ -1822,7 +1862,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // never assigns them), so this is a no-op there without needing a
         // separate mode check.
         if (entry.type === 'Requirement' && (entry.tags?.length ?? 0) > 0 && !requirementTypeFieldByType.has(entry.type)) {
-          requirementTypeFieldByType.set(entry.type, await this.resolveRequirementTypeField(fieldsByType, realType(entry.type), credential));
+          requirementTypeFieldByType.set(entry.type, await this.resolveRequirementTypeField(fieldsByType, realType(entry.type), project, credential));
         }
       }
 
@@ -1924,7 +1964,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
             }
           }
         }
-        const created = await this.mcpClient.createWorkItem(realType(entry.type), fields, credential);
+        const created = await this.mcpClient.createWorkItem(realType(entry.type), fields, project, credential);
         // Durable resume state (P4b): written immediately, not batched at
         // the end of the create loop, so a LATER item in this same
         // mapWithConcurrency batch failing doesn't lose the fact that THIS
@@ -2314,6 +2354,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
                   buildFigureAttachmentFilename(figureId, figureNameByFigureId.get(figureId) ?? null, figureFile.mimeType),
                   Buffer.from(figureFile.bytes).toString('base64'),
                   figureFile.mimeType,
+                  project,
                   credential,
                 );
                 await this.prisma.jobFigureFile.delete({ where: { id: figureFile.id } });

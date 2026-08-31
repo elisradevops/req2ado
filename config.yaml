@@ -16,9 +16,10 @@ llm:
   enabled_in_baseline: false # LLM stays off in baseline unless explicitly enabled (extraction only)
 
 ado:
-  base_url: ${ADO_BASE_URL}
-  project: ${ADO_PROJECT}
-  area_path: ${ADO_AREA_PATH}
+  # base_url / project / area_path removed as env vars -- both are now
+  # genuinely per-user/per-job: org URL + PAT come from login (vaulted),
+  # target project is an explicit Job.adoProject column threaded through
+  # every ADO operation instead of a server-wide default.
   api_version: "7.1" # ladder: 7.1 -> 5.1 -> none
   ca_cert_path: ${ADO_CA_CERT} # on-prem self-signed CA trust
   bypass_rules: false

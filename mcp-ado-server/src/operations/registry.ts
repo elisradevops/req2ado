@@ -50,10 +50,10 @@ export const adoOperations: AdoOperation[] = [
     name: 'ado_create_work_item',
     title: 'Create an ADO work item',
     description:
-      'Creates a new work item of the given type with the given fields. Does not link a parent — use ado_link_parent_child separately. `type` must be the REAL ADO type name for this project (resolve via ado_discover_work_item_type_categories first, not req2ado\'s internal Epic/Feature/Requirement labels) -- process templates other than CMMI use different real names (e.g. "User Story").',
-    inputSchema: { type: z.string(), fields: z.record(z.string()) },
-    handler: (backend, { type, fields }: { type: string; fields: Record<string, string> }) =>
-      callBackend(() => backend.createWorkItem({ type, fields })),
+      'Creates a new work item of the given type with the given fields. Does not link a parent — use ado_link_parent_child separately. `type` must be the REAL ADO type name for this project (resolve via ado_discover_work_item_type_categories first, not req2ado\'s internal Epic/Feature/Requirement labels) -- process templates other than CMMI use different real names (e.g. "User Story"). `project`, when supplied, overrides the server-configured default project -- previously missing here, so a job whose area path belonged to a different project than the server default had its work item created into the WRONG project.',
+    inputSchema: { type: z.string(), fields: z.record(z.string()), project: z.string().optional() },
+    handler: (backend, { type, fields, project }: { type: string; fields: Record<string, string>; project?: string }) =>
+      callBackend(() => backend.createWorkItem({ type, fields }, project)),
   },
   {
     name: 'ado_link_parent_child',
@@ -102,18 +102,19 @@ export const adoOperations: AdoOperation[] = [
     name: 'ado_discover_fields',
     title: 'Discover ADO work-item type fields',
     description:
-      'Returns the field reference names available on a given work-item type. Used by callers to resolve the correct Customer ID field ref name against a runtime-verified candidate list (see docs/architecture.md "Customer ID Field Resolution"). workItemType must be the REAL ADO type name for this project (resolve via ado_discover_work_item_type_categories first, not req2ado\'s internal Epic/Feature/Requirement labels) -- process templates other than CMMI use different real names (e.g. "User Story").',
-    inputSchema: { workItemType: z.string() },
-    handler: (backend, { workItemType }: { workItemType: string }) => callBackend(() => backend.discoverFields(workItemType)),
+      'Returns the field reference names available on a given work-item type. Used by callers to resolve the correct Customer ID field ref name against a runtime-verified candidate list (see docs/architecture.md "Customer ID Field Resolution"). workItemType must be the REAL ADO type name for this project (resolve via ado_discover_work_item_type_categories first, not req2ado\'s internal Epic/Feature/Requirement labels) -- process templates other than CMMI use different real names (e.g. "User Story"). `project`, when supplied, overrides the server-configured default project.',
+    inputSchema: { workItemType: z.string(), project: z.string().optional() },
+    handler: (backend, { workItemType, project }: { workItemType: string; project?: string }) =>
+      callBackend(() => backend.discoverFields(workItemType, project)),
   },
   {
     name: 'ado_discover_fields_detailed',
     title: 'Discover ADO work-item type fields with picklist metadata',
     description:
-      'Same scope as ado_discover_fields, but each field also carries its allowedValues (empty for a non-picklist field) and alwaysRequired. Use this instead of ado_discover_fields whenever the caller needs to write to a picklist-constrained field (e.g. Microsoft.VSTS.CMMI.RequirementType) -- writing an unvalidated value into such a field 400s the whole request on any org whose allowed values don\'t match what was assumed. workItemType must be the REAL ADO type name for this project (resolve via ado_discover_work_item_type_categories first, not req2ado\'s internal Epic/Feature/Requirement labels).',
-    inputSchema: { workItemType: z.string() },
-    handler: (backend, { workItemType }: { workItemType: string }) =>
-      callBackend(() => backend.discoverFieldsDetailed(workItemType)),
+      'Same scope as ado_discover_fields, but each field also carries its allowedValues (empty for a non-picklist field) and alwaysRequired. Use this instead of ado_discover_fields whenever the caller needs to write to a picklist-constrained field (e.g. Microsoft.VSTS.CMMI.RequirementType) -- writing an unvalidated value into such a field 400s the whole request on any org whose allowed values don\'t match what was assumed. workItemType must be the REAL ADO type name for this project (resolve via ado_discover_work_item_type_categories first, not req2ado\'s internal Epic/Feature/Requirement labels). `project`, when supplied, overrides the server-configured default project.',
+    inputSchema: { workItemType: z.string(), project: z.string().optional() },
+    handler: (backend, { workItemType, project }: { workItemType: string; project?: string }) =>
+      callBackend(() => backend.discoverFieldsDetailed(workItemType, project)),
   },
   {
     name: 'ado_read_area_paths',
@@ -151,9 +152,9 @@ export const adoOperations: AdoOperation[] = [
     name: 'ado_discover_link_types',
     title: 'Discover ADO work-item link types',
     description:
-      "Returns the work-item link types (referenceName/name/semanticHint) available on the target project's process template. Used to resolve trace/coverage link types (Covers/CoveredBy/Affects/AffectedBy/etc.) at runtime instead of hardcoding them.",
-    inputSchema: {},
-    handler: (backend) => callBackend(() => backend.discoverLinkTypes()),
+      "Returns the work-item link types (referenceName/name/semanticHint) available on the target project's process template. Used to resolve trace/coverage link types (Covers/CoveredBy/Affects/AffectedBy/etc.) at runtime instead of hardcoding them. `project` accepted for parity with the other discover* operations, though the real ADO endpoint behind this one is collection-level (link types aren't actually per-project) -- see RealAdoBackend.discoverLinkTypes's own comment.",
+    inputSchema: { project: z.string().optional() },
+    handler: (backend, { project }: { project?: string }) => callBackend(() => backend.discoverLinkTypes(project)),
   },
   {
     name: 'ado_discover_work_item_types',
@@ -183,12 +184,18 @@ export const adoOperations: AdoOperation[] = [
     name: 'ado_upload_attachment',
     title: 'Upload and attach a file to an ADO work item',
     description:
-      'Uploads the given bytes (base64) as an ADO attachment and links it to the work item, e.g. a figure a requirement cites (JobFigureFile). Two real ADO calls under one operation: attachments, then a relations/- patch with rel=AttachedFile.',
-    inputSchema: { workItemId: z.number(), fileName: z.string(), dataBase64: z.string(), mimeType: z.string() },
+      'Uploads the given bytes (base64) as an ADO attachment and links it to the work item, e.g. a figure a requirement cites (JobFigureFile). Two real ADO calls under one operation: attachments, then a relations/- patch with rel=AttachedFile. `project`, when supplied, overrides the server-configured default project.',
+    inputSchema: { workItemId: z.number(), fileName: z.string(), dataBase64: z.string(), mimeType: z.string(), project: z.string().optional() },
     handler: (
       backend,
-      { workItemId, fileName, dataBase64, mimeType }: { workItemId: number; fileName: string; dataBase64: string; mimeType: string },
-    ) => callBackend(() => backend.uploadAttachment(workItemId, fileName, dataBase64, mimeType)).then(() => ({ ok: true })),
+      { workItemId, fileName, dataBase64, mimeType, project }: {
+        workItemId: number;
+        fileName: string;
+        dataBase64: string;
+        mimeType: string;
+        project?: string;
+      },
+    ) => callBackend(() => backend.uploadAttachment(workItemId, fileName, dataBase64, mimeType, project)).then(() => ({ ok: true })),
   },
 ];
 

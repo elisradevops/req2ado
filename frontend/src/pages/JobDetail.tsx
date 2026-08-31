@@ -165,6 +165,7 @@ export function JobDetail(): React.ReactElement {
   // resetting to zero. null until the job fetch below resolves.
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [areaPath, setAreaPath] = useState<string | null>(null);
+  const [adoProject, setAdoProject] = useState<string | null>(null);
   // Never wired into DestinationBar before -- iterationPath rendered as
   // permanently "not set" (the hatched pattern) and state as a bare "—"
   // regardless of what the job was actually configured with, since these
@@ -261,6 +262,7 @@ export function JobDetail(): React.ReactElement {
         setDiff((job.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
         setStartedAt(job.createdAt);
         setAreaPath(job.areaPath);
+        setAdoProject(job.adoProject ?? null);
         setIterationPath(job.iterationPath ?? null);
         setWorkItemState(job.state ?? null);
         setSourceFilename(job.originalFilename);
@@ -1142,7 +1144,9 @@ export function JobDetail(): React.ReactElement {
     );
   }
 
-  const teamProject = areaPath?.split('\\')[0] ?? null;
+  // adoProject (the real Job column), falling back to the areaPath
+  // derivation only for a historical job the backfill migration missed.
+  const teamProject = adoProject ?? areaPath?.split('\\')[0] ?? null;
   // The real ADO credential lives server-side (credential vault); orgUrl
   // being set locally just signals "this browser has completed login" --
   // that's the gate for showing Confirm as available at all.

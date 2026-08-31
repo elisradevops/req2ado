@@ -6,7 +6,6 @@ import { timingSafeEqualBearer } from '../src/auth/timingSafeEqualBearer';
 import type { AdoMcpConfig } from '../src/config/env';
 
 const testConfig: AdoMcpConfig = {
-  adoBaseUrl: '',
   adoProject: '',
   apiVersionLadder: ['7.1', '5.1', 'none'],
   batchSize: 200,

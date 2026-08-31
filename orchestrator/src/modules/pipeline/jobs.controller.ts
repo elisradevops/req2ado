@@ -142,6 +142,7 @@ export class JobsController {
     @UploadedFile() file: Express.Multer.File | undefined,
     @CurrentUser() user: SessionUser,
     @Body('areaPath') areaPath: string | undefined,
+    @Body('adoProject') adoProject: string | undefined,
     @Body('mode') mode: string | undefined,
     @Body('state') state: string | undefined,
     @Body('iterationPath') iterationPath: string | undefined,
@@ -163,6 +164,17 @@ export class JobsController {
     if (!areaPath) {
       throw new BadRequestException('areaPath is required');
     }
+    // adoProject is optional at the wire level (a non-ADO-session mock
+    // context can submit with neither set), but when BOTH are present they
+    // must agree -- an area path's first segment is always its project
+    // (confirmed convention in this deployment), so a mismatch means the
+    // client sent something inconsistent rather than a value we should
+    // silently prefer one side of.
+    if (adoProject && adoProject !== areaPath.split('\\')[0]) {
+      throw new BadRequestException(
+        `adoProject ('${adoProject}') does not match areaPath's project segment ('${areaPath.split('\\')[0]}')`,
+      );
+    }
     if (mode !== undefined && mode !== 'baseline' && mode !== 'survey') {
       throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
     }
@@ -183,6 +195,7 @@ export class JobsController {
     }
     return this.jobsService.submit({
       areaPath,
+      adoProject: adoProject ?? null,
       // The submitting user's stable ADO identity (see Job.userId's own doc
       // comment) -- the Knowledge Base scope key, kept separate from
       // areaPath (ADO write-back destination only). Now the session's own
@@ -371,7 +384,11 @@ export class JobsController {
       try {
         const credential = await this.adoCredentialResolver.resolve(user.userId);
         if (credential) {
-          const project = job.areaPath.split('\\')[0];
+          // job.adoProject, falling back to the areaPath derivation only
+          // for a historical row the backfill somehow missed -- this is a
+          // best-effort read (caught below), never the write path, so a
+          // fallback here is correct where a hard-fail would be wrong.
+          const project = job.adoProject ?? job.areaPath.split('\\')[0];
           workItemTypeCatalog = await this.workItemTypeCatalogService.resolve(project, credential);
           workItemTypeCategoryLabels = await this.workItemTypeCatalogService.resolveCategoryLabels(project, credential);
           requirementClassificationField = await this.workItemTypeCatalogService.resolveRequirementClassificationField(project, credential);

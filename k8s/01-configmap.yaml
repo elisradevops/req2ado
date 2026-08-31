@@ -29,9 +29,10 @@ data:
   LLM_TRUSTED_LOCAL: "false"
 
   # --- ADO (on-prem TFS/ADO Server) ---
-  ADO_BASE_URL: "https://your-tfs-host/tfs/YourCollection"
-  ADO_PROJECT: "YourProject"
-  ADO_AREA_PATH: "YourProject\\Area"
+  # ADO_BASE_URL/ADO_PROJECT/ADO_AREA_PATH removed -- both are now genuinely
+  # per-user/per-job: org URL + PAT come from login (vaulted server-side),
+  # and the target project is an explicit Job.adoProject column threaded
+  # through every ADO operation instead of a server-wide default.
   # Initial System.State written on every created work item -- defaults to
   # "Proposed"; override if the target process template's initial state
   # has a different name.

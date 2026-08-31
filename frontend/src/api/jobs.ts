@@ -114,6 +114,11 @@ export async function previewExposition(params: {
 export interface SubmitJobParams {
   file: File;
   areaPath: string;
+  // The ADO project this job writes into -- optional at this layer (a
+  // non-ADO-session mock context has no project to send), but the backend
+  // validates it against areaPath's own project segment when both are
+  // present.
+  adoProject?: string;
   mode: 'baseline' | 'survey';
   state?: string;
   iterationPath?: string;
@@ -130,6 +135,7 @@ export async function submitJob(params: SubmitJobParams): Promise<{ jobId: strin
   const form = new FormData();
   form.append('file', params.file);
   form.append('areaPath', params.areaPath);
+  if (params.adoProject) form.append('adoProject', params.adoProject);
   form.append('mode', params.mode);
   if (params.state) form.append('state', params.state);
   if (params.iterationPath) form.append('iterationPath', params.iterationPath);

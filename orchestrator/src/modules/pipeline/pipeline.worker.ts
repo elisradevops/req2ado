@@ -93,6 +93,12 @@ async function maybeBackfillAreaPath(
 export interface PipelineJobInput {
   id: string;
   areaPath: string;
+  // The ADO project this job writes into -- see Job.adoProject's own
+  // schema.prisma doc comment. Nullable: an older job predating this column
+  // (backfilled by migration, so should only be null for a genuinely
+  // inconsistent row). Read-only/best-effort call sites below fall back to
+  // undefined when null; write-path call sites hard-fail instead.
+  adoProject: string | null;
   // The submitting user's stable ADO identity -- the Knowledge Base scope
   // key threaded into ingestionClient.level() below, kept separate from
   // areaPath (ADO write-back destination + dedup key only). Nullable: an
@@ -621,7 +627,7 @@ export async function runPipelineJob(
     // credential already resolved above (before ingest/backfill).
     let linkTypeCatalog: { referenceName: string; name: string; semanticHint?: string }[] = [];
     try {
-      linkTypeCatalog = await deps.mcpClient.discoverLinkTypes(credential);
+      linkTypeCatalog = await deps.mcpClient.discoverLinkTypes(job.adoProject ?? undefined, credential);
     } catch {
       linkTypeCatalog = [];
     }
@@ -798,11 +804,16 @@ export async function runPipelineJob(
     }
 
     const customerIdFieldCandidates = DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES;
-    // Hoisted above the crossJob-only if-block below so the SAME derivation
-    // is also in scope for queryIds's project param further down (line
-    // ~577) -- both operate on this job's ADO project, not just the
-    // Requirement-category resolution.
-    const project = job.areaPath.split('\\')[0];
+    // Hoisted above the crossJob-only if-block below so the SAME value is
+    // also in scope for queryIds's project param further down -- both
+    // operate on this job's ADO project, not just the Requirement-category
+    // resolution. job.adoProject (not areaPath.split('\\')[0]) -- see
+    // Job.adoProject's own schema.prisma doc comment. Every use in this
+    // function is fail-open/best-effort (discovery for the diff, not an
+    // actual ADO write -- that happens later in confirm()), so this falls
+    // back to undefined rather than hard-failing on a null value; the
+    // hard-fail belongs at the actual write path.
+    const project = job.adoProject ?? undefined;
     // Cross-job trace-link targets are always Requirement-CATEGORY items in
     // practice (System/Customer requirement pairs — the driving use case),
     // so a single discoverFields call is enough; if this assumption stops
@@ -820,7 +831,7 @@ export async function runPipelineJob(
         .discoverWorkItemTypeCategories(project, credential)
         .then((categories) => categories.Requirement)
         .catch(() => 'Requirement');
-      const availableFields = await deps.mcpClient.discoverFields(realRequirementType, credential).catch(() => [] as string[]);
+      const availableFields = await deps.mcpClient.discoverFields(realRequirementType, project, credential).catch(() => [] as string[]);
       resolvedCustomerIdField =
         customerIdFieldCandidates.find((candidate) => availableFields.includes(candidate)) ?? null;
     }

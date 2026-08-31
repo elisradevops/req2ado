@@ -52,6 +52,7 @@ export class BatchController {
     @UploadedFiles() files: Express.Multer.File[] | undefined,
     @CurrentUser() user: SessionUser,
     @Body('areaPath') areaPath: string | undefined,
+    @Body('adoProject') adoProject: string | undefined,
     @Body('mode') mode: string | undefined,
     @Body('state') state: string | undefined,
     @Body('iterationPath') iterationPath: string | undefined,
@@ -66,6 +67,13 @@ export class BatchController {
     if (!areaPath) {
       throw new BadRequestException('areaPath is required');
     }
+    // Same consistency check as JobsController.submit -- see its own
+    // comment for why a mismatch is rejected rather than silently resolved.
+    if (adoProject && adoProject !== areaPath.split('\\')[0]) {
+      throw new BadRequestException(
+        `adoProject ('${adoProject}') does not match areaPath's project segment ('${areaPath.split('\\')[0]}')`,
+      );
+    }
     if (mode !== undefined && mode !== 'baseline' && mode !== 'survey') {
       throw new BadRequestException(`mode must be 'baseline' or 'survey', got: ${mode}`);
     }
@@ -76,6 +84,7 @@ export class BatchController {
     return this.batchService.submitBatch({
       userId: user.userId,
       areaPath,
+      adoProject: adoProject ?? null,
       mode: (mode as 'baseline' | 'survey' | undefined) ?? 'baseline',
       state,
       iterationPath: iterationPath ?? null,
