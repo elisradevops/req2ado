@@ -5,6 +5,13 @@ import json
 
 import chromadb
 
+from app.config import settings
+
+# Read once at import, same convention as dedup/vector_store.py's own
+# _DEFAULT_EMBED_MODEL and app/survey/orchestrator_llm_client.py's
+# _LLM_REQUEST_TIMEOUT_SECONDS -- main.py does not thread it through.
+_DEFAULT_EMBED_MODEL = settings.embed_model
+
 
 # Bounds for get_document/list_documents -- both previously called
 # collection.get() with no limit at all. Confirmed real risk, not just a
@@ -19,13 +26,22 @@ _MAX_DOCUMENT_CHUNKS = 2000
 _MAX_LISTED_DOCUMENTS = 5000
 
 
-def _kb_collection_name_for_user(user_id: str) -> str:
+def _kb_collection_name_for_user(user_id: str, embed_model: str) -> str:
     # Separate namespace from dedup's `req2ado_<hash>` collections (see
     # dedup/vector_store.py) — KB chunks store real source text and are a
     # different concern from dedup's embeddings-only vectors. Keeping them
     # in different collections means neither can leak into the other's
     # queries.
-    digest = hashlib.sha256(user_id.encode()).hexdigest()[:32]
+    #
+    # `embed_model` is folded into the digest for the same reasons
+    # dedup/vector_store.py's twin does (read that comment for the full
+    # rationale): it is the model-version pin, real model names carry
+    # Chroma-illegal characters so it cannot be a readable suffix, and
+    # collections written before the pin existed are deliberately orphaned
+    # rather than migrated. For KB the miss is even more benign than for
+    # dedup: existing_file_hash simply reports "never ingested", so the next
+    # ingest re-chunks and re-embeds under the current model.
+    digest = hashlib.sha256(f"{embed_model}\x00{user_id}".encode()).hexdigest()[:32]
     return f"req2ado_kb_{digest}"
 
 
@@ -41,6 +57,7 @@ class KbVectorStore:
         mode: str = "embedded",
         host: str = "localhost",
         port: int = 8000,
+        embed_model: str = _DEFAULT_EMBED_MODEL,
     ) -> None:
         # Same embedded-vs-http choice as dedup/vector_store.py's
         # ChromaVectorStore -- "http" points at the same shared Chroma
@@ -57,6 +74,9 @@ class KbVectorStore:
         # reference, not a snapshot of contents), so caching it per user
         # is safe with no invalidation needed at all.
         self._collection_cache: dict[str, chromadb.Collection] = {}
+        # Part of every collection name this store touches (see
+        # _kb_collection_name_for_user) -- the embed model-version pin.
+        self._embed_model = embed_model
 
     def ping(self) -> bool:
         """Cheap reachability check for /ready -- ported from dedup/
@@ -76,7 +96,7 @@ class KbVectorStore:
         if cached is not None:
             return cached
         collection = self._client.get_or_create_collection(
-            name=_kb_collection_name_for_user(user_id),
+            name=_kb_collection_name_for_user(user_id, self._embed_model),
             metadata={"hnsw:space": "cosine"},
         )
         self._collection_cache[user_id] = collection
@@ -237,7 +257,7 @@ class KbVectorStore:
         matching every other method here that treats "no such user" as an
         empty result rather than an error."""
         try:
-            self._client.delete_collection(name=_kb_collection_name_for_user(user_id))
+            self._client.delete_collection(name=_kb_collection_name_for_user(user_id, self._embed_model))
         except chromadb.errors.NotFoundError:
             pass
         # The cached handle (if any) now points at a deleted collection --

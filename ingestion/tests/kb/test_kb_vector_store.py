@@ -1,6 +1,7 @@
+import re
 import tempfile
 
-from app.kb.kb_vector_store import KbVectorStore
+from app.kb.kb_vector_store import KbVectorStore, _kb_collection_name_for_user
 
 
 def test_existing_file_hash_returns_none_for_a_never_ingested_file() -> None:
@@ -512,3 +513,61 @@ def test_list_documents_stops_at_the_document_ceiling(monkeypatch) -> None:
             )
         result = store.list_documents("Project\\Area1")
         assert len(result) == 3
+
+
+def test_two_different_embed_models_produce_two_different_kb_collection_names() -> None:
+    # The model-version pin. Before this, the collection name was a hash of
+    # the user id alone, so swapping EMBED_MODEL server-side left every
+    # stored KB chunk vector in place and silently retrieved against vectors
+    # a DIFFERENT model produced -- feeding mismatched-embedding "matches"
+    # straight into SURVEY's grounded prompts, with no detection at all.
+    nomic = _kb_collection_name_for_user("Project\\Area1", "nomic-embed-text")
+    bge = _kb_collection_name_for_user("Project\\Area1", "bge-m3")
+    assert nomic != bge
+
+
+def test_the_same_model_and_user_produce_a_stable_kb_collection_name() -> None:
+    assert _kb_collection_name_for_user("Project\\Area1", "nomic-embed-text") == (
+        _kb_collection_name_for_user("Project\\Area1", "nomic-embed-text")
+    )
+
+
+def test_a_kb_model_name_with_chroma_illegal_characters_still_yields_a_legal_name() -> None:
+    name = _kb_collection_name_for_user("Project\\Area1", "qwen3:4b")
+    assert re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]", name)
+
+
+def test_a_model_swap_forces_kb_re_ingestion_instead_of_reusing_a_stale_file_hash() -> None:
+    # existing_file_hash is the skip-unchanged guard for KB ingest, and it
+    # lives INSIDE the collection -- so pinning the model makes a swap
+    # correctly re-chunk and re-embed the same source file rather than
+    # skipping it and leaving the user's KB embedded by the old model.
+    with tempfile.TemporaryDirectory() as tmp:
+        old = KbVectorStore(persist_path=tmp, embed_model="nomic-embed-text")
+        old.upsert_chunk(
+            chunk_id="source-1:doc.txt:0",
+            embedding=[1.0, 0.0, 0.0],
+            text="chunk text",
+            user_id="Project\\Area1",
+            source_file="doc.txt",
+            source_id="source-1",
+            chunk_index=0,
+            file_hash="hash-1",
+        )
+        assert old.existing_file_hash("Project\\Area1", "doc.txt", "source-1") == "hash-1"
+
+        swapped = KbVectorStore(persist_path=tmp, embed_model="bge-m3")
+        assert swapped.existing_file_hash("Project\\Area1", "doc.txt", "source-1") is None
+
+
+def test_purge_user_deletes_the_model_scoped_collection_name() -> None:
+    # purge_user is the runbook's account-reset remediation. If it kept
+    # targeting the old unpinned name it would delete a collection nothing
+    # reads while the live, model-scoped one survived -- the exact opposite
+    # of the guarantee that procedure exists to give.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = KbVectorStore(persist_path=tmp, embed_model="bge-m3")
+        deleted: list[str] = []
+        store._client.delete_collection = lambda name: deleted.append(name)
+        store.purge_user("Project\\Area1")
+        assert deleted == [_kb_collection_name_for_user("Project\\Area1", "bge-m3")]
