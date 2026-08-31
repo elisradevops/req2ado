@@ -88,6 +88,32 @@ class Settings(BaseSettings):
     # delay and connection overhead for every one of those other users
     # without buying this job anything back.
     survey_branch_concurrency: int = 1
+    # The chunk-level counterpart to survey_branch_concurrency above, for
+    # the five chunked whole-document/whole-subtree LLM enhancement passes
+    # (title/tag, requirement-text synthesis, Epic/Feature parent summary,
+    # requirement quality scoring, Epic/Feature quality scoring). Each of
+    # those splits its work into independent chunks and, before this dial
+    # existed, always issued them one at a time -- the dominant wall-clock
+    # term on a large document.
+    #
+    # Separate dial, not a reuse of survey_branch_concurrency, because the
+    # two never compound: not one of those five passes runs inside a branch
+    # worker (title/tag, synthesis and parent-summary all run inside
+    # _detect_deterministic_subtrees' sequential subtree loop, before the
+    # branch loop exists; both scoring passes run at whole-document scope
+    # after every branch executor has shut down). So an operator can raise
+    # this one without also raising branch concurrency, and total in-flight
+    # requests is max(this, branch), never the product.
+    #
+    # Default of 1 preserves the exact previous behavior (no
+    # ThreadPoolExecutor is constructed at all at 1) and carries the SAME
+    # operator warning survey_branch_concurrency's own comment above spells
+    # out in full: this is req2ado's own client-side fan-out, not a request
+    # for more backend capacity. A local single-GPU Ollama with default
+    # settings (one parallel slot) gains nothing from raising this; on a
+    # shared backend, raise it only in coordination with whoever operates
+    # that backend's own concurrency limit.
+    survey_chunk_concurrency: int = 1
     # Kill switch for app/loaders/docx_pagination.py's docx->PDF page
     # alignment (see /ingest's own comment for wiring) -- default on, but
     # lets this be disabled without a code deploy if the LibreOffice
