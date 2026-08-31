@@ -94,6 +94,10 @@ export interface TableCell {
    * Set when this cell's text could not be extracted directly and was recovered via OCR on a rendered crop -- see TableCell.ocr_recovered's own docstring in canonical/model.py.
    */
   ocr_recovered?: boolean;
+  /**
+   * Set when this cell's own DOCX markup contains a nested table whose content could not be represented in the canonical model and was dropped -- see TableCell.nested_table_dropped's own docstring in canonical/model.py.
+   */
+  nested_table_dropped?: boolean;
 }
 export interface Figure {
   id: string;
