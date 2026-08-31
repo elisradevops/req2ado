@@ -8,7 +8,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import app.survey.orchestrator_llm_client as orchestrator_llm_client_module
-from app.survey.orchestrator_llm_client import OrchestratorLlmClient
+from app.survey.orchestrator_llm_client import _MAX_OUTPUT_TOKENS, OrchestratorLlmClient
 from app.workitem.model import RequirementQualityIssue
 
 
@@ -756,6 +756,60 @@ def test_score_epics_and_features_for_document_parses_valid_response() -> None:
     result = client.score_epics_and_features_for_document({"n0": {"type": "Epic", "text": "text"}})
     assert result["n0"]["score"] == 85
     assert result["n0"]["categoryScores"] == {"scopeCoherence": 90, "outcomeClarity": 80}
+
+
+def test_chat_json_sends_the_expected_payload_shape_with_schema() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": '{"ok": true}'})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    result = client._chat_json("system text", "user text", schema={"type": "object"})
+
+    assert captured["body"]["messages"] == [
+        {"role": "system", "content": "system text"},
+        {"role": "user", "content": "user text"},
+    ]
+    assert captured["body"]["temperature"] == 0
+    assert captured["body"]["responseSchema"] == {"type": "object"}
+    assert captured["body"]["think"] is False
+    assert captured["body"]["maxTokens"] == _MAX_OUTPUT_TOKENS
+    assert captured["body"]["seed"] == 42  # client's own default
+    assert result == {"ok": True}
+
+
+def test_chat_json_omits_response_schema_when_none() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "[]"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client._chat_json("system text", "user text", schema=None)
+
+    assert "responseSchema" not in captured["body"]
+
+
+def test_chat_json_respects_a_custom_max_tokens() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client._chat_json("s", "u", schema={"type": "object"}, max_tokens=2000)
+
+    assert captured["body"]["maxTokens"] == 2000
 
 
 def test_title_and_tags_for_rows_sends_the_closed_tag_vocabulary_and_schema() -> None:

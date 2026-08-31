@@ -956,6 +956,41 @@ class OrchestratorLlmClient:
         assert response is not None  # loop always runs >=1 iteration
         return response
 
+    def _chat_json(
+        self,
+        system_prompt: str,
+        user_content: str,
+        *,
+        schema: dict | None = None,
+        max_tokens: int = _MAX_OUTPUT_TOKENS,
+    ) -> object:
+        """Shared payload-envelope + response-parsing shape for this class's
+        simple, single-shot structured-extraction calls (schema in, JSON
+        object/array out, no caching, no tracing span, no truncation
+        tracking). Callers with any of that extra machinery (analyze_section*,
+        score_*_for_document, author_content, map_figures_tables) build their
+        own payload directly instead of using this -- see each of THEIR own
+        docstrings for why. `schema=None` omits `responseSchema` entirely
+        (see infer_trace_links's own comment on the array-schema grammar-cost
+        cliff this supports)."""
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": 0,
+            **({"model": self._model} if self._model else {}),
+            **({"responseSchema": schema} if schema is not None else {}),
+            "think": False,
+            "maxTokens": max_tokens,
+            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+            **({"seed": self._seed} if self._seed is not None else {}),
+        }
+        response = self._post_chat(payload)
+        response.raise_for_status()
+        content = _strip_json_fence(response.json()["content"])
+        return _parse_json_object(content)
+
     def infer_trace_links(
         self,
         nodes: list[dict],
@@ -971,38 +1006,20 @@ class OrchestratorLlmClient:
         nodes_json = json.dumps(nodes)
         system_prompt = load_prompt("infer_trace_links", catalog_lines=catalog_lines)
         system_prompt = _with_kb_context(system_prompt, kb_context)
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": nodes_json},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            # No response_format: same top-level-array grammar-cost cliff as
-            # infer_hierarchy -- see _response_schemas.py's module docstring.
-            # Defended by the existing reference_name-not-in-catalog filter
-            # in llm_leveling.py instead.
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            # Confirmed missing here (unlike analyze_section/agentic, which
-            # already forward this): without an explicit num_ctx, Ollama
-            # silently truncates the prompt to its own small default
-            # regardless of actual size (see LlmChatOptions.numCtx's own
-            # doc comment) -- this call serializes EVERY node in the whole
-            # tree (nodes_json above), the largest single payload in this
-            # module, making it the most exposed call to that truncation.
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-            # Relationship inference over already-generated nodes is
-            # structured extraction, not open-ended reasoning -- same
-            # confirmed-live finding (3-10x wall-clock cost, no accuracy
-            # benefit) as analyze_section/analyze_section_agentic and
-            # score_requirements_for_document.
-            "think": False,
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        # No response_format/schema: same top-level-array grammar-cost cliff
+        # as infer_hierarchy -- see _response_schemas.py's module docstring.
+        # Defended by the existing reference_name-not-in-catalog filter in
+        # llm_leveling.py instead. numCtx IS forwarded (via _chat_json, when
+        # configured) -- this call serializes EVERY node in the whole tree
+        # (nodes_json above), the largest single payload in this module,
+        # making it the most exposed call to Ollama's silent prompt
+        # truncation without an explicit num_ctx (see LlmChatOptions.numCtx's
+        # own doc comment). think=False: relationship inference over
+        # already-generated nodes is structured extraction, not open-ended
+        # reasoning -- same confirmed-live finding (3-10x wall-clock cost, no
+        # accuracy benefit) as analyze_section/analyze_section_agentic and
+        # score_requirements_for_document.
+        return self._chat_json(system_prompt, nodes_json, schema=None)
 
     def score_requirements_for_document(
         self,
@@ -1212,25 +1229,12 @@ class OrchestratorLlmClient:
         is a small, self-contained part of a document; this is structured
         extraction, not whole-document comprehension."""
         system_prompt = load_prompt("extract_quality_checklist")
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS]},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": checklist_extraction_schema(),
-            "think": False,
-            "maxTokens": 2000,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        parsed = _parse_json_object(content)
+        parsed = self._chat_json(
+            system_prompt, document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
+            schema=checklist_extraction_schema(), max_tokens=2000,
+        )
         if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
-            raise ValueError(f"malformed JSON in LLM response content: {content!r}")
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         return self._sanitize_checklist(parsed)
 
     def _sanitize_checklist(self, raw_items: list[str]) -> list[str]:
@@ -1300,25 +1304,12 @@ class OrchestratorLlmClient:
         system_prompt = load_prompt(
             "extract_quality_checklist_definitions", category_names=json.dumps(category_names),
         )
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS]},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": checklist_definitions_schema(),
-            "think": False,
-            "maxTokens": 2000,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        parsed = _parse_json_object(content)
+        parsed = self._chat_json(
+            system_prompt, document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
+            schema=checklist_definitions_schema(), max_tokens=2000,
+        )
         if not isinstance(parsed, dict):
-            raise ValueError(f"malformed JSON in LLM response content: {content!r}")
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         return self._sanitize_checklist_definitions(parsed, category_names)
 
     def _sanitize_checklist_definitions(self, raw: dict, category_names: list[str]) -> dict[str, str]:
@@ -1430,23 +1421,7 @@ class OrchestratorLlmClient:
             tag_vocabulary=", ".join(t.value for t in RequirementTag),
             row_count=str(len(texts_by_row_id)),
         )
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(texts_by_row_id)},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": title_tags_schema(),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        return self._chat_json(system_prompt, json.dumps(texts_by_row_id), schema=title_tags_schema())
 
     def summarize_parent_nodes(self, nodes_by_id: dict[str, dict]) -> dict[str, dict]:
         """Backs the ParentSummaryClient protocol (id_tree_builder.py) --
@@ -1477,23 +1452,7 @@ class OrchestratorLlmClient:
         malformed/partial response, keeping the verbatim heading title and
         description exactly as constructed."""
         system_prompt = load_prompt("summarize_parent_nodes", node_count=str(len(nodes_by_id)))
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(nodes_by_id)},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": parent_summary_schema(),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        return self._chat_json(system_prompt, json.dumps(nodes_by_id), schema=parent_summary_schema())
 
     def synthesize_leaf_requirements(self, items_by_id: dict[str, dict]) -> dict[str, dict]:
         """Backs the SynthesisClient protocol (id_tree_builder.py) -- the
@@ -1522,23 +1481,7 @@ class OrchestratorLlmClient:
             tag_vocabulary=", ".join(t.value for t in RequirementTag),
             row_count=str(len(items_by_id)),
         )
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(items_by_id)},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": synthesis_schema(),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        return self._chat_json(system_prompt, json.dumps(items_by_id), schema=synthesis_schema())
 
     def distill_title(self, text: str, max_length: int) -> str:
         """Backs the TitleDistillationClient protocol
@@ -1549,23 +1492,10 @@ class OrchestratorLlmClient:
         external response to self-enforce a hard limit" rule that function's
         own docstring documents."""
         system_prompt = load_prompt("distill_survey_title")
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps({"text": text, "maxLength": max_length})},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": distill_title_schema(),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)["title"]
+        parsed = self._chat_json(
+            system_prompt, json.dumps({"text": text, "maxLength": max_length}), schema=distill_title_schema(),
+        )
+        return parsed["title"]
 
     def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
         """Backs the DuplicateJudgeClient protocol
@@ -1584,23 +1514,10 @@ class OrchestratorLlmClient:
         real match for check_for_duplicates.py's purposes (it only answers
         "does this already exist," not conflict semantics)."""
         system_prompt = load_prompt("judge_duplicate_pair")
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps({"candidate": candidate_text, "existing": matched_text})},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": duplicate_pair_verdict_schema(),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        return self._chat_json(
+            system_prompt, json.dumps({"candidate": candidate_text, "existing": matched_text}),
+            schema=duplicate_pair_verdict_schema(),
+        )
 
     def judge_duplicate_cluster(self, texts_by_id: dict[str, str]) -> dict:
         """Backs the ConflictJudgeClient protocol (llm_leveling.py) --
@@ -1624,23 +1541,7 @@ class OrchestratorLlmClient:
         case this exists to catch), 'distinct' means the similarity match
         was a false positive (genuinely different requirements)."""
         system_prompt = load_prompt("judge_duplicate_cluster")
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(texts_by_id)},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": duplicate_cluster_verdict_schema(),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        return self._chat_json(system_prompt, json.dumps(texts_by_id), schema=duplicate_cluster_verdict_schema())
 
     def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
         """Backs the RootGroupingClient protocol (llm_leveling.py) -- real
@@ -1664,23 +1565,7 @@ class OrchestratorLlmClient:
         both valid answers when that's genuinely what the topics call
         for."""
         system_prompt = load_prompt("group_root_topics")
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(titles_by_id)},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": root_grouping_schema(),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        return self._chat_json(system_prompt, json.dumps(titles_by_id), schema=root_grouping_schema())
 
     def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict:
         """Backs the RootGroupingClient protocol's second, optional method
@@ -1705,23 +1590,10 @@ class OrchestratorLlmClient:
         real root under a group that already exists and already traces to
         real source content."""
         system_prompt = load_prompt("assign_leftover_roots")
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps({"leftovers": leftover_titles_by_id, "groups": group_titles_by_id})},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": leftover_assignment_schema(),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        return self._chat_json(
+            system_prompt, json.dumps({"leftovers": leftover_titles_by_id, "groups": group_titles_by_id}),
+            schema=leftover_assignment_schema(),
+        )
 
     def show_model(self, model: str) -> dict:
         """Backs the ModelCapsClient protocol (llm_leveling.py) -- a live
@@ -1770,36 +1642,22 @@ class OrchestratorLlmClient:
             str(i): {"source_file": s["source_file"], "text": s["text"]} for i, s in enumerate(snippets)
         }
         system_prompt = load_prompt("judge_kb_relevance")
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps({"section_content": branch_content, "snippets": snippets_by_index}),
-                },
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            "responseSchema": kb_relevance_schema(),
-            # Confirmed missing here: this was the ONE call in this module
-            # with no output cap at all -- the exact unbounded-hidden-
-            # reasoning exposure _MAX_OUTPUT_TOKENS's own doc comment
-            # documents (a reasoning model observed generating 40+ minute
-            # single calls with no cap in place). Output here is a tiny
-            # index->enum map, so this is pure downside-bounding, not a
-            # real content constraint.
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-            # Binary relevant/not_relevant judgment per snippet -- structured
-            # classification, not open-ended reasoning. Same confirmed-live
-            # finding as every other non-conversational call in this module.
-            "think": False,
-        }
-        response = self._post_chat(payload)
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        return _parse_json_object(content)
+        # Confirmed missing before this used _chat_json: this was the ONE
+        # call in this module with no output cap at all -- the exact
+        # unbounded-hidden-reasoning exposure _MAX_OUTPUT_TOKENS's own doc
+        # comment documents (a reasoning model observed generating 40+ minute
+        # single calls with no cap in place). Output here is a tiny
+        # index->enum map, so _chat_json's default maxTokens is pure
+        # downside-bounding, not a real content constraint. think=False
+        # (also via _chat_json's default): binary relevant/not_relevant
+        # judgment per snippet is structured classification, not open-ended
+        # reasoning -- same confirmed-live finding as every other
+        # non-conversational call in this module.
+        return self._chat_json(
+            system_prompt,
+            json.dumps({"section_content": branch_content, "snippets": snippets_by_index}),
+            schema=kb_relevance_schema(),
+        )
 
     def analyze_section(
         self,
