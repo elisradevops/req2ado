@@ -35,7 +35,7 @@ from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.scoring import score_single_requirement_text
-from app.leveling.tree_builder import build_baseline_tree
+from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
 from app.quality.criteria_retrieval import CriteriaRetriever
@@ -516,6 +516,64 @@ def _caption_and_store_one_figure(
     )
 
 
+def _reassign_figure_captions(doc: CanonicalDoc, outcomes: list[FigureCaptionOutcome]) -> None:
+    """Writes each figure's post-parse caption back onto the already-built
+    tree, by figure id. The ONE place the tree is mutated by the captioning
+    pass -- always on the calling thread, always in figure-id order.
+
+    Two fields, not one, and the second is the load-bearing one:
+
+    - Figure.caption, the vision model's own prose.
+    - The PAIRED inline FIGURE-kind Block's text. tree_builder._figure_line
+      parses the caption back OUT of block.text ("[FIGURE: {caption or
+      'none'}]"), and BOTH /level paths use that -- not Figure.caption -- to
+      decide figure_ids vs uncaptioned_figure_ids (tree_builder.py's three
+      node-building paths and llm_leveling.py's span-fold attribution). A
+      reassignment that set Figure.caption alone would leave every captioned
+      figure classified as uncaptioned and drop every caption out of every
+      rendered section.
+
+    Blocks are paired to figures POSITIONALLY -- the i-th FIGURE-kind block
+    is doc.figures[i] -- by inverting tree_builder.figure_id_by_block_id,
+    the codebase's own shared pairing helper. Deliberately NOT by
+    source_ref: that helper's own docstring records why ("source_ref alone
+    is ambiguous for docx's own floating-image fallback path, which can give
+    several figures the identical (0, 0) placeholder ref").
+
+    The block-text write is CONDITIONAL on a real caption existing, which is
+    what preserves docx's Caption-paragraph behavior unchanged. That branch
+    (docx_loader.py) reads `figures[-1].caption is None` DURING parsing to
+    decide whether the author's own caption paragraph becomes the rendered
+    text -- and under deferred captioning that is always None, so it always
+    fires and always writes "[FIGURE: {author caption}]". Overwriting here
+    only when vision produced real prose lands on exactly the same final
+    string as the old inline order did in both cases: vision prose wins when
+    it exists, the author's caption remains the fallback when it doesn't,
+    and "[FIGURE: none]" remains the fallback when neither exists."""
+    block_id_by_figure_id = {
+        figure_id: block_id for block_id, figure_id in figure_id_by_block_id(doc).items()
+    }
+    blocks_by_id = {block.id: block for block in doc.blocks}
+    figures_by_figure_id = {figure.id: figure for figure in doc.figures}
+    for outcome in outcomes:
+        figure = figures_by_figure_id.get(outcome.figure_id)
+        if figure is None:
+            # Defensive only -- the lockstep-append invariant makes this
+            # unreachable. Never silently drop a caption without a trace.
+            logger.warning(
+                "Captioned figure %s has no matching Figure in the parsed document -- caption discarded",
+                outcome.figure_id,
+            )
+            continue
+        if outcome.caption is None:
+            continue
+        figure.caption = outcome.caption
+        block_id = block_id_by_figure_id.get(outcome.figure_id)
+        block = blocks_by_id.get(block_id) if block_id is not None else None
+        if block is not None:
+            block.text = f"[FIGURE: {outcome.caption}]"
+
+
 # Lazily constructed (NOT at import time, unlike _vector_store above) --
 # CriteriaRetriever's constructor makes a real embed() HTTP call to embed
 # the corpus, and eagerly doing that at module-import time would make every
@@ -913,80 +971,23 @@ async def ingest(
     # loop below) -- a figure the document itself already named via Task 4
     # keeps that name unconditionally.
     figure_title: dict[str, str] = {}
+    # Every figure's original bytes, in loader-append order -- collected
+    # during the parse, captioned afterward (see the post-parse captioning
+    # pass below). The collector deliberately does NOTHING but record and
+    # return None: the loaders' own lockstep-append invariant means the Nth
+    # call corresponds to figure id f"f{N-1}", so recording in call order is
+    # all the id bookkeeping this needs. Every loader is already proven to
+    # work correctly with a caption-less callback -- the docx/pptx figure
+    # precount pass above runs the very same loaders with
+    # describe_figure=None and produces the identical figure list and ids.
+    collected_figure_bytes: list[bytes] = []
     if vision_active:
-        # Closed over per-request (not module-level) -- figure_counter must
-        # start at 0 for every new /ingest call, not accumulate across
-        # concurrent or subsequent requests.
-        figure_counter = {"n": 0}
 
-        def _describe_figure_with_progress(image_bytes: bytes) -> str | None:
-            figure_counter["n"] += 1
-            index = figure_counter["n"]
-            if narration_publisher is not None:
-                narration_publisher.publish(
-                    LevelingProgress(
-                        phase="describe_figure",
-                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                        kb_grounded=False, kb_citations=[],
-                        figure_index=index, figure_count=figure_total,
-                    )
-                )
-            # index-1 matches the loader's own f"f{figure_index}" id scheme --
-            # every loader (docx/pptx/pdf) calls describe_figure exactly once
-            # per figure, immediately before appending that figure with a
-            # 0-based sequential id, in the same order (the lockstep-append
-            # invariant llm_leveling.py's figure_id_by_block_id mapping also
-            # relies on). Every skip gate in every loader runs BEFORE this
-            # call and returns without touching either counter, so the two
-            # never drift.
-            figure_id = f"f{index - 1}"
-            # primer_context is the outer ingest() route param (closed over
-            # by this nested function); _describe_figure's OWN parameter is
-            # named document_context (see main.py's _describe_figure) since
-            # it's a plain in-process argument, never a URL query key of its
-            # own -- passing primer_context's value into it here is the one
-            # place that boundary rename happens.
-            outcome = _caption_and_store_one_figure(figure_id, image_bytes, primer_context, job_id)
-            # Computed unconditionally (not only inside the job_id/
-            # _figure_file_client gate) since Figure.caption_status must be
-            # populated whenever vision ran at all, independent of whether
-            # figure-file storage is configured.
-            if outcome.status is not None:
-                figure_caption_status[figure_id] = outcome.status
-            if outcome.title is not None:
-                figure_title[figure_id] = outcome.title
-            if outcome.storage_failed:
-                failed_figure_ids.append(figure_id)
-            if narration_publisher is not None:
-                # caption is None exactly when the vision model judged this
-                # figure non-significant (or vision failed) -- both cases
-                # get the same honest "nothing here" narration copy, same
-                # spirit as the retired sentinel's display translation.
-                display_caption = (
-                    outcome.caption if outcome.caption is not None
-                    else "this figure has no discernible technical content"
-                )
-                narration_publisher.publish(
-                    LevelingProgress(
-                        phase="describe_figure",
-                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                        kb_grounded=False, kb_citations=[],
-                        figure_index=index, figure_caption=display_caption, figure_count=figure_total,
-                        # Distinct from display_caption above: lets the
-                        # frontend's FigureDescriptions panel (unlike the
-                        # one-line activity ticker, which legitimately wants
-                        # display_caption's placeholder text so it's never
-                        # blank) apply the SAME "no real caption -> don't
-                        # keep it" rule pipeline.worker.ts's persisted-job
-                        # path already applies via Boolean(caption) -- see
-                        # LevelingProgress.figure_caption_status's own
-                        # docstring for the live-confirmed bug this closes.
-                        figure_caption_status=outcome.status,
-                    )
-                )
-            return outcome.caption
+        def _collect_figure_bytes(image_bytes: bytes) -> str | None:
+            collected_figure_bytes.append(image_bytes)
+            return None
 
-        describe_figure_fn = _describe_figure_with_progress
+        describe_figure_fn = _collect_figure_bytes
 
     try:
         # run_in_threadpool: dispatch_by_extension can now make a real
@@ -1043,6 +1044,72 @@ async def ingest(
                 )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+    # POST-PARSE CAPTIONING PASS -- phase 2 of two. Parsing (above) collected
+    # every figure's bytes in loader-append order without making a single
+    # vision call; this pass captions them and phase 3 (below) reassigns the
+    # results by figure id.
+    #
+    # Runs HERE, after the try/finally, so it operates on the FINAL `doc` --
+    # including whatever annotate_docx_pages returned, which can replace
+    # Block/SourceRef objects. It needs no tmp_path (the bytes are already in
+    # hand), so the finally's unlink above is harmless. And it must run
+    # BEFORE the caption_status/name patch loop and the parse_done narration
+    # below, both of which read the results it produces.
+    #
+    # Serial for now -- see the bounded pool this becomes. Narration is
+    # deliberately split in two: the per-figure "starting" event fires in
+    # the DISPATCH loop and the "captioned" event in the ordered COLLECT
+    # loop, both on this calling thread, so figure_index stays monotonic in
+    # document order. ProgressBanner derives its overall percentage from the
+    # LAST narration event's figureIndex, so an out-of-order index is a
+    # visible backwards-moving progress bar, not a cosmetic log reorder.
+    figure_outcomes: list[FigureCaptionOutcome] = []
+    for figure_position, image_bytes in enumerate(collected_figure_bytes):
+        figure_index = figure_position + 1
+        if narration_publisher is not None:
+            narration_publisher.publish(
+                LevelingProgress(
+                    phase="describe_figure",
+                    branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                    kb_grounded=False, kb_citations=[],
+                    figure_index=figure_index, figure_count=figure_total,
+                )
+            )
+        # primer_context is the /ingest route param; _describe_figure's own
+        # parameter is named document_context -- this is the one place that
+        # boundary rename happens.
+        outcome = _caption_and_store_one_figure(
+            f"f{figure_position}", image_bytes, primer_context, job_id,
+        )
+        figure_outcomes.append(outcome)
+        if outcome.status is not None:
+            figure_caption_status[outcome.figure_id] = outcome.status
+        if outcome.title is not None:
+            figure_title[outcome.figure_id] = outcome.title
+        if outcome.storage_failed:
+            failed_figure_ids.append(outcome.figure_id)
+        if narration_publisher is not None:
+            # caption is None exactly when the vision model judged this
+            # figure non-significant (or vision failed) -- both cases get
+            # the same honest "nothing here" narration copy.
+            display_caption = (
+                outcome.caption if outcome.caption is not None
+                else "this figure has no discernible technical content"
+            )
+            narration_publisher.publish(
+                LevelingProgress(
+                    phase="describe_figure",
+                    branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                    kb_grounded=False, kb_citations=[],
+                    figure_index=figure_index, figure_caption=display_caption, figure_count=figure_total,
+                    # Distinct from display_caption above -- see
+                    # LevelingProgress.figure_caption_status's own docstring.
+                    figure_caption_status=outcome.status,
+                )
+            )
+    if figure_outcomes:
+        _reassign_figure_captions(doc, figure_outcomes)
 
     doc.failed_figure_storage_ids = failed_figure_ids
     doc.vision_active = vision_active

@@ -215,3 +215,101 @@ def test_vision_active_is_false_when_no_vision_client_is_configured(monkeypatch)
 
     assert result["vision_active"] is False
     assert result["figures"][0]["caption_status"] is None
+
+
+MULTI_FIGURE_FIXTURE_NAME = "multi_figure.docx"
+
+
+def test_multi_figure_document_captions_every_figure_with_matching_ids(monkeypatch) -> None:
+    # The core equivalence guarantee: a multi-figure document must come back
+    # with each figure's OWN caption on the right id, and each figure's
+    # paired FIGURE-kind block carrying that same caption in its text --
+    # which is what /level's _figure_line actually reads to decide
+    # figure_ids vs uncaptioned_figure_ids.
+    import app.main as main_module
+
+    class _PerImageVisionClient:
+        """A distinct caption per distinct image, so a mis-ordered
+        reassignment is detectable rather than masked by identical text."""
+
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None):
+            import hashlib
+
+            digest = hashlib.sha256(image_bytes).hexdigest()[:8]
+            return FigureVisionResult(significant=True, description=f"caption for {digest}")
+
+    monkeypatch.setattr(main_module, "_vision_client", _PerImageVisionClient())
+
+    result = _upload(
+        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        primer_context="multi-figure-caption-ids",
+    )
+
+    figures = result["figures"]
+    assert len(figures) >= 2
+    assert [f["id"] for f in figures] == [f"f{i}" for i in range(len(figures))]
+    for figure in figures:
+        assert figure["caption"] and figure["caption"].startswith("caption for ")
+
+    figure_blocks = [b for b in result["blocks"] if b["kind"] == "figure"]
+    assert len(figure_blocks) == len(figures)
+    for block, figure in zip(figure_blocks, figures):
+        # Positional pairing -- the same pairing tree_builder.
+        # figure_id_by_block_id uses, and the reason source_ref must NOT be
+        # used here.
+        assert block["text"] == f"[FIGURE: {figure['caption']}]"
+
+
+def test_an_uncaptioned_figure_keeps_the_none_placeholder_block_text(monkeypatch) -> None:
+    # The other half: when vision returns no real caption, the paired block
+    # text must stay "[FIGURE: none]" -- _figure_line treats that as
+    # uncaptioned, which is what populates uncaptioned_figure_ids in /level.
+    import app.main as main_module
+
+    class _InsignificantVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None):
+            return FigureVisionResult(significant=False, description="")
+
+    monkeypatch.setattr(main_module, "_vision_client", _InsignificantVisionClient())
+
+    result = _upload(
+        "sample.docx", FIXTURES / "sample.docx", mode="survey",
+        primer_context="uncaptioned-placeholder-block-text",
+    )
+
+    assert result["figures"][0]["caption"] is None
+    assert result["figures"][0]["caption_status"] == "insignificant"
+    figure_blocks = [b for b in result["blocks"] if b["kind"] == "figure"]
+    assert figure_blocks[0]["text"] == "[FIGURE: none]"
+
+
+def test_figure_captioning_happens_after_parsing_not_during_it(monkeypatch) -> None:
+    # Proves the two phases really are split: no vision call may be made
+    # while the loader is still walking the document. Observed by recording
+    # whether describe_figure was ever entered before the loader returned.
+    import app.main as main_module
+
+    events: list[str] = []
+    original_dispatch = main_module.dispatch_by_extension
+
+    def recording_dispatch(*args, **kwargs):
+        events.append("parse_start")
+        doc = original_dispatch(*args, **kwargs)
+        events.append("parse_end")
+        return doc
+
+    class _RecordingVisionClient:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None):
+            events.append("vision")
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    monkeypatch.setattr(main_module, "dispatch_by_extension", recording_dispatch)
+    monkeypatch.setattr(main_module, "_vision_client", _RecordingVisionClient())
+
+    _upload(
+        "sample.docx", FIXTURES / "sample.docx", mode="survey",
+        primer_context="captioning-after-parsing",
+    )
+
+    assert "vision" in events
+    assert events.index("vision") > events.index("parse_end")
