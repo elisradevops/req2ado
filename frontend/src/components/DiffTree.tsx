@@ -313,7 +313,13 @@ function useStatusColumnWidth(entries: DryRunDiffEntry[]): number {
     const font = `600 12px ${fontFamily}`;
     let widest = 0;
     for (const entry of entries) {
-      widest = Math.max(widest, measureTextWidth(actionLabel(entry), font));
+      // A flagged entry shares this same cell with the TriangleAlert icon
+      // (see the cell's own comment below) -- the icon (h-3.5 w-3.5 = 14px)
+      // plus its gap-1 (4px) to the chip must be reserved here too, or a
+      // flagged row's icon gets clipped by the cell's own overflow-hidden
+      // once the chip alone fills the measured width. Confirmed live.
+      const iconReserve = isFlaggedDiffEntry(entry) ? 14 + 4 : 0;
+      widest = Math.max(widest, measureTextWidth(actionLabel(entry), font) + iconReserve);
     }
     // Chip's own horizontal padding+border (px-2 + 1px border each side =
     // 18px) plus a small buffer so text never sits flush against the
@@ -1082,20 +1088,26 @@ function DiffTreeRow({
         </span>
       </div>
 
-      {/* overflow-hidden -- this span IS the 100px grid track (the row is a
-          CSS grid, not flex), so it already clips anything wider. Without
-          it, a long reuse/dedup_skip label ("Near-duplicate of WI-12345")
-          on Chip's own whitespace-nowrap (shared by every Chip usage in the
-          app, so not changed here) painted past the column boundary into
-          the Signals column next to it.
+      {/* This is the STATUS grid track (var(--status-w), header label
+          "Status") -- the flagged-review icon shares it with ActionBadge,
+          it is NOT the separate "Flags" track (Signals cell, issue/link/
+          table/figure counts) further right. overflow-hidden -- this span
+          IS that grid track (the row is a CSS grid, not flex), so it
+          already clips anything wider. Without it, a long reuse/dedup_skip
+          label ("Near-duplicate of WI-12345") on Chip's own
+          whitespace-nowrap (shared by every Chip usage in the app, so not
+          changed here) painted past the column boundary into the Signals
+          column next to it. useStatusColumnWidth reserves extra width for
+          the icon on a flagged entry -- without that reservation the icon's
+          left edge clips here too (confirmed live).
 
           The flagged signal is a plain icon, not a text chip -- matches
           this row's own existing vocabulary for a quick-glance signal
           (same shape as the Lock/EyeOff icons above and the Signals
-          column's issue-count icon just right of this cell), and, unlike
+          column's issue-count icon further right), and, unlike
           a text chip, has a fixed small width that always fits next to
           the action badge on one line. The previous "⚠ Review" text chip
-          in this same fixed-width, right-aligned, overflow-hidden cell
+          in this same right-aligned, overflow-hidden cell
           was itself often wider than the column -- confirmed live: its
           left edge (the ⚠ glyph and the pill's own curved left end) got
           clipped off, not just the two-chip crowding a stacked layout
