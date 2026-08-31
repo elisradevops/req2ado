@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
+from app.leveling.bounded_chunks import run_chunks_bounded
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback, _sample_titles
 from app.quality.criteria_retrieval import CriteriaRetriever
 from app.workitem.model import (
@@ -91,6 +92,10 @@ def _score_all_requirements(
     branch_count: int,
     category_checklist: list[str] | None = None,
     category_checklist_definitions: dict[str, str] | None = None,
+    # How many of this pass's independent chunks may be in flight at once
+    # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
+    # is the byte-identical previous behavior.
+    chunk_concurrency: int = 1,
 ) -> None:
     """Whole-document quality scoring (§2c redesign): replaces the old
     one-batched-call-per-branch design with one (or, for a very large
@@ -128,7 +133,16 @@ def _score_all_requirements(
     get_quality_checklist_definitions), when supplied, is passed straight
     through to _apply_quality_scores per chunk to build each node's own
     quality_category_checklist -- see _match_category_checklist's own
-    docstring for the matching heuristic."""
+    docstring for the matching heuristic.
+
+    Chunks may run concurrently, bounded by `chunk_concurrency` (see
+    app.config.Settings.survey_chunk_concurrency). Determinism is preserved
+    structurally: the client call is the only work off the calling thread,
+    outcomes come back by chunk INDEX rather than completion order, and
+    every mutation, warning append, and narration event happens in the
+    fixed-order merge loop -- so scores, warning order, and the narration
+    stream are byte-identical to a serial run. Per-chunk fail-soft is
+    unchanged."""
     if not nodes:
         return
     criteria_context = (
@@ -179,25 +193,53 @@ def _score_all_requirements(
             )
         )
 
+    # PHASE 1 -- chunk construction and every PRE-dispatch narration event,
+    # on the calling thread, in document order. Firing here rather than from
+    # a worker keeps narration in document order with no lock -- the same
+    # reasoning llm_leveling._map_figures_tables_to_nodes' _fire_map_scope
+    # already documents for its own concurrent batches. (The frontend derives
+    # its "batch N of M" chip and its percentage from the LAST narration
+    # event it received, so an out-of-order chunkIndex/blocks_done is a
+    # visible progress regression, not a cosmetic log reorder.)
+    chunks: list[list[WorkItemNode]] = []
     for start in range(0, len(representative_nodes), _SCORING_CHUNK_NODE_COUNT):
         chunk = representative_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
         chunk_index = start // _SCORING_CHUNK_NODE_COUNT
         _fire("score_requirements", chunk, nodes_done=start, chunk_index=chunk_index)
-        try:
-            _apply_quality_scores(
-                chunk, scoring_client, warnings, "", criteria_context, kb_context, category_checklist,
-                category_checklist_definitions, progress_callback=progress_callback,
-            )
-        except Exception as exc:  # noqa: BLE001 - one chunk's transient failure (confirmed live:
-            # a real job lost 45+ minutes of prior parse/tree-build/title-tag/
-            # synthesis work to a single 500 from the LLM backend here) must
-            # never discard the rest of an already-mostly-complete SURVEY job.
-            # Requirement quality scoring is an enhancement on top of the
-            # already-built tree, never a dependency of its correctness --
-            # same "must never fail a SURVEY job" philosophy
-            # _score_epics_and_features (below) already uses for the
-            # identical kind of call.
-            message = f"Requirement quality scoring failed for {len(chunk)} node(s): {exc}"
+        chunks.append(chunk)
+
+    # PHASE 2 -- the worker. _apply_quality_scores both appends warnings and
+    # fires progress_callback of its own (SCORING_MISSING,
+    # SCORING_INCONSISTENT_CATEGORIES), so it is given a per-chunk LOCAL
+    # warnings list and a COLLECTING callback here; the merge loop below
+    # replays both into the shared list / real callback in chunk order. This
+    # is what keeps the warning order and narration order byte-identical to
+    # a serial run without changing _apply_quality_scores' own signature.
+    def _score_one_chunk(chunk: list[WorkItemNode]) -> tuple[list[IntegrityWarning], list[LevelingProgress]]:
+        chunk_warnings: list[IntegrityWarning] = []
+        chunk_events: list[LevelingProgress] = []
+        _apply_quality_scores(
+            chunk, scoring_client, chunk_warnings, "", criteria_context, kb_context, category_checklist,
+            category_checklist_definitions, progress_callback=chunk_events.append,
+        )
+        return chunk_warnings, chunk_events
+
+    outcomes = run_chunks_bounded(chunks, _score_one_chunk, chunk_concurrency)
+
+    # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
+    for outcome in outcomes:
+        chunk = chunks[outcome.index]
+        chunk_index = outcome.index
+        if outcome.error is not None:
+            # One chunk's transient failure (confirmed live: a real job lost
+            # 45+ minutes of prior parse/tree-build/title-tag/synthesis work
+            # to a single 500 from the LLM backend here) must never discard
+            # the rest of an already-mostly-complete SURVEY job. Requirement
+            # quality scoring is an enhancement on top of the already-built
+            # tree, never a dependency of its correctness -- same "must never
+            # fail a SURVEY job" philosophy _score_epics_and_features (below)
+            # already uses for the identical kind of call.
+            message = f"Requirement quality scoring failed for {len(chunk)} node(s): {outcome.error}"
             logger.warning(message)
             warnings.append(
                 IntegrityWarning.make(
@@ -216,6 +258,11 @@ def _score_all_requirements(
                     )
                 )
             continue
+        chunk_warnings, chunk_events = outcome.value
+        warnings.extend(chunk_warnings)
+        if progress_callback is not None:
+            for event in chunk_events:
+                progress_callback(event)
         # Fan each representative's real result out to every OTHER node
         # sharing that same description text -- see this function's own
         # docstring for why deduplication happens before chunking at all.
@@ -226,7 +273,11 @@ def _score_all_requirements(
                 duplicate.quality_category_scores = representative.quality_category_scores
                 duplicate.quality_category_checklist = representative.quality_category_checklist
         issues_found = sum(len(node.quality_issues) for node in chunk)
-        _fire("score_requirements_done", chunk, nodes_done=start + len(chunk), chunk_index=chunk_index, issues_found=issues_found)
+        nodes_done = chunk_index * _SCORING_CHUNK_NODE_COUNT + len(chunk)
+        _fire(
+            "score_requirements_done", chunk, nodes_done=nodes_done,
+            chunk_index=chunk_index, issues_found=issues_found,
+        )
 
 
 def _score_epics_and_features(
@@ -238,6 +289,10 @@ def _score_epics_and_features(
     blocks_total: int,
     branch_count: int,
     debug_capture: "DebugCapture | None" = None,
+    # How many of this pass's independent chunks may be in flight at once
+    # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
+    # is the byte-identical previous behavior.
+    chunk_concurrency: int = 1,
 ) -> None:
     """Epic/Feature quality review -- the counterpart to
     _score_all_requirements, run separately (see
@@ -260,7 +315,16 @@ def _score_epics_and_features(
     and warned, same tolerant philosophy as every other best-effort scoring
     path in this module. quality_issues is deliberately left untouched
     ([], its default) -- see epic_feature_scores_schema's own docstring for
-    why Epic/Feature review has no issues vocabulary."""
+    why Epic/Feature review has no issues vocabulary.
+
+    Chunks may run concurrently, bounded by `chunk_concurrency` (see
+    app.config.Settings.survey_chunk_concurrency). Determinism is preserved
+    structurally: the client call is the only work off the calling thread,
+    outcomes come back by chunk INDEX rather than completion order, and
+    every mutation, warning append, and narration event happens in the
+    fixed-order merge loop -- so scores, warning order, and the narration
+    stream are byte-identical to a serial run. Per-chunk fail-soft is
+    unchanged."""
     score_fn = getattr(scoring_client, "score_epics_and_features_for_document", None)
     if score_fn is None:
         return
@@ -304,20 +368,36 @@ def _score_epics_and_features(
             )
         )
 
+    # PHASE 1 -- chunk construction and every PRE-dispatch narration event,
+    # on the calling thread, in document order (see _score_all_requirements'
+    # own identical structure).
+    chunks: list[list[WorkItemNode]] = []
+    payloads: list[dict[str, dict]] = []
     for start in range(0, len(epic_feature_nodes), _SCORING_CHUNK_NODE_COUNT):
         chunk = epic_feature_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
         chunk_index = start // _SCORING_CHUNK_NODE_COUNT
-        nodes_by_id = {
-            node.local_id: {"type": node.type.value, "text": node.description} for node in chunk
-        }
         _fire("score_requirements", chunk, nodes_done=start, chunk_index=chunk_index)
-        try:
-            scores_by_id = score_fn(nodes_by_id)
-        except Exception as exc:  # noqa: BLE001 - Epic/Feature scoring must never fail a SURVEY job
-            message = f"Epic/Feature quality scoring failed: {exc}"
+        chunks.append(chunk)
+        payloads.append(
+            {node.local_id: {"type": node.type.value, "text": node.description} for node in chunk}
+        )
+
+    # PHASE 2 -- only the client call leaves the calling thread.
+    outcomes = run_chunks_bounded(payloads, lambda nodes_by_id: score_fn(nodes_by_id), chunk_concurrency)
+
+    # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
+    for outcome in outcomes:
+        chunk = chunks[outcome.index]
+        chunk_index = outcome.index
+        if outcome.error is not None:
+            message = f"Epic/Feature quality scoring failed: {outcome.error}"
             logger.warning(message)
             if debug_capture is not None:
-                debug_capture.capture("score_epics_and_features", f"chunk_{start}", str(exc))
+                debug_capture.capture(
+                    "score_epics_and_features",
+                    f"chunk_{chunk_index * _SCORING_CHUNK_NODE_COUNT}",
+                    str(outcome.error),
+                )
             warnings.append(
                 IntegrityWarning.make(
                     WarningKind.SCORING_FAILED,
@@ -335,6 +415,7 @@ def _score_epics_and_features(
                     )
                 )
             continue
+        scores_by_id = outcome.value or {}
         for node in chunk:
             entry = scores_by_id.get(node.local_id)
             if not isinstance(entry, dict):
@@ -344,7 +425,8 @@ def _score_epics_and_features(
             if is_int and 0 <= raw_score <= 100:
                 node.quality_score = raw_score
             node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
-        _fire("score_requirements_done", chunk, nodes_done=start + len(chunk), chunk_index=chunk_index)
+        nodes_done = chunk_index * _SCORING_CHUNK_NODE_COUNT + len(chunk)
+        _fire("score_requirements_done", chunk, nodes_done=nodes_done, chunk_index=chunk_index)
 
 
 def score_single_requirement_text(
