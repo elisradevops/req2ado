@@ -21,6 +21,7 @@ import {
   type DocumentOverview,
 } from '../api/jobs';
 import { formatEtaRange } from '../utils/eta';
+import { formatFileSize } from '../utils/fileSize';
 import { useOrgUrl } from '../store/authStore';
 import { useToast } from '../components/ToastProvider';
 import { PageHeader } from '../ui/PageHeader';
@@ -41,13 +42,6 @@ import { InfoTip } from '../ui/Tooltip';
 // back up.
 const WIZARD_STEPS_BASELINE = ['Upload document', 'Configure & review'];
 const WIZARD_STEPS_SURVEY = ['Upload document', 'Configure & review', 'Confirm understanding'];
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
-}
 
 // DESIGN.md §11.1 -- the "honest answer to 'what did it read'": one
 // `.hoverable-row` per section, not just the 4 aggregate stat tiles above

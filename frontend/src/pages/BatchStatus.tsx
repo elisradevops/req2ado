@@ -13,6 +13,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { useToast } from '../components/ToastProvider';
 import { cn } from '../lib/cn';
 import { TableHeaderCell } from '../ui/TableHeaderCell';
+import { formatFileSize } from '../utils/fileSize';
 
 function ordinal(n: number): string {
   const rem100 = n % 100;
@@ -27,13 +28,6 @@ function ordinal(n: number): string {
     default:
       return `${n}th`;
   }
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
 }
 
 // A file in one of these statuses has nothing left to happen to it

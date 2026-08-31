@@ -3,6 +3,7 @@ import { Upload, X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { FileTypeIcon } from './FileTypeIcon';
 import { Button } from '../ui/Button';
+import { formatFileSize } from '../utils/fileSize';
 
 // Same accepted-format set as FileDropzone.tsx's single-file wizard --
 // kept as a separate literal (not imported) since the two components are
@@ -18,13 +19,6 @@ function extensionOf(filename: string): string {
 
 function isSupported(filename: string): boolean {
   return ACCEPTED_EXTENSIONS.split(',').includes(extensionOf(filename));
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
 }
 
 // One level of a dropped directory, no recursion -- lets "drag the

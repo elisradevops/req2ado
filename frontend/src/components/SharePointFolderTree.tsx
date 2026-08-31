@@ -7,13 +7,7 @@ import { Skeleton } from '../ui/Skeleton';
 import { Tooltip } from '../ui/Tooltip';
 import { useToast } from './ToastProvider';
 import { cn } from '../lib/cn';
-
-// Exported so KbFileList.tsx (KnowledgeBase's center pane, DESIGN.md
-// Track B phase B10) can render the same size/extension formatting for its
-// own flat, non-recursive file rows without duplicating this logic.
-export function formatSize(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
-}
+import { formatFileSize } from '../utils/fileSize';
 
 export function extensionOf(name: string): string {
   const dot = name.lastIndexOf('.');
@@ -136,7 +130,7 @@ function FolderTreeNode({
           <FileTypeIcon extension={extensionOf(entry.name)} className="h-4 w-4 rounded-sm" />
         )}
         <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-        {!foldersOnly && !entry.isFolder && <span className="flex-none font-mono text-xs text-ink-3">{formatSize(entry.sizeBytes)}</span>}
+        {!foldersOnly && !entry.isFolder && <span className="flex-none font-mono text-xs text-ink-3">{formatFileSize(entry.sizeBytes)}</span>}
         {!foldersOnly && !entry.isFolder && (
           <span onClick={(e) => e.stopPropagation()} className="flex-none">
             {ingested ? (

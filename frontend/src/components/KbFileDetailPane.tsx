@@ -1,6 +1,7 @@
 import { FileText } from 'lucide-react';
-import { formatSize, extensionOf } from './SharePointFolderTree';
+import { extensionOf } from './SharePointFolderTree';
 import { FileTypeIcon, fileTypeLabel } from './FileTypeIcon';
+import { formatFileSize } from '../utils/fileSize';
 import { Button } from '../ui/Button';
 import { EmptyState } from '../ui/EmptyState';
 import { Chip } from '../ui/Chip';
@@ -58,7 +59,7 @@ export function KbFileDetailPane({
         </div>
         <div className="flex items-center justify-between gap-2">
           <dt className="text-ink-3">Size</dt>
-          <dd className="font-mono text-xs tabular-nums text-ink-2">{formatSize(entry.sizeBytes)}</dd>
+          <dd className="font-mono text-xs tabular-nums text-ink-2">{formatFileSize(entry.sizeBytes)}</dd>
         </div>
         <div className="flex items-center justify-between gap-2">
           <dt className="text-ink-3">Knowledge base</dt>

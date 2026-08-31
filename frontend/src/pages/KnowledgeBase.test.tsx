@@ -252,9 +252,9 @@ describe('KnowledgeBase', () => {
       await userEvent.click(screen.getByText('spec.docx').closest('tr')!);
 
       await waitFor(() => expect(screen.queryByText(/no file selected/i)).not.toBeInTheDocument());
-      // "2 KB" now appears twice -- the center-pane row's own Size column,
+      // "2.0 KB" now appears twice -- the center-pane row's own Size column,
       // plus the detail pane's own Size field.
-      expect(screen.getAllByText('2 KB').length).toBeGreaterThan(1);
+      expect(screen.getAllByText('2.0 KB').length).toBeGreaterThan(1);
       expect(screen.getByRole('button', { name: /add to knowledge base/i })).toBeInTheDocument();
     });
 
