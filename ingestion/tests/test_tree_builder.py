@@ -379,8 +379,13 @@ def test_table_only_document_with_an_unsupported_content_note_still_produces_the
         blocks=[
             Block(
                 id="f0", kind=BlockKind.NOTE,
-                text="[UNSUPPORTED: 1 footnote(s) could not be read and are omitted]",
-                source_ref=_sr(path, 0, 60),
+                # Copied byte-for-byte from docx_loader.py's own f-string
+                # (f"[UNSUPPORTED: {real_count} {label}(s) not extracted]")
+                # rather than approximated -- only the "[UNSUPPORTED:" prefix
+                # is load-bearing for _is_unsupported_content_note, so an
+                # approximation drifts silently.
+                text="[UNSUPPORTED: 1 footnote(s) not extracted]",
+                source_ref=_sr(path, 0, 1),
             ),
         ],
         tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr(path, 61, 62))],
@@ -391,6 +396,43 @@ def test_table_only_document_with_an_unsupported_content_note_still_produces_the
     assert requirements[0].table_ids == ["t0"]
     assert len(tree.warnings) == 1
     assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
+
+
+def test_table_only_document_with_a_note_anchors_the_synthesized_parents_to_the_table_not_the_note() -> None:
+    # SWEEP.md section 3 (cosmetic provenance): doc.blocks[0] is the
+    # diagnostic NOTE block on this path, so both synthesized parents
+    # anchored their source_ref (and their identity_hash) to a loader
+    # diagnostic's span rather than to real content. Prefer the first
+    # non-NOTE block's span, falling back to the first table's.
+    path = "table_with_footnote.docx"
+    note_ref = _sr(path, 0, 1)
+    table_ref = _sr(path, 1, 2)
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(
+                id="f0",
+                kind=BlockKind.NOTE,
+                text="[UNSUPPORTED: 1 footnote(s) not extracted]",
+                source_ref=note_ref,
+            ),
+        ],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text=c) for c in row] for row in [["Parameter", "Value"], ["Voltage", "28 VDC"]]],
+                caption="Power budget",
+                source_ref=table_ref,
+            )
+        ],
+    )
+
+    tree = build_baseline_tree(doc)
+
+    epic = next(n for n in tree.nodes if n.type == WorkItemType.EPIC)
+    feature = next(n for n in tree.nodes if n.type == WorkItemType.FEATURE)
+    assert epic.source_ref.start_offset == table_ref.start_offset
+    assert feature.source_ref.start_offset == table_ref.start_offset
 
 
 def test_a_document_with_neither_blocks_nor_tables_still_produces_an_empty_tree() -> None:

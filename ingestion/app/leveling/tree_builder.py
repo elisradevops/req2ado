@@ -595,7 +595,21 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
     for human review rather than inventing one).
     """
     doc_title = _derive_doc_title(doc)
-    first_source_ref = doc.blocks[0].source_ref if doc.blocks else doc.tables[0].source_ref
+    # Prefer the first REAL (non-diagnostic-NOTE) block: on the table-only-
+    # plus-NOTE path (docx footnote/endnote/comment detection, see
+    # _is_unsupported_content_note), doc.blocks[0] IS the [UNSUPPORTED: ...]
+    # diagnostic, so both synthesized parents were anchoring their span --
+    # and therefore their identity_hash -- to a loader diagnostic rather than
+    # to real content (SWEEP.md section 3). Byte-identical to the old
+    # expression for every document whose first block is real, which is every
+    # document that does not hit that path.
+    first_real_block = next((b for b in doc.blocks if not _is_unsupported_content_note(b)), None)
+    if first_real_block is not None:
+        first_source_ref = first_real_block.source_ref
+    elif doc.tables:
+        first_source_ref = doc.tables[0].source_ref
+    else:
+        first_source_ref = doc.blocks[0].source_ref
 
     epic = WorkItemNode(
         local_id="n0",
