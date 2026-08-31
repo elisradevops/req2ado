@@ -7,7 +7,7 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
-import { Prisma, type PrismaClient } from '@prisma/client';
+import { Prisma, type Job, type PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
@@ -34,6 +34,14 @@ import { canNest, canBeRoot } from './canNest';
 // not just PNG. Falls back to 'png' for an unrecognized mimeType, matching
 // the extension every figure was hardcoded to before this task -- an
 // unrecognized type is no worse off than the old behavior.
+// SWEEP.md 8a -- how many times mutateDiffVersioned() re-reads and
+// re-applies a mutation that lost its optimistic-concurrency race. Two
+// concurrent human reviewers collide on a single attempt with vanishing
+// probability; three consecutive losses means something pathological (a hot
+// write loop, an automation storm), where a 409 telling the caller to back
+// off is more honest than spinning.
+const DIFF_WRITE_MAX_ATTEMPTS = 3;
+
 const FIGURE_MIME_TO_EXTENSION: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -653,18 +661,70 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     }));
   }
 
-  async setDiffEntryExcluded(id: string, localId: string, excluded: boolean): Promise<DryRunDiffEntry[]> {
-    const job = await this.prisma.job.findUnique({ where: { id } });
-    if (!job) throw new NotFoundException(`Job ${id} not found`);
-    if (job.status !== 'diff_ready') {
-      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+  // SWEEP.md 8a -- the one optimistic-concurrency guard shared by all five
+  // dryRunDiff mutation endpoints (setDiffEntryExcluded, editDiffEntry,
+  // rescoreDiffEntry, addDiffEntry, moveDiffEntry). Each of them previously
+  // did findUnique -> mutate the array in JS -> update({ where: { id } }),
+  // so two clients editing DIFFERENT nodes both read the same array, each
+  // wrote back their own full copy, and the later write silently discarded
+  // the earlier one -- with both callers getting a 200. The conditional
+  // updateMany below closes that window the same way confirm()'s atomic
+  // status claim does: the where-clause is evaluated by Postgres as part of
+  // the single UPDATE, so a write whose read is already stale matches zero
+  // rows instead of clobbering.
+  //
+  // On count === 0 this RE-READS and RE-APPLIES rather than 409ing the
+  // caller. These five mutations are per-node and disjoint, so the
+  // overwhelmingly common collision -- two clients on two different nodes,
+  // the exact scenario the SWEEP item names -- has no semantic conflict at
+  // all and both edits genuinely should land. That is also already the
+  // product's stated policy: JobDetail.tsx's handleBulkExclude serializes
+  // its calls precisely so every edit lands (see its own comment), and none
+  // of the frontend's diff-mutation handlers branch on status code, so a
+  // 409 would surface as an indistinguishable generic toast and force the
+  // user to redo the edit by hand. Same-node collisions still resolve
+  // last-writer-wins after the retry, exactly as they do today -- so this
+  // strictly dominates the previous behavior and makes no case worse.
+  //
+  // CONTRACT: `mutate` may be called more than once. It MUST be a pure
+  // re-derivation from the `diff`/`job` it is handed on that attempt --
+  // never a closure over a previous attempt's array, and never carrying an
+  // external side effect. rescoreDiffEntry's ingestion /score-item call is
+  // deliberately hoisted OUT of its mutator for exactly this reason (an
+  // LLM call re-run per retry would re-bill and could persist a different
+  // score depending on retry luck). A validation throw from `mutate` is
+  // final and stops retrying, which is correct: it was evaluated against a
+  // freshly-read array.
+  private async mutateDiffVersioned(
+    id: string,
+    mutate: (diff: DryRunDiffEntry[], job: Job) => DryRunDiffEntry[],
+  ): Promise<DryRunDiffEntry[]> {
+    for (let attempt = 1; attempt <= DIFF_WRITE_MAX_ATTEMPTS; attempt += 1) {
+      const job = await this.prisma.job.findUnique({ where: { id } });
+      if (!job) throw new NotFoundException(`Job ${id} not found`);
+      if (job.status !== 'diff_ready') {
+        throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+      }
+      const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+      const next = mutate(diff, job);
+      const written = await this.prisma.job.updateMany({
+        where: { id, diffVersion: job.diffVersion },
+        data: { dryRunDiff: next as any, diffVersion: { increment: 1 } },
+      });
+      if (written.count === 1) return next;
     }
-    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
-    const index = diff.findIndex((entry) => entry.localId === localId);
-    if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
-    diff[index] = { ...diff[index], excluded };
-    await this.prisma.job.update({ where: { id }, data: { dryRunDiff: diff as any } });
-    return diff;
+    throw new ConflictException(
+      `Job ${id}'s review tree was changed by another request while this edit was being applied -- please retry.`,
+    );
+  }
+
+  async setDiffEntryExcluded(id: string, localId: string, excluded: boolean): Promise<DryRunDiffEntry[]> {
+    return this.mutateDiffVersioned(id, (diff) => {
+      const index = diff.findIndex((entry) => entry.localId === localId);
+      if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+      diff[index] = { ...diff[index], excluded };
+      return diff;
+    });
   }
 
   async editDiffEntry(

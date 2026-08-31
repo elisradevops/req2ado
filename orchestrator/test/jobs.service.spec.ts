@@ -1,4 +1,4 @@
-import { BadGatewayException } from '@nestjs/common';
+import { BadGatewayException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { JobsService, buildFigureAttachmentFilename } from '../src/modules/pipeline/jobs.service';
@@ -1852,18 +1852,18 @@ describe('JobsService.validateCreatedTree', () => {
 
 describe('JobsService.setDiffEntryExcluded', () => {
   it('flips excluded on the matching entry and persists the whole array', async () => {
-    const update = jest.fn().mockResolvedValue(undefined);
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const prisma = {
       job: {
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateMany,
         findUnique: jest.fn().mockResolvedValue({
           id: 'job-1',
           status: 'diff_ready',
+          diffVersion: 0,
           dryRunDiff: [
             { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null },
           ],
         }),
-        update,
       },
     };
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
@@ -1871,9 +1871,9 @@ describe('JobsService.setDiffEntryExcluded', () => {
     const result = await service.setDiffEntryExcluded('job-1', 'n0', true);
 
     expect(result[0].excluded).toBe(true);
-    expect(update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
-      data: { dryRunDiff: [expect.objectContaining({ localId: 'n0', excluded: true })] },
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', diffVersion: 0 },
+      data: { dryRunDiff: [expect.objectContaining({ localId: 'n0', excluded: true })], diffVersion: { increment: 1 } },
     });
   });
 
@@ -1893,6 +1893,65 @@ describe('JobsService.setDiffEntryExcluded', () => {
     const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
 
     await expect(service.setDiffEntryExcluded('job-1', 'missing', true)).rejects.toThrow('not found');
+  });
+
+  it('re-reads and re-applies its edit when a concurrent write landed first -- both clients\' edits survive', async () => {
+    // Two "clients" both read diffVersion 0. Client A (not modelled as a
+    // second call here -- just as the state it left behind) wins the race,
+    // lands its own exclusion of node n1, and bumps the row to
+    // diffVersion 1. THIS call is client B, excluding a DIFFERENT node
+    // (n0). Its first conditional write must match zero rows because its
+    // read is already stale, and it must then re-read the array A actually
+    // wrote and re-apply n0's exclusion on top of it -- NOT overwrite A's
+    // n1 edit with its own stale copy of the array. That silent overwrite
+    // is exactly the lost update SWEEP.md section 8a describes.
+    const n0 = { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null };
+    const n1 = { localId: 'n1', parentLocalId: null, type: 'Feature', title: 'B', description: 'd1', action: 'create', existingAdoId: null, sourceHash: 'h1', customerId: null };
+    const updateMany = jest
+      .fn()
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 1 });
+    const findUnique = jest
+      .fn()
+      // Attempt 1 reads the pre-race array at version 0.
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...n0 }, { ...n1 }] })
+      // Attempt 2 reads what client A actually left behind at version 1.
+      // Fresh object literals, never the same object graph twice --
+      // mirroring real Prisma, which deserializes a JSON column afresh on
+      // every query (the same hazard moveDiffEntry's own makeService
+      // fixture-cloning comment already documents in this file).
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff: [{ ...n0 }, { ...n1, excluded: true }] });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = await service.setDiffEntryExcluded('job-1', 'n0', true);
+
+    expect(findUnique).toHaveBeenCalledTimes(2);
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    // Each attempt guards on the version it actually read, not a constant.
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'job-1', diffVersion: 0 });
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', diffVersion: 1 });
+    expect(updateMany.mock.calls[1][0].data.diffVersion).toEqual({ increment: 1 });
+    // Both edits survive. Before this fix, n1 would come back undefined --
+    // client B's stale array had no record of A's edit at all.
+    expect(result.find((e) => e.localId === 'n0')!.excluded).toBe(true);
+    expect(result.find((e) => e.localId === 'n1')!.excluded).toBe(true);
+  });
+
+  it('gives up with a conflict after the retry budget is exhausted, without writing a stale array', async () => {
+    // Helper-level behavior, tested once here rather than at all five call
+    // sites: three consecutive lost races is pathological (a hot write
+    // loop or an automation storm), not two reviewers colliding, so the
+    // honest answer is a 409 telling the caller to back off -- never a
+    // fourth attempt and never a stale write.
+    const entry = { localId: 'n0', parentLocalId: null, type: 'Feature', title: 'A', description: 'd0', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null };
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const findUnique = jest.fn().mockImplementation(() =>
+      Promise.resolve({ id: 'job-1', status: 'diff_ready', diffVersion: 0, dryRunDiff: [{ ...entry }] }),
+    );
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.setDiffEntryExcluded('job-1', 'n0', true)).rejects.toThrow(ConflictException);
+    expect(updateMany).toHaveBeenCalledTimes(3);
   });
 });
 
