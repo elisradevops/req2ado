@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
 // Real gap this closes: nothing in this system ever ages out old job
@@ -37,7 +37,9 @@ import { PrismaClient } from '@prisma/client';
 const _TERMINAL_RETENTION_STATUSES = ['succeeded', 'failed', 'rejected', 'cancelled'];
 
 @Injectable()
-export class JobRetentionService implements OnModuleInit {
+export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
+  private intervalHandle?: NodeJS.Timeout;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly checkIntervalMs: number,
@@ -45,9 +47,13 @@ export class JobRetentionService implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    setInterval(() => {
+    this.intervalHandle = setInterval(() => {
       void this.sweep();
     }, this.checkIntervalMs);
+  }
+
+  onModuleDestroy(): void {
+    clearInterval(this.intervalHandle);
   }
 
   async sweep(): Promise<void> {

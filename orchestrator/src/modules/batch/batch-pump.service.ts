@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { BatchService } from './batch.service';
 
 // Timer separated from logic, same pattern as JobRetentionService/
@@ -7,15 +7,21 @@ import { BatchService } from './batch.service';
 // only ever loads in the orchestrator HTTP process, so there is exactly
 // one pump running.
 @Injectable()
-export class BatchPumpService implements OnModuleInit {
+export class BatchPumpService implements OnModuleInit, OnModuleDestroy {
+  private intervalHandle?: NodeJS.Timeout;
+
   constructor(
     private readonly batchService: BatchService,
     private readonly pumpIntervalMs: number,
   ) {}
 
   onModuleInit(): void {
-    setInterval(() => {
+    this.intervalHandle = setInterval(() => {
       void this.batchService.pumpOnce();
     }, this.pumpIntervalMs);
+  }
+
+  onModuleDestroy(): void {
+    clearInterval(this.intervalHandle);
   }
 }
