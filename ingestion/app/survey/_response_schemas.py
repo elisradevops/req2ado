@@ -12,28 +12,38 @@ OpenWebUiClient.chat()'s degradation logic on the orchestrator side) --
 these schemas tighten output, they do not gate it. Every consumer keeps its
 existing defensive fallback as defense-in-depth.
 
-IMPORTANT -- why there is no schema here for infer_hierarchy/
-generate_requirements (single-block) (infer_trace_links now has one, see
-trace_links_schema() below): these would
-need a TOP-LEVEL ARRAY schema sized to real branch content (up to
-_MAX_SURVEY_BRANCH_BLOCK_COUNT=200 items). Observed live: Ollama's GBNF
-grammar-constrained decoding (llama.cpp under the hood, confirmed NOT
-XGrammar) compiles a bounded-repetition grammar from a maxItems-sized array
-over a complex item shape whether or not the model actually emits that many
-items -- the cost is schema-declared, not runtime-output-driven. On a
-~200-item branch this wedged the ENTIRE Ollama server (single inference
-slot, `-np 1`) for 10+ minutes, unresponsive to even unrelated requests,
-matching the documented failure mode in ollama/ollama#1910 and the
-"performance gotchas" llama.cpp's own grammar docs describe for bounded
-repetition over complex items. A smaller maxItems doesn't meaningfully
-help -- real branches legitimately need up to 200 entries, and any bound
-tight enough to avoid the grammar-cost cliff would also truncate real
-hierarchies. The three additionalProperties-object schemas below don't hit
-this: `maxProperties` is silently ignored by Ollama's converter for
-additionalProperties objects, so they compile to a cheap unbounded-star
-grammar regardless -- which is exactly why they're safe to keep. DO NOT
-re-add response_format to a top-level array schema without re-verifying
-this against whatever Ollama version is in use at the time.
+IMPORTANT -- the maxItems grammar-cost cliff, and why `infer_hierarchy`
+is still unschema'd. `generate_requirements` (single-block) used to be
+named here too; it no longer exists at all (deleted with the rest of the
+unreachable single-block SURVEY requirement path). What is real and still
+worth avoiding is a maxItems-BOUNDED top-level array sized to real branch
+content (up to _MAX_SURVEY_BRANCH_BLOCK_COUNT=200 items). Observed live:
+Ollama's GBNF grammar-constrained decoding (llama.cpp under the hood,
+confirmed NOT XGrammar) compiles a bounded-repetition grammar from a
+maxItems-sized array over a complex item shape whether or not the model
+actually emits that many items -- the cost is schema-declared, not
+runtime-output-driven. On a ~200-item branch this wedged the ENTIRE Ollama
+server (single inference slot, `-np 1`) for 10+ minutes, unresponsive to
+even unrelated requests, matching the documented failure mode in
+ollama/ollama#1910 and the "performance gotchas" llama.cpp's own grammar
+docs describe for bounded repetition over complex items. A smaller
+maxItems doesn't meaningfully help -- real branches legitimately need up
+to 200 entries, and any bound tight enough to avoid the cliff would also
+truncate real hierarchies.
+
+The workaround that DOES apply: wrap the array inside an object and omit
+maxItems entirely, which compiles to a cheap unbounded-star grammar.
+section_analysis_schema() and trace_links_schema() below both do exactly
+this, the latter over a whole-tree-sized array -- so an array being large
+is NOT by itself a reason to leave a call unschema'd. `infer_hierarchy` is
+a real remaining schema gap on those grounds, not a closed question;
+it is tracked separately rather than fixed here. The
+additionalProperties-object schemas below are safe for a different
+reason: `maxProperties` is silently ignored by Ollama's converter for
+additionalProperties objects, so they compile to the same cheap
+unbounded-star grammar regardless. DO NOT add a maxItems-BOUNDED
+top-level array schema without re-verifying the cliff against whatever
+Ollama version is in use at the time.
 """
 from __future__ import annotations
 
