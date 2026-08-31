@@ -140,40 +140,54 @@ def _apply_title_tag_pass(
         return
     by_id = {n.local_id: n for n in nodes}
     total_chunks = -(-len(leaf_node_ids) // _TITLE_TAG_CHUNK_SIZE)  # ceil division, no float rounding
-    # PHASE 1 -- chunk construction and ALL pre-dispatch narration, on the
-    # calling thread, in document order. Firing here rather than from inside
-    # a worker is what keeps narration in document order and needs no lock:
-    # the same reasoning llm_leveling._map_figures_tables_to_nodes'
-    # _fire_map_scope already documents for its own concurrent batches.
+    # PHASE 1 -- chunk construction, on the calling thread, in document
+    # order. Narration is NOT fired here: see _fire_chunk_kickoff below.
     chunk_payloads: list[dict[str, str]] = []
     chunk_id_lists: list[list[str]] = []
     for start in range(0, len(leaf_node_ids), _TITLE_TAG_CHUNK_SIZE):
         chunk_ids = leaf_node_ids[start : start + _TITLE_TAG_CHUNK_SIZE]
-        if progress_callback is not None:
-            chunk_num = start // _TITLE_TAG_CHUNK_SIZE + 1
-            label_prefix = f"{subtree_label_prefix} -- " if subtree_label_prefix else ""
-            progress_callback(
-                LevelingProgress(
-                    phase="deterministic_subtree", branch_index=None, branch_count=0,
-                    # blocks_done/blocks_total (not 0/0) -- chunk_num/total_chunks
-                    # were already being computed for the narration TEXT below;
-                    # feeding the same real fraction into these fields lets
-                    # ProgressBanner.tsx's existing blocksTotal>0 percentage
-                    # calculation render a real "~N% of this section" instead
-                    # of always falling through to "no progress estimate for
-                    # this step yet" for the whole duration of a multi-chunk
-                    # pass (confirmed live: 2+ minutes with zero numeric signal
-                    # on a real 682-block document).
-                    blocks_done=start, blocks_total=len(leaf_node_ids), kb_grounded=False, kb_citations=[],
-                    subtree_index=subtree_index, subtree_count=subtree_count,
-                    subtree_label=(
-                        f"{label_prefix}enhancing titles/tags for {len(chunk_ids)} node(s) "
-                        f"(chunk {chunk_num} of {total_chunks})"
-                    ),
-                )
-            )
         chunk_id_lists.append(chunk_ids)
         chunk_payloads.append({node_id: by_id[node_id].description for node_id in chunk_ids})
+
+    def _fire_chunk_kickoff(index: int) -> None:
+        """One chunk's pre-dispatch narration event, fired from the merge
+        loop immediately BEFORE that chunk's outcome is pulled -- never
+        up-front for every chunk. `run_chunks_bounded` is lazy, so pulling
+        an outcome is what performs the call at chunk_concurrency=1: this
+        keeps the narrate -> call -> narrate -> call interleave the serial
+        code had, instead of emitting every chunk's event back-to-back
+        before any call starts (which would drive the frontend's progress
+        bar straight to ~94% and freeze it there for the whole pass).
+        Firing here on the calling thread rather than from inside a worker
+        is what keeps narration in document order and needs no lock: the
+        same reasoning llm_leveling._map_figures_tables_to_nodes'
+        _fire_map_scope already documents for its own concurrent batches."""
+        if progress_callback is None:
+            return
+        chunk_ids = chunk_id_lists[index]
+        start = index * _TITLE_TAG_CHUNK_SIZE
+        chunk_num = index + 1
+        label_prefix = f"{subtree_label_prefix} -- " if subtree_label_prefix else ""
+        progress_callback(
+            LevelingProgress(
+                phase="deterministic_subtree", branch_index=None, branch_count=0,
+                # blocks_done/blocks_total (not 0/0) -- chunk_num/total_chunks
+                # were already being computed for the narration TEXT below;
+                # feeding the same real fraction into these fields lets
+                # ProgressBanner.tsx's existing blocksTotal>0 percentage
+                # calculation render a real "~N% of this section" instead
+                # of always falling through to "no progress estimate for
+                # this step yet" for the whole duration of a multi-chunk
+                # pass (confirmed live: 2+ minutes with zero numeric signal
+                # on a real 682-block document).
+                blocks_done=start, blocks_total=len(leaf_node_ids), kb_grounded=False, kb_citations=[],
+                subtree_index=subtree_index, subtree_count=subtree_count,
+                subtree_label=(
+                    f"{label_prefix}enhancing titles/tags for {len(chunk_ids)} node(s) "
+                    f"(chunk {chunk_num} of {total_chunks})"
+                ),
+            )
+        )
 
     # PHASE 2 -- the ONLY thing that runs off the calling thread: the client
     # call. No mutation, no warning append, no narration inside the worker.
@@ -187,8 +201,10 @@ def _apply_title_tag_pass(
     # `warnings.append`, every `progress_callback`, and every node mutation
     # happens here, so the resulting warning list and narration stream are
     # byte-identical to a serial run regardless of completion order.
-    for outcome in outcomes:
-        chunk_ids = chunk_id_lists[outcome.index]
+    for kickoff_index in range(len(chunk_id_lists)):
+        _fire_chunk_kickoff(kickoff_index)
+        outcome = next(outcomes)
+        chunk_ids = chunk_id_lists[outcome.chunk_index]
         if outcome.error is not None:
             message = (
                 f"Title/tag enhancement call failed for {len(chunk_ids)} deterministic "
@@ -439,7 +455,7 @@ def _apply_parent_summary_pass(
     # PHASE 3 -- merge in fixed CHUNK order on the calling thread: every
     # mutation, every warning, every narration event.
     for outcome in outcomes:
-        chunk_ids = chunks[outcome.index]
+        chunk_ids = chunks[outcome.chunk_index]
         if outcome.error is not None:
             message = (
                 f"Parent title/description enhancement call failed for {len(chunk_ids)} "
@@ -648,32 +664,41 @@ def _apply_synthesis_pass(
         for node_id in leaf_node_ids
     }
 
-    # PHASE 1 -- chunk construction and ALL pre-dispatch narration, on the
-    # calling thread, in document order (see _apply_title_tag_pass's own
-    # identical structure and llm_leveling._map_figures_tables_to_nodes'
-    # _fire_map_scope comment for why narration never moves into a worker).
+    # PHASE 1 -- chunk construction, on the calling thread, in document
+    # order (see _apply_title_tag_pass's own identical structure).
+    # Narration is NOT fired here: see _fire_chunk_kickoff below.
     chunk_payloads: list[dict[str, dict]] = []
     chunk_id_lists: list[list[str]] = []
     for start in range(0, len(leaf_node_ids), _SYNTHESIS_CHUNK_SIZE):
         chunk_ids = leaf_node_ids[start : start + _SYNTHESIS_CHUNK_SIZE]
-        if progress_callback is not None:
-            chunk_num = start // _SYNTHESIS_CHUNK_SIZE + 1
-            label_prefix = f"{subtree_label_prefix} -- " if subtree_label_prefix else ""
-            progress_callback(
-                LevelingProgress(
-                    phase="deterministic_subtree", branch_index=None, branch_count=0,
-                    # See _apply_title_tag_pass's identical comment above --
-                    # same fix, same reasoning.
-                    blocks_done=start, blocks_total=len(leaf_node_ids), kb_grounded=False, kb_citations=[],
-                    subtree_index=subtree_index, subtree_count=subtree_count,
-                    subtree_label=(
-                        f"{label_prefix}synthesizing requirement text for {len(chunk_ids)} node(s) "
-                        f"(chunk {chunk_num} of {total_chunks})"
-                    ),
-                )
-            )
         chunk_id_lists.append(chunk_ids)
         chunk_payloads.append({node_id: payload_by_id[node_id] for node_id in chunk_ids})
+
+    def _fire_chunk_kickoff(index: int) -> None:
+        """One chunk's pre-dispatch narration event, fired from the merge
+        loop immediately BEFORE that chunk's outcome is pulled -- see
+        _apply_title_tag_pass's own _fire_chunk_kickoff for why the
+        interleave (not just the final order) matters, and why this stays
+        on the calling thread rather than moving into a worker."""
+        if progress_callback is None:
+            return
+        chunk_ids = chunk_id_lists[index]
+        start = index * _SYNTHESIS_CHUNK_SIZE
+        chunk_num = index + 1
+        label_prefix = f"{subtree_label_prefix} -- " if subtree_label_prefix else ""
+        progress_callback(
+            LevelingProgress(
+                phase="deterministic_subtree", branch_index=None, branch_count=0,
+                # See _apply_title_tag_pass's identical comment above --
+                # same fix, same reasoning.
+                blocks_done=start, blocks_total=len(leaf_node_ids), kb_grounded=False, kb_citations=[],
+                subtree_index=subtree_index, subtree_count=subtree_count,
+                subtree_label=(
+                    f"{label_prefix}synthesizing requirement text for {len(chunk_ids)} node(s) "
+                    f"(chunk {chunk_num} of {total_chunks})"
+                ),
+            )
+        )
 
     # PHASE 2 -- only the client call leaves the calling thread.
     outcomes = run_chunks_bounded(
@@ -683,8 +708,10 @@ def _apply_synthesis_pass(
     )
 
     # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
-    for outcome in outcomes:
-        chunk_ids = chunk_id_lists[outcome.index]
+    for kickoff_index in range(len(chunk_id_lists)):
+        _fire_chunk_kickoff(kickoff_index)
+        outcome = next(outcomes)
+        chunk_ids = chunk_id_lists[outcome.chunk_index]
         if outcome.error is not None:
             message = (
                 f"Requirement-text synthesis call failed for {len(chunk_ids)} flagged fragment "

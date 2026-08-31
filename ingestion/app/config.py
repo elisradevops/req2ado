@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -144,8 +144,17 @@ class Settings(BaseSettings):
     # (e.g. contending on shared LibreOffice profile resources under load).
     docx_page_alignment_enabled: bool = True
 
-    class Config:
-        env_prefix = ""
+    # env_ignore_empty: a var PRESENT BUT BLANK in a real .env file
+    # (`SURVEY_CHUNK_CONCURRENCY=`, a shape .env.template's own commented-out
+    # examples invite) is treated as UNSET and falls back to the field
+    # default, instead of being parsed as the empty string and crashing the
+    # whole process at import time with a pydantic ValidationError. Every
+    # non-str field here is exposed to that -- the concurrency dials
+    # (survey_branch_concurrency / survey_chunk_concurrency /
+    # vision_caption_concurrency) and the bool kill switches most obviously,
+    # since they are the ones an operator is most likely to comment out by
+    # emptying rather than deleting.
+    model_config = SettingsConfigDict(env_prefix="", env_ignore_empty=True)
 
 
 settings = Settings()

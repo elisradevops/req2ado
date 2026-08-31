@@ -193,19 +193,23 @@ def _score_all_requirements(
             )
         )
 
-    # PHASE 1 -- chunk construction and every PRE-dispatch narration event,
-    # on the calling thread, in document order. Firing here rather than from
-    # a worker keeps narration in document order with no lock -- the same
-    # reasoning llm_leveling._map_figures_tables_to_nodes' _fire_map_scope
-    # already documents for its own concurrent batches. (The frontend derives
-    # its "batch N of M" chip and its percentage from the LAST narration
-    # event it received, so an out-of-order chunkIndex/blocks_done is a
-    # visible progress regression, not a cosmetic log reorder.)
+    # PHASE 1 -- chunk construction on the calling thread, in document
+    # order. The per-chunk PRE-dispatch narration event is NOT fired here:
+    # it fires from the merge loop below, immediately before that chunk's
+    # outcome is pulled (run_chunks_bounded is lazy, so pulling is what
+    # performs the call at chunk_concurrency=1). Firing every chunk's event
+    # here instead would emit them all back-to-back before the first call
+    # even started -- and the frontend derives its "batch N of M" chip and
+    # its percentage from the LAST narration event it received, so that
+    # reads as an instant jump to ~100% followed by a multi-minute freeze,
+    # not as progress. Narration stays on the calling thread either way
+    # (never inside a worker), which is what keeps it in document order
+    # with no lock -- the same reasoning
+    # llm_leveling._map_figures_tables_to_nodes' _fire_map_scope already
+    # documents for its own concurrent batches.
     chunks: list[list[WorkItemNode]] = []
     for start in range(0, len(representative_nodes), _SCORING_CHUNK_NODE_COUNT):
         chunk = representative_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
-        chunk_index = start // _SCORING_CHUNK_NODE_COUNT
-        _fire("score_requirements", chunk, nodes_done=start, chunk_index=chunk_index)
         chunks.append(chunk)
 
     # PHASE 2 -- the worker. _apply_quality_scores both appends warnings and
@@ -215,6 +219,16 @@ def _score_all_requirements(
     # replays both into the shared list / real callback in chunk order. This
     # is what keeps the warning order and narration order byte-identical to
     # a serial run without changing _apply_quality_scores' own signature.
+    #
+    # The worker DOES mutate nodes -- _apply_quality_scores writes
+    # `quality_score`/`quality_issues`/`quality_category_scores` on the
+    # nodes it is given. That is safe only because each chunk is a DISJOINT
+    # slice of `representative_nodes`, so no two workers can ever touch the
+    # same node. The duplicate-scoring fan-out below reads and writes nodes
+    # OUTSIDE the chunk (every other node sharing a representative's
+    # description) and must therefore stay in the merge loop -- moving it
+    # into the worker would make concurrent chunks write overlapping node
+    # sets.
     def _score_one_chunk(chunk: list[WorkItemNode]) -> tuple[list[IntegrityWarning], list[LevelingProgress]]:
         chunk_warnings: list[IntegrityWarning] = []
         chunk_events: list[LevelingProgress] = []
@@ -227,9 +241,16 @@ def _score_all_requirements(
     outcomes = run_chunks_bounded(chunks, _score_one_chunk, chunk_concurrency)
 
     # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
-    for outcome in outcomes:
-        chunk = chunks[outcome.index]
-        chunk_index = outcome.index
+    for kickoff_index in range(len(chunks)):
+        # Narrate immediately BEFORE pulling this chunk's outcome -- see
+        # PHASE 1 for why this is not hoisted above the dispatch.
+        _fire(
+            "score_requirements", chunks[kickoff_index],
+            nodes_done=kickoff_index * _SCORING_CHUNK_NODE_COUNT, chunk_index=kickoff_index,
+        )
+        outcome = next(outcomes)
+        chunk = chunks[outcome.chunk_index]
+        chunk_index = outcome.chunk_index
         if outcome.error is not None:
             # One chunk's transient failure (confirmed live: a real job lost
             # 45+ minutes of prior parse/tree-build/title-tag/synthesis work
@@ -368,15 +389,14 @@ def _score_epics_and_features(
             )
         )
 
-    # PHASE 1 -- chunk construction and every PRE-dispatch narration event,
-    # on the calling thread, in document order (see _score_all_requirements'
-    # own identical structure).
+    # PHASE 1 -- chunk construction on the calling thread, in document order
+    # (see _score_all_requirements' own identical structure). The per-chunk
+    # PRE-dispatch narration event fires from the merge loop below, not
+    # here -- same reasoning, spelled out there.
     chunks: list[list[WorkItemNode]] = []
     payloads: list[dict[str, dict]] = []
     for start in range(0, len(epic_feature_nodes), _SCORING_CHUNK_NODE_COUNT):
         chunk = epic_feature_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
-        chunk_index = start // _SCORING_CHUNK_NODE_COUNT
-        _fire("score_requirements", chunk, nodes_done=start, chunk_index=chunk_index)
         chunks.append(chunk)
         payloads.append(
             {node.local_id: {"type": node.type.value, "text": node.description} for node in chunk}
@@ -386,9 +406,16 @@ def _score_epics_and_features(
     outcomes = run_chunks_bounded(payloads, lambda nodes_by_id: score_fn(nodes_by_id), chunk_concurrency)
 
     # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
-    for outcome in outcomes:
-        chunk = chunks[outcome.index]
-        chunk_index = outcome.index
+    for kickoff_index in range(len(chunks)):
+        # Narrate immediately BEFORE pulling this chunk's outcome -- see
+        # _score_all_requirements' PHASE 1 comment.
+        _fire(
+            "score_requirements", chunks[kickoff_index],
+            nodes_done=kickoff_index * _SCORING_CHUNK_NODE_COUNT, chunk_index=kickoff_index,
+        )
+        outcome = next(outcomes)
+        chunk = chunks[outcome.chunk_index]
+        chunk_index = outcome.chunk_index
         if outcome.error is not None:
             message = f"Epic/Feature quality scoring failed: {outcome.error}"
             logger.warning(message)

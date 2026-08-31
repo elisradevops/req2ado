@@ -1002,6 +1002,37 @@ def test_apply_title_tag_pass_narrates_chunks_in_document_order_under_concurrenc
     assert [e.blocks_done for e in fired if e.phase == "deterministic_subtree"] == [0, 150, 300]
 
 
+def test_apply_title_tag_pass_narrates_each_chunk_immediately_before_its_own_call() -> None:
+    # The ordering test above pins only the FINAL sequence of narration
+    # events -- which stays correct even if every event fires up-front,
+    # before the first call leaves the calling thread. What the frontend
+    # actually depends on is the INTERLEAVE: ProgressBanner derives its
+    # percentage from the LAST event received, so an all-narrate-then-
+    # all-call shape reads as an instant jump to ~94% followed by a
+    # multi-minute freeze -- exactly the symptom per-chunk narration was
+    # added to prevent (see _apply_title_tag_pass's own comment). At
+    # chunk_concurrency=1, the shipped default, the trace must strictly
+    # alternate, byte-identical to the pre-chunking serial code.
+    from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
+
+    trace: list[str] = []
+
+    class TracingClient:
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            trace.append("CALL")
+            return {node_id: {"title": "T", "tags": []} for node_id in texts_by_row_id}
+
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+
+    _apply_title_tag_pass(
+        nodes, [n.local_id for n in nodes], TracingClient(), [],
+        progress_callback=lambda event: trace.append("NARRATE"),
+        chunk_concurrency=1,
+    )
+
+    assert trace == ["NARRATE", "CALL", "NARRATE", "CALL", "NARRATE", "CALL"]
+
+
 def test_apply_title_tag_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> None:
     from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
 
@@ -1105,6 +1136,29 @@ def test_apply_synthesis_pass_narrates_chunks_in_document_order_under_concurrenc
     labels = [e.subtree_label for e in fired if e.phase == "deterministic_subtree"]
     assert [label.split("(chunk ")[1] for label in labels] == ["1 of 3)", "2 of 3)", "3 of 3)"]
     assert [e.blocks_done for e in fired if e.phase == "deterministic_subtree"] == [0, 150, 300]
+
+
+def test_apply_synthesis_pass_narrates_each_chunk_immediately_before_its_own_call() -> None:
+    # See _apply_title_tag_pass's identical test above for why final event
+    # order is not enough and the interleave itself has to be pinned.
+    from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
+
+    trace: list[str] = []
+
+    class TracingClient:
+        def synthesize_leaf_requirements(self, items_by_id):
+            trace.append("CALL")
+            return {node_id: {"text": "The system shall X."} for node_id in items_by_id}
+
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+
+    _apply_synthesis_pass(
+        nodes, [n.local_id for n in nodes], TracingClient(), [],
+        progress_callback=lambda event: trace.append("NARRATE"),
+        chunk_concurrency=1,
+    )
+
+    assert trace == ["NARRATE", "CALL", "NARRATE", "CALL", "NARRATE", "CALL"]
 
 
 def test_apply_synthesis_pass_context_is_built_from_pre_pass_titles_not_a_prior_chunks_output() -> None:
