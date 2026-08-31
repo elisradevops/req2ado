@@ -316,8 +316,19 @@ export class EtaService {
     const model = params.model && params.model.length > 0 ? params.model : this.defaultModel;
 
     const cached = await this.loadFit();
+    // blockCount <= 1 (not === 0): a table-only document (xlsx/csv, or a
+    // headingless docx whose only real content is a table) legitimately
+    // carries ONE loader-emitted diagnostic NOTE block -- the docx
+    // footnote/endnote/comment detection, or encoding_utils' non-UTF-8
+    // warning -- and blockCount is literally doc.blocks.length, NOTE blocks
+    // included. Keying on === 0 made that document silently stop being
+    // recognized as table-only, escaping both this table-aware path and
+    // loadFit()'s matching exclusion below and reverting to a slightly-off
+    // flat block/figure estimate (SWEEP.md section 3). figureCount === 0
+    // stays strict: a document with figures is not table-only by any
+    // reading, and no loader emits a diagnostic FIGURE.
     const bootstrap =
-      blockCount === 0 && figureCount === 0 && tableCount > 0
+      tableCount > 0 && blockCount <= 1 && figureCount === 0
         ? bootstrapMinutesForTables(tableCount, cellCount)
         : bootstrapMinutes(blockCount, figureCount);
 
@@ -424,7 +435,18 @@ export class EtaService {
         // polluting (0,0) outlier for THIS regression, which predicts minutes
         // from block/figure counts alone and has no way to explain a table-only
         // job's real duration from zero of both inputs.
-        NOT: { blockCount: 0, figureCount: 0 },
+        // Second entry mirrors estimate()'s blockCount <= 1 tolerance
+        // above: a table-only job carrying ONE diagnostic NOTE block is the
+        // same polluting sample for this regression, and was previously
+        // escaping the exclusion entirely. Kept ADDITIVE (a NOT array, not
+        // a replacement) on purpose -- pre-migration rows have
+        // tableCount = NULL, so `tableCount: { gt: 0 }` is false for them
+        // and a replacement would silently let every legacy table-only
+        // (0,0) sample back into the fit.
+        NOT: [
+          { blockCount: 0, figureCount: 0 },
+          { blockCount: { lte: 1 }, figureCount: 0, tableCount: { gt: 0 } },
+        ],
       },
       orderBy: { diffReadyAt: 'desc' },
       take: ETA_WINDOW_MAX_SAMPLES,

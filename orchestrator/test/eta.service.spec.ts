@@ -230,14 +230,40 @@ describe('EtaService', () => {
     expect(result.estimateMinutes).toBeGreaterThan(40);
   });
 
-  it('excludes (blockCount=0, figureCount=0) samples from the block/figure regression query', async () => {
+  it('excludes (blockCount=0, figureCount=0) AND table-only-plus-one-NOTE-block samples from the block/figure regression query', async () => {
     const prisma = fakePrisma([]);
     const service = new EtaService(prisma, 'default-model');
 
     await service.estimate({ mode: 'survey', blockCount: 10, figureCount: 2 });
 
     const whereArg = prisma.job.findMany.mock.calls[0][0].where;
-    expect(whereArg.NOT).toEqual({ blockCount: 0, figureCount: 0 });
+    expect(whereArg.NOT).toEqual([
+      { blockCount: 0, figureCount: 0 },
+      { blockCount: { lte: 1 }, figureCount: 0, tableCount: { gt: 0 } },
+    ]);
+  });
+
+  it('still takes the table-aware bootstrap path when a loader-emitted diagnostic NOTE block makes blockCount 1', async () => {
+    // SWEEP.md section 3: (blockCount===0 && figureCount===0) is a fragile
+    // proxy for "table-only document" -- any single diagnostic NOTE block
+    // (this branch's own footnote/endnote/comment detection, or
+    // encoding_utils' non-UTF-8 warning) makes blockCount 1, and the
+    // document silently escapes BOTH the table-aware bootstrap and the
+    // regression exclusion, reverting to a flat block/figure estimate.
+    const prisma = fakePrisma([]);
+    const service = new EtaService(prisma, 'model-a');
+
+    // Fixture sanity: the two estimators must be numerically
+    // distinguishable for these counts, or the test cannot tell which one
+    // ran. If they are close, pick different counts until they are not.
+    expect(bootstrapMinutesForTables(12, 400)).not.toBeCloseTo(bootstrapMinutes(1, 0), 5);
+
+    const tableOnly = await service.estimate({ mode: 'survey', blockCount: 0, figureCount: 0, tableCount: 12, cellCount: 400 });
+    const tableOnlyPlusNote = await service.estimate({ mode: 'survey', blockCount: 1, figureCount: 0, tableCount: 12, cellCount: 400 });
+
+    // The one NOTE block must not change WHICH estimator ran -- both must
+    // land on the same table-aware number.
+    expect(tableOnlyPlusNote.estimateMinutes).toBe(tableOnly.estimateMinutes);
   });
 
   it('the sample query carries NO status predicate -- rejected jobs ran the full pipeline and must count', async () => {
