@@ -39,6 +39,54 @@ POST /backfill { "areaPath": "<each one>" }
 - Skipping this for an area path means every pre-deploy dedup entry in that area path silently stops being a reliable duplicate match until it's re-backfilled — exactly the class of bug this blend change exists to fix, reintroduced for old data.
 - This does not touch `IdempotencyMapping` (the exact-hash `reuse` path) — that scheme didn't change.
 
+## Swapping EMBED_MODEL (dedup + KB vector stores)
+
+**Deploy-critical, not optional.** Every Chroma collection name in both vector
+stores now includes the configured embed model: `dedup/vector_store.py`'s
+`_collection_name_for_area_path` and `kb/kb_vector_store.py`'s
+`_kb_collection_name_for_user` both hash `EMBED_MODEL` into the digest
+alongside the area path / user id. This is the model-version pin — before it
+existed, changing the embed model left every stored vector in place and
+silently compared new query vectors against vectors a *different* model
+produced, with nothing anywhere able to detect it (there is no per-vector
+model tag, and `/llm/embed`'s response body carries no model identifier).
+
+**Consequence, by design:** changing `EMBED_MODEL` starts empty collections.
+There is deliberately **no migration and no fallback lookup under the old
+collection name** — a collection whose embed model is unknown is unsafe to
+keep querying, which was the whole bug. The old collections are orphaned, not
+deleted.
+
+**Changing the embed model — do all of these:**
+1. Change `EMBED_MODEL` in **one** place that both services read: the shared
+   `.env` (docker-compose) or the `req2ado-config` ConfigMap (k8s). Both the
+   orchestrator and ingestion consume the same one; setting it on only one
+   service silently splits them. `ingestion/tests/test_embed_model_drift.py`
+   guards the plumbing that makes this true.
+2. Re-backfill dedup for every area path, using the procedure in the section
+   above (list `AreaPathBackfill`, then `POST /backfill` for each). Until an
+   area path is re-backfilled, its pre-swap entries are simply absent — a
+   dedup check behaves as if that area path had never been ingested, so
+   nothing is *wrongly* matched, but real duplicates stop being caught.
+3. Re-ingest each user's KB sources (`POST /kb/ingest-url` per source).
+   Nothing needs purging first: `existing_file_hash` reads from inside the
+   collection, so under the new model it reports "never ingested" and the
+   ingest re-chunks and re-embeds normally.
+4. Optionally reclaim the orphaned collections' disk. They are inert, and
+   dropping them is never required for correctness:
+   ```sh
+   # List every collection, old and new (v2 API; adjust host/port for your deploy):
+   curl -s http://localhost:8001/api/v2/tenants/default_tenant/databases/default_database/collections
+   ```
+   Old dedup collections are `req2ado_<32 hex>` and old KB collections are
+   `req2ado_kb_<32 hex>` — the same shape as the new ones, so identify the
+   live set first (re-run step 2/3, then re-list and diff) before deleting
+   anything. When in doubt, leave them; they cost only disk.
+
+**Do not** try to "fix" a mid-swap state by reverting `EMBED_MODEL` to make the
+old collections reachable again unless you are *certain* which model wrote
+them — that is exactly the ambiguity the pin exists to eliminate.
+
 ## Real ADO Write — Verification Steps (CR7, gated on production access)
 
 **Status: VERIFIED** against a real Azure DevOps Services org
