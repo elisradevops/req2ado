@@ -1,8 +1,9 @@
+import re
 from unittest.mock import patch
 
 import pytest
 
-from app.dedup.vector_store import ChromaVectorStore
+from app.dedup.vector_store import ChromaVectorStore, _collection_name_for_area_path
 
 
 def test_default_mode_uses_a_local_persistent_client(tmp_path) -> None:
@@ -221,3 +222,43 @@ def test_upsert_many_omits_documents_entirely_when_none_of_the_items_have_one() 
         result = store.query_nearest([1.0, 0.0, 0.0], area_path="Project\\Area1")
         assert result[0] == "item-1"
         assert result[2] is None
+
+
+def test_two_different_embed_models_produce_two_different_collection_names() -> None:
+    # The model-version pin. Before this, the collection name was a hash of
+    # the area path alone, so swapping EMBED_MODEL server-side left every
+    # stored vector in place and silently compared new query vectors against
+    # vectors a DIFFERENT model produced -- with no detection at all.
+    nomic = _collection_name_for_area_path("Project\\Area1", "nomic-embed-text")
+    bge = _collection_name_for_area_path("Project\\Area1", "bge-m3")
+    assert nomic != bge
+
+
+def test_the_same_model_and_area_path_produce_a_stable_collection_name() -> None:
+    # The pin must not make names volatile -- an unchanged deployment has to
+    # keep resolving to the same collection on every call and every restart.
+    assert _collection_name_for_area_path("Project\\Area1", "nomic-embed-text") == (
+        _collection_name_for_area_path("Project\\Area1", "nomic-embed-text")
+    )
+
+
+def test_a_model_name_with_chroma_illegal_characters_still_yields_a_legal_name() -> None:
+    # Why the model is folded into the digest instead of appended as a
+    # readable suffix: real model names carry characters Chroma rejects in a
+    # collection name (qwen3:4b's colon) and have no length bound.
+    name = _collection_name_for_area_path("Project\\Area1", "qwen3:4b")
+    assert re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]", name)
+
+
+def test_a_model_swap_starts_a_fresh_collection_instead_of_reusing_stale_vectors(tmp_path) -> None:
+    # The accepted, deliberate consequence (see this fix's plan, decision
+    # D2): pre-swap vectors become unreachable rather than silently reused.
+    # A dedup check after a model swap behaves exactly like a first-ever
+    # ingestion for that area path -- nothing is wrongly matched. Re-running
+    # the backfill is the documented remedy (docs/runbook.md).
+    old = ChromaVectorStore(persist_path=str(tmp_path), embed_model="nomic-embed-text")
+    old.upsert("item-1", [1.0, 0.0, 0.0], area_path="Project\\Area1", document="a requirement")
+    assert old.query_nearest([1.0, 0.0, 0.0], area_path="Project\\Area1") is not None
+
+    swapped = ChromaVectorStore(persist_path=str(tmp_path), embed_model="bge-m3")
+    assert swapped.query_nearest([1.0, 0.0, 0.0], area_path="Project\\Area1") is None

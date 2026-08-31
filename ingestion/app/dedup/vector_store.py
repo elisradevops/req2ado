@@ -4,13 +4,40 @@ import hashlib
 
 import chromadb
 
+from app.config import settings
 
-def _collection_name_for_area_path(area_path: str) -> str:
+# Read once at import, same convention as
+# app/survey/orchestrator_llm_client.py's own
+# `_LLM_REQUEST_TIMEOUT_SECONDS = settings.llm_request_timeout_seconds` --
+# main.py does not thread this one through, because unlike chroma_mode/host/
+# port there is no non-settings default worth expressing at the call site.
+_DEFAULT_EMBED_MODEL = settings.embed_model
+
+
+def _collection_name_for_area_path(area_path: str, embed_model: str) -> str:
     # Chroma collection names have character-set/length restrictions; area
     # paths can contain backslashes and arbitrary length, so this hashes to
     # a safe, fixed-length, collision-resistant identifier rather than
     # attempting to sanitize the raw area path string.
-    digest = hashlib.sha256(area_path.encode()).hexdigest()[:32]
+    #
+    # `embed_model` is folded into the SAME digest, for the same reason, and
+    # deliberately not appended as a readable suffix: real model names carry
+    # Chroma-illegal characters (qwen3:4b's colon) and have no length bound.
+    # Its presence here is the model-version pin -- vectors produced by a
+    # different embed model land in a structurally different collection, so
+    # swapping EMBED_MODEL can never silently compare a new query vector
+    # against vectors some OTHER model produced (there is no per-vector
+    # model tag, and /llm/embed's response carries no model identifier, so
+    # nothing else in the system could detect that). The trade-off, accepted
+    # explicitly: collections written before this pin existed are orphaned,
+    # not migrated -- a wrong-model collection is unsafe to keep using
+    # anyway, and the miss degrades to "behave like a first ingestion", not
+    # to a wrong match. See docs/runbook.md for the re-backfill procedure.
+    #
+    # The NUL separator keeps the two fields unambiguous, so no
+    # (model, area_path) pair can collide with a different pair purely by
+    # concatenation.
+    digest = hashlib.sha256(f"{embed_model}\x00{area_path}".encode()).hexdigest()[:32]
     return f"req2ado_{digest}"
 
 
@@ -42,6 +69,7 @@ class ChromaVectorStore:
         mode: str = "embedded",
         host: str = "localhost",
         port: int = 8000,
+        embed_model: str = _DEFAULT_EMBED_MODEL,
     ) -> None:
         if mode == "http":
             self._client = chromadb.HttpClient(host=host, port=port)
@@ -62,6 +90,9 @@ class ChromaVectorStore:
         # (the real, only, current call pattern) pays for count() once
         # instead of once per check.
         self._count_cache: dict[str, int] = {}
+        # Part of every collection name this store touches (see
+        # _collection_name_for_area_path) -- the embed model-version pin.
+        self._embed_model = embed_model
 
     def ping(self) -> bool:
         """Cheap reachability check for /ready -- previously nothing in
@@ -78,7 +109,7 @@ class ChromaVectorStore:
         if cached is not None:
             return cached
         collection = self._client.get_or_create_collection(
-            name=_collection_name_for_area_path(area_path),
+            name=_collection_name_for_area_path(area_path, self._embed_model),
             metadata={"hnsw:space": "cosine"},
         )
         self._collection_cache[area_path] = collection
