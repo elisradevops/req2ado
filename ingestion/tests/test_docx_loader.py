@@ -1755,3 +1755,104 @@ def test_load_docx_dedupes_the_same_image_bytes_reused_inline() -> None:
     assert len(describe_calls) == 2  # the second logo occurrence never reaches vision
     figure_blocks = [b for b in result.blocks if b.kind == BlockKind.FIGURE]
     assert len(figure_blocks) == 2
+
+
+def test_load_docx_flags_unread_comments_with_one_note_block() -> None:
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    paragraph = doc.add_paragraph("Reviewed text.")
+    doc.add_comment(paragraph.runs[0] if paragraph.runs else paragraph.add_run(""), text="A real reviewer comment.")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "commented.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE and "comment" in b.text.lower()]
+    assert len(note_blocks) == 1
+    assert note_blocks[0].text == "[UNSUPPORTED: 1 comment(s) not extracted]"
+
+
+def test_load_docx_flags_unread_footnotes_with_one_note_block() -> None:
+    from docx import Document as DocxDocument
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    doc = DocxDocument()
+    doc.add_paragraph("Body text with a footnote marker.")
+
+    footnotes_xml = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        b'<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        b'<w:footnote w:type="separator" w:id="-1"><w:p/></w:footnote>'
+        b'<w:footnote w:type="continuationSeparator" w:id="0"><w:p/></w:footnote>'
+        b'<w:footnote w:id="1"><w:p><w:r><w:t>This is a real footnote body.</w:t></w:r></w:p></w:footnote>'
+        b'</w:footnotes>'
+    )
+    part = Part(
+        PackURI("/word/footnotes.xml"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+        footnotes_xml,
+        doc.part.package,
+    )
+    doc.part.relate_to(part, RT.FOOTNOTES)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "footnoted.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    note_blocks = [b for b in result.blocks if b.kind == BlockKind.NOTE and "footnote" in b.text.lower()]
+    assert len(note_blocks) == 1
+    assert note_blocks[0].text == "[UNSUPPORTED: 1 footnote(s) not extracted]"
+
+
+def test_load_docx_does_not_flag_footnotes_when_only_separator_entries_exist() -> None:
+    from docx import Document as DocxDocument
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    doc = DocxDocument()
+    doc.add_paragraph("Body text, no real footnotes.")
+
+    footnotes_xml = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        b'<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        b'<w:footnote w:type="separator" w:id="-1"><w:p/></w:footnote>'
+        b'<w:footnote w:type="continuationSeparator" w:id="0"><w:p/></w:footnote>'
+        b'</w:footnotes>'
+    )
+    part = Part(
+        PackURI("/word/footnotes.xml"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+        footnotes_xml,
+        doc.part.package,
+    )
+    doc.part.relate_to(part, RT.FOOTNOTES)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "footnotes_part_but_empty.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    assert not any(b.kind == BlockKind.NOTE and "footnote" in b.text.lower() for b in result.blocks)
+
+
+def test_load_docx_with_no_footnotes_endnotes_or_comments_emits_no_note_blocks_for_them() -> None:
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_paragraph("Plain document, nothing special.")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "plain.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    assert not any(
+        b.kind == BlockKind.NOTE and any(kind in b.text.lower() for kind in ("footnote", "endnote", "comment"))
+        for b in result.blocks
+    )

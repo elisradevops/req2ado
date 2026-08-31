@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from docx import Document as DocxDocument
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.oxml import parse_xml as _parse_xml
 from docx.oxml.ns import qn
 from docx.oxml.table import CT_Row, CT_Tc
 from docx.table import Table as DocxTable
@@ -23,6 +25,30 @@ logger = logging.getLogger(__name__)
 
 _HEADING_STYLE_PATTERN = re.compile(r"^Heading\s*(\d+)$")
 _IMAGE_RELTYPE_MARKER = "image"
+
+_SPECIAL_NOTE_TYPES = {"separator", "continuationSeparator"}
+_NOTE_RELTYPES = {
+    RT.FOOTNOTES: ("w:footnote", "footnote"),
+    RT.ENDNOTES: ("w:endnote", "endnote"),
+    RT.COMMENTS: ("w:comment", "comment"),
+}
+
+
+def _count_real_notes(root, element_tag: str) -> int:
+    """Counts non-empty, non-separator entries in a parsed footnotes.xml/
+    endnotes.xml/comments.xml root -- a footnotes/endnotes part commonly
+    exists with only Word's own separator/continuationSeparator entries
+    (w:type) even when the author never added a real footnote, so those
+    must be excluded or every docx with the footnote FEATURE ever touched
+    (not necessarily used) would false-positive."""
+    count = 0
+    for el in root.findall(qn(element_tag)):
+        if el.get(qn("w:type")) in _SPECIAL_NOTE_TYPES:
+            continue
+        text = "".join(t.text or "" for t in el.findall(f".//{qn('w:t')}"))
+        if text.strip():
+            count += 1
+    return count
 
 # VML and office namespaces are NOT registered in python-docx's own qn()
 # helper (only OOXML-standard prefixes are) -- these are raw Clark-notation
@@ -1057,5 +1083,33 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
         block_id += 1
         figure_index += 1
         seen_figure_hashes.add(image_hash)
+
+    # Footnotes/endnotes/comments are read by NO pass above -- their content
+    # is silently absent from the canonical doc with zero trace today. Full
+    # extraction (rendering their text into the document body) is a real,
+    # separate content-placement design question; this only makes the DROP
+    # visible via the same [UNSUPPORTED: ...] NOTE-block channel every other
+    # loader-level content loss already uses, one block per present-and-
+    # non-empty part type.
+    for reltype, (element_tag, label) in _NOTE_RELTYPES.items():
+        matching_rels = [rel for rel in docx_doc.part.rels.values() if rel.reltype == reltype]
+        if not matching_rels:
+            continue
+        root = _parse_xml(matching_rels[0].target_part.blob)
+        real_count = _count_real_notes(root, element_tag)
+        if real_count == 0:
+            continue
+        start = offset
+        end = start + 1
+        offset = end
+        blocks.append(
+            Block(
+                id=f"b{block_id}",
+                kind=BlockKind.NOTE,
+                text=f"[UNSUPPORTED: {real_count} {label}(s) not extracted]",
+                source_ref=SourceRef(document_path=path, start_offset=start, end_offset=end),
+            )
+        )
+        block_id += 1
 
     return CanonicalDoc(document=document, blocks=blocks, tables=tables, figures=figures)
