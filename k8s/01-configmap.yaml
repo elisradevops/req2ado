@@ -18,14 +18,15 @@ data:
   # works reliably. If pointing at Open WebUI, confirm which shape applies
   # before deploying -- see openwebui.client.ts's openWebUiAppRoot() comment.
   LLM_BASE_URL: "http://ollama.req2ado.svc.cluster.local:11434/v1"
+  # NOT a per-user credential -- every user configures their own Open WebUI
+  # token + default chat/vision model in Settings (vaulted server-side).
+  # This is a fallback-of-last-resort model name only, used when a job's
+  # per-user default can't be resolved, plus the baseline EtaService prices
+  # an estimate against.
   LLM_CHAT_MODEL: "llama3.1"
   EMBED_TRANSPORT: "ollama"
   EMBED_MODEL: "nomic-embed-text"
   EMBED_PATH: "/api/embed"
-  # Unset (empty) = figure/diagram extraction stays a placeholder, same as
-  # before this capability existed. Set to a real vision-capable model name
-  # to enable it.
-  LLM_VISION_MODEL: ""
   LLM_TRUSTED_LOCAL: "false"
 
   # --- ADO (on-prem TFS/ADO Server) ---

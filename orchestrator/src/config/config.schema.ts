@@ -19,13 +19,15 @@ export const configSchema = z.object({
   MCP_REQUEST_TIMEOUT_MS: z.coerce.number().default(60000),
   ADO_CA_CERT: z.string().optional(),
   LLM_BASE_URL: z.string().min(1),
-  LLM_API_KEY: z.string().optional(),
+  // NOT the per-user credential any more -- every user has their own
+  // vaulted token/chat model/vision model (see llm-config.resolver.ts,
+  // openwebui-client.factory.ts). This is now purely a fallback-of-last-
+  // resort default model name, read only when a per-user default can't be
+  // resolved (pipeline.worker.ts's resolveDefaultChatModel) or for
+  // EtaService's pricing-estimate baseline (jobs.module.ts) -- neither of
+  // those is the real per-user LLM call itself, which always uses the
+  // submitting user's own configured model.
   LLM_CHAT_MODEL: z.string().min(1),
-  // Optional: a vision-capable model (e.g. llava, bakllava, moondream) for
-  // describing figures/diagrams during ingestion (see OpenWebUiClient.vision).
-  // Unset means figures stay as empty placeholders -- same behavior as
-  // before this option existed.
-  LLM_VISION_MODEL: z.string().optional(),
   LLM_TRUSTED_LOCAL: z
     .enum(['true', 'false'])
     .default('false')

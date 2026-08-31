@@ -4,12 +4,15 @@ mode: baseline # baseline | survey
 llm:
   provider: openai_compatible
   base_url: ${LLM_BASE_URL}
-  api_key: ${LLM_API_KEY}
+  # api_key / chat_model default / vision_model removed as env vars -- each
+  # user configures their own Open WebUI token + default chat/vision model
+  # in Settings (vaulted server-side). chat_model below is a fallback-of-
+  # last-resort default only, used when a job's per-user default can't be
+  # resolved.
   chat_model: ${LLM_CHAT_MODEL}
   embed_model: ${LLM_EMBED_MODEL}
   embed_transport: ollama # ollama | openai — Open WebUI does not expose an OpenAI-shaped /embeddings endpoint; it only proxies Ollama-shaped /ollama/api/embed. Default to 'ollama' until/unless a real OpenAI-shaped embeddings backend is configured separately.
   embed_base_url: ${EMBED_BASE_URL} # optional override; defaults to llm.base_url (Open WebUI) if unset
-  vision_model: ${LLM_VISION_MODEL}
   temperature: 0
   request_timeout_ms: ${LLM_REQUEST_TIMEOUT_MS} # default 600000; paired with maxRetries:0, never blindly re-runs a timed-out inference
   trusted_local: false # true => relax pre-egress redaction guard

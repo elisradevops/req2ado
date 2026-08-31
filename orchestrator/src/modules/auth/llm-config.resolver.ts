@@ -18,8 +18,11 @@ export interface StoredLlmProfile {
  * not a new table. Returns undefined (not an error) when the user has no
  * stored profile -- callers must treat "no profile" as "this user hasn't
  * configured Open WebUI yet" and hard-fail the calling operation rather
- * than silently falling back to a shared/global credential (that global no
- * longer exists once B7 retires LLM_API_KEY/LLM_CHAT_MODEL/LLM_VISION_MODEL).
+ * than silently falling back to a shared/global credential (LLM_API_KEY/
+ * LLM_VISION_MODEL as global env vars are retired entirely; LLM_CHAT_MODEL
+ * survives only as pipeline.worker.ts's fallback-of-last-resort when THIS
+ * resolution itself fails -- see that file's own resolveDefaultChatModel
+ * doc comment).
  */
 @Injectable()
 export class LlmConfigResolver {
