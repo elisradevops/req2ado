@@ -21,6 +21,25 @@ class Settings(BaseSettings):
     # as before vision support existed. Set to a real vision-capable model
     # name (e.g. "llava") to actually describe extracted figure images.
     llm_vision_model: str | None = None
+    # DUPLICATED, deliberately, from the orchestrator's own EMBED_MODEL
+    # config (orchestrator/src/config/config.schema.ts) — the /llm/embed
+    # proxy response carries only raw vectors, no model identifier, and
+    # adding one would be a cross-service HTTP contract change. Both
+    # services read the SAME env var name out of the same shared
+    # environment (docker-compose `env_file: .env`, which .env.template
+    # already declares EMBED_MODEL in; k8s `envFrom: configMapRef:
+    # req2ado-config`, which 01-configmap.yaml already sets), so at runtime
+    # they cannot disagree unless someone wires the var to only one service.
+    # Same deliberate-duplication rationale as max_upload_size_mb below;
+    # unlike that one, this pair has a mechanical drift guard —
+    # ingestion/tests/test_embed_model_drift.py.
+    #
+    # Consumed by dedup/vector_store.py and kb/kb_vector_store.py to stamp
+    # the embed model into every Chroma collection name, so swapping the
+    # embed model can never silently compare new query vectors against
+    # vectors that some OTHER model produced. Default matches the value
+    # k8s/01-configmap.yaml ships.
+    embed_model: str = "nomic-embed-text"
     chroma_persist_path: str = "./.req2ado/vectors"
     # Local chromadb.PersistentClient (default, unchanged from before this
     # option existed) does not survive horizontal scaling -- each ingestion
