@@ -166,12 +166,24 @@ _kb_vector_store = KbVectorStore(
     host=settings.chroma_host,
     port=settings.chroma_port,
 )
+# Gemma4 repetition-collapse mitigation (confirmed upstream bug,
+# ollama/ollama#15502) -- these are the Gemma4 team's own release-note-
+# recommended sampler settings, confirmed in ollama/ollama#15502 to reduce
+# degenerate token-repetition on long generations. Applied unconditionally
+# to every SURVEY analysis call (see OrchestratorLlmClient's top_k/min_p
+# forwarding) -- harmless for any other model/backend that ignores the
+# passthrough options field (see LlmChatOptions.topK/minP's own docstring).
+_SURVEY_TOP_K = 50
+_SURVEY_MIN_P = 0.05
+
 # Module-level singleton, same convention as _embed_client/_vector_store
 # above -- no per-job model override needed, /dedup/check has no model
 # context of its own (it's called once per diff-tree node, independent of
 # any job's own SURVEY model choice). Backs check_for_duplicates.py's
 # optional LLM verification pass (DuplicateJudgeClient).
-_dedup_judge_client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
+_dedup_judge_client = OrchestratorLlmClient(
+    settings.orchestrator_url, settings.llm_proxy_bearer, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P
+)
 # None (default: llm_vision_model unset) means figure extraction stays a
 # placeholder -- identical behavior to before vision support existed.
 _vision_client = (
@@ -195,7 +207,9 @@ _figure_file_client = (
 # best-effort enhancement (failures are caught and logged, never fail the
 # ingest, see ingest_service._store_document) rather than a capability gate
 # like vision.
-_checklist_client = OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer)
+_checklist_client = OrchestratorLlmClient(
+    settings.orchestrator_url, settings.llm_proxy_bearer, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P
+)
 # Module-level singleton, mirroring _embed_client/_kb_vector_store above:
 # RedisChatPublisher.__init__ opens a redis.asyncio connection pool via
 # from_url() that is never explicitly closed. Constructing one per request
@@ -1027,17 +1041,6 @@ async def ingest(
     if redact:
         doc = redact_canonical_doc(doc)
     return doc
-
-
-# Gemma4 repetition-collapse mitigation (confirmed upstream bug,
-# ollama/ollama#15502) -- these are the Gemma4 team's own release-note-
-# recommended sampler settings, confirmed in ollama/ollama#15502 to reduce
-# degenerate token-repetition on long generations. Applied unconditionally
-# to every SURVEY analysis call (see OrchestratorLlmClient's top_k/min_p
-# forwarding) -- harmless for any other model/backend that ignores the
-# passthrough options field (see LlmChatOptions.topK/minP's own docstring).
-_SURVEY_TOP_K = 50
-_SURVEY_MIN_P = 0.05
 
 
 def _append_vision_disabled_warning(
