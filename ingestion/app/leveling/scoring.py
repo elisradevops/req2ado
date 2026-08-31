@@ -79,6 +79,46 @@ def _build_criteria_context(criteria_retriever: CriteriaRetriever, nodes: list[W
 # room for ~150 nodes before a single call risks truncation.
 _SCORING_CHUNK_NODE_COUNT = 150
 
+# §7 canary/drift probe: one fixed, known-bad sentinel requirement injected
+# into every batched scoring call, asserted server-side, and stripped before
+# any caller sees it (see _apply_quality_scores' injection/pop pair and
+# _check_scoring_canary below).
+#
+# What this buys: nothing else in this repo can tell the difference between
+# "the model judged these requirements to be good" and "the model/config
+# drifted and is now scoring everything ~85 regardless of input" -- the same
+# class of silent degradation this codebase has already been bitten by twice
+# live (a missing `think: False` burning the whole token budget on hidden
+# chain-of-thought and returning empty content; an unset numCtx silently
+# truncating the tail of a large batch). A single item whose correct score is
+# not in dispute converts that from an invisible failure into a log line.
+#
+# NOT a gate. A failed canary logs and nothing else -- no IntegrityWarning
+# (that is a USER-VISIBLE surface and the sentinel must never leak to a
+# user, not even as prose about a canary), no chunk_warning, no job failure.
+# Same fail-open philosophy as every other path in this module: requirement
+# quality scoring is an enhancement on top of an already-built tree, never a
+# dependency of its correctness.
+#
+# The id is deliberately dunder-wrapped so it cannot collide with a real
+# WorkItemNode.local_id (those are section/index derived, e.g. "det0_h1",
+# "n1"); _apply_quality_scores still guards against a collision rather than
+# trusting that.
+_CANARY_NODE_ID = "__req2ado_scoring_canary__"
+# Deliberately, unambiguously bad on every dimension the prompt judges: no
+# subject-modal-predicate shape, two vague terms the prompt names verbatim
+# ('user-friendly', 'fast'), compound, passive, untestable, no acceptance
+# criteria. Any model scoring this above _CANARY_MAX_SCORE is not applying
+# the rubric. Fixed text, never randomized -- a stable sentinel keeps the
+# cache key stable and makes the log line comparable run to run.
+_CANARY_TEXT = "It should be user-friendly and fast and stuff should be handled appropriately."
+# Generous on purpose. This is a drift alarm, not a calibration test: the
+# question is "is the rubric being applied at all", and a false alarm on a
+# merely-strict model would train readers to ignore the log line. Matches
+# LOW_QUALITY_THRESHOLD (50) in diff-summary.ts/diffFlagging.ts -- the same
+# number this system already calls "low enough that a human should look".
+_CANARY_MAX_SCORE = 50
+
 
 def _score_all_requirements(
     nodes: list[WorkItemNode],
@@ -553,6 +593,44 @@ def _parse_confidence(raw: object) -> QualityConfidence | None:
         return None
 
 
+def _check_scoring_canary(entry: object) -> None:
+    """Asserts the injected sentinel (see _CANARY_TEXT) came back scored
+    below _CANARY_MAX_SCORE. Log-only on every failure path -- see the
+    canary constants' own comment for why this is never a gate and never an
+    IntegrityWarning.
+
+    A missing or malformed entry counts as a failure too, and for the same
+    reason a too-high score does: the prompt demands an entry for EVERY
+    input key, so the sentinel being absent means either the model stopped
+    honoring that instruction or the response was truncated -- both are
+    exactly the drift this probe exists to surface. Distinct messages per
+    case so a log reader can tell 'the rubric moved' from 'the response
+    didn't come back whole'."""
+    if not isinstance(entry, dict):
+        logger.warning(
+            "Scoring drift probe: the known-bad canary item got no usable entry back (%r) -- the model "
+            "either stopped returning one entry per input key or the response was truncated. Quality "
+            "scores in this batch may not be trustworthy.",
+            entry,
+        )
+        return
+    raw_score = entry.get("score")
+    if not isinstance(raw_score, int) or isinstance(raw_score, bool) or not (0 <= raw_score <= 100):
+        logger.warning(
+            "Scoring drift probe: the known-bad canary item came back with a non-usable score (%r). "
+            "Quality scores in this batch may not be trustworthy.",
+            raw_score,
+        )
+        return
+    if raw_score > _CANARY_MAX_SCORE:
+        logger.warning(
+            "Scoring drift probe FAILED: a deliberately known-bad requirement scored %d (expected <= %d). "
+            "The scoring model or its configuration has likely drifted -- every quality score in this "
+            "batch should be treated as suspect until this is investigated.",
+            raw_score, _CANARY_MAX_SCORE,
+        )
+
+
 def _match_category_checklist(
     category_scores: "QualityCategoryScores | None",
     category_checklist_definitions: dict[str, str] | None,
@@ -641,11 +719,34 @@ def _apply_quality_scores(
     the LLM, which has no need to be told back the definitions of names it
     was itself instructed to use. All four are independent/optional;
     omitting them is byte-identical to before any of these capabilities
-    existed."""
+    existed.
+
+    A fixed, known-bad canary requirement (see _CANARY_TEXT) is injected
+    into the batch sent to the model and its result popped off the response
+    immediately, before anything else here reads it -- a cheap model/config
+    drift probe (§7). It is log-only and never reaches `nodes`, `warnings`,
+    the progress callback, or any caller; see _check_scoring_canary and the
+    canary constants' own comments for why it is not a gate."""
     descriptions_by_node_id = {node.local_id: node.description for node in nodes}
+    # §7 canary: injected here (the one place the real batch is built) and
+    # popped on the very next line after the call, so nothing else in this
+    # function -- and no caller -- can observe it. Skipped in the
+    # vanishingly-unlikely event a real node already owns this id, since
+    # overwriting a real node's text to run a probe would be strictly worse
+    # than not running the probe.
+    inject_canary = _CANARY_NODE_ID not in descriptions_by_node_id
+    if inject_canary:
+        descriptions_by_node_id[_CANARY_NODE_ID] = _CANARY_TEXT
+    else:
+        logger.warning(
+            "Scoring drift probe skipped: a real node already uses the reserved canary id %r.",
+            _CANARY_NODE_ID,
+        )
     scores_by_node_id = scoring_client.score_requirements_for_document(
         descriptions_by_node_id, criteria_context, kb_context, category_checklist
     )
+    if inject_canary:
+        _check_scoring_canary(scores_by_node_id.pop(_CANARY_NODE_ID, None))
     valid_issue_values = {i.value for i in RequirementQualityIssue}
 
     for node in nodes:

@@ -1,5 +1,24 @@
-from app.leveling.scoring import _match_category_checklist, score_single_requirement_text
-from app.workitem.model import QualityConfidence
+import logging
+
+from app.canonical.model import SourceRef
+from app.leveling.scoring import (
+    _CANARY_MAX_SCORE,
+    _CANARY_NODE_ID,
+    _CANARY_TEXT,
+    _apply_quality_scores,
+    _match_category_checklist,
+    score_single_requirement_text,
+)
+from app.workitem.model import IntegrityWarning, QualityConfidence, WorkItemMode, WorkItemNode, WorkItemType
+
+
+def _requirement_node(local_id: str, description: str) -> WorkItemNode:
+    return WorkItemNode(
+        local_id=local_id, parent_local_id=None, type=WorkItemType.REQUIREMENT,
+        title=local_id, description=description,
+        source_ref=SourceRef(document_path="x.docx", start_offset=0, end_offset=1),
+        mode=WorkItemMode.SURVEY,
+    )
 
 
 class _FakeScoringClient:
@@ -409,3 +428,99 @@ def test_score_epics_and_features_narrates_chunks_in_document_order_under_concur
     assert [e.blocks_done for e in starts] == [0, 150, 300]
     assert [e.chunk_index for e in dones] == [0, 1, 2]
     assert [e.blocks_done for e in dones] == [150, 300, 320]
+
+
+class _CanaryObservingClient:
+    """Records the exact batch it was handed and answers every key,
+    including the sentinel, with a good score."""
+
+    def __init__(self, canary_score: int = 5) -> None:
+        self.batches: list[dict[str, str]] = []
+        self._canary_score = canary_score
+
+    def score_requirements_for_document(
+        self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None,
+    ) -> dict[str, dict]:
+        self.batches.append(dict(descriptions_by_node_id))
+        return {
+            node_id: {
+                "score": self._canary_score if node_id == _CANARY_NODE_ID else 90,
+                "issues": [],
+                "categoryScores": {"clarity": 90},
+            }
+            for node_id in descriptions_by_node_id
+        }
+
+
+def test_canary_is_sent_to_the_model_but_never_reaches_a_caller() -> None:
+    nodes = [_requirement_node("n1", "The system shall emit a heartbeat every 1 s.")]
+    warnings: list[IntegrityWarning] = []
+
+    client = _CanaryObservingClient()
+    _apply_quality_scores(nodes, client, warnings, "")
+
+    # Sent: the sentinel really was in the batch the model saw.
+    assert _CANARY_NODE_ID in client.batches[0]
+    assert client.batches[0][_CANARY_NODE_ID] == _CANARY_TEXT
+    # Never surfaced: no node, no warning, no id leak anywhere a caller,
+    # the orchestrator, or a user could observe it.
+    assert [n.local_id for n in nodes] == ["n1"]
+    assert nodes[0].quality_score == 90
+    assert warnings == []
+
+
+def test_canary_never_appears_in_the_progress_callback_either() -> None:
+    nodes = [_requirement_node("n1", "The system shall emit a heartbeat every 1 s.")]
+    fired: list[object] = []
+
+    _apply_quality_scores(nodes, _CanaryObservingClient(), [], "", progress_callback=fired.append)
+
+    assert not any(_CANARY_NODE_ID in repr(event) for event in fired)
+
+
+def test_drift_is_logged_when_the_canary_scores_too_high(caplog) -> None:
+    # Force the exact failure this probe exists for: the model applies no
+    # real rubric and rates a deliberately terrible requirement highly.
+    nodes = [_requirement_node("n1", "The system shall emit a heartbeat every 1 s.")]
+    warnings: list[IntegrityWarning] = []
+
+    with caplog.at_level(logging.WARNING, logger="app.leveling.scoring"):
+        _apply_quality_scores(nodes, _CanaryObservingClient(canary_score=95), warnings, "")
+
+    # caplog's own capture handler already renders each record's message
+    # (record.message = record.getMessage()) before it lands in
+    # caplog.records -- re-applying `% r.args` on the already-substituted
+    # string double-formats it and raises TypeError, since the rendered text
+    # has no placeholders left.
+    assert any("Scoring drift probe FAILED" in r.message for r in caplog.records)
+    assert any("scored 95" in r.message for r in caplog.records)
+    # Log-only: the job is untouched, and nothing user-visible mentions it.
+    assert warnings == []
+    assert nodes[0].quality_score == 90
+
+
+def test_no_drift_log_when_the_canary_scores_low(caplog) -> None:
+    nodes = [_requirement_node("n1", "The system shall emit a heartbeat every 1 s.")]
+
+    with caplog.at_level(logging.WARNING, logger="app.leveling.scoring"):
+        _apply_quality_scores(nodes, _CanaryObservingClient(canary_score=5), [], "")
+
+    assert not any("drift probe" in r.message for r in caplog.records)
+
+
+def test_absent_canary_entry_is_itself_logged_as_drift(caplog) -> None:
+    # The prompt demands one entry per input key, so a missing sentinel is a
+    # real signal (stopped honoring the instruction, or a truncated
+    # response) -- distinct message, same log-only treatment.
+    class _IgnoresTheCanaryClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+            return {"n1": {"score": 90, "issues": [], "categoryScores": {"clarity": 90}}}
+
+    nodes = [_requirement_node("n1", "The system shall emit a heartbeat every 1 s.")]
+    warnings: list[IntegrityWarning] = []
+
+    with caplog.at_level(logging.WARNING, logger="app.leveling.scoring"):
+        _apply_quality_scores(nodes, _IgnoresTheCanaryClient(), warnings, "")
+
+    assert any("got no usable entry back" in r.message for r in caplog.records)
+    assert warnings == []

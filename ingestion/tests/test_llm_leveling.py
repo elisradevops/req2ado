@@ -8,6 +8,7 @@ import pytest
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, Figure, SourceRef, Table, TableCell, plain_text_rows
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.leveling.conflict_detection import _DUPLICATE_CLUSTER_COSINE_THRESHOLD, _cosine_similarity
+from app.leveling.scoring import _CANARY_NODE_ID
 from app.leveling.llm_leveling import (
     SectionAnalysisClient,
     _BranchSkeleton,
@@ -2616,7 +2617,11 @@ def test_build_survey_tree_scores_only_requirement_type_nodes_when_a_scoring_cli
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), scoring_client)
 
     assert len(scoring_client.calls) == 1  # one batched call, not one per node
-    assert set(scoring_client.calls[0].keys()) == {"n1"}
+    # The canary sentinel (§7 drift probe, app.leveling.scoring) rides along
+    # in every real batch and is stripped from the response before any
+    # caller sees it -- the property under test here is still "exactly one
+    # batched call covering exactly the real requirement nodes".
+    assert set(scoring_client.calls[0].keys()) - {_CANARY_NODE_ID} == {"n1"}
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["n0"].quality_score is None  # no score_epics_and_features_for_document on this double
     assert by_id["n1"].quality_score == 90
@@ -3157,7 +3162,10 @@ def test_build_survey_tree_calls_scoring_once_for_the_whole_document_not_once_pe
     scoring_client = FakeScoringClient()
     tree = build_survey_tree(_two_branch_doc(), FakeSectionAnalysisClient(), scoring_client)
     assert len(scoring_client.calls) == 1
-    assert len(scoring_client.calls[0]) == 1  # only one representative sent, not both duplicates
+    # only one representative sent, not both duplicates (+1 for the §7
+    # canary sentinel, which is stripped from the response before any
+    # caller sees it)
+    assert set(scoring_client.calls[0].keys()) - {_CANARY_NODE_ID} == {"br0_n1"}
     by_id = {node.local_id: node for node in tree.nodes}
     assert by_id["br0_n1"].quality_score is not None
     assert by_id["br1_n1"].quality_score is not None
