@@ -4,6 +4,7 @@ import json
 import logging
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NamedTuple, cast
 
@@ -1045,70 +1046,113 @@ async def ingest(
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
-    # POST-PARSE CAPTIONING PASS -- phase 2 of two. Parsing (above) collected
-    # every figure's bytes in loader-append order without making a single
-    # vision call; this pass captions them and phase 3 (below) reassigns the
-    # results by figure id.
+    # POST-PARSE CAPTIONING PASS -- phase 2 of two, now bounded-concurrent.
+    # Parsing (above) collected every figure's bytes in loader-append order
+    # without making a single vision call; this pass captions them with at
+    # most settings.vision_caption_concurrency in flight, and phase 3
+    # (_reassign_figure_captions) writes the results back by figure id.
     #
-    # Runs HERE, after the try/finally, so it operates on the FINAL `doc` --
-    # including whatever annotate_docx_pages returned, which can replace
-    # Block/SourceRef objects. It needs no tmp_path (the bytes are already in
-    # hand), so the finally's unlink above is harmless. And it must run
-    # BEFORE the caption_status/name patch loop and the parse_done narration
-    # below, both of which read the results it produces.
+    # Runs HERE, after the try/finally, so it operates on the FINAL `doc`
+    # (including whatever annotate_docx_pages returned, which can replace
+    # Block/SourceRef objects). It needs no tmp_path -- the bytes are
+    # already in hand -- so the finally's unlink above is harmless. And it
+    # must run BEFORE the caption_status/name patch loop and the parse_done
+    # narration below, both of which read what it produces.
     #
-    # Serial for now -- see the bounded pool this becomes. Narration is
-    # deliberately split in two: the per-figure "starting" event fires in
-    # the DISPATCH loop and the "captioned" event in the ordered COLLECT
-    # loop, both on this calling thread, so figure_index stays monotonic in
-    # document order. ProgressBanner derives its overall percentage from the
-    # LAST narration event's figureIndex, so an out-of-order index is a
-    # visible backwards-moving progress bar, not a cosmetic log reorder.
+    # Three parts, and the split is the whole correctness story:
+    #  - DISPATCH, on this thread: fire each figure's "starting" narration
+    #    in document order, then submit its work unit.
+    #  - WORKERS: _caption_and_store_one_figure and nothing else. It has no
+    #    shared-state mutation and no narration by construction (see its own
+    #    docstring), which is what makes it safe here -- and it keeps
+    #    captioning and figure-file storage together, so the
+    #    rasterized-bytes reuse a prior fix introduced still holds.
+    #  - COLLECT, on this thread, BY SUBMISSION INDEX (never completion
+    #    order): fire each figure's "captioned" narration, populate the
+    #    caption_status/title side channels, append storage failures, and
+    #    reassign onto the tree. Everything user-visible therefore comes out
+    #    in document order: ProgressBanner derives its overall percentage
+    #    from the LAST narration event's figureIndex and the frontend's
+    #    NarrationEvent carries no timestamp or sequence field at all, so an
+    #    out-of-order index is a backwards-moving progress bar; and
+    #    failed_figure_storage_ids' order reaches the user as a
+    #    WarningRecord.
     figure_outcomes: list[FigureCaptionOutcome] = []
-    for figure_position, image_bytes in enumerate(collected_figure_bytes):
-        figure_index = figure_position + 1
-        if narration_publisher is not None:
+    if collected_figure_bytes:
+        def _publish_figure_start(figure_position: int) -> None:
+            if narration_publisher is None:
+                return
             narration_publisher.publish(
                 LevelingProgress(
                     phase="describe_figure",
                     branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
                     kb_grounded=False, kb_citations=[],
-                    figure_index=figure_index, figure_count=figure_total,
+                    figure_index=figure_position + 1, figure_count=figure_total,
                 )
             )
-        # primer_context is the /ingest route param; _describe_figure's own
-        # parameter is named document_context -- this is the one place that
-        # boundary rename happens.
-        outcome = _caption_and_store_one_figure(
-            f"f{figure_position}", image_bytes, primer_context, job_id,
-        )
-        figure_outcomes.append(outcome)
-        if outcome.status is not None:
-            figure_caption_status[outcome.figure_id] = outcome.status
-        if outcome.title is not None:
-            figure_title[outcome.figure_id] = outcome.title
-        if outcome.storage_failed:
-            failed_figure_ids.append(outcome.figure_id)
-        if narration_publisher is not None:
-            # caption is None exactly when the vision model judged this
-            # figure non-significant (or vision failed) -- both cases get
-            # the same honest "nothing here" narration copy.
-            display_caption = (
-                outcome.caption if outcome.caption is not None
-                else "this figure has no discernible technical content"
+
+        def _caption_one(figure_position: int) -> FigureCaptionOutcome:
+            # primer_context is the /ingest route param; _describe_figure's
+            # own parameter is named document_context -- this is the one
+            # place that boundary rename happens. Two byte-identical figures
+            # could in principle race the same caption cache key here and
+            # both make a live call; harmless, and unreachable within one
+            # document anyway, since every loader already dedupes identical
+            # figures by sha256 before the collector ever sees the second.
+            return _caption_and_store_one_figure(
+                f"f{figure_position}",
+                collected_figure_bytes[figure_position],
+                primer_context,
+                job_id,
             )
-            narration_publisher.publish(
-                LevelingProgress(
-                    phase="describe_figure",
-                    branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
-                    kb_grounded=False, kb_citations=[],
-                    figure_index=figure_index, figure_caption=display_caption, figure_count=figure_total,
-                    # Distinct from display_caption above -- see
-                    # LevelingProgress.figure_caption_status's own docstring.
-                    figure_caption_status=outcome.status,
+
+        caption_concurrency = settings.vision_caption_concurrency
+        if caption_concurrency <= 1 or len(collected_figure_bytes) <= 1:
+            # Byte-identical to this pass's pre-concurrency form: one figure
+            # at a time, in document order, with no ThreadPoolExecutor
+            # constructed at all -- zero new risk for every deployment that
+            # hasn't opted into concurrency. Same guard shape
+            # llm_leveling.py's own branch/batch fan-outs use.
+            for figure_position in range(len(collected_figure_bytes)):
+                _publish_figure_start(figure_position)
+                figure_outcomes.append(_caption_one(figure_position))
+        else:
+            with ThreadPoolExecutor(max_workers=caption_concurrency) as executor:
+                futures = []
+                for figure_position in range(len(collected_figure_bytes)):
+                    _publish_figure_start(figure_position)
+                    futures.append(executor.submit(_caption_one, figure_position))
+                # Collected by INDEX (list position of the future), never by
+                # completion order.
+                figure_outcomes = [future.result() for future in futures]
+
+        for outcome in figure_outcomes:
+            if outcome.status is not None:
+                figure_caption_status[outcome.figure_id] = outcome.status
+            if outcome.title is not None:
+                figure_title[outcome.figure_id] = outcome.title
+            if outcome.storage_failed:
+                failed_figure_ids.append(outcome.figure_id)
+            if narration_publisher is not None:
+                # caption is None exactly when the vision model judged this
+                # figure non-significant (or vision failed) -- both cases get
+                # the same honest "nothing here" narration copy.
+                display_caption = (
+                    outcome.caption if outcome.caption is not None
+                    else "this figure has no discernible technical content"
                 )
-            )
-    if figure_outcomes:
+                narration_publisher.publish(
+                    LevelingProgress(
+                        phase="describe_figure",
+                        branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
+                        kb_grounded=False, kb_citations=[],
+                        figure_index=int(outcome.figure_id[1:]) + 1,
+                        figure_caption=display_caption, figure_count=figure_total,
+                        # Distinct from display_caption above -- see
+                        # LevelingProgress.figure_caption_status's own docstring.
+                        figure_caption_status=outcome.status,
+                    )
+                )
         _reassign_figure_captions(doc, figure_outcomes)
 
     doc.failed_figure_storage_ids = failed_figure_ids
