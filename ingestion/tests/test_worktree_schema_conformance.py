@@ -8,6 +8,7 @@ import pytest
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.tree_builder import build_baseline_tree
+from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.workitem.model import IntegrityWarning, WarningKind
 
 SCHEMA_PATH = Path(__file__).parents[2] / "shared" / "schemas" / "work-item-tree.schema.json"
@@ -61,10 +62,8 @@ class FakeSectionAnalysisClient:
     }
 
     def analyze_section_skeleton(
-        self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
-        topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
-        heading_type_hints: list[tuple[str, str]] | None = None,
+        self, section_text: str, kb_context: str | None = None, *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], bool]:
         return [
             {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display"},

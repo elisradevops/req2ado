@@ -17,6 +17,7 @@ from pathlib import Path
 from app.canonical.model import BlockKind
 from app.leveling.llm_leveling import build_survey_tree
 from app.loaders.pdf_loader import load_pdf
+from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
 from app.workitem.model import WorkItemType
 
 
@@ -38,21 +39,10 @@ class FakeSectionAnalysisClient:
         self.calls: list[dict] = []
 
     def analyze_section_skeleton(
-        self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
-        topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None, requirement_row_hints: list[tuple[str, str]] | None = None,
-        heading_type_hints: list[tuple[str, str]] | None = None,
+        self, section_text: str, kb_context: str | None = None, *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], bool]:
-        self.calls.append(
-            {
-                "section_text": section_text,
-                "kb_context": kb_context,
-                "whole_document": whole_document,
-                "topic_count": topic_count,
-                "table_group_hints": table_group_hints,
-                "expected_root_count": expected_root_count,
-            }
-        )
+        self.calls.append({"section_text": section_text, "kb_context": kb_context, "options": options})
         # STAGE 1 sees structure only -- see llm_leveling's
         # _build_survey_skeleton_for_branch.
         return [
@@ -163,7 +153,7 @@ def test_pdf_survey_golden_produces_stable_branch_and_heading_structure(tmp_path
     # A single whole-document call, not a branch split -- this tiny
     # document's real token count comfortably fits the coverage budget.
     assert len(fake.calls) == 1
-    assert fake.calls[0]["whole_document"] is True
+    assert fake.calls[0]["options"].whole_document is True
     # topic_count is the real per-block-driven coverage hint Tasks 2-3 can
     # regress: 2 real HEADING blocks (Overview, Scope) + 0 table groups.
     # Before Task 3 added heading detection, PDF never emitted
@@ -171,5 +161,5 @@ def test_pdf_survey_golden_produces_stable_branch_and_heading_structure(tmp_path
     # assertion is the concrete pin that Task 3's heading detection is
     # actually feeding build_survey_tree's coverage hint, not just
     # producing HEADING blocks nobody downstream reads.
-    assert fake.calls[0]["topic_count"] == 2
+    assert fake.calls[0]["options"].topic_count == 2
     assert "REV" not in fake.calls[0]["section_text"]  # suppressed header never reaches the LLM prompt either
