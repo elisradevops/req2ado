@@ -1816,3 +1816,42 @@ def test_load_pdf_leaves_figure_name_none_when_no_caption_line_exists(tmp_path: 
     doc = load_pdf(str(out_path))
     assert len(doc.figures) == 1
     assert doc.figures[0].name is None
+
+
+def test_load_pdf_uses_the_harvested_figure_title_as_block_text_when_vision_never_ran(tmp_path: Path) -> None:
+    # SWEEP.md section 3: the same M1-class gap already fixed for docx. The
+    # document's own "Figure N: Title" line is harvested into Figure.name,
+    # but append_figure derives block text from `caption` alone -- so with
+    # no vision caption the rendered description was "[FIGURE: none]" and
+    # the figure counted as uncaptioned, silently discarding the author's
+    # own title from the work item. describe_figure is None here (BASELINE
+    # mode / vision disabled), which is the only case where the author's
+    # line is the sole description that will ever exist.
+    out_path = _build_pdf_with_image_and_line(
+        tmp_path, image_y=400, image_height=100, line_y=375, line_text="Figure 1: Panel Layout Diagram",
+    )
+    doc = load_pdf(str(out_path))
+
+    assert len(doc.figures) == 1
+    assert doc.figures[0].name == "Panel Layout Diagram"
+    # Figure.caption stays None -- still reserved for real vision prose only,
+    # exactly as the docx sibling fix guarantees.
+    assert doc.figures[0].caption is None
+    figure_block = next(b for b in doc.blocks if b.kind == BlockKind.FIGURE)
+    assert figure_block.text == "[FIGURE: Panel Layout Diagram]"
+
+
+def test_load_pdf_does_not_use_the_harvested_title_as_block_text_when_vision_ran_and_declined(tmp_path: Path) -> None:
+    # The sibling guard to Task 4's docx gate: vision ran and returned
+    # nothing (how an INSIGNIFICANT verdict reaches a loader), so the figure
+    # must stay uncaptioned rather than being promoted out of
+    # insignificant_figure_ids/uncaptioned_figure_ids by a rewritten
+    # block.text.
+    out_path = _build_pdf_with_image_and_line(
+        tmp_path, image_y=400, image_height=100, line_y=375, line_text="Figure 1: Panel Layout Diagram",
+    )
+    doc = load_pdf(str(out_path), describe_figure=lambda _b: None)
+
+    assert doc.figures[0].name == "Panel Layout Diagram"
+    figure_block = next(b for b in doc.blocks if b.kind == BlockKind.FIGURE)
+    assert figure_block.text == "[FIGURE: none]"

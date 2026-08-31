@@ -2089,6 +2089,27 @@ def load_pdf(
                         page=page_number,
                         name=figure_name_by_merged_index.get(i),
                     )
+                    if caption is None and describe_figure is None:
+                        harvested_title = figure_name_by_merged_index.get(i)
+                        if harvested_title:
+                            # Same M1-class fix as docx_loader.py's Caption
+                            # branch: append_figure derives block text from
+                            # `caption` alone, so a figure with a real
+                            # "Figure N: Title" line and no vision caption
+                            # rendered "[FIGURE: none]" and counted as
+                            # uncaptioned -- silently discarding the
+                            # document's own title from the rendered work
+                            # item. Gated on `describe_figure is None`
+                            # (vision never wired up), NOT on `caption is
+                            # None` alone: vision returning nothing is also
+                            # how an INSIGNIFICANT verdict arrives, and
+                            # promoting that case would remove the figure
+                            # from insignificant_figure_ids/
+                            # uncaptioned_figure_ids (see docx_loader.py's
+                            # equivalent gate for the full reasoning).
+                            # Figure.caption itself is never touched -- still
+                            # reserved for real vision prose only.
+                            blocks[-1].text = f"[FIGURE: {harvested_title}]"
                     block_id += 1
                     figure_id += 1
                     if image_key is not None:
