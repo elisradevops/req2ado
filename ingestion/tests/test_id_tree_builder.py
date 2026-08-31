@@ -907,3 +907,123 @@ def test_build_hierarchy_subtree_identity_and_fidelity_hashes_are_unaffected_by_
         bare_ref = node.source_ref.model_copy(update={"section_path": []})
         assert node.identity_hash == _hash_identity(node.description, bare_ref)
         assert node.fidelity_hash == hashlib.sha256(node.description.encode()).hexdigest()
+
+
+def _many_requirement_rows(count: int) -> list:
+    # _TITLE_TAG_CHUNK_SIZE / _SYNTHESIS_CHUNK_SIZE are both 150, so a
+    # multi-chunk pass needs >150 leaves. 320 gives 3 chunks (150/150/20) --
+    # enough that a bounded pool of 2 must genuinely overlap.
+    return [
+        _row(f"The system shall do thing {i}.", "Requirement", None, str(i + 1), has_shall=True)
+        for i in range(count)
+    ]
+
+
+def test_apply_title_tag_pass_runs_chunks_concurrently() -> None:
+    import threading
+    import time
+
+    from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
+
+    seen: set[str] = set()
+    lock = threading.Lock()
+
+    class ThreadRecordingClient:
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            with lock:
+                seen.add(threading.current_thread().name)
+            time.sleep(0.05)  # long enough that a serial run could only use one thread
+            return {node_id: {"title": "T", "tags": []} for node_id in texts_by_row_id}
+
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+    leaf_ids = [n.local_id for n in nodes]
+
+    _apply_title_tag_pass(nodes, leaf_ids, ThreadRecordingClient(), [], chunk_concurrency=3)
+
+    assert len(seen) > 1  # chunks genuinely overlapped
+
+
+def test_apply_title_tag_pass_output_is_identical_serial_vs_concurrent() -> None:
+    import time
+
+    from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
+
+    class OrderSensitiveClient:
+        """Chunk 0 is deliberately slowed so a later chunk genuinely
+        completes first -- output must not notice."""
+
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            if "det0_1" in texts_by_row_id:
+                time.sleep(0.2)
+            return {
+                node_id: {"title": f"Enhanced {node_id}", "tags": ["Functional"]}
+                for node_id in texts_by_row_id
+            }
+
+    def run(concurrency: int):
+        nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+        warnings: list = []
+        _apply_title_tag_pass(
+            nodes, [n.local_id for n in nodes], OrderSensitiveClient(), warnings,
+            chunk_concurrency=concurrency,
+        )
+        return [(n.local_id, n.title, [t.value for t in n.tags]) for n in nodes], [w.raw for w in warnings]
+
+    assert run(1) == run(4)
+
+
+def test_apply_title_tag_pass_narrates_chunks_in_document_order_under_concurrency() -> None:
+    import time
+
+    from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
+
+    class SlowFirstChunkClient:
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            if "det0_1" in texts_by_row_id:
+                time.sleep(0.2)
+            return {node_id: {"title": "T", "tags": []} for node_id in texts_by_row_id}
+
+    fired: list = []
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+
+    _apply_title_tag_pass(
+        nodes, [n.local_id for n in nodes], SlowFirstChunkClient(), [],
+        progress_callback=fired.append, chunk_concurrency=4,
+    )
+
+    labels = [e.subtree_label for e in fired if e.phase == "deterministic_subtree"]
+    # The frontend regex-parses "(chunk N of M)" straight out of this label
+    # (frontend/src/utils/deterministicSubtreeChunk.ts) and derives its pip
+    # strip and percentage from the LAST event received -- so these must
+    # arrive in ascending chunk order regardless of completion order.
+    assert [label.split("(chunk ")[1] for label in labels] == ["1 of 3)", "2 of 3)", "3 of 3)"]
+    # blocks_done must also be monotonic -- ProgressBanner's percentage
+    # comes straight off it.
+    assert [e.blocks_done for e in fired if e.phase == "deterministic_subtree"] == [0, 150, 300]
+
+
+def test_apply_title_tag_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> None:
+    from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
+
+    class SecondChunkRaisesClient:
+        def title_and_tags_for_rows(self, texts_by_row_id):
+            if "det0_151" in texts_by_row_id:
+                raise RuntimeError("boom")
+            return {node_id: {"title": "Enhanced", "tags": []} for node_id in texts_by_row_id}
+
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(320), "det0_")
+    warnings: list = []
+    fired: list = []
+
+    _apply_title_tag_pass(
+        nodes, [n.local_id for n in nodes], SecondChunkRaisesClient(), warnings,
+        progress_callback=fired.append, chunk_concurrency=4,
+    )
+
+    # Fail-soft per chunk, exactly as before: chunk 1's failure never stops
+    # chunks 0 and 2 from being applied.
+    assert nodes[0].title == "Enhanced"
+    assert nodes[319].title == "Enhanced"
+    assert nodes[151].title != "Enhanced"
+    assert len(warnings) == 1
+    assert any(e.phase == "chunk_warning" for e in fired)

@@ -25,6 +25,7 @@ from typing import Protocol
 from app.canonical.model import SourceRef, Table
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
+from app.leveling.bounded_chunks import run_chunks_bounded
 from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
@@ -105,6 +106,11 @@ def _apply_title_tag_pass(
     subtree_index: int | None = None,
     subtree_count: int | None = None,
     subtree_label_prefix: str | None = None,
+    # How many of this pass's independent chunks may be in flight at once
+    # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
+    # is the byte-identical previous behavior: one chunk at a time, on the
+    # calling thread, with no ThreadPoolExecutor constructed at all.
+    chunk_concurrency: int = 1,
 ) -> None:
     """Fail-open: any exception leaves every node's deterministic title
     and empty tags exactly as constructed -- the batched call is a pure
@@ -118,11 +124,29 @@ def _apply_title_tag_pass(
     a big model) previously had no narration between chunks at all --
     _detect_deterministic_subtrees's own kickoff event fires once per
     SUBTREE, before this loop even starts, and stays frozen for however long
-    every chunk inside it takes. Firing here, per chunk, closes that."""
+    every chunk inside it takes. Firing here, per chunk, closes that.
+
+    Chunks may run concurrently, bounded by `chunk_concurrency` (see
+    app.config.Settings.survey_chunk_concurrency). Determinism is preserved
+    structurally, not by luck: the client call is the ONLY work that leaves
+    the calling thread, results come back by chunk INDEX (never completion
+    order), and every mutation/warning/narration happens in the fixed-order
+    merge loop below -- so the node list, the warnings list, and the
+    narration stream are byte-identical to a serial run. Fail-soft per
+    chunk is unchanged: one chunk's exception still yields exactly its own
+    ENHANCEMENT_CALL_FAILED warning plus a `chunk_warning` event, and every
+    other chunk still applies."""
     if not leaf_node_ids:
         return
     by_id = {n.local_id: n for n in nodes}
     total_chunks = -(-len(leaf_node_ids) // _TITLE_TAG_CHUNK_SIZE)  # ceil division, no float rounding
+    # PHASE 1 -- chunk construction and ALL pre-dispatch narration, on the
+    # calling thread, in document order. Firing here rather than from inside
+    # a worker is what keeps narration in document order and needs no lock:
+    # the same reasoning llm_leveling._map_figures_tables_to_nodes'
+    # _fire_map_scope already documents for its own concurrent batches.
+    chunk_payloads: list[dict[str, str]] = []
+    chunk_id_lists: list[list[str]] = []
     for start in range(0, len(leaf_node_ids), _TITLE_TAG_CHUNK_SIZE):
         chunk_ids = leaf_node_ids[start : start + _TITLE_TAG_CHUNK_SIZE]
         if progress_callback is not None:
@@ -148,13 +172,27 @@ def _apply_title_tag_pass(
                     ),
                 )
             )
-        texts_by_id = {node_id: by_id[node_id].description for node_id in chunk_ids}
-        try:
-            result = title_tag_client.title_and_tags_for_rows(texts_by_id)
-        except Exception as exc:
+        chunk_id_lists.append(chunk_ids)
+        chunk_payloads.append({node_id: by_id[node_id].description for node_id in chunk_ids})
+
+    # PHASE 2 -- the ONLY thing that runs off the calling thread: the client
+    # call. No mutation, no warning append, no narration inside the worker.
+    outcomes = run_chunks_bounded(
+        chunk_payloads,
+        lambda texts_by_id: title_tag_client.title_and_tags_for_rows(texts_by_id),
+        chunk_concurrency,
+    )
+
+    # PHASE 3 -- merge in fixed CHUNK order on the calling thread. Every
+    # `warnings.append`, every `progress_callback`, and every node mutation
+    # happens here, so the resulting warning list and narration stream are
+    # byte-identical to a serial run regardless of completion order.
+    for outcome in outcomes:
+        chunk_ids = chunk_id_lists[outcome.index]
+        if outcome.error is not None:
             message = (
                 f"Title/tag enhancement call failed for {len(chunk_ids)} deterministic "
-                f"leaf node(s) -- kept their deterministic titles and empty tags: {exc}"
+                f"leaf node(s) -- kept their deterministic titles and empty tags: {outcome.error}"
             )
             warnings.append(
                 IntegrityWarning.make(
@@ -173,6 +211,7 @@ def _apply_title_tag_pass(
                     )
                 )
             continue
+        result = outcome.value or {}
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:
