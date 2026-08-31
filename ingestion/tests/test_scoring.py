@@ -508,6 +508,24 @@ def test_no_drift_log_when_the_canary_scores_low(caplog) -> None:
     assert not any("drift probe" in r.message for r in caplog.records)
 
 
+def test_canary_is_not_injected_when_the_kill_switch_is_off(monkeypatch) -> None:
+    # survey_scoring_canary_enabled=False must fully disable the probe: no
+    # sentinel in the batch the model sees, no popped entry, no drift check.
+    import app.leveling.scoring as scoring_module
+
+    monkeypatch.setattr(scoring_module.settings, "survey_scoring_canary_enabled", False)
+
+    nodes = [_requirement_node("n1", "The system shall emit a heartbeat every 1 s.")]
+    warnings: list[IntegrityWarning] = []
+    client = _CanaryObservingClient()
+
+    _apply_quality_scores(nodes, client, warnings, "")
+
+    assert _CANARY_NODE_ID not in client.batches[0]
+    assert nodes[0].quality_score == 90
+    assert warnings == []
+
+
 def test_absent_canary_entry_is_itself_logged_as_drift(caplog) -> None:
     # The prompt demands one entry per input key, so a missing sentinel is a
     # real signal (stopped honoring the instruction, or a truncated

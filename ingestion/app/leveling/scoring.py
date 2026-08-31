@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
+from app.config import settings
 from app.leveling.bounded_chunks import run_chunks_bounded
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback, _sample_titles
 from app.quality.criteria_retrieval import CriteriaRetriever
@@ -726,18 +727,23 @@ def _apply_quality_scores(
     immediately, before anything else here reads it -- a cheap model/config
     drift probe (§7). It is log-only and never reaches `nodes`, `warnings`,
     the progress callback, or any caller; see _check_scoring_canary and the
-    canary constants' own comments for why it is not a gate."""
+    canary constants' own comments for why it is not a gate. Gated on
+    settings.survey_scoring_canary_enabled (default True, preserving prior
+    behavior) -- see that setting's own comment in config.py for why an
+    operator kill switch exists."""
     descriptions_by_node_id = {node.local_id: node.description for node in nodes}
     # §7 canary: injected here (the one place the real batch is built) and
     # popped on the very next line after the call, so nothing else in this
-    # function -- and no caller -- can observe it. Skipped in the
-    # vanishingly-unlikely event a real node already owns this id, since
-    # overwriting a real node's text to run a probe would be strictly worse
-    # than not running the probe.
-    inject_canary = _CANARY_NODE_ID not in descriptions_by_node_id
+    # function -- and no caller -- can observe it. Skipped when the
+    # survey_scoring_canary_enabled kill switch is off, or (independently)
+    # in the vanishingly-unlikely event a real node already owns this id,
+    # since overwriting a real node's text to run a probe would be strictly
+    # worse than not running the probe.
+    canary_enabled = settings.survey_scoring_canary_enabled
+    inject_canary = canary_enabled and _CANARY_NODE_ID not in descriptions_by_node_id
     if inject_canary:
         descriptions_by_node_id[_CANARY_NODE_ID] = _CANARY_TEXT
-    else:
+    elif canary_enabled:
         logger.warning(
             "Scoring drift probe skipped: a real node already uses the reserved canary id %r.",
             _CANARY_NODE_ID,

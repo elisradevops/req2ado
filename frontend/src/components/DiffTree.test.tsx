@@ -304,6 +304,10 @@ describe('DiffTree', () => {
 
     expect(screen.getByText('Flagged req').closest('[role="row"], div')?.parentElement).toHaveTextContent(/review/i);
     expect(screen.getByText('Healthy req').closest('[role="row"], div')?.parentElement).not.toHaveTextContent(/review/i);
+    // The chip's title must name the actual reason (low grounding here), not
+    // a generic message -- distinguishes this from the low-confidence-only
+    // case below, which gets a different title from the same chip element.
+    expect(screen.getByTitle(/low grounding/i)).toBeInTheDocument();
   });
 
   it('shows a review chip on a low-confidence row with otherwise healthy scores', () => {
@@ -320,6 +324,10 @@ describe('DiffTree', () => {
     fireEvent.click(screen.getByRole('button', { name: /expand feature 1/i }));
 
     expect(screen.getByText('Unsure req').closest('[role="row"], div')?.parentElement).toHaveTextContent(/review/i);
+    // Grounding and quality are both healthy here -- the chip's title must
+    // name the confidence-specific reason, not the low-grounding/low-quality
+    // wording the other flagged case gets from the same chip element.
+    expect(screen.getByTitle(/model was unsure/i)).toBeInTheDocument();
   });
 
   it('filterFlaggedOnly shows only flagged entries, hiding unflagged rows including ancestors', () => {

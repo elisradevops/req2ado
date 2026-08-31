@@ -891,6 +891,17 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     if (result.qualityScore == null) {
       throw new BadGatewayException('Rescore did not return a usable score -- the item was left unchanged.');
     }
+    // result.qualityConfidence is only typed as `string | null` on
+    // IngestionHttpClient.scoreItem's return type -- ingestion's own parsing
+    // guarantees the 'high'/'medium'/'low' vocabulary today, but casting
+    // straight to the literal union below would let an unexpected value
+    // (e.g. a differently-cased string) silently pass through and later be
+    // read by isFlaggedDiffEntry as "not low", a silently unflagged item.
+    // Narrow at runtime instead of casting, falling back to null.
+    const rescoredQualityConfidence =
+      result.qualityConfidence === 'high' || result.qualityConfidence === 'medium' || result.qualityConfidence === 'low'
+        ? result.qualityConfidence
+        : null;
     // qualityCategoryChecklist (the org's own checklist citation text per
     // category, see ingestion's quality_category_checklist docstring,
     // app.workitem.model) is deliberately NOT overwritten here -- the
@@ -934,7 +945,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // laundering DESIGN.md §11.4.4 forbids. The `qualityScore == null`
         // guard above already rejected the failed-rescore case, so reaching
         // here means we have a real fresh judgment to write.
-        qualityConfidence: (result.qualityConfidence as 'high' | 'medium' | 'low' | null) ?? null,
+        qualityConfidence: rescoredQualityConfidence,
         qualityStale: false,
       };
       return freshDiff;

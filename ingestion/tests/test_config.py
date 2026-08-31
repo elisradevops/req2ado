@@ -29,6 +29,15 @@ def test_survey_chunk_concurrency_treats_a_blank_env_var_as_unset(monkeypatch) -
     assert Settings().survey_chunk_concurrency == 1
 
 
+def test_survey_scoring_canary_enabled_defaults_to_true() -> None:
+    # Kill switch for scoring.py's §7 canary/drift probe -- default ON,
+    # preserving current behavior; see config.py's own doc comment for why
+    # an operator needs to be able to turn it off without a code deploy.
+    from app.config import Settings
+
+    assert Settings().survey_scoring_canary_enabled is True
+
+
 def test_vision_caption_concurrency_defaults_to_one() -> None:
     # Same default and same reasoning as survey_branch_concurrency (see
     # config.py's own doc comment): a client-side fan-out is an operator

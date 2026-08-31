@@ -2263,6 +2263,31 @@ describe('JobsService.rescoreDiffEntry', () => {
     expect(isFlaggedDiffEntry(entry)).toBe(true);
   });
 
+  it('falls back to null instead of passing through an unexpected qualityConfidence value', async () => {
+    // M3: IngestionHttpClient.scoreItem's return type only declares
+    // qualityConfidence as `string | null` -- a runtime narrow, not a bare
+    // cast, must reject anything outside 'high'/'medium'/'low' rather than
+    // silently persisting it as a false-typed literal (which
+    // isFlaggedDiffEntry would then read as "not low", a silently unflagged
+    // item).
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: 'qwen3.6:35b', dryRunDiff: [staleEntry] }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const scoreItem = jest.fn().mockResolvedValue({
+      qualityScore: 88, qualityIssues: [], qualityCategoryScores: { clarity: 88 }, qualityConfidence: 'bogus',
+    });
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    const diff = await service.rescoreDiffEntry('job-1', 'n0');
+
+    const entry = diff.find((e) => e.localId === 'n0')!;
+    expect(entry.qualityConfidence).toBeNull();
+  });
+
   it('leaves qualityCategoryChecklist untouched across a rescore -- ingestion has no fresher citation text to offer', async () => {
     // The rescore rubric is forced to the SAME category keys (see
     // resolveCategoryChecklist above), so the entry's EXISTING checklist

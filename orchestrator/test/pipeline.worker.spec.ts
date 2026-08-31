@@ -356,6 +356,42 @@ describe('runPipelineJob', () => {
     );
   });
 
+  it('falls back to null instead of passing through an unexpected quality_confidence value', async () => {
+    // M3: LeveledNode only declares quality_confidence as the literal union
+    // at compile time -- nothing narrows the parsed ingestion JSON at
+    // runtime. An unexpected string (e.g. differently-cased) must map to
+    // null rather than pass through as a false-typed literal, which
+    // isFlaggedDiffEntry would then read as "not low" -- a silently
+    // unflagged item.
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [{ local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1', quality_confidence: 'bogus' }],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakeDryRunService.diff).toHaveBeenCalledWith(
+      [expect.objectContaining({ localId: 'n0', qualityConfidence: null })],
+      fakeIdempotencyService,
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
   it('carries parent_local_id/type/title/description from ingestion through to the dry-run diff input', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({

@@ -153,6 +153,16 @@ class Settings(BaseSettings):
     # shared backend, raise it only in coordination with whoever operates
     # that backend's own concurrency limit.
     survey_chunk_concurrency: int = 1
+    # Kill switch for scoring.py's §7 canary/drift probe (the fixed,
+    # known-bad sentinel requirement injected into every quality-scoring
+    # batch -- see _CANARY_NODE_ID's own module comment). Default on,
+    # preserving current behavior, but the live finding that a chunk's score
+    # is dominated by neighboring context (byte-identical descriptions in
+    # different chunks scored 85 vs 20 at temperature=0, see scoring.py)
+    # means the canary's mere presence in the prompt could plausibly anchor
+    # or shift real scores -- this lets an operator turn it off without a
+    # code deploy if that turns out to matter in production.
+    survey_scoring_canary_enabled: bool = True
     # Kill switch for app/loaders/docx_pagination.py's docx->PDF page
     # alignment (see /ingest's own comment for wiring) -- default on, but
     # lets this be disabled without a code deploy if the LibreOffice

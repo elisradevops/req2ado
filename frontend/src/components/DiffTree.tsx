@@ -26,7 +26,7 @@ import { cn } from '../lib/cn';
 import { moveValidationReason as sharedMoveValidationReason } from '../lib/moveValidation';
 import { actionLabel } from '../utils/labels';
 import { matchesDiffFilter } from '../utils/diffFilterMatch';
-import { isFlaggedDiffEntry } from '../utils/diffFlagging';
+import { flaggedDiffEntryReason, isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { LABEL_MICRO } from '../utils/labelMicro';
 import { ActionBadge } from './ActionBadge';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
@@ -1085,7 +1085,12 @@ function DiffTreeRow({
           the Signals column next to it. */}
       <span className="flex-none overflow-hidden">
         {isFlaggedDiffEntry(entry) && (
-          <Chip bg="var(--color-warning-soft)" color="var(--color-warning-ink)" className="border border-warning-border">
+          <Chip
+            bg="var(--color-warning-soft)"
+            color="var(--color-warning-ink)"
+            className="border border-warning-border"
+            title={flaggedDiffEntryReason(entry) ?? undefined}
+          >
             ⚠ Review
           </Chip>
         )}

@@ -724,7 +724,17 @@ export async function runPipelineJob(
         qualityIssues: node.quality_issues,
         qualityCategoryScores: node.quality_category_scores,
         qualityCategoryChecklist: node.quality_category_checklist,
-        qualityConfidence: node.quality_confidence ?? null,
+        // node.quality_confidence is typed as the literal union on LeveledNode
+        // above, but that interface is only a compile-time label on parsed
+        // ingestion JSON -- nothing narrows it at runtime. An unexpected
+        // string here (e.g. differently-cased) must fall back to null rather
+        // than silently pass through as a false-typed literal that
+        // isFlaggedDiffEntry would then read as "not low" -- a silently
+        // unflagged item.
+        qualityConfidence:
+          node.quality_confidence === 'high' || node.quality_confidence === 'medium' || node.quality_confidence === 'low'
+            ? node.quality_confidence
+            : null,
         sourceRef: node.source_ref
           ? {
               documentPath: node.source_ref.document_path,

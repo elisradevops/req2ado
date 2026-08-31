@@ -38,3 +38,32 @@ export function isFlaggedDiffEntry(entry: {
     entry.qualityConfidence === LOW_CONFIDENCE
   );
 }
+
+// Explains WHY isFlaggedDiffEntry returned true, for the existing "⚠ Review"
+// chip's native `title` tooltip -- a row can be flagged purely on a low
+// qualityConfidence while grounding and quality both look healthy, and
+// without this the chip gives a reviewer no visible reason. Mirrors
+// isFlaggedDiffEntry's own OR'd conditions exactly (same thresholds, same
+// per-type grounding cutoff) so the tooltip can never disagree with why the
+// chip is actually showing. Returns null when the entry isn't flagged.
+export function flaggedDiffEntryReason(entry: {
+  type?: string;
+  groundingScore?: number | null;
+  qualityScore?: number | null;
+  qualityConfidence?: string | null;
+}): string | null {
+  const groundingThreshold = entry.type === 'Epic' || entry.type === 'Feature'
+    ? PARENT_LOW_GROUNDING_THRESHOLD
+    : LOW_GROUNDING_THRESHOLD;
+  const reasons: string[] = [];
+  if (entry.groundingScore != null && entry.groundingScore < groundingThreshold) {
+    reasons.push('Low grounding: little overlap with the source text');
+  }
+  if (entry.qualityScore != null && entry.qualityScore < LOW_QUALITY_THRESHOLD) {
+    reasons.push('Low quality score');
+  }
+  if (entry.qualityConfidence === LOW_CONFIDENCE) {
+    reasons.push('Model was unsure about this score');
+  }
+  return reasons.length > 0 ? reasons.join('; ') : null;
+}
