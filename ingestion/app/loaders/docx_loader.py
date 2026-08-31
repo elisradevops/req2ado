@@ -16,7 +16,7 @@ from docx.text.paragraph import Paragraph as DocxParagraph
 from PIL import Image, UnidentifiedImageError
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
-from app.loaders.figure_utils import append_figure
+from app.loaders.figure_utils import append_figure, extract_figure_title
 from app.leveling.numbering import parse_numbering
 
 logger = logging.getLogger(__name__)
@@ -861,12 +861,18 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
 
             style_name = paragraph.style.name if paragraph.style else ""
             if style_name == "Caption" and blocks and blocks[-1].kind == BlockKind.FIGURE:
-                # A human-authored caption is more trustworthy than a vision
-                # guess -- it always overrides describe_figure's output, and
-                # the caption paragraph is linked to the figure rather than
-                # also emitted as its own disconnected PARAGRAPH block.
-                figures[-1].caption = content
-                blocks[-1].text = f"[FIGURE: {content}]"
+                # The author's own caption names the figure (Figure.name) -- it
+                # must NOT overwrite describe_figure's vision-generated prose
+                # (Figure.caption), which is a different field for a different
+                # purpose (see Figure's own docstring). Still consumed here, not
+                # re-emitted as its own disconnected PARAGRAPH block, same as
+                # before this fix. Falls back to the raw stripped text as the name
+                # when it doesn't match the "Figure N:" shape -- unlike pdf_loader,
+                # this branch already has an independent signal it's a caption (the
+                # paragraph's own Word style), so there is no reason to discard a
+                # real author-written title just because it doesn't start with the
+                # word "Figure".
+                figures[-1].name = extract_figure_title(content) or content
             else:
                 heading_level = _heading_level_for_paragraph(paragraph)
                 if heading_level is not None:

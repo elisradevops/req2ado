@@ -1,6 +1,25 @@
 from __future__ import annotations
 
+import re
+
 from app.canonical.model import Block, BlockKind, Figure, SourceRef
+
+_FIGURE_CAPTION_PATTERN = re.compile(r"^Figure\s+[\w.]+[:.]?\s*(.*)$", re.IGNORECASE)
+
+
+def extract_figure_title(text: str) -> str | None:
+    """Parses an author-written "Figure N: Title" (or "Figure N." with no
+    title) line into just the title text. Returns None when `text` doesn't
+    look like a figure-label line at all -- callers with an independent
+    signal that the text IS a caption regardless (e.g. docx's own "Caption"
+    paragraph style) should fall back to the raw stripped text themselves;
+    callers relying on this pattern as their ONLY signal (e.g. pdf's
+    geometric-proximity heuristic) should treat None as "not a caption"."""
+    stripped = text.strip()
+    match = _FIGURE_CAPTION_PATTERN.match(stripped)
+    if match is None:
+        return None
+    return match.group(1).strip() or stripped
 
 
 def append_figure(

@@ -1278,7 +1278,7 @@ def test_load_docx_heading_detection_takes_precedence_over_list_item_detection()
     assert block.heading_level == 1
 
 
-def test_load_docx_links_a_caption_styled_paragraph_to_the_preceding_figure() -> None:
+def test_load_docx_names_a_figure_from_its_caption_styled_paragraph() -> None:
     from docx import Document as DocxDocument
     from PIL import Image
 
@@ -1296,15 +1296,16 @@ def test_load_docx_links_a_caption_styled_paragraph_to_the_preceding_figure() ->
         result = load_docx(str(out_path))
 
     assert len(result.figures) == 1
-    assert result.figures[0].caption == "Figure 1: Power distribution diagram."
+    assert result.figures[0].name == "Power distribution diagram."
+    assert result.figures[0].caption is None
     figure_block = next(b for b in result.blocks if b.kind == BlockKind.FIGURE)
-    assert figure_block.text == "[FIGURE: Figure 1: Power distribution diagram.]"
+    assert figure_block.text == "[FIGURE: none]"
     # The caption paragraph itself is NOT also emitted as a separate PARAGRAPH block.
     assert not any(b.text == "Figure 1: Power distribution diagram." and b.kind == BlockKind.PARAGRAPH
                    for b in result.blocks)
 
 
-def test_load_docx_caption_overrides_a_vision_generated_caption() -> None:
+def test_load_docx_caption_names_the_figure_without_clobbering_a_real_vision_caption() -> None:
     from docx import Document as DocxDocument
     from PIL import Image
 
@@ -1321,7 +1322,28 @@ def test_load_docx_caption_overrides_a_vision_generated_caption() -> None:
         doc.save(str(out_path))
         result = load_docx(str(out_path), describe_figure=lambda _b: "a vision-generated guess")
 
-    assert result.figures[0].caption == "Figure 1: Power distribution diagram."
+    assert result.figures[0].name == "Power distribution diagram."
+    assert result.figures[0].caption == "a vision-generated guess"
+
+
+def test_load_docx_caption_falls_back_to_the_raw_line_as_name_when_it_does_not_match_the_figure_label_pattern() -> None:
+    from docx import Document as DocxDocument
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        doc = DocxDocument()
+        image_path = tmp_path / "diagram.png"
+        Image.new("RGB", (20, 20), color="green").save(image_path)
+        doc.add_picture(str(image_path))
+        caption_paragraph = doc.add_paragraph("Power distribution overview")
+        caption_paragraph.style = doc.styles["Caption"]
+
+        out_path = tmp_path / "captioned_no_label.docx"
+        doc.save(str(out_path))
+        result = load_docx(str(out_path))
+
+    assert result.figures[0].name == "Power distribution overview"
 
 
 def test_load_docx_emits_a_note_block_for_an_altchunk_instead_of_silently_dropping_it() -> None:

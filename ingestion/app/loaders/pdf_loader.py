@@ -15,7 +15,7 @@ from pypdf import PdfReader
 from pytesseract import Output
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef, Table, TableCell
-from app.loaders.figure_utils import append_figure
+from app.loaders.figure_utils import append_figure, extract_figure_title
 from app.leveling.numbering import parse_numbering, numbering_depth
 
 logger = logging.getLogger(__name__)
@@ -168,12 +168,6 @@ _HEADING_MIN_ALNUM_CHARS = 2
 # table," to avoid misattributing an unrelated short paragraph as a
 # caption.
 _TABLE_CAPTION_PATTERN = re.compile(r"^Table\s+[\w.]+[:.]?\s*(.*)$", re.IGNORECASE)
-
-# Same shape as _TABLE_CAPTION_PATTERN, for figures -- but a figure's own
-# caption line conventionally follows the image (below it), the opposite
-# order from a table caption (which precedes its table). See the figure
-# branch below for how this asymmetry is handled.
-_FIGURE_CAPTION_PATTERN = re.compile(r"^Figure\s+[\w.]+[:.]?\s*(.*)$", re.IGNORECASE)
 
 # A candidate caption line containing 4+ consecutive dots is a table-of-
 # contents dot-leader entry ("Figure 12: Some Title ..............12"),
@@ -1922,8 +1916,8 @@ def load_pdf(
                 stripped_next_text = next_text.strip()
                 if _TOC_DOT_LEADER_PATTERN.search(stripped_next_text):
                     continue
-                caption_match = _FIGURE_CAPTION_PATTERN.match(stripped_next_text)
-                if caption_match is None:
+                title = extract_figure_title(stripped_next_text)
+                if title is None:
                     continue
                 image_bbox, _pypdf_image = item
                 gap = next_top - image_bbox["bottom"]
@@ -1934,7 +1928,7 @@ def load_pdf(
                 # comment), so this is slack, not the expected case.
                 if not (-5.0 <= gap <= _FIGURE_CAPTION_MAX_GAP_POINTS):
                     continue
-                figure_name_by_merged_index[i] = caption_match.group(1).strip() or stripped_next_text
+                figure_name_by_merged_index[i] = title
                 consumed_figure_caption_indices.add(i + 1)
 
             for i, (kind, _top, item) in enumerate(merged):
