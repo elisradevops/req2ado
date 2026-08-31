@@ -194,6 +194,19 @@ describe('JobEventsController', () => {
     expect(res.write).toHaveBeenCalledWith('event: stage\ndata: {"stage":"infer_hierarchy_start"}\n\n');
   });
 
+  it('does NOT end the stream off a REPLAYED terminal stage -- replay writes never terminate, only live ones', async () => {
+    const terminal = JSON.stringify({ stage: 'diff_ready', emittedAt: '2026-08-31T09:00:00.000Z' });
+    const subscriber = makeSubscriber();
+    const { controller } = makeController(subscriber, makeCommandClient({ current: terminal }));
+    const res = makeRes();
+
+    await controller.streamEvents('job-1', res as any, TEST_USER);
+
+    expect(res.write).toHaveBeenCalledWith(`event: stage\ndata: ${terminal}\n\n`);
+    expect(res.end).not.toHaveBeenCalled();
+    expect(subscriber.quit).not.toHaveBeenCalled();
+  });
+
   it('writes no replay frame when no stage has been recorded yet', async () => {
     const subscriber = makeSubscriber();
     const { controller } = makeController(subscriber);
@@ -383,6 +396,29 @@ describe('JobEventsController', () => {
       expect(res.end).toHaveBeenCalled();
       expect(subscriber.unsubscribe).toHaveBeenCalledTimes(1);
       expect(subscriber.quit).toHaveBeenCalledTimes(1);
+    });
+
+    it('delivers a terminal stage exactly once when it lands in BOTH the replay snapshot and the live buffer, but does NOT end the stream -- the surviving copy came from replay, which never calls dispatch()/cleanup() (same asymmetry the sibling test above pins)', async () => {
+      // The other real ordering of the race the previous test covers: here
+      // the replay GET runs AFTER the producer's SET, so the terminal stage
+      // is already in `current` by the time we read it, AND it is also
+      // republished live while LRANGE is still in flight. mergeReplayBuffer
+      // dedupes the live copy away, so the one surviving write is the
+      // replay's plain res.write -- never dispatch() -- so res.end() must
+      // NOT be called. Not a regression: pre-fix behaviour was the same, and
+      // JobDetail.tsx already closes its own EventSource once job status
+      // leaves the live set.
+      const terminal = JSON.stringify({ stage: 'diff_ready', emittedAt: '2026-08-31T09:00:01.000Z' });
+      const subscriber = makeSubscriber();
+      const commandClient = makeCommandClient({ current: terminal, onLrange: () => subscriber.__fire(terminal) });
+      const { controller } = makeController(subscriber, commandClient);
+      const res = makeRes();
+
+      await controller.streamEvents('job-1', res as any, TEST_USER);
+
+      expect(framesFor(res, terminal, 'stage')).toHaveLength(1);
+      expect(res.end).not.toHaveBeenCalled();
+      expect(subscriber.quit).not.toHaveBeenCalled();
     });
 
     it('stops flushing after a buffered terminal stage, so nothing is written to an already-ended response', async () => {

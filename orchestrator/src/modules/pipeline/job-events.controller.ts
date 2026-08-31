@@ -154,7 +154,12 @@ export class JobEventsController {
       await subscriber.subscribe(`job-events:${id}`);
     } catch (err) {
       // subscribe() rejected before res.on('close') was registered — the
-      // just-created connection would otherwise leak, never .quit()'d.
+      // just-created connection would otherwise leak, never .quit()'d. The
+      // message handler above is already attached (registered before
+      // subscribe() is called), so mark cleanedUp before quitting to stop
+      // any message that still lands on it from reaching dispatch()/
+      // res.write() on a request whose subscribe attempt already failed.
+      cleanedUp = true;
       await subscriber.quit().catch(() => undefined);
       throw err;
     }
@@ -209,6 +214,11 @@ export class JobEventsController {
         if (streamEnded) break;
         dispatch(raw);
       }
+      // One-time flush only -- nothing after this point ever reads `buffer`
+      // again (the message handler's `replaying` check now always takes the
+      // dispatch() branch), so drop the reference rather than holding it for
+      // the SSE connection's remaining lifetime.
+      buffer.length = 0;
     } catch (err) {
       // The reads now run AFTER subscribe -- a rejection here would leak an
       // open, subscribed connection, since res.on('close') is not
