@@ -359,6 +359,9 @@ def test_table_only_document_skips_a_fully_blank_table_rather_than_creating_an_e
     tree = build_baseline_tree(doc)
     requirements = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
     assert requirements == []
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].kind == WarningKind.EMPTY_TABLE_CONTENT
+    assert tree.warnings[0].node_ids == []
 
 
 def test_a_document_with_neither_blocks_nor_tables_still_produces_an_empty_tree() -> None:
@@ -880,6 +883,8 @@ def test_document_with_both_headings_and_tables_skips_a_fully_blank_table() -> N
     tree = build_baseline_tree(doc)
 
     assert all(n.type != WorkItemType.REQUIREMENT for n in tree.nodes)
+    empty_table_warnings = [w for w in tree.warnings if w.kind == WarningKind.EMPTY_TABLE_CONTENT]
+    assert len(empty_table_warnings) == 1
 
 
 def test_table_html_escapes_cell_content() -> None:

@@ -688,6 +688,18 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
         for index, table in enumerate(doc.tables):
             description = _table_to_html(table)
             if not description.strip():
+                message = (
+                    f"Table {table.id} had no extractable content, so no work item was created for it -- "
+                    "worth checking the source table manually."
+                )
+                warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.EMPTY_TABLE_CONTENT,
+                        message,
+                        node_ids=[],
+                        detail={"tableId": table.id},
+                    )
+                )
                 continue
             title = table.caption or f"Table {index + 1}"
             node_id = f"n{index + 2}"
@@ -944,6 +956,19 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
             if table is not None:
                 description = _table_to_html(table)
                 if not description.strip():
+                    node_ids = [nodes_by_id[stack[-1][1]].local_id] if stack else []
+                    message = (
+                        f"Table {table.id} had no extractable content -- worth checking the source "
+                        "table manually."
+                    )
+                    warnings.append(
+                        IntegrityWarning.make(
+                            WarningKind.EMPTY_TABLE_CONTENT,
+                            message,
+                            node_ids=node_ids,
+                            detail={"tableId": table.id},
+                        )
+                    )
                     continue
                 if stack:
                     open_node = nodes_by_id[stack[-1][1]]
