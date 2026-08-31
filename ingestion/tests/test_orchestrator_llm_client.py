@@ -1559,10 +1559,10 @@ def test_analyze_section_includes_the_whole_document_hint_only_when_requested() 
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section("Some section text.", whole_document=True)
+    client.analyze_section("Some section text.", options=SectionAnalysisOptions(whole_document=True))
     assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT in captured["body"]["messages"][0]["content"]
 
-    client.analyze_section("Some section text.", whole_document=False)
+    client.analyze_section("Some section text.", options=SectionAnalysisOptions(whole_document=False))
     assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT not in captured["body"]["messages"][0]["content"]
 
 
@@ -1578,10 +1578,16 @@ def test_analyze_section_agentic_includes_the_whole_document_hint_only_when_requ
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section_agentic("Some section text.", lambda query: (None, []), whole_document=True)
+    client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []),
+        options=SectionAnalysisOptions(whole_document=True),
+    )
     assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT in captured["body"]["messages"][0]["content"]
 
-    client.analyze_section_agentic("Some section text.", lambda query: (None, []), whole_document=False)
+    client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []),
+        options=SectionAnalysisOptions(whole_document=False),
+    )
     assert _SECTION_ANALYSIS_WHOLE_DOCUMENT_HINT not in captured["body"]["messages"][0]["content"]
 
 
@@ -1598,7 +1604,9 @@ def test_analyze_section_whole_document_hint_states_the_topic_count() -> None:
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section("Some section text.", whole_document=True, topic_count=79)
+    client.analyze_section(
+        "Some section text.", options=SectionAnalysisOptions(whole_document=True, topic_count=79),
+    )
     system_content = captured["body"]["messages"][0]["content"]
     assert "79" in system_content
     assert "AT LEAST 79" in system_content
@@ -1615,7 +1623,10 @@ def test_analyze_section_agentic_whole_document_hint_states_the_topic_count() ->
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section_agentic("Some section text.", lambda query: (None, []), whole_document=True, topic_count=79)
+    client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []),
+        options=SectionAnalysisOptions(whole_document=True, topic_count=79),
+    )
     system_content = captured["body"]["messages"][0]["content"]
     assert "79" in system_content
     assert "AT LEAST 79" in system_content
@@ -1638,8 +1649,11 @@ def test_analyze_section_includes_table_group_hints_when_supplied() -> None:
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section(
-        "Some section text.", topic_count=3,
-        table_group_hints=[("Display", "Feature"), ("Television Receiver", "Epic")],
+        "Some section text.",
+        options=SectionAnalysisOptions(
+            topic_count=3,
+            table_group_hints=[("Display", "Feature"), ("Television Receiver", "Epic")],
+        ),
     )
     system_content = captured["body"]["messages"][0]["content"]
     assert "'Display' (Feature)" in system_content
@@ -1658,8 +1672,8 @@ def test_analyze_section_agentic_includes_table_group_hints_when_supplied() -> N
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []), topic_count=3,
-        table_group_hints=[("Display", "Feature")],
+        "Some section text.", lambda query: (None, []),
+        options=SectionAnalysisOptions(topic_count=3, table_group_hints=[("Display", "Feature")]),
     )
     system_content = captured["body"]["messages"][0]["content"]
     assert "'Display' (Feature)" in system_content
@@ -1678,7 +1692,7 @@ def test_analyze_section_omits_table_group_hint_when_no_labels_supplied() -> Non
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section("Some section text.", topic_count=3)
+    client.analyze_section("Some section text.", options=SectionAnalysisOptions(topic_count=3))
     system_content = captured["body"]["messages"][0]["content"]
     assert "structural group(s)" not in system_content
 
@@ -1724,7 +1738,7 @@ def test_analyze_section_states_the_expected_root_count_when_multi_root() -> Non
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = httpx.MockTransport(handler)
 
-    client.analyze_section("Some section text.", expected_root_count=2)
+    client.analyze_section("Some section text.", options=SectionAnalysisOptions(expected_root_count=2))
     system_content = captured["body"]["messages"][0]["content"]
     assert "At most ONE node" not in system_content
     assert "up to 2 nodes may have parent_temp_id null" in system_content
@@ -1742,7 +1756,8 @@ def test_analyze_section_agentic_states_the_expected_root_count_when_multi_root(
     client._transport = httpx.MockTransport(handler)
 
     client.analyze_section_agentic(
-        "Some section text.", lambda query: (None, []), expected_root_count=3
+        "Some section text.", lambda query: (None, []),
+        options=SectionAnalysisOptions(expected_root_count=3),
     )
     system_content = captured["body"]["messages"][0]["content"]
     assert "up to 3 nodes may have parent_temp_id null" in system_content
@@ -3512,9 +3527,11 @@ def test_analyze_section_agentic_degraded_fallback_drops_the_table_group_and_roo
 
     client.analyze_section_agentic(
         "Some section text.", lambda query: (None, []),
-        whole_document=True, topic_count=7,
-        table_group_hints=[("Media Buttons", "Feature")],
-        expected_root_count=2,
+        options=SectionAnalysisOptions(
+            whole_document=True, topic_count=7,
+            table_group_hints=[("Media Buttons", "Feature")],
+            expected_root_count=2,
+        ),
     )
 
     system_prompt = captured["body"]["messages"][0]["content"]
@@ -3522,3 +3539,36 @@ def test_analyze_section_agentic_degraded_fallback_drops_the_table_group_and_roo
     assert "7" in system_prompt
     # NOT forwarded today -- the whole point of this test:
     assert "Media Buttons" not in system_prompt
+
+
+def test_analyze_section_ignores_the_two_skeleton_only_option_fields() -> None:
+    # analyze_section is the PRE-SPLIT single call and never accepted
+    # requirement_row_hints/heading_type_hints -- those hints landed with
+    # the two-stage skeleton split. It shares SectionAnalysisOptions with
+    # the skeleton pair (a second four-field dataclass would reintroduce
+    # exactly the restatement this refactor removes), so it must IGNORE
+    # those two fields rather than start honoring them -- honoring them
+    # would be a real prompt change to a call path reached only on a
+    # weak/misbehaving model.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section(
+        "Some section text.",
+        options=SectionAnalysisOptions(
+            topic_count=3,
+            requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+            heading_type_hints=[("Target Handling", "Epic")],
+        ),
+    )
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    assert "3" in system_prompt
+    assert "P-SENSOR-001#" not in system_prompt
+    assert "Target Handling" not in system_prompt

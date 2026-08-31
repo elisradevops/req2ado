@@ -213,18 +213,16 @@ class FakeSectionAnalysisClient:
         self.legacy_calls: list[dict] = []
 
     def analyze_section(
-        self, section_text: str, kb_context: str | None = None, whole_document: bool = False,
-        topic_count: int | None = None, table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        self, section_text: str, kb_context: str | None = None, *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], bool]:
         self.legacy_calls.append({"section_text": section_text})
         return self._nodes, self._truncated
 
     def analyze_section_agentic(
         self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
-        read_other_section_fn=None, whole_document: bool = False, topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        read_other_section_fn=None, *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], list[dict], bool]:
         self.legacy_calls.append({"section_text": section_text})
         return self._agentic_nodes, self._agentic_citations, self._truncated

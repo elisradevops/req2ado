@@ -1675,10 +1675,8 @@ class OrchestratorLlmClient:
         self,
         section_text: str,
         kb_context: str | None = None,
-        whole_document: bool = False,
-        topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], bool]:
         """Single holistic SURVEY call replacing the old infer_hierarchy +
         generate_requirements_for_document pair for the whole-tree-in-one-call
@@ -1703,6 +1701,15 @@ class OrchestratorLlmClient:
         quantitative -- confirmed live that a qualitative-only reminder does
         NOT change model behavior (see _whole_document_hint's docstring).
 
+        These steering hints arrive as `options` (see
+        app.section_analysis_options.SectionAnalysisOptions). This method
+        honors four of its six fields -- `requirement_row_hints` and
+        `heading_type_hints` landed with the two-stage skeleton split and
+        are IGNORED here, exactly as they were absent from this signature
+        before the bundle existed. Shared rather than split into a second
+        four-field dataclass on purpose: a separate type for two fields
+        would reintroduce the restatement bundling removes.
+
         `maxTokens` (§9 gap, confirmed live): a whole-section holistic
         response can be substantially larger than any single legacy
         per-node/per-branch-outline call, and a reasoning/"thinking" model
@@ -1724,21 +1731,30 @@ class OrchestratorLlmClient:
         key = None
         if self._cache is not None:
             key = cache_key(
+                # Unpacked field-by-field rather than as one `options`
+                # part: cache_key serializes its *parts with default=str,
+                # so handing it the dataclass would stringify the
+                # instance's repr and change every key against a live
+                # production cache. Field order is load-bearing. Only the
+                # four fields this method honors appear here -- adding the
+                # two skeleton-only ones would change the key for no
+                # behavioral reason.
                 "analyze_section", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
-                section_text, kb_context, whole_document, topic_count, table_group_hints, expected_root_count,
+                section_text, kb_context, options.whole_document, options.topic_count,
+                options.table_group_hints, options.expected_root_count,
             )
             cached = self._cache.get(key)
             if cached is not None:
                 logger.info("analyze_section: cache hit, skipping LLM call")
                 return cached["nodes"], cached["truncated"]
         system_prompt = _with_kb_context(
-            _section_analysis_system_prompt(expected_root_count), kb_context
+            _section_analysis_system_prompt(options.expected_root_count), kb_context
         )
-        if whole_document:
-            system_prompt += _whole_document_hint(topic_count)
-        elif topic_count is not None:
-            system_prompt += _branch_topic_hint(topic_count)
-        system_prompt += _table_group_hint(table_group_hints)
+        if options.whole_document:
+            system_prompt += _whole_document_hint(options.topic_count)
+        elif options.topic_count is not None:
+            system_prompt += _branch_topic_hint(options.topic_count)
+        system_prompt += _table_group_hint(options.table_group_hints)
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1780,7 +1796,7 @@ class OrchestratorLlmClient:
         truncated = body.get("finishReason") == "length"
         logger.warning(
             "analyze_section result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
-            len(nodes), body.get("finishReason"), truncated, topic_count,
+            len(nodes), body.get("finishReason"), truncated, options.topic_count,
         )
         # Never cache a truncated result -- it's a degraded/incomplete
         # response (the LLM backend hit its own output-token cap), and
@@ -1797,10 +1813,8 @@ class OrchestratorLlmClient:
         list_documents_fn: Callable[[], list[str]] | None = None,
         read_document_fn: Callable[[str], str | None] | None = None,
         read_other_section_fn: Callable[[str], str | None] | None = None,
-        whole_document: bool = False,
-        topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], list[dict], bool]:
         """Tool-calling variant of analyze_section for models that support it
         (see §5c's capability gate) -- the model actively pulls KB context via
@@ -1838,12 +1852,12 @@ class OrchestratorLlmClient:
 
         `whole_document`/`topic_count` -- see analyze_section's own docstring."""
         tools, tool_hint = _agentic_tools_and_hint(list_documents_fn, read_document_fn, read_other_section_fn)
-        system_prompt = _section_analysis_system_prompt(expected_root_count) + tool_hint
-        if whole_document:
-            system_prompt += _whole_document_hint(topic_count)
-        elif topic_count is not None:
-            system_prompt += _branch_topic_hint(topic_count)
-        system_prompt += _table_group_hint(table_group_hints)
+        system_prompt = _section_analysis_system_prompt(options.expected_root_count) + tool_hint
+        if options.whole_document:
+            system_prompt += _whole_document_hint(options.topic_count)
+        elif options.topic_count is not None:
+            system_prompt += _branch_topic_hint(options.topic_count)
+        system_prompt += _table_group_hint(options.table_group_hints)
         citations: list[dict] = []
         content, truncated, rounds_exhausted = self._run_agentic_rounds(
             system_prompt, section_text, section_analysis_schema(), tools,
@@ -1854,7 +1868,7 @@ class OrchestratorLlmClient:
             nodes = _nodes_from_parsed(_parse_json_object(content))
             logger.warning(
                 "analyze_section_agentic result: node_count=%d truncated=%s query_kb_calls=%d topic_count=%r",
-                len(nodes), truncated, len(citations), topic_count,
+                len(nodes), truncated, len(citations), options.topic_count,
             )
             return nodes, citations, truncated
         if rounds_exhausted:
@@ -1870,8 +1884,24 @@ class OrchestratorLlmClient:
         # tool_calls nor content) -- extremely unlikely per the API contract,
         # but fall back to a single non-agentic analyze_section call over the
         # same section text rather than silently returning 0 nodes.
+        #
+        # Forwards ONLY whole_document/topic_count, NOT table_group_hints/
+        # expected_root_count -- reproducing this method's pre-existing
+        # behavior exactly. `options=options` here would look like the
+        # obvious refactor and would silently START forwarding two hints
+        # this path has never forwarded. (Contrast
+        # analyze_section_skeleton_agentic, whose own fallback deliberately
+        # forwards everything.) Whether that asymmetry SHOULD be closed is
+        # a separate question from this refactor and is recorded as its own
+        # observation in SWEEP.md; pinned down by
+        # test_analyze_section_agentic_degraded_fallback_drops_the_table_
+        # group_and_root_count_hints.
         fallback_nodes, fallback_truncated = self.analyze_section(
-            section_text, kb_context=None, whole_document=whole_document, topic_count=topic_count
+            section_text,
+            kb_context=None,
+            options=SectionAnalysisOptions(
+                whole_document=options.whole_document, topic_count=options.topic_count,
+            ),
         )
         return fallback_nodes, citations, fallback_truncated
 

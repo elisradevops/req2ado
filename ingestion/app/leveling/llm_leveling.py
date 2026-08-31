@@ -536,25 +536,21 @@ class SectionAnalysisClient(Protocol):
     same real material for the price of ONE agentic loop rather than two.
     Returns (nodes, citations)."""
 
+    # The pre-split single call. Takes the same SectionAnalysisOptions the
+    # skeleton pair does (see app.section_analysis_options) but honors only
+    # `whole_document`/`topic_count`/`table_group_hints`/
+    # `expected_root_count` -- `requirement_row_hints`/
+    # `heading_type_hints` landed with the two-stage split and are ignored
+    # here, exactly as they were absent from this signature before the
+    # bundle existed. One shared options type rather than a second
+    # four-field one: a separate dataclass for two fields would
+    # reintroduce the very restatement bundling removes.
     def analyze_section(
         self,
         section_text: str,
         kb_context: str | None = None,
-        whole_document: bool = False,
-        topic_count: int | None = None,
-        # (label, suggested_type) pairs for this section's own qualifying
-        # table groups (see table_groups.qualifying_table_groups) -- names
-        # the specific groups counted in topic_count's floor AND states
-        # which work-item type each one should become, so the model knows
-        # WHICH groups must get their own node, not just how many, and
-        # isn't left to guess Feature vs Requirement vs Epic on its own.
-        table_group_hints: list[tuple[str, str]] | None = None,
-        # Count of independent top-level table groups (see
-        # table_groups.TableGroupInfo.is_top_level) with no common
-        # ancestor -- lets the model know a real multi-root document is
-        # expected instead of the default single-root assumption. None/<2
-        # (the common case) preserves today's exact single-root wording.
-        expected_root_count: int | None = None,
+        *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], bool]: ...
 
     def analyze_section_agentic(
@@ -564,10 +560,8 @@ class SectionAnalysisClient(Protocol):
         list_documents_fn: Callable[[], list[str]] | None = None,
         read_document_fn: Callable[[str], str | None] | None = None,
         read_other_section_fn: Callable[[str], str | None] | None = None,
-        whole_document: bool = False,
-        topic_count: int | None = None,
-        table_group_hints: list[tuple[str, str]] | None = None,
-        expected_root_count: int | None = None,
+        *,
+        options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
     ) -> tuple[list[dict], list[dict], bool]: ...
 
     # STAGE 1 -- structure only. Every prompt-steering hint that shaped
