@@ -9,7 +9,12 @@ describe('runPipelineJob', () => {
     // checkpoints -- defaults to 'running' (never cancelled) so every
     // existing test's happy/failure path is unaffected; the dedicated
     // cancellation describe block below overrides this per-test.
-    job: { update: jest.fn(), findUnique: jest.fn().mockResolvedValue({ status: 'running' }) },
+    // updateMany backs the final catch-all's cancellation-safe failure
+    // write (SWEEP.md section 8a) -- defaults to "the row was not
+    // cancelled" (count: 1) so every existing test's generic-failure path
+    // is unaffected; the dedicated cancellation describe block below
+    // overrides this to simulate a concurrent cancel().
+    job: { update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }), findUnique: jest.fn().mockResolvedValue({ status: 'running' }) },
     auditEntry: { create: jest.fn() },
     dedupSkipAudit: { createMany: jest.fn() },
     jobFigureFile: { deleteMany: jest.fn() },
@@ -301,7 +306,10 @@ describe('runPipelineJob', () => {
       ),
     ).rejects.toThrow('ingestion service down');
 
-    expect(fakePrisma.job.update).toHaveBeenCalledWith({ where: { id: 'job-1' }, data: { status: 'failed' } });
+    expect(fakePrisma.job.updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: { not: 'cancelled' } },
+      data: { status: 'failed' },
+    });
   });
 
   it("passes each node's source_hash/customer_id/areaPath to the dry-run diff, not the whole tree blindly", async () => {
@@ -1747,6 +1755,65 @@ describe('runPipelineJob', () => {
       expect(fakeJobEventsPublisher.publish).toHaveBeenCalledWith('job-1', 'cancelled');
       expect(fakePrisma.auditEntry.create).toHaveBeenCalledWith({
         data: { jobId: 'job-1', message: 'Pipeline stopped: job was cancelled' },
+      });
+    });
+
+    it('does not resurrect a job to "failed" when a different error throws from the tail after a concurrent cancel() already landed', async () => {
+      // A DIFFERENT (non-JobCancelledError) error throws from inside the
+      // tail -- e.g. dryRunService.diff's own internals -- while, in real
+      // life, a concurrent cancel() call has already written status:
+      // 'cancelled' to the DB. All three assertNotCancelled checkpoints see
+      // 'running' here (the point of this test is the RACE the checkpoints
+      // don't cover, not a checkpoint catching it) -- the guard under test
+      // is the final catch-all's own write, not assertNotCancelled. An
+      // earlier test in this describe block leaves findUnique's base
+      // implementation permanently resolving 'cancelled' (mockResolvedValue,
+      // not clearAllMocks-safe) -- reset it here, same as the area-path
+      // backfill describe block's own beforeEach does for the same reason.
+      fakePrisma.job.findUnique.mockResolvedValue({ status: 'running' });
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockRejectedValue(new Error('embed service unreachable'));
+      // Simulates the real row already being 'cancelled' by the time the
+      // final catch-all's conditional write runs: a `status: { not:
+      // 'cancelled' }` filter matches zero rows.
+      fakePrisma.job.updateMany.mockResolvedValue({ count: 0 });
+
+      const result = await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+
+      // Must NOT throw/reject -- this runs inside a BullMQ sandboxed
+      // processor (pipeline.processor.ts); throwing here would trigger a
+      // retry that re-runs an already-cancelled job.
+      expect(result).toEqual([]);
+      expect(fakePrisma.job.updateMany).toHaveBeenCalledWith({
+        where: { id: 'job-1', status: { not: 'cancelled' } },
+        data: { status: 'failed' },
+      });
+      // The status must never be force-set to 'failed' via the unconditional
+      // job.update -- only the conditional updateMany above is allowed to
+      // attempt it.
+      expect(fakePrisma.job.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: 'failed' }) }),
+      );
+      expect(fakeJobEventsPublisher.publish).not.toHaveBeenCalledWith('job-1', 'failed');
+      expect(fakePrisma.auditEntry.create).toHaveBeenCalledWith({
+        data: {
+          jobId: 'job-1',
+          message: 'Pipeline error occurred after cancellation, job remains cancelled: embed service unreachable',
+        },
       });
     });
   });

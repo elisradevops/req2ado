@@ -1023,7 +1023,31 @@ export async function runPipelineJob(
       await deps.jobEventsPublisher.publish(job.id, 'cancelled');
       return [];
     }
-    await deps.prisma.job.update({ where: { id: job.id }, data: { status: 'failed' } });
+    // Guard against a DIFFERENT error (not JobCancelledError) throwing from
+    // the tail after a concurrent cancel() already wrote status:
+    // 'cancelled' -- an unconditional write here would resurrect the job to
+    // 'failed', the same symptom the JobCancelledError branch above exists
+    // to prevent, just reached via the error path instead of the success
+    // path (SWEEP.md section 8a). `count === 0` means the row was already
+    // 'cancelled' when this ran.
+    const failureWrite = await deps.prisma.job.updateMany({
+      where: { id: job.id, status: { not: 'cancelled' } },
+      data: { status: 'failed' },
+    });
+    if (failureWrite.count === 0) {
+      // Do not rethrow: this runs inside a BullMQ sandboxed processor
+      // (pipeline.processor.ts). A thrown error here would surface as a
+      // spurious BullMQ job failure for a job that's actually fine (it's
+      // cancelled, not failed) -- and if retries are ever configured on
+      // this queue, rethrowing would also re-run an already-cancelled job.
+      await deps.prisma.auditEntry.create({
+        data: {
+          jobId: job.id,
+          message: `Pipeline error occurred after cancellation, job remains cancelled: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      });
+      return [];
+    }
     await deps.prisma.auditEntry.create({
       data: { jobId: job.id, message: `Pipeline failed: ${error instanceof Error ? error.message : String(error)}` },
     });
