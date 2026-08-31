@@ -942,6 +942,64 @@ describe('DryRunService', () => {
     expect(result[0].figureIds).toEqual(['f3']);
   });
 
+  // SWEEP.md section 7's abstain channel. Same regression shape as
+  // figureIds above -- diffOneNode's three return branches are each their
+  // own object literal, so a field added to only some of them is silently
+  // dropped on the others; dry-run.service.ts's own figureIds comment
+  // documents a real, confirmed, shipped bug caused by exactly that.
+  it('carries qualityConfidence through on the "create" branch', async () => {
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
+          qualityConfidence: 'low',
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0].action).toBe('create');
+    expect(result[0].qualityConfidence).toBe('low');
+  });
+
+  it('carries qualityConfidence through on the "reuse" branch', async () => {
+    (fakeIdempotencyService.lookupMany as jest.Mock).mockResolvedValue(
+      new Map([[idempotencyMapKey('h0', 'Project\\Area1'), 42]]),
+    );
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
+          qualityConfidence: 'low',
+        },
+      ],
+      fakeIdempotencyService,
+    );
+    expect(result[0].action).toBe('reuse');
+    expect(result[0].qualityConfidence).toBe('low');
+  });
+
+  it('carries qualityConfidence through on the "dedup_skip" branch', async () => {
+    const dedupCheck = jest.fn().mockResolvedValue({ isDuplicate: true, matchedItemId: '99', similarity: 0.9 });
+    const service = new DryRunService();
+    const result = await service.diff(
+      [
+        {
+          localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'T', description: 'D',
+          sourceHash: 'h0', customerId: null, seCoverageRef: null, areaPath: 'Project\\Area1', tags: [],
+          qualityConfidence: 'low',
+        },
+      ],
+      fakeIdempotencyService,
+      dedupCheck,
+    );
+    expect(result[0].action).toBe('dedup_skip');
+    expect(result[0].qualityConfidence).toBe('low');
+  });
+
   // Phase 4 provenance fields: tableIds/uncaptionedFigureIds (siblings of
   // figureIds on DryRunTreeNode/DryRunDiffEntry) and sourceRef's own new
   // sectionPath/pageEnd/pageProvenance members. Same regression shape as

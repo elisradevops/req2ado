@@ -2,6 +2,7 @@ import { BadGatewayException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { JobsService, buildFigureAttachmentFilename } from '../src/modules/pipeline/jobs.service';
+import { isFlaggedDiffEntry } from '../src/modules/pipeline/diff-summary';
 import { toAdoDescriptionHtml } from '../src/modules/pipeline/description-html';
 import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 import { makeConfirmPrismaMock } from './helpers/prismaMock';
@@ -2235,6 +2236,31 @@ describe('JobsService.rescoreDiffEntry', () => {
     expect(result[0].qualityScore).toBe(80);
     expect(result[0].qualityCategoryScores).toEqual({ clarity: 80 });
     expect(result[0].qualityStale).toBe(false);
+  });
+
+  it('persists the fresh qualityConfidence returned by a rescore', async () => {
+    // A rescore that comes back low-confidence must re-flag the entry -- the
+    // reviewer edited the text, the model is now unsure, and the "Needs
+    // review" filter is exactly where that item belongs.
+    const prisma = {
+      job: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', userId: 'user-1', model: 'qwen3.6:35b', dryRunDiff: [staleEntry] }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const scoreItem = jest.fn().mockResolvedValue({
+      qualityScore: 88, qualityIssues: [], qualityCategoryScores: { clarity: 88 }, qualityConfidence: 'low',
+    });
+    const service = new JobsService(prisma as any, {} as any, {} as any, { scoreItem } as any, 'redis://unused');
+
+    const diff = await service.rescoreDiffEntry('job-1', 'n0');
+
+    const entry = diff.find((e) => e.localId === 'n0')!;
+    expect(entry.qualityConfidence).toBe('low');
+    expect(entry.qualityScore).toBe(88);
+    expect(entry.qualityStale).toBe(false);
+    expect(isFlaggedDiffEntry(entry)).toBe(true);
   });
 
   it('leaves qualityCategoryChecklist untouched across a rescore -- ingestion has no fresher citation text to offer', async () => {

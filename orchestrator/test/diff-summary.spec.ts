@@ -33,6 +33,18 @@ describe('summarizeDiffEntries', () => {
 
     expect(summary).toEqual({ created: 0, reused: 0, dedupSkipped: 0, flagged: 0 });
   });
+
+  it('counts a low-confidence entry in the flagged summary total', () => {
+    const summary = summarizeDiffEntries([
+      { action: 'create', type: 'Requirement', groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low' },
+      { action: 'create', type: 'Requirement', groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'high' },
+    ]);
+
+    // Flagged, but still fully counted as created -- low confidence flags for
+    // review, it never excludes an item from an aggregate.
+    expect(summary.flagged).toBe(1);
+    expect(summary.created).toBe(2);
+  });
 });
 
 describe('isFlaggedDiffEntry', () => {
@@ -56,6 +68,23 @@ describe('isFlaggedDiffEntry', () => {
 
   it('does not flag a Requirement with the same grounding score that would flag an Epic', () => {
     expect(isFlaggedDiffEntry({ type: 'Requirement', groundingScore: 0.3, qualityScore: 100 })).toBe(false);
+  });
+
+  it('flags a low-confidence entry whose scores are otherwise fine', () => {
+    // SWEEP.md section 7: a low-confidence score is another condition that
+    // sets the EXISTING flagged bit, not a new UI surface -- so an item the
+    // model scored 95 with grounding 0.9 but told us it wasn't sure about
+    // still reaches the reviewer's "Needs review" filter.
+    expect(isFlaggedDiffEntry({ type: 'Requirement', groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low' })).toBe(true);
+  });
+
+  it('does not flag high or medium confidence, nor an absent value', () => {
+    expect(isFlaggedDiffEntry({ type: 'Requirement', groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'high' })).toBe(false);
+    expect(isFlaggedDiffEntry({ type: 'Requirement', groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'medium' })).toBe(false);
+    expect(isFlaggedDiffEntry({ type: 'Requirement', groundingScore: 0.9, qualityScore: 95, qualityConfidence: null })).toBe(false);
+    // An older persisted diff entry has no key at all -- Job.dryRunDiff is a
+    // JSON column with no migration, so this is the common real shape.
+    expect(isFlaggedDiffEntry({ type: 'Requirement', groundingScore: 0.9, qualityScore: 95 })).toBe(false);
   });
 });
 

@@ -208,7 +208,7 @@ export class IngestionHttpClient {
     categoryChecklist?: string[] | null,
     userId?: string | null,
     model?: string | null,
-  ): Promise<{ qualityScore: number | null; qualityIssues: string[]; qualityCategoryScores: Record<string, number> | null }> {
+  ): Promise<{ qualityScore: number | null; qualityIssues: string[]; qualityCategoryScores: Record<string, number> | null; qualityConfidence: string | null }> {
     const response = await fetch(`${this.baseUrl}/score-item`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -226,11 +226,16 @@ export class IngestionHttpClient {
       quality_score: number | null;
       quality_issues: string[];
       quality_category_scores: Record<string, number> | null;
+      // SWEEP.md section 7's abstain channel. Optional in the parse (not
+      // `string | null`) so an ingestion deployed before this field existed
+      // still parses -- it reads as undefined, mapped to null below.
+      quality_confidence?: string | null;
     };
     return {
       qualityScore: body.quality_score,
       qualityIssues: body.quality_issues,
       qualityCategoryScores: body.quality_category_scores,
+      qualityConfidence: body.quality_confidence ?? null,
     };
   }
 

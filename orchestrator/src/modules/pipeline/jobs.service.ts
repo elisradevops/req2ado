@@ -855,7 +855,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     // qualityStale: false -- laundering a stale number as fresh, the very
     // thing DESIGN.md §11.4.4 forbids.
     const scoredDescription = diff[index].description;
-    let result: { qualityScore: number | null; qualityIssues: string[]; qualityCategoryScores: Record<string, number> | null };
+    let result: { qualityScore: number | null; qualityIssues: string[]; qualityCategoryScores: Record<string, number> | null; qualityConfidence: string | null };
     try {
       result = await this.ingestionClient.scoreItem(
         scoredDescription,
@@ -928,6 +928,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         qualityScore: result.qualityScore,
         qualityIssues: result.qualityIssues,
         qualityCategoryScores: result.qualityCategoryScores,
+        // Overwritten unconditionally, unlike qualityCategoryChecklist above:
+        // confidence is a property of THIS judgment of THIS text, so carrying
+        // the pre-edit value forward would be exactly the stale-number
+        // laundering DESIGN.md §11.4.4 forbids. The `qualityScore == null`
+        // guard above already rejected the failed-rescore case, so reaching
+        // here means we have a real fresh judgment to write.
+        qualityConfidence: (result.qualityConfidence as 'high' | 'medium' | 'low' | null) ?? null,
         qualityStale: false,
       };
       return freshDiff;
@@ -1158,7 +1165,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   } | null> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) return null;
-    const diff = (job.dryRunDiff as { action: string; type: string; localId: string; parentLocalId: string | null; excluded?: boolean; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
+    const diff = (job.dryRunDiff as { action: string; type: string; localId: string; parentLocalId: string | null; excluded?: boolean; groundingScore?: number | null; qualityScore?: number | null; qualityConfidence?: string | null }[] | null) ?? [];
     return {
       // Excluded entries (and their whole subtree) must never count toward
       // "N new work items" -- confirm() itself skips them entirely (see

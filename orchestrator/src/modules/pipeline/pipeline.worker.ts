@@ -300,6 +300,10 @@ interface LeveledNode {
   // Optional for the same backward-compat reason as the other scoring
   // fields.
   quality_category_checklist?: Record<string, string> | null;
+  // SWEEP.md section 7's abstain channel -- see ingestion's
+  // QualityConfidence docstring (app.workitem.model). Optional for the same
+  // backward-compat reason as the other scoring fields.
+  quality_confidence?: 'high' | 'medium' | 'low' | null;
   // Previously computed by ingestion (WorkItemNode.source_ref/tags) but
   // dropped here -- neither reached DryRunTreeNode nor any ADO field.
   // Optional for the same backward-compat reason as the scoring fields above.
@@ -720,6 +724,7 @@ export async function runPipelineJob(
         qualityIssues: node.quality_issues,
         qualityCategoryScores: node.quality_category_scores,
         qualityCategoryChecklist: node.quality_category_checklist,
+        qualityConfidence: node.quality_confidence ?? null,
         sourceRef: node.source_ref
           ? {
               documentPath: node.source_ref.document_path,

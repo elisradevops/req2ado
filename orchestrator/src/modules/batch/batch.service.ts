@@ -259,7 +259,7 @@ export class BatchService {
     });
 
     const diffSummary = jobs.reduce<DiffSummary>((acc, job) => {
-      const diff = (job.dryRunDiff as { action: string; type: string; localId: string; parentLocalId: string | null; excluded?: boolean; groundingScore?: number | null; qualityScore?: number | null }[] | null) ?? [];
+      const diff = (job.dryRunDiff as { action: string; type: string; localId: string; parentLocalId: string | null; excluded?: boolean; groundingScore?: number | null; qualityScore?: number | null; qualityConfidence?: string | null }[] | null) ?? [];
       // Same exclusion rule as JobsService.getSummary() -- an excluded
       // entry (or one whose ancestor is excluded) never counts toward
       // this batch-level rollup either.

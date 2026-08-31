@@ -92,6 +92,13 @@ export interface DryRunTreeNode {
   // all-or-nothing tolerance as qualityScore itself).
   qualityCategoryScores?: QualityCategoryScores | null;
   qualityCategoryChecklist?: QualityCategoryChecklist | null;
+  // SWEEP.md section 7: the scoring model's own abstain channel (see
+  // ingestion's QualityConfidence docstring). Same nullability convention as
+  // qualityScore -- absent for BASELINE, for a manually-added entry, and
+  // when the model's response carried no usable confidence value. A 'low'
+  // value sets the existing flagged bit (isFlaggedDiffEntry); it never
+  // invalidates the score or excludes the item from a count.
+  qualityConfidence?: 'high' | 'medium' | 'low' | null;
   // Carried from ingestion's WorkItemNode (source_ref/child_type/trace_links)
   // so confirm() can eventually write a traceability link, classification
   // tags, and child-type-derived fields to ADO -- previously dropped at
@@ -171,6 +178,10 @@ export interface DryRunDiffEntry {
   qualityIssues?: string[];
   qualityCategoryScores?: QualityCategoryScores | null;
   qualityCategoryChecklist?: QualityCategoryChecklist | null;
+  // Carried from DryRunTreeNode at all THREE diffOneNode return branches --
+  // see figureIds' own doc comment for the confirmed, shipped bug caused by
+  // updating fewer than all three.
+  qualityConfidence?: 'high' | 'medium' | 'low' | null;
   sourceRef?: DryRunSourceRef | null;
   childType?: string | null;
   traceLinks?: TraceLink[];
@@ -421,6 +432,7 @@ export class DryRunService {
           tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
           qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
           qualityCategoryChecklist: node.qualityCategoryChecklist,
+          qualityConfidence: node.qualityConfidence,
           sourceRef: node.sourceRef, childType: node.childType,
           traceLinks: node.traceLinks, figureIds: node.figureIds,
           tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
@@ -467,6 +479,7 @@ export class DryRunService {
               sourceHash: node.sourceHash, customerId: node.customerId, seCoverageRef: node.seCoverageRef, tags: node.tags,
               groundingScore: node.groundingScore, qualityScore: node.qualityScore, qualityIssues: node.qualityIssues,
               qualityCategoryScores: node.qualityCategoryScores, qualityCategoryChecklist: node.qualityCategoryChecklist,
+              qualityConfidence: node.qualityConfidence,
               sourceRef: node.sourceRef, childType: node.childType, traceLinks: node.traceLinks,
               figureIds: node.figureIds,
               tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
@@ -486,6 +499,7 @@ export class DryRunService {
         tags: node.tags, groundingScore: node.groundingScore, qualityScore: node.qualityScore,
         qualityIssues: node.qualityIssues, qualityCategoryScores: node.qualityCategoryScores,
         qualityCategoryChecklist: node.qualityCategoryChecklist,
+        qualityConfidence: node.qualityConfidence,
         sourceRef: node.sourceRef, childType: node.childType,
         traceLinks: node.traceLinks, figureIds: node.figureIds,
         tableIds: node.tableIds, uncaptionedFigureIds: node.uncaptionedFigureIds,
