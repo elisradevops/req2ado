@@ -215,7 +215,7 @@ class Figure(BaseModel):
     # The author's own short title for this figure -- e.g. "CubeConnect PCB
     # (PC104 Variants) - Interior (Back) View", parsed from a "Figure N:
     # Title" caption line in the source document itself (see
-    # pdf_loader.py's _FIGURE_CAPTION_PATTERN). Distinct from `caption`,
+    # figure_utils.py's extract_figure_title). Distinct from `caption`,
     # which is the vision model's own prose description: `name` is a short
     # noun phrase meant for display (UI label, ADO attachment filename),
     # `caption` is a paragraph meant for search/context. Falls back to an

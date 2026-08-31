@@ -26,7 +26,7 @@ class FigureVisionResult(NamedTuple):
     `title` (Task 7): a short noun-phrase name for this figure, distinct
     from `description`'s prose -- used ONLY as a fallback for Figure.name
     when the document itself provides no "Figure N: Title" caption line
-    (see pdf_loader.py's _FIGURE_CAPTION_PATTERN); the document's own
+    (see figure_utils.py's extract_figure_title); the document's own
     caption always wins when both exist (main.py patches this in, not
     here). None when the model omitted it or the figure isn't significant
     -- an insignificant figure gets no name from either source."""

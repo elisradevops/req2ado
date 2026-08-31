@@ -1298,8 +1298,15 @@ def test_load_docx_names_a_figure_from_its_caption_styled_paragraph() -> None:
     assert len(result.figures) == 1
     assert result.figures[0].name == "Power distribution diagram."
     assert result.figures[0].caption is None
+    # Regression (Finding M1): with no vision caption at all (vision
+    # disabled/not configured here), the author's own Caption text is the
+    # ONLY description available for this figure -- it must still reach the
+    # rendered block text instead of staying at append_figure's
+    # "[FIGURE: none]" placeholder, which tree_builder.py's _figure_line
+    # silently drops. Figure.caption itself stays None -- still reserved for
+    # real vision prose only.
     figure_block = next(b for b in result.blocks if b.kind == BlockKind.FIGURE)
-    assert figure_block.text == "[FIGURE: none]"
+    assert figure_block.text == "[FIGURE: Figure 1: Power distribution diagram.]"
     # The caption paragraph itself is NOT also emitted as a separate PARAGRAPH block.
     assert not any(b.text == "Figure 1: Power distribution diagram." and b.kind == BlockKind.PARAGRAPH
                    for b in result.blocks)
@@ -1324,6 +1331,11 @@ def test_load_docx_caption_names_the_figure_without_clobbering_a_real_vision_cap
 
     assert result.figures[0].name == "Power distribution diagram."
     assert result.figures[0].caption == "a vision-generated guess"
+    # Finding M1's fix only fires when there is NO vision caption -- a real
+    # vision caption already present means blocks[-1].text stays at whatever
+    # append_figure already set it to, untouched by the Caption paragraph.
+    figure_block = next(b for b in result.blocks if b.kind == BlockKind.FIGURE)
+    assert figure_block.text == "[FIGURE: a vision-generated guess]"
 
 
 def test_load_docx_caption_falls_back_to_the_raw_line_as_name_when_it_does_not_match_the_figure_label_pattern() -> None:
@@ -1344,6 +1356,11 @@ def test_load_docx_caption_falls_back_to_the_raw_line_as_name_when_it_does_not_m
         result = load_docx(str(out_path))
 
     assert result.figures[0].name == "Power distribution overview"
+    # Finding M1: no vision caption here either -- the author's raw Caption
+    # text must still reach the rendered block text instead of
+    # "[FIGURE: none]".
+    figure_block = next(b for b in result.blocks if b.kind == BlockKind.FIGURE)
+    assert figure_block.text == "[FIGURE: Power distribution overview]"
 
 
 def test_load_docx_emits_a_note_block_for_an_altchunk_instead_of_silently_dropping_it() -> None:

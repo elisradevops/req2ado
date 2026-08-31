@@ -172,7 +172,8 @@ _TABLE_CAPTION_PATTERN = re.compile(r"^Table\s+[\w.]+[:.]?\s*(.*)$", re.IGNORECA
 # A candidate caption line containing 4+ consecutive dots is a table-of-
 # contents dot-leader entry ("Figure 12: Some Title ..............12"),
 # not a real in-body caption -- confirmed live: cubeadcs_icd.pdf's TOC page
-# alone contributes 41 lines matching _FIGURE_CAPTION_PATTERN's shape.
+# alone contributes 41 lines matching figure_utils.py's extract_figure_title's
+# shape.
 # Without this exclusion, a figure would get named from the WRONG page's
 # TOC entry instead of its own real caption (or worse, a TOC entry with no
 # nearby image at all would still just get IGNORED by the gap check, but a

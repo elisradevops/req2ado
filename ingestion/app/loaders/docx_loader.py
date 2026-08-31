@@ -899,6 +899,17 @@ def load_docx(path: str, describe_figure: Callable[[bytes], str | None] | None =
                 # real author-written title just because it doesn't start with the
                 # word "Figure".
                 figures[-1].name = extract_figure_title(content) or content
+                if figures[-1].caption is None:
+                    # No vision prose exists for this figure (BASELINE mode,
+                    # vision disabled, or a failed/skipped vision call) -- the
+                    # author's own caption is then the ONLY description
+                    # available, so it must still reach the rendered block
+                    # text instead of the "[FIGURE: none]" placeholder that
+                    # tree_builder.py's _figure_line silently drops. This
+                    # never touches Figure.caption itself (still correctly
+                    # reserved for real vision prose only, see the comment
+                    # above).
+                    blocks[-1].text = f"[FIGURE: {content}]"
             else:
                 heading_level = _heading_level_for_paragraph(paragraph)
                 if heading_level is not None:

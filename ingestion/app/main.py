@@ -982,10 +982,11 @@ async def ingest(
             if _figure is not None:
                 _figure.caption_status = _status
         # Task 7: ONLY a fallback -- applied when the loader itself found no
-        # document caption for this figure (Task 4's
-        # _FIGURE_CAPTION_PATTERN, PDF-only today). A figure the document
-        # already named keeps that name unconditionally; the vision title
-        # never overrides it.
+        # document caption for this figure (figure_utils.py's
+        # extract_figure_title, used by PDF and docx -- docx via its own
+        # Caption paragraph style). A figure the document already named
+        # keeps that name unconditionally; the vision title never overrides
+        # it.
         for _figure_id, _title in figure_title.items():
             _figure = _figures_by_id.get(_figure_id)
             if _figure is not None and _figure.name is None:
