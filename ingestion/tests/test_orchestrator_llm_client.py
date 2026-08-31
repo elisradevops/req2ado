@@ -3354,3 +3354,151 @@ def test_distill_title_raises_on_malformed_json_content() -> None:
 
     with pytest.raises(ValueError, match="malformed"):
         client.distill_title("some text", 256)
+
+
+# --- Characterization tests for the SectionAnalysisOptions refactor ---
+# These pin down the EXACT outgoing payload, the EXACT cache key and one
+# undocumented behavioral asymmetry, so collapsing the six steering
+# parameters into a dataclass can be proven byte-identical rather than
+# assumed to be. They are deliberately written against the pre-refactor
+# signature and must keep passing, unchanged in intent, afterwards.
+
+_FULLY_STEERED_SKELETON_PROMPT_SHA256 = "aa458b30b0cdf1378ebf467e80c107fa3c43935bb251b631a1e3ae4701fecef3"
+
+
+def test_analyze_section_skeleton_fully_steered_payload_is_unchanged() -> None:
+    import hashlib
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        model="qwen3.6:35b", num_ctx=8192, top_k=40, min_p=0.05, seed=7,
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton(
+        "Some section text.",
+        kb_context="Reference material from doc-a.docx",
+        whole_document=True,
+        topic_count=7,
+        table_group_hints=[("Media Buttons", "Feature")],
+        expected_root_count=2,
+        requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+        heading_type_hints=[("Target Handling", "Epic")],
+    )
+
+    body = captured["body"]
+    system_prompt = body["messages"][0]["content"]
+    # A sha256 rather than an inline copy: the assembled prompt is several
+    # kilobytes of loaded template text, and the assertion this test needs
+    # is "not one byte moved", not "here is what it says".
+    assert hashlib.sha256(system_prompt.encode()).hexdigest() == _FULLY_STEERED_SKELETON_PROMPT_SHA256
+    assert body["messages"][1] == {"role": "user", "content": "Some section text."}
+    assert len(body["messages"]) == 2
+    # Every non-message payload field, exactly as sent today.
+    assert {k: v for k, v in body.items() if k != "messages" and k != "responseSchema"} == {
+        "temperature": 0,
+        "model": "qwen3.6:35b",
+        "maxTokens": _MAX_OUTPUT_TOKENS,
+        "think": False,
+        "numCtx": 8192,
+        "seed": 7,
+        "topK": 40,
+        "minP": 0.05,
+    }
+    from app.survey._response_schemas import section_skeleton_schema
+
+    assert body["responseSchema"] == section_skeleton_schema()
+
+
+def test_analyze_section_skeleton_fully_steered_cache_key_is_unchanged() -> None:
+    # The sharpest hazard in the whole refactor: cache_key() serializes its
+    # *parts with default=str, so passing a SectionAnalysisOptions instance
+    # as ONE part would stringify its repr and change every key -- silently
+    # invalidating a production cache with a live 24h TTL. The refactored
+    # code must keep unpacking the six fields individually, in this exact
+    # order.
+    from app.survey.llm_cache import cache_key
+
+    expected = cache_key(
+        "analyze_section_skeleton.v4", "qwen3.6:35b", 8192, 40, 0.05, 7,
+        "Some section text.", "Reference material from doc-a.docx", True, 7,
+        [("Media Buttons", "Feature")], 2,
+        [("P-SENSOR-001#", "Time sync source")], [("Target Handling", "Epic")],
+    )
+
+    recorded: dict = {}
+
+    class _RecordingCache:
+        def get(self, key: str) -> object | None:
+            recorded["key"] = key
+            return None
+
+        def set(self, key: str, value: object) -> None:
+            recorded["set_key"] = key
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(
+        base_url="http://orchestrator.internal", bearer_token="test-bearer",
+        model="qwen3.6:35b", num_ctx=8192, top_k=40, min_p=0.05, seed=7,
+        cache=_RecordingCache(),
+    )
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_skeleton(
+        "Some section text.",
+        kb_context="Reference material from doc-a.docx",
+        whole_document=True,
+        topic_count=7,
+        table_group_hints=[("Media Buttons", "Feature")],
+        expected_root_count=2,
+        requirement_row_hints=[("P-SENSOR-001#", "Time sync source")],
+        heading_type_hints=[("Target Handling", "Epic")],
+    )
+
+    assert recorded["key"] == expected
+    assert recorded["set_key"] == expected
+
+
+def test_analyze_section_agentic_degraded_fallback_drops_the_table_group_and_root_count_hints() -> None:
+    # CHARACTERIZATION, not endorsement. analyze_section_agentic's
+    # ignored-toolChoice fallback forwards only whole_document/topic_count
+    # into analyze_section -- unlike its sibling
+    # analyze_section_skeleton_agentic, which forwards all of its hints.
+    # Nothing covered this either way, so the natural `options=options`
+    # refactor would silently CHANGE production behavior with every test
+    # still green. This test makes that impossible. The asymmetry itself is
+    # left as a separate, documented observation.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "tools" in body:
+            # A round that contradicts toolChoice:'none' -- neither
+            # tool_calls nor content, which is what triggers the fallback.
+            return httpx.Response(200, json={})
+        captured["body"] = body
+        return httpx.Response(200, json={"content": json.dumps({"nodes": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.analyze_section_agentic(
+        "Some section text.", lambda query: (None, []),
+        whole_document=True, topic_count=7,
+        table_group_hints=[("Media Buttons", "Feature")],
+        expected_root_count=2,
+    )
+
+    system_prompt = captured["body"]["messages"][0]["content"]
+    # Forwarded today:
+    assert "7" in system_prompt
+    # NOT forwarded today -- the whole point of this test:
+    assert "Media Buttons" not in system_prompt
