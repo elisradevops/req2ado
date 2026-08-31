@@ -857,6 +857,129 @@ describe('OpenWebUiClient.embed (openai transport)', () => {
   }, 10000);
 });
 
+describe('OpenWebUiClient.listSelectableModels', () => {
+  const config = {
+    LLM_BASE_URL: 'http://localhost:3000/api/v1',
+    LLM_API_KEY: 'sk-test-token',
+    LLM_CHAT_MODEL: 'llama3.1',
+    LLM_TRUSTED_LOCAL: false,
+    EMBED_TRANSPORT: 'ollama' as const,
+    EMBED_BASE_URL: undefined,
+    EMBED_MODEL: 'nomic-embed-text',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  // Regression guard: confirmed live against a real production instance
+  // that a boolean-only info.meta.capabilities.vision check silently
+  // returned vision:false for every real Ollama-backed vision model --
+  // this deployment's own working vision model (gemma4:e4b) among them.
+  // Ollama-backed models report capabilities as a plain string array
+  // under `ollama.capabilities` instead, e.g. ["vision", "completion",
+  // "tools"]; a model missing "vision" from that array is correctly not
+  // vision-capable.
+  it("reads vision capability from ollama.capabilities (the real Ollama-connection shape), not just info.meta.capabilities.vision", async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          {
+            id: 'devstral-small-2:24b',
+            name: 'devstral-small-2:24b',
+            owned_by: 'ollama',
+            ollama: { capabilities: ['vision', 'completion', 'tools'] },
+          },
+          {
+            id: 'qwen3.6:35b',
+            name: 'qwen3.6:35b',
+            owned_by: 'ollama',
+            ollama: { capabilities: ['completion', 'tools', 'thinking'] },
+          },
+        ],
+      }),
+    });
+    const client = new OpenWebUiClient(config);
+
+    const models = await client.listSelectableModels();
+
+    expect(models).toEqual([
+      { id: 'devstral-small-2:24b', name: 'devstral-small-2:24b', vision: true },
+      { id: 'qwen3.6:35b', name: 'qwen3.6:35b', vision: false },
+    ]);
+  });
+
+  it('also honors info.meta.capabilities.vision for a non-Ollama connection (e.g. a cloud/OpenAI-compatible model with no `ollama` key at all)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'claude-opus', name: 'Claude Opus', info: { meta: { capabilities: { vision: true } } } }],
+      }),
+    });
+    const client = new OpenWebUiClient(config);
+
+    const models = await client.listSelectableModels();
+
+    expect(models).toEqual([{ id: 'claude-opus', name: 'Claude Opus', vision: true }]);
+  });
+
+  it('treats a model with no ollama key and no info.meta.capabilities at all (e.g. the built-in "Arena Model") as not vision-capable, not a throw', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'arena-model', name: 'Arena Model', owned_by: 'arena', arena: true }],
+      }),
+    });
+    const client = new OpenWebUiClient(config);
+
+    const models = await client.listSelectableModels();
+
+    expect(models).toEqual([{ id: 'arena-model', name: 'Arena Model', vision: false }]);
+  });
+
+  it('excludes presets/agents (preset: true or a truthy info.base_model_id) but keeps real base models', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: 'qwen3.6:35b', name: 'qwen3.6:35b', ollama: { capabilities: ['completion'] } },
+          { id: 'hijack-preset', name: 'Hijack Preset', preset: true, ollama: { capabilities: ['completion'] } },
+          { id: 'layered-agent', name: 'Layered Agent', info: { base_model_id: 'qwen3.6:35b' } },
+        ],
+      }),
+    });
+    const client = new OpenWebUiClient(config);
+
+    const models = await client.listSelectableModels();
+
+    expect(models).toEqual([{ id: 'qwen3.6:35b', name: 'qwen3.6:35b', vision: false }]);
+  });
+
+  it("uses the passed-in token override, not config.LLM_API_KEY, when supplied (POST /llm/connection's validate-before-store flow)", async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+    const client = new OpenWebUiClient(config);
+
+    await client.listSelectableModels('sk-candidate-token');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ headers: { Authorization: 'Bearer sk-candidate-token' } }),
+    );
+  });
+
+  it('throws on a non-ok response', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 401 });
+    const client = new OpenWebUiClient(config);
+    await expect(client.listSelectableModels()).rejects.toThrow(/listSelectableModels.*401/i);
+  });
+});
+
 describe('OpenWebUiClient.showModel', () => {
   const config = {
     LLM_BASE_URL: 'http://localhost:11434/v1',

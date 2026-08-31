@@ -145,9 +145,10 @@ export class OpenWebUiClient implements LlmClient {
   // -- both now draw from this single filtered source). Built on the
   // native /api/models surface, NOT the OpenAI SDK's models.list() (used by
   // listModels()/checkHealth() above): confirmed live that /api/models is
-  // the only source carrying preset/base_model_id and
-  // info.meta.capabilities.vision, and that it's already permission-scoped
-  // to the caller's own token (an access_grants field was present on every
+  // the only source carrying preset/base_model_id and a vision-capability
+  // signal (see listSelectableModels's own doc comment for the two real
+  // shapes that signal takes), and that it's already permission-scoped to
+  // the caller's own token (an access_grants field was present on every
   // entry in a live probe).
   //
   // Filters out Open WebUI presets/agents (a `preset: true` flag, or a
@@ -164,6 +165,32 @@ export class OpenWebUiClient implements LlmClient {
   // `token`, when supplied, overrides this.config.LLM_API_KEY for this
   // call only -- needed for POST /llm/connection's validate-before-store
   // flow, which must list models using a token that isn't vaulted yet.
+  //
+  // Vision capability has TWO real, confirmed-live shapes depending on the
+  // model's connection type, not one:
+  //   - Ollama-backed models (this deployment's real shape, confirmed live
+  //     against a real /api/models response): capabilities is a plain
+  //     string array under `ollama.capabilities`, e.g.
+  //     ["vision", "completion", "tools"] -- NOT a boolean anywhere. A
+  //     model missing "vision" from this array (or missing the `ollama`
+  //     key entirely, e.g. the built-in "Arena Model" virtual construct)
+  //     is not vision-capable.
+  //   - Non-Ollama connections (cloud/OpenAI-compatible models, per
+  //     earlier live research against this same instance): report it as
+  //     `info.meta.capabilities.vision: boolean` instead -- no `ollama`
+  //     key at all for these.
+  // Checking only the boolean shape (the original, incomplete
+  // implementation) silently returned vision:false for EVERY Ollama-backed
+  // model on a live instance, including two genuinely vision-capable ones
+  // (confirmed live via a raw /api/models dump: devstral-small-2:24b and
+  // qwen3.6:35b both report "vision" in ollama.capabilities). Also
+  // confirmed live, separately: gemma4:e4b/gemma4:26b do NOT self-report
+  // vision via Ollama's own capabilities, despite older code elsewhere in
+  // this codebase (predating this per-user migration) assuming gemma4:e4b
+  // was "the" configured vision model -- that assumption came from a
+  // hardcoded LLM_VISION_MODEL env var, never verified against Ollama's
+  // own capability metadata. This method is the first place that actually
+  // checks it.
   async listSelectableModels(token?: string): Promise<{ id: string; name: string; vision: boolean }[]> {
     const response = await fetch(`${this.openWebUiAppRoot()}/api/models`, {
       headers: { Authorization: `Bearer ${token ?? this.config.LLM_API_KEY ?? ''}` },
@@ -177,6 +204,7 @@ export class OpenWebUiClient implements LlmClient {
         name?: string;
         preset?: boolean;
         info?: { base_model_id?: string | null; meta?: { capabilities?: { vision?: boolean } } };
+        ollama?: { capabilities?: string[] };
       }[];
     };
     return body.data
@@ -184,7 +212,7 @@ export class OpenWebUiClient implements LlmClient {
       .map((model) => ({
         id: model.id,
         name: model.name ?? model.id,
-        vision: model.info?.meta?.capabilities?.vision ?? false,
+        vision: (model.ollama?.capabilities?.includes('vision') || model.info?.meta?.capabilities?.vision) ?? false,
       }));
   }
 
