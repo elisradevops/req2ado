@@ -5,25 +5,13 @@ import re
 from pathlib import Path
 from typing import Callable
 
-import pytesseract
 from pdf2image import convert_from_path
 from pypdf import PdfReader
-from pytesseract import Output
 
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Document, DocumentFormat, SourceRef
 from app.loaders.pdf_loader import load_pdf, ocr_image_to_text_filtered, page_has_extractable_text
 
 _OPEN_TBD_PATTERN = re.compile(r"\b(OPEN|TBD)\b[:\s]", re.IGNORECASE)
-
-
-def ocr_page_to_text(path: str, page_index: int, languages: str = "eng") -> str:
-    """`languages` is passed directly to Tesseract's `lang` parameter; join
-    multiple language codes with '+' for mixed-script documents, e.g.
-    'heb+eng' for Hebrew narrative with embedded English part numbers.
-    Requires the corresponding Tesseract language pack to be installed
-    (e.g. `tesseract-ocr-heb` on Debian/Ubuntu for 'heb')."""
-    images = convert_from_path(path, first_page=page_index + 1, last_page=page_index + 1)
-    return pytesseract.image_to_string(images[0], lang=languages)
 
 
 def ocr_page_to_text_filtered(
