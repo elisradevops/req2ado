@@ -64,6 +64,7 @@ class FakeSectionAnalysisClient:
     def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
         return [
             {"temp_id": "n0", "type": "Feature", "parent_temp_id": None, "title": "Display"},
@@ -72,6 +73,7 @@ class FakeSectionAnalysisClient:
 
     def author_content(
         self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
         return {
             local_id: self._CONTENT[local_id]

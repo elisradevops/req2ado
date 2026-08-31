@@ -31,7 +31,7 @@ class _SignificantVisionClient:
     """Vision-result shape (a): the call succeeded and the model judged the
     figure significant -- a real caption, caption_status stays null."""
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
         return FigureVisionResult(significant=True, description="a real caption")
 
 
@@ -39,7 +39,7 @@ class _InsignificantVisionClient:
     """Vision-result shape (b): the call succeeded but the model judged the
     figure decorative/non-technical -- caption=None, caption_status="insignificant"."""
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
         return FigureVisionResult(significant=False, description="")
 
 
@@ -47,7 +47,7 @@ class _SignificantVisionClientWithTitle:
     """Task 7: vision-result shape (a) plus a title -- the LLM-generated
     name fallback."""
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
         return FigureVisionResult(significant=True, description="a real caption", title="Panel Layout Diagram")
 
 
@@ -56,7 +56,7 @@ class _FailingVisionClient:
     unparseable response -- main.py's _describe_figure ambiguous-result
     branch, caption=None, caption_status="vision_failed"."""
 
-    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+    def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
         return None
 
 
@@ -233,7 +233,7 @@ def test_multi_figure_document_captions_every_figure_with_matching_ids(monkeypat
         """A distinct caption per distinct image, so a mis-ordered
         reassignment is detectable rather than masked by identical text."""
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None):
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None):
             import hashlib
 
             digest = hashlib.sha256(image_bytes).hexdigest()[:8]
@@ -268,7 +268,7 @@ def test_an_uncaptioned_figure_keeps_the_none_placeholder_block_text(monkeypatch
     import app.main as main_module
 
     class _InsignificantVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None):
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None):
             return FigureVisionResult(significant=False, description="")
 
     monkeypatch.setattr(main_module, "_vision_client", _InsignificantVisionClient())
@@ -300,7 +300,7 @@ def test_figure_captioning_happens_after_parsing_not_during_it(monkeypatch) -> N
         return doc
 
     class _RecordingVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None):
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None):
             events.append("vision")
             return FigureVisionResult(significant=True, description="a real caption")
 

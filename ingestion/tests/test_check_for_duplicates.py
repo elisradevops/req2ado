@@ -301,7 +301,7 @@ class RecordingJudgeClient:
         self.verdict = verdict
         self.calls: list[tuple[str, str]] = []
 
-    def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
+    def judge_duplicate_pair(self, candidate_text: str, matched_text: str, user_id: str | None = None) -> dict:
         self.calls.append((candidate_text, matched_text))
         return {"verdict": self.verdict}
 
@@ -382,7 +382,7 @@ def test_judge_client_exception_falls_back_to_the_embedding_only_verdict_but_is_
     # the codebase whose unsafe direction is silently DROPPING a real
     # requirement (confirm() skips 'create' for a dedup_skip match).
     class RaisingJudgeClient:
-        def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
+        def judge_duplicate_pair(self, candidate_text: str, matched_text: str, user_id: str | None = None) -> dict:
             raise RuntimeError("LLM unreachable")
 
     with tempfile.TemporaryDirectory() as tmp:

@@ -28,7 +28,7 @@ class _FakeScoringClient:
 
     def score_requirements_for_document(
         self, descriptions_by_node_id, criteria_context=None, kb_context=None,
-        category_checklist=None,
+        category_checklist=None, user_id=None,
     ):
         self.calls.append(
             (descriptions_by_node_id, criteria_context, kb_context, category_checklist)
@@ -279,7 +279,7 @@ def test_score_all_requirements_runs_chunks_concurrently() -> None:
     lock = threading.Lock()
 
     class ThreadRecordingClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             with lock:
                 seen.add(threading.current_thread().name)
             time.sleep(0.05)
@@ -295,7 +295,7 @@ def test_score_all_requirements_runs_chunks_concurrently() -> None:
 
 def test_score_all_requirements_output_is_identical_serial_vs_concurrent() -> None:
     class OrderSensitiveClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             if "r0" in descriptions_by_node_id:
                 time.sleep(0.2)
             return {
@@ -320,7 +320,7 @@ def test_score_all_requirements_output_is_identical_serial_vs_concurrent() -> No
 
 def test_score_all_requirements_narrates_chunks_in_document_order_under_concurrency() -> None:
     class SlowFirstChunkClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             if "r0" in descriptions_by_node_id:
                 time.sleep(0.2)
             return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
@@ -345,7 +345,7 @@ def test_score_all_requirements_narrates_chunks_in_document_order_under_concurre
 
 def test_score_all_requirements_one_failing_chunk_still_scores_the_others_under_concurrency() -> None:
     class SecondChunkRaisesClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             if "r150" in descriptions_by_node_id:
                 raise RuntimeError("boom")
             return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
@@ -372,7 +372,7 @@ def test_score_epics_and_features_runs_chunks_concurrently() -> None:
     lock = threading.Lock()
 
     class ThreadRecordingClient:
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             with lock:
                 seen.add(threading.current_thread().name)
             time.sleep(0.05)
@@ -387,7 +387,7 @@ def test_score_epics_and_features_runs_chunks_concurrently() -> None:
 
 def test_score_epics_and_features_output_is_identical_serial_vs_concurrent() -> None:
     class OrderSensitiveClient:
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             if "e0" in nodes_by_id:
                 time.sleep(0.2)
             return {
@@ -411,7 +411,7 @@ def test_score_epics_and_features_output_is_identical_serial_vs_concurrent() -> 
 
 def test_score_epics_and_features_narrates_chunks_in_document_order_under_concurrency() -> None:
     class SlowFirstChunkClient:
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             if "e0" in nodes_by_id:
                 time.sleep(0.2)
             return {node_id: {"score": 75} for node_id in nodes_by_id}
@@ -440,6 +440,7 @@ class _CanaryObservingClient:
 
     def score_requirements_for_document(
         self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None,
+        user_id=None,
     ) -> dict[str, dict]:
         self.batches.append(dict(descriptions_by_node_id))
         return {
@@ -531,7 +532,7 @@ def test_absent_canary_entry_is_itself_logged_as_drift(caplog) -> None:
     # real signal (stopped honoring the instruction, or a truncated
     # response) -- distinct message, same log-only treatment.
     class _IgnoresTheCanaryClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {"n1": {"score": 90, "issues": [], "categoryScores": {"clarity": 90}}}
 
     nodes = [_requirement_node("n1", "The system shall emit a heartbeat every 1 s.")]

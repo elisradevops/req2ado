@@ -335,6 +335,7 @@ def _describe_figure(
     # rasterization of the same image. Absent on a cache HIT (rasterization
     # never ran) -- that caller must still rasterize its own copy then.
     caption_status_out: dict[str, str | bytes] | None = None,
+    user_id: str | None = None,
 ) -> str | None:
     # SCOPE NOTE (KB ingestion): this function is shared by SURVEY-mode
     # /ingest AND the three KB-ingestion routes below (/kb/ingest-url,
@@ -395,7 +396,7 @@ def _describe_figure(
     describe_bytes, mime_type = _rasterize_for_vision(image_bytes)
     if caption_status_out is not None:
         caption_status_out["rasterized_bytes"] = describe_bytes
-    result = _vision_client.describe_figure(describe_bytes, mime_type, document_context)
+    result = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id)
     if result is None:
         # The vision client's single "ambiguous result" outcome: a totally
         # unparseable response OR a well-formed significant=True whose
@@ -455,6 +456,7 @@ def _caption_and_store_one_figure(
     image_bytes: bytes,
     document_context: str | None,
     job_id: str | None,
+    user_id: str | None = None,
 ) -> FigureCaptionOutcome:
     """One figure's vision caption AND its figure-file storage, deliberately
     in ONE function.
@@ -486,7 +488,7 @@ def _caption_and_store_one_figure(
     # same call the loader's except swallowed, so a failed caption never
     # attempted a store either.
     try:
-        caption = _describe_figure(image_bytes, document_context, caption_status_out)
+        caption = _describe_figure(image_bytes, document_context, caption_status_out, user_id=user_id)
     except Exception:  # noqa: BLE001 -- one figure's vision failure must not abort the whole document
         logger.warning("Vision captioning failed for %s -- figure left uncaptioned", figure_id, exc_info=True)
         return FigureCaptionOutcome(
@@ -736,6 +738,14 @@ class DedupCheckRequest(BaseModel):
     # check_for_duplicates's own 0.90 default, identical to before this
     # field existed.
     threshold: float | None = None
+    # The submitting user's identity, forwarded to judge_duplicate_pair's
+    # own per-call user_id param (see OrchestratorLlmClient's own
+    # X-Req2Ado-User-Id threading) so this route's LLM tie-break judge call
+    # resolves the caller's own Open WebUI connection instead of failing
+    # 401 against the orchestrator's now-mandatory per-user auth. None for
+    # any caller that doesn't have a user identity handy -- the judge call
+    # simply fails the same way any other unauthenticated /llm/* call does.
+    user_id: str | None = None
 
 
 class DedupUpsertRequest(BaseModel):
@@ -894,6 +904,16 @@ async def ingest(
     # figure-description closure (a plain in-process argument, never a wire
     # key of its own).
     primer_context: str | None = None,
+    # Optional -- identifies which user's vaulted Open WebUI credential the
+    # orchestrator's /llm/vision proxy should use for this request's figure
+    # captioning (see OrchestratorVisionClient.describe_figure's own
+    # X-Req2Ado-User-Id doc comment). Same optional query-param convention as
+    # job_id/primer_context above. The orchestrator's own ingestion-http
+    # client does not send this today (this parse-phase /ingest call predates
+    # per-user credentials) -- None here degrades to "no identity available,"
+    # not a fabricated fallback, and the orchestrator's own 401 on /llm/vision
+    # is the correct, honest failure signal for that case.
+    user_id: str | None = None,
 ) -> CanonicalDoc:
     # skip_vision: /jobs/preview (orchestrator) only needs blockCount/
     # sectionCount/fileType to show the user before they even pick a mode --
@@ -1106,6 +1126,7 @@ async def ingest(
                 collected_figure_bytes[figure_position],
                 primer_context,
                 job_id,
+                user_id=user_id,
             )
 
         def _merge_one(outcome: FigureCaptionOutcome) -> None:
@@ -1415,7 +1436,9 @@ async def level(
             settings.orchestrator_url, settings.llm_proxy_bearer, model=model,
             top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
         )
-        num_ctx = (await run_in_threadpool(_resolve_caps, model, probe_client)).context_budget_tokens
+        num_ctx = (
+            await run_in_threadpool(_resolve_caps, model, probe_client, user_id)
+        ).context_budget_tokens
         client = OrchestratorLlmClient(
             settings.orchestrator_url, settings.llm_proxy_bearer, model=model, num_ctx=num_ctx,
             top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
@@ -1478,13 +1501,16 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model,
         top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
     )
-    num_ctx = (await run_in_threadpool(_resolve_caps, body.model, probe_client)).context_budget_tokens
+    num_ctx = (
+        await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)
+    ).context_budget_tokens
     client = OrchestratorLlmClient(
         settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx,
         top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
     )
     score, issues, category_scores, confidence = score_single_requirement_text(
         body.description, client, _get_criteria_retriever(), kb_context, body.category_checklist,
+        user_id=body.user_id,
     )
     return ScoreItemResponse(
         quality_score=score, quality_issues=issues, quality_category_scores=category_scores,
@@ -1508,6 +1534,7 @@ async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
         embed_client=_embed_client,
         vector_store=_vector_store,
         judge_client=_dedup_judge_client,
+        user_id=body.user_id,
         **kwargs,
     )
 
@@ -1587,7 +1614,16 @@ async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
             # KB ingestion shares SURVEY's figure-significance filter (with no
             # document_context) -- an insignificant figure is dropped and will
             # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
-            describe_figure=_describe_figure if _vision_client is not None else None,
+            # Closes over body.user_id (this route's real, wire-supplied
+            # identity) so the vision call carries the correct
+            # X-Req2Ado-User-Id -- _describe_figure itself is per-user-safe
+            # (user_id is a per-call arg, never stored), but the loader's
+            # `describe_figure` callback contract is a single-bytes-arg
+            # Callable, so the closure is what threads user_id through.
+            describe_figure=(
+                (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
+                if _vision_client is not None else None
+            ),
             checklist_client=_checklist_client,
             retrieval_mode=body.retrieval_mode,
         )
@@ -1621,7 +1657,11 @@ async def kb_ingest_folder_url(body: KbIngestUrlRequest) -> FolderIngestResult:
             # KB ingestion shares SURVEY's figure-significance filter (with no
             # document_context) -- an insignificant figure is dropped and will
             # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
-            describe_figure=_describe_figure if _vision_client is not None else None,
+            # Closes over body.user_id -- see /kb/ingest-url's identical comment.
+            describe_figure=(
+                (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
+                if _vision_client is not None else None
+            ),
             checklist_client=_checklist_client,
         )
     except ValueError as exc:
@@ -1657,7 +1697,11 @@ async def kb_ingest_item(body: KbIngestItemRequest) -> IngestResult:
             # KB ingestion shares SURVEY's figure-significance filter (with no
             # document_context) -- an insignificant figure is dropped and will
             # not be KB-retrievable. See _describe_figure's own SCOPE NOTE.
-            describe_figure=_describe_figure if _vision_client is not None else None,
+            # Closes over body.user_id -- see /kb/ingest-url's identical comment.
+            describe_figure=(
+                (lambda image_bytes: _describe_figure(image_bytes, user_id=body.user_id))
+                if _vision_client is not None else None
+            ),
             checklist_client=_checklist_client,
             retrieval_mode=body.retrieval_mode,
         )

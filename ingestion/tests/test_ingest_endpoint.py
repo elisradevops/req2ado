@@ -152,7 +152,7 @@ def test_ingest_skip_vision_skips_figure_captioning_even_when_vision_is_configur
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             self.calls += 1
             return FigureVisionResult(significant=True, description="a description nobody asked for")
 
@@ -176,7 +176,7 @@ def test_ingest_survey_mode_still_captions_when_vision_is_configured(monkeypatch
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             self.calls += 1
             return FigureVisionResult(significant=True, description="a real caption")
 
@@ -203,7 +203,7 @@ def test_describe_figure_caches_by_image_hash_so_a_rerun_gets_the_same_caption(m
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             self.calls += 1
             return FigureVisionResult(significant=True, description=f"caption #{self.calls}")
 
@@ -240,7 +240,7 @@ def test_describe_figure_calls_the_vision_client_again_for_genuinely_different_i
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             self.calls += 1
             return FigureVisionResult(significant=True, description=f"caption #{self.calls}")
 
@@ -283,7 +283,7 @@ def test_describe_figure_strips_a_degenerate_continuation_from_an_already_cached
     import app.main as main_module
 
     class _FailIfCalledVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None):
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None):
             raise AssertionError("must be served from cache, not a fresh vision call")
 
     class _FakeRedis:
@@ -348,7 +348,7 @@ def test_describe_figure_cache_key_does_not_collide_across_different_document_co
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             self.calls += 1
             return FigureVisionResult(significant=True, description=f"caption for {document_context}")
 
@@ -386,7 +386,7 @@ def test_describe_figure_degrades_to_a_live_call_when_the_cache_read_or_write_fa
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="live caption")
 
     class _ExplodingRedis:
@@ -415,7 +415,7 @@ def test_describe_figure_never_caches_a_blank_result(monkeypatch) -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             self.calls += 1
             return None if self.calls == 1 else FigureVisionResult(significant=True, description="a real caption on retry")
 
@@ -462,7 +462,7 @@ def test_describe_figure_caches_a_genuine_insignificant_verdict(monkeypatch) -> 
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             self.calls += 1
             return FigureVisionResult(significant=False, description="")
 
@@ -483,7 +483,7 @@ def test_describe_figure_returns_none_when_vision_model_judges_figure_insignific
     from app.vision.orchestrator_vision_client import FigureVisionResult
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             return FigureVisionResult(significant=False, description="A decorative rectangular block.")
 
     monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
@@ -498,7 +498,7 @@ def test_describe_figure_returns_the_description_when_vision_model_judges_figure
     from app.vision.orchestrator_vision_client import FigureVisionResult
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             return FigureVisionResult(significant=True, description="A power interface wiring diagram.")
 
     monkeypatch.setattr(main_module, "_vision_client", _FakeVisionClient())
@@ -515,7 +515,7 @@ def test_describe_figure_forwards_document_context_to_the_vision_client(monkeypa
     captured = {}
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             captured["document_context"] = document_context
             return FigureVisionResult(significant=True, description="ok")
 
@@ -551,7 +551,7 @@ def test_ingest_publishes_describe_figure_and_parse_done_narration_when_job_id_i
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _FakeRedis:
@@ -641,7 +641,7 @@ def test_ingest_pptx_publishes_a_real_figure_count_denominator(monkeypatch) -> N
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="a red square")
 
     class _FakeRedis:
@@ -692,7 +692,7 @@ def test_ingest_image_publishes_a_figure_count_of_one_with_no_precount_walk(monk
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _FakeRedis:
@@ -738,7 +738,7 @@ def test_ingest_pdf_publishes_the_exact_figure_count_denominator(monkeypatch) ->
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _FakeRedis:
@@ -780,7 +780,7 @@ def test_ingest_publishes_no_narration_when_job_id_is_omitted(monkeypatch) -> No
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _FakeRedis:
@@ -825,7 +825,7 @@ def test_ingest_baseline_mode_never_captions_even_when_vision_is_configured(monk
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             self.calls += 1
             return FigureVisionResult(significant=True, description="a description that must never appear in baseline")
 
@@ -854,7 +854,7 @@ def test_ingest_unrecognized_mode_value_fails_safe_to_baseline(monkeypatch) -> N
         def __init__(self) -> None:
             self.calls = 0
 
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             self.calls += 1
             return FigureVisionResult(significant=True, description="should never be reached")
 
@@ -878,7 +878,7 @@ def test_ingest_then_level_baseline_never_touches_a_configured_vision_client() -
     import app.main as main_module
 
     class _ExplodingVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             raise AssertionError("BASELINE must never call describe_figure")
 
     monkeypatch_target = main_module._vision_client
@@ -1095,7 +1095,7 @@ def test_figure_storage_uses_the_same_rasterized_bytes_as_captioning_not_the_ori
     captured_store_calls: list[tuple[str, str, bytes, str]] = []
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _FakeFigureFileClient:
@@ -1150,7 +1150,7 @@ def test_figure_bytes_are_rasterized_exactly_once_per_figure(monkeypatch) -> Non
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _FakeFigureFileClient:
@@ -1185,7 +1185,7 @@ def test_caption_and_store_one_figure_returns_a_complete_outcome(monkeypatch) ->
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="prose about the figure", title="Short Title")
 
     stored: list[tuple[str, str]] = []
@@ -1214,7 +1214,7 @@ def test_caption_and_store_one_figure_flags_a_storage_failure_without_losing_the
     import app.main as main_module
 
     class _FakeVisionClient:
-        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None) -> FigureVisionResult | None:
+        def describe_figure(self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None, user_id: str | None = None) -> FigureVisionResult | None:
             return FigureVisionResult(significant=True, description="prose about the figure")
 
     class _RaisingFigureFileClient:

@@ -162,7 +162,7 @@ class FakeTitleDistillationClient:
     wiring/gate tests need (the actual distillation logic has its own
     coverage in test_survey_title.py)."""
 
-    def distill_title(self, text: str, max_length: int) -> str:
+    def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
         return "Physical robustness"
 
 
@@ -216,6 +216,7 @@ class FakeSectionAnalysisClient:
     def analyze_section(
         self, section_text: str, kb_context: str | None = None, *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
         self.legacy_calls.append({"section_text": section_text})
         return self._nodes, self._truncated
@@ -224,6 +225,7 @@ class FakeSectionAnalysisClient:
         self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
         read_other_section_fn=None, *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
         self.legacy_calls.append({"section_text": section_text})
         return self._agentic_nodes, self._agentic_citations, self._truncated
@@ -231,6 +233,7 @@ class FakeSectionAnalysisClient:
     def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
         self.calls.append({
             "section_text": section_text, "kb_context": kb_context, "options": options,
@@ -241,6 +244,7 @@ class FakeSectionAnalysisClient:
         self, section_text: str, retrieve_fn, list_documents_fn=None, read_document_fn=None,
         read_other_section_fn=None, *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
         self.agentic_calls.append(
             {
@@ -256,6 +260,7 @@ class FakeSectionAnalysisClient:
 
     def author_content(
         self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
         self.author_calls.append({
             "section_text": section_text, "skeleton_nodes": skeleton_nodes, "kb_context": kb_context,
@@ -695,7 +700,7 @@ def test_regrouped_synthesized_node_identity_hash_differs_from_its_own_first_chi
     ]
 
     class FakeGroupingClient:
-        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
             return {"groups": [{"title": "Power", "member_ids": ["n0", "n1"]}]}
 
     warnings: list[str] = []
@@ -2419,6 +2424,7 @@ class _PerSectionSectionAnalysisClient:
 
     def author_content(
         self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
         keyword = self._keyword_for(section_text)
         return (
@@ -2462,7 +2468,7 @@ def test_build_survey_tree_forwards_chunk_concurrency_to_the_deterministic_passe
     monkeypatch.setattr(id_tree_builder_module, "_apply_title_tag_pass", spy)
 
     class TitleTagClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             return {node_id: {"title": "T", "tags": []} for node_id in texts_by_row_id}
 
     build_survey_tree(
@@ -2585,6 +2591,7 @@ class FakeScoringClient:
         criteria_context: str | None = None,
         kb_context: str | None = None,
         category_checklist: list[str] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, dict]:
         self.calls.append(descriptions_by_node_id)
         self.criteria_contexts.append(criteria_context)
@@ -2639,7 +2646,7 @@ def test_build_survey_tree_scores_epic_and_feature_nodes_via_the_separate_rubric
             super().__init__()
             self.epic_feature_calls: list[dict] = []
 
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             self.epic_feature_calls.append(nodes_by_id)
             return {
                 node_id: {"score": 77, "categoryScores": {"scopeCoherence": 70, "outcomeClarity": 80}}
@@ -2671,7 +2678,7 @@ def test_build_survey_tree_excludes_a_synthesized_bridge_feature_from_epic_featu
             super().__init__()
             self.epic_feature_calls: list[dict] = []
 
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             self.epic_feature_calls.append(nodes_by_id)
             return {node_id: {"score": 50, "categoryScores": {}} for node_id in nodes_by_id}
 
@@ -2717,7 +2724,7 @@ def test_score_epics_and_features_excludes_a_per_epic_bridge_feature() -> None:
         def __init__(self) -> None:
             self.calls: list[dict] = []
 
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             self.calls.append(nodes_by_id)
             return {node_id: {"score": 50, "categoryScores": {}} for node_id in nodes_by_id}
 
@@ -2749,7 +2756,7 @@ def test_build_survey_tree_requirement_scoring_failure_is_caught_and_warned() ->
     # immediately below). Requirement quality scoring is an enhancement on
     # top of an already-built tree, never a dependency of its correctness.
     class _RaisingRequirementScoringClient(FakeScoringClient):
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             raise ValueError("boom")
 
     tree = build_survey_tree(_small_doc(), FakeSectionAnalysisClient(), _RaisingRequirementScoringClient())
@@ -2763,7 +2770,7 @@ def test_build_survey_tree_requirement_scoring_failure_fires_chunk_warning() -> 
     # docs/ui-progress-review.md item #3: this failure must be visible LIVE
     # (via progress_callback), not just in the final tree.warnings list.
     class _RaisingRequirementScoringClient(FakeScoringClient):
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             raise ValueError("boom")
 
     fired: list[LevelingProgress] = []
@@ -2786,7 +2793,7 @@ def test_build_survey_tree_epic_feature_scoring_is_a_noop_without_scoring_client
 
 def test_build_survey_tree_epic_feature_scoring_failure_is_caught_and_warned() -> None:
     class _RaisingEpicFeatureClient(FakeScoringClient):
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             raise ValueError("boom")
 
     scoring_client = _RaisingEpicFeatureClient()
@@ -2800,7 +2807,7 @@ def test_build_survey_tree_epic_feature_scoring_failure_is_caught_and_warned() -
 
 def test_build_survey_tree_epic_feature_scoring_failure_fires_chunk_warning() -> None:
     class _RaisingEpicFeatureClient(FakeScoringClient):
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             raise ValueError("boom")
 
     fired: list[LevelingProgress] = []
@@ -2818,7 +2825,7 @@ def test_apply_quality_scores_missing_score_fires_chunk_warning() -> None:
     from app.leveling.scoring import _apply_quality_scores
 
     class _EmptyScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {}  # every node comes back with no valid score
 
     nodes = [_req_node("n1", "The system shall do x.")]
@@ -2837,7 +2844,7 @@ def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> N
     from app.leveling.scoring import _apply_quality_scores
 
     class _InconsistentCategoriesClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {
                 "n1": {"score": 80, "issues": [], "categoryScores": {"clarity": 80}},
                 "n2": {"score": 70, "issues": [], "categoryScores": {"rationale": 70}},
@@ -2857,7 +2864,7 @@ def test_apply_quality_scores_inconsistent_categories_fires_chunk_warning() -> N
 
 def test_build_survey_tree_captures_the_raw_response_when_epic_feature_scoring_fails() -> None:
     class _RaisingEpicFeatureClient(FakeScoringClient):
-        def score_epics_and_features_for_document(self, nodes_by_id):
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
             raise ValueError("boom")
 
     class _FakeDebugCapture:
@@ -2958,7 +2965,7 @@ def test_build_survey_tree_carries_the_matched_checklist_definitions_through_to_
     )
 
     class _CapturingScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {
                 node_id: {"score": 90, "issues": [], "categoryScores": {"Necessary": 80, "Unambiguous": 70}}
                 for node_id in descriptions_by_node_id
@@ -3005,7 +3012,7 @@ def test_build_survey_tree_leaves_checklist_none_when_no_definitions_were_ever_e
     )
 
     class _CapturingScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {
                 node_id: {"score": 90, "issues": [], "categoryScores": {"Necessary": 80}}
                 for node_id in descriptions_by_node_id
@@ -3132,7 +3139,7 @@ def test_low_confidence_is_copied_onto_every_duplicate_description_node(monkeypa
     # default fixture, see the "only one representative sent" test below),
     # which is what triggers the fan-out at all.
     class _LowConfidenceScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {
                 node_id: {"score": 90, "issues": [], "categoryScores": {"clarity": 90}, "confidence": "low"}
                 for node_id in descriptions_by_node_id
@@ -3395,7 +3402,7 @@ def test_build_survey_tree_score_requirements_events_carry_the_real_kb_citations
     monkeypatch.setattr("app.leveling.llm_leveling.retrieve_context", _fake_retrieve_context)
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
     fake = FakeSectionAnalysisClient(
@@ -3446,7 +3453,7 @@ def test_build_survey_tree_scoring_uses_the_stored_checklist_from_the_grounding_
     captured: dict = {}
 
     class _CapturingScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             captured["category_checklist"] = category_checklist
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
@@ -3485,7 +3492,7 @@ def test_build_survey_tree_falls_back_to_none_checklist_when_grounding_document_
     captured: dict = {}
 
     class _CapturingScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             captured["category_checklist"] = category_checklist
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
@@ -3521,7 +3528,7 @@ def test_build_survey_tree_scoring_is_actually_grounded_on_the_agentic_path() ->
         def __init__(self):
             self.received_kb_context = "unset"
 
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             self.received_kb_context = kb_context
             return {node_id: {"score": 90, "issues": []} for node_id in descriptions_by_node_id}
 
@@ -3614,7 +3621,7 @@ class _FakeCapsClient:
         self._raises = raises
         self.call_count = 0
 
-    def show_model(self, model: str) -> dict:
+    def show_model(self, model: str, user_id: str | None = None) -> dict:
         self.call_count += 1
         if self._raises:
             raise RuntimeError("orchestrator unreachable")
@@ -3796,6 +3803,7 @@ def test_build_survey_tree_reuses_same_kb_context_for_scoring_as_other_calls(mon
             criteria_context: str | None = None,
             kb_context: str | None = None,
             category_checklist: list[str] | None = None,
+            user_id: str | None = None,
         ) -> dict[str, dict]:
             captured["scoring_kb_context"] = kb_context
             return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
@@ -3902,7 +3910,7 @@ def test_build_survey_tree_kb_citations_get_verified_relevance_when_relevance_cl
     )
 
     class _FakeKbRelevanceClient:
-        def judge_kb_relevance(self, branch_content: str, snippets: list[dict]) -> dict[str, str]:
+        def judge_kb_relevance(self, branch_content: str, snippets: list[dict], user_id: str | None = None) -> dict[str, str]:
             return {"0": "relevant", "1": "not_relevant"}
 
     tree = build_survey_tree(
@@ -3930,7 +3938,7 @@ def test_build_survey_tree_kb_citations_degrade_to_unknown_when_relevance_client
     )
 
     class _RaisingKbRelevanceClient:
-        def judge_kb_relevance(self, branch_content: str, snippets: list[dict]) -> dict[str, str]:
+        def judge_kb_relevance(self, branch_content: str, snippets: list[dict], user_id: str | None = None) -> dict[str, str]:
             raise RuntimeError("orchestrator unreachable")
 
     tree = build_survey_tree(
@@ -4003,6 +4011,7 @@ def test_build_survey_tree_agentic_path_scoring_kb_context_merges_always_include
             criteria_context: str | None = None,
             kb_context: str | None = None,
             category_checklist: list[str] | None = None,
+            user_id: str | None = None,
         ) -> dict[str, dict]:
             captured["scoring_kb_context"] = kb_context
             return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
@@ -4035,7 +4044,7 @@ class FakeTraceLinkInferenceClient:
         self._results = results if results is not None else []
         self.calls: list[dict] = []
 
-    def infer_trace_links(self, nodes: list[dict], link_type_catalog: list[dict], kb_context: str | None = None) -> list[dict]:
+    def infer_trace_links(self, nodes: list[dict], link_type_catalog: list[dict], kb_context: str | None = None, user_id: str | None = None) -> list[dict]:
         self.calls.append({"nodes": nodes, "link_type_catalog": link_type_catalog, "kb_context": kb_context})
         return self._results
 
@@ -4132,7 +4141,7 @@ def test_build_survey_tree_sends_trace_link_nodes_with_table_html_stripped() -> 
     )
 
     class FakeParentSummaryClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
 
     fake_trace_client = FakeTraceLinkInferenceClient()
@@ -4364,7 +4373,7 @@ def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises()
     # trace_links=[] with a warning, not abort the whole job and discard
     # everything already produced.
     class _RaisingTraceLinkClient:
-        def infer_trace_links(self, nodes, link_type_catalog, kb_context=None):
+        def infer_trace_links(self, nodes, link_type_catalog, kb_context=None, user_id=None):
             raise ValueError("malformed JSON in LLM response content: 'Based'")
 
     tree = build_survey_tree(
@@ -4378,7 +4387,7 @@ def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises()
 
 def test_build_survey_tree_captures_the_raw_response_when_trace_link_inference_fails() -> None:
     class _RaisingTraceLinkClient:
-        def infer_trace_links(self, nodes, link_type_catalog, kb_context=None):
+        def infer_trace_links(self, nodes, link_type_catalog, kb_context=None, user_id=None):
             raise ValueError("malformed JSON in LLM response content: 'Based'")
 
     class _FakeDebugCapture:
@@ -4495,6 +4504,7 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
         def analyze_section_skeleton(
             self, section_text: str, kb_context: str | None = None, *,
             options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+            user_id: str | None = None,
         ) -> tuple[list[dict], bool]:
             self.call_count += 1
             return [
@@ -4504,6 +4514,7 @@ def test_build_survey_tree_bounds_an_oversized_top_level_branch_into_multiple_an
 
         def author_content(
             self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+            user_id: str | None = None,
         ) -> tuple[dict[str, dict], bool]:
             lines_by_index = dict(enumerate(self._lines_of(section_text)))
             return {
@@ -4592,7 +4603,7 @@ def test_build_survey_tree_progress_callback_fires_score_requirements_when_scori
     events = []
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {node_id: {"score": 100, "issues": []} for node_id in descriptions_by_node_id}
 
     build_survey_tree(
@@ -4621,7 +4632,7 @@ def test_build_survey_tree_progress_callback_carries_the_sections_finished_nodes
     events = []
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             return {node_id: {"score": 87, "issues": ["vague_term"]} for node_id in descriptions_by_node_id}
 
     build_survey_tree(
@@ -4655,7 +4666,7 @@ def test_build_survey_tree_progress_callback_carries_model_draft_count_and_issue
         model = "qwen2.5:32b"
 
     class _FakeScoringClient:
-        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None):
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             # One node scored with two issues, the rest clean -- exercises a
             # real non-zero issues_found sum, not just a trivial 0 case.
             first_id = next(iter(descriptions_by_node_id))
@@ -4788,11 +4799,15 @@ def _claim_on_every_node(monkeypatch, **ids: list[str]) -> None:
 
     real_author = llm_leveling_module._author_branch_content
 
-    def _patched(skeleton, analysis_client, figure_table_ids_by_local_id=None, title_distillation_client=None):
+    def _patched(
+        skeleton, analysis_client, figure_table_ids_by_local_id=None, title_distillation_client=None,
+        **kwargs,
+    ):
         return real_author(
             skeleton, analysis_client,
             figure_table_ids_by_local_id={node.local_id: dict(ids) for node in skeleton.nodes},
             title_distillation_client=title_distillation_client,
+            **kwargs,
         )
 
     monkeypatch.setattr(llm_leveling_module, "_author_branch_content", _patched)
@@ -5334,11 +5349,11 @@ def test_build_survey_tree_uses_a_live_derived_token_budget_for_the_parent_summa
             self.summarize_calls: list[dict] = []
             self.show_model_calls: list[str] = []
 
-        def show_model(self, model: str) -> dict:
+        def show_model(self, model: str, user_id: str | None = None) -> dict:
             self.show_model_calls.append(model)
             return {"context_length": self.context_length, "capabilities": ["completion"]}
 
-        def summarize_parent_nodes(self, nodes_by_id: dict) -> dict:
+        def summarize_parent_nodes(self, nodes_by_id: dict, user_id: str | None = None) -> dict:
             self.summarize_calls.append(nodes_by_id)
             return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
 
@@ -5362,11 +5377,11 @@ def test_build_survey_tree_never_does_a_live_caps_lookup_for_an_already_tuned_mo
         def __init__(self) -> None:
             self.show_model_calls: list[str] = []
 
-        def show_model(self, model: str) -> dict:
+        def show_model(self, model: str, user_id: str | None = None) -> dict:
             self.show_model_calls.append(model)
             return {"context_length": 1, "capabilities": []}
 
-        def summarize_parent_nodes(self, nodes_by_id: dict) -> dict:
+        def summarize_parent_nodes(self, nodes_by_id: dict, user_id: str | None = None) -> dict:
             return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
 
     fake_client = FakeParentSummaryAndCapsClient()
@@ -5443,7 +5458,7 @@ def test_build_survey_tree_parent_summary_preserves_a_deterministically_claimed_
     )
 
     class FakeParentSummaryClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {node_id: {"title": "Synthesized Epic", "description": "Covers A-E."} for node_id in nodes_by_id}
 
     tree = build_survey_tree(doc, FakeSectionAnalysisClient(), parent_summary_client=FakeParentSummaryClient())
@@ -6076,7 +6091,7 @@ class _FakeConflictClient:
         self._verdict = verdict
         self.calls: list[dict[str, str]] = []
 
-    def judge_duplicate_cluster(self, texts_by_id: dict[str, str]) -> dict:
+    def judge_duplicate_cluster(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict:
         self.calls.append(texts_by_id)
         return self._verdict
 
@@ -6331,7 +6346,7 @@ class _FakeGroupingClient:
         self._result = result
         self.calls: list[dict[str, str]] = []
 
-    def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+    def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
         self.calls.append(titles_by_id)
         return self._result
 
@@ -6496,7 +6511,7 @@ def test_regroup_disconnected_roots_skips_a_single_member_group() -> None:
 
 def test_regroup_disconnected_roots_is_fail_open() -> None:
     class RaisingGroupingClient:
-        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
             raise RuntimeError("boom")
 
     nodes = [
@@ -6522,7 +6537,7 @@ def test_regroup_disconnected_roots_captures_the_failure_when_group_root_topics_
     # failure was only ever a log line -- unlike score_epics_and_features'
     # own failure, which was already captured for the debug-read endpoint.
     class RaisingGroupingClient:
-        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
             raise RuntimeError("boom")
 
     nodes = [
@@ -6540,10 +6555,10 @@ def test_regroup_disconnected_roots_captures_the_failure_when_group_root_topics_
 
 def test_regroup_disconnected_roots_captures_the_failure_when_assign_leftover_roots_raises() -> None:
     class RaisingAssignmentClient:
-        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
             return {"groups": [{"title": "VPX Utility & Management Signals", "member_ids": ["n0", "n1"]}]}
 
-        def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict:
+        def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
             raise RuntimeError("kaboom")
 
     nodes = [
@@ -6589,10 +6604,10 @@ class _FakeGroupingClientWithAssignment:
         self._assignment_result = assignment_result
         self.assignment_calls: list[tuple[dict[str, str], dict[str, str]]] = []
 
-    def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+    def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
         return self._group_result
 
-    def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict:
+    def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
         self.assignment_calls.append((leftover_titles_by_id, group_titles_by_id))
         return self._assignment_result
 
@@ -6983,7 +6998,7 @@ def test_content_stage_cannot_change_the_hierarchy_it_was_given() -> None:
     # A response that re-types a node, re-parents it, renames it, or invents
     # an id outright changes nothing structural -- only descriptions land.
     class _MeddlingClient(FakeSectionAnalysisClient):
-        def author_content(self, section_text, skeleton_nodes, kb_context=None):
+        def author_content(self, section_text, skeleton_nodes, kb_context=None, user_id=None):
             self.author_calls.append({"skeleton_nodes": skeleton_nodes})
             return {
                 "n0": {"description": "Root feature text.", "type": "Requirement", "title": "Renamed", "parent_id": "n1", "tags": []},
@@ -7010,7 +7025,7 @@ def test_content_stage_never_tags_an_epic_or_feature_even_when_the_model_returns
     # skeleton); a real model returning "safety" for it must still land as
     # [] on the final node.
     class _OvertaggingClient(FakeSectionAnalysisClient):
-        def author_content(self, section_text, skeleton_nodes, kb_context=None):
+        def author_content(self, section_text, skeleton_nodes, kb_context=None, user_id=None):
             return {
                 "n0": {"description": "Display features.", "tags": ["safety"]},
                 "n1": {"description": "The display shall support HDR.", "tags": ["functional"]},
@@ -7026,7 +7041,7 @@ def test_content_stage_never_tags_an_epic_or_feature_even_when_the_model_returns
 
 def test_content_stage_falls_back_to_the_title_for_an_omitted_node_and_warns() -> None:
     class _PartialClient(FakeSectionAnalysisClient):
-        def author_content(self, section_text, skeleton_nodes, kb_context=None):
+        def author_content(self, section_text, skeleton_nodes, kb_context=None, user_id=None):
             return {"n1": {"description": "The display shall support HDR.", "tags": []}}, False
 
     tree = build_survey_tree(_small_doc(), _PartialClient())
@@ -7100,7 +7115,7 @@ def test_root_regrouping_runs_between_the_two_stages(monkeypatch) -> None:
     _force_multi_branch(monkeypatch)
 
     class _FakeGroupingClient:
-        def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+        def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
             return {"groups": [{"title": "Media Subsystems", "member_ids": list(titles_by_id)}]}
 
     fake = FakeSectionAnalysisClient(
@@ -7265,7 +7280,7 @@ class FakeMappingClient(FakeSectionAnalysisClient):
         self._raises = raises
         self.mapping_calls: list[dict] = []
 
-    def map_figures_tables(self, candidates: dict[str, dict], items: dict[str, dict]) -> dict[str, dict]:
+    def map_figures_tables(self, candidates: dict[str, dict], items: dict[str, dict], user_id: str | None = None) -> dict[str, dict]:
         self.mapping_calls.append({"candidates": candidates, "items": items})
         if self._raises:
             raise RuntimeError("mapping backend exploded")

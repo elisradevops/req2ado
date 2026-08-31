@@ -255,9 +255,12 @@ export class OpenWebUiClient implements LlmClient {
   }
 
   async embed(texts: string[], opts?: { model?: string }): Promise<number[][]> {
+    if (this.config.EMBED_TRANSPORT === 'openai') {
+      return this.embedViaOpenAiProxy(texts, opts);
+    }
     if (this.config.EMBED_TRANSPORT !== 'ollama') {
       throw new Error(
-        `OpenWebUiClient.embed() not implemented for EMBED_TRANSPORT=${this.config.EMBED_TRANSPORT} — only 'ollama' (the confirmed-real Open WebUI/Ollama transport) is implemented`,
+        `OpenWebUiClient.embed() not implemented for EMBED_TRANSPORT=${this.config.EMBED_TRANSPORT} — only 'ollama' and 'openai' are implemented`,
       );
     }
     const outboundTexts = this.config.LLM_TRUSTED_LOCAL ? texts : texts.map(redactText);
@@ -284,6 +287,46 @@ export class OpenWebUiClient implements LlmClient {
     }
     const body = (await response.json()) as { embeddings: number[][] };
     return body.embeddings;
+  }
+
+  // Ollama (and Open WebUI's own /api/embeddings passthrough of it) is
+  // permanently unavailable on this deployment's production target --
+  // confirmed with the user, not just disabled today. This is the fallback
+  // transport: Open WebUI's deprecated-but-working `/openai/embeddings`
+  // proxy (labeled "Deprecated: proxy all requests to OpenAI API" in Open
+  // WebUI's own source), which -- unlike the documented, provider-agnostic
+  // `/api/embeddings` route -- does NOT check the model against the
+  // chat-model registry first (a known, currently-unfixed upstream bug,
+  // open-webui/open-webui#17584, that makes `/api/embeddings` 500 "Model
+  // not found" for an embedding-only connection). Confirmed live: this
+  // route returns real 1536-dim vectors for
+  // `model: "OpenAI/text-embedding-3-small"`, and production's own
+  // existing file-attach RAG already depends on this identical
+  // openai-proxy connection type (RAG_EMBEDDING_ENGINE: openai).
+  //
+  // `body.data` is NOT guaranteed to come back in request order (the
+  // OpenAI embeddings API spec only promises each entry's own `.index`
+  // matches its position in the input) -- sorting before mapping is
+  // required, not defensive/optional, or a request with >1 text could
+  // silently pair the wrong text with the wrong vector.
+  private async embedViaOpenAiProxy(texts: string[], opts?: { model?: string }): Promise<number[][]> {
+    const outboundTexts = this.config.LLM_TRUSTED_LOCAL ? texts : texts.map(redactText);
+    // Same retry policy as the 'ollama' branch above -- a pure read with no
+    // side effects, safe to re-run on a transient 429/5xx/network failure.
+    const response = await fetchWithRetry(
+      () =>
+        fetch(`${this.openWebUiAppRoot()}/openai/embeddings`, {
+          method: 'POST',
+          headers: this.nativeOllamaHeaders(),
+          body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: outboundTexts }),
+        }),
+      { maxRetries: 3 },
+    );
+    if (!response.ok) {
+      throw new Error(`Open WebUI /openai/embeddings request failed: ${response.status}`);
+    }
+    const body = (await response.json()) as { data: { embedding: number[]; index: number }[] };
+    return [...body.data].sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
   }
 
   // Shared by embed()/showModel() -- both bypass the OpenAI SDK client

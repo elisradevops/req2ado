@@ -26,7 +26,9 @@ class DuplicateJudgeClient(Protocol):
     own is_duplicate verdict (after the numeric veto) is trusted as-is,
     matching pre-existing behavior exactly."""
 
-    def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict: ...
+    def judge_duplicate_pair(
+        self, candidate_text: str, matched_text: str, user_id: str | None = None,
+    ) -> dict: ...
 
 # Matches a numeric literal, optionally followed by a unit/percent symbol
 # directly or with whitespace (e.g. "87%", "500W", "3.3 V") -- used to veto a
@@ -68,6 +70,7 @@ def check_for_duplicates(
     vector_store: ChromaVectorStore,
     threshold: float = 0.90,
     judge_client: DuplicateJudgeClient | None = None,
+    user_id: str | None = None,
 ) -> DuplicateCheckResult:
     """Embeds `title`+`text` (blended, see below) and checks the blend
     against the Area-Path-scoped vector store for a near-duplicate.
@@ -140,7 +143,7 @@ def check_for_duplicates(
     judge_verdict: str | None = None
     if is_duplicate and judge_client is not None and matched_document is not None:
         try:
-            result = judge_client.judge_duplicate_pair(text, matched_document)
+            result = judge_client.judge_duplicate_pair(text, matched_document, user_id=user_id)
             judge_verdict = result.get("verdict")
             if judge_verdict == "distinct":
                 is_duplicate = False

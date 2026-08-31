@@ -478,7 +478,9 @@ class KbRelevanceClient(Protocol):
     relevance stays at its default (KbCitationRelevance.UNKNOWN), matching
     pre-verification behavior exactly."""
 
-    def judge_kb_relevance(self, branch_content: str, snippets: list[dict]) -> dict[str, str]: ...
+    def judge_kb_relevance(
+        self, branch_content: str, snippets: list[dict], user_id: str | None = None,
+    ) -> dict[str, str]: ...
 
 
 class SectionAnalysisClient(Protocol):
@@ -551,6 +553,7 @@ class SectionAnalysisClient(Protocol):
         kb_context: str | None = None,
         *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], bool]: ...
 
     def analyze_section_agentic(
@@ -562,6 +565,7 @@ class SectionAnalysisClient(Protocol):
         read_other_section_fn: Callable[[str], str | None] | None = None,
         *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], list[dict], bool]: ...
 
     # STAGE 1 -- structure only. Every prompt-steering hint that shaped
@@ -590,6 +594,7 @@ class SectionAnalysisClient(Protocol):
         kb_context: str | None = None,
         *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], bool]: ...
 
     def analyze_section_skeleton_agentic(
@@ -601,6 +606,7 @@ class SectionAnalysisClient(Protocol):
         read_other_section_fn: Callable[[str], str | None] | None = None,
         *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], list[dict], bool]: ...
 
     # STAGE 3 -- `skeleton_nodes` maps each node's own local_id to
@@ -613,6 +619,7 @@ class SectionAnalysisClient(Protocol):
         section_text: str,
         skeleton_nodes: dict[str, dict],
         kb_context: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]: ...
 
 
@@ -622,6 +629,7 @@ def _resolve_kb_citations(
     kb_relevance_client: KbRelevanceClient | None,
     node_id_prefix: str = "",
     debug_capture: "DebugCapture | None" = None,
+    user_id: str | None = None,
 ) -> list[KbCitation]:
     """Builds the final KbCitation list for one branch's retrieved
     snippets: verifies relevance via kb_relevance_client when supplied,
@@ -635,7 +643,7 @@ def _resolve_kb_citations(
     if kb_relevance_client is not None:
         snippets = [{"source_file": c["source_file"], "text": c["text"]} for c in raw_citations]
         try:
-            verdicts = kb_relevance_client.judge_kb_relevance(outline, snippets)
+            verdicts = kb_relevance_client.judge_kb_relevance(outline, snippets, user_id=user_id)
         except Exception as exc:  # noqa: BLE001 - KB relevance verification must never fail a SURVEY job
             logger.warning("KB relevance verification failed: %s", exc)
             if debug_capture is not None:
@@ -1157,6 +1165,7 @@ def _apply_det_parent_summary(
     # Forwarded unchanged to _apply_parent_summary_pass -- see
     # app.config.Settings.survey_chunk_concurrency.
     chunk_concurrency: int = 1,
+    user_id: str | None = None,
 ) -> None:
     """Runs the Epic/Feature title+description enhancement pass over EVERY
     deterministic subtree at once, only after all of them (and every
@@ -1191,7 +1200,7 @@ def _apply_det_parent_summary(
     _apply_parent_summary_pass(
         det_nodes, parent_ids, parent_summary_client, det_warnings,
         token_budget=token_budget, progress_callback=progress_callback,
-        tables_by_id=tables_by_id, chunk_concurrency=chunk_concurrency,
+        tables_by_id=tables_by_id, chunk_concurrency=chunk_concurrency, user_id=user_id,
     )
 
 
@@ -1215,6 +1224,7 @@ def _detect_deterministic_subtrees(
     # _apply_det_parent_summary's parent-summary pass) -- see
     # app.config.Settings.survey_chunk_concurrency.
     chunk_concurrency: int = 1,
+    user_id: str | None = None,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning], CanonicalDoc]:
     """Detects and builds every deterministic hierarchy subtree this
     document's own structure already encodes -- a 2-column dotted-ID
@@ -1296,7 +1306,7 @@ def _detect_deterministic_subtrees(
             # caption-or-id-fallback convention _build_headingless_tree's
             # own per-table title already uses.
             section_path_root=table.caption or f"Table {table.id}",
-            chunk_concurrency=chunk_concurrency,
+            chunk_concurrency=chunk_concurrency, user_id=user_id,
         )
         # Every node in this subtree came from THIS one Table -- unlike a
         # heading-derived node, which can fold zero or more Tables into its
@@ -1333,7 +1343,7 @@ def _detect_deterministic_subtrees(
             heading_rows, f"det{subtree_index}_", title_tag_client, synthesis_client,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label="Heading hierarchy",
-            chunk_concurrency=chunk_concurrency,
+            chunk_concurrency=chunk_concurrency, user_id=user_id,
         )
         # See the table-subtree call site's identical comment above.
         _repair_requirement_hierarchy(nodes, f"det{subtree_index}_", build_warnings)
@@ -1528,6 +1538,7 @@ def _detect_deterministic_subtrees(
         _apply_det_parent_summary(
             det_nodes, det_warnings, parent_summary_client, model, progress_callback,
             tables_by_id={t.id: t for t in doc.tables}, chunk_concurrency=chunk_concurrency,
+            user_id=user_id,
         )
         return det_nodes, det_warnings, doc
 
@@ -1559,6 +1570,7 @@ def _detect_deterministic_subtrees(
     _apply_det_parent_summary(
         det_nodes, det_warnings, parent_summary_client, model, progress_callback,
         tables_by_id={t.id: t for t in doc.tables}, chunk_concurrency=chunk_concurrency,
+        user_id=user_id,
     )
     return det_nodes, det_warnings, llm_doc
 
@@ -1856,6 +1868,7 @@ def build_survey_tree(
         progress_callback=progress_callback,
         figure_id_by_block_id=figure_id_by_block_id,
         chunk_concurrency=chunk_concurrency,
+        user_id=user_id,
     )
 
     if llm_doc.blocks == [] and llm_doc.tables == [] and llm_doc.figures == []:
@@ -1889,7 +1902,7 @@ def build_survey_tree(
                 user_id, query_text, embed_client, vector_store,
             )
             doc_kb_citations = _resolve_kb_citations(
-                query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture
+                query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture, user_id=user_id,
             )
             doc_kb_context, doc_kb_citations = _merge_always_include_context(
                 doc_kb_context, doc_kb_citations, user_id, vector_store,
@@ -1934,20 +1947,21 @@ def build_survey_tree(
                     requirement_nodes, scoring_client, all_warnings, criteria_retriever,
                     doc_kb_context, doc_kb_citations, progress_callback, model_name,
                     len(det_nodes), 0, category_checklist, category_checklist_definitions,
-                    chunk_concurrency=chunk_concurrency,
+                    chunk_concurrency=chunk_concurrency, user_id=user_id,
                 )
             _score_epics_and_features(
                 all_nodes, scoring_client, all_warnings, progress_callback, model_name,
                 len(det_nodes), 0, debug_capture=debug_capture, chunk_concurrency=chunk_concurrency,
+                user_id=user_id,
             )
 
         _detect_conflicting_duplicates(
             all_nodes, embed_client, conflict_client, all_warnings,
-            progress_callback, len(det_nodes), 0,
+            progress_callback, len(det_nodes), 0, user_id=user_id,
         )
         _regroup_disconnected_roots(
             all_nodes, "regroup_", grouping_client, all_warnings,
-            progress_callback, len(det_nodes), 0, debug_capture=debug_capture,
+            progress_callback, len(det_nodes), 0, debug_capture=debug_capture, user_id=user_id,
         )
         _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
         recompute_child_types(all_nodes)
@@ -1957,6 +1971,7 @@ def build_survey_tree(
             trace_links = _infer_trace_links_for_nodes(
                 all_nodes, link_type_client, link_type_catalog or [], all_warnings,
                 progress_callback, len(det_nodes), 0, debug_capture=debug_capture, kb_context=doc_kb_context,
+                user_id=user_id,
             )
 
         return WorkItemTree(
@@ -2110,7 +2125,7 @@ def build_survey_tree(
         query_text = _document_level_query_text(doc)
         doc_kb_context, raw_doc_citations = retrieve_context(user_id, query_text, embed_client, vector_store)
         doc_kb_citations = _resolve_kb_citations(
-            query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture
+            query_text, raw_doc_citations, kb_relevance_client, debug_capture=debug_capture, user_id=user_id,
         )
         doc_kb_context, doc_kb_citations = _merge_always_include_context(
             doc_kb_context, doc_kb_citations, user_id, vector_store,
@@ -2242,6 +2257,7 @@ def build_survey_tree(
             progress_callback=progress_callback,
             figure_id_by_block_id=figure_id_by_block_id,
             figure_caption_status_by_id=figure_caption_status_by_id,
+            user_id=user_id,
         )]
     else:
         # blocks_done_before is precomputed per branch (each branch's own
@@ -2335,6 +2351,7 @@ def build_survey_tree(
                 blocks_total=blocks_total, progress_callback=_fire_progress,
                 figure_id_by_block_id=figure_id_by_block_id,
                 figure_caption_status_by_id=figure_caption_status_by_id,
+                user_id=user_id,
             )
 
         if branch_concurrency <= 1:
@@ -2392,7 +2409,9 @@ def build_survey_tree(
     # narrates via its own new 'map_scope' phase, added alongside the
     # frontend phase-mapping changes that let it do so without regroup_roots'
     # own stepper-regression problem.
-    _regroup_disconnected_roots(all_nodes, "regroup_", grouping_client, all_warnings, debug_capture=debug_capture)
+    _regroup_disconnected_roots(
+        all_nodes, "regroup_", grouping_client, all_warnings, debug_capture=debug_capture, user_id=user_id,
+    )
     _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
 
     # STAGE 2: whole-document figure/table -> EXACT node mapping, run here
@@ -2421,7 +2440,7 @@ def build_survey_tree(
         ) = _map_figures_tables_to_nodes(
             branch_skeletons, map_fn, figures_by_id(doc.figures),
             figure_id_by_block_id, all_warnings, branch_concurrency,
-            progress_callback=progress_callback, blocks_total=blocks_total,
+            progress_callback=progress_callback, blocks_total=blocks_total, user_id=user_id,
         )
         # Stage 3's hallucination guard (see _author_branch_content) checks a
         # node's assigned ids against what was OFFERED for it -- per branch
@@ -2460,14 +2479,18 @@ def build_survey_tree(
     # reaches exactly the branch that owns its target node.
     if branch_concurrency <= 1 or len(branch_skeletons) <= 1:
         branch_results: list[_BranchContentResult] = [
-            _author_branch_content(skeleton, analysis_client, figure_table_ids_by_local_id, title_distillation_client)
+            _author_branch_content(
+                skeleton, analysis_client, figure_table_ids_by_local_id, title_distillation_client,
+                user_id=user_id,
+            )
             for skeleton in branch_skeletons
         ]
     else:
         with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
             content_futures = [
                 executor.submit(
-                    _author_branch_content, skeleton, analysis_client, figure_table_ids_by_local_id, title_distillation_client,
+                    _author_branch_content, skeleton, analysis_client, figure_table_ids_by_local_id,
+                    title_distillation_client, user_id=user_id,
                 )
                 for skeleton in branch_skeletons
             ]
@@ -2532,7 +2555,7 @@ def build_survey_tree(
                 requirement_nodes, scoring_client, all_warnings, criteria_retriever,
                 combined_kb_context, deduped_citations, progress_callback, model_name, blocks_total,
                 len(branches), category_checklist, category_checklist_definitions,
-                chunk_concurrency=chunk_concurrency,
+                chunk_concurrency=chunk_concurrency, user_id=user_id,
             )
         # Separate rubric/prompt from Requirement scoring above -- see
         # OrchestratorLlmClient.score_epics_and_features_for_document's own
@@ -2542,12 +2565,12 @@ def build_survey_tree(
         # there's nothing of that type either.
         _score_epics_and_features(
             all_nodes, scoring_client, all_warnings, progress_callback, model_name, blocks_total, len(branches),
-            debug_capture=debug_capture, chunk_concurrency=chunk_concurrency,
+            debug_capture=debug_capture, chunk_concurrency=chunk_concurrency, user_id=user_id,
         )
 
     _detect_conflicting_duplicates(
         all_nodes, embed_client, conflict_client, all_warnings,
-        progress_callback, blocks_total, len(branches),
+        progress_callback, blocks_total, len(branches), user_id=user_id,
     )
     # _regroup_disconnected_roots/_ensure_root_features_have_epic_parent used
     # to run right here, after every branch's full text had already been
@@ -2578,6 +2601,7 @@ def build_survey_tree(
         trace_links = _infer_trace_links_for_nodes(
             all_nodes, link_type_client, link_type_catalog or [], all_warnings,
             progress_callback, blocks_total, len(branches), debug_capture=debug_capture, kb_context=doc_kb_context,
+            user_id=user_id,
         )
 
     return WorkItemTree(
@@ -2783,6 +2807,7 @@ def _build_survey_skeleton_for_branch(
     # multi-branch documents this whole task's figure-significance
     # disambiguation exists for.
     figure_caption_status_by_id: dict[str, str] | None = None,
+    user_id: str | None = None,
 ) -> _BranchSkeleton:
     """STAGE 1 of SURVEY's two-stage per-branch generation: does the actual
     per-branch (or, for a single-branch document, whole-document) leveling
@@ -2972,6 +2997,7 @@ def _build_survey_skeleton_for_branch(
             section_text, retrieve_fn, list_documents_fn=list_documents_fn, read_document_fn=read_document_fn,
             read_other_section_fn=read_other_section_fn,
             options=section_analysis_options,
+            user_id=user_id,
         )
         # The model chose to pull and use these snippets itself, so relevance
         # verification (kb_relevance_client) doesn't apply on this path --
@@ -3050,6 +3076,7 @@ def _build_survey_skeleton_for_branch(
         raw_nodes, truncated = analysis_client.analyze_section_skeleton(
             section_text, kb_context=kb_context,
             options=section_analysis_options,
+            user_id=user_id,
         )
         kb_citations = []  # doc-level citations are collected once in build_survey_tree, not per-branch
 
@@ -3620,6 +3647,7 @@ class _MappingBatchResult(NamedTuple):
 def _run_mapping_batch(
     batch: _MappingBatch,
     map_fn: Callable[[dict[str, dict], dict[str, dict]], dict[str, dict]],
+    user_id: str | None = None,
 ) -> _MappingBatchResult:
     """Makes ONE mapping call and classifies its verdicts. Pure with respect to
     everything outside it (reads only its `batch`, writes only its returned
@@ -3670,7 +3698,7 @@ def _run_mapping_batch(
             excluded.append((item_id, item.get("kind", "figure")))
 
     try:
-        verdicts = map_fn(batch.candidates, batch.items)
+        verdicts = map_fn(batch.candidates, batch.items, user_id=user_id)
     except Exception as exc:  # noqa: BLE001 - stage 2 is deliberately fail-open, see _map_figures_tables_to_nodes
         _degraded("call_error", f"failed ({exc})", batch.items)
         return _MappingBatchResult(attached, excluded, escalated, warnings)
@@ -3745,6 +3773,7 @@ def _map_figures_tables_to_nodes(
     # every other optional narration hook in this module.
     progress_callback: ProgressCallback | None = None,
     blocks_total: int = 0,
+    user_id: str | None = None,
 ) -> tuple[dict[str, dict[str, list[str]]], list[str], list[str]]:
     """STAGE 2 of SURVEY's generation: binds every figure/table in the
     document to ONE exact node id, run AFTER stage 1's skeleton and the
@@ -3824,9 +3853,11 @@ def _map_figures_tables_to_nodes(
         """Same submission/collect-by-index pattern stages 1 and 3 use --
         results are gathered by INDEX, never by completion order."""
         if branch_concurrency <= 1 or len(batches) <= 1:
-            return [_run_mapping_batch(batch, map_fn) for batch in batches]
+            return [_run_mapping_batch(batch, map_fn, user_id=user_id) for batch in batches]
         with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
-            futures = [executor.submit(_run_mapping_batch, batch, map_fn) for batch in batches]
+            futures = [
+                executor.submit(_run_mapping_batch, batch, map_fn, user_id=user_id) for batch in batches
+            ]
             return [future.result() for future in futures]
 
     def _chunks(item_ids: list[str]) -> list[list[str]]:
@@ -3955,6 +3986,7 @@ def _author_branch_content(
     # for this param. None (the default): every title stands as stage 1
     # produced it, byte-identical to before this capability existed.
     title_distillation_client: TitleDistillationClient | None = None,
+    user_id: str | None = None,
 ) -> _BranchContentResult:
     """STAGE 3 of SURVEY's two-stage per-branch generation: authors each
     node's requirement/description text and tags via ONE author_content call
@@ -4039,7 +4071,7 @@ def _author_branch_content(
             for node in authorable
         }
         content, truncated = analysis_client.author_content(
-            section_text, skeleton_payload, kb_context=skeleton.scoring_kb_context,
+            section_text, skeleton_payload, kb_context=skeleton.scoring_kb_context, user_id=user_id,
         )
         if truncated:
             warnings.append(
@@ -4256,7 +4288,7 @@ def _author_branch_content(
             and not used_title_as_description
             and title_is_low_quality(node.title)
         ):
-            node.title = distill_survey_title(node.description, title_distillation_client)
+            node.title = distill_survey_title(node.description, title_distillation_client, user_id=user_id)
             distilled_title_local_ids.append(node.local_id)
 
         grounding_score = _grounding_score(text, section_text)

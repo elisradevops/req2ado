@@ -453,8 +453,8 @@ describe('OpenWebUiClient', () => {
     expect(chunks).toEqual([{ reasoning: 'Hmm, ' }, { reasoning: 'let me think.' }, { content: 'Sure.' }]);
   });
 
-  it('embed() throws not-implemented in this phase', async () => {
-    const client = new OpenWebUiClient(config);
+  it('embed() throws not-implemented for an EMBED_TRANSPORT neither ollama nor openai', async () => {
+    const client = new OpenWebUiClient({ ...config, EMBED_TRANSPORT: 'nonsense' as any });
     await expect(client.embed(['text'])).rejects.toThrow(/not implemented/i);
   });
 
@@ -757,11 +757,6 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     expect(global.fetch).toHaveBeenCalledTimes(4); // 1 initial + 3 retries (embed()'s maxRetries:3)
   }, 10000);
 
-  it('throws not-implemented for EMBED_TRANSPORT=openai', async () => {
-    const client = new OpenWebUiClient({ ...config, EMBED_TRANSPORT: 'openai' as const });
-    await expect(client.embed(['text'])).rejects.toThrow(/not implemented/i);
-  });
-
   it('uses EMBED_PATH when set to the Open WebUI proxy path, instead of /api/embed', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ embeddings: [[0.1]] }) });
     const client = new OpenWebUiClient({ ...config, EMBED_PATH: '/ollama/api/embed' });
@@ -769,6 +764,97 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
     expect(calledUrl).toBe('http://localhost:11434/ollama/api/embed');
   });
+});
+
+describe('OpenWebUiClient.embed (openai transport)', () => {
+  // Ollama is permanently unavailable on production (confirmed with the
+  // user) -- this is the real fallback transport: Open WebUI's deprecated-
+  // but-working /openai/embeddings proxy, confirmed live to return real
+  // vectors where the documented /api/embeddings route 500s for an
+  // embedding-only connection (see embedViaOpenAiProxy's own doc comment).
+  const config = {
+    LLM_BASE_URL: 'http://localhost:3000/api/v1',
+    LLM_API_KEY: undefined,
+    LLM_CHAT_MODEL: 'llama3.1',
+    LLM_TRUSTED_LOCAL: false,
+    EMBED_TRANSPORT: 'openai' as const,
+    EMBED_BASE_URL: undefined,
+    EMBED_MODEL: 'OpenAI/text-embedding-3-large',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
+  };
+
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  it('POSTs {model, input} to the app root\'s /openai/embeddings -- NOT /ollama/* or EMBED_PATH', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ index: 0, embedding: [0.1, 0.2, 0.3] }] }),
+    });
+    const client = new OpenWebUiClient(config);
+    await client.embed(['The unit shall survive a drop.']);
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:3000/openai/embeddings',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ model: 'OpenAI/text-embedding-3-large', input: ['The unit shall survive a drop.'] }),
+      }),
+    );
+  });
+
+  it('sorts embeddings by the response\'s own .index before mapping -- an out-of-order data[] must still return vectors in INPUT order', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          { index: 2, embedding: [0.3] },
+          { index: 0, embedding: [0.1] },
+          { index: 1, embedding: [0.2] },
+        ],
+      }),
+    });
+    const client = new OpenWebUiClient(config);
+    const result = await client.embed(['first', 'second', 'third']);
+    expect(result).toEqual([[0.1], [0.2], [0.3]]);
+  });
+
+  it('sends an Authorization bearer header when LLM_API_KEY is set', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ data: [{ index: 0, embedding: [0.1] }] }) });
+    const client = new OpenWebUiClient({ ...config, LLM_API_KEY: 'sk-real-key' });
+    await client.embed(['text']);
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer sk-real-key' }) }),
+    );
+  });
+
+  it('honors an explicit opts.model override instead of EMBED_MODEL', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ data: [{ index: 0, embedding: [0.1] }] }) });
+    const client = new OpenWebUiClient(config);
+    await client.embed(['text'], { model: 'OpenAI/text-embedding-3-small' });
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body.model).toBe('OpenAI/text-embedding-3-small');
+  });
+
+  it('throws on a non-ok, non-retryable response', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 400 });
+    const client = new OpenWebUiClient(config);
+    await expect(client.embed(['text'])).rejects.toThrow(/openai\/embeddings.*400/i);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a transient 503 before giving up, then throws with the final status', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 503, headers: { get: () => null } });
+    const client = new OpenWebUiClient(config);
+    await expect(client.embed(['text'])).rejects.toThrow(/openai\/embeddings.*503/i);
+    expect(global.fetch).toHaveBeenCalledTimes(4); // 1 initial + 3 retries
+  }, 10000);
 });
 
 describe('OpenWebUiClient.showModel', () => {

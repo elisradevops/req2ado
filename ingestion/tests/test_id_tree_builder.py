@@ -268,7 +268,7 @@ def _epic_feature_requirement_nodes():
 
 def test_apply_parent_summary_pass_replaces_verbatim_title_and_gives_a_distinct_description() -> None:
     class FakeParentSummaryClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {
                 node_id: {"title": f"Synthesized: {entry['title']}", "description": "A synthesized capability summary."}
                 for node_id, entry in nodes_by_id.items()
@@ -298,7 +298,7 @@ def test_apply_parent_summary_pass_recomputes_grounding_score_against_descendant
     # bug, mirroring the same one already fixed in _apply_synthesis_pass),
     # it would stay at 1.0 regardless of this mismatch.
     class FakeParentSummaryClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {
                 node_id: {"title": f"Synthesized: {entry['title']}", "description": "A synthesized capability summary."}
                 for node_id, entry in nodes_by_id.items()
@@ -332,7 +332,7 @@ def test_apply_parent_summary_pass_preserves_already_embedded_table_content_but_
     # independently of this text, via node.figure_ids alone), so there is
     # nothing here for this pass to preserve.
     class FakeParentSummaryClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {
                 node_id: {"title": entry["title"], "description": "A synthesized capability summary."}
                 for node_id, entry in nodes_by_id.items()
@@ -379,7 +379,7 @@ def test_apply_parent_summary_pass_grounding_score_is_not_deflated_by_reembedded
     summary_text = "The system shall clamp input over 28V."
 
     class FakeParentSummaryClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             return {node_id: {"title": entry["title"], "description": summary_text} for node_id, entry in nodes_by_id.items()}
 
     nodes_without_table = _epic_feature_requirement_nodes()
@@ -429,7 +429,7 @@ def test_apply_parent_summary_pass_sees_a_nested_sub_requirement_not_just_the_di
     seen_payloads: list[dict] = []
 
     class RecordingClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             seen_payloads.append(nodes_by_id[epic.local_id])
             return {node_id: {"title": "Synthesized Epic", "description": "Covers mode A."} for node_id in nodes_by_id}
 
@@ -462,7 +462,7 @@ def test_apply_parent_summary_pass_gives_each_nested_epic_its_own_full_rollup_in
     seen_payloads: dict[str, dict] = {}
 
     class RecordingClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             seen_payloads.update(nodes_by_id)
             return {node_id: {"title": f"Synthesized {node_id}", "description": "A rollup summary."} for node_id in nodes_by_id}
 
@@ -499,7 +499,7 @@ def test_apply_parent_summary_pass_splits_by_token_budget_without_dropping_any_p
     call_count = 0
 
     class RecordingClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             nonlocal call_count
             call_count += 1
             return {node_id: {"title": f"Synthesized {node_id}", "description": "A rollup summary."} for node_id in nodes_by_id}
@@ -531,7 +531,7 @@ def test_apply_parent_summary_pass_never_splits_a_single_oversized_parent_it_jus
     seen: list[dict] = []
 
     class RecordingClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             seen.append(nodes_by_id)
             return {node_id: {"title": "Synthesized", "description": "A rollup summary."} for node_id in nodes_by_id}
 
@@ -544,7 +544,7 @@ def test_apply_parent_summary_pass_never_splits_a_single_oversized_parent_it_jus
 
 def test_apply_parent_summary_pass_is_fail_open() -> None:
     class RaisingClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             raise RuntimeError("boom")
 
     nodes = _epic_feature_requirement_nodes()
@@ -565,7 +565,7 @@ def test_apply_parent_summary_pass_fires_chunk_warning_alongside_the_appended_wa
     # LIVE (via progress_callback), not just in the final post-completion
     # warnings list -- both must carry the SAME message.
     class RaisingClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             raise RuntimeError("boom")
 
     nodes = _epic_feature_requirement_nodes()
@@ -582,7 +582,7 @@ def test_apply_parent_summary_pass_fires_chunk_warning_alongside_the_appended_wa
 
 def test_apply_parent_summary_pass_no_op_when_no_parent_ids() -> None:
     class RaisingIfCalledClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             raise AssertionError("must not be called when parent_node_ids is empty")
 
     nodes = _epic_feature_requirement_nodes()
@@ -593,7 +593,7 @@ def test_apply_parent_summary_pass_no_op_when_no_parent_ids() -> None:
 
 def test_build_hierarchy_subtree_title_tag_client_is_fail_open() -> None:
     class RaisingClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             raise RuntimeError("boom")
 
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
@@ -605,7 +605,7 @@ def test_build_hierarchy_subtree_title_tag_client_is_fail_open() -> None:
 
 def test_build_hierarchy_subtree_title_tag_failure_fires_chunk_warning() -> None:
     class RaisingClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             raise RuntimeError("boom")
 
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
@@ -619,7 +619,7 @@ def test_build_hierarchy_subtree_title_tag_failure_fires_chunk_warning() -> None
 
 def test_build_hierarchy_subtree_synthesizes_a_flagged_fragment_leaf() -> None:
     class FakeSynthesisClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             return {
                 node_id: {
                     "title": "COTS power supply form factor",
@@ -655,7 +655,7 @@ def test_build_hierarchy_subtree_grounding_score_is_not_trivially_1_for_unrelate
     # implementation and passes after it -- not just exercising the pass in
     # general.
     class FakeSynthesisClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             return {
                 node_id: {
                     "title": "לוח זמנים",
@@ -685,7 +685,7 @@ def test_build_hierarchy_subtree_never_tags_a_non_requirement_synthesized_leaf()
     # calling order, so this constructs the case directly rather than
     # relying on a specific upstream sequence to produce it.
     class FakeSynthesisClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             return {
                 node_id: {
                     "title": "Power Supply",
@@ -708,7 +708,7 @@ def test_build_hierarchy_subtree_never_tags_a_non_requirement_synthesized_leaf()
 
 def test_build_hierarchy_subtree_synthesis_is_fail_open() -> None:
     class RaisingSynthesisClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             raise RuntimeError("boom")
 
     rows = [_row('Size: 3U 1"', "Requirement", None, "1", needs_synthesis=True)]
@@ -722,7 +722,7 @@ def test_build_hierarchy_subtree_synthesis_is_fail_open() -> None:
 
 def test_build_hierarchy_subtree_synthesis_failure_fires_chunk_warning() -> None:
     class RaisingSynthesisClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             raise RuntimeError("boom")
 
     rows = [_row('Size: 3U 1"', "Requirement", None, "1", needs_synthesis=True)]
@@ -744,7 +744,7 @@ def test_build_hierarchy_subtree_never_synthesizes_a_non_flagged_leaf() -> None:
         def __init__(self):
             self.called = False
 
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             self.called = True
             return {}
 
@@ -763,7 +763,7 @@ def test_build_hierarchy_subtree_fires_progress_before_the_title_tag_chunk() -> 
     # Heading hierarchy)" for 5+ minutes with zero further signal. Firing
     # per CHUNK here, using the subtree label as a prefix, closes that.
     class FakeTitleTagClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             return {}
 
     rows = [_row("The system shall do A.", "Requirement", None, "1", has_shall=True)]
@@ -783,7 +783,7 @@ def test_build_hierarchy_subtree_fires_progress_before_the_title_tag_chunk() -> 
 
 def test_build_hierarchy_subtree_fires_progress_before_the_synthesis_chunk() -> None:
     class FakeSynthesisClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             return {}
 
     rows = [_row('Size: 3U 1"', "Requirement", None, "1", needs_synthesis=True)]
@@ -810,7 +810,7 @@ def test_build_hierarchy_subtree_fires_one_progress_event_per_chunk_not_per_subt
     # just once for the whole subtree regardless of how many chunks it
     # actually takes.
     class FakeTitleTagClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             return {}
 
     rows = [
@@ -929,7 +929,7 @@ def test_apply_title_tag_pass_runs_chunks_concurrently() -> None:
     lock = threading.Lock()
 
     class ThreadRecordingClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             with lock:
                 seen.add(threading.current_thread().name)
             time.sleep(0.05)  # long enough that a serial run could only use one thread
@@ -952,7 +952,7 @@ def test_apply_title_tag_pass_output_is_identical_serial_vs_concurrent() -> None
         """Chunk 0 is deliberately slowed so a later chunk genuinely
         completes first -- output must not notice."""
 
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             if "det0_1" in texts_by_row_id:
                 time.sleep(0.2)
             return {
@@ -978,7 +978,7 @@ def test_apply_title_tag_pass_narrates_chunks_in_document_order_under_concurrenc
     from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
 
     class SlowFirstChunkClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             if "det0_1" in texts_by_row_id:
                 time.sleep(0.2)
             return {node_id: {"title": "T", "tags": []} for node_id in texts_by_row_id}
@@ -1018,7 +1018,7 @@ def test_apply_title_tag_pass_narrates_each_chunk_immediately_before_its_own_cal
     trace: list[str] = []
 
     class TracingClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             trace.append("CALL")
             return {node_id: {"title": "T", "tags": []} for node_id in texts_by_row_id}
 
@@ -1037,7 +1037,7 @@ def test_apply_title_tag_pass_one_failing_chunk_still_applies_the_others_under_c
     from app.leveling.id_tree_builder import _apply_title_tag_pass, build_hierarchy_subtree
 
     class SecondChunkRaisesClient:
-        def title_and_tags_for_rows(self, texts_by_row_id):
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
             if "det0_151" in texts_by_row_id:
                 raise RuntimeError("boom")
             return {node_id: {"title": "Enhanced", "tags": []} for node_id in texts_by_row_id}
@@ -1070,7 +1070,7 @@ def test_apply_synthesis_pass_runs_chunks_concurrently() -> None:
     lock = threading.Lock()
 
     class ThreadRecordingClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             with lock:
                 seen.add(threading.current_thread().name)
             time.sleep(0.05)
@@ -1091,7 +1091,7 @@ def test_apply_synthesis_pass_output_is_identical_serial_vs_concurrent() -> None
     from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
 
     class OrderSensitiveClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             if "det0_1" in items_by_id:
                 time.sleep(0.2)
             return {
@@ -1120,7 +1120,7 @@ def test_apply_synthesis_pass_narrates_chunks_in_document_order_under_concurrenc
     from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
 
     class SlowFirstChunkClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             if "det0_1" in items_by_id:
                 time.sleep(0.2)
             return {node_id: {"text": "The system shall X."} for node_id in items_by_id}
@@ -1146,7 +1146,7 @@ def test_apply_synthesis_pass_narrates_each_chunk_immediately_before_its_own_cal
     trace: list[str] = []
 
     class TracingClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             trace.append("CALL")
             return {node_id: {"text": "The system shall X."} for node_id in items_by_id}
 
@@ -1173,7 +1173,7 @@ def test_apply_synthesis_pass_context_is_built_from_pre_pass_titles_not_a_prior_
     captured: list[dict] = []
 
     class RecordingClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             captured.append(dict(items_by_id))
             return {node_id: {"text": "The system shall X.", "title": "REWRITTEN"} for node_id in items_by_id}
 
@@ -1204,7 +1204,7 @@ def test_apply_synthesis_pass_one_failing_chunk_still_applies_the_others_under_c
     from app.leveling.id_tree_builder import _apply_synthesis_pass, build_hierarchy_subtree
 
     class SecondChunkRaisesClient:
-        def synthesize_leaf_requirements(self, items_by_id):
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
             if "det0_151" in items_by_id:
                 raise RuntimeError("boom")
             return {node_id: {"text": "The system shall X."} for node_id in items_by_id}
@@ -1255,7 +1255,7 @@ def test_apply_parent_summary_pass_runs_chunks_concurrently() -> None:
     lock = threading.Lock()
 
     class ThreadRecordingClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             with lock:
                 seen.add(threading.current_thread().name)
             time.sleep(0.05)
@@ -1276,7 +1276,7 @@ def test_apply_parent_summary_pass_output_is_identical_serial_vs_concurrent() ->
     from app.leveling.id_tree_builder import _apply_parent_summary_pass
 
     class OrderSensitiveClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             if "det0_1" in nodes_by_id:
                 time.sleep(0.2)
             return {
@@ -1305,7 +1305,7 @@ def test_apply_parent_summary_pass_one_failing_chunk_still_applies_the_others_un
     first_id = feature_ids[0]
 
     class FirstChunkRaisesClient:
-        def summarize_parent_nodes(self, nodes_by_id):
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
             if first_id in nodes_by_id:
                 raise RuntimeError("boom")
             return {node_id: {"title": "T", "description": "D"} for node_id in nodes_by_id}

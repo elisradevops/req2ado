@@ -81,7 +81,7 @@ describe('runPipelineJob', () => {
 
     // Trailing undefined is ocrLanguages (deps has no ocrLanguages set here)
     // -- see the dedicated NEW-04 test below for the real-value case.
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined);
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, undefined);
     expect(fakeIngestionClient.level).toHaveBeenCalledWith({ blocks: [{ id: 'b0' }] }, 'baseline', undefined, [], 'gemma4:12b', 'job-1', undefined);
     expect(result).toEqual([{ localId: 'n0', action: 'create', existingAdoId: null }]);
   });
@@ -107,7 +107,30 @@ describe('runPipelineJob', () => {
       },
     );
 
-    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, 'heb+eng');
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, 'heb+eng', undefined);
+  });
+
+  it("forwards job.userId to ingestionClient.ingest as the 8th argument, so figure-vision captioning during /ingest resolves the submitting user's own Open WebUI connection", async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from('text'), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, 'user-1');
   });
 
   it('throws when a node has neither identity_hash nor fidelity_hash (cannot compute a stable sourceHash)', async () => {
@@ -1108,7 +1131,36 @@ describe('runPipelineJob', () => {
     await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
     // 4th arg (dedupThreshold) is undefined here since deps has no
     // settingsService -- see the dedicated Settings-threshold tests below.
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined);
+    // 5th arg (userId) is undefined since this job's userId is null.
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, undefined);
+  });
+
+  it("forwards job.userId to ingestionClient.checkDuplicate as the 5th argument, so the dedup tie-break LLM judge resolves the submitting user's own Open WebUI connection", async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+    fakeIngestionClient.level.mockResolvedValue({
+      nodes: [{ local_id: 'n0', fidelity_hash: 'hashA', customer_id: 'CUST-1' }],
+    });
+    fakeDryRunService.diff.mockResolvedValue([]);
+    fakeIngestionClient.checkDuplicate.mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
+    await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, 'user-1');
   });
 
   it('fetches the live dedup threshold from settingsService once per job and forwards it to checkDuplicate', async () => {
@@ -1139,7 +1191,7 @@ describe('runPipelineJob', () => {
     expect(fakeSettingsService.get).toHaveBeenCalledTimes(1);
     const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
     await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', 0.75);
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', 0.75, undefined);
   });
 
   it('fails open (no dedup threshold override, no job failure) when settingsService.get() rejects', async () => {
@@ -1169,7 +1221,7 @@ describe('runPipelineJob', () => {
 
     const dedupCheckArg = fakeDryRunService.diff.mock.calls[0][2];
     await dedupCheckArg('Desc 0', 'Title 0', 'Project\\Area1');
-    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined);
+    expect(fakeIngestionClient.checkDuplicate).toHaveBeenCalledWith('Desc 0', 'Title 0', 'Project\\Area1', undefined, undefined);
   });
 
   it('always supplies the dedupCheck callback -- deciding whether a work item already exists is a required step, not opt-in (WID 300567: the followUp flag itself was removed as dead)', async () => {

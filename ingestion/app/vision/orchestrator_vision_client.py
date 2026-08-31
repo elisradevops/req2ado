@@ -225,7 +225,11 @@ class OrchestratorVisionClient:
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
     def describe_figure(
-        self, image_bytes: bytes, mime_type: str | None = None, document_context: str | None = None
+        self,
+        image_bytes: bytes,
+        mime_type: str | None = None,
+        document_context: str | None = None,
+        user_id: str | None = None,
     ) -> FigureVisionResult | None:
         """`mime_type` (e.g. 'image/jpeg'), when supplied, tells the
         orchestrator's real content-type instead of its pre-existing
@@ -233,7 +237,15 @@ class OrchestratorVisionClient:
         document AI primer, see pipeline.worker.ts) lets significance be
         judged relative to THIS document, not just in visual isolation --
         omitted (None) produces a figure-only prompt, unchanged from before
-        this parameter existed."""
+        this parameter existed. `user_id` -- the orchestrator now requires
+        an X-Req2Ado-User-Id header identifying which user's vaulted Open
+        WebUI credential to use (no shared/global fallback credential
+        exists any more); a request with a valid bearer token but a
+        missing/unknown header is rejected with 401. Omitted from the
+        header entirely when falsy, never sent as an empty string."""
+        headers = {"Authorization": f"Bearer {self._bearer_token}"}
+        if user_id:
+            headers["X-Req2Ado-User-Id"] = user_id
         with httpx.Client(transport=self._transport, timeout=_VISION_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/vision",
@@ -243,7 +255,7 @@ class OrchestratorVisionClient:
                     "responseSchema": {"name": "figure_significance", "schema": _FIGURE_SIGNIFICANCE_SCHEMA},
                     **({"mimeType": mime_type} if mime_type else {}),
                 },
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
+                headers=headers,
             )
         response.raise_for_status()
         return _parse_figure_response(response.json()["description"])

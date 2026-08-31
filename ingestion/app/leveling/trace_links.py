@@ -56,7 +56,11 @@ class TraceLinkInferenceClient(Protocol):
     dropped by build_survey_tree, never trusted blind."""
 
     def infer_trace_links(
-        self, nodes: list[dict], link_type_catalog: list[dict], kb_context: str | None = None
+        self,
+        nodes: list[dict],
+        link_type_catalog: list[dict],
+        kb_context: str | None = None,
+        user_id: str | None = None,
     ) -> list[dict]: ...
 
 
@@ -70,6 +74,7 @@ def _infer_trace_links_for_nodes(
     branch_count: int,
     debug_capture: "DebugCapture | None" = None,
     kb_context: str | None = None,
+    user_id: str | None = None,
 ) -> list[TraceLink]:
     """Whole-tree trace-link inference, shared by both the LLM-analysis path
     (build_survey_tree's own main body) and the pure-deterministic guard
@@ -121,7 +126,7 @@ def _infer_trace_links_for_nodes(
     # (_resolve_kb_citations) above -- trace links degrade to [], not
     # the whole job.
     try:
-        raw_links = link_type_client.infer_trace_links(llm_nodes, catalog, kb_context=kb_context)
+        raw_links = link_type_client.infer_trace_links(llm_nodes, catalog, kb_context=kb_context, user_id=user_id)
     except ValueError as exc:
         logger.warning("Trace-link inference failed: %s", exc)
         if debug_capture is not None:

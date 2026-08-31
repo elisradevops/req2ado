@@ -90,7 +90,9 @@ class TitleTagClient(Protocol):
     call-per-node design is both slower and worse than one call per whole
     unit of work (see SectionAnalysisClient's own docstring history)."""
 
-    def title_and_tags_for_rows(self, texts_by_row_id: dict[str, str]) -> dict[str, dict]: ...
+    def title_and_tags_for_rows(
+        self, texts_by_row_id: dict[str, str], user_id: str | None = None,
+    ) -> dict[str, dict]: ...
 
 
 _TITLE_TAG_CHUNK_SIZE = 150
@@ -111,6 +113,7 @@ def _apply_title_tag_pass(
     # is the byte-identical previous behavior: one chunk at a time, on the
     # calling thread, with no ThreadPoolExecutor constructed at all.
     chunk_concurrency: int = 1,
+    user_id: str | None = None,
 ) -> None:
     """Fail-open: any exception leaves every node's deterministic title
     and empty tags exactly as constructed -- the batched call is a pure
@@ -193,7 +196,7 @@ def _apply_title_tag_pass(
     # call. No mutation, no warning append, no narration inside the worker.
     outcomes = run_chunks_bounded(
         chunk_payloads,
-        lambda texts_by_id: title_tag_client.title_and_tags_for_rows(texts_by_id),
+        lambda texts_by_id: title_tag_client.title_and_tags_for_rows(texts_by_id, user_id=user_id),
         chunk_concurrency,
     )
 
@@ -281,7 +284,9 @@ class ParentSummaryClient(Protocol):
     (not per node), same "one call per whole unit of work" principle as
     TitleTagClient."""
 
-    def summarize_parent_nodes(self, nodes_by_id: dict[str, dict]) -> dict[str, dict]: ...
+    def summarize_parent_nodes(
+        self, nodes_by_id: dict[str, dict], user_id: str | None = None,
+    ) -> dict[str, dict]: ...
 
 
 _PARENT_SUMMARY_CHUNK_SIZE = 150
@@ -367,6 +372,7 @@ def _apply_parent_summary_pass(
     # is the byte-identical previous behavior: one chunk at a time, on the
     # calling thread, with no ThreadPoolExecutor constructed at all.
     chunk_concurrency: int = 1,
+    user_id: str | None = None,
 ) -> None:
     """Fail-open, same convention as `_apply_title_tag_pass`/
     `_apply_synthesis_pass`: any exception or missing/malformed response
@@ -448,7 +454,7 @@ def _apply_parent_summary_pass(
     # PHASE 2 -- only the client call leaves the calling thread.
     outcomes = run_chunks_bounded(
         chunk_payloads,
-        lambda nodes_by_id_payload: client.summarize_parent_nodes(nodes_by_id_payload),
+        lambda nodes_by_id_payload: client.summarize_parent_nodes(nodes_by_id_payload, user_id=user_id),
         chunk_concurrency,
     )
 
@@ -580,7 +586,9 @@ class SynthesisClient(Protocol):
     to before this capability existed: a flagged leaf keeps its raw,
     verbatim source text exactly as constructed."""
 
-    def synthesize_leaf_requirements(self, items_by_id: dict[str, dict]) -> dict[str, dict]: ...
+    def synthesize_leaf_requirements(
+        self, items_by_id: dict[str, dict], user_id: str | None = None,
+    ) -> dict[str, dict]: ...
 
 
 _SYNTHESIS_CHUNK_SIZE = 150
@@ -600,6 +608,7 @@ def _apply_synthesis_pass(
     # is the byte-identical previous behavior: one chunk at a time, on the
     # calling thread, with no ThreadPoolExecutor constructed at all.
     chunk_concurrency: int = 1,
+    user_id: str | None = None,
 ) -> None:
     """Fail-open, same convention as `_apply_title_tag_pass`: any exception
     or malformed/partial response leaves a flagged node's verbatim
@@ -703,7 +712,7 @@ def _apply_synthesis_pass(
     # PHASE 2 -- only the client call leaves the calling thread.
     outcomes = run_chunks_bounded(
         chunk_payloads,
-        lambda items_by_id: synthesis_client.synthesize_leaf_requirements(items_by_id),
+        lambda items_by_id: synthesis_client.synthesize_leaf_requirements(items_by_id, user_id=user_id),
         chunk_concurrency,
     )
 
@@ -806,6 +815,7 @@ def build_hierarchy_subtree(
     # below -- see app.config.Settings.survey_chunk_concurrency. 1 (the
     # default) is the byte-identical previous behavior.
     chunk_concurrency: int = 1,
+    user_id: str | None = None,
 ) -> tuple[list[WorkItemNode], list[IntegrityWarning]]:
     """Constructs real WorkItemNodes from an already-hierarchy-resolved
     `rows` list (see `id_hierarchy.HierarchyRow`'s own docstring -- every
@@ -1030,7 +1040,7 @@ def build_hierarchy_subtree(
             nodes, synthesis_leaf_ids, synthesis_client, warnings,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label_prefix=subtree_label,
-            chunk_concurrency=chunk_concurrency,
+            chunk_concurrency=chunk_concurrency, user_id=user_id,
         )
         synthesized_ids = set(synthesis_leaf_ids)
 
@@ -1040,7 +1050,7 @@ def build_hierarchy_subtree(
             nodes, leaf_node_ids, title_tag_client, warnings,
             progress_callback=progress_callback, subtree_index=subtree_index,
             subtree_count=subtree_count, subtree_label_prefix=subtree_label,
-            chunk_concurrency=chunk_concurrency,
+            chunk_concurrency=chunk_concurrency, user_id=user_id,
         )
 
     # parent_summary_client (Epic/Feature title+description enhancement) is

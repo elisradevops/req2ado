@@ -33,7 +33,7 @@ def test_captioning_runs_figures_concurrently(monkeypatch) -> None:
     lock = threading.Lock()
 
     class _ThreadRecordingVisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             with lock:
                 seen.add(threading.current_thread().name)
             time.sleep(0.05)
@@ -64,7 +64,7 @@ def test_captioning_never_exceeds_the_configured_concurrency(monkeypatch) -> Non
     lock = threading.Lock()
 
     class _CountingVisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             nonlocal in_flight, max_in_flight
             with lock:
                 in_flight += 1
@@ -97,7 +97,7 @@ def test_captioning_output_is_identical_serial_vs_concurrent(monkeypatch) -> Non
         def __init__(self) -> None:
             self._first_seen: bytes | None = None
 
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             if self._first_seen is None:
                 self._first_seen = image_bytes
             if image_bytes == self._first_seen:
@@ -139,7 +139,7 @@ def test_captioning_narrates_figures_in_document_order_under_concurrency(monkeyp
         def __init__(self) -> None:
             self._first_seen: bytes | None = None
 
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             if self._first_seen is None:
                 self._first_seen = image_bytes
             if image_bytes == self._first_seen:
@@ -182,7 +182,7 @@ def test_a_raising_vision_call_leaves_one_figure_uncaptioned(monkeypatch, concur
     import app.main as main_module
 
     class _RaisingVisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             raise RuntimeError("vision service is down")
 
     monkeypatch.setattr(main_module, "_vision_client", _RaisingVisionClient())
@@ -219,7 +219,7 @@ def test_figure_narration_stream_is_incremental_and_monotonic(monkeypatch, concu
         def __init__(self) -> None:
             self._first_seen: bytes | None = None
 
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             if self._first_seen is None:
                 self._first_seen = image_bytes
             if image_bytes == self._first_seen:
@@ -259,7 +259,7 @@ def test_storage_failures_are_recorded_in_figure_id_order_under_concurrency(monk
     import app.main as main_module
 
     class _VisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _AlwaysFailingFigureFileClient:
@@ -292,7 +292,7 @@ def test_figure_bytes_are_still_rasterized_exactly_once_per_figure_under_concurr
     import app.main as main_module
 
     class _VisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _FigureFileClient:
@@ -332,7 +332,7 @@ def test_figure_count_narration_is_the_exact_collected_count(monkeypatch) -> Non
     published: list = []
 
     class _VisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             return FigureVisionResult(significant=True, description="a real caption")
 
     class _RecordingNarrationPublisher:
@@ -371,7 +371,7 @@ def test_a_vision_active_docx_is_parsed_exactly_once(monkeypatch) -> None:
         return original_dispatch(filename, path, **kwargs)
 
     class _VisionClient:
-        def describe_figure(self, image_bytes, mime_type=None, document_context=None):
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
             return FigureVisionResult(significant=True, description="a real caption")
 
     monkeypatch.setattr(main_module, "dispatch_by_extension", counting_dispatch)

@@ -8,7 +8,7 @@ class FakeTitleDistillationClient:
     used in production -- see test_llm_leveling.py for the smart-title
     fallback's own gate/wiring tests."""
 
-    def distill_title(self, text: str, max_length: int) -> str:
+    def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
         assert max_length == 256
         return "Physical robustness"
 
@@ -18,7 +18,7 @@ class MisbehavingTitleDistillationClient:
     distill_survey_title's defensive re-truncation actually protects the
     schema's title max_length=256 constraint regardless of client behavior."""
 
-    def distill_title(self, text: str, max_length: int) -> str:
+    def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
         return "A" * 500
 
 
@@ -34,7 +34,7 @@ def test_distill_survey_title_enforces_max_length_even_if_client_ignores_it() ->
 
 def test_distill_survey_title_respects_a_custom_max_length() -> None:
     class ShortClient:
-        def distill_title(self, text: str, max_length: int) -> str:
+        def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
             assert max_length == 50
             return "A" * 100
 

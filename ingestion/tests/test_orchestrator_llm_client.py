@@ -1,5 +1,7 @@
 # ingestion/tests/test_orchestrator_llm_client.py
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -3588,3 +3590,164 @@ def test_analyze_section_ignores_the_two_skeleton_only_option_fields() -> None:
     assert "3" in system_prompt
     assert "P-SENSOR-001#" not in system_prompt
     assert "Target Handling" not in system_prompt
+
+
+# --- X-Req2Ado-User-Id threading (per-user Open WebUI credential routing) ---
+#
+# The orchestrator's /llm/chat, /llm/vision, /llm/show, /llm/embed routes now
+# require an X-Req2Ado-User-Id header identifying which user's vaulted Open
+# WebUI token/model to use -- there is no shared/global fallback credential
+# any more, and a request with a valid bearer token but a missing/unknown
+# header is rejected with 401 (see llm.controller.ts). `user_id` is threaded
+# as a per-call parameter through every public method down to _post_chat --
+# deliberately NEVER stored on `self`, since this class is constructed as a
+# module-level singleton shared across every concurrent request the process
+# handles (see main.py's _dedup_judge_client/_checklist_client). Storing it
+# on the instance would leak one user's identity into a concurrent request
+# from a different user.
+
+
+def test_score_requirements_for_document_sends_the_x_req2ado_user_id_header_when_supplied() -> None:
+    captured_headers: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_headers["value"] = request.headers.get("x-req2ado-user-id")
+        return httpx.Response(200, json={"content": json.dumps({})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"n0": "The unit shall power on."}, user_id="user-123")
+
+    assert captured_headers["value"] == "user-123"
+
+
+def test_score_requirements_for_document_omits_the_x_req2ado_user_id_header_when_not_supplied() -> None:
+    # Omitted entirely (never sent as an empty string) when user_id is None --
+    # mirrors how every other optional field in this module is conditionally
+    # included.
+    captured_headers: dict[str, bool] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_headers["present"] = "x-req2ado-user-id" in request.headers
+        return httpx.Response(200, json={"content": json.dumps({})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.score_requirements_for_document({"n0": "The unit shall power on."})
+
+    assert captured_headers["present"] is False
+
+
+def test_show_model_sends_the_x_req2ado_user_id_header_when_supplied() -> None:
+    # show_model is the one method with its own raw httpx call (not routed
+    # through _post_chat/_chat_json) -- same header-threading contract,
+    # verified separately since it builds its own headers dict.
+    captured_headers: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/llm/show"
+        captured_headers["value"] = request.headers.get("x-req2ado-user-id")
+        return httpx.Response(200, json={"contextLength": 32000, "capabilities": []})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.show_model("qwen3:4b", user_id="user-456")
+
+    assert captured_headers["value"] == "user-456"
+
+
+def test_shared_singleton_client_sends_the_correct_distinct_user_id_header_for_each_concurrent_call() -> None:
+    """The single most important regression test for the concurrency hazard
+    this task exists to close: a module-level-singleton-shaped client
+    instance (mirroring main.py's _dedup_judge_client/_checklist_client --
+    ONE OrchestratorLlmClient shared across every concurrent request the
+    process handles) must send the CORRECT, per-call user_id header for two
+    concurrent calls made with two DIFFERENT user_id values, never a value
+    leaked from the other in-flight call.
+
+    A `threading.Barrier(2)` inside the mock handler forces both requests to
+    be genuinely in-flight at the same time (both must arrive before either
+    is allowed to return) -- if `user_id` were ever stored on `self` instead
+    of threaded as a pure per-call argument, this is exactly the interleaving
+    that would expose it: thread B's `self._user_id = "user-b"` assignment
+    would race ahead of thread A's own request being built/sent, and thread
+    A's request could go out carrying thread B's identity instead of its
+    own."""
+    barrier = threading.Barrier(2)
+    captured_by_marker: dict[str, str | None] = {}
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        # The node_id doubles as this call's own marker -- lets the
+        # assertions below tie a captured header back to the specific call
+        # that produced it, regardless of which thread's request the mock
+        # transport happens to process first.
+        marker = next(iter(json.loads(body["messages"][1]["content"])))
+        # Both requests must be fully built and in-flight before either is
+        # allowed to complete -- forces genuine concurrent overlap instead of
+        # accidentally-serialized execution that would never exercise the
+        # hazard this test exists to catch.
+        barrier.wait(timeout=5)
+        with lock:
+            captured_by_marker[marker] = request.headers.get("x-req2ado-user-id")
+        return httpx.Response(200, json={"content": json.dumps({})})
+
+    # ONE shared client instance -- same module-level-singleton shape as
+    # main.py's _dedup_judge_client/_checklist_client.
+    shared_client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    shared_client._transport = httpx.MockTransport(handler)
+
+    def call_as(user_id: str) -> None:
+        shared_client.score_requirements_for_document(
+            {user_id: "requirement text"}, user_id=user_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_a = executor.submit(call_as, "user-a")
+        future_b = executor.submit(call_as, "user-b")
+        future_a.result(timeout=5)
+        future_b.result(timeout=5)
+
+    assert captured_by_marker == {"user-a": "user-a", "user-b": "user-b"}
+
+
+def test_describe_figure_sends_the_x_req2ado_user_id_header_when_supplied() -> None:
+    # Vision client: same per-call, never-on-self contract as
+    # OrchestratorLlmClient -- see this test module's own header block
+    # comment.
+    from app.vision.orchestrator_vision_client import OrchestratorVisionClient
+
+    captured_headers: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/llm/vision"
+        captured_headers["value"] = request.headers.get("x-req2ado-user-id")
+        return httpx.Response(200, json={"description": json.dumps({"significant": False, "description": ""})})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.describe_figure(b"fake-image-bytes", user_id="user-789")
+
+    assert captured_headers["value"] == "user-789"
+
+
+def test_describe_figure_omits_the_x_req2ado_user_id_header_when_not_supplied() -> None:
+    from app.vision.orchestrator_vision_client import OrchestratorVisionClient
+
+    captured_headers: dict[str, bool] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_headers["present"] = "x-req2ado-user-id" in request.headers
+        return httpx.Response(200, json={"description": json.dumps({"significant": False, "description": ""})})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.describe_figure(b"fake-image-bytes")
+
+    assert captured_headers["present"] is False

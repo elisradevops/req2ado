@@ -21,7 +21,7 @@ class ConflictJudgeClient(Protocol):
     when omitted, near-duplicate Requirements are simply never checked for
     conflict, matching pre-existing behavior exactly."""
 
-    def judge_duplicate_cluster(self, texts_by_id: dict[str, str]) -> dict: ...
+    def judge_duplicate_cluster(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict: ...
 
 
 _DUPLICATE_CLUSTER_COSINE_THRESHOLD = 0.85
@@ -44,6 +44,7 @@ def _detect_conflicting_duplicates(
     progress_callback: ProgressCallback | None = None,
     blocks_total: int = 0,
     branch_count: int = 0,
+    user_id: str | None = None,
 ) -> None:
     """Real capability gap closed here: this codebase had NO conflict/
     contradiction detection anywhere. The existing dedup vector store
@@ -186,7 +187,7 @@ def _detect_conflicting_duplicates(
         cluster_nodes = [requirement_nodes[i] for i in member_indices]
         texts_by_id = {n.local_id: n.description for n in cluster_nodes}
         try:
-            verdict_entry = conflict_client.judge_duplicate_cluster(texts_by_id)
+            verdict_entry = conflict_client.judge_duplicate_cluster(texts_by_id, user_id=user_id)
         except Exception as exc:
             logger.warning(
                 "Duplicate-cluster conflict judgment failed for %d node(s), skipping cluster: %s",

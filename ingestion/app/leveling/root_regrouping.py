@@ -24,7 +24,7 @@ class RootGroupingClient(Protocol):
     convention as every other client here) -- when omitted, disconnected
     roots are simply left as-is, matching pre-existing behavior exactly."""
 
-    def group_root_topics(self, titles_by_id: dict[str, str]) -> dict: ...
+    def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict: ...
 
     # Optional second pass (see _regroup_disconnected_roots's own call
     # site below for the full rationale): a client implementing only
@@ -34,7 +34,12 @@ class RootGroupingClient(Protocol):
     # itself. Not declared with a default/optional marker here because
     # Protocol has no such mechanism; the call site is what actually makes
     # it optional.
-    def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict: ...
+    def assign_leftover_roots(
+        self,
+        leftover_titles_by_id: dict[str, str],
+        group_titles_by_id: dict[str, str],
+        user_id: str | None = None,
+    ) -> dict: ...
 
 
 def _regroup_disconnected_roots(
@@ -46,6 +51,7 @@ def _regroup_disconnected_roots(
     blocks_total: int = 0,
     branch_count: int = 0,
     debug_capture: "DebugCapture | None" = None,
+    user_id: str | None = None,
 ) -> None:
     """Real gap closed here, confirmed against a real document (AirPro):
     77 disconnected root nodes, because the document's own Word outline
@@ -91,7 +97,7 @@ def _regroup_disconnected_roots(
             )
         )
     try:
-        result = grouping_client.group_root_topics(titles_by_id)
+        result = grouping_client.group_root_topics(titles_by_id, user_id=user_id)
     except Exception as exc:
         logger.warning("Root topical regrouping failed, leaving disconnected roots as-is: %s", exc)
         if debug_capture is not None:
@@ -197,7 +203,9 @@ def _regroup_disconnected_roots(
         leftover_titles_by_id = {leftover_id: titles_by_id[leftover_id] for leftover_id in leftover_ids}
         group_titles_by_id = {group_id: node.title for group_id, node in created_group_nodes.items()}
         try:
-            assign_result = grouping_client.assign_leftover_roots(leftover_titles_by_id, group_titles_by_id)
+            assign_result = grouping_client.assign_leftover_roots(
+                leftover_titles_by_id, group_titles_by_id, user_id=user_id,
+            )
         except Exception as exc:
             # Same fail-open contract as the first pass above -- covers a
             # real transient/parse failure AND a client that only

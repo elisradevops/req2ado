@@ -56,6 +56,7 @@ class BatchedScoringClient(Protocol):
         criteria_context: str | None = None,
         kb_context: str | None = None,
         category_checklist: list[str] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, dict]: ...
 
 
@@ -138,6 +139,7 @@ def _score_all_requirements(
     # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
     # is the byte-identical previous behavior.
     chunk_concurrency: int = 1,
+    user_id: str | None = None,
 ) -> None:
     """Whole-document quality scoring (§2c redesign): replaces the old
     one-batched-call-per-branch design with one (or, for a very large
@@ -276,7 +278,7 @@ def _score_all_requirements(
         chunk_events: list[LevelingProgress] = []
         _apply_quality_scores(
             chunk, scoring_client, chunk_warnings, "", criteria_context, kb_context, category_checklist,
-            category_checklist_definitions, progress_callback=chunk_events.append,
+            category_checklist_definitions, progress_callback=chunk_events.append, user_id=user_id,
         )
         return chunk_warnings, chunk_events
 
@@ -357,6 +359,7 @@ def _score_epics_and_features(
     # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
     # is the byte-identical previous behavior.
     chunk_concurrency: int = 1,
+    user_id: str | None = None,
 ) -> None:
     """Epic/Feature quality review -- the counterpart to
     _score_all_requirements, run separately (see
@@ -446,7 +449,9 @@ def _score_epics_and_features(
         )
 
     # PHASE 2 -- only the client call leaves the calling thread.
-    outcomes = run_chunks_bounded(payloads, lambda nodes_by_id: score_fn(nodes_by_id), chunk_concurrency)
+    outcomes = run_chunks_bounded(
+        payloads, lambda nodes_by_id: score_fn(nodes_by_id, user_id=user_id), chunk_concurrency,
+    )
 
     # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
     for kickoff_index in range(len(chunks)):
@@ -505,6 +510,7 @@ def score_single_requirement_text(
     criteria_retriever: CriteriaRetriever | None,
     kb_context: str | None,
     category_checklist: list[str] | None,
+    user_id: str | None = None,
 ) -> tuple[int | None, list[str], "QualityCategoryScores | None", "QualityConfidence | None"]:
     """CR-7d rescore: the single ad-hoc-string counterpart to
     _apply_quality_scores below, for re-judging ONE already-formalized
@@ -530,7 +536,7 @@ def score_single_requirement_text(
         criteria = criteria_retriever.retrieve(description)
         criteria_context = "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
     scores_by_id = scoring_client.score_requirements_for_document(
-        {"adhoc": description}, criteria_context, kb_context, category_checklist
+        {"adhoc": description}, criteria_context, kb_context, category_checklist, user_id=user_id,
     )
     entry = scores_by_id.get("adhoc")
     if not isinstance(entry, dict):
@@ -692,6 +698,7 @@ def _apply_quality_scores(
     category_checklist: list[str] | None = None,
     category_checklist_definitions: dict[str, str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Judges every node's FINAL formalized description in ONE batched call
     (mutates `nodes` in place -- WorkItemNode is a plain, mutable pydantic
@@ -749,7 +756,7 @@ def _apply_quality_scores(
             _CANARY_NODE_ID,
         )
     scores_by_node_id = scoring_client.score_requirements_for_document(
-        descriptions_by_node_id, criteria_context, kb_context, category_checklist
+        descriptions_by_node_id, criteria_context, kb_context, category_checklist, user_id=user_id,
     )
     if inject_canary:
         _check_scoring_canary(scores_by_node_id.pop(_CANARY_NODE_ID, None))

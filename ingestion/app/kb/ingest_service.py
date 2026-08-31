@@ -157,14 +157,14 @@ def _store_document(
     if checklist_client is not None:
         try:
             full_text = "\n\n".join(chunk.text for chunk in chunks)
-            quality_checklist = checklist_client.extract_quality_checklist(full_text)
+            quality_checklist = checklist_client.extract_quality_checklist(full_text, user_id=user_id)
         except Exception as exc:  # noqa: BLE001 - checklist extraction must never fail an ingest
             logger.warning("Quality-checklist extraction failed for %s: %s", name, exc)
             quality_checklist = None
         definitions_fn = getattr(checklist_client, "extract_quality_checklist_definitions", None)
         if quality_checklist and definitions_fn is not None:
             try:
-                quality_checklist_definitions = definitions_fn(full_text, quality_checklist)
+                quality_checklist_definitions = definitions_fn(full_text, quality_checklist, user_id=user_id)
             except Exception as exc:  # noqa: BLE001 - same "enhancement, never a hard dependency" tolerance
                 logger.warning("Quality-checklist definition extraction failed for %s: %s", name, exc)
                 quality_checklist_definitions = None

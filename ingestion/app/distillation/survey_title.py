@@ -24,15 +24,17 @@ class TitleDistillationClient(Protocol):
     title (first sentence if descriptive, else concise summary/paraphrase);
     enforce <=256.'"""
 
-    def distill_title(self, text: str, max_length: int) -> str: ...
+    def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str: ...
 
 
-def distill_survey_title(text: str, client: TitleDistillationClient, max_length: int = 256) -> str:
+def distill_survey_title(
+    text: str, client: TitleDistillationClient, max_length: int = 256, user_id: str | None = None,
+) -> str:
     """SURVEY-mode title distillation: delegates to the injected client (a
     real LLM chat call, once the orchestrator's redaction-proxy exists), then
     defensively re-truncates the result via extract_baseline_title. This
     guarantees the schema's title max_length constraint holds even if the
     client ignores the max_length it was given — never trust an external
     (eventually LLM-backed) response to self-enforce a hard limit."""
-    distilled = client.distill_title(text, max_length)
+    distilled = client.distill_title(text, max_length, user_id=user_id)
     return extract_baseline_title(distilled, max_length)

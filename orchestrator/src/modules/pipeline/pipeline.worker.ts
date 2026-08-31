@@ -582,7 +582,7 @@ export async function runPipelineJob(
     // with no data dependency on ingest, so there's no reason to pay its
     // cost serially on top of /ingest's own wall-clock time.
     const [doc] = await Promise.all([
-      deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id, primerContext, deps.ocrLanguages),
+      deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id, primerContext, deps.ocrLanguages, job.userId ?? undefined),
       maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential),
     ]);
 
@@ -908,7 +908,7 @@ export async function runPipelineJob(
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      (text, title, areaPath) => deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold),
+      (text, title, areaPath) => deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined),
       (completed, total, currentTitle) => {
         void deps.jobEventsPublisher.publishNarration(job.id, {
           phase: 'dedup_check',

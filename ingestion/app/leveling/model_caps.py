@@ -134,7 +134,7 @@ class ModelCapsClient(Protocol):
     authoritative where it exists: those numbers reflect real empirical
     coverage-quality tuning a generic derivation can't replicate)."""
 
-    def show_model(self, model: str) -> dict: ...
+    def show_model(self, model: str, user_id: str | None = None) -> dict: ...
 
 
 # Process-lifetime cache -- a live show_model() call is a real HTTP round
@@ -154,7 +154,9 @@ _LIVE_MODEL_CAPS_CACHE: dict[str, _ModelCaps] = {}
 _FRONTIER_SCALE_CONTEXT_THRESHOLD = 100_000
 
 
-def _derive_caps_from_live_lookup(model: str, caps_client: ModelCapsClient) -> _ModelCaps:
+def _derive_caps_from_live_lookup(
+    model: str, caps_client: ModelCapsClient, user_id: str | None = None,
+) -> _ModelCaps:
     """Real gap closed here: an unknown model previously got the same
     blanket `context=28_000, coverage=_COVERAGE_BUDGET_TOKENS,
     supports_tools=False` guess regardless of what it actually is. Derives
@@ -165,7 +167,7 @@ def _derive_caps_from_live_lookup(model: str, caps_client: ModelCapsClient) -> _
     malformed response) is caught by the CALLER (_resolve_caps), never
     here -- this function's job is only the derivation, not the fail-open
     fallback."""
-    info = caps_client.show_model(model)
+    info = caps_client.show_model(model, user_id=user_id)
     context_length = info.get("context_length")
     context_budget_tokens = context_length if isinstance(context_length, int) and context_length > 0 else 28_000
     capabilities = info.get("capabilities") or []
@@ -175,7 +177,9 @@ def _derive_caps_from_live_lookup(model: str, caps_client: ModelCapsClient) -> _
     return _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, context_budget_tokens, _COVERAGE_BUDGET_TOKENS, supports_tools)
 
 
-def _resolve_caps(model: str | None, caps_client: ModelCapsClient | None = None) -> _ModelCaps:
+def _resolve_caps(
+    model: str | None, caps_client: ModelCapsClient | None = None, user_id: str | None = None,
+) -> _ModelCaps:
     """Resolves a model name to its branch-size cap, context-token budget, and
     tool-calling support. Frontier models (production target, see
     build_survey_tree's docstring) get much larger caps/budgets since they run
@@ -200,7 +204,7 @@ def _resolve_caps(model: str | None, caps_client: ModelCapsClient | None = None)
     if model in _LIVE_MODEL_CAPS_CACHE:
         return _LIVE_MODEL_CAPS_CACHE[model]
     try:
-        derived = _derive_caps_from_live_lookup(model, caps_client)
+        derived = _derive_caps_from_live_lookup(model, caps_client, user_id=user_id)
     except Exception:
         return static_default
     _LIVE_MODEL_CAPS_CACHE[model] = derived

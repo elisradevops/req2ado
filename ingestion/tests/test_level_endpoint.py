@@ -347,7 +347,7 @@ def test_level_endpoint_survey_mode_passes_link_type_catalog_through(monkeypatch
     catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related"}]
     captured: dict[str, list[dict]] = {}
 
-    def fake_infer_trace_links(self, nodes, link_type_catalog, kb_context=None):
+    def fake_infer_trace_links(self, nodes, link_type_catalog, kb_context=None, user_id=None):
         captured["link_type_catalog"] = link_type_catalog
         return []
 
@@ -399,7 +399,7 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
     # was never invoked.
     captured: dict[str, list[dict]] = {}
 
-    def fake_infer_trace_links(self, nodes, link_type_catalog, kb_context=None):
+    def fake_infer_trace_links(self, nodes, link_type_catalog, kb_context=None, user_id=None):
         captured["link_type_catalog"] = link_type_catalog
         return []
 

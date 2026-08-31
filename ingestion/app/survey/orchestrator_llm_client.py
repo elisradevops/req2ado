@@ -929,7 +929,7 @@ class OrchestratorLlmClient:
         running page, without this class needing to know narration exists."""
         return self._model
 
-    def _post_chat(self, payload: dict) -> httpx.Response:
+    def _post_chat(self, payload: dict, user_id: str | None) -> httpx.Response:
         """POSTs to /llm/chat with a short, bounded retry for a transient
         backend error (429/5xx) only -- see _RETRYABLE_CHAT_STATUS_CODES'
         own module-level doc comment for why this exists and why it's safe
@@ -937,14 +937,31 @@ class OrchestratorLlmClient:
         fail-open nets rather than replacing them). Every one of this
         class's /llm/chat call sites should route through this instead of
         constructing its own httpx.Client + raw post -- callers still call
-        `.raise_for_status()` themselves afterward, unchanged."""
+        `.raise_for_status()` themselves afterward, unchanged.
+
+        `user_id` -- the orchestrator now requires an X-Req2Ado-User-Id
+        header identifying which user's vaulted Open WebUI credential to
+        use (no shared/global fallback credential exists any more); a
+        request with a valid bearer token but a missing/unknown header is
+        rejected with 401. MUST be a per-call parameter, never stored on
+        `self` -- this class is constructed as a module-level singleton
+        shared across every concurrent request the process handles (see
+        main.py's _dedup_judge_client/_checklist_client), so storing it on
+        the instance would leak one user's identity into a concurrent
+        request from a different user. Omitted from the header entirely
+        when falsy, mirroring how every other optional field in this
+        module is conditionally included -- never sent as an empty
+        string."""
         response: httpx.Response | None = None
+        headers = {"Authorization": f"Bearer {self._bearer_token}"}
+        if user_id:
+            headers["X-Req2Ado-User-Id"] = user_id
         for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
             with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
                 response = client.post(
                     f"{self._base_url}/llm/chat",
                     json=payload,
-                    headers={"Authorization": f"Bearer {self._bearer_token}"},
+                    headers=headers,
                 )
             if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
                 return response
@@ -965,6 +982,7 @@ class OrchestratorLlmClient:
         *,
         schema: dict | None = None,
         max_tokens: int = _MAX_OUTPUT_TOKENS,
+        user_id: str | None = None,
     ) -> Any:
         """Shared payload-envelope + response-parsing shape for this class's
         simple, single-shot structured-extraction calls (schema in, JSON
@@ -974,7 +992,8 @@ class OrchestratorLlmClient:
         own payload directly instead of using this -- see each of THEIR own
         docstrings for why. `schema=None` omits `responseSchema` entirely
         (see infer_trace_links's own comment on the array-schema grammar-cost
-        cliff this supports)."""
+        cliff this supports). `user_id` -- see _post_chat's own docstring;
+        forwarded straight through, never stored."""
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -990,7 +1009,7 @@ class OrchestratorLlmClient:
             **({"minP": self._min_p} if self._min_p else {}),
             **({"seed": self._seed} if self._seed is not None else {}),
         }
-        response = self._post_chat(payload)
+        response = self._post_chat(payload, user_id)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
         return _parse_json_object(content)
@@ -1000,6 +1019,7 @@ class OrchestratorLlmClient:
         nodes: list[dict],
         link_type_catalog: list[dict],
         kb_context: str | None = None,
+        user_id: str | None = None,
     ) -> list[dict]:
         sorted_catalog = sorted(link_type_catalog, key=lambda entry: not _is_native_ado_link_type(entry["reference_name"]))
         catalog_lines = "\n".join(
@@ -1026,7 +1046,7 @@ class OrchestratorLlmClient:
         # confirmed-live finding (3-10x wall-clock cost, no accuracy
         # benefit) as analyze_section/analyze_section_agentic and
         # score_requirements_for_document.
-        result = self._chat_json(system_prompt, nodes_json, schema=trace_links_schema())
+        result = self._chat_json(system_prompt, nodes_json, schema=trace_links_schema(), user_id=user_id)
         return result.get("links", []) if isinstance(result, dict) else []
 
     def score_requirements_for_document(
@@ -1035,6 +1055,7 @@ class OrchestratorLlmClient:
         criteria_context: str | None = None,
         kb_context: str | None = None,
         category_checklist: list[str] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, dict]:
         """Batched quality-scoring call: one LLM call judging every node's
         FINAL formalized description in the branch, not one call per node —
@@ -1206,7 +1227,7 @@ class OrchestratorLlmClient:
             span.set_attribute("gen_ai.request.model", self._model or "default")
             span.set_attribute("gen_ai.operation.name", "chat")
             span.set_attribute("req2ado.node_count", len(descriptions_by_node_id))
-            response = self._post_chat(payload)
+            response = self._post_chat(payload, user_id)
             elapsed_seconds = time.monotonic() - started_at
             logger.info(
                 "score_requirements_for_document: %d node(s), %d request char(s), %.1fs wall time",
@@ -1219,7 +1240,7 @@ class OrchestratorLlmClient:
             self._cache.set(key, result)
         return result
 
-    def extract_quality_checklist(self, document_text: str) -> list[str]:
+    def extract_quality_checklist(self, document_text: str, user_id: str | None = None) -> list[str]:
         """Runs ONCE per document, at KB ingestion time (see
         app.kb.ingest_service), never per scoring call -- the real fix for a
         confirmed real determinism gap (user-reported): asking the scoring
@@ -1241,7 +1262,7 @@ class OrchestratorLlmClient:
         system_prompt = load_prompt("extract_quality_checklist")
         parsed = self._chat_json(
             system_prompt, document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
-            schema=checklist_extraction_schema(), max_tokens=2000,
+            schema=checklist_extraction_schema(), max_tokens=2000, user_id=user_id,
         )
         if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
@@ -1283,7 +1304,7 @@ class OrchestratorLlmClient:
         return cleaned
 
     def extract_quality_checklist_definitions(
-        self, document_text: str, category_names: list[str],
+        self, document_text: str, category_names: list[str], user_id: str | None = None,
     ) -> dict[str, str]:
         """Best-effort SECOND extraction pass, run once at KB ingestion time
         immediately AFTER extract_quality_checklist (see
@@ -1316,7 +1337,7 @@ class OrchestratorLlmClient:
         )
         parsed = self._chat_json(
             system_prompt, document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
-            schema=checklist_definitions_schema(), max_tokens=2000,
+            schema=checklist_definitions_schema(), max_tokens=2000, user_id=user_id,
         )
         if not isinstance(parsed, dict):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
@@ -1349,7 +1370,9 @@ class OrchestratorLlmClient:
             result[canonical_name] = definition[:_CHECKLIST_DEFINITION_MAX_CHARS]
         return result
 
-    def score_epics_and_features_for_document(self, nodes_by_id: dict[str, dict]) -> dict[str, dict]:
+    def score_epics_and_features_for_document(
+        self, nodes_by_id: dict[str, dict], user_id: str | None = None,
+    ) -> dict[str, dict]:
         """Batched Epic/Feature quality review -- the counterpart to
         score_requirements_for_document, deliberately kept as a SEPARATE
         call/prompt rather than folded into it: RequirementQualityIssue's
@@ -1397,7 +1420,7 @@ class OrchestratorLlmClient:
         # score_requirements_for_document -- see its own comment.
         request_chars = len(json.dumps(payload))
         started_at = time.monotonic()
-        response = self._post_chat(payload)
+        response = self._post_chat(payload, user_id)
         elapsed_seconds = time.monotonic() - started_at
         logger.info(
             "score_epics_and_features_for_document: %d node(s), %d request char(s), "
@@ -1411,7 +1434,9 @@ class OrchestratorLlmClient:
             self._cache.set(key, result)
         return result
 
-    def title_and_tags_for_rows(self, texts_by_row_id: dict[str, str]) -> dict[str, dict]:
+    def title_and_tags_for_rows(
+        self, texts_by_row_id: dict[str, str], user_id: str | None = None,
+    ) -> dict[str, dict]:
         """Backs the TitleTagClient protocol (id_tree_builder.py) -- the
         deterministic-hierarchy path's optional per-document title/tag
         enhancement pass. Confirmed real gap: `main.py`'s /level call site
@@ -1433,9 +1458,13 @@ class OrchestratorLlmClient:
             tag_vocabulary=", ".join(t.value for t in RequirementTag),
             row_count=str(len(texts_by_row_id)),
         )
-        return self._chat_json(system_prompt, json.dumps(texts_by_row_id), schema=title_tags_schema())
+        return self._chat_json(
+            system_prompt, json.dumps(texts_by_row_id), schema=title_tags_schema(), user_id=user_id,
+        )
 
-    def summarize_parent_nodes(self, nodes_by_id: dict[str, dict]) -> dict[str, dict]:
+    def summarize_parent_nodes(
+        self, nodes_by_id: dict[str, dict], user_id: str | None = None,
+    ) -> dict[str, dict]:
         """Backs the ParentSummaryClient protocol (id_tree_builder.py) --
         the deterministic-hierarchy path's Epic/Feature title+description
         enhancement pass. Confirmed real gap, live: an Epic/Feature's
@@ -1464,9 +1493,13 @@ class OrchestratorLlmClient:
         malformed/partial response, keeping the verbatim heading title and
         description exactly as constructed."""
         system_prompt = load_prompt("summarize_parent_nodes", node_count=str(len(nodes_by_id)))
-        return self._chat_json(system_prompt, json.dumps(nodes_by_id), schema=parent_summary_schema())
+        return self._chat_json(
+            system_prompt, json.dumps(nodes_by_id), schema=parent_summary_schema(), user_id=user_id,
+        )
 
-    def synthesize_leaf_requirements(self, items_by_id: dict[str, dict]) -> dict[str, dict]:
+    def synthesize_leaf_requirements(
+        self, items_by_id: dict[str, dict], user_id: str | None = None,
+    ) -> dict[str, dict]:
         """Backs the SynthesisClient protocol (id_tree_builder.py) -- the
         actual quality fix for the deterministic-hierarchy path's
         fragment-as-requirement problem (confirmed real, live: raw
@@ -1493,9 +1526,11 @@ class OrchestratorLlmClient:
             tag_vocabulary=", ".join(t.value for t in RequirementTag),
             row_count=str(len(items_by_id)),
         )
-        return self._chat_json(system_prompt, json.dumps(items_by_id), schema=synthesis_schema())
+        return self._chat_json(
+            system_prompt, json.dumps(items_by_id), schema=synthesis_schema(), user_id=user_id,
+        )
 
-    def distill_title(self, text: str, max_length: int) -> str:
+    def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
         """Backs the TitleDistillationClient protocol
         (distillation/survey_title.py) -- 300553's smart-title fallback.
         `max_length` is included in the prompt as a hint, but never trusted
@@ -1506,10 +1541,13 @@ class OrchestratorLlmClient:
         system_prompt = load_prompt("distill_survey_title")
         parsed = self._chat_json(
             system_prompt, json.dumps({"text": text, "maxLength": max_length}), schema=distill_title_schema(),
+            user_id=user_id,
         )
         return parsed["title"]
 
-    def judge_duplicate_pair(self, candidate_text: str, matched_text: str) -> dict:
+    def judge_duplicate_pair(
+        self, candidate_text: str, matched_text: str, user_id: str | None = None,
+    ) -> dict:
         """Backs the DuplicateJudgeClient protocol
         (check_for_duplicates.py) -- verifies a >=threshold embedding
         match against ADO's own vector store before trusting it as a real
@@ -1528,10 +1566,10 @@ class OrchestratorLlmClient:
         system_prompt = load_prompt("judge_duplicate_pair")
         return self._chat_json(
             system_prompt, json.dumps({"candidate": candidate_text, "existing": matched_text}),
-            schema=duplicate_pair_verdict_schema(),
+            schema=duplicate_pair_verdict_schema(), user_id=user_id,
         )
 
-    def judge_duplicate_cluster(self, texts_by_id: dict[str, str]) -> dict:
+    def judge_duplicate_cluster(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict:
         """Backs the ConflictJudgeClient protocol (llm_leveling.py) --
         real capability gap closed here: this codebase had NO
         conflict/contradiction detection anywhere. The existing dedup
@@ -1553,9 +1591,11 @@ class OrchestratorLlmClient:
         case this exists to catch), 'distinct' means the similarity match
         was a false positive (genuinely different requirements)."""
         system_prompt = load_prompt("judge_duplicate_cluster")
-        return self._chat_json(system_prompt, json.dumps(texts_by_id), schema=duplicate_cluster_verdict_schema())
+        return self._chat_json(
+            system_prompt, json.dumps(texts_by_id), schema=duplicate_cluster_verdict_schema(), user_id=user_id,
+        )
 
-    def group_root_topics(self, titles_by_id: dict[str, str]) -> dict:
+    def group_root_topics(self, titles_by_id: dict[str, str], user_id: str | None = None) -> dict:
         """Backs the RootGroupingClient protocol (llm_leveling.py) -- real
         gap closed here, confirmed against a real document (AirPro): a
         deterministically-built tree with no single top heading produced
@@ -1577,9 +1617,16 @@ class OrchestratorLlmClient:
         both valid answers when that's genuinely what the topics call
         for."""
         system_prompt = load_prompt("group_root_topics")
-        return self._chat_json(system_prompt, json.dumps(titles_by_id), schema=root_grouping_schema())
+        return self._chat_json(
+            system_prompt, json.dumps(titles_by_id), schema=root_grouping_schema(), user_id=user_id,
+        )
 
-    def assign_leftover_roots(self, leftover_titles_by_id: dict[str, str], group_titles_by_id: dict[str, str]) -> dict:
+    def assign_leftover_roots(
+        self,
+        leftover_titles_by_id: dict[str, str],
+        group_titles_by_id: dict[str, str],
+        user_id: str | None = None,
+    ) -> dict:
         """Backs the RootGroupingClient protocol's second, optional method
         (llm_leveling.py) -- closes a real gap found in group_root_topics'
         own commit history: a controlled test (v1 -> v2 prompt change)
@@ -1604,10 +1651,10 @@ class OrchestratorLlmClient:
         system_prompt = load_prompt("assign_leftover_roots")
         return self._chat_json(
             system_prompt, json.dumps({"leftovers": leftover_titles_by_id, "groups": group_titles_by_id}),
-            schema=leftover_assignment_schema(),
+            schema=leftover_assignment_schema(), user_id=user_id,
         )
 
-    def show_model(self, model: str) -> dict:
+    def show_model(self, model: str, user_id: str | None = None) -> dict:
         """Backs the ModelCapsClient protocol (llm_leveling.py) -- a live
         Ollama /api/show lookup, proxied through the orchestrator's own
         /llm/show route (OpenWebUiClient.showModel), for a model NOT
@@ -1627,17 +1674,22 @@ class OrchestratorLlmClient:
         all; `_resolve_caps` (the sole caller) already fails open on any
         exception this raises, so this method itself stays a thin,
         undecorated passthrough."""
+        headers = {"Authorization": f"Bearer {self._bearer_token}"}
+        if user_id:
+            headers["X-Req2Ado-User-Id"] = user_id
         with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
             response = client.post(
                 f"{self._base_url}/llm/show",
                 json={"model": model},
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
+                headers=headers,
             )
         response.raise_for_status()
         body = response.json()
         return {"context_length": body.get("contextLength"), "capabilities": body.get("capabilities") or []}
 
-    def judge_kb_relevance(self, branch_content: str, snippets: list[dict]) -> dict[str, str]:
+    def judge_kb_relevance(
+        self, branch_content: str, snippets: list[dict], user_id: str | None = None,
+    ) -> dict[str, str]:
         """Verifies whether each KB snippet OFFERED to a branch's grounded
         calls was actually relevant to that branch's real content -- being
         above the retrieval similarity cutoff and pasted into a prompt
@@ -1669,6 +1721,7 @@ class OrchestratorLlmClient:
             system_prompt,
             json.dumps({"section_content": branch_content, "snippets": snippets_by_index}),
             schema=kb_relevance_schema(),
+            user_id=user_id,
         )
 
     def analyze_section(
@@ -1677,6 +1730,7 @@ class OrchestratorLlmClient:
         kb_context: str | None = None,
         *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
         """Single holistic SURVEY call replacing the old infer_hierarchy +
         generate_requirements_for_document pair for the whole-tree-in-one-call
@@ -1787,7 +1841,7 @@ class OrchestratorLlmClient:
         with _tracer.start_as_current_span("analyze_section") as span:
             span.set_attribute("gen_ai.request.model", self._model or "default")
             span.set_attribute("gen_ai.operation.name", "chat")
-            response = self._post_chat(payload)
+            response = self._post_chat(payload, user_id)
             response.raise_for_status()
             body = response.json()
             content = _strip_json_fence(body["content"])
@@ -1815,6 +1869,7 @@ class OrchestratorLlmClient:
         read_other_section_fn: Callable[[str], str | None] | None = None,
         *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
         """Tool-calling variant of analyze_section for models that support it
         (see §5c's capability gate) -- the model actively pulls KB context via
@@ -1862,7 +1917,7 @@ class OrchestratorLlmClient:
         content, truncated, rounds_exhausted = self._run_agentic_rounds(
             system_prompt, section_text, section_analysis_schema(), tools,
             retrieve_fn, list_documents_fn, read_document_fn, read_other_section_fn,
-            citations, "analyze_section_agentic",
+            citations, "analyze_section_agentic", user_id,
         )
         if content:
             nodes = _nodes_from_parsed(_parse_json_object(content))
@@ -1902,6 +1957,7 @@ class OrchestratorLlmClient:
             options=SectionAnalysisOptions(
                 whole_document=options.whole_document, topic_count=options.topic_count,
             ),
+            user_id=user_id,
         )
         return fallback_nodes, citations, fallback_truncated
 
@@ -1911,6 +1967,7 @@ class OrchestratorLlmClient:
         kb_context: str | None = None,
         *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
         """STAGE 1 of the two-stage SURVEY generation split: the STRUCTURE
         half of what analyze_section used to decide in one call. Given the
@@ -2001,7 +2058,7 @@ class OrchestratorLlmClient:
         with _tracer.start_as_current_span("analyze_section_skeleton") as span:
             span.set_attribute("gen_ai.request.model", self._model or "default")
             span.set_attribute("gen_ai.operation.name", "chat")
-            response = self._post_chat(payload)
+            response = self._post_chat(payload, user_id)
             response.raise_for_status()
             body = response.json()
             content = _strip_json_fence(body["content"])
@@ -2027,6 +2084,7 @@ class OrchestratorLlmClient:
         read_other_section_fn: Callable[[str], str | None] | None = None,
         *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], list[dict], bool]:
         """Tool-calling variant of analyze_section_skeleton, standing in the
         same relation to it that analyze_section_agentic does to
@@ -2058,7 +2116,7 @@ class OrchestratorLlmClient:
         content, truncated, rounds_exhausted = self._run_agentic_rounds(
             system_prompt, section_text, section_skeleton_schema(), tools,
             retrieve_fn, list_documents_fn, read_document_fn, read_other_section_fn,
-            citations, "analyze_section_skeleton_agentic",
+            citations, "analyze_section_skeleton_agentic", user_id,
         )
         if content:
             nodes = _nodes_from_parsed(_parse_json_object(content))
@@ -2081,7 +2139,7 @@ class OrchestratorLlmClient:
         # only two of its four hints -- a pre-existing asymmetry this
         # refactor deliberately preserves rather than silently changing).
         fallback_nodes, fallback_truncated = self.analyze_section_skeleton(
-            section_text, kb_context=None, options=options,
+            section_text, kb_context=None, options=options, user_id=user_id,
         )
         return fallback_nodes, citations, fallback_truncated
 
@@ -2090,6 +2148,7 @@ class OrchestratorLlmClient:
         section_text: str,
         skeleton_nodes: dict[str, dict],
         kb_context: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
         """STAGE 3 of the two-stage SURVEY generation split: the CONTENT
         half of what analyze_section used to decide in one call. Given the
@@ -2166,7 +2225,7 @@ class OrchestratorLlmClient:
         with _tracer.start_as_current_span("author_content") as span:
             span.set_attribute("gen_ai.request.model", self._model or "default")
             span.set_attribute("gen_ai.operation.name", "chat")
-            response = self._post_chat(payload)
+            response = self._post_chat(payload, user_id)
             response.raise_for_status()
             body = response.json()
             content = _strip_json_fence(body["content"])
@@ -2184,7 +2243,9 @@ class OrchestratorLlmClient:
             self._cache.set(key, {"content": result, "truncated": truncated})
         return result, truncated
 
-    def map_figures_tables(self, candidates: dict[str, dict], items: dict[str, dict]) -> dict[str, dict]:
+    def map_figures_tables(
+        self, candidates: dict[str, dict], items: dict[str, dict], user_id: str | None = None,
+    ) -> dict[str, dict]:
         """STAGE 2 of the two-stage SURVEY generation split: which EXACT node
         each of this document's figures/tables belongs to. Runs BETWEEN
         stage 1 (structure) and stage 3 (content) -- exact-node binding is
@@ -2264,7 +2325,7 @@ class OrchestratorLlmClient:
             span.set_attribute("gen_ai.request.model", self._model or "default")
             span.set_attribute("gen_ai.operation.name", "chat")
             span.set_attribute("gen_ai.request.item_count", len(items))
-            response = self._post_chat(payload)
+            response = self._post_chat(payload, user_id)
             response.raise_for_status()
             body = response.json()
             content = _strip_json_fence(body["content"])
@@ -2301,6 +2362,7 @@ class OrchestratorLlmClient:
         read_other_section_fn: Callable[[str], str | None] | None,
         citations: list[dict],
         label: str,
+        user_id: str | None = None,
     ) -> tuple[str | None, bool, bool]:
         """The bounded tool-calling round loop shared by every agentic
         SURVEY call (analyze_section_agentic and its skeleton counterpart) --
@@ -2367,7 +2429,7 @@ class OrchestratorLlmClient:
                 **({"minP": self._min_p} if self._min_p else {}),
                 **({"seed": self._seed} if self._seed is not None else {}),
             }
-            response = self._post_chat(payload)
+            response = self._post_chat(payload, user_id)
             response.raise_for_status()
             body = response.json()
             tool_calls = body.get("toolCalls")

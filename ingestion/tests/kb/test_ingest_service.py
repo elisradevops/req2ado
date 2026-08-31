@@ -103,13 +103,13 @@ class FakeChecklistClient:
         self.checklist = checklist
         self.calls: list[str] = []
 
-    def extract_quality_checklist(self, document_text: str) -> list[str]:
+    def extract_quality_checklist(self, document_text: str, user_id: str | None = None) -> list[str]:
         self.calls.append(document_text)
         return self.checklist
 
 
 class RaisingChecklistClient:
-    def extract_quality_checklist(self, document_text: str) -> list[str]:
+    def extract_quality_checklist(self, document_text: str, user_id: str | None = None) -> list[str]:
         raise ValueError("boom")
 
 
@@ -126,13 +126,13 @@ class FakeChecklistClientWithDefinitions(FakeChecklistClient):
         self.definitions = definitions
         self.definition_calls: list[tuple[str, list[str]]] = []
 
-    def extract_quality_checklist_definitions(self, document_text: str, category_names: list[str]) -> dict[str, str]:
+    def extract_quality_checklist_definitions(self, document_text: str, category_names: list[str], user_id: str | None = None) -> dict[str, str]:
         self.definition_calls.append((document_text, category_names))
         return self.definitions
 
 
 class RaisingDefinitionsChecklistClient(FakeChecklistClient):
-    def extract_quality_checklist_definitions(self, document_text: str, category_names: list[str]) -> dict[str, str]:
+    def extract_quality_checklist_definitions(self, document_text: str, category_names: list[str], user_id: str | None = None) -> dict[str, str]:
         raise ValueError("boom")
 
 

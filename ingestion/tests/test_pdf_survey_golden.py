@@ -41,6 +41,7 @@ class FakeSectionAnalysisClient:
     def analyze_section_skeleton(
         self, section_text: str, kb_context: str | None = None, *,
         options: SectionAnalysisOptions = DEFAULT_SECTION_ANALYSIS_OPTIONS,
+        user_id: str | None = None,
     ) -> tuple[list[dict], bool]:
         self.calls.append({"section_text": section_text, "kb_context": kb_context, "options": options})
         # STAGE 1 sees structure only -- see llm_leveling's
@@ -52,6 +53,7 @@ class FakeSectionAnalysisClient:
 
     def author_content(
         self, section_text: str, skeleton_nodes: dict[str, dict], kb_context: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[dict[str, dict], bool]:
         by_title = {node["title"]: node for node in self._nodes}
         return {

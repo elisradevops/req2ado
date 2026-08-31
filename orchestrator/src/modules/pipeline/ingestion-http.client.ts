@@ -121,6 +121,14 @@ export class IngestionHttpClient {
     // too, to keep "not sent at all" and "sent as eng" distinguishable if
     // that ever matters).
     languages?: string,
+    // Knowledge Base scope key -- same submitting-user identity level()
+    // above already threads as `user_id`, now also needed here so this
+    // route's own figure-vision describe_figure calls (during /ingest's
+    // parse, not /level) can resolve the caller's per-user Open WebUI
+    // connection. Optional/omitted for every call site predating this
+    // field (e.g. /jobs/preview, which sets skipVision=true anyway --
+    // vision never fires there, so a missing user_id is moot).
+    userId?: string,
   ): Promise<CanonicalDoc> {
     const form = new FormData();
     form.append('file', new Blob([fileBuffer]), filename);
@@ -136,6 +144,9 @@ export class IngestionHttpClient {
     }
     if (languages) {
       params.set('languages', languages);
+    }
+    if (userId) {
+      params.set('user_id', userId);
     }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
     const response = await fetch(url, { method: 'POST', body: form, dispatcher: this.longRunningAgent });
@@ -251,11 +262,26 @@ export class IngestionHttpClient {
     title: string,
     areaPath: string,
     threshold?: number,
+    // Knowledge Base scope key -- same submitting-user identity level()/
+    // ingest() already thread as `user_id`, now also needed here so the
+    // dedup tie-break LLM judge call (check_for_duplicates.py's
+    // judge_duplicate_pair) can resolve the caller's per-user Open WebUI
+    // connection instead of failing unauthenticated. Optional: an older/
+    // mocked call site (or a job with no userId) simply doesn't get the
+    // LLM tie-break judge, same "no LLM judge available" degrade
+    // check_for_duplicates.py already has for judge_client=None.
+    userId?: string,
   ): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
     const response = await fetch(`${this.baseUrl}/dedup/check`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, title, area_path: areaPath, ...(threshold !== undefined ? { threshold } : {}) }),
+      body: JSON.stringify({
+        text,
+        title,
+        area_path: areaPath,
+        ...(threshold !== undefined ? { threshold } : {}),
+        ...(userId ? { user_id: userId } : {}),
+      }),
     });
     if (!response.ok) {
       throw new IngestionHttpError(response.status, `Ingestion /dedup/check request failed: ${await _readErrorDetail(response)}`);
