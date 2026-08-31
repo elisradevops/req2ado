@@ -484,6 +484,21 @@ def _ocr_recovered_table_warning(table: Table, node_ids: list[str]) -> Integrity
     )
 
 
+def _unsupported_content_note_warning(block: Block) -> IntegrityWarning:
+    """Builds the UNSUPPORTED_CONTENT_NOTE warning for one loader diagnostic
+    NOTE block (see _is_unsupported_content_note) -- shared by both of
+    _build_headingless_tree's branches (the block-handling loop and the
+    table-only path) so a diagnostic NOTE block still becomes a warning no
+    matter which branch handles the rest of the document (see
+    _build_headingless_tree's real_blocks split)."""
+    return IntegrityWarning.make(
+        WarningKind.UNSUPPORTED_CONTENT_NOTE,
+        f'A loader diagnostic note ("{block.text}") was stripped instead of '
+        "leaking into the proposed tree as if it were real content.",
+        detail={"kind": "block", "sourceId": block.id, "text": block.text},
+    )
+
+
 def _nested_table_dropped_warning(table: Table, node_ids: list[str]) -> IntegrityWarning | None:
     """One warning for this table if it has any cell whose nested table was
     dropped (TableCell.nested_table_dropped, set by docx_loader.py's
@@ -622,7 +637,19 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
     # below) -- there is no real heading ancestry in a headingless document,
     # and [] is already SourceRef.section_path's own default, so no
     # model_copy is needed anywhere in this function purely for that field.
-    if doc.blocks:
+    #
+    # Branches on whether there is any REAL (non-diagnostic-NOTE) block, not
+    # just whether doc.blocks is non-empty: docx_loader.py's footnote/
+    # endnote/comment detection pass (see _is_unsupported_content_note) can
+    # append a single `[UNSUPPORTED: ...]` NOTE block to doc.blocks for an
+    # otherwise table-only document (e.g. an xlsx-shaped docx with no real
+    # paragraphs but a stray comment). A plain `if doc.blocks:` check would
+    # then take the block-handling branch below for a document that has NO
+    # real blocks at all, and doc.tables would never be visited -- silently
+    # dropping every table with no warning. Confirmed real bug (table-only
+    # docx with any footnote/endnote/comment lost ALL its tables).
+    real_blocks = [b for b in doc.blocks if not _is_unsupported_content_note(b)]
+    if real_blocks:
         figure_map = figure_id_by_block_id(doc)
         fig_map = figures_by_id(doc.figures)
         for index, block in enumerate(doc.blocks):
@@ -633,14 +660,7 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
                 # docstring. Dropped, not silently: recorded as a warning
                 # instead (no node is ever "open" in this function, so
                 # node_ids is always empty here).
-                warnings.append(
-                    IntegrityWarning.make(
-                        WarningKind.UNSUPPORTED_CONTENT_NOTE,
-                        f'A loader diagnostic note ("{block.text}") was stripped instead of '
-                        "leaking into the proposed tree as if it were real content.",
-                        detail={"kind": "block", "sourceId": block.id, "text": block.text},
-                    )
-                )
+                warnings.append(_unsupported_content_note_warning(block))
                 continue
             description = block.text
             # This function gives every block its own node (no folding into
@@ -685,6 +705,14 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
                 )
             )
     else:
+        # No real block ever gets its own node on this path (there are none
+        # -- see real_blocks above), but a diagnostic NOTE block can still be
+        # sitting in doc.blocks (e.g. the footnote/endnote/comment detection
+        # pass) and must still surface as a warning even though the rest of
+        # this document is handled as table-only.
+        for note_block in doc.blocks:
+            if _is_unsupported_content_note(note_block):
+                warnings.append(_unsupported_content_note_warning(note_block))
         for index, table in enumerate(doc.tables):
             description = _table_to_html(table)
             if not description.strip():
@@ -700,6 +728,9 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
                         detail={"tableId": table.id},
                     )
                 )
+                nested_table_warning = _nested_table_dropped_warning(table, node_ids=[])
+                if nested_table_warning is not None:
+                    warnings.append(nested_table_warning)
                 continue
             title = table.caption or f"Table {index + 1}"
             node_id = f"n{index + 2}"
@@ -969,6 +1000,9 @@ def build_baseline_tree(doc: CanonicalDoc) -> WorkItemTree:
                             detail={"tableId": table.id},
                         )
                     )
+                    nested_table_warning = _nested_table_dropped_warning(table, node_ids=node_ids)
+                    if nested_table_warning is not None:
+                        warnings.append(nested_table_warning)
                     continue
                 if stack:
                     open_node = nodes_by_id[stack[-1][1]]

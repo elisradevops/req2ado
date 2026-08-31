@@ -364,6 +364,35 @@ def test_table_only_document_skips_a_fully_blank_table_rather_than_creating_an_e
     assert tree.warnings[0].node_ids == []
 
 
+def test_table_only_document_with_an_unsupported_content_note_still_produces_the_table_and_the_warning() -> None:
+    # Regression (Finding C1): docx_loader.py's footnote/endnote/comment
+    # detection pass appends a single [UNSUPPORTED: ...] NOTE block to
+    # doc.blocks even for an otherwise table-only document. A plain
+    # `if doc.blocks:` check in _build_headingless_tree would then wrongly
+    # take the block-handling branch (which never visits doc.tables at all)
+    # for a document with no REAL blocks -- silently dropping every table
+    # with no warning at all. Must produce BOTH the table-derived
+    # Requirement node AND the note's own warning.
+    path = "table_with_footnote.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[
+            Block(
+                id="f0", kind=BlockKind.NOTE,
+                text="[UNSUPPORTED: 1 footnote(s) could not be read and are omitted]",
+                source_ref=_sr(path, 0, 60),
+            ),
+        ],
+        tables=[Table(id="t0", cells=[[TableCell(text=c) for c in row] for row in [["a", "b"]]], caption="Sheet1", source_ref=_sr(path, 61, 62))],
+    )
+    tree = build_baseline_tree(doc)
+    requirements = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
+    assert len(requirements) == 1
+    assert requirements[0].table_ids == ["t0"]
+    assert len(tree.warnings) == 1
+    assert tree.warnings[0].kind == WarningKind.UNSUPPORTED_CONTENT_NOTE
+
+
 def test_a_document_with_neither_blocks_nor_tables_still_produces_an_empty_tree() -> None:
     doc = CanonicalDoc(
         document=Document(path="empty.txt", format=DocumentFormat.TXT, sha256="h"),
@@ -1898,6 +1927,57 @@ def test_headingless_table_only_doc_with_a_nested_table_dropped_cell_emits_a_war
     assert tree.warnings[0].kind == WarningKind.NESTED_TABLE_DROPPED
     assert tree.warnings[0].node_ids == [node.local_id]
     assert tree.warnings[0].detail == {"tableId": "t0", "droppedCellCount": 1}
+
+
+def test_a_blank_table_that_also_dropped_a_nested_table_emits_both_warnings() -> None:
+    # Regression (Finding M2): the blank-table EMPTY_TABLE_CONTENT `continue`
+    # in build_baseline_tree's structured walk previously fired BEFORE the
+    # nested-table-dropped check ever ran, so a table that is both blank
+    # (every real cell's text is empty) AND has a dropped nested table only
+    # ever got the EMPTY_TABLE_CONTENT warning -- the NESTED_TABLE_DROPPED
+    # warning was silently suppressed. SURVEY's equivalent code checks
+    # nested-table-drops independently of blankness and does not suppress it;
+    # BASELINE must match.
+    path = "blank_with_nested.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[Block(id="b0", kind=BlockKind.HEADING, heading_level=1, text="Power Distribution", source_ref=_sr(path, 0, 19))],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="", nested_table_dropped=True), TableCell(text="")]],
+                source_ref=_sr(path, 20, 21),
+            )
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    kinds = {w.kind for w in tree.warnings}
+    assert WarningKind.EMPTY_TABLE_CONTENT in kinds
+    assert WarningKind.NESTED_TABLE_DROPPED in kinds
+    assert len(tree.warnings) == 2
+
+
+def test_headingless_table_only_blank_table_that_also_dropped_a_nested_table_emits_both_warnings() -> None:
+    # Mirrors test_a_blank_table_that_also_dropped_a_nested_table_emits_both_warnings
+    # above, but for _build_headingless_tree's own separate blank-table
+    # `continue` site.
+    path = "headingless_blank_with_nested.docx"
+    doc = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.DOCX, sha256="h"),
+        blocks=[],
+        tables=[
+            Table(
+                id="t0",
+                cells=[[TableCell(text="", nested_table_dropped=True), TableCell(text="")]],
+                source_ref=_sr(path, 0, 1),
+            )
+        ],
+    )
+    tree = build_baseline_tree(doc)
+    kinds = {w.kind for w in tree.warnings}
+    assert WarningKind.EMPTY_TABLE_CONTENT in kinds
+    assert WarningKind.NESTED_TABLE_DROPPED in kinds
+    assert len(tree.warnings) == 2
 
 
 def test_a_real_ocr_recovered_pdf_table_produces_the_expected_warning_end_to_end() -> None:
