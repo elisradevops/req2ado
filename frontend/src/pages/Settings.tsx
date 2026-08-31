@@ -20,6 +20,7 @@ import { Switch } from '../ui/Switch';
 import { Select } from '../ui/Select';
 import { Skeleton } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
+import { Eye } from 'lucide-react';
 
 type IntegrationTone = 'ok' | 'danger' | 'warning' | 'dim';
 
@@ -288,7 +289,13 @@ export function Settings(): React.ReactElement {
   }
 
   function openLlmDialog(): void {
-    setLlmToken('');
+    // llmToken is deliberately NOT reset here -- kept in memory only (never
+    // written to browser storage, matching this repo's own established rule
+    // against holding a raw secret client-side, see authStore.ts's own
+    // comment on why the ADO PAT was removed from sessionStorage) so
+    // iterating on model selection within the same page load doesn't force
+    // re-pasting the token on every reopen. Still cleared on a real page
+    // refresh, same as before.
     setLlmModels([]);
     setLlmChatModel(llmConnection?.chatModel ?? '');
     setLlmVisionModel(llmConnection?.visionModel ?? '');
@@ -577,6 +584,15 @@ export function Settings(): React.ReactElement {
         </div>
         <Select
           label="Chat model"
+          labelExtra={
+            <InfoTip
+              content={
+                <span className="inline-flex items-center gap-1">
+                  <Eye className="h-3 w-3 flex-none" aria-hidden /> marks a vision-capable model.
+                </span>
+              }
+            />
+          }
           value={llmChatModel}
           onChange={(e) => setLlmChatModel(e.target.value)}
           disabled={llmModels.length === 0}
@@ -585,8 +601,15 @@ export function Settings(): React.ReactElement {
           <option value="">Select a model…</option>
           {llmModels.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.name}
-              {m.vision ? ' (vision-capable)' : ''}
+              {m.vision ? (
+                <span className="inline-flex items-center gap-1.5">
+                  {m.name}
+                  <Eye className="h-3.5 w-3.5 flex-none text-ink-3" aria-hidden />
+                  <span className="sr-only">, vision-capable</span>
+                </span>
+              ) : (
+                m.name
+              )}
             </option>
           ))}
         </Select>

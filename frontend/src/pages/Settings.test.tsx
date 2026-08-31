@@ -282,5 +282,48 @@ describe('Settings', () => {
       await waitFor(() => expect(screen.getByText(/could not validate this token/i)).toBeInTheDocument());
       expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
     });
+
+    it('keeps a pasted token in memory across a dialog close/reopen -- not cleared, so re-loading models does not require re-typing it', async () => {
+      renderPage();
+
+      await waitFor(() => expect(screen.getByText('Open WebUI')).toBeInTheDocument());
+      const openDialog = () => {
+        const configureButtons = screen.getAllByRole('button', { name: /^configure$/i });
+        return userEvent.click(configureButtons[configureButtons.length - 1]);
+      };
+
+      await openDialog();
+      await userEvent.type(screen.getByLabelText(/open webui api token/i), 'sk-in-progress-token');
+      await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+      await openDialog();
+
+      expect(screen.getByLabelText(/open webui api token/i)).toHaveValue('sk-in-progress-token');
+    });
+
+    it('marks a vision-capable model in the chat model dropdown so it is distinguishable from a non-vision one', async () => {
+      vi.spyOn(llmConnectionApi, 'getLlmConnectionModels').mockResolvedValue([
+        { id: 'qwen2.5:14b', name: 'qwen2.5:14b', vision: false },
+        { id: 'devstral-small-2:24b', name: 'devstral-small-2:24b', vision: true },
+      ]);
+      renderPage();
+
+      await waitFor(() => expect(screen.getByText('Open WebUI')).toBeInTheDocument());
+      const configureButtons = screen.getAllByRole('button', { name: /^configure$/i });
+      await userEvent.click(configureButtons[configureButtons.length - 1]);
+      await userEvent.type(screen.getByLabelText(/open webui api token/i), 'sk-test-token');
+      await userEvent.click(screen.getByRole('button', { name: /load models/i }));
+      await waitFor(() => expect(llmConnectionApi.getLlmConnectionModels).toHaveBeenCalled());
+      await userEvent.click(screen.getByLabelText(/chat model/i));
+      // Popup options render only after llmModels' state update from the
+      // mocked getLlmConnectionModels() promise settles -- waited for
+      // explicitly since it can land after the click itself resolves.
+      await waitFor(() => expect(screen.queryAllByRole('option').length).toBeGreaterThan(0));
+
+      // The accessible name includes the sr-only ", vision-capable" suffix
+      // for the vision model's option, and is absent for the non-vision one.
+      expect(screen.getByRole('option', { name: /devstral-small-2:24b.*vision-capable/i })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'qwen2.5:14b' })).toBeInTheDocument();
+    });
   });
 });
