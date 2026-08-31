@@ -1082,4 +1082,29 @@ describe('NodeDetailPanel', () => {
     );
     expect(screen.queryByText(/grounding/i)).not.toBeInTheDocument();
   });
+
+  it('marks an Epic Grounding metric as low using the higher 0.35 parent threshold, not the base 0.2 threshold', () => {
+    // M3: NodeDetailPanel must use the same isFlaggedDiffEntry threshold
+    // logic as the diff tree/list view -- a hardcoded 0.2 here would let a
+    // synthesized Epic/Feature that the diff tree flags "Needs review"
+    // (under the 0.35 parent threshold) render as healthy in its own
+    // detail panel.
+    const epicEntry: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic Title', description: 'Epic body',
+      action: 'create', customerId: null, groundingScore: 0.3,
+    };
+    renderPanel(<NodeDetailPanel entry={epicEntry} />);
+    expect(screen.getByText('0.30')).toBeInTheDocument();
+    expect(screen.getByText(/low/i)).toBeInTheDocument();
+  });
+
+  it('does not mark a Requirement Grounding metric as low at the same score that would flag an Epic', () => {
+    const requirementEntry: DryRunDiffEntry = {
+      localId: 'e1', parentLocalId: null, type: 'Requirement', title: 'Req Title', description: 'Req body',
+      action: 'create', customerId: null, groundingScore: 0.3,
+    };
+    renderPanel(<NodeDetailPanel entry={requirementEntry} />);
+    expect(screen.getByText('0.30')).toBeInTheDocument();
+    expect(screen.queryByText(/low/i)).not.toBeInTheDocument();
+  });
 });

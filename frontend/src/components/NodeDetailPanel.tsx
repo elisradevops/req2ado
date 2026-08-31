@@ -17,6 +17,7 @@ import { Tooltip } from '../ui/Tooltip';
 import { DescriptionMarkdown, Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
 import { LABEL_MICRO } from '../utils/labelMicro';
+import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 
 // CR-7d rescore: the quality score/categoryScores from JUST BEFORE a
 // successful rescore -- held briefly so QualityGauge can render a real
@@ -274,6 +275,14 @@ export function NodeDetailPanel({
   const visibleUncaptionedFigureIds = (entry.uncaptionedFigureIds ?? []).filter(
     (figureId) => !(entry.insignificantFigureIds ?? []).includes(figureId),
   );
+  // M3: uses the same shared threshold logic as the diff tree/list view
+  // (isFlaggedDiffEntry, which raises the Epic/Feature grounding threshold
+  // to 0.35) instead of a hardcoded 0.2 -- otherwise an Epic/Feature that
+  // the diff tree flags "Needs review" under the higher threshold could
+  // render as healthy here, in its own detail panel. qualityScore is
+  // deliberately null: this check is scoped to the grounding badge alone,
+  // not the separate quality-score gauge already shown above.
+  const isLowGrounding = isFlaggedDiffEntry({ type: entry.type, groundingScore: entry.groundingScore, qualityScore: null });
 
   function startEditing(): void {
     setDraftTitle(entry!.title);
@@ -650,10 +659,10 @@ export function NodeDetailPanel({
       )}
       {entry.groundingScore != null && (
         <div className="flex items-center gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5 text-sm">
-          <span className={cn('font-mono font-semibold', entry.groundingScore < 0.2 ? 'text-warning' : 'text-ink-1')}>
+          <span className={cn('font-mono font-semibold', isLowGrounding ? 'text-warning' : 'text-ink-1')}>
             {entry.groundingScore.toFixed(2)}
           </span>
-          <span className="text-ink-3">Grounding{entry.groundingScore < 0.2 ? ' ⚠ low' : ''}</span>
+          <span className="text-ink-3">Grounding{isLowGrounding ? ' ⚠ low' : ''}</span>
         </div>
       )}
       {/* DESIGN.md §11.4.1 -- in place of the absent gauge, an Epic/Feature
