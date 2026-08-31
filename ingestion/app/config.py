@@ -63,6 +63,26 @@ class Settings(BaseSettings):
     # orchestrator's LLM_REQUEST_TIMEOUT_MS changes, reconsider the other --
     # they're meant to stay in that relative order.
     vision_request_timeout_seconds: float = 590.0
+    # How many figures may be captioned concurrently by /ingest's post-parse
+    # captioning pass. Vision captioning used to run fully inline during the
+    # document walk -- one network round-trip per figure, strictly in
+    # document order -- so a 39-figure document performed 39 sequential
+    # vision calls, each with up to vision_request_timeout_seconds above to
+    # spend. Its own dial, separate from survey_branch_concurrency/
+    # survey_chunk_concurrency: this is a different model behind a different
+    # client (_vision_client / LLM_VISION_MODEL), whose backend capacity is
+    # an independent operational fact, and it runs in /ingest rather than
+    # /level so it never overlaps with either of those.
+    #
+    # Default of 1 preserves the exact previous behavior (no
+    # ThreadPoolExecutor is constructed at all at 1) and carries the SAME
+    # operator caveat survey_branch_concurrency's own comment below spells
+    # out in full: this is req2ado's own client-side fan-out, not a request
+    # for more backend capacity. Raising it only helps if the configured
+    # vision backend can genuinely serve more than one generation at a time;
+    # on a shared backend, raise it only in coordination with whoever
+    # operates that backend's own concurrency limit.
+    vision_caption_concurrency: int = 1
     # No logging config existed anywhere in this service before -- whatever
     # uvicorn's own defaults produced. Named so it's configurable without a
     # code change per deployment (e.g. DEBUG locally, INFO/WARNING in prod).
