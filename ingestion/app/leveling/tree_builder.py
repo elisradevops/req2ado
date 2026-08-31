@@ -704,6 +704,62 @@ def _build_headingless_tree(doc: CanonicalDoc) -> WorkItemTree:
                     child_type=WorkItemType.REQUIREMENT,
                 )
             )
+        # doc.tables is folded in HERE too, not only in the else branch
+        # below: this branch previously iterated doc.blocks alone, so a
+        # headingless document with real paragraphs AND a table dropped the
+        # table entirely with no warning -- the same silent-table-loss class
+        # bug the else branch's own table handling exists to prevent, just in
+        # the other branch (SWEEP.md section 3; confirmed pre-existing).
+        # local_id continues past the block loop's own f"n{index + 2}" range
+        # rather than restarting at n2 -- len(doc.blocks) (not len(real_blocks))
+        # is the right base because that loop enumerates doc.blocks including
+        # the NOTE blocks it skips, so its ids are sparse but unique across
+        # that whole range.
+        table_id_base = len(doc.blocks) + 2
+        for index, table in enumerate(doc.tables):
+            description = _table_to_html(table)
+            if not description.strip():
+                message = (
+                    f"Table {table.id} had no extractable content, so no work item was created for it -- "
+                    "worth checking the source table manually."
+                )
+                warnings.append(
+                    IntegrityWarning.make(
+                        WarningKind.EMPTY_TABLE_CONTENT,
+                        message,
+                        node_ids=[],
+                        detail={"tableId": table.id},
+                    )
+                )
+                nested_table_warning = _nested_table_dropped_warning(table, node_ids=[])
+                if nested_table_warning is not None:
+                    warnings.append(nested_table_warning)
+                continue
+            title = table.caption or f"Table {index + 1}"
+            node_id = f"n{table_id_base + index}"
+            nodes.append(
+                WorkItemNode(
+                    local_id=node_id,
+                    type=WorkItemType.REQUIREMENT,
+                    parent_local_id=feature.local_id,
+                    title=extract_baseline_title(title),
+                    description=description,
+                    customer_id=None,
+                    source_ref=table.source_ref,
+                    fidelity_hash=_hash_description(description),
+                    identity_hash=_hash_identity(description, table.source_ref),
+                    tags=[],
+                    table_ids=[table.id],
+                    mode=WorkItemMode.BASELINE,
+                    child_type=WorkItemType.REQUIREMENT,
+                )
+            )
+            ocr_warning = _ocr_recovered_table_warning(table, node_ids=[node_id])
+            if ocr_warning is not None:
+                warnings.append(ocr_warning)
+            nested_table_warning = _nested_table_dropped_warning(table, node_ids=[node_id])
+            if nested_table_warning is not None:
+                warnings.append(nested_table_warning)
     else:
         # No real block ever gets its own node on this path (there are none
         # -- see real_blocks above), but a diagnostic NOTE block can still be

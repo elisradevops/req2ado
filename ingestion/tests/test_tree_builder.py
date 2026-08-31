@@ -1643,6 +1643,36 @@ def test_headingless_table_only_tree_sets_table_ids_to_its_own_table() -> None:
     assert requirement_node.table_ids == ["t0"]
 
 
+def test_headingless_document_with_real_paragraphs_and_a_table_keeps_both() -> None:
+    # SWEEP.md section 3: the `if real_blocks:` branch iterated only
+    # doc.blocks and never visited doc.tables at all, so a headingless
+    # document with real paragraphs AND a table dropped the table entirely
+    # with no warning of any kind -- the same silent-table-loss class bug
+    # the sibling `else` branch's fix already closed for the table-only
+    # case. Confirmed pre-existing, not a regression.
+    doc = _headingless_doc()
+    doc.tables.append(
+        Table(
+            id="t0",
+            cells=[[TableCell(text=c) for c in row] for row in [["Parameter", "Value"], ["Voltage", "28 VDC"]]],
+            caption="Power budget",
+            source_ref=_sr("flat_notes.txt", 182, 240),
+        )
+    )
+
+    tree = build_baseline_tree(doc)
+
+    requirement_nodes = [n for n in tree.nodes if n.type == WorkItemType.REQUIREMENT]
+    # 3 paragraph requirements + 1 table requirement.
+    assert len(requirement_nodes) == 4
+    table_node = next(n for n in requirement_nodes if n.table_ids == ["t0"])
+    assert "28 VDC" in table_node.description
+    # Every local_id must still be unique -- the table loop's ids continue
+    # past the block-derived ones rather than restarting at n2.
+    local_ids = [n.local_id for n in tree.nodes]
+    assert len(local_ids) == len(set(local_ids))
+
+
 def test_flat_list_tree_direct_call_populates_figure_ids_when_a_branch_root_is_a_figure() -> None:
     # Unreachable via build_baseline_tree's own routing today (a FIGURE-kind
     # block never resolves a depth, so it can never be a lone-block branch
