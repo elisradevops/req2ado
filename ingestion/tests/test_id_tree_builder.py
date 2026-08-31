@@ -1169,3 +1169,103 @@ def test_apply_synthesis_pass_one_failing_chunk_still_applies_the_others_under_c
     assert nodes[151].description != "The system shall X."
     assert len(warnings) == 1
     assert any(e.phase == "chunk_warning" for e in fired)
+
+
+def _many_feature_nodes(count: int):
+    # _PARENT_SUMMARY_CHUNK_SIZE is 150 but the greedy TOKEN budget usually
+    # splits first -- so use the same magnitude as the existing budget test
+    # (test_apply_parent_summary_pass_splits_by_token_budget_without_dropping_any_parent,
+    # "shall support mode A " * 400, ~2200 chars/~550 estimated tokens per
+    # item) to guarantee several chunks, not just "x" * 400 (~100 estimated
+    # tokens/item), which stays comfortably under the 6000-token budget for
+    # 40 items and would make every "later chunk" assertion below vacuous.
+    from app.leveling.id_tree_builder import build_hierarchy_subtree
+
+    long_text = "shall support mode A " * 400
+    rows = []
+    for i in range(count):
+        rows.append(_row(f"Feature area {i}", "Feature", None, str(i + 1)))
+        rows.append(_row(long_text, "Requirement", len(rows) - 1, f"{i + 1}.1", has_shall=True))
+    nodes, _ = build_hierarchy_subtree(rows, "det0_")
+    feature_ids = [n.local_id for n in nodes if n.type.value == "Feature"]
+    return nodes, feature_ids
+
+
+def test_apply_parent_summary_pass_runs_chunks_concurrently() -> None:
+    import threading
+    import time
+
+    from app.leveling.id_tree_builder import _apply_parent_summary_pass
+
+    seen: set[str] = set()
+    lock = threading.Lock()
+
+    class ThreadRecordingClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            with lock:
+                seen.add(threading.current_thread().name)
+            time.sleep(0.05)
+            return {node_id: {"title": "T", "description": "D"} for node_id in nodes_by_id}
+
+    nodes, feature_ids = _many_feature_nodes(40)
+
+    _apply_parent_summary_pass(
+        nodes, feature_ids, ThreadRecordingClient(), [], chunk_concurrency=3,
+    )
+
+    assert len(seen) > 1
+
+
+def test_apply_parent_summary_pass_output_is_identical_serial_vs_concurrent() -> None:
+    import time
+
+    from app.leveling.id_tree_builder import _apply_parent_summary_pass
+
+    class OrderSensitiveClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            if "det0_1" in nodes_by_id:
+                time.sleep(0.2)
+            return {
+                node_id: {"title": f"T {node_id}", "description": f"Summary of {node_id}."}
+                for node_id in nodes_by_id
+            }
+
+    def run(concurrency: int):
+        nodes, feature_ids = _many_feature_nodes(40)
+        warnings: list = []
+        _apply_parent_summary_pass(
+            nodes, feature_ids, OrderSensitiveClient(), warnings, chunk_concurrency=concurrency,
+        )
+        return (
+            [(n.local_id, n.title, n.description, n.grounding_score, n.fidelity_hash) for n in nodes],
+            [w.raw for w in warnings],
+        )
+
+    assert run(1) == run(4)
+
+
+def test_apply_parent_summary_pass_one_failing_chunk_still_applies_the_others_under_concurrency() -> None:
+    from app.leveling.id_tree_builder import _apply_parent_summary_pass
+
+    nodes, feature_ids = _many_feature_nodes(40)
+    first_id = feature_ids[0]
+
+    class FirstChunkRaisesClient:
+        def summarize_parent_nodes(self, nodes_by_id):
+            if first_id in nodes_by_id:
+                raise RuntimeError("boom")
+            return {node_id: {"title": "T", "description": "D"} for node_id in nodes_by_id}
+
+    warnings: list = []
+    fired: list = []
+
+    _apply_parent_summary_pass(
+        nodes, feature_ids, FirstChunkRaisesClient(), warnings,
+        progress_callback=fired.append, chunk_concurrency=4,
+    )
+
+    by_id = {n.local_id: n for n in nodes}
+    assert by_id[first_id].title != "T"          # its own chunk failed
+    assert by_id[feature_ids[-1]].title == "T"   # a later chunk still applied
+    assert any(w.kind.value == "enhancement_call_failed" for w in warnings)
+    assert any(e.phase == "chunk_warning" for e in fired)

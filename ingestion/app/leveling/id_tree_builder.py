@@ -346,6 +346,11 @@ def _apply_parent_summary_pass(
     token_budget: int = _PARENT_SUMMARY_TOKEN_BUDGET,
     progress_callback: ProgressCallback | None = None,
     tables_by_id: dict[str, Table] | None = None,
+    # How many of this pass's independent chunks may be in flight at once
+    # (see app.config.Settings.survey_chunk_concurrency). 1 (the default)
+    # is the byte-identical previous behavior: one chunk at a time, on the
+    # calling thread, with no ThreadPoolExecutor constructed at all.
+    chunk_concurrency: int = 1,
 ) -> None:
     """Fail-open, same convention as `_apply_title_tag_pass`/
     `_apply_synthesis_pass`: any exception or missing/malformed response
@@ -376,7 +381,14 @@ def _apply_parent_summary_pass(
     how many calls that takes, never what's covered.
     _PARENT_SUMMARY_CHUNK_SIZE (item count) still applies as a secondary
     ceiling, same "safety net regardless of token footprint" relationship
-    _bound_branch_size has to coverage_budget_tokens's own budget-merge."""
+    _bound_branch_size has to coverage_budget_tokens's own budget-merge.
+
+    Chunks may run concurrently, bounded by `chunk_concurrency` (see
+    _apply_title_tag_pass's own identical treatment). No hoist was needed
+    here: `payload_by_id` is already built for every parent up-front, above
+    the chunk loop, so no chunk's input can ever depend on another chunk's
+    output. Greedy token-budget chunking, the fail-open contract, and this
+    pass's total absence of pre-dispatch narration are all unchanged."""
     if not parent_node_ids:
         return
     by_id = {n.local_id: n for n in nodes}
@@ -410,15 +422,29 @@ def _apply_parent_summary_pass(
     if current:
         chunks.append(current)
 
-    for chunk_ids in chunks:
-        nodes_by_id_payload = {node_id: payload_by_id[node_id] for node_id in chunk_ids}
-        try:
-            result = client.summarize_parent_nodes(nodes_by_id_payload)
-        except Exception as exc:
+    # PHASE 1 -- payloads. This pass fires NO pre-dispatch narration event
+    # (it never did), so the chunk-constructing work is only the payload
+    # projection; `chunks` itself was already built above.
+    chunk_payloads = [
+        {node_id: payload_by_id[node_id] for node_id in chunk_ids} for chunk_ids in chunks
+    ]
+
+    # PHASE 2 -- only the client call leaves the calling thread.
+    outcomes = run_chunks_bounded(
+        chunk_payloads,
+        lambda nodes_by_id_payload: client.summarize_parent_nodes(nodes_by_id_payload),
+        chunk_concurrency,
+    )
+
+    # PHASE 3 -- merge in fixed CHUNK order on the calling thread: every
+    # mutation, every warning, every narration event.
+    for outcome in outcomes:
+        chunk_ids = chunks[outcome.index]
+        if outcome.error is not None:
             message = (
                 f"Parent title/description enhancement call failed for {len(chunk_ids)} "
                 f"deterministic Epic/Feature node(s) -- kept their verbatim heading title "
-                f"and description: {exc}"
+                f"and description: {outcome.error}"
             )
             warnings.append(
                 IntegrityWarning.make(
@@ -437,6 +463,7 @@ def _apply_parent_summary_pass(
                     )
                 )
             continue
+        result = outcome.value or {}
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:
