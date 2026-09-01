@@ -1,0 +1,97 @@
+name: '🚀 publish - req2ado-ingestion'
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'ingestion/**'
+      - '.github/workflows/ingestion-release.yml'
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 🚀 publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          fetch-depth: 0
+
+      # No npm-ecosystem version-bump action applies to a Python package --
+      # same semantic-commit convention as docgen-json-to-word's own bump
+      # step (feat:/BREAKING CHANGE: -> minor/major, everything else patch),
+      # adapted to bump ingestion/pyproject.toml's version field instead.
+      - name: 'Automated Version Bump'
+        id: bump_version
+        shell: bash
+        run: |
+          CURRENT_VERSION="$(grep -m1 '^version = ' ingestion/pyproject.toml | sed -E 's/version = "(.*)"/\1/')"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          if [[ ! "$MAJOR" =~ ^[0-9]+$ || ! "$MINOR" =~ ^[0-9]+$ || ! "$PATCH" =~ ^[0-9]+$ ]]; then
+            echo "Version '$CURRENT_VERSION' is not in MAJOR.MINOR.PATCH format"
+            exit 1
+          fi
+
+          COMMIT_TEXT="$(git log -1 --format=%B)"
+          BUMP_TYPE="patch"
+          if echo "$COMMIT_TEXT" | grep -Eiq 'BREAKING CHANGE|(^|[[:space:]])major([[:space:]]|$)|!:'; then
+            BUMP_TYPE="major"
+          elif echo "$COMMIT_TEXT" | grep -Eiq '(^feat(\(.+\))?:)|(^feature(\(.+\))?:)|(^|[[:space:]])minor([[:space:]]|$)'; then
+            BUMP_TYPE="minor"
+          fi
+
+          if [[ "$BUMP_TYPE" == "major" ]]; then
+            NEXT_VERSION="$((MAJOR + 1)).0.0"
+          elif [[ "$BUMP_TYPE" == "minor" ]]; then
+            NEXT_VERSION="${MAJOR}.$((MINOR + 1)).0"
+          else
+            NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+
+          echo "current-version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          export NEXT_VERSION
+
+          sed -i -E "s/^version = \".*\"/version = \"${NEXT_VERSION}\"/" ingestion/pyproject.toml
+          UPDATED_VERSION="$(grep -m1 '^version = ' ingestion/pyproject.toml | sed -E 's/version = "(.*)"/\1/')"
+          if [[ "$UPDATED_VERSION" != "$NEXT_VERSION" ]]; then
+            echo "Version update failed: expected $NEXT_VERSION, got $UPDATED_VERSION"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ingestion/pyproject.toml
+          git commit -m "CI: bumps ingestion version to ${NEXT_VERSION} [skip ci]"
+          NEW_TAG="ingestion-v${NEXT_VERSION}"
+          if git rev-parse -q --verify "refs/tags/${NEW_TAG}" >/dev/null; then
+            echo "Tag ${NEW_TAG} already exists, skipping tag creation."
+          else
+            git tag "${NEW_TAG}"
+          fi
+          git push --follow-tags
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ingestion
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            elisradevops/req2ado-ingestion:${{ steps.bump_version.outputs.current-version }}
+            elisradevops/req2ado-ingestion:latest
