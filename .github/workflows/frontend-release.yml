@@ -5,19 +5,22 @@ on:
       - main
     paths:
       - 'frontend/**'
-      - '.github/workflows/frontend-release.yml'
 
-# Shared literal group name across all four *-release.yml workflows (GitHub
-# Actions matches concurrency groups by name across an entire repo, not
-# per-workflow-file) -- each one's version-bump step commits+pushes to the
-# same main branch via the same PAT, so two firing at once race for that
-# push (confirmed live: all four fired together on the commit that first
-# added them, and three lost the race with "! [rejected] main -> main
-# (fetch first)"). queued, not cancelled -- a cancelled run could abort
-# mid Docker push.
-concurrency:
-  group: req2ado-release-version-bump
-  cancel-in-progress: false
+# No trigger on '.github/workflows/frontend-release.yml' itself (unlike the
+# docgen precedent's blanket paths-ignore: '.github/**', scoped here to just
+# this file since paths:/paths-ignore: can't mix on one trigger) -- editing
+# CI config alone shouldn't force a version bump + republish. This also
+# stops a real, confirmed failure mode: adding/editing multiple of these
+# four *-release.yml files in ONE commit previously fired all of them
+# simultaneously, and their version-bump steps raced pushing to main (one
+# "! [rejected] main -> main (fetch first)"). A shared `concurrency:` group
+# was tried as a fix and reverted -- GitHub Actions only keeps the LAST
+# queued run per group and CANCELS earlier-queued ones outright, which
+# silently dropped two real publishes instead of racing harmlessly. A
+# future push touching 2+ of frontend/orchestrator/mcp-ado-server/ingestion
+# at once can still race the same way; no image is pushed before the
+# version-bump step succeeds, so a lost race just fails that run cleanly --
+# re-run it by hand (`gh run rerun <id>`) if it happens.
 
 jobs:
   release:
