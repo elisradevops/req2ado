@@ -5,6 +5,11 @@ on:
       - main
     paths:
       - 'frontend/**'
+  # See orchestrator-release.yml's own comment: manual re-trigger from the
+  # live branch tip, correctly retries a lost version-bump-push race
+  # (gh run rerun does not -- it replays against the original, now-stale
+  # trigger commit).
+  workflow_dispatch:
 
 # No trigger on '.github/workflows/frontend-release.yml' itself (unlike the
 # docgen precedent's blanket paths-ignore: '.github/**', scoped here to just

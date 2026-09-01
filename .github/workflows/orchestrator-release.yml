@@ -5,6 +5,13 @@ on:
       - main
     paths:
       - 'orchestrator/**'
+  # Lets a publish be re-triggered by hand (Actions tab "Run workflow", or
+  # `gh workflow run`) without a code change -- also the correct way to
+  # retry a run that lost the version-bump-push race (confirmed live:
+  # `gh run rerun` replays against the ORIGINAL trigger commit, not main's
+  # current tip, so it just loses the race again against real progress
+  # since made; workflow_dispatch always runs against the live branch tip).
+  workflow_dispatch:
 
 # See frontend-release.yml's own comment for the full story: no trigger on
 # this file's own edits, and a race-on-simultaneous-multi-package-commit

@@ -5,6 +5,11 @@ on:
       - main
     paths:
       - 'mcp-ado-server/**'
+  # See orchestrator-release.yml's own comment: manual re-trigger from the
+  # live branch tip, correctly retries a lost version-bump-push race
+  # (gh run rerun does not -- it replays against the original, now-stale
+  # trigger commit).
+  workflow_dispatch:
 
 # See frontend-release.yml's own comment for the full story: no trigger on
 # this file's own edits, and a race-on-simultaneous-multi-package-commit
