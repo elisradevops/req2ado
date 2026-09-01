@@ -39,7 +39,13 @@ ENV NODE_EXTRA_CA_CERTS=/tmp/extra-ca.pem
 # repo (orchestrator/ and shared/ts/ are siblings).
 COPY shared/ts /shared/ts
 COPY orchestrator/package.json orchestrator/package-lock.json ./
-RUN npm ci
+# --ignore-scripts: orchestrator/package.json's own postinstall runs
+# `prisma generate`, which needs prisma/schema.prisma -- not COPYed in
+# until below, since it's ordered after `npm ci` here so Docker's layer
+# cache doesn't invalidate the (slow) full dependency install on every
+# schema.prisma edit. The explicit `npx prisma generate` two lines down,
+# after that COPY, is the one place this stage actually needs it to run.
+RUN npm ci --ignore-scripts
 COPY orchestrator/tsconfig.json orchestrator/tsconfig.build.json orchestrator/nest-cli.json* ./
 COPY orchestrator/src ./src
 COPY orchestrator/prisma ./prisma
@@ -50,7 +56,16 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 RUN apk add --no-cache openssl
 COPY orchestrator/package.json orchestrator/package-lock.json ./
-RUN npm ci --omit=dev
+# --ignore-scripts: orchestrator/package.json's own postinstall runs
+# `prisma generate` (added so a clean checkout's `pnpm install` produces a
+# real Prisma Client for `nest build` -- see that script's own history).
+# This stage can't run it: prisma/ isn't COPYed in until the line below (a
+# deliberate ordering choice, see this stage's own next comment), and even
+# if it were, the `prisma` CLI itself is a devDependency this
+# --omit=dev install never installs. Confirmed live: without this flag,
+# postinstall fails the whole image build with "Could not find Prisma
+# Schema" / prisma CLI not found.
+RUN npm ci --omit=dev --ignore-scripts
 # The generated Prisma client (node_modules/.prisma/client) is produced by
 # `prisma generate` in the builder stage, keyed to that stage's full
 # node_modules -- copying it over the fresh prod-only install here rather
