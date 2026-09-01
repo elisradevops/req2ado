@@ -52,7 +52,25 @@ jobs:
           version: 9
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # Temporary diagnostic: this job has hung on "Run pnpm test" three
+      # times despite a fix (commit 75138c6) that resolved the same hang
+      # reproduced locally in a Docker container constrained to --cpus=2 --
+      # need this runner's OWN real numbers to confirm or rule out the same
+      # cgroup-CPU-misreporting mechanism, rather than guessing further.
+      # Remove once the real cause is confirmed.
+      - name: DIAGNOSTIC -- CPU/memory reporting on this runner
+        run: |
+          echo "nproc: $(nproc)"
+          node -e "const os=require('os'); console.log('os.cpus().length:', os.cpus().length); console.log('os.availableParallelism():', os.availableParallelism ? os.availableParallelism() : 'n/a (node too old)');"
+          cat /proc/cpuinfo | grep -c ^processor || true
+          echo "--- cgroup v2 cpu.max (if present) ---"
+          cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo "not present"
+          echo "--- cgroup v1 cfs quota/period (if present) ---"
+          cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo "not present"
+          cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo "not present"
+          free -h || true
       - run: pnpm test
+        timeout-minutes: 8
 
   ingestion:
     name: Ingestion (pytest)
