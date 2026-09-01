@@ -16,6 +16,14 @@ jobs:
   node:
     name: Node (frontend / orchestrator / mcp-ado-server)
     runs-on: ubuntu-latest
+    # Safety net, not a fix: this job hung twice today (once from a real
+    # leaked setInterval, since fixed; once with no code-level cause found
+    # after real effort -- isolated orchestrator, full local `pnpm test`,
+    # and the exact CI command all ran clean in under a minute, repeatedly).
+    # A normal run takes ~2 min. 20 min gives real headroom while turning
+    # any future hang into a fast, visible failure instead of burning
+    # unbounded CI time and needing a manual `gh run cancel`.
+    timeout-minutes: 20
     # orchestrator/test/health.e2e-spec.ts boots the full AppModule, which
     # eagerly constructs real (non-lazyConnect) ioredis clients for
     # JobEventsPublisher/JobEventsController/JobEventPersistenceService --
