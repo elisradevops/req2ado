@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, NotFoundException, Param, Res } from '@nestjs/common';
+import { Controller, Get, Inject, NotFoundException, Param, Res, type OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import type { Response } from 'express';
 import type Redis from 'ioredis';
@@ -29,13 +29,26 @@ export const REDIS_COMMAND_CLIENT = 'REDIS_COMMAND_CLIENT';
 // the injected factory rather than sharing the module's other Redis/BullMQ
 // connections.
 @Controller('jobs')
-export class JobEventsController {
+export class JobEventsController implements OnModuleDestroy {
   constructor(
     @Inject(REDIS_SUBSCRIBER_FACTORY) private readonly redisSubscriberFactory: () => Redis,
     @Inject(REDIS_COMMAND_CLIENT) private readonly redisCommandClient: Redis,
     private readonly jobsService: JobsService,
     private readonly prisma: PrismaClient,
   ) {}
+
+  // redisCommandClient (REDIS_COMMAND_CLIENT above) is a raw ioredis
+  // instance with no lifecycle hooks of its own -- confirmed real, the same
+  // gap found in JobEventPersistenceService/ChatService/JobEventsPublisher:
+  // never disconnected, stayed open past every e2e-spec.ts's app.close().
+  // Per-connection subscribers (redisSubscriberFactory) are NOT touched
+  // here -- each is already torn down on its own request/response
+  // lifecycle inside streamEvents (see that method's own cleanup), and this
+  // shared command client must never be closed from there (see
+  // REDIS_COMMAND_CLIENT's own doc comment above).
+  onModuleDestroy(): void {
+    this.redisCommandClient.disconnect();
+  }
 
   // Durable counterpart to the live SSE stream above: JobEventPersistenceService
   // writes every stage/narration event to JobEvent as it's published, so a

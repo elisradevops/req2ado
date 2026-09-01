@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import type Redis from 'ioredis';
 
@@ -41,7 +41,7 @@ interface ParsedEvent {
 // not a Nest application) -- a second instance of this subscriber would
 // double-write every event.
 @Injectable()
-export class JobEventPersistenceService implements OnModuleInit {
+export class JobEventPersistenceService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly subscriber: Redis,
     // A plain, never-subscribed connection -- `subscriber` above is
@@ -78,6 +78,22 @@ export class JobEventPersistenceService implements OnModuleInit {
       // eslint-disable-next-line no-console -- no structured logger in this module yet
       console.error('JobEventPersistenceService backfill sweep failed:', err);
     });
+  }
+
+  // Neither client was ever closed -- a real, confirmed leak: both stayed
+  // open past app.close() in every e2e-spec.ts that boots the full
+  // AppModule, accumulating (2 connections x however many such spec files
+  // run in the same process) with nothing to reclaim them once Jest's
+  // worker-level force-exit safety net is bypassed by --runInBand (a single
+  // worker, no per-worker process boundary) -- confirmed live as the root
+  // cause of "Run pnpm test" hanging in CI, where maxWorkers legitimately
+  // computes to 1 on a real 2-core runner. disconnect() (not quit()),
+  // matching HealthController's own precedent: subscriber is psubscribe'd
+  // and can't accept the QUIT command's own round trip; disconnect() closes
+  // the raw socket immediately for both regardless of that.
+  onModuleDestroy(): void {
+    this.subscriber.disconnect();
+    this.commandClient.disconnect();
   }
 
   private parsePayload(message: string): ParsedEvent | null {

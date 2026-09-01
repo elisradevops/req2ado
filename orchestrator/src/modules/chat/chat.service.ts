@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException, type OnModuleDestroy } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import type Redis from 'ioredis';
 import axios from 'axios';
@@ -23,7 +23,7 @@ interface DoneEventPayload {
 }
 
 @Injectable()
-export class ChatService {
+export class ChatService implements OnModuleDestroy {
   private readonly logger = new Logger(ChatService.name);
 
   constructor(
@@ -31,6 +31,18 @@ export class ChatService {
     private readonly ingestionBaseUrl: string,
     private readonly redis: Redis,
   ) {}
+
+  // CHAT_REDIS_CLIENT (chat.module.ts) is a raw ioredis instance with no
+  // lifecycle hooks of its own -- Nest's DI never closes it on app.close()
+  // unless the class it's injected into does. Confirmed real, alongside the
+  // identical gap in JobEventPersistenceService: neither was ever
+  // disconnected, both stayed open past every e2e-spec.ts's app.close(),
+  // accumulating across the whole orchestrator test process with nothing to
+  // reclaim them once Jest's --runInBand mode removes the per-worker
+  // process boundary that otherwise silently forced them closed.
+  onModuleDestroy(): void {
+    this.redis.disconnect();
+  }
 
   async sendTurn(jobId: string, localId: string, message: string, model: string | undefined): Promise<void> {
     const job = await this.prisma.job.findUnique({ where: { id: jobId } });

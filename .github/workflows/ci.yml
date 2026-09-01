@@ -16,13 +16,19 @@ jobs:
   node:
     name: Node (frontend / orchestrator / mcp-ado-server)
     runs-on: ubuntu-latest
-    # Safety net, not a fix: this job hung twice today (once from a real
-    # leaked setInterval, since fixed; once with no code-level cause found
-    # after real effort -- isolated orchestrator, full local `pnpm test`,
-    # and the exact CI command all ran clean in under a minute, repeatedly).
-    # A normal run takes ~2 min. 20 min gives real headroom while turning
-    # any future hang into a fast, visible failure instead of burning
-    # unbounded CI time and needing a manual `gh run cancel`.
+    # Safety net: this job hung repeatedly on "Run pnpm test" before the
+    # real cause (several raw ioredis clients across jobs.module.ts/
+    # chat.module.ts with no OnModuleDestroy -- JobEventsPublisher,
+    # REDIS_COMMAND_CLIENT/JobEventsController, both of
+    # JobEventPersistenceService's connections, ChatService's client) was
+    # found and fixed. Each stayed open past every e2e-spec.ts's
+    # app.close(), and on this runner's real 2 vCPUs (confirmed via a
+    # temporary diagnostic step, since removed: nproc/os.cpus()/
+    # os.availableParallelism() all agree at 2 here) jest's own maxWorkers
+    # legitimately computes to 1 -- a single process with no per-worker
+    # boundary to silently force the leaked connections closed the way
+    # multi-worker mode was masking locally the whole time. A normal run
+    # takes ~2 min; kept as a backstop in case a future leak slips through.
     timeout-minutes: 20
     # orchestrator/test/health.e2e-spec.ts boots the full AppModule, which
     # eagerly constructs real (non-lazyConnect) ioredis clients for
@@ -52,23 +58,8 @@ jobs:
           version: 9
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      # Temporary diagnostic: this job has hung on "Run pnpm test" three
-      # times despite a fix (commit 75138c6) that resolved the same hang
-      # reproduced locally in a Docker container constrained to --cpus=2 --
-      # need this runner's OWN real numbers to confirm or rule out the same
-      # cgroup-CPU-misreporting mechanism, rather than guessing further.
-      # Remove once the real cause is confirmed.
-      - name: DIAGNOSTIC -- CPU/memory reporting on this runner
-        run: |
-          echo "nproc: $(nproc)"
-          node -e "const os=require('os'); console.log('os.cpus().length:', os.cpus().length); console.log('os.availableParallelism():', os.availableParallelism ? os.availableParallelism() : 'n/a (node too old)');"
-          cat /proc/cpuinfo | grep -c ^processor || true
-          echo "--- cgroup v2 cpu.max (if present) ---"
-          cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo "not present"
-          echo "--- cgroup v1 cfs quota/period (if present) ---"
-          cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo "not present"
-          cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo "not present"
-          free -h || true
+      # Step-level backstop, tighter than the job's 20-minute one -- a
+      # normal run finishes this in under a minute.
       - run: pnpm test
         timeout-minutes: 8
 

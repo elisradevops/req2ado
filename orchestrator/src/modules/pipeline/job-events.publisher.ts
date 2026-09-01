@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import type Redis from 'ioredis';
 
 export type JobStage =
@@ -74,8 +74,19 @@ const CURRENT_STAGE_TTL_SECONDS = 3600;
 const NARRATION_LOG_MAX_ENTRIES = 50;
 
 @Injectable()
-export class JobEventsPublisher {
+export class JobEventsPublisher implements OnModuleDestroy {
   constructor(private readonly redis: Redis) {}
+
+  // The raw ioredis instance jobs.module.ts's useFactory constructs has no
+  // lifecycle hooks of its own -- confirmed real, the same gap found in
+  // JobEventPersistenceService and ChatService: never disconnected, stayed
+  // open past every e2e-spec.ts's app.close(), part of the dozens of
+  // accumulated open connections that hang orchestrator's Jest run once
+  // --runInBand removes the per-worker process boundary that otherwise
+  // silently forced them closed.
+  onModuleDestroy(): void {
+    this.redis.disconnect();
+  }
 
   async publish(jobId: string, stage: JobStage): Promise<void> {
     // Real gap this closes: JobEventPersistenceService's own
