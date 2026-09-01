@@ -7,6 +7,18 @@ on:
       - 'frontend/**'
       - '.github/workflows/frontend-release.yml'
 
+# Shared literal group name across all four *-release.yml workflows (GitHub
+# Actions matches concurrency groups by name across an entire repo, not
+# per-workflow-file) -- each one's version-bump step commits+pushes to the
+# same main branch via the same PAT, so two firing at once race for that
+# push (confirmed live: all four fired together on the commit that first
+# added them, and three lost the race with "! [rejected] main -> main
+# (fetch first)"). queued, not cancelled -- a cancelled run could abort
+# mid Docker push.
+concurrency:
+  group: req2ado-release-version-bump
+  cancel-in-progress: false
+
 jobs:
   release:
     name: 🚀 publish

@@ -9,6 +9,13 @@ on:
 permissions:
   contents: write
 
+# See frontend-release.yml's own comment -- shared literal group name across
+# all four *-release.yml workflows so their version-bump commits/pushes to
+# main queue instead of racing.
+concurrency:
+  group: req2ado-release-version-bump
+  cancel-in-progress: false
+
 jobs:
   release:
     name: 🚀 publish
