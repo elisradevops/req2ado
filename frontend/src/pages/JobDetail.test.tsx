@@ -877,7 +877,17 @@ describe('JobDetail', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(screen.getByRole('checkbox', { name: /exclude row one/i }));
 
-    await waitFor(() => expect(screen.getByText(/failed to update/i)).toBeInTheDocument());
+    // findByText's own timeout, not the global asyncUtilTimeout (setup.ts) --
+    // that default is deliberately kept under ToastProvider's 4400ms
+    // auto-dismiss so a toast that appears fast can't be watched
+    // disappearing before the assertion checks (confirmed live as a real
+    // race this session). This click-to-toast path has no such ceiling:
+    // setDiffEntryExcluded rejects immediately (no artificial delay in the
+    // mock), so the toast's own 4400ms clock only starts once it actually
+    // mounts -- widening just the "does it ever appear" wait here, for this
+    // one assertion, adds real headroom against CI contention delaying the
+    // click's own re-render without reintroducing that race anywhere else.
+    await screen.findByText(/failed to update/i, {}, { timeout: 8000 });
   });
 
   // SWEEP.md §10 final-review fix: the backend (JobsService.getSummary/
