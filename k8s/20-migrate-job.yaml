@@ -18,7 +18,13 @@ spec:
           # Targets the multi-stage Dockerfile's `builder` stage, NOT the
           # default `runtime` stage -- the `prisma` CLI package is a
           # devDependency, stripped from `runtime` (see orchestrator/Dockerfile).
-          image: req2ado-orchestrator:builder
+          # Published by orchestrator-release.yml's second build step, same
+          # floating-tag convention as this directory's other manifests
+          # (nothing here rewrites k8s/ automatically, so a version-pinned-only
+          # tag would silently rot). Pin to `:<version>-builder` (also
+          # published) instead if you want a real deployment pinned to a
+          # specific release.
+          image: elisradevops/req2ado-orchestrator:latest-builder
           command: ["npx", "prisma", "migrate", "deploy"]
           env:
             - name: DATABASE_URL
