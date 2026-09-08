@@ -1,7 +1,7 @@
 # ingestion/app/config.py
 from __future__ import annotations
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -172,6 +172,33 @@ class Settings(BaseSettings):
     # ATTEMPTING it, for when the conversion step itself is the problem
     # (e.g. contending on shared LibreOffice profile resources under load).
     docx_page_alignment_enabled: bool = True
+
+    # `logging.basicConfig(level=...)` in app/main.py runs at MODULE IMPORT
+    # time -- before the FastAPI app object is even constructed -- and
+    # logging matches level NAMES against its uppercase-only `_nameToLevel`
+    # table with no case folding in any Python version this package supports.
+    # So LOG_LEVEL=info (a completely natural thing for an operator to
+    # hand-write) raised `ValueError: Unknown level: 'info'` and crashlooped
+    # the pod at boot, before one line of logging config had been applied.
+    # Confirmed live by reproducing it directly.
+    #
+    # Deliberately NOT retyped as `Literal[...]`: that would only convert
+    # "lowercase silently works" into "lowercase still crashes, different
+    # error message" -- the opposite of the goal. A genuinely unknown level
+    # (LOG_LEVEL=nonsense) is still allowed to raise here -- that's a real
+    # typo, and failing fast at boot beats silently downgrading to INFO and
+    # leaving an operator to wonder why their DEBUG flag did nothing. This is
+    # a different intent than env_ignore_empty below (blank means "operator
+    # deliberately unset this"), not an inconsistency with it.
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, value: object) -> object:
+        # isinstance guard rather than a bare .strip().upper(): without it a
+        # non-str input raises a raw AttributeError from inside the
+        # validator instead of pydantic's own ValidationError.
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
 
     # env_ignore_empty: a var PRESENT BUT BLANK in a real .env file
     # (`SURVEY_CHUNK_CONCURRENCY=`, a shape .env.template's own commented-out

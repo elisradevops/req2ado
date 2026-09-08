@@ -72,3 +72,39 @@ jobs:
           tags: |
             elisradevops/req2ado-orchestrator:${{ steps.package-version.outputs.current-version }}
             elisradevops/req2ado-orchestrator:latest
+      # Second build of the SAME Dockerfile and the SAME context, stopping at
+      # the `builder` stage instead of running through to `runtime`.
+      # k8s/20-migrate-job.yaml runs `npx prisma migrate deploy` against this
+      # image: the `prisma` CLI is a devDependency, so `runtime`'s
+      # `npm ci --omit=dev` strips it out entirely -- that stage COPYs the
+      # prisma/ schema in but has no CLI to apply it with. Mirrors
+      # docker-compose.yml's `migrate` service, which sets `target: builder`
+      # for exactly this reason. Before this step existed, NO builder-stage
+      # tag was ever published and the migrate Job could not pull at all.
+      - name: Build and push (builder stage, for the migrate Job)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: orchestrator/Dockerfile
+          target: builder
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # Same reason as the runtime build above: the default OCI build
+          # attestations do not pull through this org's Artifactory Docker
+          # remote-repo config.
+          provenance: false
+          sbom: false
+          # cache-from only, deliberately no cache-to. `builder` is a PARENT
+          # stage of `runtime`, and the step above exports mode=max (every
+          # intermediate stage), so this exact stage's layers are already in
+          # the cache under the same default scope. Re-exporting them would
+          # collide on an immutable GHA cache key -- a 409 surfaced as a noisy
+          # "failed to save cache" warning -- for zero added coverage.
+          cache-from: type=gha
+          # `latest-builder` is the tag k8s/20-migrate-job.yaml tracks, exactly
+          # as its four sibling manifests track `:latest`. Nothing in CI ever
+          # rewrites k8s/, so a version-pinned-only tag there would silently
+          # rot on the next orchestrator release.
+          tags: |
+            elisradevops/req2ado-orchestrator:${{ steps.package-version.outputs.current-version }}-builder
+            elisradevops/req2ado-orchestrator:latest-builder
