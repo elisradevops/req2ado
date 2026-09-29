@@ -25,7 +25,7 @@ describe('resolveApiVersion', () => {
     const httpClient = axios.create();
     const getSpy = vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
 
-    const result = await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient);
+    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
 
     expect(result).toBe('7.1');
     expect(getSpy).toHaveBeenCalledTimes(1);
@@ -39,7 +39,7 @@ describe('resolveApiVersion', () => {
       .mockRejectedValueOnce({ response: { status: 400 } })
       .mockResolvedValueOnce({ status: 200, data: {} });
 
-    const result = await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient);
+    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
 
     expect(result).toBe('5.1');
     expect(getSpy).toHaveBeenCalledTimes(2);
@@ -53,7 +53,7 @@ describe('resolveApiVersion', () => {
       .mockRejectedValueOnce({ response: { status: 400 } })
       .mockResolvedValueOnce({ status: 200, data: {} });
 
-    const result = await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient);
+    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
 
     expect(result).toBe('none');
     expect(getSpy.mock.calls[2][0]).not.toContain('api-version');
@@ -63,7 +63,7 @@ describe('resolveApiVersion', () => {
     const httpClient = axios.create();
     vi.spyOn(httpClient, 'get').mockRejectedValue({ response: { status: 400 } });
 
-    await expect(resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient)).rejects.toThrow(
+    await expect(resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient)).rejects.toThrow(
       /no api-version/i,
     );
   });
@@ -72,34 +72,37 @@ describe('resolveApiVersion', () => {
     const httpClient = axios.create();
     const getSpy = vi.spyOn(httpClient, 'get').mockRejectedValue({ response: { status: 401 } });
 
-    await expect(resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient)).rejects.toThrow(
+    await expect(resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient)).rejects.toThrow(
       /401/,
     );
     expect(getSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('probes the project-scoped wit/fields endpoint, not org-level connectionData', async () => {
+  it('probes the collection-level wit/fields endpoint, not org-level connectionData', async () => {
     // Regression: found live against a real ADO org that connectionData
     // rejects api-version 7.1/7.0/5.1 with 400 (resolving to "none"), while
     // the actual wit/workitems create endpoint accepts 7.1 directly and,
     // unlike connectionData, hard-requires an explicit api-version --
     // "none" 400'd there with "No api-version was supplied". Probing the
     // same _apis/wit/* family we actually write to avoids that mismatch.
+    // Collection-level (no project prefix) is used so the probe works when
+    // no default project is configured (e.g. during discoverProjects).
     const httpClient = axios.create();
     const getSpy = vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
 
-    await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1'], credential, httpClient);
+    await resolveApiVersion(credential.orgUrl, ['7.1'], credential, httpClient);
 
     const url = getSpy.mock.calls[0][0] as string;
-    expect(url).toContain(`/${testConfig.adoProject}/_apis/wit/fields`);
+    expect(url).toContain('/_apis/wit/fields');
     expect(url).not.toContain('connectionData');
+    expect(url).not.toContain(`/${testConfig.adoProject}/`);
   });
 
   it('sends the PAT as a Basic auth header on every probe', async () => {
     const httpClient = axios.create();
     const getSpy = vi.spyOn(httpClient, 'get').mockResolvedValueOnce({ status: 200, data: {} });
 
-    await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1'], credential, httpClient);
+    await resolveApiVersion(credential.orgUrl, ['7.1'], credential, httpClient);
 
     const expectedHeader = `Basic ${Buffer.from(':fake-pat').toString('base64')}`;
     expect(getSpy.mock.calls[0][1]?.headers?.Authorization).toBe(expectedHeader);
@@ -112,7 +115,7 @@ describe('resolveApiVersion', () => {
       .mockRejectedValueOnce({ response: { status: 503 } })
       .mockResolvedValueOnce({ status: 200, data: {} });
 
-    const result = await resolveApiVersion(credential.orgUrl, testConfig.adoProject, ['7.1', '5.1', 'none'], credential, httpClient);
+    const result = await resolveApiVersion(credential.orgUrl, ['7.1', '5.1', 'none'], credential, httpClient);
 
     expect(result).toBe('7.1');
     expect(getSpy).toHaveBeenCalledTimes(2);
@@ -120,16 +123,13 @@ describe('resolveApiVersion', () => {
     expect(getSpy.mock.calls[1][0]).toContain('api-version=7.1');
   });
 
-  it("RealAdoBackend's api-version probe itself targets the per-request project, not config.adoProject", async () => {
-    // Discriminating regression test for a real gap found while wiring the
-    // per-project fix: every RealAdoBackend method computed its own `proj`
-    // (project ?? config.adoProject) for its real endpoint URL, but called
-    // `getApiVersion()` with NO argument -- so the api-version LADDER PROBE
-    // itself always ran against config.adoProject's URL regardless of which
-    // project the call was actually scoped to. Asserts on the FIRST get
-    // call (the probe) specifically, not the second (the real endpoint) --
-    // every pre-existing "overrides config.adoProject" test in this file
-    // only checked the second call and would not have caught this.
+  it("RealAdoBackend's api-version probe uses the collection-level wit/fields URL regardless of which project is requested", async () => {
+    // Regression guard for the collection-level probe design: the probe must
+    // NOT include any project segment so it works even when no default project
+    // is configured (e.g. during discoverProjects or a ping call). Asserts on
+    // the FIRST get call (the probe) specifically, not the second (the real
+    // endpoint) -- the real endpoint URL carries the project, but the probe
+    // must always be collection-scoped.
     const backend = new RealAdoBackend(testConfig, credential);
     const httpClient = axios.create();
     const getSpy = vi
@@ -142,7 +142,8 @@ describe('resolveApiVersion', () => {
     await backend.readAreaPaths(5, 'OtherProject');
 
     const probeUrl = getSpy.mock.calls[0][0] as string;
-    expect(probeUrl).toContain('/OtherProject/_apis/wit/fields');
+    expect(probeUrl).toContain('/_apis/wit/fields');
+    expect(probeUrl).not.toContain('/OtherProject/');
     expect(probeUrl).not.toContain('/MyProject/');
   });
 });

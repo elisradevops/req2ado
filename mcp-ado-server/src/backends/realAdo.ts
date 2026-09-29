@@ -57,15 +57,19 @@ function buildHttpClient(config: AdoMcpConfig): AxiosInstance {
  */
 export async function resolveApiVersion(
   orgUrl: string,
-  project: string,
   apiVersionLadder: string[],
   credential: AdoCredential,
   httpClient: AxiosInstance,
 ): Promise<string> {
+  // wit/fields is valid at the collection level (no project segment) --
+  // using a project-scoped URL here required a known project before any call
+  // was made, which broke discoverProjects/ping (collection-level calls that
+  // run before any project is known). The collection-level endpoint returns
+  // the same api-version behaviour and needs no ADO_PROJECT fallback.
   const authHeader = buildBasicAuthHeader(credential.pat);
   let lastFailure: { status: number; url: string } | null = null;
   for (const version of apiVersionLadder) {
-    const base = `${orgUrl.replace(/\/$/, '')}/${project}/_apis/wit/fields`;
+    const base = `${orgUrl.replace(/\/$/, '')}/_apis/wit/fields`;
     const url = version === 'none' ? base : `${base}?api-version=${version}`;
     try {
       const response = await retryWithBackoff(() => httpClient.get(url, { headers: { Authorization: authHeader } }));
@@ -174,11 +178,10 @@ export class RealAdoBackend implements AdoBackend {
   // RealAdoBackend instance serves exactly one credential/request
   // (index.ts builds a fresh instance per request), so this cache never
   // leaks across requests or credentials.
-  private async getApiVersion(project?: string): Promise<string> {
+  private async getApiVersion(): Promise<string> {
     if (this.resolvedApiVersion === null) {
       this.resolvedApiVersion = await resolveApiVersion(
         this.credential.orgUrl,
-        this.resolveProject(project),
         this.config.apiVersionLadder,
         this.credential,
         this.httpClient,
@@ -194,7 +197,7 @@ export class RealAdoBackend implements AdoBackend {
 
   async createWorkItem(input: CreateWorkItemInput, project?: string): Promise<WorkItemRecord> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitems/$${input.type}${versionQueryParam(version)}`;
     // retryOnNoResponse: false -- this create is not idempotent. A lost
     // response after ADO already committed the work item means a blind
@@ -325,7 +328,7 @@ export class RealAdoBackend implements AdoBackend {
 
   async queryIds(fieldMatch: Record<string, string>, project?: string): Promise<number[]> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/wiql${versionQueryParam(version)}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.post(
@@ -349,7 +352,7 @@ export class RealAdoBackend implements AdoBackend {
 
   async discoverFields(workItemType: string, project?: string): Promise<string[]> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitemtypes/${workItemType}/fields${versionQueryParam(version)}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
@@ -366,7 +369,7 @@ export class RealAdoBackend implements AdoBackend {
   // this backend's existing fail-open convention (see readAreaPaths et al).
   async discoverFieldsDetailed(workItemType: string, project?: string): Promise<AdoFieldDescriptor[]> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitemtypes/${workItemType}/fields${versionQueryParam(version)}${version === 'none' ? '?' : '&'}$expand=allowedValues`;
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
@@ -382,7 +385,7 @@ export class RealAdoBackend implements AdoBackend {
 
   async readAreaPaths(depth: number, project?: string): Promise<AreaPathNode> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/classificationnodes/areas${versionQueryParam(version)}${version === 'none' ? '?' : '&'}$depth=${depth}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
@@ -392,7 +395,7 @@ export class RealAdoBackend implements AdoBackend {
 
   async readIterationPaths(depth: number, project?: string): Promise<AreaPathNode> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/classificationnodes/iterations${versionQueryParam(version)}${version === 'none' ? '?' : '&'}$depth=${depth}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
@@ -402,7 +405,7 @@ export class RealAdoBackend implements AdoBackend {
 
   async readStates(workItemType: string, project?: string): Promise<string[]> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitemtypes/${workItemType}/states${versionQueryParam(version)}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
@@ -423,7 +426,7 @@ export class RealAdoBackend implements AdoBackend {
 
   async discoverWorkItemTypes(project?: string): Promise<WorkItemTypeDefinition[]> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitemtypes${versionQueryParam(version)}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
@@ -448,7 +451,7 @@ export class RealAdoBackend implements AdoBackend {
   // each category is the real type name to use.
   async discoverWorkItemTypeCategories(project?: string): Promise<WorkItemTypeCategoryMap> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/workitemtypecategories${versionQueryParam(version)}`;
     const response = await retryWithBackoff(() =>
       this.httpClient.get(url, { headers: { Authorization: this.authHeader() } }),
@@ -510,7 +513,7 @@ export class RealAdoBackend implements AdoBackend {
    */
   async uploadAttachment(workItemId: number, fileName: string, dataBase64: string, mimeType: string, project?: string): Promise<void> {
     const proj = this.resolveProject(project);
-    const version = await this.getApiVersion(proj);
+    const version = await this.getApiVersion();
     const uploadBase = `${this.credential.orgUrl.replace(/\/$/, '')}/${proj}/_apis/wit/attachments?fileName=${encodeURIComponent(fileName)}`;
     const uploadUrl = version === 'none' ? uploadBase : `${uploadBase}&api-version=${version}`;
     // ADO's attachments-create endpoint only accepts application/octet-stream
@@ -558,7 +561,7 @@ export class RealAdoBackend implements AdoBackend {
   // ADO, not per-project -- unlike discoverFields/discoverWorkItemTypes,
   // there is no wrong-project bug here to fix.
   async discoverLinkTypes(project?: string): Promise<AdoLinkType[]> {
-    const version = await this.getApiVersion(project);
+    const version = await this.getApiVersion();
     const url = `${this.credential.orgUrl.replace(/\/$/, '')}/_apis/wit/workitemrelationtypes${versionQueryParam(version)}`;
     try {
       const response = await retryWithBackoff(() =>
