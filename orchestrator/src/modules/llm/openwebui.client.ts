@@ -21,6 +21,35 @@ function isSchemaRejection(err: unknown): boolean {
   return err instanceof OpenAI.APIError && (err.status === 400 || err.status === 422);
 }
 
+/** Carries an upstream HTTP status so the controller can propagate it instead of collapsing to a generic 500. */
+export class UpstreamHttpError extends Error {
+  constructor(
+    public readonly upstreamStatus: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'UpstreamHttpError';
+  }
+}
+
+// LiteLLM surfaces a 'seed' rejection as a 400 with 'UnsupportedParamsError'
+// when the underlying provider (e.g. azure_ai) doesn't accept that param.
+// Detected here so callers can retry without seed instead of hard-failing.
+function isSeedUnsupportedError(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return false;
+  return err.message.includes('UnsupportedParamsError') || (err.message.includes('unsupported') && err.message.includes('seed'));
+}
+
+// Normalises an OpenAI.APIError into UpstreamHttpError so the HTTP controller
+// can forward the upstream status code without importing the OpenAI SDK itself.
+// Any other thrown value is re-thrown unchanged.
+function rethrowAsUpstream(err: unknown): never {
+  if (err instanceof OpenAI.APIError && err.status != null) {
+    throw new UpstreamHttpError(err.status, err.message);
+  }
+  throw err;
+}
+
 export interface OpenWebUiClientConfig {
   LLM_BASE_URL: string;
   LLM_API_KEY?: string;
@@ -73,14 +102,15 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
-    const buildParams = (includeSchema: boolean) => ({
+    const buildParams = (includeSchema: boolean, includeSeed = true) => ({
       model: opts?.model ?? this.config.LLM_CHAT_MODEL,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
       // See LlmChatOptions.seed's doc comment -- only sent when a caller
       // explicitly asks for pinned sampling, so every other caller's default
-      // behavior is unchanged.
-      ...(opts?.seed !== undefined ? { seed: opts.seed } : {}),
+      // behavior is unchanged. includeSeed:false is used for the unsupported-
+      // param retry path (some providers, e.g. azure_ai via LiteLLM, reject seed).
+      ...(includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
       // Ollama maps OpenAI-compat max_tokens -> its own num_predict. Bounds
       // worst-case latency for a reasoning model's otherwise-unbounded
@@ -118,7 +148,13 @@ export class OpenWebUiClient implements LlmClient {
         const response = await this.openai.chat.completions.create(buildParams(false));
         return toResult(response);
       }
-      throw err;
+      if (opts?.seed !== undefined && isSeedUnsupportedError(err)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[OpenWebUiClient.chat] upstream rejected seed param (UnsupportedParamsError); retrying without it for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+        const response = await this.openai.chat.completions.create(buildParams(true, false));
+        return toResult(response);
+      }
+      rethrowAsUpstream(err);
     }
   }
 
@@ -243,14 +279,14 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
-    const buildParams = (includeSchema: boolean) => ({
+    const buildParams = (includeSchema: boolean, includeSeed = true) => ({
       model: opts?.model ?? this.config.LLM_CHAT_MODEL,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       stream: true as const,
       ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
       // See chat()'s own seed comment -- only sent when a caller explicitly
-      // asks for pinned sampling.
-      ...(opts?.seed !== undefined ? { seed: opts.seed } : {}),
+      // asks for pinned sampling. includeSeed:false is the seed retry path.
+      ...(includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
@@ -265,8 +301,12 @@ export class OpenWebUiClient implements LlmClient {
     } catch (err) {
       if (opts?.responseSchema && isSchemaRejection(err)) {
         stream = await this.openai.chat.completions.create(buildParams(false));
+      } else if (opts?.seed !== undefined && isSeedUnsupportedError(err)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[OpenWebUiClient.streamChat] upstream rejected seed param; retrying without it for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+        stream = await this.openai.chat.completions.create(buildParams(true, false));
       } else {
-        throw err;
+        rethrowAsUpstream(err);
       }
     }
     // `reasoning` is Ollama's OpenAI-compat streaming delta field for a
@@ -311,7 +351,14 @@ export class OpenWebUiClient implements LlmClient {
       { maxRetries: 3 },
     );
     if (!response.ok) {
-      throw new Error(`Ollama embed request failed: ${response.status}`);
+      let bodyText = '';
+      try { bodyText = await response.text(); } catch { /* ignore read failure */ }
+      // eslint-disable-next-line no-console
+      console.error(`[OpenWebUiClient] Ollama embed ${response.status}: ${bodyText.slice(0, 500)}`);
+      throw new UpstreamHttpError(
+        response.status,
+        `Ollama embed request failed: ${response.status}${bodyText ? ` — ${bodyText.slice(0, 200)}` : ''}`,
+      );
     }
     const body = (await response.json()) as { embeddings: number[][] };
     return body.embeddings;
@@ -351,7 +398,21 @@ export class OpenWebUiClient implements LlmClient {
       { maxRetries: 3 },
     );
     if (!response.ok) {
-      throw new Error(`Open WebUI /openai/embeddings request failed: ${response.status}`);
+      let bodyText = '';
+      try { bodyText = await response.text(); } catch { /* ignore read failure */ }
+      let detail = bodyText;
+      try {
+        const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+        const msg = typeof parsed.message === 'string' ? parsed.message : '';
+        const det = typeof parsed.detail === 'string' ? parsed.detail : '';
+        detail = msg || det || bodyText;
+      } catch { /* non-JSON body — use raw text */ }
+      // eslint-disable-next-line no-console
+      console.error(`[OpenWebUiClient] /openai/embeddings ${response.status}: ${detail.slice(0, 500)}`);
+      throw new UpstreamHttpError(
+        response.status,
+        `Open WebUI /openai/embeddings request failed: ${response.status}${detail ? ` — ${detail.slice(0, 200)}` : ''}`,
+      );
     }
     const body = (await response.json()) as { data: { embedding: number[]; index: number }[] };
     return [...body.data].sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
@@ -631,7 +692,9 @@ export class OpenWebUiClient implements LlmClient {
       }),
     });
     if (!response.ok) {
-      throw new Error(`OpenWebUiClient.chatWithFullFileContext failed: ${response.status}`);
+      let bodyText = '';
+      try { bodyText = await response.text(); } catch { /* ignore read failure */ }
+      throw new Error(`OpenWebUiClient.chatWithFullFileContext failed: ${response.status}${bodyText ? ` — ${bodyText.slice(0, 200)}` : ''}`);
     }
     const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
     return { content: data.choices?.[0]?.message?.content ?? '' };

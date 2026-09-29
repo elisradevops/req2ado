@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpException, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { llmChatRequestSchema } from './llm-chat.dto';
@@ -8,6 +8,7 @@ import { llmVisionRequestSchema } from './llm-vision.dto';
 import type { LlmToolCall } from './llm-client.interface';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClientFactory } from './openwebui-client.factory';
+import { UpstreamHttpError } from './openwebui.client';
 import { Public } from '../auth/public.decorator';
 
 // Every route here is internal service-to-service traffic already gated by
@@ -57,20 +58,25 @@ export class LlmController {
     }
     const body = parseResult.data;
     const llmClient = await this.resolveClient(userId);
-    const result = await llmClient.chat(body.messages, {
-      ...(body.model !== undefined ? { model: body.model } : {}),
-      ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
-      ...(body.seed !== undefined ? { seed: body.seed } : {}),
-      ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
-      ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
-      ...(body.numCtx !== undefined ? { numCtx: body.numCtx } : {}),
-      ...(body.topK !== undefined ? { topK: body.topK } : {}),
-      ...(body.minP !== undefined ? { minP: body.minP } : {}),
-      ...(body.tools !== undefined ? { tools: body.tools } : {}),
-      ...(body.toolChoice !== undefined ? { toolChoice: body.toolChoice } : {}),
-      ...(body.think !== undefined ? { think: body.think } : {}),
-    });
-    return result;
+    try {
+      const result = await llmClient.chat(body.messages, {
+        ...(body.model !== undefined ? { model: body.model } : {}),
+        ...(body.temperature !== undefined ? { temperature: body.temperature } : {}),
+        ...(body.seed !== undefined ? { seed: body.seed } : {}),
+        ...(body.responseSchema !== undefined ? { responseSchema: body.responseSchema } : {}),
+        ...(body.maxTokens !== undefined ? { maxTokens: body.maxTokens } : {}),
+        ...(body.numCtx !== undefined ? { numCtx: body.numCtx } : {}),
+        ...(body.topK !== undefined ? { topK: body.topK } : {}),
+        ...(body.minP !== undefined ? { minP: body.minP } : {}),
+        ...(body.tools !== undefined ? { tools: body.tools } : {}),
+        ...(body.toolChoice !== undefined ? { toolChoice: body.toolChoice } : {}),
+        ...(body.think !== undefined ? { think: body.think } : {}),
+      });
+      return result;
+    } catch (err) {
+      if (err instanceof UpstreamHttpError) throw new HttpException(err.message, err.upstreamStatus);
+      throw err;
+    }
   }
 
   @Post('chat/stream')
@@ -145,8 +151,13 @@ export class LlmController {
       throw new BadRequestException('Invalid request body: texts must be a non-empty array of strings');
     }
     const llmClient = await this.resolveClient(userId);
-    const embeddings = await llmClient.embed(parseResult.data.texts);
-    return { embeddings };
+    try {
+      const embeddings = await llmClient.embed(parseResult.data.texts);
+      return { embeddings };
+    } catch (err) {
+      if (err instanceof UpstreamHttpError) throw new HttpException(err.message, err.upstreamStatus);
+      throw err;
+    }
   }
 
   // Backs ingestion's optional live per-model capability lookup
