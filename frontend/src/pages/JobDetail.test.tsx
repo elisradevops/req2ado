@@ -128,8 +128,10 @@ describe('JobDetail', () => {
 
     // Save exits edit mode immediately, so a second Edit->Save round is
     // reachable through the same UI -- the guard, not the UI, must block
-    // the second underlying call.
-    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    // the second underlying call. findByRole (async) rather than getByRole
+    // (sync) because the view-mode re-render from exiting edit mode may not
+    // have committed by the time this line runs on a slow CI runner.
+    await userEvent.click(await screen.findByRole('button', { name: /edit/i }));
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
     expect(jobsApi.editDiffEntry).toHaveBeenCalledTimes(1);
@@ -1215,8 +1217,10 @@ describe('JobDetail', () => {
 
       // The form collapses immediately after Add, so reopening it and
       // submitting again is reachable through the same UI -- the guard,
-      // not the UI, must block the second underlying call.
-      await userEvent.click(screen.getByRole('button', { name: /^new item$/i }));
+      // not the UI, must block the second underlying call. findByRole (async)
+      // for the same reason as the handleSaveEdit guard test above: the
+      // form-collapse re-render may not have committed on a slow CI runner.
+      await userEvent.click(await screen.findByRole('button', { name: /^new item$/i }));
       await userEvent.type(screen.getByLabelText(/title/i), 'Second Epic');
       await userEvent.type(screen.getByLabelText(/description/i), 'd');
       await userEvent.click(screen.getByRole('button', { name: /^add$/i }));
