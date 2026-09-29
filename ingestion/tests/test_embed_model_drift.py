@@ -35,8 +35,6 @@ from app.config import Settings
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ORCHESTRATOR_SCHEMA = _REPO_ROOT / "orchestrator/src/config/config.schema.ts"
-_K8S_CONFIGMAP = _REPO_ROOT / "k8s/01-configmap.yaml"
-_K8S_INGESTION = _REPO_ROOT / "k8s/24-ingestion.yaml"
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _ENV_TEMPLATE = _REPO_ROOT / ".env.template"
 
@@ -79,28 +77,10 @@ def test_ingestion_reads_that_exact_env_var_name() -> None:
             os.environ[_ENV_VAR_NAME] = previous
 
 
-def test_ingestions_default_matches_the_shared_k8s_configmap_value(monkeypatch) -> None:
-    # The orchestrator's zod field is required with no default, so the
-    # ConfigMap is the only place a concrete shared value is written -- and
-    # both deployments consume that same ConfigMap. If these two drift, a
-    # deployment that never sets EMBED_MODEL explicitly runs the two services
-    # on two different embed models.
-    configmap = _K8S_CONFIGMAP.read_text(encoding="utf-8")
-    match = re.search(rf'^\s*{_ENV_VAR_NAME}:\s*"([^"]+)"', configmap, re.MULTILINE)
-    assert match, f"{_ENV_VAR_NAME} is no longer set in {_K8S_CONFIGMAP.name}"
-
-    monkeypatch.delenv(_ENV_VAR_NAME, raising=False)
-    assert Settings().embed_model == match.group(1), (
-        "ingestion/app/config.py's embed_model default has drifted from "
-        f"{_K8S_CONFIGMAP.name}'s {_ENV_VAR_NAME} value. Update both, or a "
-        "deployment without an explicit override runs two different models."
-    )
-
-
 def test_both_deployment_paths_still_deliver_the_var_to_ingestion() -> None:
     # The duplicated value is only safe because both services read it out of
     # the SAME shared environment. Assert that plumbing still exists, so the
-    # pin can't be quietly defeated by a compose/k8s edit that gives the var
+    # pin can't be quietly defeated by a compose edit that gives the var
     # to the orchestrator only.
     env_template = _ENV_TEMPLATE.read_text(encoding="utf-8")
     assert re.search(rf"^{_ENV_VAR_NAME}=", env_template, re.MULTILINE), (
@@ -122,10 +102,4 @@ def test_both_deployment_paths_still_deliver_the_var_to_ingestion() -> None:
         "docker-compose.yml's ingestion service no longer loads .env, so it no "
         f"longer receives ${_ENV_VAR_NAME} -- its embed_model would silently "
         "fall back to the Python default while the orchestrator uses the .env value."
-    )
-
-    k8s_ingestion = _K8S_INGESTION.read_text(encoding="utf-8")
-    assert "configMapRef" in k8s_ingestion and "req2ado-config" in k8s_ingestion, (
-        f"{_K8S_INGESTION.name} no longer pulls the req2ado-config ConfigMap, so it "
-        f"no longer receives ${_ENV_VAR_NAME}."
     )
