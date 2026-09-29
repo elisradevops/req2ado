@@ -1,6 +1,6 @@
 {
   "name": "@req2ado/orchestrator",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "req2ado orchestrator API — app auth/RBAC, LLM redaction proxy, job queue, ADO REST client, Prisma/Postgres",
   "scripts": {
