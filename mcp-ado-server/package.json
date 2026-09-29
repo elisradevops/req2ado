@@ -1,6 +1,6 @@
 {
   "name": "@req2ado/mcp-ado-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "REST service exposing ADO/TFS work-item read+write operations, with a swappable real/mock backend",
   "scripts": {
