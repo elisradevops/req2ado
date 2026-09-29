@@ -25,7 +25,7 @@ describe('AdoPatProvider', () => {
       displayName: 'Jane Doe',
     });
     expect(fetch).toHaveBeenCalledWith(
-      'https://tfs.internal/tfs/Collection/_apis/connectionData?api-version=7.1',
+      'https://tfs.internal/tfs/Collection/_apis/connectionData?api-version=7.2-preview',
       { headers: { Authorization: expect.stringMatching(/^Basic /) } },
     );
   });
@@ -60,9 +60,8 @@ describe('AdoPatProvider', () => {
   });
 
   it('advances to the next api-version in the ladder on a 400, and succeeds there', async () => {
-    // Reproduces the real on-prem Azure DevOps Server 2022.1 case: 7.1 is
-    // preview-only and rejected with 400 (VssInvalidPreviewVersionException);
-    // the GA version there is 7.0.
+    // Reproduces the real on-prem Azure DevOps Server 2022.x case: 7.2-preview
+    // is rejected with 400; the server accepts 7.1-preview instead.
     const fetchMock = jest
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'preview version required' } as Response)
@@ -78,12 +77,12 @@ describe('AdoPatProvider', () => {
     expect(result).toEqual({ identity: 'id-1', displayName: 'Jane Doe' });
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      'https://tfs.internal/tfs/Collection/_apis/connectionData?api-version=7.1',
+      'https://tfs.internal/tfs/Collection/_apis/connectionData?api-version=7.2-preview',
       expect.anything(),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      'https://tfs.internal/tfs/Collection/_apis/connectionData?api-version=7.0',
+      'https://tfs.internal/tfs/Collection/_apis/connectionData?api-version=7.1-preview',
       expect.anything(),
     );
   });
@@ -97,7 +96,7 @@ describe('AdoPatProvider', () => {
     await expect(
       provider.validateAndIdentify('https://tfs.internal/tfs/Collection', 'fake-pat'),
     ).rejects.toThrow('ADO connectionData validation failed: 400');
-    // 7.1, 7.0, 5.1, none — every rung tried once.
+    // 7.2-preview, 7.1-preview, 6.0-preview, none — every rung tried once.
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 

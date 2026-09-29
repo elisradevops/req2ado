@@ -1,0 +1,56 @@
+# Prisma migration, run as a Helm hook -- blocks `helm install`/`helm
+# upgrade` until it completes. Replaces the previous pattern of a
+# revision-suffixed Job (req2ado-migrate-7, a new name every release) plus
+# a `rancher/kubectl wait --for=condition=complete job/<that exact name>`
+# initContainer on both the orchestrator and pipeline-worker Deployments --
+# that pattern needed RBAC to read Jobs and only worked because each
+# release's Job name was known in advance. A Helm hook needs neither: Helm
+# itself blocks the release until this completes, so those initContainers
+# and the RBAC they needed are gone (see app-deployment.yaml).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "req2ado.fullname" . }}-migrate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: {{ include "req2ado.fullname" . }}-migrate
+    spec:
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.postgres.repository "tag" .Values.image.postgres.tag) }}
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h {{ include "req2ado.fullname" . }}-postgres -p 5432 -U "$POSTGRES_USER"; do
+                echo "waiting for postgres..."; sleep 3;
+              done
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.config.POSTGRES_USER | quote }}
+      containers:
+        - name: migrate
+          # The `builder` stage, not `runtime` -- the `prisma` CLI is a
+          # devDependency stripped from `runtime` (orchestrator/Dockerfile).
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.orchestrator.repository "tag" (printf "%s-builder" .Values.image.orchestrator.tag)) }}
+          command: ["npx", "prisma", "migrate", "deploy"]
+          envFrom:
+            - configMapRef:
+                name: req2ado-config
+            - secretRef:
+                name: {{ .Values.secrets.appSecretsName }}
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }

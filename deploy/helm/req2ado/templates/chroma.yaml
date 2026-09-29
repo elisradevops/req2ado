@@ -1,0 +1,73 @@
+# Name and volumeClaimTemplates deliberately unchanged from production --
+# both are load-bearing for `helm upgrade` to adopt the live StatefulSet
+# and its bound PVC (data-req2ado-chroma-0, 20Gi, nfs-client) without data
+# loss. selector.matchLabels and volumeClaimTemplates are immutable on a
+# StatefulSet; editing either fails the upgrade outright.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "req2ado.fullname" . }}-chroma
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+spec:
+  clusterIP: None # headless -- StatefulSet gets a stable per-pod DNS name
+  selector:
+    app: {{ include "req2ado.fullname" . }}-chroma
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "req2ado.fullname" . }}-chroma
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "req2ado.fullname" . }}-chroma
+  replicas: 1 # Chroma has no built-in clustering -- do not raise this
+  selector:
+    matchLabels:
+      app: {{ include "req2ado.fullname" . }}-chroma
+  template:
+    metadata:
+      labels:
+        app: {{ include "req2ado.fullname" . }}-chroma
+    spec:
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      containers:
+        - name: chroma
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.chroma.repository "tag" .Values.image.chroma.tag) }}
+          env:
+            - name: IS_PERSISTENT
+              value: "TRUE"
+            - name: PERSIST_DIRECTORY
+              value: /data
+            - name: ANONYMIZED_TELEMETRY
+              value: "FALSE"
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            httpGet: { path: /api/v1/heartbeat, port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /api/v1/heartbeat, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.chroma.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.chroma.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.chroma.storage }}

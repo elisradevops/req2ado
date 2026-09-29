@@ -1,0 +1,30 @@
+{{- if .Values.ingress.enabled }}
+# Deliberately no ingressClassName and no annotations -- copies
+# docgen-ingress exactly, which has neither and has worked against this
+# cluster's Traefik (k3s's built-in, unclassed-Ingress default controller)
+# for 196+ days. Do not add ingress-nginx/cert-manager annotations here;
+# neither is installed in this cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "req2ado.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+spec:
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "req2ado.fullname" . }}-app
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+{{- end }}

@@ -1,0 +1,26 @@
+req2ado is deployed.
+
+Pods:
+  kubectl get pods -n {{ .Release.Namespace }}
+  # expect: {{ include "req2ado.fullname" . }}-app-*, -ingestion-*, -chroma-0,
+  #         -postgres-0, -valkey-*  -- five, not thirteen.
+
+Logs, by container -- this is the whole point of the consolidation:
+  kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "req2ado.fullname" . }}-app -c web
+  kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "req2ado.fullname" . }}-app -c orchestrator
+  kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "req2ado.fullname" . }}-app -c pipeline-worker
+  kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "req2ado.fullname" . }}-app -c mcp-ado-server
+
+{{- if .Values.ingress.enabled }}
+Reachable at:
+  https://{{ .Values.ingress.host }}
+{{- end }}
+{{- if eq .Values.service.type "NodePort" }}
+Also reachable at (transitional -- see values.yaml's service.type comment):
+  http://<any-node>:{{ .Values.service.nodePort }}
+{{- end }}
+
+First install against an existing production namespace? Read
+deploy/helm/req2ado/README.md BEFORE running `helm upgrade` --
+req2ado-secrets and req2ado-ado-ca must already be annotated
+helm.sh/resource-policy=keep, or this chart's first apply prunes them.

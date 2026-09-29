@@ -1,0 +1,128 @@
+# The consolidated pod: nginx (SPA + /api proxy), orchestrator,
+# pipeline-worker, and mcp-ado-server as sibling containers over localhost.
+# Replaces 4 separate Deployments (8 pods at the old minReplicas:2) with
+# one Deployment, one pod. See README.md for why.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "req2ado.fullname" . }}-app
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+    app: {{ include "req2ado.fullname" . }}-app
+spec:
+  replicas: 1
+  strategy:
+    type: {{ .Values.app.strategy }}
+  selector:
+    matchLabels:
+      app: {{ include "req2ado.fullname" . }}-app
+  template:
+    metadata:
+      labels:
+        app: {{ include "req2ado.fullname" . }}-app
+      annotations:
+        checksum/config: {{ .Values.config | toYaml | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        # nginx: SPA + /api/ reverse proxy to the orchestrator container
+        # below over localhost. The only container the app Service/Ingress
+        # ever routes to.
+        - name: web
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.frontend.repository "tag" .Values.image.frontend.tag) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 80
+          livenessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.app.resources.web | nindent 12 }}
+
+        - name: orchestrator
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.orchestrator.repository "tag" .Values.image.orchestrator.tag) }}
+          envFrom:
+            - configMapRef:
+                name: req2ado-config
+            - secretRef:
+                name: {{ .Values.secrets.appSecretsName }}
+          env:
+            - name: PORT
+              value: "3001"
+          ports:
+            - containerPort: 3001
+          # /health = liveness (process up, no dependency check). /ready =
+          # readiness (real Postgres+Redis checks) -- see
+          # docs/handoff-point7-*.md. Because pod readiness gates on every
+          # container, the app Service only routes traffic once this
+          # container is genuinely ready, not merely nginx.
+          livenessProbe:
+            httpGet: { path: /health, port: 3001 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /ready, port: 3001 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.app.resources.orchestrator | nindent 12 }}
+
+        # No Service/probe -- nothing calls this directly, it only
+        # consumes BullMQ jobs from valkey. Same image as orchestrator,
+        # different command (see orchestrator/Dockerfile CMD override).
+        - name: pipeline-worker
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.orchestrator.repository "tag" .Values.image.orchestrator.tag) }}
+          command: ["node", "dist/modules/pipeline/pipeline-worker.main.js"]
+          envFrom:
+            - configMapRef:
+                name: req2ado-config
+            - secretRef:
+                name: {{ .Values.secrets.appSecretsName }}
+          resources:
+            {{- toYaml .Values.app.resources.pipelineWorker | nindent 12 }}
+
+        - name: mcp-ado-server
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.mcpAdoServer.repository "tag" .Values.image.mcpAdoServer.tag) }}
+          envFrom:
+            - configMapRef:
+                name: req2ado-config
+            - secretRef:
+                name: {{ .Values.secrets.appSecretsName }}
+          env:
+            - name: PORT
+              value: "4100"
+            # Only needed against a self-signed on-prem ADO/TFS cert --
+            # omit this env var + the volume/volumeMount entirely for a
+            # CA-issued cert.
+            - name: ADO_CA_CERT
+              value: /etc/ado-ca/ca.crt
+          ports:
+            - containerPort: 4100
+          livenessProbe:
+            httpGet: { path: /health, port: 4100 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /ready, port: 4100 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.app.resources.mcpAdoServer | nindent 12 }}
+          volumeMounts:
+            - name: ado-ca
+              mountPath: /etc/ado-ca
+              readOnly: true
+      volumes:
+        - name: ado-ca
+          secret:
+            secretName: {{ .Values.secrets.adoCaSecretName }}
+            items:
+              - key: ca.crt
+                path: ca.crt

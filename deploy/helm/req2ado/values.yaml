@@ -1,0 +1,170 @@
+# req2ado — default values.
+#
+# Installed as release "req2ado" into the existing "req2ado" namespace
+# (helm upgrade req2ado ./deploy/helm/req2ado -n req2ado), reproducing and
+# consolidating the topology previously managed as Helm release "req2ado",
+# chart req2ado-0.1.0 (revision 7) -- that chart was never checked into
+# git; this one replaces it as the source of truth. See
+# deploy/helm/req2ado/README.md before the first upgrade against a real
+# cluster -- req2ado-secrets and req2ado-ado-ca must be annotated
+# helm.sh/resource-policy=keep BEFORE this chart's first apply, or Helm
+# will prune them (no template here manages either Secret).
+
+# Set via --set image.registry=<your-registry>/docker -- deliberately
+# empty by default so an unset value fails loudly (an unqualified image
+# name) rather than silently pulling from Docker Hub.
+image:
+  registry: ""
+  pullPolicy: IfNotPresent
+  orchestrator:
+    repository: elisradevops/req2ado-orchestrator
+    tag: "0.1.4"
+  mcpAdoServer:
+    repository: elisradevops/req2ado-mcp-ado-server
+    tag: "0.1.1"
+  frontend:
+    repository: elisradevops/req2ado-frontend
+    tag: "0.1.1"
+  ingestion:
+    repository: elisradevops/req2ado-ingestion
+    tag: "0.2.0"
+  postgres:
+    repository: elisradevops/req2ado-postgres
+    tag: "1.0.1"
+  valkey:
+    repository: elisradevops/req2ado-valkey
+    tag: "1.0.1"
+  chroma:
+    repository: chromadb/chroma
+    tag: "0.6.3"
+
+serviceAccountName: req2ado
+
+# Secrets this chart reads but never manages (never templates, never
+# prunes). Create/keep them exactly as production already has them --
+# see README.md.
+secrets:
+  appSecretsName: req2ado-secrets
+  adoCaSecretName: req2ado-ado-ca
+
+# The single consolidated pod: web (nginx) + orchestrator + pipeline-worker
+# + mcp-ado-server. replicas is deliberately not exposed here -- always 1,
+# see README.md for why duplicate pods are the problem this chart exists
+# to remove.
+app:
+  # Recreate, not the RollingUpdate default -- at replicas:1, a rolling
+  # update's default maxSurge:25% would briefly run a second pod (two
+  # pipeline-workers both consuming the same BullMQ queue), reintroducing
+  # the exact duplication this consolidation removes. Trade-off: brief
+  # downtime on every deploy. Check GET /jobs for running jobs first (see
+  # docs/runbook.md) -- a restart kills in-flight jobs.
+  strategy: Recreate
+  resources:
+    web:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 250m, memory: 256Mi }
+    orchestrator:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { cpu: "1", memory: 1Gi }
+    pipelineWorker:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { cpu: "1", memory: 1Gi }
+    mcpAdoServer:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+
+ingestion:
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { cpu: "2", memory: 4Gi }
+
+chroma:
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+  storage: 20Gi
+  # Matches production's live PVC -- do not change without a storage
+  # migration plan (see README.md).
+  storageClassName: nfs-client
+
+postgres:
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+  storage: 20Gi
+  storageClassName: nfs-client
+
+valkey:
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+
+# Single external entry point. NodePort is the default so nothing is
+# blocked on DNS/cert provisioning; flip to ClusterIP once the Ingress
+# (below) is validated in production -- see the plan's cutover section.
+service:
+  type: NodePort
+  nodePort: 30100
+
+# Disabled by default -- enable once a DNS record and an internal-CA
+# certificate (matching docgen-tls's pattern: SANs for both the short
+# name and the FQDN) exist for the chosen host. See README.md.
+ingress:
+  enabled: false
+  host: req2ado.example.co.il
+  tls:
+    secretName: req2ado-tls
+
+# req2ado-config ConfigMap data. Values below match what was live in
+# production at the time this chart was authored (kubectl get cm
+# req2ado-config -o yaml), except where the consolidation changes an
+# in-cluster address -- each such key says so.
+config:
+  ADO_API_VERSION_LADDER: "7.0,6.0"
+  ADO_BACKEND: "real"
+  ADO_BATCH_SIZE: "200"
+  ADO_CONCURRENCY: "8"
+  ADO_INITIAL_STATE: "New"
+  BATCH_PUMP_INTERVAL_MS: "5000"
+  BATCH_SUBMIT_STUCK_MS: "300000"
+  BATCH_SURVEY_CONCURRENCY: "4"
+  CHROMA_MODE: "http"
+  CHROMA_PORT: "8000"
+  CONFIRM_WRITE_CONCURRENCY: "4"
+  # true, not production's stale "false" -- the app is now only reachable
+  # over HTTPS (Ingress) or, during transition, plain HTTP on the
+  # NodePort. Session cookies must be secure once TLS is the real path;
+  # flip back to "false" only if running NodePort-only with no TLS at all.
+  COOKIE_SECURE: "true"
+  DOCX_PAGE_ALIGNMENT_ENABLED: "true"
+  DOCX_TO_PDF_CONVERT_TIMEOUT_SECONDS: "120"
+  EMBED_MODEL: "OpenAI/text-embedding-3-small"
+  EMBED_TRANSPORT: "openai"
+  FILES_STATUS_PATH: "/api/v1/files"
+  FILES_UPLOAD_PATH: "/api/v1/files/"
+  GRAPH_BASE_URL: "https://graph.microsoft.com/v1.0"
+  INGESTION_REQUEST_TIMEOUT_MS: "3600000"
+  JOB_RETENTION_CHECK_INTERVAL_MS: "3600000"
+  JOB_RETENTION_MAX_AGE_MS: "172800000"
+  LLM_BASE_URL: "https://elbichat.elbitsystems.com/api/v1"
+  LLM_CHAT_MODEL: "gpt-4o"
+  LLM_REQUEST_TIMEOUT_MS: "600000"
+  LLM_REQUEST_TIMEOUT_SECONDS: "90"
+  LLM_TRUSTED_LOCAL: "false"
+  LOG_LEVEL: "INFO"
+  MAX_BATCH_FILES: "50"
+  MAX_UPLOAD_SIZE_MB: "50"
+  MCP_REQUEST_TIMEOUT_MS: "60000"
+  OCR_LANGUAGES: "eng,heb"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  PIPELINE_WORKER_CONCURRENCY: "4"
+  POSTGRES_DB: "req2ado"
+  POSTGRES_USER: "req2ado"
+  SHOW_PATH: "/ollama/api/show"
+  STALE_JOB_CHECK_INTERVAL_MS: "60000"
+  STALE_JOB_THRESHOLD_MS: "3600000"
+  SURVEY_BRANCH_CONCURRENCY: "4"
+  VISION_REQUEST_TIMEOUT_SECONDS: "590"
+  # CORS_ORIGIN deliberately omitted -- the web container's nginx is now
+  # the frontend's only origin, proxying /api/ to the orchestrator
+  # sibling container over localhost. The orchestrator only enables CORS
+  # when this is set (orchestrator/src/main.ts), so omitting it keeps
+  # cross-origin access closed by default. Re-add only for a genuinely
+  # separate frontend origin (e.g. local `vite dev`).

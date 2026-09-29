@@ -1,0 +1,61 @@
+# No PVC -- BullMQ queue/pub-sub state is transient, matches production
+# (VALKEY_PASSWORD required, unlike the repo's old k8s/11-redis.yaml which
+# both used a different Service name (redis, not valkey) and had no auth
+# -- neither matches what's actually running).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "req2ado.fullname" . }}-valkey
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: {{ include "req2ado.fullname" . }}-valkey
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "req2ado.fullname" . }}-valkey
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+    app: {{ include "req2ado.fullname" . }}-valkey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "req2ado.fullname" . }}-valkey
+  template:
+    metadata:
+      labels:
+        app: {{ include "req2ado.fullname" . }}-valkey
+    spec:
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      containers:
+        - name: valkey
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.valkey.repository "tag" .Values.image.valkey.tag) }}
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.appSecretsName }}
+                  key: VALKEY_PASSWORD
+          command: ["valkey-server", "--requirepass", "$(VALKEY_PASSWORD)"]
+          ports:
+            - containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "valkey-cli -a \"$VALKEY_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "valkey-cli -a \"$VALKEY_PASSWORD\" ping | grep -q PONG"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.valkey.resources | nindent 12 }}

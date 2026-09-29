@@ -1,0 +1,32 @@
+# Single external entry point. Exposes both 80 (nginx, the browser/ADO
+# path) and 3001 (orchestrator, for ingestion's internal /llm/* callback
+# and any in-cluster caller) on one Service, matching how ORCHESTRATOR_URL
+# is wired in configmap.yaml.
+#
+# While service.type is NodePort (the transitional default -- see
+# values.yaml), Kubernetes auto-assigns an external nodePort to port 3001
+# as well as port 80, since every port on a NodePort-type Service gets one.
+# That's a transitional-only leak, not a real second entry point: flip
+# service.type to ClusterIP once the Ingress is validated (see README.md)
+# and both auto-assigned nodePorts disappear, leaving zero.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "req2ado.fullname" . }}-app
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ include "req2ado.fullname" . }}-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}
+    - name: orchestrator
+      port: 3001
+      targetPort: 3001

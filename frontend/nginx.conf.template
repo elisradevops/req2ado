@@ -1,0 +1,60 @@
+# frontend/nginx.conf.template
+#
+# Templated (not a static conf) so the orchestrator upstream is env-driven:
+# 127.0.0.1:3001 in the consolidated k8s pod (orchestrator is a sibling
+# container on localhost), orchestrator:3001 in docker-compose (a separate
+# container). The nginx:1.27-alpine base image's own entrypoint script
+# (/docker-entrypoint.d/20-envsubst-on-templates.sh) renders every
+# /etc/nginx/templates/*.template into /etc/nginx/conf.d/ automatically on
+# container start -- no custom ENTRYPOINT needed. It substitutes only
+# names that are actual environment variables, so nginx's own $uri-style
+# variables below are left untouched.
+#
+# Consolidating the frontend and orchestrator behind one origin (see
+# docs/design-decisions.md's runtime-config rationale) removes the need for
+# CORS entirely -- the browser only ever talks to this nginx origin.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # MAX_UPLOAD_SIZE_MB=50 (req2ado-config) -- nginx's own default is 1m,
+    # which would reject every real document upload before it ever reaches
+    # the orchestrator.
+    client_max_body_size 50m;
+
+    # Same-origin API proxy. /api/foo -> upstream's /foo (the orchestrator
+    # itself has no /api prefix on its routes).
+    location /api/ {
+        proxy_pass http://${UPSTREAM_HOST}:${UPSTREAM_PORT}/;
+        proxy_http_version 1.1;
+        # SSE (frontend/src/api/events.ts's EventSource) needs unbuffered
+        # proxying -- with the nginx default (proxy_buffering on), job
+        # progress events queue up behind nginx's buffer instead of
+        # streaming, and the UI never updates until the buffer flushes.
+        proxy_buffering off;
+        # Matches INGESTION_REQUEST_TIMEOUT_MS=3600000 (req2ado-config) --
+        # a SURVEY-mode /level call can legitimately take up to an hour;
+        # nginx's 60s default would sever the connection long before that.
+        proxy_read_timeout 3600s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # ChatGateway's raw `ws` WebSocket adapter (orchestrator/src/main.ts)
+        # -- needed if any future client ever upgrades a /api/ connection.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+
+    # SPA fallback: any path not matching a real static file or /api/ above
+    # serves index.html so client-side routing works.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

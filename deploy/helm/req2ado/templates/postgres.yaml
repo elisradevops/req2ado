@@ -1,0 +1,80 @@
+# Name and volumeClaimTemplates deliberately unchanged from production --
+# see chroma.yaml's header comment; the same constraints apply here for
+# data-req2ado-postgres-0 (20Gi, nfs-client).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "req2ado.fullname" . }}-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+spec:
+  clusterIP: None # headless -- StatefulSet gets a stable per-pod DNS name
+  selector:
+    app: {{ include "req2ado.fullname" . }}-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "req2ado.fullname" . }}-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "req2ado.fullname" . }}-postgres
+  replicas: 1 # single-instance -- no HA/replication set up here
+  selector:
+    matchLabels:
+      app: {{ include "req2ado.fullname" . }}-postgres
+  template:
+    metadata:
+      labels:
+        app: {{ include "req2ado.fullname" . }}-postgres
+    spec:
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.postgres.repository "tag" .Values.image.postgres.tag) }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.config.POSTGRES_USER | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.config.POSTGRES_DB | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.appSecretsName }}
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "req2ado", "-d", "req2ado"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "req2ado", "-d", "req2ado"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.postgres.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}

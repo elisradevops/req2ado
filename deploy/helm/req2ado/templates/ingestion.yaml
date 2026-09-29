@@ -1,0 +1,65 @@
+# Unchanged from production's shape -- a ~1GB Python OCR/LibreOffice image
+# with an independent lifecycle, kept as its own Deployment. Bidirectionally
+# coupled to the app pod's orchestrator container (orchestrator calls
+# /level,/ingest,/dedup,/kb; ingestion calls back to ORCHESTRATOR_URL's
+# /llm/* redaction proxy), but not worth folding in -- see README.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "req2ado.fullname" . }}-ingestion
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: {{ include "req2ado.fullname" . }}-ingestion
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "req2ado.fullname" . }}-ingestion
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+    app: {{ include "req2ado.fullname" . }}-ingestion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "req2ado.fullname" . }}-ingestion
+  template:
+    metadata:
+      labels:
+        app: {{ include "req2ado.fullname" . }}-ingestion
+      annotations:
+        checksum/config: {{ .Values.config | toYaml | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      containers:
+        - name: ingestion
+          image: {{ include "req2ado.image" (dict "root" $ "repo" .Values.image.ingestion.repository "tag" .Values.image.ingestion.tag) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: req2ado-config
+            - secretRef:
+                name: {{ .Values.secrets.appSecretsName }}
+          env:
+            - name: PORT
+              value: "8000"
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /ready, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.ingestion.resources | nindent 12 }}
+      terminationGracePeriodSeconds: 30

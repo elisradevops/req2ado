@@ -15,14 +15,17 @@ function buildBasicAuthHeader(pat: string): string {
   return `Basic ${Buffer.from(`:${pat}`).toString('base64')}`;
 }
 
-// Mirrors mcp-ado-server's own api-version ladder (src/config/env.ts) —
-// confirmed against a real on-prem Azure DevOps Server 2022.1: its GA REST
-// API tops out at 7.0. 7.1 is preview-only there and is REJECTED with a 400
-// VssInvalidPreviewVersionException, not authenticated at all. Only a 400
-// advances to the next version in the ladder; a 401 means the PAT itself
-// is bad/expired and must fail immediately — retrying other api-versions
-// would never fix an auth problem and would only hide the real error.
-const API_VERSION_LADDER = ['7.1', '7.0', '5.1', 'none'];
+// connectionData is a PREVIEW-classified resource in the ADO Location service —
+// it requires the -preview suffix regardless of server version. Requesting it
+// with a plain GA version (e.g. 7.1) returns 400 VssInvalidPreviewVersionException
+// even on servers whose latest GA REST API version is 7.2. Confirmed live against
+// on-prem Azure DevOps Server 2022.x:
+//   connectionData?api-version=7.1         → 400 (preview flag required)
+//   connectionData?api-version=7.1-preview → 200 ✅
+// The ladder tries preview versions newest-first; a 400 advances to the next
+// entry (wrong preview version for this server). A non-400 failure (401 bad PAT,
+// TLS error, etc.) breaks immediately — retrying versions cannot fix those.
+const CONNECTION_DATA_VERSION_LADDER = ['7.2-preview', '7.1-preview', '6.0-preview', 'none'];
 
 function connectionDataUrl(orgUrl: string, version: string): string {
   const base = `${orgUrl.replace(/\/$/, '')}/_apis/connectionData`;
@@ -51,7 +54,7 @@ export class AdoPatProvider {
     const authHeader = buildBasicAuthHeader(pat);
     let lastFailure: { status: number; url: string; bodyText: string } | null = null;
 
-    for (const version of API_VERSION_LADDER) {
+    for (const version of CONNECTION_DATA_VERSION_LADDER) {
       const url = connectionDataUrl(orgUrl, version);
       const response = await fetch(url, { headers: { Authorization: authHeader } });
 
@@ -70,7 +73,20 @@ export class AdoPatProvider {
       }
 
       const bodyText = await response.text().catch(() => '<unreadable body>');
-      lastFailure = { status: response.status, url, bodyText };
+      // Attempt to extract ADO's structured error fields (typeKey / message)
+      // so a VssInvalidPreviewVersionException 400 is clearly distinguishable
+      // from a real 401 auth failure in the logs — both previously appeared
+      // identical to callers.
+      let errorDetail = '';
+      try {
+        const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+        const typeKey = typeof parsed.typeKey === 'string' ? parsed.typeKey : '';
+        const message = typeof parsed.message === 'string' ? parsed.message : '';
+        if (typeKey || message) errorDetail = ` [${typeKey}] ${message}`.trimEnd();
+      } catch {
+        // non-JSON body — errorDetail stays empty, raw bodyText logged below
+      }
+      lastFailure = { status: response.status, url, bodyText: errorDetail || bodyText };
 
       // Only a 400 (e.g. VssInvalidPreviewVersionException) means THIS
       // api-version is wrong for this server — try the next one. Any other

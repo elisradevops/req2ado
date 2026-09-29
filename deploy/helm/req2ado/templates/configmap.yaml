@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: req2ado-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "req2ado.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  # In-cluster addresses that changed with the consolidation -- not
+  # user-overridable via .Values.config since they must match the
+  # resources this chart actually creates below.
+  CHROMA_HOST: {{ include "req2ado.fullname" . }}-chroma
+  INGESTION_BASE_URL: http://{{ include "req2ado.fullname" . }}-ingestion:8000
+  # Same pod now (web/orchestrator/pipeline-worker/mcp-ado-server are
+  # sibling containers) -- was a Service DNS name, now localhost.
+  MCP_URL: http://localhost:4100
+  # ingestion's LLM callback (ingestion/app/config.py's orchestrator_url)
+  # -- was the orchestrator's own Service, now the consolidated app
+  # Service (still routes to the same orchestrator container/port).
+  ORCHESTRATOR_URL: http://{{ include "req2ado.fullname" . }}-app:3001
