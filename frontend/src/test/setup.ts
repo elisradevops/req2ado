@@ -18,6 +18,15 @@ import { configure } from '@testing-library/react';
 // contention while staying safely under every toast's 4400ms shelf life.
 configure({ asyncUtilTimeout: 3000 });
 
+// jsdom does not implement HTMLCanvasElement.getContext -- DiffTree.tsx calls
+// it for text-width measurement (getMeasurerContext). Without this stub jsdom
+// throws "Not implemented: HTMLCanvasElement.prototype.getContext" on every
+// render of DiffTree, flooding the test output and causing timing-sensitive
+// act() failures on the slow CI runner. DiffTree already handles a null
+// return from getContext gracefully (measureTextWidth returns 0), so returning
+// null here is the correct and minimal stub.
+HTMLCanvasElement.prototype.getContext = () => null;
+
 // jsdom has no ResizeObserver -- DiffTree's VariableSizeList row measurement
 // (see DiffTree.tsx's MeasuredRow) requires one to exist at all, even though
 // jsdom can't produce real layout/size values.
