@@ -241,7 +241,7 @@ describe('Settings', () => {
       await waitFor(() => expect(screen.getByText(/connected · qwen2.5:14b/i)).toBeInTheDocument());
     });
 
-    it('loads the model catalog for a pasted token and saves the selected chat/vision models', async () => {
+    it('loads the model catalog for a pasted token and saves the selected model (vision-capable only shown in picker)', async () => {
       vi.spyOn(llmConnectionApi, 'getLlmConnectionModels').mockResolvedValue([
         { id: 'qwen2.5:14b', name: 'qwen2.5:14b', vision: false },
         { id: 'gemma4:e4b', name: 'gemma4:e4b', vision: true },
@@ -256,15 +256,18 @@ describe('Settings', () => {
       await userEvent.click(screen.getByRole('button', { name: /load models/i }));
 
       await waitFor(() => expect(llmConnectionApi.getLlmConnectionModels).toHaveBeenCalledWith('sk-test-token'));
+      // Single picker shows only vision-capable models -- gemma4:e4b (vision: true)
+      // is the only option; qwen2.5:14b (vision: false) is filtered out.
       // Select is a Radix combobox+listbox, not a native <select> -- see
       // ProjectPicker.test.tsx's own comment for why this is open-then-
       // click-option rather than userEvent.selectOptions.
-      await userEvent.click(screen.getByLabelText(/chat model/i));
-      await userEvent.click(await screen.findByRole('option', { name: 'qwen2.5:14b' }));
+      await userEvent.click(screen.getByLabelText(/^model$/i));
+      await userEvent.click(await screen.findByRole('option', { name: 'gemma4:e4b' }));
       await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
 
+      // No visionModel arg -- the single picker collapsed chat+vision into one field.
       await waitFor(() =>
-        expect(llmConnectionApi.setLlmConnection).toHaveBeenCalledWith('sk-test-token', 'qwen2.5:14b', undefined),
+        expect(llmConnectionApi.setLlmConnection).toHaveBeenCalledWith('sk-test-token', 'gemma4:e4b'),
       );
       await waitFor(() => expect(screen.getByText(/open webui connection saved/i)).toBeInTheDocument());
     });
@@ -301,7 +304,7 @@ describe('Settings', () => {
       expect(screen.getByLabelText(/open webui api token/i)).toHaveValue('sk-in-progress-token');
     });
 
-    it('marks a vision-capable model in the chat model dropdown so it is distinguishable from a non-vision one', async () => {
+    it('shows only vision-capable models in the picker and filters out non-vision models', async () => {
       vi.spyOn(llmConnectionApi, 'getLlmConnectionModels').mockResolvedValue([
         { id: 'qwen2.5:14b', name: 'qwen2.5:14b', vision: false },
         { id: 'devstral-small-2:24b', name: 'devstral-small-2:24b', vision: true },
@@ -314,16 +317,15 @@ describe('Settings', () => {
       await userEvent.type(screen.getByLabelText(/open webui api token/i), 'sk-test-token');
       await userEvent.click(screen.getByRole('button', { name: /load models/i }));
       await waitFor(() => expect(llmConnectionApi.getLlmConnectionModels).toHaveBeenCalled());
-      await userEvent.click(screen.getByLabelText(/chat model/i));
+      await userEvent.click(screen.getByLabelText(/^model$/i));
       // Popup options render only after llmModels' state update from the
       // mocked getLlmConnectionModels() promise settles -- waited for
       // explicitly since it can land after the click itself resolves.
       await waitFor(() => expect(screen.queryAllByRole('option').length).toBeGreaterThan(0));
 
-      // The accessible name includes the sr-only ", vision-capable" suffix
-      // for the vision model's option, and is absent for the non-vision one.
-      expect(screen.getByRole('option', { name: /devstral-small-2:24b.*vision-capable/i })).toBeInTheDocument();
-      expect(screen.getByRole('option', { name: 'qwen2.5:14b' })).toBeInTheDocument();
+      // Picker shows only vision-capable models; non-vision models are filtered out.
+      expect(screen.getByRole('option', { name: 'devstral-small-2:24b' })).toBeInTheDocument();
+      expect(screen.queryByRole('option', { name: 'qwen2.5:14b' })).not.toBeInTheDocument();
     });
   });
 });
