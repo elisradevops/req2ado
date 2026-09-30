@@ -11,21 +11,22 @@ on:
   # trigger commit).
   workflow_dispatch:
 
-# No trigger on '.github/workflows/frontend-release.yml' itself (unlike the
-# docgen precedent's blanket paths-ignore: '.github/**', scoped here to just
-# this file since paths:/paths-ignore: can't mix on one trigger) -- editing
-# CI config alone shouldn't force a version bump + republish. This also
-# stops a real, confirmed failure mode: adding/editing multiple of these
-# four *-release.yml files in ONE commit previously fired all of them
-# simultaneously, and their version-bump steps raced pushing to main (one
-# "! [rejected] main -> main (fetch first)"). A shared `concurrency:` group
-# was tried as a fix and reverted -- GitHub Actions only keeps the LAST
-# queued run per group and CANCELS earlier-queued ones outright, which
-# silently dropped two real publishes instead of racing harmlessly. A
-# future push touching 2+ of frontend/orchestrator/mcp-ado-server/ingestion
-# at once can still race the same way; no image is pushed before the
-# version-bump step succeeds, so a lost race just fails that run cleanly --
-# re-run it by hand (`gh run rerun <id>`) if it happens.
+# No trigger on '.github/workflows/frontend-release.yml' itself -- editing
+# CI config alone shouldn't force a version bump + republish.
+#
+# Concurrency strategy: `cancel-in-progress: false` queues a second publish
+# run (e.g. orchestrator + frontend both triggered by one commit) rather than
+# cancelling it. The checkout below uses `ref: github.ref_name` (the live
+# branch tip) so the queued run always starts from the state AFTER the first
+# run's version-bump commit, never from the stale trigger SHA. Together these
+# two changes eliminate the "fetch first" rejection without losing any publish.
+# Three or more simultaneous triggers (touching 3+ packages in one commit)
+# would still lose the middle runs to GitHub's "only one pending per group"
+# limit, but that case is rare and fixable by re-running the cancelled jobs.
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -36,6 +37,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          ref: ${{ github.ref_name }}
       - name: 🟢 node
         uses: actions/setup-node@v4
         with:

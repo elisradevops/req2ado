@@ -13,10 +13,12 @@ on:
   # since made; workflow_dispatch always runs against the live branch tip).
   workflow_dispatch:
 
-# See frontend-release.yml's own comment for the full story: no trigger on
-# this file's own edits, and a race-on-simultaneous-multi-package-commit
-# limitation (a shared concurrency group was tried and reverted -- it
-# cancelled real publishes instead of queueing them).
+# See frontend-release.yml's own comment for the full story on the concurrency
+# + ref: github.ref_name strategy that eliminates the version-bump-push race.
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -27,6 +29,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          ref: ${{ github.ref_name }}
       - name: 🟢 node
         uses: actions/setup-node@v4
         with:
