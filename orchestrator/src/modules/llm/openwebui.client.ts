@@ -126,8 +126,11 @@ export class OpenWebUiClient implements LlmClient {
     // request options. Built as ONE merged object (not one independent
     // spread per field) since multiple `options:` spread entries in the same
     // object literal would silently OVERWRITE each other (later key wins),
-    // losing whichever was set first. A genuine OpenAI-compat backend (the
-    // production frontier-model proxy) simply ignores an unrecognized field.
+    // losing whichever was set first. Gated on LLM_TRUSTED_LOCAL: confirmed
+    // live that OpenAI/gpt-4.1 via LiteLLM (LLM_TRUSTED_LOCAL=false) rejects
+    // `options` with 400 "Unrecognized request argument supplied: options" --
+    // NOT silently ignored as previously assumed. Only Ollama-compatible
+    // backends (LLM_TRUSTED_LOCAL=true) accept this field.
     // See LlmChatOptions.numCtx/topK/minP doc comments.
     const ollamaOptions: Record<string, number> = {};
     if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
@@ -146,7 +149,7 @@ export class OpenWebUiClient implements LlmClient {
       // worst-case latency for a reasoning model's otherwise-unbounded
       // chain-of-thought + answer (see LlmChatOptions.maxTokens doc comment).
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
-      ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
+      ...(this.config.LLM_TRUSTED_LOCAL && Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
       // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT (false by default --
       // Azure-backed models via LiteLLM reject it with a 400). includeReasoningEffort:
       // false is the retry path. `reasoning_effort: 'none'` is NOT an Ollama-native
@@ -319,7 +322,7 @@ export class OpenWebUiClient implements LlmClient {
       ...(this.config.LLM_SEND_SEED && includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
-      ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
+      ...(this.config.LLM_TRUSTED_LOCAL && Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
       // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT -- see chat()'s
       // own reasoning_effort comment for why this is the correct field.
       // includeReasoningEffort:false is the retry path when upstream rejects it.
@@ -421,6 +424,17 @@ export class OpenWebUiClient implements LlmClient {
   // silently pair the wrong text with the wrong vector.
   private async embedViaOpenAiProxy(texts: string[], opts?: { model?: string }): Promise<number[][]> {
     const outboundTexts = this.config.LLM_TRUSTED_LOCAL ? texts : texts.map(redactText);
+    // Split any text that exceeds the model's per-input token limit before
+    // submitting. chunkMap[i] = [start, end) in the flat chunks array for
+    // original text i, so we can reconstruct one vector per original text by
+    // averaging its chunks (a no-op for texts that fit within the limit).
+    const flatChunks: string[] = [];
+    const chunkMap: [number, number][] = [];
+    for (const text of outboundTexts) {
+      const chunks = this.splitTextForEmbed(text);
+      chunkMap.push([flatChunks.length, flatChunks.length + chunks.length]);
+      flatChunks.push(...chunks);
+    }
     // Same retry policy as the 'ollama' branch above -- a pure read with no
     // side effects, safe to re-run on a transient 429/5xx/network failure.
     const response = await fetchWithRetry(
@@ -428,7 +442,7 @@ export class OpenWebUiClient implements LlmClient {
         fetch(`${this.openWebUiAppRoot()}/openai/embeddings`, {
           method: 'POST',
           headers: this.nativeOllamaHeaders(),
-          body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: outboundTexts }),
+          body: JSON.stringify({ model: opts?.model ?? this.config.EMBED_MODEL, input: flatChunks }),
         }),
       { maxRetries: 3 },
     );
@@ -450,7 +464,48 @@ export class OpenWebUiClient implements LlmClient {
       );
     }
     const body = (await response.json()) as { data: { embedding: number[]; index: number }[] };
-    return [...body.data].sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
+    // OpenAI embeddings spec only guarantees each entry's own `.index` matches
+    // its position in the input -- sort before indexing into the flat array.
+    const flatVectors = [...body.data].sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
+    // Reconstruct one vector per original text by averaging the vectors of its
+    // constituent chunks (a no-op when the text fit within the limit).
+    return chunkMap.map(([start, end]) => this.averageVectors(flatVectors.slice(start, end)));
+  }
+
+  // Splits a text into chunks that each fit within EMBED_MAX_TOKENS (estimated
+  // via chars / CHARS_PER_TOKEN). Breaks at whitespace when possible to avoid
+  // splitting mid-word. Over-estimates token count intentionally -- extra
+  // chunks cost one more embedding call, not a backend 400.
+  private splitTextForEmbed(text: string): string[] {
+    const maxChars = OpenWebUiClient.EMBED_MAX_TOKENS * OpenWebUiClient.CHARS_PER_TOKEN;
+    if (text.length <= maxChars) return [text];
+    const chunks: string[] = [];
+    let pos = 0;
+    while (pos < text.length) {
+      let end = Math.min(pos + maxChars, text.length);
+      if (end < text.length) {
+        const lastWs = text.lastIndexOf(' ', end);
+        if (lastWs > pos) end = lastWs;
+      }
+      const chunk = text.slice(pos, end).trim();
+      if (chunk.length > 0) chunks.push(chunk);
+      pos = end;
+      while (pos < text.length && text[pos] === ' ') pos++;
+    }
+    return chunks.length > 0 ? chunks : [text];
+  }
+
+  // Averages a set of equal-dimension embedding vectors component-wise.
+  // Returns the single vector directly when there is only one (no copy).
+  private averageVectors(vectors: number[][]): number[] {
+    if (vectors.length === 1) return vectors[0];
+    const dim = vectors[0].length;
+    const result = new Array<number>(dim).fill(0);
+    for (const v of vectors) {
+      for (let i = 0; i < dim; i++) result[i] += v[i];
+    }
+    const n = vectors.length;
+    return result.map((x) => x / n);
   }
 
   // Shared by embed()/showModel() -- both bypass the OpenAI SDK client
@@ -489,6 +544,15 @@ export class OpenWebUiClient implements LlmClient {
   // HTTP error (looks identical to "backend unreachable"). Named + growable
   // if Open WebUI adds more virtual model kinds later; not a general
   // capability check, just this one confirmed real gap.
+  // Per-input token limit for the /openai/embeddings endpoint.
+  // text-embedding-3-small (this deployment) hard-caps at 8192; 7500 provides
+  // ~700 token margin for the chars/token estimate's rounding.
+  private static readonly EMBED_MAX_TOKENS = 7500;
+  // Conservative chars-per-token estimate for English/mixed text. Intentionally
+  // low so splitTextForEmbed over-splits rather than under-splits -- the cost of
+  // an extra chunk is one more embedding call, not a 400 from the backend.
+  private static readonly CHARS_PER_TOKEN = 4;
+
   private static readonly VIRTUAL_MODEL_NAMES = new Set(['Arena Model']);
 
   async showModel(model: string): Promise<{ contextLength: number | null; capabilities: string[] }> {

@@ -119,7 +119,7 @@ describe('OpenWebUiClient', () => {
   });
 
   it('forwards numCtx as options.num_ctx when provided (Ollama-specific passthrough)', async () => {
-    const client = new OpenWebUiClient(config);
+    const client = new OpenWebUiClient({ ...config, LLM_TRUSTED_LOCAL: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -139,7 +139,7 @@ describe('OpenWebUiClient', () => {
   });
 
   it('forwards topK/minP as options.top_k/options.min_p when provided (Gemma4 repetition-collapse mitigation)', async () => {
-    const client = new OpenWebUiClient(config);
+    const client = new OpenWebUiClient({ ...config, LLM_TRUSTED_LOCAL: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -163,7 +163,7 @@ describe('OpenWebUiClient', () => {
     // spread pattern would have the second `options:` key silently OVERWRITE
     // the first in the object literal, losing num_ctx entirely whenever both
     // are set together -- exactly the case every real SURVEY call now hits.
-    const client = new OpenWebUiClient(config);
+    const client = new OpenWebUiClient({ ...config, LLM_TRUSTED_LOCAL: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -468,7 +468,8 @@ describe('OpenWebUiClient', () => {
 
   it('streamChat forwards numCtx/topK/minP as ONE options object and think:false as reasoning_effort (previously silently discarded)', async () => {
     // LLM_SEND_REASONING_EFFORT: true -- tests the reasoning_effort-forwarding path when the flag is on.
-    const client = new OpenWebUiClient({ ...config, LLM_SEND_REASONING_EFFORT: true });
+    // LLM_TRUSTED_LOCAL: true -- options is Ollama-only; only forwarded on local/Ollama backends.
+    const client = new OpenWebUiClient({ ...config, LLM_SEND_REASONING_EFFORT: true, LLM_TRUSTED_LOCAL: true });
     async function* fakeStream() {
       yield { choices: [{ delta: { content: 'hi' } }] };
     }
