@@ -211,7 +211,14 @@ describe('JobDetail', () => {
 
     await userEvent.click(screen.getByText('Root'));
 
-    const retryButton = await screen.findByRole('button', { name: /retry writing "covers" trace link/i });
+    // findByRole's own timeout, not the global asyncUtilTimeout (setup.ts,
+    // 3000ms) -- same race as the toast-appear fix elsewhere in this file
+    // (see 9e6a6b4): the "Root" click's own re-render (mounting the node
+    // detail panel with this chip) can exceed 3000ms under real CI
+    // contention even though the underlying mock resolves immediately.
+    // Widening just this one call adds headroom without touching the
+    // global ceiling anywhere else in the suite.
+    const retryButton = await screen.findByRole('button', { name: /retry writing "covers" trace link/i }, { timeout: 8000 });
     await userEvent.click(retryButton);
 
     expect(jobsApi.retryTraceLinkWrite).toHaveBeenCalledWith('job-20', 'failure-1');
