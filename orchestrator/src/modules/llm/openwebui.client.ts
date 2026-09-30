@@ -59,6 +59,24 @@ function parseUnsupportedParams(err: unknown): Set<string> {
   return params;
 }
 
+// Detects temperature *value* constraint errors — distinct from "unsupported
+// parameter" errors that parseUnsupportedParams handles. Returns the required
+// temperature, or null when the error is not a value constraint.
+// Example: Anthropic via LiteLLM for claude-opus-4-8 with extended thinking →
+//   "temperature: 0 should be >= 1 and <= 1"
+// Extracting the required value from the error avoids a static model→temperature
+// map and works for any model that surfaces the constraint the same way.
+function parseTemperatureConstraint(err: unknown): number | null {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return null;
+  // "temperature: 0 should be >= 1 and <= 1" (exact range → single allowed value)
+  const rangeMatch = err.message.match(/temperature.*?>=\s*(\d+(?:\.\d+)?)\s*and\s*<=\s*(\d+(?:\.\d+)?)/i);
+  if (rangeMatch && rangeMatch[1] === rangeMatch[2]) return parseFloat(rangeMatch[1]);
+  // "temperature must be 1" / "only allows temperature=1"
+  const mustMatch = err.message.match(/temperature\s*(?:must be|only allows?)\s*=?\s*(\d+(?:\.\d+)?)/i);
+  if (mustMatch) return parseFloat(mustMatch[1]);
+  return null;
+}
+
 // Normalises an OpenAI.APIError into UpstreamHttpError so the HTTP controller
 // can forward the upstream status code without importing the OpenAI SDK itself.
 // Any other thrown value is re-thrown unchanged.
@@ -184,6 +202,13 @@ export class OpenWebUiClient implements LlmClient {
         const response = await this.openai.chat.completions.create(
           buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
         );
+        return toResult(response);
+      }
+      const tempConstraint = parseTemperatureConstraint(err);
+      if (tempConstraint !== null) {
+        // eslint-disable-next-line no-console
+        console.warn(`[OpenWebUiClient.chat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+        const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
         return toResult(response);
       }
       rethrowAsUpstream(err);
@@ -343,7 +368,14 @@ export class OpenWebUiClient implements LlmClient {
             buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
           );
         } else {
-          rethrowAsUpstream(err);
+          const tempConstraint = parseTemperatureConstraint(err);
+          if (tempConstraint !== null) {
+            // eslint-disable-next-line no-console
+            console.warn(`[OpenWebUiClient.streamChat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+            stream = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
+          } else {
+            rethrowAsUpstream(err);
+          }
         }
       }
     }
@@ -716,6 +748,13 @@ export class OpenWebUiClient implements LlmClient {
         const response = await this.openai.chat.completions.create(
           buildParams(true, !unsupported.has('temperature'), !unsupported.has('frequency_penalty')),
         );
+        return response.choices[0]?.message?.content ?? '';
+      }
+      const tempConstraint = parseTemperatureConstraint(err);
+      if (tempConstraint !== null) {
+        // eslint-disable-next-line no-console
+        console.warn(`[OpenWebUiClient.vision] upstream requires temperature=${tempConstraint}; retrying for model=${model}`);
+        const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
         return response.choices[0]?.message?.content ?? '';
       }
       throw err;
