@@ -155,6 +155,14 @@ config:
   # Set to "true" only when targeting a local Ollama-compatible backend that supports them.
   LLM_SEND_SEED: "false"
   LLM_SEND_REASONING_EFFORT: "false"
+  # Optional: temperature for vision() calls only (figure/image captioning).
+  # Unset (default) sends no temperature -- the backend model applies its own
+  # default, and a value-constraint 400 (e.g. a model that only accepts
+  # temperature=1) is retried automatically once the required value is
+  # parsed from the error. Set to "0" for deterministic captions on a
+  # permissive model, or to the model's own required value (e.g. "1") to
+  # skip that retry round-trip.
+  # LLM_VISION_TEMPERATURE: "0"
   LLM_REQUEST_TIMEOUT_SECONDS: "90"
   LLM_TRUSTED_LOCAL: "false"
   LOG_LEVEL: "INFO"

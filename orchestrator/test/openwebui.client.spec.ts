@@ -318,6 +318,56 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
   });
 
+  it('chat() retries with the required temperature on Azure\'s "does not support N ... default (M)" wording (confirmed live against OpenAI/gpt-5.5)', async () => {
+    // Exact production error string (Elbichat/gpt-5.5 via LiteLLM) -- this
+    // wording is distinct from both the ">= 1 and <= 1" range pattern and
+    // the "must be"/"only allows" pattern already covered above.
+    const rejection = new OpenAI.APIError(
+      400,
+      {
+        message:
+          "400 litellm.BadRequestError: AzureException BadRequestError - Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.No fallback model group found for original model_group=OpenAI/gpt-5.5. Fallbacks=[{'OpenAI/gpt-5.1-chat': ['gpt-5.1-chat-fallback']}]",
+      },
+      "400 litellm.BadRequestError: AzureException BadRequestError - Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.No fallback model group found for original model_group=OpenAI/gpt-5.5. Fallbacks=[{'OpenAI/gpt-5.1-chat': ['gpt-5.1-chat-fallback']}]",
+      {} as any,
+    );
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest
+      .fn()
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'ok at temperature 1' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], { temperature: 0 });
+
+    expect(result.content).toBe('ok at temperature 1');
+    expect(fakeCreate).toHaveBeenCalledTimes(2);
+    expect(fakeCreate.mock.calls[0][0]).toHaveProperty('temperature', 0);
+    expect(fakeCreate.mock.calls[1][0]).toHaveProperty('temperature', 1);
+  });
+
+  it('chat() retries with the required temperature on the "should be >= N and <= N" range wording (Anthropic/claude-opus extended thinking)', async () => {
+    const rejection = new OpenAI.APIError(
+      400,
+      { message: 'temperature: 0 should be >= 1 and <= 1' },
+      'temperature: 0 should be >= 1 and <= 1',
+      {} as any,
+    );
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest
+      .fn()
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'ok at temperature 1' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], { temperature: 0 });
+
+    expect(result.content).toBe('ok at temperature 1');
+    expect(fakeCreate.mock.calls[1][0]).toHaveProperty('temperature', 1);
+  });
+
   it('forwards tools as-is and omits tool_choice when not provided', async () => {
     const client = new OpenWebUiClient(config);
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });

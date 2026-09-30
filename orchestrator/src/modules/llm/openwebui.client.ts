@@ -74,6 +74,12 @@ function parseTemperatureConstraint(err: unknown): number | null {
   // "temperature must be 1" / "only allows temperature=1"
   const mustMatch = err.message.match(/temperature\s*(?:must be|only allows?)\s*=?\s*(\d+(?:\.\d+)?)/i);
   if (mustMatch) return parseFloat(mustMatch[1]);
+  // Azure's own wording (confirmed live against OpenAI/gpt-5.5 via LiteLLM,
+  // distinct from both patterns above): "'temperature' does not support 0
+  // with this model. Only the default (1) value is supported." Captures the
+  // parenthesized default, not the rejected value that precedes it.
+  const azureDefaultMatch = err.message.match(/temperature[^.]{0,40}does not support\s+[\d.]+[^.]*?\.\s*Only the default\s*\((\d+(?:\.\d+)?)\)/i);
+  if (azureDefaultMatch) return parseFloat(azureDefaultMatch[1]);
   return null;
 }
 
@@ -201,6 +207,22 @@ export class OpenWebUiClient implements LlmClient {
         const response = await this.openai.chat.completions.create(buildParams(false));
         return toResult(response);
       }
+      // Checked BEFORE parseUnsupportedParams: a value-constraint match here
+      // is a precise regex against known error wordings, while
+      // parseUnsupportedParams's own fallback branch is a loose substring
+      // heuristic ("unsupported" + "temperature" both present) that
+      // misfires on this exact class of message (confirmed live against
+      // OpenAI/gpt-5.5: "Unsupported value: 'temperature' does not support
+      // 0..." contains both substrings, but is a VALUE constraint, not an
+      // unsupported PARAMETER) -- letting that fallback claim it first
+      // would retry with the identical rejected temperature and fail again.
+      const tempConstraint = parseTemperatureConstraint(err);
+      if (tempConstraint !== null) {
+        // eslint-disable-next-line no-console
+        console.warn(`[OpenWebUiClient.chat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+        const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
+        return toResult(response);
+      }
       const unsupported = parseUnsupportedParams(err);
       if (unsupported.size > 0) {
         // eslint-disable-next-line no-console
@@ -208,13 +230,6 @@ export class OpenWebUiClient implements LlmClient {
         const response = await this.openai.chat.completions.create(
           buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
         );
-        return toResult(response);
-      }
-      const tempConstraint = parseTemperatureConstraint(err);
-      if (tempConstraint !== null) {
-        // eslint-disable-next-line no-console
-        console.warn(`[OpenWebUiClient.chat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-        const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
         return toResult(response);
       }
       rethrowAsUpstream(err);
@@ -366,19 +381,22 @@ export class OpenWebUiClient implements LlmClient {
       if (opts?.responseSchema && isSchemaRejection(err)) {
         stream = await this.openai.chat.completions.create(buildParams(false));
       } else {
-        const unsupported = parseUnsupportedParams(err);
-        if (unsupported.size > 0) {
+        // Checked BEFORE parseUnsupportedParams -- see chat()'s own comment
+        // on this same ordering for why a precise value-constraint match
+        // must win over parseUnsupportedParams's loose substring heuristic.
+        const tempConstraint = parseTemperatureConstraint(err);
+        if (tempConstraint !== null) {
           // eslint-disable-next-line no-console
-          console.warn(`[OpenWebUiClient.streamChat] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-          stream = await this.openai.chat.completions.create(
-            buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
-          );
+          console.warn(`[OpenWebUiClient.streamChat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+          stream = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
         } else {
-          const tempConstraint = parseTemperatureConstraint(err);
-          if (tempConstraint !== null) {
+          const unsupported = parseUnsupportedParams(err);
+          if (unsupported.size > 0) {
             // eslint-disable-next-line no-console
-            console.warn(`[OpenWebUiClient.streamChat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-            stream = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
+            console.warn(`[OpenWebUiClient.streamChat] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+            stream = await this.openai.chat.completions.create(
+              buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
+            );
           } else {
             rethrowAsUpstream(err);
           }
@@ -750,6 +768,20 @@ export class OpenWebUiClient implements LlmClient {
         const response = await this.openai.chat.completions.create(buildParams(false));
         return response.choices[0]?.message?.content ?? '';
       }
+      // Checked BEFORE parseUnsupportedParams -- see chat()'s own comment on
+      // this same ordering. parseTemperatureConstraint's regexes only match
+      // a genuine value-constraint wording ("does not support 0 ... Only
+      // the default (1)", "should be >= 1 and <= 1", "must be 1") and never
+      // the bracket-listed "does not support parameters: ['temperature']"
+      // form below, so a real unsupported-parameter rejection still falls
+      // through to parseUnsupportedParams unchanged.
+      const tempConstraint = parseTemperatureConstraint(err);
+      if (tempConstraint !== null) {
+        // eslint-disable-next-line no-console
+        console.warn(`[OpenWebUiClient.vision] upstream requires temperature=${tempConstraint}; retrying for model=${model}`);
+        const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
+        return response.choices[0]?.message?.content ?? '';
+      }
       const unsupported = parseUnsupportedParams(err);
       if (unsupported.size > 0) {
         // eslint-disable-next-line no-console
@@ -757,13 +789,6 @@ export class OpenWebUiClient implements LlmClient {
         const response = await this.openai.chat.completions.create(
           buildParams(true, !unsupported.has('temperature'), !unsupported.has('frequency_penalty')),
         );
-        return response.choices[0]?.message?.content ?? '';
-      }
-      const tempConstraint = parseTemperatureConstraint(err);
-      if (tempConstraint !== null) {
-        // eslint-disable-next-line no-console
-        console.warn(`[OpenWebUiClient.vision] upstream requires temperature=${tempConstraint}; retrying for model=${model}`);
-        const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
         return response.choices[0]?.message?.content ?? '';
       }
       throw err;
