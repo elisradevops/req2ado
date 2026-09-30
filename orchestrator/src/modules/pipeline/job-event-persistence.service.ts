@@ -51,6 +51,17 @@ export class JobEventPersistenceService implements OnModuleInit, OnModuleDestroy
     private readonly prisma: PrismaClient,
   ) {}
 
+  // Guards the backfillMissedEvents() catch handler below against logging a
+  // late rejection that only happened BECAUSE onModuleDestroy() already
+  // disconnected the clients out from under an in-flight sweep -- confirmed
+  // real (not hypothetical) in CI: a test that boots this service and tears
+  // it down quickly leaves backfillMissedEvents() still mid-flight, and its
+  // Redis/Postgres call then fails against an already-disconnected client,
+  // logging "backfill sweep failed: Connection is closed" AFTER Jest
+  // considers that test file finished ("Cannot log after tests are done"),
+  // which flips jest's own exit code even though every assertion passed.
+  private destroyed = false;
+
   onModuleInit(): void {
     // ioredis clients are plain EventEmitters -- an 'error' event with zero
     // listeners throws synchronously and crashes the process (same
@@ -75,6 +86,11 @@ export class JobEventPersistenceService implements OnModuleInit, OnModuleDestroy
     // whatever's already in Postgres regardless of what arrives live in the
     // meantime), only that neither path is skipped.
     void this.backfillMissedEvents().catch((err) => {
+      // Skip logging when the module has already been torn down -- see the
+      // `destroyed` field's own doc comment for the real CI failure this
+      // guards against; a rejection caused by our OWN intentional
+      // disconnect() is not a real error worth reporting.
+      if (this.destroyed) return;
       // eslint-disable-next-line no-console -- no structured logger in this module yet
       console.error('JobEventPersistenceService backfill sweep failed:', err);
     });
@@ -92,6 +108,7 @@ export class JobEventPersistenceService implements OnModuleInit, OnModuleDestroy
   // and can't accept the QUIT command's own round trip; disconnect() closes
   // the raw socket immediately for both regardless of that.
   onModuleDestroy(): void {
+    this.destroyed = true;
     this.subscriber.disconnect();
     this.commandClient.disconnect();
   }
