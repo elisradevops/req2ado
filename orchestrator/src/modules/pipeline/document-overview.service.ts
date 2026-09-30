@@ -74,9 +74,23 @@ export class DocumentOverviewService {
         { seed: 42, maxTokens: 300, think: false },
       );
       const synopsis = result.content.trim();
-      if (!synopsis) return null;
+      if (!synopsis) {
+        // Distinct from the catch below -- this is a genuine 200 response
+        // with empty content, not a thrown error. Known real cause: a
+        // reasoning-capable model burns the entire maxTokens budget on
+        // hidden chain-of-thought and returns empty content (same failure
+        // class OpenWebUiClient.vision()'s own think:false handling exists
+        // for) -- worth distinguishing from a thrown exception, since this
+        // fail-open path previously gave no signal at all which case
+        // happened.
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        console.error(`DocumentOverviewService.generate: model returned empty content for user ${userId} (finishReason=${result.finishReason ?? 'unknown'})`);
+        return null;
+      }
       return { synopsis, caveat };
-    } catch {
+    } catch (err) {
+      // eslint-disable-next-line no-console -- no structured logger in this module yet
+      console.error(`DocumentOverviewService.generate failed for user ${userId}:`, err);
       return null;
     }
   }
