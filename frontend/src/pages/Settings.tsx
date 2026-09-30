@@ -20,7 +20,6 @@ import { Switch } from '../ui/Switch';
 import { Select } from '../ui/Select';
 import { Skeleton } from '../ui/Skeleton';
 import { cn } from '../lib/cn';
-import { Eye } from 'lucide-react';
 
 type IntegrationTone = 'ok' | 'danger' | 'warning' | 'dim';
 
@@ -187,7 +186,6 @@ export function Settings(): React.ReactElement {
   const [llmToken, setLlmToken] = useState('');
   const [llmModels, setLlmModels] = useState<LlmSelectableModel[]>([]);
   const [llmChatModel, setLlmChatModel] = useState('');
-  const [llmVisionModel, setLlmVisionModel] = useState('');
   const [isLoadingLlmModels, setIsLoadingLlmModels] = useState(false);
   const [isSavingLlmConnection, setIsSavingLlmConnection] = useState(false);
   const [llmConnectionError, setLlmConnectionError] = useState<string | null>(null);
@@ -298,7 +296,6 @@ export function Settings(): React.ReactElement {
     // refresh, same as before.
     setLlmModels([]);
     setLlmChatModel(llmConnection?.chatModel ?? '');
-    setLlmVisionModel(llmConnection?.visionModel ?? '');
     setLlmConnectionError(null);
     setLlmDialogOpen(true);
     // Prefills the dropdowns from the caller's already-stored token (if
@@ -337,7 +334,7 @@ export function Settings(): React.ReactElement {
     setIsSavingLlmConnection(true);
     setLlmConnectionError(null);
     try {
-      await setLlmConnection(llmToken.trim(), llmChatModel, llmVisionModel || undefined);
+      await setLlmConnection(llmToken.trim(), llmChatModel);
       const status = await getLlmConnection();
       setLlmConnectionState(status);
       // Flips RouteGuard's cached gate state directly -- without this, a
@@ -391,6 +388,14 @@ export function Settings(): React.ReactElement {
 
   const sharePointCopy = sharePointStatus ? SHAREPOINT_COPY[sharePointStatus.status] : null;
   const sharePointExpiry = sharePointStatus ? formatSharePointExpiry(sharePointStatus.expiresInSeconds) : null;
+
+  const llmVisionModels = llmModels.filter((m) => m.vision);
+  const llmAllVisionUnknown = llmModels.length > 0 && llmVisionModels.length === 0;
+  const llmPickerModels = llmAllVisionUnknown ? llmModels : llmVisionModels;
+  // Clear a stale selection whenever the filtered model list loads and no longer contains it.
+  if (llmChatModel && llmPickerModels.length > 0 && !llmPickerModels.find((m) => m.id === llmChatModel)) {
+    setLlmChatModel('');
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -583,62 +588,28 @@ export function Settings(): React.ReactElement {
           </Button>
         </div>
         <Select
-          label="Chat model"
+          label="Model"
           labelExtra={
             <InfoTip
               content={
-                <span className="inline-flex items-center gap-1">
-                  <Eye className="h-3 w-3 flex-none" aria-hidden /> marks a vision-capable model.
-                </span>
+                llmAllVisionUnknown
+                  ? 'No models report vision capability — showing all models.'
+                  : 'Showing vision-capable models only.'
               }
             />
           }
           value={llmChatModel}
           onChange={(e) => setLlmChatModel(e.target.value)}
-          disabled={llmModels.length === 0}
+          disabled={llmPickerModels.length === 0}
           fullWidth
         >
           <option value="">Select a model…</option>
-          {llmModels.map((m) => (
+          {llmPickerModels.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.vision ? (
-                <span className="inline-flex items-center gap-1.5">
-                  {m.name}
-                  <Eye className="h-3.5 w-3.5 flex-none text-ink-3" aria-hidden />
-                  <span className="sr-only">, vision-capable</span>
-                </span>
-              ) : (
-                m.name
-              )}
+              {m.name}
             </option>
           ))}
         </Select>
-        <Select
-          label="Vision model"
-          labelExtra={
-            <InfoTip content="Used to describe figures/diagrams. Leave unset if your chat model above is already vision-capable -- it will be used for both." />
-          }
-          value={llmVisionModel}
-          onChange={(e) => setLlmVisionModel(e.target.value)}
-          disabled={llmModels.length === 0}
-          fullWidth
-        >
-          <option value="">
-            {llmModels.find((m) => m.id === llmChatModel)?.vision ? 'Use chat model (vision-capable)' : 'Same as chat model'}
-          </option>
-          {llmModels
-            .filter((m) => m.vision)
-            .map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-        </Select>
-        {llmChatModel && !llmModels.find((m) => m.id === llmChatModel)?.vision && !llmVisionModel && (
-          <p className="text-xs text-warning-ink">
-            Your chat model doesn't support vision. Figure/diagram descriptions will be skipped unless you select a vision model above.
-          </p>
-        )}
         {llmConnectionError && <p className="text-sm text-danger">{llmConnectionError}</p>}
       </Dialog>
     </div>

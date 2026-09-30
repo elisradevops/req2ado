@@ -19,6 +19,15 @@ export const configSchema = z.object({
   MCP_REQUEST_TIMEOUT_MS: z.coerce.number().default(60000),
   ADO_CA_CERT: z.string().optional(),
   LLM_BASE_URL: z.string().min(1),
+  // Optional: overrides LLM_BASE_URL as the OpenAI SDK's baseURL for chat/completions
+  // calls only. Use to switch to Open WebUI's /api/chat path without breaking native-
+  // API calls (files, embeddings) which derive their root from LLM_BASE_URL.
+  LLM_CHAT_BASE_URL: z.string().optional(),
+  // When false (default), seed and reasoning_effort are never sent -- Azure-backed
+  // models via LiteLLM reject both with a 400. Set true only for Ollama/compatible
+  // backends that accept them.
+  LLM_SEND_SEED: z.enum(['true', 'false']).default('false'),
+  LLM_SEND_REASONING_EFFORT: z.enum(['true', 'false']).default('false'),
   // NOT the per-user credential any more -- every user has their own
   // vaulted token/chat model/vision model (see llm-config.resolver.ts,
   // openwebui-client.factory.ts). This is now purely a fallback-of-last-

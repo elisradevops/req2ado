@@ -144,8 +144,17 @@ config:
   JOB_RETENTION_CHECK_INTERVAL_MS: "3600000"
   JOB_RETENTION_MAX_AGE_MS: "172800000"
   LLM_BASE_URL: "https://elbichat.elbitsystems.com/api/v1"
+  # LLM_CHAT_BASE_URL: "" # Optional: overrides LLM_BASE_URL for SDK chat calls only.
+  #   Use to switch to Open WebUI's /api/chat path (set to https://host/api) without
+  #   breaking native-API calls (files, embeddings) which derive their root from LLM_BASE_URL.
+  #   Leave unset to keep using LLM_BASE_URL (current behaviour: /api/v1/chat/completions).
   LLM_CHAT_MODEL: "gpt-4o"
   LLM_REQUEST_TIMEOUT_MS: "600000"
+  # Azure-backed models via LiteLLM reject seed and reasoning_effort with a 400.
+  # Both default to false so req2ado works out of the box against ElbiChat/Azure.
+  # Set to "true" only when targeting a local Ollama-compatible backend that supports them.
+  LLM_SEND_SEED: "false"
+  LLM_SEND_REASONING_EFFORT: "false"
   LLM_REQUEST_TIMEOUT_SECONDS: "90"
   LLM_TRUSTED_LOCAL: "false"
   LOG_LEVEL: "INFO"

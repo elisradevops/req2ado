@@ -32,12 +32,29 @@ export class UpstreamHttpError extends Error {
   }
 }
 
-// LiteLLM surfaces a 'seed' rejection as a 400 with 'UnsupportedParamsError'
-// when the underlying provider (e.g. azure_ai) doesn't accept that param.
-// Detected here so callers can retry without seed instead of hard-failing.
-function isSeedUnsupportedError(err: unknown): boolean {
-  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return false;
-  return err.message.includes('UnsupportedParamsError') || (err.message.includes('unsupported') && err.message.includes('seed'));
+// LiteLLM surfaces unsupported-param rejections as a 400 with a body like:
+//   "azure_ai does not support parameters: ['seed']"
+//   "azure does not support parameters: ['reasoning_effort']"
+//   "UnsupportedParamsError"
+// Returns the set of rejected param names so callers can strip exactly the
+// offending params and retry once, rather than hard-failing the whole request.
+function parseUnsupportedParams(err: unknown): Set<string> {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return new Set();
+  const params = new Set<string>();
+  // Primary LiteLLM format: "does not support parameters: ['seed', 'reasoning_effort']"
+  const bracketMatch = err.message.match(/does not support parameters:\s*\[([^\]]+)\]/i);
+  if (bracketMatch) {
+    for (const raw of bracketMatch[1].split(',')) {
+      params.add(raw.trim().replace(/['"]/g, ''));
+    }
+    return params;
+  }
+  // Fallback: generic UnsupportedParamsError -- scan for known param names in the message
+  if (err.message.includes('UnsupportedParamsError') || err.message.toLowerCase().includes('unsupported')) {
+    if (err.message.includes('seed')) params.add('seed');
+    if (err.message.includes('reasoning_effort')) params.add('reasoning_effort');
+  }
+  return params;
 }
 
 // Normalises an OpenAI.APIError into UpstreamHttpError so the HTTP controller
@@ -52,10 +69,22 @@ function rethrowAsUpstream(err: unknown): never {
 
 export interface OpenWebUiClientConfig {
   LLM_BASE_URL: string;
+  /** Overrides LLM_BASE_URL as the OpenAI SDK's baseURL for chat/completions calls only.
+   * Use to switch between proxy paths (e.g. /api/v1 vs /api) without breaking the
+   * app-root derivation that native-API calls (files, embeddings) depend on. */
+  LLM_CHAT_BASE_URL?: string;
   LLM_API_KEY?: string;
   LLM_CHAT_MODEL: string;
   LLM_VISION_MODEL?: string;
   LLM_TRUSTED_LOCAL: boolean;
+  /** When false (default), seed is never sent in chat/vision/file-context requests.
+   * Azure-backed models via LiteLLM reject it with a 400. Set true only for
+   * Ollama/compatible backends that accept it. */
+  LLM_SEND_SEED: boolean;
+  /** When false (default), reasoning_effort is never sent in chat/vision requests.
+   * Azure-backed models via LiteLLM reject it with a 400. Set true only for
+   * Ollama/compatible backends that support it. */
+  LLM_SEND_REASONING_EFFORT: boolean;
   EMBED_TRANSPORT: 'ollama' | 'openai';
   EMBED_BASE_URL?: string;
   EMBED_MODEL: string;
@@ -72,7 +101,7 @@ export class OpenWebUiClient implements LlmClient {
 
   constructor(private readonly config: OpenWebUiClientConfig) {
     this.openai = new OpenAI({
-      baseURL: config.LLM_BASE_URL,
+      baseURL: config.LLM_CHAT_BASE_URL ?? config.LLM_BASE_URL,
       apiKey: config.LLM_API_KEY ?? 'unused',
       timeout: config.LLM_REQUEST_TIMEOUT_MS,
       // Root cause of job a830aa30's ~66min failure (confirmed): the SDK's
@@ -102,36 +131,31 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
-    const buildParams = (includeSchema: boolean, includeSeed = true) => ({
+    const buildParams = (includeSchema: boolean, includeSeed = true, includeReasoningEffort = true) => ({
       model: opts?.model ?? this.config.LLM_CHAT_MODEL,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      // See LlmChatOptions.seed's doc comment -- only sent when a caller
-      // explicitly asks for pinned sampling, so every other caller's default
-      // behavior is unchanged. includeSeed:false is used for the unsupported-
-      // param retry path (some providers, e.g. azure_ai via LiteLLM, reject seed).
-      ...(includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
+      // seed: gated on LLM_SEND_SEED (false by default -- Azure-backed models via
+      // LiteLLM reject it with a 400). includeSeed:false is the retry path when the
+      // upstream signals the param is unsupported even with LLM_SEND_SEED:true.
+      ...(this.config.LLM_SEND_SEED && includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
       // Ollama maps OpenAI-compat max_tokens -> its own num_predict. Bounds
       // worst-case latency for a reasoning model's otherwise-unbounded
       // chain-of-thought + answer (see LlmChatOptions.maxTokens doc comment).
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
-      // `reasoning_effort: 'none'` -- NOT an Ollama-native `options.*` field
-      // like numCtx/topK/minP above; it's Ollama's OpenAI-compat endpoint's
-      // OWN top-level field for controlling reasoning (confirmed against
-      // Ollama's own openai/openai.go: ChatCompletionRequest.ReasoningEffort,
-      // mapped internally to api.ThinkValue -- a bare `think`/`options.think`
-      // field is silently ignored by this endpoint, confirmed live: it
-      // produced a real `reasoning` field in the response and no speedup).
-      // The OpenAI SDK's own ReasoningEffort type is 'low'|'medium'|'high'|
-      // null (real OpenAI o1/o3 models don't support 'none') -- 'none' is
-      // an Ollama-specific extension of the same field, confirmed valid
-      // server-side even though the SDK's TS union doesn't know about it;
-      // cast past that narrower type rather than widen it repo-wide. Only
-      // sent when explicitly `false`; omitted otherwise so every other
-      // caller's default reasoning behavior is unaffected.
-      ...(opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
+      // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT (false by default --
+      // Azure-backed models via LiteLLM reject it with a 400). includeReasoningEffort:
+      // false is the retry path. `reasoning_effort: 'none'` is NOT an Ollama-native
+      // `options.*` field like numCtx/topK/minP above; it's Ollama's OpenAI-compat
+      // endpoint's OWN top-level field (confirmed against Ollama's own openai/openai.go:
+      // ChatCompletionRequest.ReasoningEffort, mapped internally to api.ThinkValue --
+      // a bare `think`/`options.think` field is silently ignored, confirmed live).
+      // The SDK's ReasoningEffort type is 'low'|'medium'|'high'|null; 'none' is an
+      // Ollama-specific extension, valid server-side despite the narrower SDK union.
+      // Only sent when opts.think is explicitly false; omitted otherwise.
+      ...(this.config.LLM_SEND_REASONING_EFFORT && includeReasoningEffort && opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
     });
@@ -148,10 +172,13 @@ export class OpenWebUiClient implements LlmClient {
         const response = await this.openai.chat.completions.create(buildParams(false));
         return toResult(response);
       }
-      if (opts?.seed !== undefined && isSeedUnsupportedError(err)) {
+      const unsupported = parseUnsupportedParams(err);
+      if (unsupported.size > 0) {
         // eslint-disable-next-line no-console
-        console.warn(`[OpenWebUiClient.chat] upstream rejected seed param (UnsupportedParamsError); retrying without it for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-        const response = await this.openai.chat.completions.create(buildParams(true, false));
+        console.warn(`[OpenWebUiClient.chat] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+        const response = await this.openai.chat.completions.create(
+          buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
+        );
         return toResult(response);
       }
       rethrowAsUpstream(err);
@@ -279,21 +306,21 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
-    const buildParams = (includeSchema: boolean, includeSeed = true) => ({
+    const buildParams = (includeSchema: boolean, includeSeed = true, includeReasoningEffort = true) => ({
       model: opts?.model ?? this.config.LLM_CHAT_MODEL,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       stream: true as const,
       ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      // See chat()'s own seed comment -- only sent when a caller explicitly
-      // asks for pinned sampling. includeSeed:false is the seed retry path.
-      ...(includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
+      // seed: gated on LLM_SEND_SEED -- see chat()'s own seed comment.
+      // includeSeed:false is the retry path when upstream rejects the param.
+      ...(this.config.LLM_SEND_SEED && includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
-      // See chat()'s own reasoning_effort comment for why this is the
-      // correct field for Ollama's OpenAI-compat endpoint (not a bare
-      // think/options.think field). Only sent when explicitly `false`.
-      ...(opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
+      // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT -- see chat()'s
+      // own reasoning_effort comment for why this is the correct field.
+      // includeReasoningEffort:false is the retry path when upstream rejects it.
+      ...(this.config.LLM_SEND_REASONING_EFFORT && includeReasoningEffort && opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
     });
     let stream;
     try {
@@ -301,12 +328,17 @@ export class OpenWebUiClient implements LlmClient {
     } catch (err) {
       if (opts?.responseSchema && isSchemaRejection(err)) {
         stream = await this.openai.chat.completions.create(buildParams(false));
-      } else if (opts?.seed !== undefined && isSeedUnsupportedError(err)) {
-        // eslint-disable-next-line no-console
-        console.warn(`[OpenWebUiClient.streamChat] upstream rejected seed param; retrying without it for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-        stream = await this.openai.chat.completions.create(buildParams(true, false));
       } else {
-        rethrowAsUpstream(err);
+        const unsupported = parseUnsupportedParams(err);
+        if (unsupported.size > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(`[OpenWebUiClient.streamChat] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+          stream = await this.openai.chat.completions.create(
+            buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
+          );
+        } else {
+          rethrowAsUpstream(err);
+        }
       }
     }
     // `reasoning` is Ollama's OpenAI-compat streaming delta field for a
@@ -493,10 +525,7 @@ export class OpenWebUiClient implements LlmClient {
     images: Buffer[],
     opts?: { model?: string; mimeType?: string; responseSchema?: LlmResponseSchema },
   ): Promise<string> {
-    const model = opts?.model ?? this.config.LLM_VISION_MODEL;
-    if (!model) {
-      throw new Error('vision() called with no model available -- set LLM_VISION_MODEL or pass opts.model');
-    }
+    const model = opts?.model ?? this.config.LLM_VISION_MODEL ?? this.config.LLM_CHAT_MODEL;
     // Same OpenAI-compatible chat.completions endpoint as chat(), just with
     // a multimodal content array -- Ollama/Open WebUI's OpenAI-compat API
     // accepts image_url content parts for vision-capable models (llava,
@@ -525,11 +554,11 @@ export class OpenWebUiClient implements LlmClient {
       // llm_leveling.py's token-budget branch splitter, so a differently
       // worded caption can shift branch boundaries and, with them, total
       // node count. A caption is structured extraction (describe what's in
-      // the image), not creative writing -- temperature 0 is the correct
-      // setting on its own merits, seed is defensive/hygiene on top of
-      // that in case this backend ever runs at a non-zero temperature.
+      // the image), not creative writing -- temperature 0 is correct on its
+      // own merits. seed 0 is defensive hygiene gated on LLM_SEND_SEED
+      // (false by default for Azure backends that reject it).
       temperature: 0,
-      seed: 0,
+      ...(this.config.LLM_SEND_SEED ? { seed: 0 } : {}),
       // No output cap previously existed here at all -- the prompt asks
       // for "one or two sentences" (orchestrator_vision_client.py's
       // _build_prompt), so a real caption is SUPPOSED to be short, but
@@ -570,10 +599,10 @@ export class OpenWebUiClient implements LlmClient {
       // legitimate use for a reasoning trace -- same "structured
       // extraction, not creative writing" reasoning the temperature=0
       // comment above already states, applied to the token-budget problem
-      // reasoning caused. Same `reasoning_effort: 'none'` knob chat() uses,
-      // just unconditional here since no caller ever wants a captioned
-      // reasoning trace.
-      reasoning_effort: 'none' as OpenAI.ReasoningEffort,
+      // reasoning caused. Gated on LLM_SEND_REASONING_EFFORT (false by
+      // default for Azure backends that reject it); only meaningful when
+      // targeting an Ollama-compatible backend that supports 'none'.
+      ...(this.config.LLM_SEND_REASONING_EFFORT ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
       // Third live incident, confirmed via a real completed job's actual
       // figure descriptions (not a synthetic test): 2 of 42 real captions
       // came back with the SAME content repeated near-verbatim within one
@@ -686,7 +715,7 @@ export class OpenWebUiClient implements LlmClient {
         messages: [{ role: 'user', content: outboundContent }],
         files: [{ type: 'file', id: fileId, context: 'full' }],
         temperature: 0,
-        seed: 0,
+        ...(this.config.LLM_SEND_SEED ? { seed: 0 } : {}),
         ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
         ...(opts.numCtx !== undefined ? { options: { num_ctx: opts.numCtx } } : {}),
       }),

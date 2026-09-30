@@ -11,6 +11,8 @@ const GLOBAL_CONFIG: OpenWebUiGlobalConfig = {
   FILES_UPLOAD_PATH: '/api/v1/files/',
   FILES_STATUS_PATH: '/api/v1/files',
   LLM_REQUEST_TIMEOUT_MS: 60_000,
+  LLM_SEND_SEED: false,
+  LLM_SEND_REASONING_EFFORT: false,
 };
 
 describe('OpenWebUiClientFactory', () => {

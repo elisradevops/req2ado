@@ -18,6 +18,8 @@ describe('OpenWebUiClient', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   it('constructs the OpenAI client with an explicit timeout and maxRetries: 0 (never blindly retries a non-idempotent, multi-minute inference call)', () => {
@@ -82,7 +84,9 @@ describe('OpenWebUiClient', () => {
     // Backs the primer call's temperature/seed pinning (pipeline.worker.ts):
     // without this passthrough, `seed: 0` on a chat() call would be silently
     // dropped and the primer would keep re-sampling.
-    const client = new OpenWebUiClient(config);
+    // LLM_SEND_SEED: true -- this test verifies the seed IS forwarded when the
+    // feature flag is on; separate tests cover the default-false (Azure) path.
+    const client = new OpenWebUiClient({ ...config, LLM_SEND_SEED: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -178,7 +182,9 @@ describe('OpenWebUiClient', () => {
     // think toggle, confirmed via Ollama's source (ReasoningEffort ->
     // api.ThinkValue), and 'none' is an Ollama-specific extension beyond
     // real OpenAI's low/medium/high/null.
-    const client = new OpenWebUiClient(config);
+    // LLM_SEND_REASONING_EFFORT: true -- this test verifies the param IS
+    // forwarded when enabled; the default-false (Azure) path has its own test.
+    const client = new OpenWebUiClient({ ...config, LLM_SEND_REASONING_EFFORT: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -259,6 +265,57 @@ describe('OpenWebUiClient', () => {
       client.chat([{ role: 'user', content: 'hi' }], { responseSchema: { name: 'hierarchy', schema: {} } }),
     ).rejects.toThrow();
     expect(fakeCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('chat() retries without the rejected params when upstream returns a LiteLLM UnsupportedParamsError 400', async () => {
+    // LLM_SEND_SEED: true so seed IS sent on the first attempt and the retry strips it.
+    const client = new OpenWebUiClient({ ...config, LLM_SEND_SEED: true });
+    const rejection = new OpenAI.APIError(
+      400,
+      { message: "azure does not support parameters: ['seed']" },
+      "azure does not support parameters: ['seed']",
+      {} as any,
+    );
+    const fakeCreate = jest
+      .fn()
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'ok without seed' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], { seed: 42 });
+
+    expect(result.content).toBe('ok without seed');
+    expect(fakeCreate).toHaveBeenCalledTimes(2);
+    expect(fakeCreate.mock.calls[0][0]).toHaveProperty('seed', 42);
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
+  });
+
+  it('streamChat() retries without the rejected params when upstream returns a LiteLLM UnsupportedParamsError 400', async () => {
+    // LLM_SEND_SEED: true so seed IS sent on the first attempt and the retry strips it.
+    const client = new OpenWebUiClient({ ...config, LLM_SEND_SEED: true });
+    const rejection = new OpenAI.APIError(
+      400,
+      { message: "azure does not support parameters: ['seed']" },
+      "azure does not support parameters: ['seed']",
+      {} as any,
+    );
+    async function* fakeStream() {
+      yield { choices: [{ delta: { content: 'ok without seed' } }] };
+    }
+    const fakeCreate = jest.fn().mockRejectedValueOnce(rejection).mockResolvedValueOnce(fakeStream());
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const chunks: string[] = [];
+    for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }], { seed: 42 })) {
+      if (chunk.content) chunks.push(chunk.content);
+    }
+
+    expect(chunks).toEqual(['ok without seed']);
+    expect(fakeCreate).toHaveBeenCalledTimes(2);
+    expect(fakeCreate.mock.calls[0][0]).toHaveProperty('seed', 42);
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
   });
 
   it('forwards tools as-is and omits tool_choice when not provided', async () => {
@@ -386,7 +443,8 @@ describe('OpenWebUiClient', () => {
   });
 
   it('streamChat forwards seed when provided, and omits it otherwise (same pinned-sampling passthrough as chat())', async () => {
-    const client = new OpenWebUiClient(config);
+    // LLM_SEND_SEED: true -- tests the seed-forwarding path when the flag is on.
+    const client = new OpenWebUiClient({ ...config, LLM_SEND_SEED: true });
     async function* fakeStream() {
       yield { choices: [{ delta: { content: 'hi' } }] };
     }
@@ -409,7 +467,8 @@ describe('OpenWebUiClient', () => {
   });
 
   it('streamChat forwards numCtx/topK/minP as ONE options object and think:false as reasoning_effort (previously silently discarded)', async () => {
-    const client = new OpenWebUiClient(config);
+    // LLM_SEND_REASONING_EFFORT: true -- tests the reasoning_effort-forwarding path when the flag is on.
+    const client = new OpenWebUiClient({ ...config, LLM_SEND_REASONING_EFFORT: true });
     async function* fakeStream() {
       yield { choices: [{ delta: { content: 'hi' } }] };
     }
@@ -458,13 +517,19 @@ describe('OpenWebUiClient', () => {
     await expect(client.embed(['text'])).rejects.toThrow(/not implemented/i);
   });
 
-  it('vision() throws when no model is configured and no override is passed', async () => {
-    const client = new OpenWebUiClient(config); // config has no LLM_VISION_MODEL
-    await expect(client.vision('prompt', [Buffer.from('img')])).rejects.toThrow(/no model/i);
+  it('vision() falls back to LLM_CHAT_MODEL when no LLM_VISION_MODEL is configured', async () => {
+    // config has no LLM_VISION_MODEL -- vision() must use LLM_CHAT_MODEL rather than throwing.
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+    await client.vision('prompt', [Buffer.from('img')]);
+    expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: config.LLM_CHAT_MODEL }));
   });
 
   it('vision() sends a multimodal content array to the same chat.completions endpoint', async () => {
-    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    // LLM_SEND_SEED + LLM_SEND_REASONING_EFFORT: true -- vision() sends both when flags are on.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true, LLM_SEND_REASONING_EFFORT: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'A block diagram.' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -527,7 +592,8 @@ describe('OpenWebUiClient', () => {
   });
 
   it('vision() sends temperature 0 and a fixed seed -- a caption is structured extraction, not creative writing, and feeds branch-splitting downstream', async () => {
-    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    // LLM_SEND_SEED: true -- tests seed is forwarded by vision() when the flag is on.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -585,7 +651,8 @@ describe('OpenWebUiClient', () => {
     // reasoning tokens, leaving message.content genuinely empty for every
     // single figure in a real document -- "no useful caption returned"
     // for figures that unambiguously have real technical content.
-    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'gemma4:e4b' });
+    // LLM_SEND_REASONING_EFFORT: true -- tests reasoning_effort is forwarded by vision() when the flag is on.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'gemma4:e4b', LLM_SEND_REASONING_EFFORT: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'A wiring diagram.' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -616,7 +683,8 @@ describe('OpenWebUiClient', () => {
   });
 
   it('vision() omits response_format when responseSchema is not provided -- unchanged from pre-Task-2 behavior', async () => {
-    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
+    // LLM_SEND_SEED + LLM_SEND_REASONING_EFFORT: true -- full object check, both flags on.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true, LLM_SEND_REASONING_EFFORT: true });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'A block diagram.' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -673,6 +741,8 @@ describe('OpenWebUiClient.embed (ollama transport)', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   beforeEach(() => {
@@ -785,6 +855,8 @@ describe('OpenWebUiClient.embed (openai transport)', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   beforeEach(() => {
@@ -871,6 +943,8 @@ describe('OpenWebUiClient.listSelectableModels', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   beforeEach(() => {
@@ -994,6 +1068,8 @@ describe('OpenWebUiClient.showModel', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   beforeEach(() => {
@@ -1086,6 +1162,8 @@ describe('OpenWebUiClient.uploadFile', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 5000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   beforeEach(() => {
@@ -1159,6 +1237,8 @@ describe('OpenWebUiClient.pollFileProcessed', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 5000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   beforeEach(() => {
@@ -1212,6 +1292,8 @@ describe('OpenWebUiClient.deleteFile', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 5000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   beforeEach(() => {
@@ -1238,6 +1320,8 @@ describe('OpenWebUiClient.chatWithFullFileContext', () => {
     FILES_UPLOAD_PATH: '/api/v1/files/',
     FILES_STATUS_PATH: '/api/v1/files',
     LLM_REQUEST_TIMEOUT_MS: 5000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
   };
 
   beforeEach(() => {
@@ -1286,7 +1370,8 @@ describe('OpenWebUiClient.chatWithFullFileContext', () => {
 
   it('sends temperature 0 and a fixed seed unconditionally -- this primer text feeds a deterministic figure-caption cache key, same reasoning as vision()', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) });
-    const client = new OpenWebUiClient(config);
+    // LLM_SEND_SEED: true -- tests seed IS forwarded when the flag is on.
+    const client = new OpenWebUiClient({ ...config, LLM_SEND_SEED: true });
     await client.chatWithFullFileContext('Describe this document.', 'file-123', {});
     const [, options] = (global.fetch as jest.Mock).mock.calls[0];
     const body = JSON.parse(options.body);

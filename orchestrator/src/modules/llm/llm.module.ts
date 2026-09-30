@@ -26,6 +26,9 @@ import { AuthModule } from '../auth/auth.module';
       useFactory: (config: ConfigService, llmConfigResolver: LlmConfigResolver) => {
         const globalConfig: OpenWebUiGlobalConfig = {
           LLM_BASE_URL: config.get<string>('LLM_BASE_URL')!,
+          LLM_CHAT_BASE_URL: config.get<string>('LLM_CHAT_BASE_URL'),
+          LLM_SEND_SEED: config.get<string>('LLM_SEND_SEED') === 'true',
+          LLM_SEND_REASONING_EFFORT: config.get<string>('LLM_SEND_REASONING_EFFORT') === 'true',
           LLM_TRUSTED_LOCAL: config.get<boolean>('LLM_TRUSTED_LOCAL')!,
           EMBED_TRANSPORT: config.get<'ollama' | 'openai'>('EMBED_TRANSPORT')!,
           EMBED_BASE_URL: config.get<string>('EMBED_BASE_URL'),

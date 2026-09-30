@@ -71,6 +71,9 @@ const settingsService = new SettingsService(prisma);
 // other client above.
 const openWebUiGlobalConfig: OpenWebUiGlobalConfig = {
   LLM_BASE_URL: config.LLM_BASE_URL,
+  LLM_CHAT_BASE_URL: config.LLM_CHAT_BASE_URL,
+  LLM_SEND_SEED: config.LLM_SEND_SEED === 'true',
+  LLM_SEND_REASONING_EFFORT: config.LLM_SEND_REASONING_EFFORT === 'true',
   LLM_TRUSTED_LOCAL: config.LLM_TRUSTED_LOCAL,
   EMBED_TRANSPORT: config.EMBED_TRANSPORT,
   EMBED_BASE_URL: config.EMBED_BASE_URL,
