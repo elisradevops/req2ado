@@ -53,6 +53,8 @@ function parseUnsupportedParams(err: unknown): Set<string> {
   if (err.message.includes('UnsupportedParamsError') || err.message.toLowerCase().includes('unsupported')) {
     if (err.message.includes('seed')) params.add('seed');
     if (err.message.includes('reasoning_effort')) params.add('reasoning_effort');
+    if (err.message.includes('temperature')) params.add('temperature');
+    if (err.message.includes('frequency_penalty')) params.add('frequency_penalty');
   }
   return params;
 }
@@ -257,6 +259,7 @@ export class OpenWebUiClient implements LlmClient {
   async listSelectableModels(token?: string): Promise<{ id: string; name: string; vision: boolean }[]> {
     const response = await fetch(`${this.openWebUiAppRoot()}/api/models`, {
       headers: { Authorization: `Bearer ${token ?? this.config.LLM_API_KEY ?? ''}` },
+      signal: AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw new Error(`OpenWebUiClient.listSelectableModels failed: ${response.status}`);
@@ -523,7 +526,7 @@ export class OpenWebUiClient implements LlmClient {
   async vision(
     prompt: string,
     images: Buffer[],
-    opts?: { model?: string; mimeType?: string; responseSchema?: LlmResponseSchema },
+    opts?: { model?: string; mimeType?: string; responseSchema?: LlmResponseSchema; detail?: 'low' | 'high' | 'auto' },
   ): Promise<string> {
     const model = opts?.model ?? this.config.LLM_VISION_MODEL ?? this.config.LLM_CHAT_MODEL;
     // Same OpenAI-compatible chat.completions endpoint as chat(), just with
@@ -540,10 +543,16 @@ export class OpenWebUiClient implements LlmClient {
       { type: 'text', text: outboundPrompt },
       ...images.map((image) => ({
         type: 'image_url' as const,
-        image_url: { url: `data:${mimeType};base64,${image.toString('base64')}` },
+        // detail controls resolution/token cost: 'high' activates tile-based
+        // high-res processing (Azure AI vision docs), useful for complex
+        // engineering drawings. Defaults to 'auto' when not set.
+        image_url: {
+          url: `data:${mimeType};base64,${image.toString('base64')}`,
+          ...(opts?.detail ? { detail: opts.detail } : {}),
+        },
       })),
     ];
-    const buildParams = (includeSchema: boolean) => ({
+    const buildParams = (includeSchema: boolean, includeTemperature = true, includeFrequencyPenalty = true) => ({
       model,
       messages: [{ role: 'user' as const, content }],
       // Confirmed real root cause of run-to-run SURVEY node-count variance
@@ -557,7 +566,9 @@ export class OpenWebUiClient implements LlmClient {
       // the image), not creative writing -- temperature 0 is correct on its
       // own merits. seed 0 is defensive hygiene gated on LLM_SEND_SEED
       // (false by default for Azure backends that reject it).
-      temperature: 0,
+      // includeTemperature:false is the retry path when the upstream
+      // (e.g. an Azure o-series reasoning model) rejects this param.
+      ...(includeTemperature ? { temperature: 0 } : {}),
       ...(this.config.LLM_SEND_SEED ? { seed: 0 } : {}),
       // No output cap previously existed here at all -- the prompt asks
       // for "one or two sentences" (orchestrator_vision_client.py's
@@ -621,7 +632,9 @@ export class OpenWebUiClient implements LlmClient {
       // problem specifically. A mitigation, not a guarantee -- repetition-
       // loop behavior is probabilistic, not a deterministic bug this
       // parameter can promise to eliminate.
-      frequency_penalty: 0.4,
+      // includeFrequencyPenalty:false is the retry path when the upstream
+      // (e.g. an Azure o-series reasoning model) rejects this param.
+      ...(includeFrequencyPenalty ? { frequency_penalty: 0.4 } : {}),
       ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
     });
     try {
@@ -630,6 +643,15 @@ export class OpenWebUiClient implements LlmClient {
     } catch (err) {
       if (opts?.responseSchema && isSchemaRejection(err)) {
         const response = await this.openai.chat.completions.create(buildParams(false));
+        return response.choices[0]?.message?.content ?? '';
+      }
+      const unsupported = parseUnsupportedParams(err);
+      if (unsupported.size > 0) {
+        // eslint-disable-next-line no-console
+        console.warn(`[OpenWebUiClient.vision] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${model}`);
+        const response = await this.openai.chat.completions.create(
+          buildParams(true, !unsupported.has('temperature'), !unsupported.has('frequency_penalty')),
+        );
         return response.choices[0]?.message?.content ?? '';
       }
       throw err;
@@ -706,6 +728,14 @@ export class OpenWebUiClient implements LlmClient {
     const outboundContent = this.config.LLM_TRUSTED_LOCAL ? content : redactText(content);
     const response = await fetch(`${this.openWebUiAppRoot()}/api/chat/completions`, {
       method: 'POST',
+      // `context: 'full'` is an undocumented Open WebUI extension field on
+      // the files array entry that instructs the native route to return the
+      // file's full stored content instead of routing it into chunked RAG.
+      // Confirmed working live (canary phrase test) but not in the public
+      // API reference -- a future Open WebUI upgrade could change this
+      // behavior silently (failure mode: falls back to chunked RAG, not a
+      // 400). Confirmed against Open WebUI v0.8.12 source.
+      signal: AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS),
       headers: {
         'Content-Type': 'application/json',
         ...(this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {}),

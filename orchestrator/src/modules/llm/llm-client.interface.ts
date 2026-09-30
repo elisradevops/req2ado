@@ -133,5 +133,5 @@ export interface LlmClient {
   listModels(): Promise<string[]>;
   streamChat(messages: ChatMessage[], opts?: LlmChatOptions): AsyncGenerator<LlmStreamChunk>;
   embed(texts: string[], opts?: { model?: string }): Promise<number[][]>;
-  vision(prompt: string, images: Buffer[], opts?: { model?: string; mimeType?: string; responseSchema?: LlmResponseSchema }): Promise<string>;
+  vision(prompt: string, images: Buffer[], opts?: { model?: string; mimeType?: string; responseSchema?: LlmResponseSchema; detail?: 'low' | 'high' | 'auto' }): Promise<string>;
 }
