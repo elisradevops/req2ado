@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
 import type { DocumentMapSection } from './document-map';
 
@@ -43,7 +44,10 @@ Do not mention structural concerns, formatting, or how deep/fragmented the docum
 
 @Injectable()
 export class DocumentOverviewService {
-  constructor(private readonly clientFactory: OpenWebUiClientFactory) {}
+  constructor(
+    private readonly clientFactory: OpenWebUiClientFactory,
+    private readonly configService: ConfigService,
+  ) {}
 
   // userId resolves this call's Open WebUI client -- a user with no
   // connection configured yet falls into the same catch block below and
@@ -71,7 +75,17 @@ export class DocumentOverviewService {
         // This is a plain structured single-paragraph summary with no need
         // for multi-step reasoning, matching this codebase's own established
         // use of think: false for exactly this class of call.
-        { seed: 42, maxTokens: 300, think: false },
+        //
+        // maxTokens: confirmed live in production (this deployment) that
+        // think:false alone is NOT sufficient here -- LLM_SEND_REASONING_EFFORT
+        // is globally false in this deployment, so `think` never actually
+        // reaches the backend as `reasoning_effort`, and a reasoning-capable
+        // model can still exhaust the budget on hidden chain-of-thought
+        // (real production log: finishReason=length at the previous 300
+        // default). DOCUMENT_OVERVIEW_MAX_TOKENS (config.schema.ts) is a
+        // reasoned estimate, not empirically proven sufficient for every
+        // model -- configurable so it can be retuned without a code change.
+        { seed: 42, maxTokens: this.configService.get<number>('DOCUMENT_OVERVIEW_MAX_TOKENS')!, think: false },
       );
       const synopsis = result.content.trim();
       if (!synopsis) {

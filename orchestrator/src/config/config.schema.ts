@@ -36,6 +36,17 @@ export const configSchema = z.object({
   // it; set to 1 to skip the retry overhead when the target vision model is
   // known to require it.
   LLM_VISION_TEMPERATURE: z.coerce.number().optional(),
+  // maxTokens for DocumentOverviewService's pre-job document-summary call
+  // (NewJobWizard step 3, "Confirm understanding"). Default raised from the
+  // original 300 after live confirmation (finishReason=length in production
+  // logs) that a reasoning-capable model can exhaust a small budget on
+  // hidden chain-of-thought before emitting any real content -- this
+  // deployment has no way to disable that reasoning for this call
+  // (LLM_SEND_REASONING_EFFORT is globally false), so a larger budget is the
+  // only available lever. 4000 is a reasoned estimate, not empirically
+  // confirmed sufficient for every model -- exposed as an env var so it can
+  // be retuned without a code change if it recurs.
+  DOCUMENT_OVERVIEW_MAX_TOKENS: z.coerce.number().default(4000),
   // NOT the per-user credential any more -- every user has their own
   // vaulted token/chat model/vision model (see llm-config.resolver.ts,
   // openwebui-client.factory.ts). This is now purely a fallback-of-last-

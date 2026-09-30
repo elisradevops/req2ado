@@ -163,6 +163,17 @@ config:
   # permissive model, or to the model's own required value (e.g. "1") to
   # skip that retry round-trip.
   # LLM_VISION_TEMPERATURE: "0"
+  # maxTokens for the pre-job document-summary preview call (NewJobWizard
+  # step 3). Raised from an original 300 after live confirmation that a
+  # reasoning-capable model can exhaust a small budget on hidden
+  # chain-of-thought before emitting real content -- this deployment can't
+  # disable that reasoning for this call (LLM_SEND_REASONING_EFFORT is
+  # globally false), so a larger budget is the only available lever. A
+  # reasoned estimate, not empirically proven sufficient for every model --
+  # retune here without a code change if "Couldn't generate a summary"
+  # recurs (check orchestrator logs for DocumentOverviewService.generate's
+  # own finishReason=length diagnostic first).
+  DOCUMENT_OVERVIEW_MAX_TOKENS: "4000"
   LLM_REQUEST_TIMEOUT_SECONDS: "90"
   LLM_TRUSTED_LOCAL: "false"
   LOG_LEVEL: "INFO"

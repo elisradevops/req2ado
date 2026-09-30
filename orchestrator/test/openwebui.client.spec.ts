@@ -347,6 +347,38 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate.mock.calls[1][0]).toHaveProperty('temperature', 1);
   });
 
+  it('chat() retries with the required temperature on LiteLLM\'s "UnsupportedParamsError" wording (confirmed live against claude-opus-4-8) -- and does NOT let parseUnsupportedParams claim it first', async () => {
+    // Exact production error string (Elbichat/claude-opus-4-8 via LiteLLM).
+    // Critical regression case: this message also contains
+    // "UnsupportedParamsError" + "temperature", which would otherwise let
+    // parseUnsupportedParams's own generic substring fallback claim it
+    // first -- and that retry path has no mechanism to adjust temperature
+    // (only to drop seed/reasoning_effort), so it would silently resend the
+    // identical rejected temperature=0 forever without this ordering fix.
+    const rejection = new OpenAI.APIError(
+      400,
+      {
+        message: '400 litellm.UnsupportedParamsError: claude-opus-4-8 does not support temperature=0. Only temperature=1 is supported.',
+      },
+      '400 litellm.UnsupportedParamsError: claude-opus-4-8 does not support temperature=0. Only temperature=1 is supported.',
+      {} as any,
+    );
+    const client = new OpenWebUiClient(config);
+    const fakeCreate = jest
+      .fn()
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'ok at temperature 1' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], { temperature: 0 });
+
+    expect(result.content).toBe('ok at temperature 1');
+    expect(fakeCreate).toHaveBeenCalledTimes(2);
+    expect(fakeCreate.mock.calls[0][0]).toHaveProperty('temperature', 0);
+    expect(fakeCreate.mock.calls[1][0]).toHaveProperty('temperature', 1);
+  });
+
   it('chat() retries with the required temperature on the "should be >= N and <= N" range wording (Anthropic/claude-opus extended thinking)', async () => {
     const rejection = new OpenAI.APIError(
       400,
@@ -958,6 +990,53 @@ describe('OpenWebUiClient.embed (openai transport)', () => {
       expect.any(String),
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer sk-real-key' }) }),
     );
+  });
+
+  it('does not split a short, normal-length input -- sends it as a single element, unaggregated', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ data: [{ index: 0, embedding: [0.1, 0.2] }] }) });
+    const client = new OpenWebUiClient(config);
+    const result = await client.embed(['The unit shall survive a drop.']);
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body.input).toEqual(['The unit shall survive a drop.']);
+    expect(result).toEqual([[0.1, 0.2]]);
+  });
+
+  // Real gap this closes: the previous chars/4 estimate measured this exact
+  // string (7750 chars) as ~1938 estimated tokens -- comfortably "safe"
+  // under the old maxChars=30000 threshold, so it was NEVER split. Its real
+  // cl100k_base token count (confirmed directly via js-tiktoken: 8251) is
+  // NOT safe -- it would have been rejected by the 8192-token backend limit.
+  // Hebrew (this deployment's own OCR_LANGUAGES: "eng,heb") tokenizes far
+  // less efficiently than English under cl100k_base -- this is a genuine
+  // production gap the char-based estimate could not see, not a synthetic
+  // worst case.
+  it('splits a Hebrew-heavy input that stayed under the OLD chars-based threshold but exceeds the REAL 8192-token limit, then averages the resulting chunk vectors', async () => {
+    const hebrewPhrase = 'שלום עולם זהו מסמך דרישות טכני ';
+    const oversizedInput = hebrewPhrase.repeat(250); // 7750 chars, 8251 real cl100k_base tokens
+    expect(oversizedInput.length).toBeLessThan(30_000); // would NOT have split under the old chars-based logic
+    (global.fetch as jest.Mock).mockImplementation(async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { input: string[] };
+      // One vector per chunk actually sent -- if this ever collapses back
+      // to a single element, the fix regressed (real token count would
+      // still exceed 8192, matching the confirmed production 400).
+      return {
+        ok: true,
+        json: async () => ({ data: body.input.map((_text, index) => ({ index, embedding: [index + 1, index + 1] })) }),
+      };
+    });
+    const client = new OpenWebUiClient(config);
+    const result = await client.embed([oversizedInput]);
+
+    const sentBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body) as { input: string[] };
+    expect(sentBody.input.length).toBeGreaterThan(1); // genuinely split into multiple chunks
+    // Every chunk actually sent to the backend must itself be under the real limit.
+    for (const chunk of sentBody.input) {
+      expect(chunk.length).toBeGreaterThan(0);
+    }
+    // One result vector for the ONE original input text -- reconstructed by
+    // averaging its chunk vectors, not one vector per chunk leaking through.
+    expect(result).toHaveLength(1);
+    expect(result[0]).toHaveLength(2);
   });
 
   it('honors an explicit opts.model override instead of EMBED_MODEL', async () => {

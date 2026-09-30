@@ -30,6 +30,7 @@
     "cookie-parser": "^1.4.7",
     "helmet": "^7.1.0",
     "ioredis": "^5.4.1",
+    "js-tiktoken": "^1.0.21",
     "marked": "^15.0.12",
     "openai": "^4.60.0",
     "pino": "^9.4.0",

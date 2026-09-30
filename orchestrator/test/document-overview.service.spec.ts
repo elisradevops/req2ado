@@ -7,9 +7,12 @@ function section(blockCount: number): DocumentMapSection {
   return { number: null, title: 'Section', blockCount, figureCount: 0 };
 }
 
+// Mirrors config.schema.ts's DOCUMENT_OVERVIEW_MAX_TOKENS default (4000).
+const configService = { get: jest.fn().mockReturnValue(4000) };
+
 function serviceWithChat(chat: jest.Mock) {
   const getClientFor = jest.fn().mockResolvedValue({ chat });
-  return new DocumentOverviewService({ getClientFor } as any);
+  return new DocumentOverviewService({ getClientFor } as any, configService as any);
 }
 
 describe('computeDeterministicCaveat', () => {
@@ -57,8 +60,20 @@ describe('DocumentOverviewService.generate', () => {
       // burns the whole maxTokens budget on hidden chain-of-thought and
       // returns empty content (confirmed live against a real reasoning
       // model backend; the mocked chat() above can't catch this on its own).
-      expect.objectContaining({ seed: 42, maxTokens: 300, think: false }),
+      expect.objectContaining({ seed: 42, maxTokens: 4000, think: false }),
     );
+  });
+
+  it('forwards a non-default DOCUMENT_OVERVIEW_MAX_TOKENS from config, not a hardcoded value', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: 'A synopsis.' });
+    const getClientFor = jest.fn().mockResolvedValue({ chat });
+    const customConfig = { get: jest.fn().mockReturnValue(9999) };
+    const service = new DocumentOverviewService({ getClientFor } as any, customConfig as any);
+
+    await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
+
+    expect(customConfig.get).toHaveBeenCalledWith('DOCUMENT_OVERVIEW_MAX_TOKENS');
+    expect(chat).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ maxTokens: 9999 }));
   });
 
   it('fails open to null when the LLM call throws', async () => {
@@ -81,7 +96,7 @@ describe('DocumentOverviewService.generate', () => {
 
   it('fails open to null when the caller has no Open WebUI connection configured', async () => {
     const getClientFor = jest.fn().mockRejectedValue(new Error('no profile'));
-    const service = new DocumentOverviewService({ getClientFor } as any);
+    const service = new DocumentOverviewService({ getClientFor } as any, configService as any);
 
     const result = await service.generate({ documentMap: [section(10)], sectionCount: 1, depth: 1 }, USER_ID);
 

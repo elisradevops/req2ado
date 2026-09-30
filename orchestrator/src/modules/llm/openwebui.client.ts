@@ -1,8 +1,28 @@
 import { Injectable } from '@nestjs/common';
 import OpenAI from 'openai';
+import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmStreamChunk } from './llm-client.interface';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { fetchWithRetry } from './retryWithBackoff';
+
+// Module-level singleton, not per-instance: the cl100k_base rank table load
+// cost should happen once per process, not once per user-scoped
+// OpenWebUiClient (OpenWebUiClientFactory caches one instance per user --
+// see that factory's own doc comment). Lazily initialized so a process that
+// never calls embed() never pays this cost at all. `/lite` + `/ranks/*`
+// subpath imports (the more tree-shakeable option) do NOT resolve under
+// this project's tsconfig (no explicit moduleResolution -- defaults to
+// node10, which doesn't understand package.json subpath exports; confirmed
+// directly: `tsc` reports "types... could not be resolved under your
+// current 'moduleResolution' setting" for the subpath, while the plain
+// main-entry `getEncoding` import resolves cleanly) -- the main entry point
+// bundles every encoding table, a negligible one-time memory cost for a
+// backend service, not worth a build-breaking risk to avoid.
+let cl100kEncoder: Tiktoken | null = null;
+function getEmbedEncoder(): Tiktoken {
+  if (!cl100kEncoder) cl100kEncoder = getEncoding('cl100k_base');
+  return cl100kEncoder;
+}
 
 function buildResponseFormat(opts: LlmChatOptions | undefined, includeSchema: boolean): OpenAI.ResponseFormatJSONSchema | undefined {
   if (!includeSchema || !opts?.responseSchema) return undefined;
@@ -74,12 +94,28 @@ function parseTemperatureConstraint(err: unknown): number | null {
   // "temperature must be 1" / "only allows temperature=1"
   const mustMatch = err.message.match(/temperature\s*(?:must be|only allows?)\s*=?\s*(\d+(?:\.\d+)?)/i);
   if (mustMatch) return parseFloat(mustMatch[1]);
-  // Azure's own wording (confirmed live against OpenAI/gpt-5.5 via LiteLLM,
-  // distinct from both patterns above): "'temperature' does not support 0
-  // with this model. Only the default (1) value is supported." Captures the
-  // parenthesized default, not the rejected value that precedes it.
-  const azureDefaultMatch = err.message.match(/temperature[^.]{0,40}does not support\s+[\d.]+[^.]*?\.\s*Only the default\s*\((\d+(?:\.\d+)?)\)/i);
-  if (azureDefaultMatch) return parseFloat(azureDefaultMatch[1]);
+  // Unified "only <value> is (the required one)" wording -- deliberately NOT
+  // anchored to a fixed word order, since two real wordings have been
+  // confirmed live with the required value in different positions relative
+  // to "does not support"/"temperature":
+  //   Azure/LiteLLM (OpenAI/gpt-5.5): "'temperature' does not support 0 with
+  //     this model. Only the default (1) value is supported."
+  //   LiteLLM UnsupportedParamsError (claude-opus-4-8): "claude-opus-4-8
+  //     does not support temperature=0. Only temperature=1 is supported."
+  // Guarded on the message mentioning "temperature" at all, so this can't
+  // misfire on an unrelated parameter's similarly-worded value constraint.
+  // Checked BEFORE parseUnsupportedParams at every call site specifically
+  // because the second wording above also contains "UnsupportedParamsError"
+  // + "temperature", which would otherwise let parseUnsupportedParams's own
+  // loose substring fallback claim it first -- and that retry path has no
+  // mechanism to adjust temperature, only to drop seed/reasoning_effort, so
+  // it would silently resend the identical rejected value forever.
+  if (/temperature/i.test(err.message)) {
+    const requiredValueMatch = err.message.match(
+      /(?:only(?: the default)?|must be)\D{0,20}\(?(\d+(?:\.\d+)?)\)?(?:\s*value)?\s*is\s*(?:supported|allowed)/i,
+    );
+    if (requiredValueMatch) return parseFloat(requiredValueMatch[1]);
+  }
   return null;
 }
 
@@ -528,11 +564,53 @@ export class OpenWebUiClient implements LlmClient {
     return chunkMap.map(([start, end]) => this.averageVectors(flatVectors.slice(start, end)));
   }
 
-  // Splits a text into chunks that each fit within EMBED_MAX_TOKENS (estimated
-  // via chars / CHARS_PER_TOKEN). Breaks at whitespace when possible to avoid
-  // splitting mid-word. Over-estimates token count intentionally -- extra
-  // chunks cost one more embedding call, not a backend 400.
+  // Splits a text into chunks that each fit within EMBED_MAX_TOKENS, using
+  // the REAL cl100k_base tokenizer (text-embedding-3-small's own encoding)
+  // rather than a chars-based estimate. Real gap this closes: the previous
+  // chars/4 estimate is a reasonable average for English but confirmed
+  // unsafe for this deployment's Hebrew content (OCR_LANGUAGES: "eng,heb")
+  // -- BPE tokenizers trained predominantly on Latin-script text commonly
+  // tokenize Hebrew far less efficiently (often 1.5-2.5 chars/token, not 4),
+  // so a chunk that measured "safe" under the char estimate could still
+  // exceed the real 8192-token limit. KB ingestion's own chunker
+  // (chunker.py's _chunk_by_heading) has no upstream size cap, so this is
+  // the only real safety net for an oversized section.
+  //
+  // Chunks by slicing the ENCODED TOKEN ARRAY, not by character position --
+  // guarantees exact correctness regardless of script/density, unlike any
+  // chars-based heuristic. A chunk boundary landing mid-word after decode()
+  // is a non-issue here: nobody reads this text, and the resulting vectors
+  // are averaged back together by the caller.
+  //
+  // Falls back to the previous chars-based estimate on any tokenizer
+  // failure (e.g. a corrupted install in a constrained container) rather
+  // than crashing the embed call -- same fail-open philosophy as
+  // DocumentOverviewService/JobEventPersistenceService elsewhere in this
+  // module.
   private splitTextForEmbed(text: string): string[] {
+    try {
+      const encoder = getEmbedEncoder();
+      const tokens = encoder.encode(text);
+      if (tokens.length <= OpenWebUiClient.EMBED_MAX_TOKENS) return [text];
+      const chunks: string[] = [];
+      for (let start = 0; start < tokens.length; start += OpenWebUiClient.EMBED_MAX_TOKENS) {
+        const slice = tokens.slice(start, start + OpenWebUiClient.EMBED_MAX_TOKENS);
+        chunks.push(encoder.decode(slice));
+      }
+      return chunks;
+    } catch (err) {
+      // eslint-disable-next-line no-console -- no structured logger in this module yet
+      console.error('[OpenWebUiClient] cl100k_base tokenizer failed, falling back to chars-based chunk estimate:', err);
+      return this.splitTextForEmbedByChars(text);
+    }
+  }
+
+  // Fallback-only chars/CHARS_PER_TOKEN estimate, used solely when the real
+  // tokenizer (splitTextForEmbed above) fails. Breaks at whitespace when
+  // possible to avoid splitting mid-word. Over-estimates token count
+  // intentionally -- extra chunks cost one more embedding call, not a
+  // backend 400.
+  private splitTextForEmbedByChars(text: string): string[] {
     const maxChars = OpenWebUiClient.EMBED_MAX_TOKENS * OpenWebUiClient.CHARS_PER_TOKEN;
     if (text.length <= maxChars) return [text];
     const chunks: string[] = [];
@@ -602,11 +680,17 @@ export class OpenWebUiClient implements LlmClient {
   // capability check, just this one confirmed real gap.
   // Per-input token limit for the /openai/embeddings endpoint.
   // text-embedding-3-small (this deployment) hard-caps at 8192; 7500 provides
-  // ~700 token margin for the chars/token estimate's rounding.
+  // ~700 token margin. Used both as the real cl100k_base token-count ceiling
+  // (splitTextForEmbed's primary path) and, multiplied by CHARS_PER_TOKEN,
+  // as the fallback chars-based ceiling (splitTextForEmbedByChars).
   private static readonly EMBED_MAX_TOKENS = 7500;
-  // Conservative chars-per-token estimate for English/mixed text. Intentionally
-  // low so splitTextForEmbed over-splits rather than under-splits -- the cost of
-  // an extra chunk is one more embedding call, not a 400 from the backend.
+  // Fallback-only: chars-per-token estimate used solely when the real
+  // tokenizer fails (see splitTextForEmbed's own doc comment for why a
+  // chars-based estimate is unsafe as the PRIMARY mechanism -- kept here
+  // only as a defensive last resort). Intentionally low so
+  // splitTextForEmbedByChars over-splits rather than under-splits when it's
+  // the active path -- the cost of an extra chunk is one more embedding
+  // call, not a 400 from the backend.
   private static readonly CHARS_PER_TOKEN = 4;
 
   private static readonly VIRTUAL_MODEL_NAMES = new Set(['Arena Model']);
