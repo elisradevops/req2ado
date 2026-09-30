@@ -123,7 +123,10 @@ describe('JobDetail', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(screen.getByText('Req Title'));
 
-    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    // findByRole (async), not getByRole (sync) -- same race as the second
+    // Edit click below: the node-detail-panel render triggered by selecting
+    // 'Req Title' may not have committed yet on a slow CI runner.
+    await userEvent.click(await screen.findByRole('button', { name: /edit/i }));
     await userEvent.click(screen.getByRole('button', { name: /save/i }));
 
     // Save exits edit mode immediately, so a second Edit->Save round is
