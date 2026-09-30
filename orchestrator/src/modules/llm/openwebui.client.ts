@@ -105,6 +105,12 @@ export interface OpenWebUiClientConfig {
    * Azure-backed models via LiteLLM reject it with a 400. Set true only for
    * Ollama/compatible backends that support it. */
   LLM_SEND_REASONING_EFFORT: boolean;
+  /** Temperature for vision() calls. When undefined (default), no temperature
+   * is sent and the backend model applies its own default or constraint.
+   * Set to 0 for deterministic extraction on permissive models; set to 1
+   * when the vision model requires it (e.g. claude-opus-4-8 extended thinking)
+   * to avoid the parseTemperatureConstraint retry round-trip. */
+  LLM_VISION_TEMPERATURE?: number;
   EMBED_TRANSPORT: 'ollama' | 'openai';
   EMBED_BASE_URL?: string;
   EMBED_MODEL: string;
@@ -664,7 +670,10 @@ export class OpenWebUiClient implements LlmClient {
       // (false by default for Azure backends that reject it).
       // includeTemperature:false is the retry path when the upstream
       // (e.g. an Azure o-series reasoning model) rejects this param.
-      ...(includeTemperature ? { temperature: 0 } : {}),
+      // LLM_VISION_TEMPERATURE unset → no temperature sent; the backend
+      // applies its own default or constraint (parseTemperatureConstraint
+      // handles value-constraint retries when they arise).
+      ...(includeTemperature && this.config.LLM_VISION_TEMPERATURE !== undefined ? { temperature: this.config.LLM_VISION_TEMPERATURE } : {}),
       ...(this.config.LLM_SEND_SEED ? { seed: 0 } : {}),
       // No output cap previously existed here at all -- the prompt asks
       // for "one or two sentences" (orchestrator_vision_client.py's

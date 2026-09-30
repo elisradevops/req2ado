@@ -530,7 +530,8 @@ describe('OpenWebUiClient', () => {
 
   it('vision() sends a multimodal content array to the same chat.completions endpoint', async () => {
     // LLM_SEND_SEED + LLM_SEND_REASONING_EFFORT: true -- vision() sends both when flags are on.
-    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true, LLM_SEND_REASONING_EFFORT: true });
+    // LLM_VISION_TEMPERATURE: 0 -- temperature is now config-driven; unset means omit entirely.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true, LLM_SEND_REASONING_EFFORT: true, LLM_VISION_TEMPERATURE: 0 });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'A block diagram.' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -594,7 +595,8 @@ describe('OpenWebUiClient', () => {
 
   it('vision() sends temperature 0 and a fixed seed -- a caption is structured extraction, not creative writing, and feeds branch-splitting downstream', async () => {
     // LLM_SEND_SEED: true -- tests seed is forwarded by vision() when the flag is on.
-    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true });
+    // LLM_VISION_TEMPERATURE: 0 -- temperature is now config-driven; this verifies it is forwarded when set.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true, LLM_VISION_TEMPERATURE: 0 });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;
@@ -685,7 +687,8 @@ describe('OpenWebUiClient', () => {
 
   it('vision() omits response_format when responseSchema is not provided -- unchanged from pre-Task-2 behavior', async () => {
     // LLM_SEND_SEED + LLM_SEND_REASONING_EFFORT: true -- full object check, both flags on.
-    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true, LLM_SEND_REASONING_EFFORT: true });
+    // LLM_VISION_TEMPERATURE: 0 -- temperature is now config-driven; unset means omit entirely.
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava', LLM_SEND_SEED: true, LLM_SEND_REASONING_EFFORT: true, LLM_VISION_TEMPERATURE: 0 });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'A block diagram.' } }] });
     // @ts-expect-error -- reaching into the private SDK client for a test double
     client.openai.chat.completions.create = fakeCreate;

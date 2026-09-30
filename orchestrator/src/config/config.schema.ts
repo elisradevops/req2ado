@@ -28,6 +28,14 @@ export const configSchema = z.object({
   // backends that accept them.
   LLM_SEND_SEED: z.enum(['true', 'false']).default('false'),
   LLM_SEND_REASONING_EFFORT: z.enum(['true', 'false']).default('false'),
+  // Temperature for vision() calls. Unset (default) → no temperature sent,
+  // letting the backend model apply its own default or constraint (e.g.
+  // claude-opus-4-8 requires temperature=1 for extended thinking -- the
+  // parseTemperatureConstraint retry handles that automatically when this is
+  // left unset). Set to 0 for deterministic extraction on models that accept
+  // it; set to 1 to skip the retry overhead when the target vision model is
+  // known to require it.
+  LLM_VISION_TEMPERATURE: z.coerce.number().optional(),
   // NOT the per-user credential any more -- every user has their own
   // vaulted token/chat model/vision model (see llm-config.resolver.ts,
   // openwebui-client.factory.ts). This is now purely a fallback-of-last-
