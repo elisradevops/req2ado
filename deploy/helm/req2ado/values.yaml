@@ -18,16 +18,16 @@ image:
   pullPolicy: IfNotPresent
   orchestrator:
     repository: elisradevops/req2ado-orchestrator
-    tag: "0.1.4"
+    tag: "0.1.7"
   mcpAdoServer:
     repository: elisradevops/req2ado-mcp-ado-server
-    tag: "0.1.1"
+    tag: "0.1.2"
   frontend:
     repository: elisradevops/req2ado-frontend
-    tag: "0.1.1"
+    tag: "0.1.6"
   ingestion:
     repository: elisradevops/req2ado-ingestion
-    tag: "0.2.0"
+    tag: "0.2.2"
   postgres:
     repository: elisradevops/req2ado-postgres
     tag: "1.0.1"

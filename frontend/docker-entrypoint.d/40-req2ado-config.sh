@@ -17,6 +17,11 @@ set -eu
 
 : "${API_BASE_URL:=/api}"
 
+# When readOnlyRootFilesystem is active (k8s cluster-level policy), the
+# Dockerfile already bakes the correct default (/api) into the image --
+# skip the runtime write silently so nginx starts cleanly.
+[ -w /usr/share/nginx/html ] || exit 0
+
 cat > /usr/share/nginx/html/config.json <<EOF
 {"apiBaseUrl": "${API_BASE_URL}"}
 EOF

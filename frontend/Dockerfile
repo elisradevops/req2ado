@@ -8,6 +8,11 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
+# Overwrite the dev placeholder (public/config.json has "http://localhost:3001")
+# with the correct production default. The entrypoint script (40-req2ado-config.sh)
+# overrides this at runtime when the filesystem is writable (docker-compose),
+# but falls back to this baked value on k8s where readOnlyRootFilesystem is active.
+RUN echo '{"apiBaseUrl":"/api"}' > /usr/share/nginx/html/config.json
 # Templated, not static -- rendered by the base image's own
 # /docker-entrypoint.d/20-envsubst-on-templates.sh on every container
 # start, so the orchestrator upstream is env-driven (see the template's
