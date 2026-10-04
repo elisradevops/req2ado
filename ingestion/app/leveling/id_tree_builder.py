@@ -99,6 +99,50 @@ _TITLE_TAG_CHUNK_SIZE = 150
 _VALID_TAGS = {t.value for t in RequirementTag}
 
 
+def title_tag_updates(entry: dict) -> dict:
+    """What one title/tag response entry changes on its node: only the keys
+    that carry a usable value (`title`, `tags`). Shared by the pipeline's
+    `_apply_title_tag_pass` and the post-hoc retry endpoint (POST
+    /enhance-items) so a retried item is judged by exactly the same rules as
+    one enhanced on the first run -- two hand-copied versions would drift.
+    Tags are not type-gated here, matching this pass's original behaviour."""
+    updates: dict = {}
+    raw_title = entry.get("title")
+    if isinstance(raw_title, str) and raw_title.strip():
+        updates["title"] = extract_baseline_title(raw_title)
+    raw_tags = entry.get("tags")
+    if isinstance(raw_tags, list):
+        updates["tags"] = [RequirementTag(t) for t in raw_tags if t in _VALID_TAGS]
+    return updates
+
+
+def synthesis_updates(entry: dict, original_text: str, node_type: WorkItemType) -> dict:
+    """What one synthesis response entry changes on its node. `description`
+    always arrives with `fidelity_hash` and `grounding_score` (recomputed
+    against the ORIGINAL verbatim text, not the new one -- a self-comparison
+    would always read 1.0). Shared with POST /enhance-items; see
+    `title_tag_updates`."""
+    updates: dict = {}
+    raw_text = entry.get("text")
+    if isinstance(raw_text, str) and raw_text.strip():
+        description = raw_text.strip()
+        updates["description"] = description
+        updates["fidelity_hash"] = _hash_description(description)
+        updates["grounding_score"] = _grounding_score(description, original_text)
+    raw_title = entry.get("title")
+    if isinstance(raw_title, str) and raw_title.strip():
+        updates["title"] = extract_baseline_title(raw_title)
+    raw_tags = entry.get("tags")
+    # Requirement-only -- gated explicitly at assignment time, not merely via
+    # the pass's needs_synthesis-scoped caller: _repair_requirement_hierarchy
+    # can re-type a synthesized leaf to FEATURE AFTER this pass runs, so a
+    # check anywhere upstream of that repair wouldn't reflect the node's
+    # final type.
+    if isinstance(raw_tags, list) and node_type == WorkItemType.REQUIREMENT:
+        updates["tags"] = [RequirementTag(t) for t in raw_tags if t in _VALID_TAGS]
+    return updates
+
+
 def _apply_title_tag_pass(
     nodes: list[WorkItemNode],
     leaf_node_ids: list[str],
@@ -259,12 +303,11 @@ def _apply_title_tag_pass(
             if not entry:
                 continue
             node = by_id[node_id]
-            raw_title = entry.get("title")
-            if isinstance(raw_title, str) and raw_title.strip():
-                node.title = extract_baseline_title(raw_title)
-            raw_tags = entry.get("tags")
-            if isinstance(raw_tags, list):
-                node.tags = [RequirementTag(t) for t in raw_tags if t in _VALID_TAGS]
+            updates = title_tag_updates(entry)
+            if "title" in updates:
+                node.title = updates["title"]
+            if "tags" in updates:
+                node.tags = updates["tags"]
 
 
 class ParentSummaryClient(Protocol):
@@ -772,24 +815,15 @@ def _apply_synthesis_pass(
             if not entry:
                 continue
             node = by_id[node_id]
-            raw_text = entry.get("text")
-            if isinstance(raw_text, str) and raw_text.strip():
-                node.description = raw_text.strip()
-                node.fidelity_hash = _hash_description(node.description)
-                original_text = original_text_by_id[node_id]
-                node.grounding_score = _grounding_score(node.description, original_text)
-            raw_title = entry.get("title")
-            if isinstance(raw_title, str) and raw_title.strip():
-                node.title = extract_baseline_title(raw_title)
-            raw_tags = entry.get("tags")
-            # Requirement-only -- gated explicitly here, not merely via this
-            # pass's needs_synthesis-scoped caller: _repair_requirement_hierarchy
-            # can re-type a synthesized leaf to FEATURE AFTER this pass runs,
-            # so a check anywhere upstream of that repair wouldn't reflect the
-            # node's final type. A fresh check right here, at assignment time
-            # (before any such repair), is what actually needs to hold.
-            if isinstance(raw_tags, list) and node.type == WorkItemType.REQUIREMENT:
-                node.tags = [RequirementTag(t) for t in raw_tags if t in _VALID_TAGS]
+            updates = synthesis_updates(entry, original_text_by_id[node_id], node.type)
+            if "description" in updates:
+                node.description = updates["description"]
+                node.fidelity_hash = updates["fidelity_hash"]
+                node.grounding_score = updates["grounding_score"]
+            if "title" in updates:
+                node.title = updates["title"]
+            if "tags" in updates:
+                node.tags = updates["tags"]
 
 
 def build_hierarchy_subtree(

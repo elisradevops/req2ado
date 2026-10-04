@@ -1,14 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useAnimate } from 'motion/react-mini';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { Dialog } from '../ui/Dialog';
 import { Tabs } from '../ui/Tabs';
+import { Button } from '../ui/Button';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { ActionBadge } from './ActionBadge';
 import { NodeDetailPanel, canEditEntry } from './NodeDetailPanel';
 import { AddChildCard } from './AddChildCard';
 import { ChatPanel } from './ChatPanel';
 import { MoveToPicker } from './MoveToPicker';
+import { cn } from '../lib/cn';
 import { canBeRoot } from '../lib/canNest';
+import type { WarningGroup } from '../utils/warningKinds';
 import { validNewParentsFor } from '../lib/moveValidation';
 import type { DryRunDiffEntry } from './DiffTree';
 import type { DiffTreeMoveInput } from './DiffTree';
@@ -85,6 +89,8 @@ export function NodeDetailDialog({
   onNavigate,
   hasPrev,
   hasNext,
+  reason,
+  review,
   typeCatalog,
   categoryLabels,
   requirementClassificationField,
@@ -152,6 +158,14 @@ export function NodeDetailDialog({
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
   hasNext?: boolean;
+  // Why this item is being stepped through, when it was opened from a
+  // focused integrity warning -- shown as a banner above the item so the
+  // reviewer doesn't have to remember what they're checking for.
+  reason?: { title: string; todo: string; group: WarningGroup } | null;
+  // Marks this item as checked and steps on (R). Present only when the
+  // item was opened from a fix/review warning on a job still awaiting
+  // review. `reviewed` swaps the primary action for an undo.
+  review?: { reviewed: boolean; onMark: () => void; onUnmark: () => void } | null;
   typeCatalog?: Record<string, WorkItemTypeCatalogEntry>;
   // Category -> this project's real ADO type name, for AddChildForm's type
   // Select LABELS only -- see AddChildForm.tsx's own doc comment.
@@ -166,6 +180,48 @@ export function NodeDetailDialog({
   useEffect(() => {
     setMobileTab('details');
   }, [entry?.localId]);
+
+  // Brief settle-in when J/K/R moves to another item, so the reviewer sees
+  // the content change under their hands. Not on first open (the dialog's
+  // own entrance covers that) and skipped for reduced-motion users.
+  const [detailsScope, animateDetails] = useAnimate<HTMLDivElement>();
+  const previousLocalId = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const localId = entry?.localId;
+    const hadPrevious = previousLocalId.current !== undefined;
+    previousLocalId.current = localId;
+    if (!hadPrevious || localId === undefined || !detailsScope.current) return;
+    // motion/mini drives the Web Animations API; an environment without it
+    // (jsdom, very old browsers) just skips the effect.
+    if (typeof detailsScope.current.animate !== 'function') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    void animateDetails(detailsScope.current, { opacity: [0.4, 1], y: [4, 0] }, { duration: 0.19, ease: 'easeOut' });
+  }, [entry?.localId, animateDetails, detailsScope]);
+
+  // J / K step to the next / previous item, same as the chevrons in the
+  // title. Ignored while typing (edit fields, chat) and with any modifier
+  // held, so it never swallows a real character or a browser shortcut.
+  useEffect(() => {
+    if (!open || !onNavigate) return;
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      const key = event.key.toLowerCase();
+      if (key === 'j' && hasNext) {
+        event.preventDefault();
+        onNavigate?.('next');
+      } else if (key === 'k' && hasPrev) {
+        event.preventDefault();
+        onNavigate?.('prev');
+      } else if (key === 'r' && review && !review.reviewed) {
+        event.preventDefault();
+        review.onMark();
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onNavigate, hasNext, hasPrev, review]);
 
   if (!entry) return null;
 
@@ -281,10 +337,51 @@ export function NodeDetailDialog({
         entry.excluded ? <span className="text-xs text-ink-3">Excluded from this run</span> : undefined
       }
     >
+      {reason && (
+        <div
+          role="note"
+          className={cn(
+            'flex-none border-b px-5 py-2 text-sm',
+            reason.group === 'fix' && 'border-danger-border bg-danger-soft text-danger-ink',
+            reason.group === 'review' && 'border-warning-border bg-warning-soft text-warning-ink',
+            reason.group === 'info' && 'border-hairline bg-surface-sunken text-ink-2',
+          )}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+            <span className="min-w-0 flex-1">
+              <span className="font-semibold">{reason.title}.</span> {reason.todo}
+              {onNavigate && (
+                <span className="ml-2 whitespace-nowrap text-xs opacity-80">
+                  <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">J</kbd> next{' '}
+                  <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">K</kbd> previous
+                  {review && !review.reviewed && (
+                    <>
+                      {' '}
+                      <kbd className="rounded-sm border border-current/30 px-1 font-mono text-micro">R</kbd> mark reviewed
+                    </>
+                  )}
+                </span>
+              )}
+            </span>
+            {review &&
+              (review.reviewed ? (
+                <Button size="sm" variant="outline" className="flex-none" onClick={review.onUnmark}>
+                  Mark not reviewed
+                </Button>
+              ) : (
+                <Button size="sm" variant="primary" className="flex-none" onClick={review.onMark}>
+                  Mark reviewed and next
+                </Button>
+              ))}
+          </div>
+        </div>
+      )}
       {isDesktop ? (
         // `lg` and up: real two-pane layout, details left / chat right.
         <div className="flex min-h-0 flex-1">
-          <div className="min-h-0 flex-1 overflow-y-auto">{detailsContent}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div ref={detailsScope}>{detailsContent}</div>
+          </div>
           <div className="min-h-0 w-[400px] flex-none border-l border-hairline">{chatContent}</div>
         </div>
       ) : (
@@ -300,7 +397,9 @@ export function NodeDetailDialog({
               ]}
             />
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">{mobileTab === 'details' ? detailsContent : chatContent}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {mobileTab === 'details' ? <div ref={detailsScope}>{detailsContent}</div> : chatContent}
+          </div>
         </div>
       )}
     </Dialog>

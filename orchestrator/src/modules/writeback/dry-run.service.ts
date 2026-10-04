@@ -147,6 +147,11 @@ export interface WarningRecord {
   nodeIds: string[];
   detail: Record<string, unknown>;
   raw: string;
+  // Reviewer state, set by JobsService.setWarningsAcknowledged -- NOT part
+  // of ingestion's IntegrityWarning (shared/schemas/work-item-tree.schema.json):
+  // ingestion never emits it, so it is deliberately not in that contract.
+  // Advisory only; confirm() never reads it.
+  acknowledged?: boolean;
 }
 
 export interface DryRunDiffEntry {
@@ -203,6 +208,10 @@ export interface DryRunDiffEntry {
   uncaptionedFigureIds?: string[];
   insignificantFigureIds?: string[];
   excluded?: boolean;
+  // Reviewer has checked this item (see JobsService.setDiffEntriesReviewed).
+  // Advisory progress state for working through integrity warnings --
+  // confirm() never reads it, so it never changes what is written to ADO.
+  reviewed?: boolean;
   isManual?: boolean;
   // CR-7d rescore: set by JobsService.editDiffEntry whenever a patch
   // changes `description` on an entry that already carries a qualityScore

@@ -200,6 +200,45 @@ export async function setDiffEntryExcluded(jobId: string, localId: string, exclu
   return response.data;
 }
 
+// Advisory "I've checked these" flag, set for many items in one request --
+// see JobsService.setDiffEntriesReviewed. Never changes what Confirm writes.
+export async function setDiffEntriesReviewed(jobId: string, localIds: string[], reviewed: boolean): Promise<{ dryRunDiff: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/diff/reviewed`, { localIds, reviewed });
+  return response.data;
+}
+
+// Marks integrity warnings handled. By kind (all records of it) or, with
+// `raws`, only the records with that exact text -- see
+// JobsService.setWarningsAcknowledged for why not by array index.
+export async function setWarningsAcknowledged(
+  jobId: string,
+  input: { kind: string; raws?: string[]; acknowledged: boolean },
+): Promise<{ warnings: unknown }> {
+  const response = await httpClient.patch(`/jobs/${jobId}/warnings/acknowledged`, input);
+  return response.data;
+}
+
+// Re-runs a failed optional enhancement pass for a batch of the items its
+// warning lists (see JobsService.retryEnhancement). The caller sends one
+// batch at a time and loops; `enhanced` ids changed, `failed` ids got
+// nothing usable from the model, `skipped` ids were excluded, edited since,
+// or otherwise left alone.
+export interface RetryEnhancementResult {
+  dryRunDiff: unknown;
+  warnings: unknown;
+  enhanced: string[];
+  failed: string[];
+  skipped: string[];
+}
+
+export async function retryEnhancement(
+  jobId: string,
+  input: { kind: string; pass: 'title_tag' | 'synthesis'; localIds: string[] },
+): Promise<RetryEnhancementResult> {
+  const response = await httpClient.post(`/jobs/${jobId}/warnings/retry-enhancement`, input);
+  return response.data;
+}
+
 // CR-7d rescore: re-judges ONE Requirement entry's CURRENT description
 // (post-edit), forced against its own existing category rubric server-side
 // -- see JobsService.rescoreDiffEntry's own docstring. Throws on failure;

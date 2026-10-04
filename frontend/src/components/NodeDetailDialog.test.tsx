@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { ToastProvider } from './ToastProvider';
 import type { DryRunDiffEntry } from './DiffTree';
@@ -112,6 +112,94 @@ describe('NodeDetailDialog', () => {
     expect(screen.getByRole('button', { name: /previous item/i })).toBeDisabled();
     await userEvent.click(screen.getByRole('button', { name: /next item/i }));
     expect(onNavigate).toHaveBeenCalledWith('next');
+  });
+
+  describe('keyboard stepping and warning reason', () => {
+    it('J steps to the next item and K to the previous, gated by hasNext/hasPrev', async () => {
+      const onNavigate = vi.fn();
+      renderDialog({ onNavigate, hasPrev: true, hasNext: true });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.keyboard('j');
+      expect(onNavigate).toHaveBeenLastCalledWith('next');
+      await userEvent.keyboard('k');
+      expect(onNavigate).toHaveBeenLastCalledWith('prev');
+    });
+
+    it('ignores J/K at the ends of the list', async () => {
+      const onNavigate = vi.fn();
+      renderDialog({ onNavigate, hasPrev: false, hasNext: false });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.keyboard('jk');
+      expect(onNavigate).not.toHaveBeenCalled();
+    });
+
+    it('does not steal J/K while typing in a field, or with a modifier held', () => {
+      const onNavigate = vi.fn();
+      renderDialog({ onNavigate, hasPrev: true, hasNext: true });
+
+      // fireEvent on the field itself: Radix's focus trap would pull a
+      // real .focus() on an out-of-dialog input straight back inside.
+      const input = document.createElement('input');
+      screen.getByRole('dialog').appendChild(input);
+      fireEvent.keyDown(input, { key: 'j' });
+      fireEvent.keyDown(input, { key: 'k' });
+      input.remove();
+      fireEvent.keyDown(document.body, { key: 'j', ctrlKey: true });
+      fireEvent.keyDown(document.body, { key: 'k', metaKey: true });
+
+      expect(onNavigate).not.toHaveBeenCalled();
+    });
+
+    it('shows why the item is being reviewed when opened from a focused warning', () => {
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'Low grounding: possible fabrication', todo: 'Read each item against its source.', group: 'review' },
+      });
+      const note = screen.getByRole('note');
+      expect(note).toHaveTextContent('Low grounding: possible fabrication.');
+      expect(note).toHaveTextContent('Read each item against its source.');
+    });
+
+    it('offers Mark reviewed and next, and R does the same, while the item is unreviewed', async () => {
+      const onMark = vi.fn();
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'Low grounding: possible fabrication', todo: 'Read it.', group: 'review' },
+        review: { reviewed: false, onMark, onUnmark: vi.fn() },
+      });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Mark reviewed and next' }));
+      expect(onMark).toHaveBeenCalledTimes(1);
+
+      await userEvent.keyboard('r');
+      expect(onMark).toHaveBeenCalledTimes(2);
+    });
+
+    it('swaps to Mark not reviewed for a reviewed item, and R no longer marks', async () => {
+      const onMark = vi.fn();
+      const onUnmark = vi.fn();
+      renderDialog({
+        onNavigate: vi.fn(),
+        reason: { title: 'Low grounding: possible fabrication', todo: 'Read it.', group: 'review' },
+        review: { reviewed: true, onMark, onUnmark },
+      });
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      expect(screen.queryByRole('button', { name: 'Mark reviewed and next' })).not.toBeInTheDocument();
+      await userEvent.keyboard('r');
+      expect(onMark).not.toHaveBeenCalled();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Mark not reviewed' }));
+      expect(onUnmark).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows no reason banner by default', () => {
+      renderDialog();
+      expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    });
   });
 
   it('mounts the real two-pane layout (details + chat both visible, no tabs) on a desktop-width viewport', () => {

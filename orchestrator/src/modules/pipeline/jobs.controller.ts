@@ -59,6 +59,9 @@ export const ALLOWED_EXTENSIONS = new Set(['.txt', '.md', '.docx', '.pdf', '.xls
 // document's own numbering/ID scheme isn't known ahead of time. Only a
 // generous length ceiling to catch an obviously-wrong paste.
 export const MAX_CUSTOMER_ID_LENGTH = 128;
+// One retry request's item cap -- below ingestion's own per-call limit (150), so a
+// batch is always a single LLM call.
+const MAX_RETRY_ENHANCEMENT_ITEMS = 100;
 
 // Same free-form-identifier reasoning as MAX_CUSTOMER_ID_LENGTH above --
 // see WorkItemNode.se_coverage_ref's own docstring (ingestion side) for
@@ -405,6 +408,85 @@ export class JobsController {
       }
     }
     return { ...job, workItemTypeCatalog, workItemTypeCategoryLabels, requirementClassificationField };
+  }
+
+  // Re-runs a failed optional enhancement pass for some of the items its
+  // warning lists. The client sends one batch at a time and loops, so no
+  // request runs minutes of LLM work. `parent_summary` isn't retryable (it
+  // needs every descendant's text) -- a resubmit is the fix for that one.
+  @Post(':id/warnings/retry-enhancement')
+  async retryEnhancement(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+    @Body('kind') kind: unknown,
+    @Body('pass') pass: unknown,
+    @Body('localIds') localIds: unknown,
+  ): Promise<unknown> {
+    if (kind !== 'enhancement_call_failed' && kind !== 'enhancement_response_incomplete') {
+      throw new BadRequestException("kind must be 'enhancement_call_failed' or 'enhancement_response_incomplete'");
+    }
+    if (pass !== 'title_tag' && pass !== 'synthesis') {
+      throw new BadRequestException("pass must be 'title_tag' or 'synthesis' (parent_summary can't be retried)");
+    }
+    if (
+      !Array.isArray(localIds) ||
+      localIds.length === 0 ||
+      localIds.length > MAX_RETRY_ENHANCEMENT_ITEMS ||
+      !localIds.every((v) => typeof v === 'string' && v.length > 0)
+    ) {
+      throw new BadRequestException(
+        `localIds must be a non-empty array of at most ${MAX_RETRY_ENHANCEMENT_ITEMS} strings`,
+      );
+    }
+    await this.ownedJob(id, user);
+    return this.jobsService.retryEnhancement(id, { kind, pass, localIds: [...new Set(localIds as string[])] });
+  }
+
+  // Declared BEFORE ':id/diff/:localId' on purpose -- 'reviewed' is a static
+  // segment that the parametric route below would otherwise swallow as a
+  // localId.
+  @Patch(':id/diff/reviewed')
+  async setDiffEntriesReviewed(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+    @Body('localIds') localIds: unknown,
+    @Body('reviewed') reviewed: unknown,
+  ): Promise<{ dryRunDiff: unknown }> {
+    if (typeof reviewed !== 'boolean') {
+      throw new BadRequestException('reviewed must be a boolean');
+    }
+    if (!Array.isArray(localIds) || localIds.length === 0 || !localIds.every((v) => typeof v === 'string' && v.length > 0)) {
+      throw new BadRequestException('localIds must be a non-empty array of strings');
+    }
+    await this.ownedJob(id, user);
+    const dryRunDiff = await this.jobsService.setDiffEntriesReviewed(id, localIds as string[], reviewed);
+    return { dryRunDiff };
+  }
+
+  @Patch(':id/warnings/acknowledged')
+  async setWarningsAcknowledged(
+    @Param('id') id: string,
+    @CurrentUser() user: SessionUser,
+    @Body('kind') kind: unknown,
+    @Body('raws') raws: unknown,
+    @Body('acknowledged') acknowledged: unknown,
+  ): Promise<{ warnings: unknown }> {
+    if (typeof acknowledged !== 'boolean') {
+      throw new BadRequestException('acknowledged must be a boolean');
+    }
+    if (typeof kind !== 'string' || kind.length === 0) {
+      throw new BadRequestException('kind must be a non-empty string');
+    }
+    if (raws !== undefined && (!Array.isArray(raws) || raws.length === 0 || !raws.every((v) => typeof v === 'string'))) {
+      throw new BadRequestException('raws, when given, must be a non-empty array of strings');
+    }
+    await this.ownedJob(id, user);
+    const warnings = await this.jobsService.setWarningsAcknowledged(id, {
+      kind,
+      raws: raws as string[] | undefined,
+      acknowledged,
+    });
+    return { warnings };
   }
 
   @Patch(':id/diff/:localId')

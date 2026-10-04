@@ -755,6 +755,218 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  // Advisory "I've checked these" flag, set in bulk so marking 80 items is
+  // one request and one version bump instead of 80 racing read-modify-writes.
+  // Never read by confirm() -- see DryRunDiffEntry.reviewed.
+  async setDiffEntriesReviewed(id: string, localIds: string[], reviewed: boolean): Promise<DryRunDiffEntry[]> {
+    return this.mutateDiffVersioned(id, (diff) => {
+      const wanted = new Set(localIds);
+      const found = new Set<string>();
+      const next = diff.map((entry) => {
+        if (!wanted.has(entry.localId)) return entry;
+        found.add(entry.localId);
+        return !!entry.reviewed === reviewed ? entry : { ...entry, reviewed };
+      });
+      if (found.size !== wanted.size) {
+        const missing = [...wanted].filter((localId) => !found.has(localId));
+        throw new NotFoundException(`Diff entries not found: ${missing.slice(0, 5).join(', ')}`);
+      }
+      return next;
+    });
+  }
+
+  // Re-runs ONE failed optional enhancement pass for a few of the items its
+  // warning lists, so a handful of failures doesn't need a whole-job
+  // resubmit. The caller sends the ids (a batch at a time) and loops; the
+  // server never runs minutes of LLM work inside one request.
+  //
+  // Same shape as rescoreDiffEntry: the LLM call sits OUTSIDE the version-
+  // guarded write (it costs money and can answer differently per call, so a
+  // write retry must never re-run it), and the write re-checks, against the
+  // freshly-read array, that each item is still the one that was sent --
+  // never overwriting an edit made while the call was in flight.
+  async retryEnhancement(
+    id: string,
+    input: { kind: string; pass: 'title_tag' | 'synthesis'; localIds: string[] },
+  ): Promise<{
+    dryRunDiff: DryRunDiffEntry[];
+    warnings: (WarningRecord | string)[];
+    enhanced: string[];
+    failed: string[];
+    skipped: string[];
+  }> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException(`Job ${id} not found`);
+    if (job.status !== 'diff_ready') {
+      throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+    }
+    const isMatching = (warning: WarningRecord | string): warning is WarningRecord =>
+      typeof warning !== 'string' && warning.kind === input.kind && warning.detail?.pass === input.pass;
+    const listed = new Set(
+      ((job.warnings as (WarningRecord | string)[] | null) ?? []).filter(isMatching).flatMap((w) => w.nodeIds),
+    );
+    if (listed.size === 0) {
+      throw new NotFoundException(`No ${input.kind} warning for the ${input.pass} pass on job ${id}`);
+    }
+    const notListed = input.localIds.filter((localId) => !listed.has(localId));
+    if (notListed.length > 0) {
+      throw new BadRequestException(`Not part of this warning: ${notListed.slice(0, 5).join(', ')}`);
+    }
+
+    // Phase 1: what to send. Excluded items are left alone (their text won't
+    // reach ADO), as is anything that isn't a plain proposed item.
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const byId = new Map(diff.map((entry) => [entry.localId, entry]));
+    const parentChain = (entry: DryRunDiffEntry): string => {
+      const titles: string[] = [];
+      const seen = new Set<string>();
+      let current = entry.parentLocalId;
+      while (current && !seen.has(current)) {
+        seen.add(current);
+        const ancestor = byId.get(current);
+        if (!ancestor) break;
+        titles.push(ancestor.title);
+        current = ancestor.parentLocalId;
+      }
+      return titles.reverse().join(' > ');
+    };
+    const sentText = new Map<string, string>();
+    const skipped: string[] = [];
+    const items: { id: string; text: string; type: string; context: string }[] = [];
+    for (const localId of input.localIds) {
+      const entry = byId.get(localId);
+      if (!entry || entry.action !== 'create' || entry.excluded || entry.isManual) {
+        skipped.push(localId);
+        continue;
+      }
+      sentText.set(localId, entry.description);
+      items.push({ id: localId, text: entry.description, type: entry.type, context: parentChain(entry) });
+    }
+    if (items.length === 0) {
+      return { dryRunDiff: diff, warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [], enhanced: [], failed: [], skipped };
+    }
+
+    // Phase 2: the model call, once.
+    let outcome: Awaited<ReturnType<IngestionHttpClient['enhanceItems']>>;
+    try {
+      outcome = await this.ingestionClient.enhanceItems(input.pass, items, job.userId ?? undefined, job.model ?? undefined);
+    } catch (err) {
+      if (err instanceof IngestionHttpError) throw new BadGatewayException(err.message);
+      throw err;
+    }
+
+    // Phase 3: apply under the version/status guard. A pure re-derivation
+    // from what it reads on each attempt -- the results above are fixed.
+    const passLabel = { title_tag: 'title/tag', synthesis: 'text synthesis' }[input.pass];
+    for (let attempt = 1; attempt <= DIFF_WRITE_MAX_ATTEMPTS; attempt += 1) {
+      const fresh = await this.prisma.job.findUnique({ where: { id } });
+      if (!fresh) throw new NotFoundException(`Job ${id} not found`);
+      if (fresh.status !== 'diff_ready') {
+        throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+      }
+      const freshDiff = ((fresh.dryRunDiff as unknown as DryRunDiffEntry[]) ?? []).map((entry) => ({ ...entry }));
+      const enhanced: string[] = [];
+      const changedSince: string[] = [];
+      for (const entry of freshDiff) {
+        const result = outcome.results[entry.localId];
+        if (!result || !sentText.has(entry.localId)) continue;
+        if (entry.excluded || entry.description !== sentText.get(entry.localId)) {
+          changedSince.push(entry.localId);
+          continue;
+        }
+        if (result.title) entry.title = result.title;
+        // Tags are a Requirement-only attribute everywhere else (editDiffEntry,
+        // confirm()), so never set them on an Epic/Feature.
+        if (result.tags && entry.type === 'Requirement') entry.tags = result.tags;
+        if (input.pass === 'synthesis' && result.description) {
+          entry.description = result.description;
+          if (result.groundingScore != null) entry.groundingScore = result.groundingScore;
+          // The score (if any) judged the OLD text -- same stale marking as a manual edit.
+          if (entry.qualityScore != null) entry.qualityStale = true;
+        }
+        enhanced.push(entry.localId);
+      }
+      const done = new Set(enhanced);
+      const freshWarnings = (fresh.warnings as (WarningRecord | string)[] | null) ?? [];
+      const nextWarnings: (WarningRecord | string)[] = [];
+      for (const warning of freshWarnings) {
+        if (!isMatching(warning)) {
+          nextWarnings.push(warning);
+          continue;
+        }
+        const remaining = warning.nodeIds.filter((localId) => !done.has(localId));
+        if (remaining.length === 0) continue;
+        if (remaining.length === warning.nodeIds.length) {
+          nextWarnings.push(warning);
+          continue;
+        }
+        nextWarnings.push({
+          ...warning,
+          nodeIds: remaining,
+          raw:
+            input.kind === 'enhancement_call_failed'
+              ? `The ${passLabel} enhancement call failed for ${remaining.length} item(s) -- those kept their existing text.`
+              : `The ${passLabel} enhancement response omitted ${remaining.length} item(s) -- those kept their existing text.`,
+        });
+      }
+      const written = await this.prisma.job.updateMany({
+        where: { id, status: 'diff_ready', diffVersion: fresh.diffVersion },
+        data: { dryRunDiff: freshDiff as any, warnings: nextWarnings as any, diffVersion: { increment: 1 } },
+      });
+      if (written.count === 1) {
+        const attemptedFailed = items.map((item) => item.id).filter((localId) => !done.has(localId) && !changedSince.includes(localId));
+        return {
+          dryRunDiff: freshDiff,
+          warnings: nextWarnings,
+          enhanced,
+          failed: attemptedFailed,
+          skipped: [...skipped, ...changedSince],
+        };
+      }
+    }
+    throw new ConflictException(
+      `Job ${id}'s review tree was changed by another request while this retry was being applied -- please retry.`,
+    );
+  }
+
+  // Marks integrity warnings as handled. Addressed by `kind` (plus, to ack a
+  // single record, its `raw` text) rather than by array index: the warnings
+  // array is also rewritten elsewhere (a trace-link retry drops/shrinks its
+  // own record), which would shift indices under a client holding a stale
+  // view. A legacy plain-string warning can't carry the flag and is skipped.
+  // Same version/status-guarded retry loop as mutateDiffVersioned, so it
+  // can't clobber -- or be clobbered by -- a concurrent diff edit.
+  async setWarningsAcknowledged(
+    id: string,
+    input: { kind: string; raws?: string[]; acknowledged: boolean },
+  ): Promise<(WarningRecord | string)[]> {
+    for (let attempt = 1; attempt <= DIFF_WRITE_MAX_ATTEMPTS; attempt += 1) {
+      const job = await this.prisma.job.findUnique({ where: { id } });
+      if (!job) throw new NotFoundException(`Job ${id} not found`);
+      if (job.status !== 'diff_ready') {
+        throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+      }
+      const warnings = (job.warnings as (WarningRecord | string)[] | null) ?? [];
+      const rawFilter = input.raws ? new Set(input.raws) : null;
+      let matched = 0;
+      const next = warnings.map((warning) => {
+        if (typeof warning === 'string' || warning.kind !== input.kind) return warning;
+        if (rawFilter && !rawFilter.has(warning.raw)) return warning;
+        matched += 1;
+        return !!warning.acknowledged === input.acknowledged ? warning : { ...warning, acknowledged: input.acknowledged };
+      });
+      if (matched === 0) throw new NotFoundException(`No ${input.kind} warning found on job ${id}`);
+      const written = await this.prisma.job.updateMany({
+        where: { id, status: 'diff_ready', diffVersion: job.diffVersion },
+        data: { warnings: next as any, diffVersion: { increment: 1 } },
+      });
+      if (written.count === 1) return next;
+    }
+    throw new ConflictException(
+      `Job ${id}'s warnings were changed by another request while this edit was being applied -- please retry.`,
+    );
+  }
+
   async editDiffEntry(
     id: string,
     localId: string,

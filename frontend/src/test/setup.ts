@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom';
 import { configure } from '@testing-library/react';
+import { vi } from 'vitest';
 
 // Default asyncUtilTimeout (1000ms) for findBy*/waitFor is tuned for a fast
 // local machine. This repo's own CI (first real run: 2026-08-31) surfaced
@@ -72,3 +73,11 @@ if (!window.matchMedia) {
       dispatchEvent: () => false,
     }) as unknown as MediaQueryList;
 }
+
+// number-flow renders the digits into a shadow root with its own <style>,
+// so a sentence like "28 of 80 reviewed" is split across elements and no
+// longer matches getByText. Tests assert the numbers, not the roll
+// animation -- render the plain formatted value as a bare text node.
+vi.mock('@number-flow/react', () => ({
+  default: ({ value }: { value: number }) => Number(value).toLocaleString(),
+}));

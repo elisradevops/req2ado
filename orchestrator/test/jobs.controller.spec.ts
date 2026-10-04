@@ -392,6 +392,136 @@ describe('JobsController.moveDiffEntry', () => {
   });
 });
 
+describe('JobsController.setDiffEntriesReviewed', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+  it('delegates to jobsService.setDiffEntriesReviewed and returns the new diff', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      setDiffEntriesReviewed: jest.fn().mockResolvedValue([{ localId: 'n0', reviewed: true }]),
+    };
+
+    const result = await make(jobsService).setDiffEntriesReviewed('job-1', TEST_USER, ['n0', 'n1'], true);
+
+    expect(jobsService.setDiffEntriesReviewed).toHaveBeenCalledWith('job-1', ['n0', 'n1'], true);
+    expect(result).toEqual({ dryRunDiff: [{ localId: 'n0', reviewed: true }] });
+  });
+
+  it.each([
+    ['a non-boolean reviewed', ['n0'], 'yes', 'reviewed must be a boolean'],
+    ['a missing localIds', undefined, true, 'localIds must be a non-empty array'],
+    ['an empty localIds', [], true, 'localIds must be a non-empty array'],
+    ['non-string ids', ['n0', 7], true, 'localIds must be a non-empty array'],
+    ['an empty-string id', ['n0', ''], true, 'localIds must be a non-empty array'],
+  ])('rejects %s before touching the job', async (_label, localIds, reviewed, message) => {
+    const jobsService = { getById: jest.fn(), setDiffEntriesReviewed: jest.fn() };
+
+    await expect(make(jobsService).setDiffEntriesReviewed('job-1', TEST_USER, localIds as any, reviewed as any)).rejects.toThrow(message);
+    expect(jobsService.getById).not.toHaveBeenCalled();
+    expect(jobsService.setDiffEntriesReviewed).not.toHaveBeenCalled();
+  });
+
+  it('404s for a job that does not belong to the caller', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }), setDiffEntriesReviewed: jest.fn() };
+
+    await expect(make(jobsService).setDiffEntriesReviewed('job-1', TEST_USER, ['n0'], true)).rejects.toThrow('not found');
+    expect(jobsService.setDiffEntriesReviewed).not.toHaveBeenCalled();
+  });
+
+  it("is declared before ':id/diff/:localId' so 'reviewed' is not captured as a localId", () => {
+    // Express matches in declaration order; the parametric PATCH route would
+    // swallow PATCH /jobs/:id/diff/reviewed if it came first.
+    const names = Object.getOwnPropertyNames(JobsController.prototype);
+    expect(names.indexOf('setDiffEntriesReviewed')).toBeLessThan(names.indexOf('editDiffEntry'));
+  });
+});
+
+describe('JobsController.setWarningsAcknowledged', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+  it('delegates by kind, with optional raws, and returns the warnings', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(TEST_JOB),
+      setWarningsAcknowledged: jest.fn().mockResolvedValue([{ kind: 'zero_nodes', acknowledged: true }]),
+    };
+
+    const result = await make(jobsService).setWarningsAcknowledged('job-1', TEST_USER, 'zero_nodes', ['raw one'], true);
+
+    expect(jobsService.setWarningsAcknowledged).toHaveBeenCalledWith('job-1', { kind: 'zero_nodes', raws: ['raw one'], acknowledged: true });
+    expect(result).toEqual({ warnings: [{ kind: 'zero_nodes', acknowledged: true }] });
+  });
+
+  it('allows omitting raws to acknowledge the whole kind', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), setWarningsAcknowledged: jest.fn().mockResolvedValue([]) };
+
+    await make(jobsService).setWarningsAcknowledged('job-1', TEST_USER, 'zero_nodes', undefined, false);
+
+    expect(jobsService.setWarningsAcknowledged).toHaveBeenCalledWith('job-1', { kind: 'zero_nodes', raws: undefined, acknowledged: false });
+  });
+
+  it.each([
+    ['a non-boolean acknowledged', 'zero_nodes', undefined, 1, 'acknowledged must be a boolean'],
+    ['a missing kind', undefined, undefined, true, 'kind must be a non-empty string'],
+    ['an empty kind', '', undefined, true, 'kind must be a non-empty string'],
+    ['an empty raws list', 'zero_nodes', [], true, 'raws, when given'],
+    ['non-string raws', 'zero_nodes', [1], true, 'raws, when given'],
+  ])('rejects %s before touching the job', async (_label, kind, raws, acknowledged, message) => {
+    const jobsService = { getById: jest.fn(), setWarningsAcknowledged: jest.fn() };
+
+    await expect(make(jobsService).setWarningsAcknowledged('job-1', TEST_USER, kind as any, raws as any, acknowledged as any)).rejects.toThrow(message);
+    expect(jobsService.getById).not.toHaveBeenCalled();
+  });
+
+  it('404s for a job that does not belong to the caller', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }), setWarningsAcknowledged: jest.fn() };
+
+    await expect(make(jobsService).setWarningsAcknowledged('job-1', TEST_USER, 'zero_nodes', undefined, true)).rejects.toThrow('not found');
+    expect(jobsService.setWarningsAcknowledged).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsController.retryEnhancement', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+
+  it('delegates with de-duplicated ids and returns the service result', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), retryEnhancement: jest.fn().mockResolvedValue({ enhanced: ['a'] }) };
+
+    const result = await make(jobsService).retryEnhancement('job-1', TEST_USER, 'enhancement_call_failed', 'synthesis', ['a', 'a', 'b']);
+
+    expect(jobsService.retryEnhancement).toHaveBeenCalledWith('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a', 'b'] });
+    expect(result).toEqual({ enhanced: ['a'] });
+  });
+
+  it.each([
+    ['another kind', 'low_grounding', 'synthesis', ['a'], 'kind must be'],
+    ['parent_summary', 'enhancement_call_failed', 'parent_summary', ['a'], "can't be retried"],
+    ['no ids', 'enhancement_call_failed', 'synthesis', [], 'localIds must be'],
+    ['more than 100 ids', 'enhancement_call_failed', 'synthesis', Array.from({ length: 101 }, (_, i) => `n${i}`), 'at most 100'],
+    ['non-string ids', 'enhancement_call_failed', 'synthesis', ['a', 3], 'localIds must be'],
+  ])('rejects %s before touching the job', async (_label, kind, pass, localIds, message) => {
+    const jobsService = { getById: jest.fn(), retryEnhancement: jest.fn() };
+
+    await expect(make(jobsService).retryEnhancement('job-1', TEST_USER, kind as any, pass as any, localIds as any)).rejects.toThrow(message);
+    expect(jobsService.getById).not.toHaveBeenCalled();
+  });
+
+  it('404s for a job that does not belong to the caller', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue({ ...TEST_JOB, userId: 'someone-else' }), retryEnhancement: jest.fn() };
+
+    await expect(make(jobsService).retryEnhancement('job-1', TEST_USER, 'enhancement_call_failed', 'synthesis', ['a'])).rejects.toThrow('not found');
+    expect(jobsService.retryEnhancement).not.toHaveBeenCalled();
+  });
+});
+
 describe('JobsController.addDiffEntry', () => {
   const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
   const TEST_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };

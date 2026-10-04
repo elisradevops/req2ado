@@ -1916,6 +1916,297 @@ describe('JobsService.validateCreatedTree', () => {
   });
 });
 
+describe('JobsService.setDiffEntriesReviewed', () => {
+  const entry = (localId: string, extra: object = {}) => ({
+    localId, parentLocalId: null, type: 'Feature', title: localId, description: 'd', action: 'create',
+    existingAdoId: null, sourceHash: `h-${localId}`, customerId: null, ...extra,
+  });
+  const makeService = (diff: object[], updateMany = jest.fn().mockResolvedValue({ count: 1 })) => {
+    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 3, dryRunDiff: diff }) } };
+    return { service: new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused'), updateMany };
+  };
+
+  it('marks every requested entry in ONE guarded write and leaves the others untouched', async () => {
+    const { service, updateMany } = makeService([entry('n0'), entry('n1'), entry('n2')]);
+
+    const result = await service.setDiffEntriesReviewed('job-1', ['n0', 'n2'], true);
+
+    expect(result.map((e) => !!e.reviewed)).toEqual([true, false, true]);
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'diff_ready', diffVersion: 3 },
+      data: { dryRunDiff: expect.any(Array), diffVersion: { increment: 1 } },
+    });
+  });
+
+  it('can clear the flag again', async () => {
+    const { service } = makeService([entry('n0', { reviewed: true }), entry('n1', { reviewed: true })]);
+
+    const result = await service.setDiffEntriesReviewed('job-1', ['n0'], false);
+
+    expect(result.map((e) => !!e.reviewed)).toEqual([false, true]);
+  });
+
+  it('is idempotent: re-marking an already-reviewed entry keeps it as is', async () => {
+    const { service } = makeService([entry('n0', { reviewed: true })]);
+
+    const result = await service.setDiffEntriesReviewed('job-1', ['n0'], true);
+
+    expect(result[0].reviewed).toBe(true);
+  });
+
+  it('refuses the WHOLE request when any id is unknown, writing nothing', async () => {
+    const { service, updateMany } = makeService([entry('n0')]);
+
+    await expect(service.setDiffEntriesReviewed('job-1', ['n0', 'ghost'], true)).rejects.toThrow('not found: ghost');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('throws a conflict when the job is no longer diff_ready', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'writing', dryRunDiff: [] }) } };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.setDiffEntriesReviewed('job-1', ['n0'], true)).rejects.toThrow('not in a diff-editable state');
+  });
+});
+
+describe('JobsService.setWarningsAcknowledged', () => {
+  const warn = (kind: string, raw: string, extra: object = {}) => ({
+    kind, severity: 'needs_review', nodeIds: [], detail: {}, raw, ...extra,
+  });
+  const makeService = (warnings: unknown[], updateMany = jest.fn().mockResolvedValue({ count: 1 })) => {
+    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'diff_ready', diffVersion: 5, warnings }) } };
+    return { service: new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused'), updateMany };
+  };
+
+  it('acknowledges every record of a kind and persists under the version/status guard', async () => {
+    const { service, updateMany } = makeService([warn('dropped_blocks', 'a'), warn('dropped_blocks', 'b'), warn('low_grounding', 'c')]);
+
+    const result = (await service.setWarningsAcknowledged('job-1', { kind: 'dropped_blocks', acknowledged: true })) as any[];
+
+    expect(result.map((w) => !!w.acknowledged)).toEqual([true, true, false]);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'diff_ready', diffVersion: 5 },
+      data: { warnings: expect.any(Array), diffVersion: { increment: 1 } },
+    });
+  });
+
+  it('acknowledges only the records whose raw text is listed', async () => {
+    const { service } = makeService([warn('dropped_blocks', 'a'), warn('dropped_blocks', 'b')]);
+
+    const result = (await service.setWarningsAcknowledged('job-1', { kind: 'dropped_blocks', raws: ['b'], acknowledged: true })) as any[];
+
+    expect(result.map((w) => !!w.acknowledged)).toEqual([false, true]);
+  });
+
+  it('can clear the flag, and keeps every other field of the record', async () => {
+    const { service } = makeService([warn('zero_nodes', 'x', { acknowledged: true, nodeIds: ['n0'], detail: { k: 1 } })]);
+
+    const [result] = (await service.setWarningsAcknowledged('job-1', { kind: 'zero_nodes', acknowledged: false })) as any[];
+
+    expect(result).toEqual(expect.objectContaining({ kind: 'zero_nodes', raw: 'x', nodeIds: ['n0'], detail: { k: 1 }, acknowledged: false }));
+  });
+
+  it('skips legacy plain-string warnings and never matches on them', async () => {
+    const { service } = makeService(['an old string warning', warn('zero_nodes', 'x')]);
+
+    const result = await service.setWarningsAcknowledged('job-1', { kind: 'zero_nodes', acknowledged: true });
+
+    expect(result[0]).toBe('an old string warning');
+    expect((result[1] as any).acknowledged).toBe(true);
+  });
+
+  it('404s when no warning of that kind (or raw) exists, writing nothing', async () => {
+    const { service, updateMany } = makeService([warn('low_grounding', 'c')]);
+
+    await expect(service.setWarningsAcknowledged('job-1', { kind: 'zero_nodes', acknowledged: true })).rejects.toThrow('No zero_nodes warning');
+    await expect(service.setWarningsAcknowledged('job-1', { kind: 'low_grounding', raws: ['other'], acknowledged: true })).rejects.toThrow('No low_grounding warning');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('re-reads and re-applies when a concurrent write landed first', async () => {
+    const updateMany = jest.fn().mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 5, warnings: [warn('zero_nodes', 'x')] })
+      // The retry sees what the racing writer left behind (another kind acked).
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 6, warnings: [warn('zero_nodes', 'x'), warn('low_grounding', 'c', { acknowledged: true })] });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    const result = (await service.setWarningsAcknowledged('job-1', { kind: 'zero_nodes', acknowledged: true })) as any[];
+
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'job-1', status: 'diff_ready', diffVersion: 6 });
+    expect(result.map((w) => !!w.acknowledged)).toEqual([true, true]);
+  });
+
+  it('throws a conflict when the job is not diff_ready', async () => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'confirmed', warnings: [] }) } };
+    const service = new JobsService(prisma as any, {} as any, {} as any, {} as any, 'redis://unused');
+
+    await expect(service.setWarningsAcknowledged('job-1', { kind: 'zero_nodes', acknowledged: true })).rejects.toThrow('not in a diff-editable state');
+  });
+});
+
+describe('JobsService.retryEnhancement', () => {
+  const entry = (localId: string, extra: object = {}) => ({
+    localId, parentLocalId: 'p1', type: 'Requirement', title: `orig ${localId}`, description: `verbatim ${localId}`,
+    action: 'create', existingAdoId: null, sourceHash: `h-${localId}`, customerId: null, tags: [], ...extra,
+  });
+  const parent = { localId: 'p1', parentLocalId: 'p0', type: 'Feature', title: 'Chassis', description: '', action: 'create', existingAdoId: null, sourceHash: 'hp', customerId: null, tags: [] };
+  const root = { localId: 'p0', parentLocalId: null, type: 'Epic', title: 'Power', description: '', action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null, tags: [] };
+  const warn = (kind: string, pass: string, nodeIds: string[]) => ({ kind, severity: 'pipeline_issue', nodeIds, detail: { pass }, raw: 'old raw' });
+
+  const makeService = (diff: object[], warnings: object[], enhanceItems: jest.Mock, updateMany = jest.fn().mockResolvedValue({ count: 1 })) => {
+    const job = { id: 'job-1', status: 'diff_ready', diffVersion: 7, userId: 'u1', model: 'm1', dryRunDiff: diff, warnings };
+    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue(job) } };
+    const service = new JobsService(prisma as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
+    return { service, updateMany, prisma };
+  };
+
+  it('sends the verbatim text with its parent chain, applies the result, and shrinks the warning', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({
+      results: { a: { title: 'New A', description: 'The A shall X.', groundingScore: 0.8, tags: ['functional'] } },
+      omitted: [],
+    });
+    const { service, updateMany } = makeService([root, parent, entry('a'), entry('b')], [warn('enhancement_call_failed', 'synthesis', ['a', 'b'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a'] });
+
+    expect(enhanceItems).toHaveBeenCalledWith(
+      'synthesis',
+      [{ id: 'a', text: 'verbatim a', type: 'Requirement', context: 'Power > Chassis' }],
+      'u1',
+      'm1',
+    );
+    const a = result.dryRunDiff.find((e) => e.localId === 'a')!;
+    expect(a).toEqual(expect.objectContaining({ title: 'New A', description: 'The A shall X.', groundingScore: 0.8, tags: ['functional'] }));
+    // sourceHash is position-based identity, never touched by a text rewrite.
+    expect(a.sourceHash).toBe('h-a');
+    expect(result.enhanced).toEqual(['a']);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ nodeIds: ['b'], raw: 'The text synthesis enhancement call failed for 1 item(s) -- those kept their existing text.' }),
+    ]);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'diff_ready', diffVersion: 7 },
+      data: { dryRunDiff: expect.any(Array), warnings: expect.any(Array), diffVersion: { increment: 1 } },
+    });
+  });
+
+  it('drops the warning record once every item is enhanced', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { title: 'T' } }, omitted: [] });
+    const { service } = makeService([entry('a')], [warn('enhancement_call_failed', 'title_tag', ['a']), warn('low_grounding', 'x', ['a'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['a'] });
+
+    expect(result.warnings).toHaveLength(1);
+    expect((result.warnings[0] as any).kind).toBe('low_grounding');
+  });
+
+  it('title_tag changes only title and tags, never the description', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { title: 'T', description: 'SHOULD NOT APPLY', tags: ['functional'] } }, omitted: [] });
+    const { service } = makeService([entry('a')], [warn('enhancement_call_failed', 'title_tag', ['a'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['a'] });
+
+    expect(result.dryRunDiff[0]).toEqual(expect.objectContaining({ title: 'T', description: 'verbatim a', tags: ['functional'] }));
+  });
+
+  it('never gives an Epic or Feature tags', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { f: { title: 'T', tags: ['functional'] } }, omitted: [] });
+    const { service } = makeService([entry('f', { type: 'Feature' })], [warn('enhancement_call_failed', 'title_tag', ['f'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['f'] });
+
+    expect(result.dryRunDiff[0].tags).toEqual([]);
+  });
+
+  it('marks an existing quality score stale when synthesis rewrites the text it judged', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { description: 'New text.' } }, omitted: [] });
+    const { service } = makeService([entry('a', { qualityScore: 80 })], [warn('enhancement_call_failed', 'synthesis', ['a'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a'] });
+
+    expect(result.dryRunDiff[0].qualityStale).toBe(true);
+  });
+
+  it('keeps items the model skipped in the warning and reports them as failed', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { title: 'T' } }, omitted: ['b'] });
+    const { service } = makeService([entry('a'), entry('b')], [warn('enhancement_call_failed', 'title_tag', ['a', 'b'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['a', 'b'] });
+
+    expect(result.enhanced).toEqual(['a']);
+    expect(result.failed).toEqual(['b']);
+    expect((result.warnings[0] as any).nodeIds).toEqual(['b']);
+  });
+
+  it('skips excluded, manual and non-create items without sending them', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: {}, omitted: [] });
+    const { service } = makeService(
+      [entry('x', { excluded: true }), entry('m', { isManual: true }), entry('r', { action: 'reuse' })],
+      [warn('enhancement_call_failed', 'title_tag', ['x', 'm', 'r', 'gone'])],
+      enhanceItems,
+    );
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['x', 'm', 'r', 'gone'] });
+
+    expect(enhanceItems).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual(['x', 'm', 'r', 'gone']);
+    expect(result.enhanced).toEqual([]);
+  });
+
+  it('does not overwrite an item the reviewer edited while the call was in flight', async () => {
+    // Phase 1 reads the original text; by the guarded write the item was edited.
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 1, dryRunDiff: [entry('a')], warnings: [warn('enhancement_call_failed', 'synthesis', ['a'])] })
+      .mockResolvedValueOnce({ id: 'job-1', status: 'diff_ready', diffVersion: 2, dryRunDiff: [entry('a', { description: 'edited by hand' })], warnings: [warn('enhancement_call_failed', 'synthesis', ['a'])] });
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { description: 'Model text.' } }, omitted: [] });
+    const service = new JobsService({ job: { findUnique, updateMany } } as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
+
+    const result = await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a'] });
+
+    expect(result.dryRunDiff[0].description).toBe('edited by hand');
+    expect(result.enhanced).toEqual([]);
+    expect(result.skipped).toEqual(['a']);
+    // Still listed: it wasn't enhanced.
+    expect((result.warnings[0] as any).nodeIds).toEqual(['a']);
+  });
+
+  it('re-applies on a version race without calling the model twice', async () => {
+    const updateMany = jest.fn().mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+    const enhanceItems = jest.fn().mockResolvedValue({ results: { a: { title: 'T' } }, omitted: [] });
+    const { service } = makeService([entry('a')], [warn('enhancement_call_failed', 'title_tag', ['a'])], enhanceItems, updateMany);
+
+    await service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['a'] });
+
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    expect(enhanceItems).toHaveBeenCalledTimes(1);
+  });
+
+  it('turns an ingestion failure into a 502 and writes nothing', async () => {
+    const enhanceItems = jest.fn().mockRejectedValue(new IngestionHttpError(502, 'enhancement call failed: boom'));
+    const { service, updateMany } = makeService([entry('a')], [warn('enhancement_call_failed', 'title_tag', ['a'])], enhanceItems);
+
+    await expect(service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['a'] })).rejects.toThrow('boom');
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses ids that are not part of the warning, a missing warning, and a job past diff_ready', async () => {
+    const enhanceItems = jest.fn();
+    const { service } = makeService([entry('a'), entry('z')], [warn('enhancement_call_failed', 'title_tag', ['a'])], enhanceItems);
+
+    await expect(service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['z'] })).rejects.toThrow('Not part of this warning: z');
+    await expect(service.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['a'] })).rejects.toThrow('No enhancement_call_failed warning');
+    expect(enhanceItems).not.toHaveBeenCalled();
+
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ id: 'job-1', status: 'confirmed' }) } };
+    const closed = new JobsService(prisma as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
+    await expect(closed.retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'title_tag', localIds: ['a'] })).rejects.toThrow('not in a diff-editable state');
+  });
+});
+
 describe('JobsService.setDiffEntryExcluded', () => {
   it('flips excluded on the matching entry and persists the whole array', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });

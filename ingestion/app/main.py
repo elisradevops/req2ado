@@ -6,7 +6,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import NamedTuple, cast
+from typing import Literal, NamedTuple, cast
 
 import redis
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -32,6 +32,7 @@ from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import retrieve_context
 from app.leveling.id_hierarchy import rows_from_table
 from app.leveling.llm_leveling import build_survey_tree
+from app.leveling.id_tree_builder import _TITLE_TAG_CHUNK_SIZE, synthesis_updates, title_tag_updates
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.scoring import score_single_requirement_text
@@ -1535,6 +1536,128 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         quality_score=score, quality_issues=issues, quality_category_scores=category_scores,
         quality_confidence=confidence.value if confidence is not None else None,
     )
+
+
+class EnhanceItem(BaseModel):
+    id: str
+    # The leaf's CURRENT verbatim text -- what the failed first-run call was
+    # given (a failed item kept its verbatim text).
+    text: str
+    # 'Epic' | 'Feature' | 'Requirement' -- only a Requirement keeps tags
+    # from a synthesis response (see id_tree_builder.synthesis_updates).
+    type: str
+    # " > "-joined parent chain titles, root first. Synthesis pass only.
+    context: str = ""
+
+
+class EnhanceItemsRequest(BaseModel):
+    """Post-hoc retry of the optional enhancement passes that failed during a
+    run (see WarningKind.ENHANCEMENT_CALL_FAILED), for just the affected
+    items. `parent_summary` is deliberately not retryable here -- it needs
+    every descendant's text, which the caller doesn't send."""
+
+    enhancement_pass: Literal["title_tag", "synthesis"]
+    items: list[EnhanceItem]
+    user_id: str | None = None
+    model: str | None = None
+
+
+class EnhancedItem(BaseModel):
+    title: str | None = None
+    tags: list[str] | None = None
+    # Synthesis only: new description, with the hash/score recomputed the
+    # same way the pipeline does.
+    description: str | None = None
+    grounding_score: float | None = None
+    fidelity_hash: str | None = None
+
+
+class EnhanceItemsResponse(BaseModel):
+    results: dict[str, EnhancedItem]
+    # Ids the model returned nothing usable for (or that had blank text).
+    omitted: list[str]
+
+
+# Same size the pipeline's own passes chunk at -- one LLM call per request.
+_ENHANCE_ITEMS_MAX = _TITLE_TAG_CHUNK_SIZE
+
+
+@app.post("/enhance-items", response_model=EnhanceItemsResponse)
+async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
+    if not body.items:
+        raise HTTPException(status_code=400, detail="items must not be empty")
+    if len(body.items) > _ENHANCE_ITEMS_MAX:
+        raise HTTPException(
+            status_code=400, detail=f"at most {_ENHANCE_ITEMS_MAX} items per request",
+        )
+    try:
+        node_types = {item.id: WorkItemType(item.type) for item in body.items}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=f"unknown item type: {error}") from error
+
+    # Blank text can't be enhanced; report it rather than spend a call on it.
+    sendable = [item for item in body.items if item.text.strip()]
+    blank_ids = [item.id for item in body.items if not item.text.strip()]
+    if not sendable:
+        return EnhanceItemsResponse(results={}, omitted=blank_ids)
+
+    # Same construct-probe-then-construct-real pattern as /score-item, for
+    # the same reasons (num_ctx needs the model's caps, which is a blocking
+    # lookup that must not run inline in an async route).
+    probe_client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model,
+        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    num_ctx = (
+        await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)
+    ).context_budget_tokens
+    client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx,
+        top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+
+    try:
+        if body.enhancement_pass == "title_tag":
+            raw = await run_in_threadpool(
+                client.title_and_tags_for_rows,
+                {item.id: item.text for item in sendable},
+                body.user_id,
+            )
+        else:
+            raw = await run_in_threadpool(
+                client.synthesize_leaf_requirements,
+                {item.id: {"text": item.text, "context": item.context} for item in sendable},
+                body.user_id,
+            )
+    except Exception as error:
+        # The caller treats a 502 as "this batch failed" and leaves every
+        # item exactly as it was -- retry is a pure enhancement, like the
+        # pipeline passes it mirrors.
+        logger.warning("enhance-items %s call failed: %s", body.enhancement_pass, error)
+        raise HTTPException(status_code=502, detail=f"enhancement call failed: {error}") from error
+
+    results: dict[str, EnhancedItem] = {}
+    omitted = list(blank_ids)
+    for item in sendable:
+        entry = (raw or {}).get(item.id)
+        if not isinstance(entry, dict) or not entry:
+            omitted.append(item.id)
+            continue
+        if body.enhancement_pass == "title_tag":
+            updates = title_tag_updates(entry)
+        else:
+            updates = synthesis_updates(entry, item.text, node_types[item.id])
+        if not updates:
+            omitted.append(item.id)
+            continue
+        results[item.id] = EnhancedItem(
+            title=updates.get("title"),
+            tags=[tag.value for tag in updates["tags"]] if "tags" in updates else None,
+            description=updates.get("description"),
+            grounding_score=updates.get("grounding_score"),
+            fidelity_hash=updates.get("fidelity_hash"),
+        )
+    return EnhanceItemsResponse(results=results, omitted=omitted)
 
 
 @app.post("/dedup/check", response_model=DuplicateCheckResult)
