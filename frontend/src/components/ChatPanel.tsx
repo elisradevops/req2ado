@@ -87,6 +87,7 @@ export function ChatPanel({
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [models, setModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [model, setModel] = useState<string | undefined>(undefined);
   const [streaming, setStreaming] = useState('');
   // A reasoning/"thinking" model's chain-of-thought, streamed on a separate
@@ -153,12 +154,16 @@ export function ChatPanel({
       .catch(() => {
         if (!cancelled) showToast('Failed to load chat history for this item.', 'error');
       });
+    setModelsLoading(true);
     listModels()
       .then((m) => {
         if (!cancelled) setModels(m);
       })
       .catch(() => {
         if (!cancelled) setModels([]);
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false);
       });
     return () => {
       cancelled = true;
@@ -451,7 +456,7 @@ export function ChatPanel({
             Select component itself now ellipsizes (+ shows the full value
             on hover) if a future name is longer still. */}
         <div className="flex items-center gap-1.5">
-          <Select aria-label="Model" value={model ?? ''} onChange={(e) => setModel(e.target.value || undefined)} className="w-28 text-xs">
+          <Select aria-label="Model" value={model ?? ''} onChange={(e) => setModel(e.target.value || undefined)} loading={modelsLoading} className="w-28 text-xs">
             <option value="">Default</option>
             {models.map((m) => (
               <option key={m} value={m}>

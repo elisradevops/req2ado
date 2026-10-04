@@ -84,7 +84,10 @@ function DocumentMapList({ sections }: { sections: PreviewResult['documentMap'] 
 // no file it shows what will eventually fill this space. Every note here is
 // a real, current-parse fact (table/figure/open-TBD counts already
 // returned by preview()) -- never an invented risk to fill space.
-function WorthKnowingCard({ preview }: { preview: PreviewResult | null }): React.ReactElement {
+function WorthKnowingCard({ preview, parsing }: { preview: PreviewResult | null; parsing: boolean }): React.ReactElement {
+  if (!preview && parsing) {
+    return <p className="text-xs text-ink-3">Parsing the document… this fills in when it finishes.</p>;
+  }
   if (!preview) {
     return <p className="text-xs text-ink-3">Drop a document and this fills with what the parser found in it.</p>;
   }
@@ -173,6 +176,8 @@ export function NewJobWizard(): React.ReactElement {
   const [iterationPath, setIterationPath] = useState('');
   const [model, setModel] = useState('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(false);
   const [documentOverview, setDocumentOverview] = useState<DocumentOverview | null>(null);
   const [expositionStatus, setExpositionStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   // DESIGN.md §11.2.3.d -- server-computed, both modes shown side by side
@@ -205,9 +210,15 @@ export function NewJobWizard(): React.ReactElement {
     // Best-effort: if this fails, the dropdown just stays empty and the job
     // submits with no model override (falls back to the orchestrator's
     // configured default), matching pre-model-selection behavior.
+    setModelsLoading(true);
+    setModelsError(false);
     listModels()
       .then(setAvailableModels)
-      .catch(() => setAvailableModels([]));
+      .catch(() => {
+        setAvailableModels([]);
+        setModelsError(true);
+      })
+      .finally(() => setModelsLoading(false));
   }, [mode, availableModels.length]);
 
   // Fires the exposition call exactly once per entry into step 3 -- guarded
@@ -368,8 +379,18 @@ export function NewJobWizard(): React.ReactElement {
             same two-pane pattern step 2 already uses below. */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
           <div className="flex min-w-0 flex-col gap-3">
-            {!file ? (
-              <FileDropzone onFileSelected={handleFileSelected} status={parseStatus} errorMessage={parseError} />
+            {/* Keyed on parse status, not on `file` -- handleFileSelected sets
+                `file` BEFORE the parse resolves, so gating on `!file` hid the
+                dropzone's own parsing/error states entirely: the user saw
+                a Document card and '--' tiles with no sign anything was
+                happening (or that it had failed). */}
+            {parseStatus !== 'parsed' || !file ? (
+              <FileDropzone
+                onFileSelected={handleFileSelected}
+                status={parseStatus}
+                fileName={file?.name}
+                errorMessage={parseError}
+              />
             ) : (
               <>
                 <SectionCard
@@ -451,7 +472,7 @@ export function NewJobWizard(): React.ReactElement {
             {/* Never renders empty -- with no file it states what will
                 eventually fill this space, never a blank card. */}
             <SectionCard title="Worth knowing before you run it">
-              <WorthKnowingCard preview={preview} />
+              <WorthKnowingCard preview={preview} parsing={parseStatus === 'parsing'} />
             </SectionCard>
             {file && (
               <div className="mt-auto flex flex-wrap items-center gap-3">
@@ -640,6 +661,8 @@ export function NewJobWizard(): React.ReactElement {
               model={model}
               onModelChange={setModel}
               availableModels={availableModels}
+              modelsLoading={modelsLoading}
+              modelsError={modelsError}
             />
           </SectionCard>
           {mode === 'survey' && (

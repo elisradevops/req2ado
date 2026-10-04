@@ -285,6 +285,33 @@ describe('NewJobWizard Step 1', () => {
     await waitFor(() => expect(screen.getAllByText(/failed to parse the uploaded file/i).length).toBeGreaterThan(0));
   });
 
+  it('shows the dropzone parsing state (not just empty tiles) while the file is being parsed, and the error state if it fails', async () => {
+    let rejectParse!: (error: Error) => void;
+    vi.spyOn(jobsApi, 'previewJob').mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectParse = reject;
+        }),
+    );
+    render(
+      <ToastProvider>
+        <MemoryRouter>
+          <NewJobWizard />
+        </MemoryRouter>
+      </ToastProvider>,
+    );
+    await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'req.docx'));
+
+    expect(await screen.findByText(/parsing req\.docx/i)).toBeInTheDocument();
+    expect(screen.getByText(/this fills in when it finishes/i)).toBeInTheDocument();
+
+    await act(async () => {
+      rejectParse(new Error('boom'));
+      await Promise.resolve();
+    });
+    expect(await screen.findByText(/drop it again, or try a different file/i)).toBeInTheDocument();
+  });
+
   it("handleFileSelected: a slower preview response for an earlier file selection cannot overwrite a faster later selection's already-shown preview", async () => {
     // Regression (SWEEP.md): handleFileSelected had no sequence guard, so
     // picking file A, then quickly replacing it with file B before A's
@@ -312,11 +339,11 @@ describe('NewJobWizard Step 1', () => {
     // Select file A first -- fires the slower, still-pending
     // previewJob('doc-a.docx') request.
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['x'], 'doc-a.docx'));
-    await waitFor(() => expect(screen.getByRole('button', { name: /replace/i })).toBeInTheDocument());
+    expect(await screen.findByText(/parsing doc-a\.docx/i)).toBeInTheDocument();
 
-    // Before A resolves, replace it with file B -- fires a second, faster
-    // request that resolves and paints B's preview first.
-    await userEvent.click(screen.getByRole('button', { name: /replace/i }));
+    // Before A resolves, re-select with file B through the still-active
+    // dropzone -- fires a second, faster request that resolves and paints
+    // B's preview first.
     await userEvent.upload(screen.getByLabelText(/upload/i), new File(['y'], 'doc-b.docx'));
 
     await waitFor(() => expect(screen.getByText('777')).toBeInTheDocument());

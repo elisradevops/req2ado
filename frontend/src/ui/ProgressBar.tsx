@@ -1,4 +1,13 @@
-export function ProgressBar({ value }: { value?: number }): React.ReactElement {
+export function ProgressBar({
+  value,
+  // A model call is in flight: overlays a slow sheen on the filled part so a
+  // determinate bar that is legitimately not moving for minutes still reads
+  // as alive. Never changes the width -- the number stays honest.
+  active,
+}: {
+  value?: number;
+  active?: boolean;
+}): React.ReactElement {
   const determinate = value !== undefined;
   const clamped = determinate ? Math.min(Math.max(value, 0), 100) : undefined;
   return (
@@ -20,6 +29,13 @@ export function ProgressBar({ value }: { value?: number }): React.ReactElement {
             : { width: '34%', animation: 'indeterminate-progress var(--duration-ambient) var(--ease-in-out) infinite' }
         }
       />
+      {active && determinate && (
+        <span
+          data-testid="progress-active"
+          className="pointer-events-none absolute inset-y-0 left-0 rounded-full bg-[linear-gradient(90deg,transparent_25%,var(--color-shimmer-highlight)_37%,transparent_63%)] bg-[length:400%_100%] opacity-60"
+          style={{ width: `${clamped}%`, animation: 'shimmer var(--duration-ambient) var(--ease-linear) infinite' }}
+        />
+      )}
     </div>
   );
 }

@@ -95,6 +95,8 @@ export function ModeCards({
   model,
   onModelChange,
   availableModels,
+  modelsLoading,
+  modelsError,
 }: {
   value: 'baseline' | 'survey';
   onChange: (mode: 'baseline' | 'survey') => void;
@@ -114,6 +116,8 @@ export function ModeCards({
   model?: string;
   onModelChange?: (model: string) => void;
   availableModels?: string[];
+  modelsLoading?: boolean;
+  modelsError?: boolean;
 }): React.ReactElement {
   return (
     // Stacked (not side-by-side) -- matches the prototype's `.modes` grid
@@ -196,7 +200,7 @@ export function ModeCards({
                   <Cpu className="h-3.5 w-3.5 flex-none text-ink-3" />
                   Model
                 </span>
-                <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="LLM Model">
+                <Select value={model ?? ''} onChange={(event) => onModelChange(event.target.value)} aria-label="LLM Model" loading={modelsLoading}>
                   <option value="">Default</option>
                   {(availableModels ?? []).map((m) => (
                     <option key={m} value={m}>
@@ -204,6 +208,9 @@ export function ModeCards({
                     </option>
                   ))}
                 </Select>
+                {modelsError && (
+                  <span className="basis-full text-micro text-danger">Couldn't load models — Default will be used.</span>
+                )}
                 <span className="basis-full text-micro text-ink-3">
                   Fetched live from the backend. Feeds the estimate below — leave it on Default and the estimate falls back to a
                   neutral 1.0×, because the frontend cannot know which model the orchestrator resolves to.
