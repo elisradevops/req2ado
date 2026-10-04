@@ -48,6 +48,34 @@ jobs:
           GH_TOKEN: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
         run: |
           SHA="${{ github.sha }}"
+          # Walk back past [skip ci] version-bump commits (this repo's own
+          # convention -- every automated bump commit, e.g. "CI: bumps
+          # orchestrator version to X [skip ci]", only touches package.json/
+          # package-lock.json, never application code) before checking CI.
+          # Confirmed real gap: GitHub suppresses ALL push-triggered
+          # workflows, CI included, for any commit whose message contains
+          # [skip ci] -- such a commit NEVER gets a CI run at all. A
+          # workflow_dispatch's ref resolves to the branch's CURRENT tip at
+          # dispatch time, which can legitimately BE one of these bump
+          # commits (confirmed live) -- without this walk-back, this step
+          # would poll forever for a CI run that can never exist and time
+          # out, blocking a publish whose actual code already passed CI on
+          # the parent commit.
+          for i in $(seq 1 10); do
+            # Written to a file, not a shell variable -- a raw commit object
+            # (unlike the pre-filtered actions/runs lookup below) can carry
+            # content (e.g. a GPG signature block) that corrupts when
+            # round-tripped through `echo "$VAR" | jq` (confirmed live).
+            gh api "repos/${{ github.repository }}/commits/$SHA" > /tmp/commit.json
+            COMMIT_MSG=$(jq -r '.commit.message' /tmp/commit.json)
+            if echo "$COMMIT_MSG" | grep -qiE '\[skip ci\]|\[ci skip\]'; then
+              PARENT_SHA=$(jq -r '.parents[0].sha' /tmp/commit.json)
+              echo "$SHA is a [skip ci] commit ('$COMMIT_MSG') -- walking back to parent $PARENT_SHA"
+              SHA="$PARENT_SHA"
+              continue
+            fi
+            break
+          done
           echo "Waiting for the 'CI' workflow to complete on $SHA..."
           for i in $(seq 1 40); do
             RUN_JSON=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA" --jq '[.workflow_runs[] | select(.name=="CI")][0]')
