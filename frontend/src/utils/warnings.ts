@@ -18,6 +18,9 @@ export interface WarningRecord {
   // (optionally) mark a warning as "from an older run" instead of
   // presenting a best-effort guess as a real classification.
   legacy?: boolean;
+  // Reviewer state, set server-side by JobsService.setWarningsAcknowledged.
+  // Advisory: Confirm never reads it. Not part of ingestion's contract.
+  acknowledged?: boolean;
 }
 
 const CONFLICT_LOCAL_ID_RE = /\[localId: ([^\]]+)\]/g;

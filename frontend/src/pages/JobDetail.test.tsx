@@ -171,6 +171,316 @@ describe('JobDetail', () => {
     expect(screen.queryByText('Healthy epic')).not.toBeInTheDocument();
   });
 
+  describe('integrity warnings', () => {
+    function epic(localId: string, title: string) {
+      return { localId, parentLocalId: null, type: 'Epic', title, description: '', action: 'create', customerId: null, tags: [] };
+    }
+
+    function mockJobWithWarnings() {
+      vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+        id: 'job-60',
+        status: 'diff_ready',
+        mode: 'survey',
+        dryRunDiff: [epic('e1', 'Affected one'), epic('e2', 'Affected two'), epic('e3', 'Untouched')],
+        warnings: [
+          { kind: 'low_grounding', severity: 'needs_review', nodeIds: ['e1', 'e2'], detail: {}, raw: '2 nodes have low grounding.' },
+          { kind: 'enhancement_call_failed', severity: 'pipeline_issue', nodeIds: ['e3'], detail: {}, raw: 'Enhancement failed.' },
+        ],
+      } as any);
+    }
+
+    it('counts only warning types that need attention in the banner, never informational ones', async () => {
+      mockJobWithWarnings();
+      renderAt('job-60');
+
+      // Two warning types, but enhancement_call_failed is informational.
+      await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
+    });
+
+    it("narrows the tree to a warning's items, shows a clearable chip, and points bulk actions at that set", async () => {
+      mockJobWithWarnings();
+      renderAt('job-60');
+      await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      expect(screen.getByRole('button', { name: /exclude all/i })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+
+      expect(screen.getByText('Affected one')).toBeInTheDocument();
+      expect(screen.getByText('Affected two')).toBeInTheDocument();
+      expect(screen.queryByText('Untouched')).not.toBeInTheDocument();
+      expect(screen.getByText(/Low grounding: possible fabrication:\s*2 left of 2/)).toBeInTheDocument();
+      // Reason chip on the rows, so a reviewer sees why each is listed.
+      expect(screen.getAllByText('Low grounding')).toHaveLength(2);
+      expect(screen.getByRole('button', { name: /exclude matching/i })).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole('button', { name: /clear warning filter/i }));
+
+      expect(screen.getByText('Untouched')).toBeInTheDocument();
+      expect(screen.queryByText(/2 left of 2/)).not.toBeInTheDocument();
+      expect(screen.queryAllByText('Low grounding')).toHaveLength(0);
+    });
+
+    it('shows the focused warning as the reason in the details dialog', async () => {
+      mockJobWithWarnings();
+      renderAt('job-60');
+      await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+      const { default: userEvent } = await import('@testing-library/user-event');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+      await userEvent.click(screen.getByText('Affected one'));
+
+      const note = await screen.findByRole('note');
+      expect(note).toHaveTextContent('Low grounding: possible fabrication.');
+    });
+
+    describe('reviewing', () => {
+      it('marks every item of the focused warning reviewed in one request, empties the tree and clears the banner, and Undo restores it', async () => {
+        mockJobWithWarnings();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+        renderAt('job-60');
+        await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+
+        await userEvent.click(screen.getByRole('button', { name: 'Mark all reviewed' }));
+
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledTimes(1);
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-60', ['e1', 'e2'], true);
+        // Hide reviewed is on by default: nothing is left to show.
+        expect(screen.getByText('All 2 items reviewed.')).toBeInTheDocument();
+        expect(screen.queryByText('Affected one')).not.toBeInTheDocument();
+        expect(screen.getByText('All warnings handled. You can approve the diff.')).toBeInTheDocument();
+        expect(screen.queryByText(/need.* your attention/i)).not.toBeInTheDocument();
+
+        await userEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-60', ['e1', 'e2'], false);
+        expect(await screen.findByText('Affected one')).toBeInTheDocument();
+        expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument();
+      });
+
+      it('keeps reviewed items listed, marked Reviewed, when hide reviewed is turned off', async () => {
+        mockJobWithWarnings();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+        renderAt('job-60');
+        await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+        await userEvent.click(screen.getByRole('checkbox', { name: 'Hide reviewed' }));
+
+        await userEvent.click(screen.getByRole('button', { name: 'Mark all reviewed' }));
+
+        expect(screen.getByText('Affected one')).toBeInTheDocument();
+        expect(screen.getAllByText('Reviewed')).toHaveLength(2);
+        expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();
+      });
+
+      it('puts the items back and says so when the server refuses the mark', async () => {
+        mockJobWithWarnings();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockRejectedValue(new Error('409'));
+        renderAt('job-60');
+        await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+
+        await userEvent.click(screen.getByRole('button', { name: 'Mark all reviewed' }));
+
+        expect(await screen.findByText(/failed to update review state/i)).toBeInTheDocument();
+        expect(screen.getByText('Affected one')).toBeInTheDocument();
+        expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument();
+      });
+
+      it('marks the open item reviewed and steps to the next item still to do', async () => {
+        mockJobWithWarnings();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+        renderAt('job-60');
+        await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+        await userEvent.click(screen.getByText('Affected one'));
+
+        await userEvent.click(await screen.findByRole('button', { name: 'Mark reviewed and next' }));
+
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenCalledWith('job-60', ['e1'], true);
+        // Now showing the second item, and its position in what is left.
+        const dialog = await screen.findByRole('dialog');
+        expect(within(dialog).getAllByText('Affected two').length).toBeGreaterThan(0);
+        expect(within(dialog).queryByText('Affected one')).not.toBeInTheDocument();
+      });
+
+      it('closes the dialog after marking the last item to do', async () => {
+        mockJobWithWarnings();
+        vi.mocked(jobsApi.setDiffEntriesReviewed).mockResolvedValue({ dryRunDiff: [] });
+        renderAt('job-60');
+        await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+        await userEvent.click(screen.getByText('Affected one'));
+        await userEvent.click(await screen.findByRole('button', { name: 'Mark reviewed and next' }));
+        await userEvent.click(await screen.findByRole('button', { name: 'Mark reviewed and next' }));
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(jobsApi.setDiffEntriesReviewed).toHaveBeenLastCalledWith('job-60', ['e2'], true);
+      });
+
+      it('offers no review controls once the job is no longer awaiting review', async () => {
+        vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+          id: 'job-61',
+          status: 'confirmed',
+          mode: 'survey',
+          dryRunDiff: [epic('e1', 'Affected one')],
+          warnings: [{ kind: 'low_grounding', severity: 'needs_review', nodeIds: ['e1'], detail: {}, raw: 'x' }],
+        } as any);
+        renderAt('job-61');
+        await waitFor(() => expect(screen.getByText('Affected one')).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
+
+        expect(screen.queryByRole('button', { name: 'Mark all reviewed' })).not.toBeInTheDocument();
+      });
+    });
+
+    describe('retrying a failed enhancement', () => {
+      const requirement = (localId: string, title: string) => ({
+        localId, parentLocalId: null, type: 'Requirement', title, description: `verbatim ${localId}`, action: 'create', customerId: null, tags: [],
+      });
+      const ids = Array.from({ length: 120 }, (_, i) => `r${i}`);
+      const warningFor = (nodeIds: string[]) => ({
+        kind: 'enhancement_call_failed', severity: 'pipeline_issue', nodeIds, detail: { pass: 'synthesis' }, raw: 'failed',
+      });
+
+      // vi.mock('../api/jobs') keeps call history and queued once-values
+      // across tests -- every assertion here counts calls.
+      beforeEach(() => {
+        vi.mocked(jobsApi.retryEnhancement).mockReset();
+      });
+
+      function mockJob() {
+        vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+          id: 'job-70',
+          status: 'diff_ready',
+          mode: 'survey',
+          dryRunDiff: ids.map((id) => requirement(id, `Original ${id}`)),
+          warnings: [warningFor(ids)],
+        } as any);
+      }
+
+      it('retries in batches of 50, merges each batch into the tree, and reports the totals', async () => {
+        mockJob();
+        vi.mocked(jobsApi.retryEnhancement).mockImplementation(async (_id, input) => ({
+          dryRunDiff: input.localIds.map((id) => ({ ...requirement(id, `Better ${id}`), reviewed: false })),
+          warnings: [warningFor(ids.slice(ids.indexOf(input.localIds[input.localIds.length - 1]) + 1))].filter((w) => w.nodeIds.length > 0),
+          enhanced: input.localIds,
+          failed: [],
+          skipped: [],
+        }));
+        renderAt('job-70');
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.click(await screen.findByRole('button', { name: 'Retry enhancement' }));
+
+        await waitFor(() => expect(jobsApi.retryEnhancement).toHaveBeenCalledTimes(3));
+        const calls = vi.mocked(jobsApi.retryEnhancement).mock.calls.map(([, input]) => input.localIds.length);
+        expect(calls).toEqual([50, 50, 20]);
+        expect(vi.mocked(jobsApi.retryEnhancement).mock.calls[0][1]).toEqual({
+          kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ids.slice(0, 50),
+        });
+        expect(await screen.findByText('120 enhanced.')).toBeInTheDocument();
+        // The warning is gone once nothing is left, so the row (and its button) with it.
+        await waitFor(() => expect(screen.queryByText('Enhanced wording unavailable')).not.toBeInTheDocument());
+      });
+
+      it('stops at the first batch that errors and says how far it got', async () => {
+        mockJob();
+        vi.mocked(jobsApi.retryEnhancement)
+          .mockResolvedValueOnce({ dryRunDiff: [], warnings: [warningFor(ids.slice(50))], enhanced: ids.slice(0, 50), failed: [], skipped: [] })
+          .mockRejectedValueOnce(new Error('502'));
+        renderAt('job-70');
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.click(await screen.findByRole('button', { name: 'Retry enhancement' }));
+
+        expect(await screen.findByText(/retry stopped after 50 enhanced/i)).toBeInTheDocument();
+        expect(jobsApi.retryEnhancement).toHaveBeenCalledTimes(2);
+        // Back to a usable button, with the remaining items still listed.
+        expect(await screen.findByRole('button', { name: 'Retry enhancement' })).toBeEnabled();
+      });
+
+      it('reports items that failed again or were left alone, without retrying them in the same run', async () => {
+        mockJob();
+        vi.mocked(jobsApi.retryEnhancement).mockImplementation(async (_id, input) => ({
+          dryRunDiff: [],
+          warnings: [warningFor(ids)],
+          enhanced: input.localIds.slice(2),
+          failed: [input.localIds[0]],
+          skipped: [input.localIds[1]],
+        }));
+        renderAt('job-70');
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.click(await screen.findByRole('button', { name: 'Retry enhancement' }));
+
+        expect(await screen.findByText(/114 enhanced, 3 still failing, 3 left alone/)).toBeInTheDocument();
+        expect(jobsApi.retryEnhancement).toHaveBeenCalledTimes(3);
+      });
+
+      it('offers no retry once the job is no longer awaiting review', async () => {
+        vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+          id: 'job-71', status: 'confirmed', mode: 'survey',
+          dryRunDiff: [requirement('r0', 'Original r0')],
+          warnings: [warningFor(['r0'])],
+        } as any);
+        renderAt('job-71');
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await screen.findByText('Enhanced wording unavailable');
+        expect(screen.queryByRole('button', { name: 'Retry enhancement' })).not.toBeInTheDocument();
+      });
+    });
+
+    describe('marking a warning handled', () => {
+      function mockJobWithZeroNodes() {
+        vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+          id: 'job-62',
+          status: 'diff_ready',
+          mode: 'survey',
+          dryRunDiff: [epic('e1', 'Only item')],
+          warnings: [{ kind: 'zero_nodes', severity: 'pipeline_issue', nodeIds: [], detail: {}, raw: 'Section produced 0 work items.' }],
+        } as any);
+      }
+
+      it('acknowledges the kind, completes it and clears the banner', async () => {
+        mockJobWithZeroNodes();
+        vi.mocked(jobsApi.setWarningsAcknowledged).mockResolvedValue({ warnings: [] });
+        renderAt('job-62');
+        await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.click(screen.getByRole('button', { name: 'Mark handled' }));
+
+        expect(jobsApi.setWarningsAcknowledged).toHaveBeenCalledWith('job-62', { kind: 'zero_nodes', raws: undefined, acknowledged: true });
+        expect(screen.getByText('Done')).toBeInTheDocument();
+        expect(screen.getByText('All warnings handled. You can approve the diff.')).toBeInTheDocument();
+      });
+
+      it('reverts the acknowledgement when the server refuses it', async () => {
+        mockJobWithZeroNodes();
+        vi.mocked(jobsApi.setWarningsAcknowledged).mockRejectedValue(new Error('409'));
+        renderAt('job-62');
+        await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
+        const { default: userEvent } = await import('@testing-library/user-event');
+
+        await userEvent.click(screen.getByRole('button', { name: 'Mark handled' }));
+
+        expect(await screen.findByText(/failed to update/i)).toBeInTheDocument();
+        expect(screen.queryByText('Done')).not.toBeInTheDocument();
+        expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument();
+      });
+    });
+  });
+
   it('shows a retry control for a failed trace link and calls retryTraceLinkWrite(jobId, failureId) when clicked', async () => {
     const baseJob = {
       id: 'job-20',
@@ -785,10 +1095,10 @@ describe('JobDetail', () => {
 
     renderAt('job-27');
 
-    // The prominent warning banner and the detail panel below it both
-    // legitimately say this now -- getAllByText tolerates that expected
-    // duplication (same convention ProgressBanner's own tests already use).
-    await waitFor(() => expect(screen.getAllByText(/1 integrity warning/i).length).toBeGreaterThan(0));
+    // The prominent banner and the warnings panel below it both show the
+    // warning now -- the banner by count, the panel by its row.
+    await waitFor(() => expect(screen.getByText(/1 warning needs your attention/i)).toBeInTheDocument());
+    expect(screen.getByText('Low grounding: possible fabrication')).toBeInTheDocument();
   });
 
   it('gates the Confirm button on diff_ready status', async () => {

@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ToastProvider, useToast } from './ToastProvider';
@@ -68,5 +68,52 @@ describe('ToastProvider', () => {
 
     const after = seenValues.at(-1);
     expect(after).toBe(before);
+  });
+
+  it('renders an action button that runs its handler once and dismisses the toast', async () => {
+    const onAction = vi.fn();
+    function Trigger(): React.ReactElement {
+      const { showToast } = useToast();
+      return (
+        <button type="button" onClick={() => showToast('2 items marked reviewed.', 'success', { label: 'Undo', onAction })}>
+          Trigger
+        </button>
+      );
+    }
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <Trigger />
+      </ToastProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Trigger' }));
+    await screen.findByText('2 items marked reviewed.');
+
+    await user.click(screen.getByRole('button', { name: 'Undo' }));
+
+    expect(onAction).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(screen.queryByText('2 items marked reviewed.')).not.toBeInTheDocument());
+  });
+
+  it('keeps at most three toasts on screen, dropping the oldest', async () => {
+    function Trigger(): React.ReactElement {
+      const { showToast } = useToast();
+      return (
+        <button type="button" onClick={() => ['one', 'two', 'three', 'four'].forEach((m) => showToast(m, 'info'))}>
+          Trigger
+        </button>
+      );
+    }
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <Trigger />
+      </ToastProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Trigger' }));
+
+    await screen.findByText('four');
+    expect(screen.queryByText('one')).not.toBeInTheDocument();
+    expect(screen.getByText('two')).toBeInTheDocument();
   });
 });

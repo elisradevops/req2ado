@@ -417,6 +417,55 @@ describe('DiffTree', () => {
     expect(screen.queryByText('Feature 1')).not.toBeInTheDocument();
   });
 
+  describe('warning focus', () => {
+    const FOCUS_ENTRIES: DryRunDiffEntry[] = [
+      { localId: 'e1', parentLocalId: null, type: 'Epic', title: 'Epic 1', description: '', action: 'create', customerId: null },
+      { localId: 'f1', parentLocalId: 'e1', type: 'Feature', title: 'Feature 1', description: '', action: 'create', customerId: null },
+      { localId: 'r1', parentLocalId: 'f1', type: 'Requirement', title: 'Affected req', description: '', action: 'create', customerId: null },
+      { localId: 'r2', parentLocalId: 'f1', type: 'Requirement', title: 'Unaffected req', description: '', action: 'create', customerId: null },
+    ];
+
+    it('focusNodeIds shows only the focused items, even under a collapsed ancestor', () => {
+      render(
+        <DiffTree
+          entries={FOCUS_ENTRIES}
+          selectedId={null}
+          onSelect={() => {}}
+          filterAction={null}
+          filterText=""
+          focusNodeIds={new Set(['r1'])}
+          onToggleExclude={() => {}}
+        />,
+      );
+
+      // Features start collapsed, but a filter in progress auto-expands.
+      expect(screen.getByText('Affected req')).toBeInTheDocument();
+      expect(screen.queryByText('Unaffected req')).not.toBeInTheDocument();
+      expect(screen.queryByText('Feature 1')).not.toBeInTheDocument();
+    });
+
+    it('shows each focused row\'s reason as a chip, and no chip on any row when nothing is focused', () => {
+      const { rerender } = render(
+        <DiffTree
+          entries={FOCUS_ENTRIES}
+          selectedId={null}
+          onSelect={() => {}}
+          filterAction={null}
+          filterText=""
+          focusNodeIds={new Set(['r1'])}
+          reasonByLocalId={{ r1: { chip: 'Original wording', tip: 'Text enhancement failed.', group: 'info' } }}
+          onToggleExclude={() => {}}
+        />,
+      );
+      expect(screen.getByText('Original wording')).toBeInTheDocument();
+
+      rerender(
+        <DiffTree entries={FOCUS_ENTRIES} selectedId={null} onSelect={() => {}} filterAction={null} filterText="" onToggleExclude={() => {}} />,
+      );
+      expect(screen.queryByText('Original wording')).not.toBeInTheDocument();
+    });
+  });
+
   it('ArrowDown/ArrowUp move selection between visible rows', async () => {
     const onSelect = vi.fn();
     render(

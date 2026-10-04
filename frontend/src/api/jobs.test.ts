@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import { httpClient } from './httpClient';
-import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
+import { listJobs, submitJob, confirmJob, editDiffEntry, setDiffEntryExcluded, setDiffEntriesReviewed, setWarningsAcknowledged, retryEnhancement, addDiffEntry, rescoreDiffEntry, getFigureFile, attachFigureToAdo, retryTraceLinkWrite, validateCreatedTree, previewExposition } from './jobs';
 
 vi.mock('./httpClient');
 
@@ -38,6 +38,25 @@ describe('jobs api', () => {
     (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
     await setDiffEntryExcluded('job-1', 'n0', true);
     expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/n0/exclude', { excluded: true });
+  });
+
+  it('setDiffEntriesReviewed PATCHes the bulk reviewed route with every id in one body', async () => {
+    (httpClient.patch as any).mockResolvedValue({ data: { dryRunDiff: [] } });
+    await setDiffEntriesReviewed('job-1', ['n0', 'n1'], true);
+    expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/diff/reviewed', { localIds: ['n0', 'n1'], reviewed: true });
+  });
+
+  it('setWarningsAcknowledged PATCHes the warnings sub-route with kind and optional raws', async () => {
+    (httpClient.patch as any).mockResolvedValue({ data: { warnings: [] } });
+    await setWarningsAcknowledged('job-1', { kind: 'dropped_blocks', raws: ['a'], acknowledged: true });
+    expect(httpClient.patch).toHaveBeenCalledWith('/jobs/job-1/warnings/acknowledged', { kind: 'dropped_blocks', raws: ['a'], acknowledged: true });
+  });
+
+  it('retryEnhancement POSTs one batch to the retry-enhancement sub-route', async () => {
+    (httpClient.post as any).mockResolvedValue({ data: { enhanced: ['n0'], failed: [], skipped: [] } });
+    const result = await retryEnhancement('job-1', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['n0'] });
+    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/warnings/retry-enhancement', { kind: 'enhancement_call_failed', pass: 'synthesis', localIds: ['n0'] });
+    expect(result.enhanced).toEqual(['n0']);
   });
 
   it('addDiffEntry POSTs to the diff collection route', async () => {

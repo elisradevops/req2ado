@@ -807,6 +807,29 @@ normative, plus three clauses:
    phase headline and the meta line's freshness stamp carry the liveness claim
    in text, so the pulse is decoration on top of a fact, not the fact itself.
 
+### §8.2 — Review-feedback motion
+
+Three effects exist to confirm that a reviewer's action landed. Each is one of
+§8's five roles, and each is skipped under `prefers-reduced-motion` and where
+the Web Animations API is missing (so the content just appears).
+
+| Effect | Role | What moves | Where |
+|---|---|---|---|
+| **Count roll** | State-change | The digits of a count roll to the new value. Only counts the reviewer is driving down: the banner, the focus chip's "left of N", a row's "reviewed" count. | `ui/AnimatedNumber.tsx` (`@number-flow/react`) |
+| **Done pop** | Entrance | A *Done* chip scales 0.6 → 1 on a spring when a kind completes. Exceeds Entrance's `scale(0.97→1)` allowance on purpose: it is a completion confirmation. | `ui/DoneChip.tsx` |
+| **Item settle** | State-change | The details dialog's content fades 0.4 → 1 and rises 4px when J/K/R moves to another item. Not on first open (the dialog's own entrance covers that). | `NodeDetailDialog.tsx` |
+
+The Done pop and Item settle use `motion/react-mini` (the Web Animations API,
+about 3 KB). The full `motion/react` components were evaluated and rejected: they
+cost about 28 KB gzip for the same result. Rows leaving the tree after being
+marked do not animate: the tree is virtualised, and §8 already restricts what a
+virtualised row may animate.
+
+**Dependencies.** `@number-flow/react` and `motion` are approved for this
+purpose only. In tests `@number-flow/react` is mocked to a bare text node
+(`src/test/setup.ts`), because it renders its digits into a shadow root and would
+otherwise split a sentence like "28 of 80 reviewed" across elements.
+
 ---
 
 ## §9 — Elevation semantics
@@ -1864,104 +1887,110 @@ per the project's `react-virtuoso` convention. Both are fed from the merged
 reconnect never makes counts appear to regress — see `docs/ui-progress-review.md`
 §4 for why that merge exists; do not undo it.
 
-#### §11.3.3 — `CollapsibleWarnings`: two-level disclosure, severity-tiered
+#### §11.3.3 — `CollapsibleWarnings`: action-first index, tree as the workspace
 
-**Closed §17 change.** This component previously grouped by a fixed four-way
-*taxonomy* (`dropped-block`/`external-reference`/`conflict`/`other`), with a
-flat `warnings: string[]` behind it. Both the grouping axis and the data shape
-changed: warnings are now structured records (ingestion's `IntegrityWarning`,
-mirrored as `WarningRecord` in `utils/warnings.ts` and orchestrator's
-`dry-run.service.ts`) carrying a `severity` — `auto_fixed` / `needs_review` /
-`pipeline_issue` — alongside the old free-form `kind` string. Severity, not
-kind, is now the primary grouping axis: the single most useful question a
-reviewer has about any given warning is *do I need to act on this at all*,
-which severity answers directly; kind (with its own tip, same as the old
-taxonomy tip) is the specific reason, shown as a sub-header within the open
-severity group, not a second independently-collapsible level. This also
-retires the "four taxonomies are fixed, do not add a fifth without §17" rule
-from the previous revision — `kind` is intentionally an open, string-typed
-vocabulary now (ingestion owns the closed enum, `app.workitem.model.WarningKind`),
-since it can grow without a matching frontend release; `kindMeta`'s fallback
-(`CollapsibleWarnings.tsx`) humanizes an unrecognized kind's own string rather
-than requiring a hardcoded entry to render at all.
+**Closed change.** This section previously specified a severity-tiered
+two-level disclosure (Automatically fixed / Needs your review / Pipeline issue)
+that rendered one *Review "…" →* button per affected item. A single run-level
+warning ("the text synthesis enhancement call failed for 275 items") became 275
+buttons with no guidance on what to do, and nothing ever went down, so a
+reviewer could never tell they were finished. Benchmarked against Search
+Console's issue report, SonarQube's issue workflow, the GOV.UK error summary and
+NN/g's error-message guidance, the problems were: severity and required action mixed on two axes; no
+reviewed state; a second review path that duplicated the tree's own *Needs
+review* filter; and the reason an item was flagged not shown on the item itself.
 
-**Structure: two nested levels of disclosure, never a flat list.**
+**The panel is an index; the tree is the workspace.** The panel never lists
+hundreds of items. It says what happened and what to do, in one compact row per
+warning *kind*, and sends the reviewer to the proposed tree to work through the
+affected items there.
 
-1. **The summary row** — always visible, always collapsed on first render.
-   `ChevronRight`/`ChevronDown`, then `{n} integrity warning(s)`, then a
-   dimmer clause built from the real severity counts present (e.g. *"— 12
-   fixed automatically, 3 need your review"*) instead of the old fixed
-   "document content SURVEY may have dropped or couldn't place" text, which
-   was never accurate for the auto-fixed/pipeline-issue kinds this revision
-   adds. The count is the headline because it is the only thing a reviewer
-   needs before deciding whether to open it.
-2. **Per-severity groups** — inside, one nested disclosure per severity tier
-   that has at least one member. Within an open tier, warnings are grouped by
-   `kind` (a `text-xs font-semibold` sub-header + count, then the tip, then
-   the list) — not independently collapsible, since the severity tier is
-   already the collapse boundary.
+**Groups are by what the reviewer must DO, not by ingestion severity.**
+`severity` (`auto_fixed` / `needs_review` / `pipeline_issue`) stays ingestion's
+and is shown only as "Reported as" in a row's details. The group comes from the
+kind, in `utils/warningKinds.ts` (`KIND_META`), which is the single place a new
+kind's copy and group are declared. A pipeline *failure* that leaves the output
+complete (an optional enhancement call that fell back to the original text) is
+informational; a Requirement that would reach Azure DevOps without its Customer
+ID is not.
 
-| Severity | Glyph | Title | Token family | What it means |
-|---|---|---|---|---|
-| `auto_fixed` | `CircleCheck` | Automatically fixed | `ok` (`bg-ok-soft`/`border-ok-border`/`text-ok-ink`) | Deterministic code already resolved it — a hierarchy repair, a synthesized grouping node, a safe fallback. No action needed. |
-| `needs_review` | `TriangleAlert` | Needs your review | `warning` | An AI/heuristic judgment call — a conflict, low grounding, an invalid reference dropped. Worth a human read. |
-| `pipeline_issue` | `CircleX` | Pipeline issue | `danger` | Something broke or was incomplete for this run — a scoring call failed, a section produced zero items. Re-running (optionally with a different model) is the general fix. |
+| Group | Header tone | Meaning | Default |
+|---|---|---|---|
+| Fix before confirming | `danger` | Would reach Azure DevOps wrong or incomplete | Open |
+| Review | `warning` | A judgment call a human should check | Open |
+| For your information | neutral (`surface-sunken`) | Nothing to do; shown so the reviewer knows what happened | Collapsed (open only when it is all there is) |
 
-Icon/token choice deliberately mirrors `ui/Alert.tsx`'s own
-info/warning/success/error vocabulary (`CircleCheck`/`TriangleAlert`/`CircleX`,
-`ok`/`warning`/`danger` token families) rather than inventing a parallel one.
+An unrecognised kind is grouped by its severity: `auto_fixed` is informational,
+anything else is *Review*, with a humanised title. Legacy plain-string warnings
+(`normalizeWarning`) keep their existing fallback and `legacy` suffix.
 
-**Each warning is an exit, not a dead end.** A `near_duplicate_conflict`
-warning's `[localId: …]` tag is an internal reference for **this run only**
-and is never an ADO work-item number — the copy says so explicitly, because a
-reviewer reading it as a WI number will search ADO for an ID that does not
-exist. Any kind carrying `nodeIds` (not just conflicts) now gets one *Review*
-button per affected item, plus *View WI #N in Azure DevOps* shown only when
-the item genuinely already exists. Two real, closed gaps from the previous
-revision:
+**A row** (`Accordion` over Radix, one open at a time): chevron, title, one-line
+subtitle, a count ("275 items", or "6 sections" for a kind without item ids), and
+one action button. The button is *Fix in tree* / *Review in tree* /
+*Show in tree* (*Compare* for near-duplicates) and filters the tree to that
+kind's items. Opening a row shows **What it means**, **What to do**, **Reported
+as**, and the kind's notices (first three, then *Show N more*).
+`external_reference` keeps its *Add to knowledge base* link. A kind with five or
+fewer affected items also lists them in the details (open the item, or *View WI
+#N in Azure DevOps* when it already exists there); above five there is no list
+at all.
 
-- **Duplicated-looking buttons.** Every button used to read literally "Review
-  item →", so two or three sitting side by side looked like duplicated UI
-  even though each targeted a different item. Each button is now
-  disambiguated with the item's own title (`Review "Power supply efficiency" →`,
-  truncated past 40 chars), via a `titleByLocalId` lookup `JobDetail.tsx`
-  builds the same way it already builds `adoIdByLocalId`. Falls back to
-  `Review item {n} →` only when no title is known for that id.
-- **"Review item" didn't actually go anywhere.** The previous revision's own
-  claim here — "jumps to the node in the diff tree (`setTab('tree')` +
-  `setSelectedId`)" — was never true in effect: neither call scrolled the
-  target into view, expanded a collapsed ancestor, or opened anything.
-  `JobDetail.tsx`'s `onJumpToNode` now also calls `setDialogOpen(true)`,
-  matching `onOpenDetails` exactly, and `DiffTree.tsx` gained two
-  `useEffect`s keyed on `selectedId`: one expands any collapsed ancestor
-  (found via a new unfiltered `allRows` memo, kept separate from the
-  filtered/collapsed `rows` the list actually renders), the other calls
-  `listRef.current.scrollToItem(index, 'center')` once `rows` reflects that
-  expansion. The `.hoverable-row[aria-selected='true']` highlight (`bg-accent-soft`
-  + the accent rail, index.css) already existed and needed no change — the
-  gap was purely that nothing ever scrolled to or expanded the row wearing it.
+**Tree focus.** `JobDetail` holds `focusWarning` (kind, label, item ids),
+ANDed with the existing action/text/*Needs review* filters, and applied to the
+tree, bulk include/exclude and prev/next alike. A chip in the filter bar reads
+"Low grounding: 52 left of 80 ×". While focused, each row shows a reason chip
+(group colour, explained by a `Tooltip`), or *Reviewed*. The *Exclude matching* /
+*Include matching* labels follow the focus.
 
-An `external_reference` group still links straight to the knowledge base.
+**The dialog follows the focus.** Opened from a focused warning, the details
+dialog shows a banner with the kind's title and *What to do*, steps with
+**J** / **K**, and (fix and review groups on a job still awaiting review) offers
+**Mark reviewed and next** (**R**), which moves to the next item still to do,
+wrapping, and closes the dialog when none is left. The keys are ignored while
+typing and with any modifier held.
 
-**Legacy back-compat.** A job persisted before this migration still has a
-literal `string[]` in its `Job.warnings` `Json?` column — no DB migration was
-run. `utils/warnings.ts`'s `normalizeWarning` reclassifies a plain string via
-the OLD prefix-matching rules (`dropped_blocks`/`external_reference`/
-`near_duplicate_conflict`/`other`), always to `severity: 'needs_review'`
-(never `auto_fixed` — defaulting to "no action needed" would suppress
-attention on content nobody actually classified) and tags it `legacy: true`,
-rendered as a dim "(from an older run)" suffix. The exact same function also
-normalizes live in-flight `chunk_warning` narration strings (`JobDetail.tsx`'s
-`liveWarnings`) — `narration_publisher.py`'s wire schema was **not** upgraded
-to carry structured records in this pass (a live warning still arrives as
-plain text while a job is running); doing so is a real, separate follow-up
-that touches the SSE payload shape on both ends.
+**Reviewed state.** Advisory only: **Confirm never reads it**, so it can't change
+what is written to Azure DevOps and never blocks confirming. Stored on the
+job, so it survives a reload and other reviewers see it:
 
-**The expand animation is a grid-rows transition, not a conditional unmount.**
-The body stays mounted at `grid-rows-[0fr]` and animates to `grid-rows-[1fr]`,
-because `grid-template-rows` is transitionable and `height: auto` is not. Keep
-this; it is the reason the disclosure animates at all. It respects §8.1 through
-the global reduced-motion rule.
+- Item-level: `reviewed?: boolean` on each diff entry, set in bulk by
+  `PATCH /jobs/:id/diff/reviewed { localIds, reviewed }`
+  (`JobsService.setDiffEntriesReviewed`, on `mutateDiffVersioned`).
+- Notice-level, for kinds with no items (`zero_nodes`, `dropped_blocks`):
+  `acknowledged?: boolean` on a warning record, set by
+  `PATCH /jobs/:id/warnings/acknowledged { kind, raws?, acknowledged }`. Addressed
+  by kind (and, for a single notice, its exact `raw` text), **not** by array
+  index: the warnings array is also rewritten by a trace-link retry, which would
+  shift indices under a client holding a stale view. `acknowledged` is
+  orchestrator-owned and deliberately not in
+  `shared/schemas/work-item-tree.schema.json`, which is ingestion's output
+  contract.
+- Both endpoints are `diff_ready`-only and version/status-guarded, like every
+  other review-tree mutation.
+
+Only fix and review kinds are trackable. A kind shows *N of M reviewed* with a
+`ProgressBar`, and a **Done** chip when every item is reviewed (or every notice
+acknowledged). The page banner counts the trackable kinds not yet done ("3
+warnings need your attention before you approve") and becomes a success alert
+("All warnings handled. You can approve the diff.") at zero. While a fix/review
+kind is focused, *Hide reviewed* (on by default) drops reviewed items from the
+tree, bulk actions and prev/next, and *Mark all reviewed* marks what is left.
+
+**Marking is optimistic and undoable.** The flag flips at once so stepping
+through dozens of items stays instant. The server's reply is deliberately not
+applied back (with several marks in flight an older reply would overwrite a newer
+flip); a failure reverts only the items that call changed. Every mark shows a
+toast with **Undo** (`ToastProvider`'s `showToast(message, severity, { label,
+onAction })`; at most three toasts are kept).
+
+**Feedback motion** is specified in §8.2.
+
+**Legacy and live warnings.** A job persisted before structured warnings still
+has a `string[]` in `Job.warnings`; `normalizeWarning` reclassifies it
+(`needs_review`, `legacy: true`). A live `chunk_warning` narration arrives as
+plain text and is normalised the same way; neither can be acknowledged, since
+marking is offered only on `diff_ready` jobs and only on structured records.
+
 ### §11.4 — The work-item detail dialog
 
 **Files:** `components/NodeDetailDialog.tsx` (the container),

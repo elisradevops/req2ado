@@ -8,6 +8,9 @@ import {
   getDebugCaptures,
   editDiffEntry,
   setDiffEntryExcluded,
+  setDiffEntriesReviewed,
+  setWarningsAcknowledged,
+  retryEnhancement,
   addDiffEntry,
   moveDiffEntry,
   rescoreDiffEntry,
@@ -59,15 +62,17 @@ import { DestinationBar } from '../components/DestinationBar';
 import { Card } from '../ui/Card';
 import { StatTile } from '../ui/StatTile';
 import { TextField } from '../ui/TextField';
+import { AnimatedNumber } from '../ui/AnimatedNumber';
 import { Select } from '../ui/Select';
 import { CollapsibleWarnings } from '../components/CollapsibleWarnings';
 import { normalizeWarning, type WarningRecord } from '../utils/warnings';
+import { buildKindGroups, kindMeta, kindProgress, type ReasonTone, type RetryablePass } from '../utils/warningKinds';
 import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
 import { isRunDetailStatus, shouldShowTiles, shouldShowTabs, shouldShowFilterBar } from './jobDetailLayout';
-import { FileX2 } from 'lucide-react';
+import { FileX2, X } from 'lucide-react';
 import { EmptyState } from '../ui/EmptyState';
 import { LABEL_MICRO } from '../utils/labelMicro';
 
@@ -77,6 +82,9 @@ import { LABEL_MICRO } from '../utils/labelMicro';
 // convention as SourceProvenance/other single-line previews elsewhere in
 // this app.
 const VALIDATION_MISMATCH_PREVIEW_LENGTH = 80;
+// Items per retry request: one LLM call, and well under the server's cap of
+// 100, so a stop request takes effect within a short wait.
+const RETRY_ENHANCEMENT_BATCH_SIZE = 50;
 
 function truncateForDisplay(text: string): string {
   const collapsed = text.replace(/\s+/g, ' ').trim();
@@ -181,6 +189,19 @@ export function JobDetail(): React.ReactElement {
   const [filterAction, setFilterAction] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
   const [filterFlaggedOnly, setFilterFlaggedOnly] = useState(false);
+  // Set by a warning row's tree button (see CollapsibleWarnings'
+  // onFocusKind): narrows the tree, bulk include/exclude and prev/next to
+  // that warning kind's affected items. Another filter dimension, ANDed
+  // with the three above -- cleared by the chip in the filter bar.
+  const [focusWarning, setFocusWarning] = useState<{ kind: string; label: string; nodeIds: Set<string> } | null>(null);
+  // While a warning is focused, drop items the reviewer already marked so
+  // the tree shows what's left. On by default; the filter bar toggles it.
+  const [hideReviewed, setHideReviewed] = useState(true);
+  // A running "Retry enhancement": which warning kind, and how many of its
+  // items are done. The loop itself lives in handleRetryEnhancement; Stop
+  // flips the ref, which the loop checks between batches.
+  const [retryProgress, setRetryProgress] = useState<{ kind: string; done: number; total: number } | null>(null);
+  const retryCancelRef = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
   // Resolved server-side and embedded directly in the job response (see
@@ -801,6 +822,129 @@ export function JobDetail(): React.ReactElement {
     }
   }
 
+  // Marks items reviewed (or not), optimistically: the flag flips at once so
+  // stepping through dozens of items stays instant. The server's reply is
+  // deliberately NOT applied back -- with several marks in flight, an older
+  // reply would otherwise overwrite a newer flip. On failure only the items
+  // this call changed are put back. `force` skips the "already in that
+  // state" filter, which Undo needs: its closure holds the diff from the
+  // render that created it, not the current one.
+  async function handleSetReviewed(localIds: string[], reviewed: boolean, options?: { force?: boolean }): Promise<void> {
+    if (!id) return;
+    const wanted = new Set(localIds);
+    const changed = options?.force
+      ? localIds
+      : diff.filter((entry) => wanted.has(entry.localId) && !!entry.reviewed !== reviewed).map((entry) => entry.localId);
+    if (changed.length === 0) return;
+    const changedSet = new Set(changed);
+    setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed } : entry)));
+    try {
+      await setDiffEntriesReviewed(id, changed, reviewed);
+      showToast(
+        `${changed.length === 1 ? '1 item' : `${changed.length.toLocaleString()} items`} marked ${reviewed ? 'reviewed' : 'not reviewed'}.`,
+        'success',
+        { label: 'Undo', onAction: () => void handleSetReviewed(changed, !reviewed, { force: true }) },
+      );
+    } catch {
+      setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed: !reviewed } : entry)));
+      showToast('Failed to update review state — please try again.', 'error');
+    }
+  }
+
+  // Marks the open item reviewed and moves to the next one still to do,
+  // wrapping around the focused list. With none left, closes the dialog.
+  function handleMarkSelectedReviewedAndNext(): void {
+    if (!selectedId) return;
+    const currentIndex = filteredForNav.findIndex((entry) => entry.localId === selectedId);
+    const after = currentIndex === -1 ? filteredForNav : [...filteredForNav.slice(currentIndex + 1), ...filteredForNav.slice(0, currentIndex)];
+    const next = after.find((entry) => entry.localId !== selectedId && !entry.reviewed);
+    void handleSetReviewed([selectedId], true);
+    if (next) {
+      setSelectedId(next.localId);
+    } else {
+      setDialogOpen(false);
+    }
+  }
+
+  // Re-runs a failed enhancement pass for the items its warning lists, a
+  // batch at a time (one LLM call each, so no request runs for minutes) and
+  // stops at the first batch error or when the reviewer presses Stop. Items
+  // that fail again are not re-sent within the same run. Each batch's reply
+  // is merged in per item -- the server's version of an enhanced entry, but
+  // this page's own `reviewed` flag, since a reply can predate a mark.
+  async function handleRetryEnhancement(kind: string, batches: { pass: RetryablePass; localIds: string[] }[]): Promise<void> {
+    if (!id || retryProgress) return;
+    const total = batches.reduce((sum, batch) => sum + batch.localIds.length, 0);
+    let done = 0;
+    let enhanced = 0;
+    let failed = 0;
+    let skipped = 0;
+    retryCancelRef.current = false;
+    setRetryProgress({ kind, done, total });
+    try {
+      outer: for (const { pass, localIds } of batches) {
+        for (let start = 0; start < localIds.length; start += RETRY_ENHANCEMENT_BATCH_SIZE) {
+          if (retryCancelRef.current) break outer;
+          const batch = localIds.slice(start, start + RETRY_ENHANCEMENT_BATCH_SIZE);
+          const result = await retryEnhancement(id, { kind, pass, localIds: batch });
+          const serverById = new Map(((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []).map((entry) => [entry.localId, entry]));
+          const enhancedSet = new Set(result.enhanced);
+          setDiff((prev) =>
+            prev.map((entry) => {
+              const server = serverById.get(entry.localId);
+              return enhancedSet.has(entry.localId) && server ? { ...server, reviewed: entry.reviewed } : entry;
+            }),
+          );
+          setWarnings((result.warnings as (WarningRecord | string)[] | null) ?? []);
+          enhanced += result.enhanced.length;
+          failed += result.failed.length;
+          skipped += result.skipped.length;
+          done += batch.length;
+          setRetryProgress({ kind, done, total });
+        }
+      }
+      const stopped = retryCancelRef.current && done < total;
+      showToast(
+        `${stopped ? 'Stopped. ' : ''}${enhanced.toLocaleString()} enhanced` +
+          (failed > 0 ? `, ${failed.toLocaleString()} still failing` : '') +
+          (skipped > 0 ? `, ${skipped.toLocaleString()} left alone (excluded or edited)` : '') +
+          '.',
+        failed > 0 || skipped > 0 || stopped ? 'warning' : 'success',
+      );
+    } catch {
+      showToast(
+        `Retry stopped after ${enhanced.toLocaleString()} enhanced -- the model call failed. Try again, or resubmit the job.`,
+        'error',
+      );
+    } finally {
+      setRetryProgress(null);
+    }
+  }
+
+  // Marks integrity warnings handled. Optimistic, like handleSetReviewed;
+  // a failure puts back each affected record's own prior value.
+  async function handleAcknowledge(kind: string, raws: string[] | undefined, acknowledged: boolean): Promise<void> {
+    if (!id) return;
+    const matches = (warning: WarningRecord | string): warning is WarningRecord =>
+      typeof warning !== 'string' && warning.kind === kind && (!raws || raws.includes(warning.raw));
+    const prior = new Map<string, boolean>();
+    for (const warning of warnings) if (matches(warning)) prior.set(warning.raw, !!warning.acknowledged);
+    if (prior.size === 0) return;
+    setWarnings((prev) => prev.map((warning) => (matches(warning) ? { ...warning, acknowledged } : warning)));
+    try {
+      await setWarningsAcknowledged(id, { kind, raws, acknowledged });
+      showToast(acknowledged ? 'Marked handled.' : 'Marked not handled.', 'success', {
+        label: 'Undo',
+        onAction: () => void handleAcknowledge(kind, raws, !acknowledged),
+      });
+    } catch {
+      setWarnings((prev) =>
+        prev.map((warning) => (matches(warning) ? { ...warning, acknowledged: prior.get(warning.raw) ?? false } : warning)),
+      );
+      showToast('Failed to update — please try again.', 'error');
+    }
+  }
+
   // Sequential, not Promise.all: setDiffEntryExcluded is a read-modify-write
   // against the job's whole dryRunDiff array server-side (jobs.service.ts)
   // -- concurrent calls would race and drop updates, not just be slower.
@@ -811,6 +955,7 @@ export function JobDetail(): React.ReactElement {
       (entry) =>
         matchesDiffFilter(entry, filterAction, query) &&
         (!filterFlaggedOnly || isFlaggedDiffEntry(entry)) &&
+        (!focusVisibleIds || focusVisibleIds.has(entry.localId)) &&
         !!entry.excluded !== excluded,
     );
     if (targets.length === 0) return;
@@ -1094,6 +1239,55 @@ export function JobDetail(): React.ReactElement {
     return result;
   }, [diff]);
 
+  // Reviewer progress, from the server-persisted flag on each diff entry.
+  const reviewedIds = useMemo(() => new Set(diff.filter((entry) => entry.reviewed).map((entry) => entry.localId)), [diff]);
+
+  // Counted per warning TYPE (one row each in the panel), not per record:
+  // "3 warnings need your attention" must match the 3 rows to fix or review.
+  // Kinds that need nothing from the reviewer (group 'info') never count,
+  // and neither does one the reviewer has finished.
+  const warningKindGroups = useMemo(() => buildKindGroups(mergedWarnings), [mergedWarnings]);
+  const trackableKinds = useMemo(() => warningKindGroups.filter((entry) => entry.group !== 'info'), [warningKindGroups]);
+  const actionableWarningCount = trackableKinds.filter((entry) => !kindProgress(entry, reviewedIds).complete).length;
+
+  // Whether the focused warning is one the reviewer works through (fix or
+  // review) rather than an informational one with nothing to mark.
+  const focusReviewable = !!focusWarning && kindMeta(focusWarning.kind).group !== 'info';
+
+  // The focused warning's items still to be shown: its own set, minus the
+  // ones already reviewed while "hide reviewed" is on. Drives the tree, the
+  // bulk include/exclude and prev/next, so all three agree on the list.
+  const focusVisibleIds = useMemo(() => {
+    if (!focusWarning) return undefined;
+    if (!hideReviewed || !focusReviewable) return focusWarning.nodeIds;
+    return new Set([...focusWarning.nodeIds].filter((localId) => !reviewedIds.has(localId)));
+  }, [focusWarning, focusReviewable, hideReviewed, reviewedIds]);
+  const focusReviewedCount = focusWarning ? [...focusWarning.nodeIds].filter((localId) => reviewedIds.has(localId)).length : 0;
+
+  // Per-item reason shown as a chip on tree rows while a warning is
+  // focused -- or that it's already reviewed.
+  const reasonByLocalId = useMemo(() => {
+    if (!focusWarning) return undefined;
+    const meta = kindMeta(focusWarning.kind);
+    const result: Record<string, { chip: string; tip: string; group: ReasonTone }> = {};
+    for (const localId of focusWarning.nodeIds) {
+      result[localId] =
+        focusReviewable && reviewedIds.has(localId)
+          ? { chip: 'Reviewed', tip: 'You marked this reviewed.', group: 'done' }
+          : { chip: meta.chip, tip: meta.means, group: meta.group };
+    }
+    return result;
+  }, [focusWarning, focusReviewable, reviewedIds]);
+
+  // Banner for the details dialog: only while the open item is one of the
+  // focused warning's own items (a reviewer who stepped outside the set, or
+  // opened an unrelated row, shouldn't see a stale reason).
+  const dialogReason = useMemo(() => {
+    if (!focusWarning || !selectedId || !focusWarning.nodeIds.has(selectedId)) return null;
+    const meta = kindMeta(focusWarning.kind);
+    return { title: meta.title, todo: meta.todo, group: meta.group };
+  }, [focusWarning, selectedId]);
+
   // Backs the toolbar's "Needs review" chip -- see isFlaggedDiffEntry.
   const flaggedCount = useMemo(() => diff.filter((entry) => isFlaggedDiffEntry(entry)).length, [diff]);
 
@@ -1104,8 +1298,10 @@ export function JobDetail(): React.ReactElement {
   // prev/next is an acceptable simplification, not a correctness bug.
   const filteredForNav = useMemo(() => {
     const query = filterText.trim().toLowerCase();
-    return diff.filter((entry) => matchesDiffFilter(entry, filterAction, query));
-  }, [diff, filterAction, filterText]);
+    return diff.filter(
+      (entry) => matchesDiffFilter(entry, filterAction, query) && (!focusVisibleIds || focusVisibleIds.has(entry.localId)),
+    );
+  }, [diff, filterAction, filterText, focusVisibleIds]);
 
   function handleNavigateDialog(direction: 'prev' | 'next'): void {
     const currentIndex = filteredForNav.findIndex((entry) => entry.localId === selectedId);
@@ -1178,14 +1374,16 @@ export function JobDetail(): React.ReactElement {
     if (chunk) stepSubLabelByKey.analyze = formatDeterministicSubtreePassSubLabel(chunk);
   }
 
-  // Real gap this closes (confirmed live): a warning needing a real
-  // decision (severity needs_review/pipeline_issue) carried the same
-  // visual weight as the figure-descriptions row below it -- a plain
-  // collapsed accordion, easy to scroll past. auto_fixed warnings don't
-  // need this -- nothing for the user to actually do about those.
-  const actionableWarningCount = mergedWarnings.filter(
-    (w) => w.severity === 'needs_review' || w.severity === 'pipeline_issue',
-  ).length;
+  // Review controls for the open item: only while a fix/review warning is
+  // focused, the item belongs to it, and the job still accepts marking.
+  const dialogReview =
+    focusReviewable && focusWarning && selectedId && focusWarning.nodeIds.has(selectedId) && status === 'diff_ready'
+      ? {
+          reviewed: reviewedIds.has(selectedId),
+          onMark: handleMarkSelectedReviewedAndNext,
+          onUnmark: () => void handleSetReviewed([selectedId], false),
+        }
+      : null;
 
   return (
     // px-2 lives on this one outer container -- every child below relies on
@@ -1406,17 +1604,22 @@ export function JobDetail(): React.ReactElement {
         <Alert severity="warning" className="mb-4">
           <div className="flex flex-wrap items-center justify-between gap-2.5">
             <span>
-              {actionableWarningCount} integrity warning{actionableWarningCount === 1 ? '' : 's'} need
-              {actionableWarningCount === 1 ? 's' : ''} your review.
+              <AnimatedNumber value={actionableWarningCount} /> warning{actionableWarningCount === 1 ? '' : 's'} need
+              {actionableWarningCount === 1 ? 's' : ''} your attention before you approve.
             </span>
             <button
               type="button"
               onClick={() => document.getElementById('integrity-warnings')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               className="flex-none rounded-sm border border-warning-border bg-surface px-2.5 py-1 text-xs font-medium text-warning-ink hover:border-current"
             >
-              Review now
+              Go to warnings
             </button>
           </div>
+        </Alert>
+      )}
+      {actionableWarningCount === 0 && trackableKinds.length > 0 && (
+        <Alert severity="success" className="mb-4">
+          All warnings handled. You can approve the diff.
         </Alert>
       )}
       {status === 'pending' && (
@@ -1439,6 +1642,29 @@ export function JobDetail(): React.ReactElement {
       <div id="integrity-warnings">
         <CollapsibleWarnings
           warnings={mergedWarnings}
+          focusedKind={focusWarning?.kind ?? null}
+          reviewedIds={reviewedIds}
+          // Marking is advisory review state on a still-editable job; once
+          // the job leaves diff_ready the server refuses it.
+          onAcknowledge={status === 'diff_ready' ? handleAcknowledge : undefined}
+          onRetryEnhancement={status === 'diff_ready' ? handleRetryEnhancement : undefined}
+          onCancelRetry={() => {
+            retryCancelRef.current = true;
+          }}
+          retryProgress={retryProgress}
+          onFocusKind={(kind, nodeIds, label) => {
+            // Narrow the tree to this warning's items and bring it into
+            // view. A prior name/action filter would silently hide some of
+            // the items the row's count promises, so those are reset.
+            setFocusWarning({ kind, label, nodeIds: new Set(nodeIds) });
+            setFilterAction(null);
+            setFilterText('');
+            setFilterFlaggedOnly(false);
+            setTab('tree');
+            requestAnimationFrame(() =>
+              document.getElementById('proposed-tree')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+            );
+          }}
           onJumpToNode={(localId) => {
             // Matches onOpenDetails below exactly -- previously this only
             // switched tabs and set selection, which (a) never scrolled the
@@ -1486,7 +1712,7 @@ export function JobDetail(): React.ReactElement {
           ]}
         >
           {tab === 'tree' ? (
-            <div className="pt-3">
+            <div id="proposed-tree" className="pt-3">
               <Card>
                 {/* DESIGN.md §11.5 -- the artifact's persistent "+ New item"
                     toolbar button, previously missing entirely: creation
@@ -1507,7 +1733,7 @@ export function JobDetail(): React.ReactElement {
                     />
                   </div>
                 )}
-                {showFilterBar && (
+                {(showFilterBar || focusWarning) && (
                   <div className="flex flex-wrap gap-2 border-b border-hairline p-3">
                     <TextField
                       placeholder="Filter by title…"
@@ -1535,37 +1761,89 @@ export function JobDetail(): React.ReactElement {
                         ⚠ Needs review · {flaggedCount}
                       </button>
                     )}
+                    {focusWarning && (
+                      <span className="flex items-center gap-1.5 rounded-full border border-accent-soft-border bg-accent-soft py-1 pl-2.5 pr-1 text-xs font-medium text-accent-ink">
+                        {focusWarning.label}:{' '}
+                        {focusReviewable ? (
+                          <>
+                            <AnimatedNumber value={focusWarning.nodeIds.size - focusReviewedCount} /> left of{' '}
+                            {focusWarning.nodeIds.size.toLocaleString()}
+                          </>
+                        ) : (
+                          `${focusWarning.nodeIds.size.toLocaleString()} ${focusWarning.nodeIds.size === 1 ? 'item' : 'items'}`
+                        )}
+                        <button
+                          type="button"
+                          aria-label="Clear warning filter"
+                          onClick={() => setFocusWarning(null)}
+                          className="grid h-[18px] w-[18px] place-items-center rounded-full hover:bg-accent-soft-border"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    )}
+                    {focusWarning && focusReviewable && (
+                      <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink-2">
+                        <input
+                          type="checkbox"
+                          checked={hideReviewed}
+                          onChange={(e) => setHideReviewed(e.target.checked)}
+                          className="h-3.5 w-3.5 accent-accent"
+                        />
+                        Hide reviewed
+                      </label>
+                    )}
+                    {focusWarning && focusReviewable && status === 'diff_ready' && focusReviewedCount < focusWarning.nodeIds.size && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void handleSetReviewed([...focusWarning.nodeIds], true)}
+                      >
+                        Mark all reviewed
+                      </Button>
+                    )}
                     {status === 'diff_ready' && (
                       <div className="ml-auto flex gap-2">
                         <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(true)} disabled={isDiffMutating}>
-                          Exclude {filterAction || filterText || filterFlaggedOnly ? 'matching' : 'all'}
+                          Exclude {filterAction || filterText || filterFlaggedOnly || focusWarning ? 'matching' : 'all'}
                         </Button>
                         <Button size="sm" variant="ghost" onClick={() => handleBulkExclude(false)} disabled={isDiffMutating}>
-                          Include {filterAction || filterText || filterFlaggedOnly ? 'matching' : 'all'}
+                          Include {filterAction || filterText || filterFlaggedOnly || focusWarning ? 'matching' : 'all'}
                         </Button>
                       </div>
                     )}
                   </div>
                 )}
-                <DiffTree
-                  entries={diff}
-                  selectedId={selectedId}
-                  onSelect={setSelectedId}
-                  onOpenDetails={(localId) => {
-                    setSelectedId(localId);
-                    setDialogOpen(true);
-                  }}
-                  filterAction={filterAction}
-                  filterText={filterText}
-                  filterFlaggedOnly={filterFlaggedOnly}
-                  onToggleExclude={handleToggleExclude}
-                  typeCatalog={typeCatalog ?? undefined}
-                  categoryLabels={categoryLabels ?? undefined}
-                  orgUrl={orgUrl}
-                  project={teamProject}
-                  onMove={handleMoveEntry}
-                  canMove={status === 'diff_ready'}
-                />
+                {focusWarning && focusVisibleIds && focusVisibleIds.size === 0 ? (
+                  <div className="flex flex-col items-center gap-2.5 p-8 text-center text-sm text-ink-2">
+                    <span>All {focusWarning.nodeIds.size.toLocaleString()} items reviewed.</span>
+                    <Button size="sm" variant="outline" onClick={() => setFocusWarning(null)}>
+                      Show the full tree
+                    </Button>
+                  </div>
+                ) : (
+                  <DiffTree
+                    entries={diff}
+                    selectedId={selectedId}
+                    onSelect={setSelectedId}
+                    onOpenDetails={(localId) => {
+                      setSelectedId(localId);
+                      setDialogOpen(true);
+                    }}
+                    filterAction={filterAction}
+                    filterText={filterText}
+                    filterFlaggedOnly={filterFlaggedOnly}
+                    focusNodeIds={focusVisibleIds}
+                    reasonByLocalId={reasonByLocalId}
+                    onToggleExclude={handleToggleExclude}
+                    typeCatalog={typeCatalog ?? undefined}
+                    categoryLabels={categoryLabels ?? undefined}
+                    orgUrl={orgUrl}
+                    project={teamProject}
+                    onMove={handleMoveEntry}
+                    canMove={status === 'diff_ready'}
+                  />
+                )}
               </Card>
               <NodeDetailDialog
                 open={dialogOpen}
@@ -1591,6 +1869,8 @@ export function JobDetail(): React.ReactElement {
                 onNavigate={handleNavigateDialog}
                 hasPrev={hasPrevEntry}
                 hasNext={hasNextEntry}
+                reason={dialogReason}
+                review={dialogReview}
                 typeCatalog={typeCatalog ?? undefined}
                 categoryLabels={categoryLabels ?? undefined}
                 requirementClassificationField={requirementClassificationField}

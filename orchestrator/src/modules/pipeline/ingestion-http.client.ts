@@ -250,6 +250,47 @@ export class IngestionHttpClient {
     };
   }
 
+  // Post-hoc retry of one optional enhancement pass for a handful of items
+  // that failed during the run (see ingestion's POST /enhance-items). Each
+  // returned id carries only the fields the pass is allowed to change;
+  // `omitted` lists ids the model returned nothing usable for. A non-2xx
+  // (including the 502 ingestion uses for a failed LLM call) throws.
+  async enhanceItems(
+    enhancementPass: 'title_tag' | 'synthesis',
+    items: { id: string; text: string; type: string; context: string }[],
+    userId?: string | null,
+    model?: string | null,
+  ): Promise<{
+    results: Record<string, { title?: string; tags?: string[]; description?: string; groundingScore?: number }>;
+    omitted: string[];
+  }> {
+    const response = await fetch(`${this.baseUrl}/enhance-items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enhancement_pass: enhancementPass, items, user_id: userId ?? null, model: model ?? null }),
+    });
+    if (!response.ok) {
+      throw new IngestionHttpError(response.status, `Ingestion /enhance-items request failed: ${await _readErrorDetail(response)}`);
+    }
+    const body = (await response.json()) as {
+      results: Record<
+        string,
+        { title: string | null; tags: string[] | null; description: string | null; grounding_score: number | null }
+      >;
+      omitted: string[];
+    };
+    const results: Record<string, { title?: string; tags?: string[]; description?: string; groundingScore?: number }> = {};
+    for (const [id, entry] of Object.entries(body.results)) {
+      results[id] = {
+        ...(entry.title != null ? { title: entry.title } : {}),
+        ...(entry.tags != null ? { tags: entry.tags } : {}),
+        ...(entry.description != null ? { description: entry.description } : {}),
+        ...(entry.grounding_score != null ? { groundingScore: entry.grounding_score } : {}),
+      };
+    }
+    return { results, omitted: body.omitted };
+  }
+
   // title: blended 50/50 with the description embedding on the ingestion
   // side -- description alone can't separate "same requirement, reworded"
   // from "different requirement, same topic" (confirmed real miss: a true

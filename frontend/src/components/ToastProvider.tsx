@@ -4,14 +4,23 @@ import { X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { SEVERITY_ICON, type Severity } from '../ui/severityIcons';
 
+export interface ToastAction {
+  label: string;
+  onAction: () => void;
+}
+
 interface ToastItem {
   id: number;
   message: string;
   severity: Severity;
+  action?: ToastAction;
 }
 
 interface ToastContextValue {
-  showToast: (message: string, severity: Severity) => void;
+  // `action` adds one button to the toast (e.g. "Undo" after a review
+  // mark). Clicking it runs onAction and dismisses the toast. A toast with
+  // an action stays up longer, since the user needs time to reach it.
+  showToast: (message: string, severity: Severity, action?: ToastAction) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -39,12 +48,18 @@ const SEVERITY_BORDER_CLASS: Record<Severity, string> = {
 
 let nextToastId = 0;
 
+const DEFAULT_TOAST_DURATION_MS = 4400;
+const ACTION_TOAST_DURATION_MS = 7000;
+const MAX_VISIBLE_TOASTS = 3;
+
 export function ToastProvider({ children }: { children: ReactNode }): React.ReactElement {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
-  const showToast = useCallback((message: string, severity: Severity) => {
+  const showToast = useCallback((message: string, severity: Severity, action?: ToastAction) => {
     const id = nextToastId++;
-    setToasts((prev) => [...prev, { id, message, severity }]);
+    // Capped so a run of quick actions (each leaving an Undo toast) can't
+    // pile a tall stack of toasts over the page -- the oldest drops first.
+    setToasts((prev) => [...prev, { id, message, severity, action }].slice(-MAX_VISIBLE_TOASTS));
   }, []);
 
   const dismiss = useCallback((id: number) => {
@@ -61,12 +76,13 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
   return (
     <ToastContext.Provider value={contextValue}>
       {children}
-      <RadixToast.Provider swipeDirection="right" duration={4400}>
+      <RadixToast.Provider swipeDirection="right" duration={DEFAULT_TOAST_DURATION_MS}>
         {toasts.map((toast) => {
           const Icon = SEVERITY_ICON[toast.severity];
           return (
             <RadixToast.Root
               key={toast.id}
+              duration={toast.action ? ACTION_TOAST_DURATION_MS : undefined}
               onOpenChange={(open) => {
                 if (!open) dismiss(toast.id);
               }}
@@ -77,6 +93,15 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
             >
               <Icon className={cn('mt-0.5 h-4 w-4 flex-none', SEVERITY_ICON_CLASS[toast.severity])} />
               <RadixToast.Description className="flex-1">{toast.message}</RadixToast.Description>
+              {toast.action && (
+                <RadixToast.Action
+                  altText={`${toast.action.label}: ${toast.message}`}
+                  onClick={toast.action.onAction}
+                  className="flex-none rounded-sm px-1.5 py-0.5 text-sm font-semibold text-accent-on-dark hover:bg-white/10"
+                >
+                  {toast.action.label}
+                </RadixToast.Action>
+              )}
               <RadixToast.Close aria-label="Dismiss" className="flex-none text-ink-on-dark-dim hover:text-white">
                 <X className="h-3.5 w-3.5" />
               </RadixToast.Close>

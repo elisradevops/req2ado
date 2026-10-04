@@ -32,7 +32,8 @@ import { ActionBadge } from './ActionBadge';
 import { WorkItemTypeBadge } from './WorkItemTypeBadge';
 import { Checkbox } from '../ui/Checkbox';
 import { Chip } from '../ui/Chip';
-import { InfoTip } from '../ui/Tooltip';
+import { InfoTip, Tooltip } from '../ui/Tooltip';
+import type { ReasonTone } from '../utils/warningKinds';
 import type { WorkItemTypeCatalogEntry } from '../api/ado';
 
 // Rows are now pure information (exclude toggle, index, type+title,
@@ -134,6 +135,8 @@ export interface DryRunDiffEntry {
   qualityStale?: boolean;
   childType?: string | null;
   excluded?: boolean;
+  // Advisory "reviewer has checked this" flag -- see JobsService.setDiffEntriesReviewed.
+  reviewed?: boolean;
   isManual?: boolean;
   traceLinks?: {
     sourceLocalId: string;
@@ -384,6 +387,8 @@ export function DiffTree({
   filterAction,
   filterText,
   filterFlaggedOnly = false,
+  focusNodeIds,
+  reasonByLocalId,
   onToggleExclude,
   typeCatalog,
   categoryLabels,
@@ -408,6 +413,14 @@ export function DiffTree({
   // filterAction/filterText, a separate filter dimension from action-type
   // filtering, not a value inside filterAction's own vocabulary.
   filterFlaggedOnly?: boolean;
+  // Restricts the tree to one integrity warning's affected items (see
+  // JobDetail's focusWarning) -- ANDed with the filters above. A Set of
+  // localIds; undefined means no warning focus.
+  focusNodeIds?: Set<string>;
+  // Why each focused row is listed (the warning kind's short chip label,
+  // its explanation, and its group colour). Rendered as a chip after the
+  // title, only while a warning is focused.
+  reasonByLocalId?: Record<string, { chip: string; tip: string; group: ReasonTone }>;
   onToggleExclude: (localId: string, excluded: boolean) => void;
   // Real per-project work-item-type colors/icons, when available (see
   // useWorkItemTypeCatalog) -- undefined falls back to WorkItemTypeBadge's
@@ -456,7 +469,7 @@ export function DiffTree({
     });
   }, []);
 
-  const isFiltering = !!filterAction || !!filterText || filterFlaggedOnly;
+  const isFiltering = !!filterAction || !!filterText || filterFlaggedOnly || !!focusNodeIds;
 
   // Unfiltered/uncollapsed rows -- kept separate from `rows` below so the
   // selectedId-driven effects further down can find a target's real
@@ -469,13 +482,14 @@ export function DiffTree({
     return allRows.filter((row) => {
       if (!matchesDiffFilter({ action: row.entry.action, title: row.entry.title, index: row.index }, filterAction, query)) return false;
       if (filterFlaggedOnly && !isFlaggedDiffEntry(row.entry)) return false;
+      if (focusNodeIds && !focusNodeIds.has(row.entry.localId)) return false;
       // A search/filter in progress auto-expands -- hiding a real match
       // under a collapsed ancestor would look like the filter silently
       // missed it. Collapse state only applies when browsing unfiltered.
       if (isFiltering) return true;
       return !row.ancestorIds.some((ancestorId) => collapsedIds.has(ancestorId));
     });
-  }, [allRows, filterAction, filterText, filterFlaggedOnly, isFiltering, collapsedIds]);
+  }, [allRows, filterAction, filterText, filterFlaggedOnly, focusNodeIds, isFiltering, collapsedIds]);
 
   const indexColumnWidth = useIndexColumnWidth(allRows);
   const statusColumnWidth = useStatusColumnWidth(entries);
@@ -751,6 +765,7 @@ export function DiffTree({
             {({ index, style }) => (
               <DiffTreeRow
                 row={rows[index]}
+                reason={reasonByLocalId?.[rows[index].entry.localId]}
                 style={style}
                 selectedId={selectedId}
                 onSelect={onSelect}
@@ -779,8 +794,16 @@ export function DiffTree({
   );
 }
 
+const REASON_CHIP_COLORS: Record<ReasonTone, { bg: string; color: string; borderClass: string }> = {
+  fix: { bg: 'var(--color-danger-soft)', color: 'var(--color-danger-ink)', borderClass: 'border-danger-border' },
+  review: { bg: 'var(--color-warning-soft)', color: 'var(--color-warning-ink)', borderClass: 'border-warning-border' },
+  info: { bg: 'var(--color-surface-sunken)', color: 'var(--color-ink-2)', borderClass: 'border-hairline-strong' },
+  done: { bg: 'var(--color-ok-soft)', color: 'var(--color-ok-ink)', borderClass: 'border-ok-border' },
+};
+
 function DiffTreeRow({
   row,
+  reason,
   style,
   selectedId,
   onSelect,
@@ -802,6 +825,7 @@ function DiffTreeRow({
   justCompletedDragRef,
 }: {
   row: FlatRow;
+  reason?: { chip: string; tip: string; group: ReasonTone };
   style: React.CSSProperties;
   selectedId: string | null;
   onSelect: (localId: string) => void;
@@ -1070,6 +1094,18 @@ function DiffTreeRow({
             >
               same tier
             </Chip>
+          )}
+          {reason && (
+            <Tooltip content={reason.tip}>
+              <Chip
+                tabIndex={0}
+                bg={REASON_CHIP_COLORS[reason.group].bg}
+                color={REASON_CHIP_COLORS[reason.group].color}
+                className={cn('flex-none border', REASON_CHIP_COLORS[reason.group].borderClass)}
+              >
+                {reason.chip}
+              </Chip>
+            </Tooltip>
           )}
           {parentIsExcluded && !entry.excluded && (
             <span
