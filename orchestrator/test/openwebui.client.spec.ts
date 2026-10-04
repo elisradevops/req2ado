@@ -318,6 +318,101 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
   });
 
+  describe('responseSchema present -- precise classifiers must win over the catch-all schema-less fallback', () => {
+    // Exact production error (Elbichat/claude-opus-4-8 via LiteLLM). Regression
+    // for the SURVEY Score-phase stall: isSchemaRejection matches ANY 400, so
+    // with a responseSchema it used to retry schema-less at the SAME rejected
+    // temperature=0, and throw the retry's raw APIError (HTTP 500).
+    const tempMsg =
+      '400 litellm.UnsupportedParamsError: claude-opus-4-8 does not support temperature=0. Only temperature=1 is supported.';
+    const tempRejection = () => new OpenAI.APIError(400, { message: tempMsg }, tempMsg, {} as any);
+    const schema = { name: 'hierarchy', schema: { type: 'array' } };
+
+    it('chat() retries with temperature 1 and KEEPS response_format', async () => {
+      const client = new OpenWebUiClient(config);
+      const fakeCreate = jest
+        .fn()
+        .mockRejectedValueOnce(tempRejection())
+        .mockResolvedValueOnce({ choices: [{ message: { content: '[]' } }] });
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      const result = await client.chat([{ role: 'user', content: 'hi' }], { temperature: 0, responseSchema: schema });
+
+      expect(result.content).toBe('[]');
+      expect(fakeCreate).toHaveBeenCalledTimes(2);
+      expect(fakeCreate.mock.calls[1][0]).toHaveProperty('temperature', 1);
+      expect(fakeCreate.mock.calls[1][0]).toHaveProperty('response_format');
+    });
+
+    it('streamChat() retries with temperature 1 and KEEPS response_format', async () => {
+      const client = new OpenWebUiClient(config);
+      async function* fakeStream() {
+        yield { choices: [{ delta: { content: 'ok' } }] };
+      }
+      const fakeCreate = jest.fn().mockRejectedValueOnce(tempRejection()).mockResolvedValueOnce(fakeStream());
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      const chunks: string[] = [];
+      for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }], { temperature: 0, responseSchema: schema })) {
+        if (chunk.content) chunks.push(chunk.content);
+      }
+
+      expect(chunks).toEqual(['ok']);
+      expect(fakeCreate).toHaveBeenCalledTimes(2);
+      expect(fakeCreate.mock.calls[1][0]).toHaveProperty('temperature', 1);
+      expect(fakeCreate.mock.calls[1][0]).toHaveProperty('response_format');
+    });
+
+    it('vision() retries with temperature 1 and KEEPS response_format', async () => {
+      const client = new OpenWebUiClient({ ...config, LLM_VISION_TEMPERATURE: 0 });
+      const fakeCreate = jest
+        .fn()
+        .mockRejectedValueOnce(tempRejection())
+        .mockResolvedValueOnce({ choices: [{ message: { content: 'A diagram.' } }] });
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      const result = await client.vision('describe', [Buffer.from('img')], { responseSchema: schema });
+
+      expect(result).toBe('A diagram.');
+      expect(fakeCreate).toHaveBeenCalledTimes(2);
+      expect(fakeCreate.mock.calls[0][0]).toHaveProperty('temperature', 0);
+      expect(fakeCreate.mock.calls[1][0]).toHaveProperty('temperature', 1);
+      expect(fakeCreate.mock.calls[1][0]).toHaveProperty('response_format');
+    });
+
+    it('chat() drops an unsupported seed on retry and KEEPS response_format', async () => {
+      const client = new OpenWebUiClient({ ...config, LLM_SEND_SEED: true });
+      const msg = "azure does not support parameters: ['seed']";
+      const fakeCreate = jest
+        .fn()
+        .mockRejectedValueOnce(new OpenAI.APIError(400, { message: msg }, msg, {} as any))
+        .mockResolvedValueOnce({ choices: [{ message: { content: '[]' } }] });
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      await client.chat([{ role: 'user', content: 'hi' }], { seed: 42, responseSchema: schema });
+
+      expect(fakeCreate).toHaveBeenCalledTimes(2);
+      expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('seed');
+      expect(fakeCreate.mock.calls[1][0]).toHaveProperty('response_format');
+    });
+
+    it('chat() surfaces a failed temperature retry as UpstreamHttpError(400), not a raw APIError (no 500 -> ingestion retry loop)', async () => {
+      const client = new OpenWebUiClient(config);
+      const fakeCreate = jest.fn().mockRejectedValue(tempRejection());
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { temperature: 0, responseSchema: schema }),
+      ).rejects.toMatchObject({ name: 'UpstreamHttpError', upstreamStatus: 400 });
+      expect(fakeCreate).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('chat() retries with the required temperature on Azure\'s "does not support N ... default (M)" wording (confirmed live against OpenAI/gpt-5.5)', async () => {
     // Exact production error string (Elbichat/gpt-5.5 via LiteLLM) -- this
     // wording is distinct from both the ">= 1 and <= 1" range pattern and
