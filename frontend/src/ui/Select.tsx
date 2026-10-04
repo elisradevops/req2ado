@@ -3,6 +3,7 @@ import { Select as RadixSelect } from 'radix-ui';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { FieldShell } from './FieldShell';
+import { Spinner } from './Spinner';
 
 // Radix's Select.Item forbids an empty-string value (it reserves '' to mean
 // "nothing selected" internally) -- but this app's callers all pass native
@@ -40,12 +41,15 @@ export const Select = forwardRef<
     value?: string;
     defaultValue?: string;
     disabled?: boolean;
+    // True while the options are still being fetched: the trigger is
+    // disabled and says so, instead of opening an empty list.
+    loading?: boolean;
     'aria-label'?: string;
     onChange?: (event: { target: { value: string; name?: string } }) => void;
     children?: ReactNode;
   }
 >(function Select(
-  { label, labelExtra, helperText, fullWidth, className, id, name, value, defaultValue, disabled, onChange, children, ...rest },
+  { label, labelExtra, helperText, fullWidth, className, id, name, value, defaultValue, disabled, loading, onChange, children, ...rest },
   ref,
 ) {
   const generatedId = useId();
@@ -71,7 +75,7 @@ export const Select = forwardRef<
         value={toRadixValue(value)}
         defaultValue={toRadixValue(defaultValue)}
         onValueChange={handleValueChange}
-        disabled={disabled}
+        disabled={disabled || loading}
         name={name}
       >
         <RadixSelect.Trigger
@@ -94,7 +98,13 @@ export const Select = forwardRef<
               longer than the trigger (e.g. a long model name in a narrow
               picker) overflows raw instead of ellipsizing. */}
           <span className="min-w-0 flex-1 truncate text-left">
-            <RadixSelect.Value />
+            {loading ? (
+              <span className="flex items-center gap-1.5 text-ink-3">
+                <Spinner /> Loading…
+              </span>
+            ) : (
+              <RadixSelect.Value />
+            )}
           </span>
           <RadixSelect.Icon>
             <ChevronDown className="h-3.5 w-3.5 flex-none text-ink-3" />

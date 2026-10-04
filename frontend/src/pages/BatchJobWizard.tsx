@@ -40,15 +40,23 @@ export function BatchJobWizard(): React.ReactElement {
   const [iterationPath, setIterationPath] = useState('');
   const [model, setModel] = useState('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(false);
   const isSubmittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const hasAdoSession = !!orgUrl;
 
   useEffect(() => {
     if (mode !== 'survey' || availableModels.length > 0) return;
+    setModelsLoading(true);
+    setModelsError(false);
     listModels()
       .then(setAvailableModels)
-      .catch(() => setAvailableModels([]));
+      .catch(() => {
+        setAvailableModels([]);
+        setModelsError(true);
+      })
+      .finally(() => setModelsLoading(false));
   }, [mode, availableModels.length]);
 
   useEffect(() => {
@@ -151,7 +159,15 @@ export function BatchJobWizard(): React.ReactElement {
                 submitting -- see the doc comment above ModeCards' own
                 estimate props for why '--' is the honest state here, not a
                 locally-approximated number). */}
-            <ModeCards value={mode} onChange={setMode} model={model} onModelChange={setModel} availableModels={availableModels} />
+            <ModeCards
+              value={mode}
+              onChange={setMode}
+              model={model}
+              onModelChange={setModel}
+              availableModels={availableModels}
+              modelsLoading={modelsLoading}
+              modelsError={modelsError}
+            />
           </SectionCard>
           {mode === 'survey' && (
             <Alert severity="warning">

@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getProjects, type AdoProject } from '../api/ado';
 import { useToast } from './ToastProvider';
-import { Select } from '../ui/Select';
+import { Combobox } from '../ui/Combobox';
 
 export function ProjectPicker({
   value,
@@ -11,32 +11,59 @@ export function ProjectPicker({
   onChange: (name: string) => void;
 }): React.ReactElement {
   const [projects, setProjects] = useState<AdoProject[]>([]);
+  const [loading, setLoading] = useState(true);
+  // The text in the box. Distinct from `value`: a team project must be one
+  // of the fetched names, so `value` only ever holds an exact match (or '')
+  // while the box holds whatever the user is mid-typing.
+  const [query, setQuery] = useState(value);
   const { showToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
     getProjects()
       .then((result) => {
-        if (!cancelled) setProjects(result);
+        if (!cancelled) {
+          setProjects([...result].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })));
+        }
       })
       .catch(() => {
         if (!cancelled) showToast('Failed to load team projects.', 'error');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, [showToast]);
 
+  // Keep the box in step with a value the parent sets directly; never
+  // clobber what the user is typing when the parent's value is just ''.
+  useEffect(() => {
+    if (value) setQuery(value);
+  }, [value]);
+
+  const names = useMemo(() => projects.map((project) => project.name), [projects]);
+
+  function handleChange(text: string): void {
+    setQuery(text);
+    const match = projects.find((project) => project.name.toLowerCase() === text.trim().toLowerCase());
+    onChange(match ? match.name : '');
+  }
+
+  const unresolved = !loading && query.trim() !== '' && !value;
+
   return (
-    <Select label="Team Project" value={value} onChange={(event) => onChange(event.target.value)} fullWidth>
-      <option value="" disabled>
-        Select a project
-      </option>
-      {projects.map((project) => (
-        <option key={project.id} value={project.name}>
-          {project.name}
-        </option>
-      ))}
-    </Select>
+    <Combobox
+      label="Team Project"
+      value={query}
+      onChange={handleChange}
+      options={names}
+      loading={loading}
+      placeholder="Select or type a project"
+      emptyText="No matching team project."
+      helperText={unresolved ? 'Pick a project from the list' : undefined}
+      fullWidth
+    />
   );
 }

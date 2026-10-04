@@ -601,6 +601,7 @@ export function Settings(): React.ReactElement {
           value={llmChatModel}
           onChange={(e) => setLlmChatModel(e.target.value)}
           disabled={llmPickerModels.length === 0}
+          loading={isLoadingLlmModels}
           fullWidth
         >
           <option value="">Select a model…</option>

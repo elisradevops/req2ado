@@ -911,6 +911,74 @@ describe('ProgressBanner', () => {
     expect(screen.getAllByText(/\d+s ago/i).length).toBeGreaterThan(0);
   });
 
+  it('resets the "last update" counter on a new event even when the 50-event cap keeps the list length constant', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-09T10:30:00Z'));
+    const makeEvent = (i: number): NarrationEvent => ({
+      phase: 'analyze_section', branchIndex: i, branchCount: 100, blocksDone: i, blocksTotal: 1000,
+      kbGrounded: false, kbCitations: [], message: `event ${i}`,
+    });
+    const full = Array.from({ length: 50 }, (_, i) => makeEvent(i));
+    const { rerender } = render(
+      <ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={full} />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(125_000);
+    });
+    expect(screen.getByTitle(/time since the last progress update/i)).toHaveTextContent(/2m 5s ago/);
+
+    // JobDetail's `[...current, narration].slice(-50)`: new last object, SAME length.
+    const next = [...full, makeEvent(50)].slice(-50);
+    expect(next.length).toBe(full.length);
+    rerender(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={next} />);
+    // The ref resets in an effect, so the display catches up on the next
+    // clock tick (same one-render lag useWindowStartedAt documents).
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(screen.getByTitle(/time since the last progress update/i)).toHaveTextContent(/updated 1s ago/);
+  });
+
+  it.each([
+    ['analyze_section', { branchIndex: 1, sectionLabel: '3.2 Receiver' }, /writing requirement text for “3\.2 Receiver”/],
+    ['score_requirements', { branchIndex: null, chunkIndex: 1, chunkCount: 4 }, /scoring requirement batch 2 of 4/],
+  ] as const)('shows a live "so far" model-call clock during %s', (phase, extra, expected) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-09T10:30:00Z'));
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase, branchCount: 4, blocksDone: 10, blocksTotal: 100, kbGrounded: false, kbCitations: [], message: 'x', ...extra } as NarrationEvent,
+        ]}
+      />,
+    );
+    act(() => {
+      vi.advanceTimersByTime(372_000);
+    });
+    const clock = screen.getByTestId('model-call-clock');
+    expect(clock).toHaveTextContent(expected);
+    expect(clock).toHaveTextContent(/6m 12s so far/);
+    // After a minute of silence the meta row says what is actually going on.
+    expect(screen.getByTitle(/time since the last progress update/i)).toHaveTextContent(/waiting on model · last update 6m 12s ago/);
+  });
+
+  it('shows no model-call clock once the phase is not an in-flight model call', () => {
+    render(
+      <ProgressBanner
+        stage="infer_hierarchy_start"
+        startedAt="2026-07-09T10:00:00Z"
+        mode="survey"
+        narrations={[
+          { phase: 'section_complete', branchIndex: 0, branchCount: 2, blocksDone: 5, blocksTotal: 10, kbGrounded: false, kbCitations: [], message: 'x' },
+        ]}
+      />,
+    );
+    expect(screen.queryByTestId('model-call-clock')).not.toBeInTheDocument();
+  });
+
   it('renders a real N-of-M counter for dedup_check, despite its branchCount always being 0', () => {
     // Regression this fixes (DESIGN.md Track B, phase B6): dedup_check
     // always carries branchCount 0 (job-events.publisher.ts hardcodes it),

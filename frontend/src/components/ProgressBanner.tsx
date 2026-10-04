@@ -136,6 +136,33 @@ function formatDuration(ms: number): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+// What the in-flight model call is working on, in plain words -- never the
+// internal phase name. Scoring reports batches (not a hardcoded node range),
+// so this stays correct if the backend's batch size changes.
+function describeModelCallTarget(latest: NarrationEvent): string {
+  const section = latest.sectionLabel ? `“${latest.sectionLabel}”` : null;
+  switch (latest.phase) {
+    case 'build_skeleton':
+      return section ? `deciding the structure of ${section}` : 'deciding this section’s structure';
+    case 'analyze_section':
+      return section ? `writing requirement text for ${section}` : 'writing requirement text for this section';
+    case 'map_scope':
+      return 'mapping figures and tables to their work items';
+    case 'score_requirements':
+      return latest.chunkIndex != null && latest.chunkCount
+        ? `scoring requirement batch ${latest.chunkIndex + 1} of ${latest.chunkCount}`
+        : 'scoring requirement quality';
+    case 'detect_conflicts':
+      return 'checking near-duplicate requirements for conflicts';
+    case 'regroup_roots':
+      return 'grouping top-level items by topic';
+    case 'infer_trace_links':
+      return 'resolving trace links between requirements';
+    default:
+      return PHASE_SUBLABEL[latest.phase].toLowerCase();
+  }
+}
+
 export function ProgressBanner({
   stage,
   startedAt,
@@ -277,7 +304,7 @@ export function ProgressBanner({
   // update Ns ago" counter derive from this one useNow() call instead of
   // each owning its own setInterval.
   const tickingNow = useNow();
-  const secondsSinceUpdate = useSecondsSinceLastUpdate(narrations?.length ?? 0, tickingNow);
+  const secondsSinceUpdate = useSecondsSinceLastUpdate(latest, tickingNow);
   // deterministic_subtree runs as several sequential, whole-chunk-blocking
   // LLM calls (up to 150 nodes each -- see id_tree_builder.py's
   // _apply_synthesis_pass/_apply_title_tag_pass), and also runs TWO
@@ -329,6 +356,29 @@ export function ProgressBanner({
   const detSubtreeChunkStorageKey = detSubtreeChunkKey && jobId ? `progress-window:${jobId}:${detSubtreeChunkKey}` : undefined;
   const detSubtreeChunkStartedAt = useWindowStartedAt(detSubtreeChunkKey, tickingNow, detSubtreeChunkStorageKey);
   const detSubtreeChunkElapsedMs = detSubtreeChunkKey ? tickingNow - detSubtreeChunkStartedAt : undefined;
+  // Every other long step (Analyze's skeleton/authoring calls, Score's
+  // batches, the whole-document passes) is likewise ONE blocking, non-
+  // streaming model call that publishes nothing until it returns -- minutes
+  // of silence that read as a frozen bar. Same honest "so far" clock as
+  // deterministic_subtree above (only counts real elapsed time, never a
+  // fabricated percentage), keyed per phase/branch/chunk so it restarts at
+  // every new call and survives a reload of the same job.
+  const modelCallInFlight =
+    latest !== null &&
+    (latest.phase === 'build_skeleton' ||
+      latest.phase === 'analyze_section' ||
+      latest.phase === 'map_scope' ||
+      latest.phase === 'score_requirements' ||
+      latest.phase === 'detect_conflicts' ||
+      latest.phase === 'regroup_roots' ||
+      latest.phase === 'infer_trace_links');
+  const modelCallKey = modelCallInFlight
+    ? `modelcall:${latest.phase}:${latest.branchIndex ?? 'x'}:${latest.chunkIndex ?? 'x'}`
+    : undefined;
+  const modelCallStorageKey = modelCallKey && jobId ? `progress-window:${jobId}:${modelCallKey}` : undefined;
+  const modelCallStartedAt = useWindowStartedAt(modelCallKey, tickingNow, modelCallStorageKey);
+  const modelCallElapsedMs = modelCallKey ? tickingNow - modelCallStartedAt : undefined;
+  const modelCallTarget = latest ? describeModelCallTarget(latest) : null;
   // Companion to the window-start recovery above: even with the TRUE
   // window-start timestamp recovered, a tab that starts observing an
   // ALREADY-in-flight chunk (confirmed live: a frontend redeploy mid-run
@@ -457,7 +507,8 @@ export function ProgressBanner({
           <>
             <span className='text-ink-3'>·</span>
             <span className='text-ink-3' title='Time since the last progress update from the server'>
-              updated {secondsSinceUpdate}s ago
+              {modelCallInFlight && secondsSinceUpdate >= 60 ? 'waiting on model · last update ' : 'updated '}
+              {formatDuration(secondsSinceUpdate * 1000)} ago
             </span>
           </>
         )}
@@ -594,9 +645,16 @@ export function ProgressBanner({
                   ? 'A single whole-document pass -- no fixed step count to measure against.'
                   : 'Working — no progress estimate for this step yet.'}
             </div>
-            <ProgressBar value={clampedProgress} />
+            <ProgressBar value={clampedProgress} active={modelCallInFlight} />
           </div>
         </div>
+        )}
+
+        {modelCallInFlight && modelCallElapsedMs !== undefined && !detSubtreeChunk && (
+          <p className='mt-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3 text-xs text-ink-2' data-testid='model-call-clock'>
+            Waiting on the model, {modelCallTarget} — {formatDuration(modelCallElapsedMs)} so far. Each of these steps is a single
+            model call, so the bar moves when the call returns.
+          </p>
         )}
 
         {detSubtreeChunk && (

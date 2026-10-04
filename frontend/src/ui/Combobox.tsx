@@ -36,6 +36,11 @@ export function Combobox({
   loading,
   placeholder,
   disabled,
+  // Strict pickers (free text is not a valid value) override the default
+  // "type to enter one manually" row, which would be wrong for them -- and
+  // also show it when a typed query matches nothing, not just when the
+  // option list is empty.
+  emptyText,
 }: {
   label?: string;
   labelExtra?: ReactNode;
@@ -49,6 +54,7 @@ export function Combobox({
   loading?: boolean;
   placeholder?: string;
   disabled?: boolean;
+  emptyText?: string;
 }): React.ReactElement {
   const generatedId = useId();
   const fieldId = id ?? generatedId;
@@ -69,7 +75,7 @@ export function Combobox({
   // the fetch is in flight, or an explicit "no matches" row -- an empty,
   // silently-closed popover is what read as broken before this fix.
   const showLoadingRow = loading && filtered.length === 0;
-  const showEmptyRow = !loading && filtered.length === 0 && options.length === 0;
+  const showEmptyRow = !loading && filtered.length === 0 && (emptyText !== undefined || options.length === 0);
   const popoverOpen = open && (filtered.length > 0 || showLoadingRow || showEmptyRow);
 
   function selectOption(option: string): void {
@@ -145,7 +151,9 @@ export function Combobox({
             className="z-50 max-h-60 w-[var(--radix-popover-anchor-width)] overflow-y-auto rounded-sm border border-hairline-strong bg-surface p-1 shadow-popover"
           >
             {showLoadingRow && <div className="px-2.5 py-1.5 text-sm text-ink-3">Loading…</div>}
-            {showEmptyRow && <div className="px-2.5 py-1.5 text-sm text-ink-3">No suggestions -- type to enter one manually.</div>}
+            {showEmptyRow && (
+              <div className="px-2.5 py-1.5 text-sm text-ink-3">{emptyText ?? 'No suggestions -- type to enter one manually.'}</div>
+            )}
             {filtered.map((option, index) => (
               <div
                 key={option}
