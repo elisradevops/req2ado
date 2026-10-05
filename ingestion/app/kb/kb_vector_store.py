@@ -260,6 +260,13 @@ class KbVectorStore:
             self._client.delete_collection(name=_kb_collection_name_for_user(user_id, self._embed_model))
         except chromadb.errors.NotFoundError:
             pass
+        except (ValueError, chromadb.errors.InvalidArgumentError) as exc:
+            # chromadb 0.6.x (the pinned client, matching the prod server)
+            # signals a missing collection with a bare ValueError (embedded)
+            # or InvalidArgumentError (http); 1.x raises NotFoundError
+            # (handled above). Any other such error is real.
+            if "does not exist" not in str(exc):
+                raise
         # The cached handle (if any) now points at a deleted collection --
         # unlike dedup's ChromaVectorStore, this store can drop a whole
         # collection, not just individual items, so the collection-handle

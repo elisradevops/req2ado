@@ -19,7 +19,11 @@ dependencies = [
     "markdown-it-py>=3.0.0",
     "python-multipart>=0.0.12",
     "httpx>=0.27.0",
-    "chromadb>=0.5.0",
+    # Pinned to match the Chroma server image tag (deploy/helm/req2ado/
+    # values.yaml image.chroma.tag) -- a newer client against the 0.6.3
+    # server fails get_or_create_collection with KeyError('_type'). Bump
+    # both together.
+    "chromadb==0.6.3",
     # Already present transitively via chromadb; declared directly now that
     # app/leveling/conflict_detection.py imports it for a vectorized
     # cosine-similarity matrix (replacing an O(n^2) pure-Python loop).

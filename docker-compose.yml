@@ -44,7 +44,7 @@ services:
   # genuinely stateless/horizontally-scalable; this container is the
   # single stateful thing (backed by the req2ado_chroma volume).
   chroma:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.6.3
     ports:
       - "8001:8000"
     volumes:
