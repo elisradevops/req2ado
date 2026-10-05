@@ -47,6 +47,7 @@ import { NodeDetailDialog } from '../components/NodeDetailDialog';
 import { AddChildCard } from '../components/AddChildCard';
 import { applyMoveOptimistically } from '../lib/applyMove';
 import { cn } from '../lib/cn';
+import { getServerMessage } from '../lib/errorDetails';
 import { isFlaggedDiffEntry } from '../utils/diffFlagging';
 import { useToast } from '../components/ToastProvider';
 import type { KbCitation } from '../components/KbCitationChips';
@@ -96,7 +97,7 @@ export function JobDetail(): React.ReactElement {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const orgUrl = useOrgUrl();
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
   const [status, setStatus] = useState<string | null>(null);
   const [mode, setMode] = useState<string | null>(null);
   const [documentOverview, setDocumentOverview] = useState<{ synopsis: string; caveat: string | null } | null>(null);
@@ -411,14 +412,14 @@ export function JobDetail(): React.ReactElement {
               // mount-time loadJob() where a freshly-completed job's real
               // captions become available.
               setTableDescriptions(job.tableDescriptions ?? []);
-            }).catch(() => {
+            }).catch((err) => {
               // Real gap this closes: this is the ONLY path that populates
               // the real terminal status/diff/warnings/citations/etc. --
               // an unhandled rejection here previously left the page stuck
               // showing a stale "running" view forever with zero signal
               // that anything went wrong.
               if (cancelled) return;
-              showToast('Lost connection while finishing up -- reload the page to see the final result.', 'error');
+              showErrorToast('Lost connection while finishing up -- reload the page to see the final result.', err);
             });
           }
         },
@@ -778,8 +779,8 @@ export function JobDetail(): React.ReactElement {
       link.download = `job-${id}-summary.json`;
       link.click();
       URL.revokeObjectURL(url);
-    } catch {
-      showToast('Failed to download summary — please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to download summary — please try again.', err);
     }
   }
 
@@ -792,8 +793,8 @@ export function JobDetail(): React.ReactElement {
     try {
       const result = await validateCreatedTree(id);
       setValidationResult(result);
-    } catch {
-      showToast('Failed to validate — please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to validate — please try again.', err);
     } finally {
       setIsValidating(false);
     }
@@ -814,8 +815,8 @@ export function JobDetail(): React.ReactElement {
         // until the next successful refetch, rather than blocking the
         // exclusion toggle (which already succeeded) on this.
       }
-    } catch {
-      showToast('Failed to update — please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to update — please try again.', err);
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
@@ -845,9 +846,9 @@ export function JobDetail(): React.ReactElement {
         'success',
         { label: 'Undo', onAction: () => void handleSetReviewed(changed, !reviewed, { force: true }) },
       );
-    } catch {
+    } catch (err) {
       setDiff((prev) => prev.map((entry) => (changedSet.has(entry.localId) ? { ...entry, reviewed: !reviewed } : entry)));
-      showToast('Failed to update review state — please try again.', 'error');
+      showErrorToast('Failed to update review state — please try again.', err);
     }
   }
 
@@ -937,11 +938,11 @@ export function JobDetail(): React.ReactElement {
         label: 'Undo',
         onAction: () => void handleAcknowledge(kind, raws, !acknowledged),
       });
-    } catch {
+    } catch (err) {
       setWarnings((prev) =>
         prev.map((warning) => (matches(warning) ? { ...warning, acknowledged: prior.get(warning.raw) ?? false } : warning)),
       );
-      showToast('Failed to update — please try again.', 'error');
+      showErrorToast('Failed to update — please try again.', err);
     }
   }
 
@@ -976,8 +977,8 @@ export function JobDetail(): React.ReactElement {
         // the next successful refetch, rather than blocking on this.
       }
       showToast(`${excluded ? 'Excluded' : 'Included'} ${succeeded} item${succeeded === 1 ? '' : 's'}.`, 'success');
-    } catch {
-      showToast(`Stopped after updating ${succeeded} of ${targets.length} item(s) — please retry.`, 'error');
+    } catch (err) {
+      showErrorToast(`Stopped after updating ${succeeded} of ${targets.length} item(s) — please retry.`, err);
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
@@ -1008,9 +1009,9 @@ export function JobDetail(): React.ReactElement {
     try {
       const result = await moveDiffEntry(id, localId, input);
       setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
-    } catch {
+    } catch (err) {
       setDiff(previousDiff);
-      showToast('Failed to move — please try again.', 'error');
+      showErrorToast('Failed to move — please try again.', err);
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
@@ -1043,8 +1044,8 @@ export function JobDetail(): React.ReactElement {
       const result = await editDiffEntry(id, localId, patch);
       setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
       showToast('Changes saved.', 'success');
-    } catch {
-      showToast('Failed to save changes — please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to save changes — please try again.', err);
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);
@@ -1062,7 +1063,13 @@ export function JobDetail(): React.ReactElement {
       setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
       showToast('Rescored.', 'success');
     } catch (err) {
-      showToast('Failed to rescore — please try again.', 'error');
+      // The server's own reason (e.g. "Rescore did not return a usable score")
+      // when it sent one, so the user sees WHY -- full context is behind Details.
+      const reason = getServerMessage(err);
+      showErrorToast(
+        reason ? `Failed to rescore — ${reason.length > 200 ? `${reason.slice(0, 200)}…` : reason}` : 'Failed to rescore — please try again.',
+        err,
+      );
       throw err;
     }
   }
@@ -1078,7 +1085,7 @@ export function JobDetail(): React.ReactElement {
       await attachFigureToAdo(id, localId, figureId);
       showToast('Figure uploaded to Azure DevOps.', 'success');
     } catch (err) {
-      showToast('Failed to upload figure — please try again.', 'error');
+      showErrorToast('Failed to upload figure — please try again.', err);
       throw err;
     }
   }
@@ -1109,7 +1116,7 @@ export function JobDetail(): React.ReactElement {
       setWarnings(job.warnings ?? []);
       showToast('Trace link written to Azure DevOps.', 'success');
     } catch (err) {
-      showToast('Failed to write trace link — please try again.', 'error');
+      showErrorToast('Failed to write trace link — please try again.', err);
       throw err;
     }
   }
@@ -1130,8 +1137,8 @@ export function JobDetail(): React.ReactElement {
       const result = await addDiffEntry(id, { parentLocalId, ...input });
       setDiff((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []);
       showToast('Item added.', 'success');
-    } catch {
-      showToast('Failed to add item — please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to add item — please try again.', err);
     } finally {
       isDiffMutatingRef.current = false;
       setIsDiffMutating(false);

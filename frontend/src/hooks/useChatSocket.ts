@@ -9,6 +9,9 @@ export interface StreamEvent {
   proposedDescription?: string | null;
   model?: string;
   reason?: string;
+  // Structured failure context from ingestion (see chat_service.py's
+  // exception_details); `traceback` only when it runs with EXPOSE_ERROR_DETAILS.
+  details?: { status?: number; method?: string; url?: string; traceback?: string };
 }
 
 export function toWsUrl(apiBaseUrl: string): string {

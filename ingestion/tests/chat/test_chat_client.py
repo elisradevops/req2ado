@@ -126,3 +126,39 @@ async def test_stream_reply_sends_a_fixed_seed_for_reproducibility() -> None:
 
     assert captured["body"]["seed"] == 42
     assert captured["body"]["temperature"] == 0.3
+
+
+@pytest.mark.asyncio
+async def test_stream_reply_sends_user_id_header_when_given() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = request.headers
+        return httpx.Response(200, content=b"")
+
+    client = ChatLlmClient("http://orchestrator:3001", "test-token")
+    client._transport = httpx.MockTransport(handler)  # noqa: SLF001
+
+    [_ async for _ in client.stream_reply([{"role": "user", "content": "hi"}], model=None, user_id="user-1")]
+
+    assert captured["headers"]["x-req2ado-user-id"] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_stream_reply_error_carries_orchestrator_message_without_mdn_suffix() -> None:
+    from app.http_errors import describe_exception
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"statusCode": 401, "message": "X-Req2Ado-User-Id header is required"})
+
+    client = ChatLlmClient("http://orchestrator:3001", "test-token")
+    client._transport = httpx.MockTransport(handler)  # noqa: SLF001
+
+    with pytest.raises(httpx.HTTPStatusError) as caught:
+        [_ async for _ in client.stream_reply([{"role": "user", "content": "hi"}], model=None)]
+
+    described = describe_exception(caught.value)
+    assert "401" in described
+    assert "/llm/chat/stream" in described
+    assert "X-Req2Ado-User-Id header is required" in described
+    assert "mozilla" not in described

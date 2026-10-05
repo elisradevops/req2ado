@@ -83,7 +83,7 @@ export function ChatPanel({
   disabledReason?: string;
   onAcceptProposal: (patch: { title?: string; description?: string }) => void;
 }): React.ReactElement {
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [models, setModels] = useState<string[]>([]);
@@ -151,8 +151,8 @@ export function ChatPanel({
       .then((h) => {
         if (!cancelled) setHistory(h);
       })
-      .catch(() => {
-        if (!cancelled) showToast('Failed to load chat history for this item.', 'error');
+      .catch((err) => {
+        if (!cancelled) showErrorToast('Failed to load chat history for this item.', err);
       });
     setModelsLoading(true);
     listModels()
@@ -209,7 +209,15 @@ export function ChatPanel({
         setStreamStartedAt(null);
         setStreaming('');
         setReasoning('');
-        showToast(`Chat reply failed: ${event.reason ?? 'unknown error'}`, 'error');
+        const reason = event.reason ?? 'unknown error';
+        showErrorToast(`Chat reply failed: ${reason}`, {
+          message: reason,
+          status: event.details?.status,
+          method: event.details?.method,
+          url: event.details?.url,
+          serverStack: event.details?.traceback,
+          timestamp: new Date().toISOString(),
+        });
       }
     },
     !disabled,
@@ -280,9 +288,9 @@ export function ChatPanel({
       // means the Redis flag was set, not that the model has stopped. It
       // clears in the socket done/error handler above, once the stream
       // actually ends.
-    } catch {
+    } catch (err) {
       setStopping(false);
-      showToast('Failed to stop -- the reply may still be generating.', 'error');
+      showErrorToast('Failed to stop -- the reply may still be generating.', err);
     } finally {
       isStoppingRef.current = false;
     }

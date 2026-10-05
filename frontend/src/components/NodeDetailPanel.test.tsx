@@ -1065,9 +1065,9 @@ describe('NodeDetailPanel', () => {
         entry={{ ...baseRequirementEntry, groundingScore: 0.14 }}
       />,
     );
-    expect(screen.getByText('0.14')).toBeInTheDocument();
-    expect(screen.getByText(/grounding/i)).toBeInTheDocument();
-    expect(screen.getByText(/low/i)).toBeInTheDocument();
+    expect(screen.getByText('Loosely')).toBeInTheDocument();
+    expect(screen.getByText(/matches source wording/i)).toBeInTheDocument();
+    expect(screen.getByText(/worth checking against the source/i)).toBeInTheDocument();
   });
 
   it('omits the Grounding metric when groundingScore is null (e.g. a BASELINE node)', () => {
@@ -1080,7 +1080,7 @@ describe('NodeDetailPanel', () => {
         entry={{ ...baseRequirementEntry, groundingScore: null }}
       />,
     );
-    expect(screen.queryByText(/grounding/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/matches source wording/i)).not.toBeInTheDocument();
   });
 
   it('marks an Epic Grounding metric as low using the higher 0.35 parent threshold, not the base 0.2 threshold', () => {
@@ -1094,8 +1094,8 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, groundingScore: 0.3,
     };
     renderPanel(<NodeDetailPanel entry={epicEntry} />);
-    expect(screen.getByText('0.30')).toBeInTheDocument();
-    expect(screen.getByText(/low/i)).toBeInTheDocument();
+    expect(screen.getByText('Loosely')).toBeInTheDocument();
+    expect(screen.getByText(/worth checking against the source/i)).toBeInTheDocument();
   });
 
   it('does not mark a Requirement Grounding metric as low at the same score that would flag an Epic', () => {
@@ -1104,8 +1104,8 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, groundingScore: 0.3,
     };
     renderPanel(<NodeDetailPanel entry={requirementEntry} />);
-    expect(screen.getByText('0.30')).toBeInTheDocument();
-    expect(screen.queryByText(/low/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Partly')).toBeInTheDocument();
+    expect(screen.queryByText(/worth checking/i)).not.toBeInTheDocument();
   });
 
   it('does not mark the Grounding metric low just because qualityConfidence is low', () => {
@@ -1120,7 +1120,7 @@ describe('NodeDetailPanel', () => {
       action: 'create', customerId: null, groundingScore: 0.9, qualityScore: 95, qualityConfidence: 'low',
     };
     renderPanel(<NodeDetailPanel entry={requirementEntry} />);
-    expect(screen.getByText('0.90')).toBeInTheDocument();
-    expect(screen.queryByText(/low/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Closely')).toBeInTheDocument();
+    expect(screen.queryByText(/worth checking/i)).not.toBeInTheDocument();
   });
 });

@@ -23,7 +23,7 @@ export function IterationPathPicker({
 }): React.ReactElement {
   const [options, setOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -32,8 +32,8 @@ export function IterationPathPicker({
       .then((tree) => {
         if (!cancelled) setOptions(flatten(tree));
       })
-      .catch(() => {
-        if (!cancelled) showToast('Failed to load iteration paths — you can still type one manually.', 'error');
+      .catch((err) => {
+        if (!cancelled) showErrorToast('Failed to load iteration paths — you can still type one manually.', err);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

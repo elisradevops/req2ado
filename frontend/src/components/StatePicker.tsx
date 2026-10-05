@@ -25,7 +25,7 @@ export function StatePicker({
 }): React.ReactElement {
   const [options, setOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -34,8 +34,8 @@ export function StatePicker({
       .then((states) => {
         if (!cancelled) setOptions(states);
       })
-      .catch(() => {
-        if (!cancelled) showToast('Failed to load work-item states — you can still type one manually.', 'error');
+      .catch((err) => {
+        if (!cancelled) showErrorToast('Failed to load work-item states — you can still type one manually.', err);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

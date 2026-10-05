@@ -181,7 +181,10 @@ config:
   MAX_UPLOAD_SIZE_MB: "50"
   MCP_REQUEST_TIMEOUT_MS: "60000"
   OCR_LANGUAGES: "eng,heb"
-  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  # Tracing off until a collector exists. An empty OTEL_EXPORTER_OTLP_ENDPOINT
+  # does NOT disable export (it yields a schemeless /v1/traces and errors every
+  # 5s) -- to enable, remove this flag and set a real http(s)://...:4318 endpoint.
+  OTEL_SDK_DISABLED: "true"
   PIPELINE_WORKER_CONCURRENCY: "4"
   POSTGRES_DB: "req2ado"
   POSTGRES_USER: "req2ado"

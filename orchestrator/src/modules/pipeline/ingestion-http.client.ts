@@ -28,7 +28,10 @@ import type { FolderIngestFile } from '../kb/kb.service';
 const DEFAULT_INGESTION_REQUEST_TIMEOUT_MS = 3_600_000;
 
 export class IngestionHttpError extends Error {
-  constructor(public readonly status: number, message: string) {
+  // traceback: ingestion's own Python traceback, present only when ingestion
+  // runs with EXPOSE_ERROR_DETAILS on. Kept off `message` so audit trails and
+  // toasts stay one readable line.
+  constructor(public readonly status: number, message: string, public readonly traceback?: string) {
     super(message);
   }
 }
@@ -43,17 +46,27 @@ export class IngestionHttpError extends Error {
 // reads that detail (falling back to the raw response text, then the bare
 // status, for a body that isn't the expected JSON shape) so the real
 // message survives all the way to the job's audit entry.
-async function _readErrorDetail(response: Response): Promise<string> {
+async function _readErrorDetail(response: Response): Promise<{ detail: string; traceback?: string }> {
   const text = typeof response.text === 'function' ? await response.text().catch(() => '') : '';
-  if (!text) return String(response.status);
+  if (!text) return { detail: String(response.status) };
   try {
-    const parsed = JSON.parse(text) as { detail?: unknown };
-    if (typeof parsed.detail === 'string' && parsed.detail.length > 0) return parsed.detail;
+    const parsed = JSON.parse(text) as { detail?: unknown; traceback?: unknown };
+    if (typeof parsed.detail === 'string' && parsed.detail.length > 0) {
+      return {
+        detail: parsed.detail,
+        ...(typeof parsed.traceback === 'string' ? { traceback: parsed.traceback } : {}),
+      };
+    }
   } catch {
     // Not JSON (e.g. a proxy/gateway's own HTML error page) -- fall through
     // to the raw text below rather than losing it entirely.
   }
-  return text;
+  return { detail: text };
+}
+
+async function _ingestionError(response: Response, prefix: string): Promise<IngestionHttpError> {
+  const { detail, traceback } = await _readErrorDetail(response);
+  return new IngestionHttpError(response.status, `${prefix}${detail}`, traceback);
 }
 
 /**
@@ -151,7 +164,7 @@ export class IngestionHttpClient {
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
     const response = await fetch(url, { method: 'POST', body: form, dispatcher: this.longRunningAgent });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /ingest request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /ingest request failed: `);
     }
     return (await response.json()) as CanonicalDoc;
   }
@@ -202,7 +215,7 @@ export class IngestionHttpClient {
       dispatcher: this.longRunningAgent,
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /level request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /level request failed: `);
     }
     return (await response.json()) as WorkItemTree;
   }
@@ -231,7 +244,7 @@ export class IngestionHttpClient {
       }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /score-item request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /score-item request failed: `);
     }
     const body = (await response.json()) as {
       quality_score: number | null;
@@ -270,7 +283,7 @@ export class IngestionHttpClient {
       body: JSON.stringify({ enhancement_pass: enhancementPass, items, user_id: userId ?? null, model: model ?? null }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /enhance-items request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /enhance-items request failed: `);
     }
     const body = (await response.json()) as {
       results: Record<
@@ -325,7 +338,7 @@ export class IngestionHttpClient {
       }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /dedup/check request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /dedup/check request failed: `);
     }
     const body = (await response.json()) as { is_duplicate: boolean; matched_item_id: string | null; similarity: number | null };
     return { isDuplicate: body.is_duplicate, matchedItemId: body.matched_item_id, similarity: body.similarity };
@@ -338,7 +351,7 @@ export class IngestionHttpClient {
       body: JSON.stringify({ item_id: itemId, text, title, area_path: areaPath, ...(userId ? { user_id: userId } : {}) }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /dedup/upsert request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /dedup/upsert request failed: `);
     }
   }
 
@@ -362,7 +375,7 @@ export class IngestionHttpClient {
       }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /dedup/upsert-batch request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /dedup/upsert-batch request failed: `);
     }
   }
 
@@ -379,7 +392,7 @@ export class IngestionHttpClient {
       body: JSON.stringify({ item_id: itemId, area_path: areaPath }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /dedup/delete request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /dedup/delete request failed: `);
     }
   }
 
@@ -394,7 +407,7 @@ export class IngestionHttpClient {
       method: 'DELETE',
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/collection delete request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /kb/collection delete request failed: `);
     }
   }
 
@@ -425,7 +438,7 @@ export class IngestionHttpClient {
       dispatcher: this.longRunningAgent,
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-url request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /kb/ingest-url request failed: `);
     }
     const body = (await response.json()) as {
       document_name: string;
@@ -459,7 +472,7 @@ export class IngestionHttpClient {
       dispatcher: this.longRunningAgent,
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-folder-url request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /kb/ingest-folder-url request failed: `);
     }
     const body = (await response.json()) as {
       files: {
@@ -521,7 +534,7 @@ export class IngestionHttpClient {
       dispatcher: this.longRunningAgent,
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/ingest-item request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /kb/ingest-item request failed: `);
     }
     const body = (await response.json()) as {
       document_name: string;
@@ -545,7 +558,7 @@ export class IngestionHttpClient {
     const params = new URLSearchParams({ user_id: userId, source_file: sourceFile, source_id: sourceId });
     const response = await fetch(`${this.baseUrl}/kb/documents?${params.toString()}`, { method: 'DELETE' });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion DELETE /kb/documents request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion DELETE /kb/documents request failed: `);
     }
   }
 
@@ -556,7 +569,7 @@ export class IngestionHttpClient {
       body: JSON.stringify({ url, graph_token: graphToken ?? null }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/browse-folder request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /kb/browse-folder request failed: `);
     }
     return mapFolderChildren(
       (await response.json()) as { id: string; name: string; mime_type: string | null; size_bytes: number; is_folder: boolean; drive_id: string | null; download_url: string | null }[],
@@ -570,7 +583,7 @@ export class IngestionHttpClient {
       body: JSON.stringify({ drive_id: driveId, item_id: itemId, graph_token: graphToken ?? null }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/browse-children request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /kb/browse-children request failed: `);
     }
     return mapFolderChildren(
       (await response.json()) as { id: string; name: string; mime_type: string | null; size_bytes: number; is_folder: boolean; drive_id: string | null; download_url: string | null }[],
@@ -585,7 +598,7 @@ export class IngestionHttpClient {
   async getDebugCaptures(jobId: string): Promise<{ kind: string; identifier: string; content: string }[]> {
     const response = await fetch(`${this.baseUrl}/debug/${encodeURIComponent(jobId)}`);
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /debug request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /debug request failed: `);
     }
     return (await response.json()) as { kind: string; identifier: string; content: string }[];
   }
@@ -597,7 +610,7 @@ export class IngestionHttpClient {
       body: JSON.stringify({ graph_token: graphToken ?? null }),
     });
     if (!response.ok) {
-      throw new IngestionHttpError(response.status, `Ingestion /kb/sharepoint/status request failed: ${await _readErrorDetail(response)}`);
+      throw await _ingestionError(response, `Ingestion /kb/sharepoint/status request failed: `);
     }
     const body = (await response.json()) as { status: SharePointStatus['status']; expires_in_seconds: number | null };
     return { status: body.status, expiresInSeconds: body.expires_in_seconds };

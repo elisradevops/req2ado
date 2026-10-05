@@ -24,7 +24,7 @@ export function AreaPathPicker({
 }): React.ReactElement {
   const [options, setOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -33,8 +33,8 @@ export function AreaPathPicker({
       .then((tree) => {
         if (!cancelled) setOptions(flatten(tree));
       })
-      .catch(() => {
-        if (!cancelled) showToast('Failed to load area paths — you can still type one manually.', 'error');
+      .catch((err) => {
+        if (!cancelled) showErrorToast('Failed to load area paths — you can still type one manually.', err);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

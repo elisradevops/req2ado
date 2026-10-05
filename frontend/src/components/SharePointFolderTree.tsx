@@ -43,7 +43,7 @@ function FolderTreeNode({
   selectedFolderId?: string | null;
   onSelectFolder?: (entry: FolderTreeEntry, path: string) => void;
 }): React.ReactElement {
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FolderTreeEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -85,8 +85,8 @@ function FolderTreeNode({
       setIngested(true);
       setIngestedDocId(result.ingestedDocumentId);
       showToast(`Added "${entry.name}" to the knowledge base.`, 'success');
-    } catch {
-      showToast(`Failed to add "${entry.name}" — please try again.`, 'error');
+    } catch (err) {
+      showErrorToast(`Failed to add "${entry.name}" — please try again.`, err);
     } finally {
       setIsIngesting(false);
     }

@@ -25,6 +25,7 @@ from app.dedup.embedding_blend import blend_embeddings
 from app.dedup.orchestrator_embed_client import OrchestratorEmbedClient
 from app.dedup.vector_store import ChromaVectorStore
 from app.dispatch import dispatch_by_extension
+from app.http_errors import describe_exception, exception_details
 from app.kb.browse_service import FolderChildSummary, browse_shared_folder, browse_subfolder
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
@@ -124,7 +125,7 @@ def _publish_job_failed(request: Request, exc: Exception) -> None:
                 phase="job_failed",
                 branch_index=None, branch_count=0, blocks_done=0, blocks_total=0,
                 kb_grounded=False, kb_citations=[],
-                error_type=type(exc).__name__, error_message=str(exc),
+                error_type=type(exc).__name__, error_message=describe_exception(exc),
                 elapsed_seconds=elapsed_seconds, last_phase=last_known_phase(job_id),
             )
         )
@@ -138,14 +139,20 @@ async def _value_error_handler(request: Request, exc: ValueError) -> JSONRespons
     # query param, which .path silently drops from this log line.
     logger.exception("Unhandled ValueError in %s", request.url)
     _publish_job_failed(request, exc)
-    return JSONResponse(status_code=502, content={"detail": str(exc)})
+    return JSONResponse(
+        status_code=502,
+        content={"detail": describe_exception(exc), **exception_details(exc, settings.expose_error_details)},
+    )
 
 
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled exception in %s", request.url)
     _publish_job_failed(request, exc)
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": describe_exception(exc), **exception_details(exc, settings.expose_error_details)},
+    )
 
 # settings.chroma_mode="embedded" (default, unset = same behavior as
 # before this option existed) means a local PersistentClient -- does NOT

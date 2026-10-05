@@ -6,6 +6,7 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/http-exception.filter';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -25,6 +26,7 @@ async function bootstrap(): Promise<void> {
   // module's onModuleDestroy/beforeApplicationShutdown lifecycle hook on
   // SIGTERM/SIGINT before the process actually exits.
   app.enableShutdownHooks();
+  app.useGlobalFilters(new HttpExceptionFilter());
   app.use(helmet());
   // Session cookie (AuthGuard, auth.controller.ts) is read via
   // req.cookies -- must run before any guard/route handler.

@@ -1104,7 +1104,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       // by editDiffEntry/addDiffEntry (pure DB/array operations, nothing to
       // fail this way).
       if (err instanceof IngestionHttpError) {
-        throw new BadGatewayException(err.message);
+        throw new BadGatewayException({
+          statusCode: 502,
+          message: err.message,
+          error: 'Bad Gateway',
+          ...(err.traceback ? { upstreamTraceback: err.traceback } : {}),
+        });
       }
       throw err;
     }
