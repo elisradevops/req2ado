@@ -16,7 +16,7 @@ export function ProjectPicker({
   // of the fetched names, so `value` only ever holds an exact match (or '')
   // while the box holds whatever the user is mid-typing.
   const [query, setQuery] = useState(value);
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -26,8 +26,8 @@ export function ProjectPicker({
           setProjects([...result].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })));
         }
       })
-      .catch(() => {
-        if (!cancelled) showToast('Failed to load team projects.', 'error');
+      .catch((err) => {
+        if (!cancelled) showErrorToast('Failed to load team projects.', err);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

@@ -50,7 +50,9 @@ class ChatLlmClient:
         self._bearer_token = bearer_token
         self._transport: httpx.AsyncBaseTransport | None = None  # test-only injection seam
 
-    async def stream_reply(self, messages: list[dict], model: str | None) -> AsyncIterator[tuple[str, str]]:
+    async def stream_reply(
+        self, messages: list[dict], model: str | None, user_id: str | None = None
+    ) -> AsyncIterator[tuple[str, str]]:
         """Yields (content_delta, reasoning_delta) pairs -- exactly one of the
         pair is non-empty per chunk (a reasoning model's chain-of-thought
         arrives on a separate wire field, `reasoningDelta`, from the final
@@ -64,13 +66,23 @@ class ChatLlmClient:
         payload: dict = {"messages": messages, "temperature": 0.3, "seed": 42}
         if model is not None:
             payload["model"] = model
+        headers = {"Authorization": f"Bearer {self._bearer_token}"}
+        # The orchestrator's /llm/* proxy resolves each user's own Open WebUI
+        # connection from this header and rejects the call (401) without it --
+        # same contract every other ingestion LLM client follows.
+        if user_id:
+            headers["X-Req2Ado-User-Id"] = user_id
         async with httpx.AsyncClient(transport=self._transport, timeout=_STREAM_REQUEST_TIMEOUT_SECONDS) as client:
             async with client.stream(
                 "POST",
                 f"{self._base_url}/llm/chat/stream",
                 json=payload,
-                headers={"Authorization": f"Bearer {self._bearer_token}"},
+                headers=headers,
             ) as response:
+                if response.is_error:
+                    # A streamed body must be read before describe_exception
+                    # can surface the orchestrator's own error message.
+                    await response.aread()
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if not line:

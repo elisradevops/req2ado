@@ -3,6 +3,8 @@ import { Toast as RadixToast } from 'radix-ui';
 import { X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { SEVERITY_ICON, type Severity } from '../ui/severityIcons';
+import { toErrorDetails, type ErrorDetails } from '../lib/errorDetails';
+import { ErrorDetailsDialog } from './ErrorDetailsDialog';
 
 export interface ToastAction {
   label: string;
@@ -21,6 +23,11 @@ interface ToastContextValue {
   // mark). Clicking it runs onAction and dismisses the toast. A toast with
   // an action stays up longer, since the user needs time to reach it.
   showToast: (message: string, severity: Severity, action?: ToastAction) => void;
+  // An error toast with a "Details" button that opens the full error
+  // (message, status, request URL, redacted input/response, stack). `error`
+  // is whatever the catch block caught -- an axios error, Error, or a
+  // ready-made ErrorDetails (e.g. built from a chat error event).
+  showErrorToast: (message: string, error: unknown) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -62,6 +69,16 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
     setToasts((prev) => [...prev, { id, message, severity, action }].slice(-MAX_VISIBLE_TOASTS));
   }, []);
 
+  const [detailsOpenFor, setDetailsOpenFor] = useState<ErrorDetails | null>(null);
+
+  const showErrorToast = useCallback(
+    (message: string, error: unknown) => {
+      const details = toErrorDetails(error);
+      showToast(message, 'error', { label: 'Details', onAction: () => setDetailsOpenFor(details) });
+    },
+    [showToast],
+  );
+
   const dismiss = useCallback((id: number) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
@@ -71,7 +88,7 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
   // value change re-renders every subscriber, object identity or not).
   // showToast itself is already a stable useCallback reference, so this
   // only ever produces a new object when it doesn't need to.
-  const contextValue = useMemo(() => ({ showToast }), [showToast]);
+  const contextValue = useMemo(() => ({ showToast, showErrorToast }), [showToast, showErrorToast]);
 
   return (
     <ToastContext.Provider value={contextValue}>
@@ -110,6 +127,7 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
         })}
         <RadixToast.Viewport className="fixed bottom-4 right-4 z-[100] flex w-[380px] max-w-[calc(100vw-32px)] flex-col gap-2 outline-none" />
       </RadixToast.Provider>
+      <ErrorDetailsDialog details={detailsOpenFor} onClose={() => setDetailsOpenFor(null)} />
     </ToastContext.Provider>
   );
 }

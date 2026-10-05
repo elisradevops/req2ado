@@ -6,6 +6,8 @@ from starlette.concurrency import run_in_threadpool
 
 from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, split_message_and_proposal
 from app.chat.redis_publisher import RedisChatPublisher
+from app.config import settings
+from app.http_errors import describe_exception, exception_details
 from app.kb.retrieval import retrieve_context
 
 logger = logging.getLogger(__name__)
@@ -122,7 +124,7 @@ async def run_chat_turn(
 
         window = _SentinelWindow(PROPOSAL_SENTINEL)
         full_text = ""
-        async for delta, reasoning_delta in chat_client.stream_reply(messages, model):
+        async for delta, reasoning_delta in chat_client.stream_reply(messages, model, user_id):
             if await publisher.is_aborted(job_id, local_id):
                 logger.info("Chat turn aborted for job_id=%s local_id=%s", job_id, local_id)
                 await publisher.publish_error(job_id, local_id, "stopped by user")
@@ -149,5 +151,8 @@ async def run_chat_turn(
             job_id, local_id, message, proposed_title, proposed_description, model or ""
         )
     except Exception as exc:  # noqa: BLE001 - a chat turn must always terminate with an event
-        logger.warning("Chat turn failed for job_id=%s local_id=%s: %s", job_id, local_id, exc)
-        await publisher.publish_error(job_id, local_id, str(exc))
+        reason = describe_exception(exc)
+        logger.warning("Chat turn failed for job_id=%s local_id=%s: %s", job_id, local_id, reason)
+        await publisher.publish_error(
+            job_id, local_id, reason, exception_details(exc, settings.expose_error_details)
+        )

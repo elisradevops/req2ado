@@ -156,7 +156,7 @@ function WorthKnowingCard({ preview, parsing }: { preview: PreviewResult | null;
 
 export function NewJobWizard(): React.ReactElement {
   const navigate = useNavigate();
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
   const orgUrl = useOrgUrl();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [file, setFile] = useState<File | null>(null);
@@ -295,7 +295,7 @@ export function NewJobWizard(): React.ReactElement {
       if (seq !== previewRequestSeq.current) return;
       setPreview(result);
       setParseStatus('parsed');
-    } catch {
+    } catch (err) {
       // Regression: an upload failure here previously had NO feedback at
       // all -- the promise just rejected silently (no try/catch, no
       // console-visible UI signal), leaving the user stuck on step 1 with
@@ -307,7 +307,7 @@ export function NewJobWizard(): React.ReactElement {
       const message = 'Failed to parse the uploaded file. Please try again.';
       setParseStatus('error');
       setParseError(message);
-      showToast(message, 'error');
+      showErrorToast(message, err);
     }
   }
 
@@ -340,8 +340,8 @@ export function NewJobWizard(): React.ReactElement {
         documentOverview: mode === 'survey' ? documentOverview : undefined,
       });
       navigate(`/jobs/${jobId}`);
-    } catch {
-      showToast('Failed to start the job. Please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to start the job. Please try again.', err);
       isSubmittingRef.current = false;
       setIsSubmitting(false);
     }

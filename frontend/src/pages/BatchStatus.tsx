@@ -41,7 +41,7 @@ const NOTE_SEVERITY_MAP: Record<'info' | 'warning', 'info' | 'warning'> = { info
 
 export function BatchStatus(): React.ReactElement {
   const { batchId } = useParams<{ batchId: string }>();
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
   const [batch, setBatch] = useState<BatchDetail | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -84,8 +84,8 @@ export function BatchStatus(): React.ReactElement {
       await cancelQueuedFiles(batchId);
       showToast('Stopped queueing the remaining files.', 'success');
       load();
-    } catch {
-      showToast('Failed to stop queueing -- please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to stop queueing -- please try again.', err);
     } finally {
       isCancellingRef.current = false;
       setIsCancelling(false);

@@ -120,7 +120,7 @@ class _FakeChatClient:
         self._deltas = deltas
         self._reasoning_deltas = reasoning_deltas or []
 
-    async def stream_reply(self, messages, model):  # noqa: ANN001, ARG002 - test double
+    async def stream_reply(self, messages, model, user_id=None):  # noqa: ANN001, ARG002 - test double
         for delta in self._reasoning_deltas:
             yield "", delta
         for delta in self._deltas:
@@ -151,7 +151,7 @@ class _FakePublisher:
             "model": model,
         }
 
-    async def publish_error(self, job_id, local_id, reason):  # noqa: ANN001, ARG002
+    async def publish_error(self, job_id, local_id, reason, details=None):  # noqa: ANN001, ARG002
         self.errors.append(reason)
 
     async def is_aborted(self, job_id, local_id):  # noqa: ANN001, ARG002
@@ -283,7 +283,7 @@ async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_pat
     captured: dict[str, list[dict]] = {}
 
     class _CapturingChatClient:
-        async def stream_reply(self, messages, model):  # noqa: ANN001, ARG002 - test double
+        async def stream_reply(self, messages, model, user_id=None):  # noqa: ANN001, ARG002 - test double
             captured["messages"] = messages
             yield "Sure.", ""
 
@@ -310,7 +310,7 @@ async def test_run_chat_turn_grounds_system_prompt_with_kb_context_when_area_pat
 @pytest.mark.asyncio
 async def test_run_chat_turn_publishes_error_on_llm_failure_never_raises() -> None:
     class _FailingChatClient:
-        async def stream_reply(self, messages, model):  # noqa: ANN001, ARG002
+        async def stream_reply(self, messages, model, user_id=None):  # noqa: ANN001, ARG002
             raise RuntimeError("LLM unreachable")
             yield  # pragma: no cover - unreachable, makes this an async generator
 

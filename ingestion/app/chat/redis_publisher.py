@@ -43,8 +43,13 @@ class RedisChatPublisher:
         }
         await self._redis.publish(self._channel(job_id, local_id), json.dumps(payload))
 
-    async def publish_error(self, job_id: str, local_id: str, reason: str) -> None:
-        await self._redis.publish(self._channel(job_id, local_id), json.dumps({"type": "error", "reason": reason}))
+    async def publish_error(
+        self, job_id: str, local_id: str, reason: str, details: dict | None = None
+    ) -> None:
+        payload: dict = {"type": "error", "reason": reason}
+        if details:
+            payload["details"] = details
+        await self._redis.publish(self._channel(job_id, local_id), json.dumps(payload))
 
     async def is_aborted(self, job_id: str, local_id: str) -> bool:
         key = f"chat:abort:{job_id}:{local_id}"

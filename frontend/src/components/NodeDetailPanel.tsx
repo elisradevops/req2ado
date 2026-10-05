@@ -659,10 +659,13 @@ export function NodeDetailPanel({
       )}
       {entry.groundingScore != null && (
         <div className="flex items-center gap-1.5 rounded-sm border border-hairline bg-surface-alt p-2.5 text-sm">
-          <span className={cn('font-mono font-semibold', isLowGrounding ? 'text-warning' : 'text-ink-1')}>
-            {entry.groundingScore.toFixed(2)}
+          <Tooltip content="How closely this item's wording follows the original document text.">
+            <span className="text-ink-3">Matches source wording:</span>
+          </Tooltip>
+          <span className={cn('font-semibold', isLowGrounding ? 'text-warning' : 'text-ink-1')}>
+            {isLowGrounding ? 'Loosely' : entry.groundingScore >= 0.7 ? 'Closely' : 'Partly'}
           </span>
-          <span className="text-ink-3">Grounding{isLowGrounding ? ' ⚠ low' : ''}</span>
+          {isLowGrounding && <span className="text-ink-3">— worth checking against the source</span>}
         </div>
       )}
       {/* DESIGN.md §11.4.1 -- in place of the absent gauge, an Epic/Feature

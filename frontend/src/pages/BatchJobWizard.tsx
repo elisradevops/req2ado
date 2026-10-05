@@ -30,7 +30,7 @@ const SURVEY_BATCH_THROTTLE_HINT = 2;
 
 export function BatchJobWizard(): React.ReactElement {
   const navigate = useNavigate();
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
   const orgUrl = useOrgUrl();
   const [files, setFiles] = useState<File[]>([]);
   const [mode, setMode] = useState<'baseline' | 'survey'>('baseline');
@@ -86,8 +86,8 @@ export function BatchJobWizard(): React.ReactElement {
         model: mode === 'survey' ? model || undefined : undefined,
       });
       navigate(`/jobs/batch/${batchId}`);
-    } catch {
-      showToast('Failed to start the batch. Please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to start the batch. Please try again.', err);
       isSubmittingRef.current = false;
       setIsSubmitting(false);
     }

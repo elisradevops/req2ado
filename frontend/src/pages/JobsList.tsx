@@ -72,7 +72,7 @@ export function JobsList(): React.ReactElement {
   const [resubmitTarget, setResubmitTarget] = useState<JobSummary | null>(null);
   const [isResubmitting, setIsResubmitting] = useState(false);
   const navigate = useNavigate();
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
   const denseView = useDenseView();
   const autoSyncLedgers = useAutoSyncLedgers();
 
@@ -83,10 +83,10 @@ export function JobsList(): React.ReactElement {
         setJobs(result);
         setLoaded(true);
       })
-      .catch(() => {
+      .catch((err) => {
         setLoaded(true);
         setLoadError(true);
-        showToast('Failed to load jobs.', 'error');
+        showErrorToast('Failed to load jobs.', err);
       });
   }
 
@@ -114,8 +114,8 @@ export function JobsList(): React.ReactElement {
       setResubmitTarget(null);
       showToast('Resubmitted as a new job.', 'success');
       navigate(`/jobs/${result.jobId}`);
-    } catch {
-      showToast('Resubmit failed — the original file may not have been retained. Re-upload it as a new job instead.', 'error');
+    } catch (err) {
+      showErrorToast('Resubmit failed — the original file may not have been retained. Re-upload it as a new job instead.', err);
     } finally {
       setIsResubmitting(false);
     }
@@ -129,8 +129,8 @@ export function JobsList(): React.ReactElement {
       setDeleteTarget(null);
       showToast('Job deleted.', 'success');
       load();
-    } catch {
-      showToast('Failed to delete job — please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to delete job — please try again.', err);
     } finally {
       setIsDeleting(false);
     }

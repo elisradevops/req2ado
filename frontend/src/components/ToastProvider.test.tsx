@@ -116,4 +116,29 @@ describe('ToastProvider', () => {
     expect(screen.queryByText('one')).not.toBeInTheDocument();
     expect(screen.getByText('two')).toBeInTheDocument();
   });
+
+  it('an error toast offers Details, which opens the error dialog with the message and status', async () => {
+    const user = userEvent.setup();
+    function ErrorTrigger(): React.ReactElement {
+      const { showErrorToast } = useToast();
+      return (
+        <button
+          type="button"
+          onClick={() => showErrorToast('Failed to rescore', { message: 'No usable score', status: 502, timestamp: 't' })}
+        >
+          Fail
+        </button>
+      );
+    }
+    render(
+      <ToastProvider>
+        <ErrorTrigger />
+      </ToastProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Fail' }));
+    await user.click(await screen.findByRole('button', { name: /Details/ }));
+    expect(await screen.findByText('Error details')).toBeInTheDocument();
+    expect(screen.getByText('No usable score')).toBeInTheDocument();
+    expect(screen.getByText('502')).toBeInTheDocument();
+  });
 });

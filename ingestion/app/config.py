@@ -17,6 +17,10 @@ class Settings(BaseSettings):
 
     orchestrator_url: str = "http://localhost:3001"
     llm_proxy_bearer: str = "dev-local-only"
+    # Off by default. When on, error responses and chat error events also carry
+    # a Python traceback so the UI's error-details dialog can show it. Keep off
+    # in production: tracebacks expose internal paths and code structure.
+    expose_error_details: bool = False
     # Unset = figure/diagram extraction stays a placeholder, same behavior
     # as before vision support existed. Set to a real vision-capable model
     # name (e.g. "llava") to actually describe extracted figure images.

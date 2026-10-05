@@ -144,7 +144,7 @@ const ROOT_FOLDER: CurrentFolder = { id: null, driveId: null, path: '', name: 'R
 const KB_BROWSE_URL_STORAGE_KEY = 'req2ado-kb-browse-url';
 
 export function KnowledgeBase(): React.ReactElement {
-  const { showToast } = useToast();
+  const { showToast, showErrorToast } = useToast();
   const userId = useUserId();
   const [browseUrl, setBrowseUrl] = useState('');
   // The root folder's own children -- also what the left-pane tree walks
@@ -254,9 +254,9 @@ export function KnowledgeBase(): React.ReactElement {
       const entries = await browseSubfolder(driveId, id, userId, path);
       if (seq !== folderNavSeqRef.current) return;
       setCenterEntries(entries);
-    } catch {
+    } catch (err) {
       if (seq !== folderNavSeqRef.current) return;
-      showToast(`Failed to open "${name}" — please try again.`, 'error');
+      showErrorToast(`Failed to open "${name}" — please try again.`, err);
       setCenterEntries([]);
     } finally {
       if (seq === folderNavSeqRef.current) setCenterLoading(false);
@@ -298,8 +298,8 @@ export function KnowledgeBase(): React.ReactElement {
       const result = await ingestFolderItem(entry.name, entry.id, entry.downloadUrl, relativePath, userId, retrievalMode);
       setIngestOverrides((prev) => ({ ...prev, [entry.id]: { ingested: true, docId: result.ingestedDocumentId } }));
       showToast(`Added "${entry.name}" to the knowledge base.`, 'success');
-    } catch {
-      showToast(`Failed to add "${entry.name}" — please try again.`, 'error');
+    } catch (err) {
+      showErrorToast(`Failed to add "${entry.name}" — please try again.`, err);
     } finally {
       ingestingRef.current = false;
       setIngestingId(null);
@@ -321,8 +321,8 @@ export function KnowledgeBase(): React.ReactElement {
       showToast(`Removed "${documentPendingRemoval.name}" from the knowledge base.`, 'success');
       setIngestOverrides((prev) => ({ ...prev, [documentPendingRemoval.entryId]: { ingested: false, docId: null } }));
       setDocumentPendingRemoval(null);
-    } catch {
-      showToast('Failed to remove the document. Please try again.', 'error');
+    } catch (err) {
+      showErrorToast('Failed to remove the document. Please try again.', err);
     } finally {
       isRemovingRef.current = false;
       setIsRemoving(false);
