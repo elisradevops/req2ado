@@ -1,0 +1,347 @@
+name: '🚀 publish'
+
+# One release workflow for ingestion, orchestrator, mcp-ado-server and frontend
+# (it replaces their four separate workflows).
+#
+# Why one: the separate workflows shared a `publish` concurrency group, and GitHub
+# keeps only ONE pending run per group, so a push touching three or more packages
+# silently dropped the middle runs ("Canceling since a higher priority waiting
+# request for publish exists") and nothing re-ran them.
+#
+# How it works now:
+#  1. wait for CI on the trigger commit (once);
+#  2. `detect` works out which packages have changes since their last
+#     "CI: bumps <package> version to ..." commit, not which ones this push touched.
+#     So if GitHub still drops a queued run, the run that survives publishes
+#     whatever is behind: nothing is lost and nothing needs a manual re-run;
+#  3. the changed packages publish one after another in a fixed order (backend
+#     first, UI last). A failed package does not skip the ones after it; the run
+#     still ends red.
+#
+# Manual run (Actions -> Run workflow):
+#   packages: comma-separated list to publish even if unchanged
+#             (ingestion,orchestrator,mcp-ado-server,frontend); empty = automatic
+#   dry-run:  true = do everything except changing the branch, tagging and pushing
+#             images (use it to try this workflow from a branch)
+#
+# No trigger on this file itself -- editing CI config alone should not force a
+# version bump + republish.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'ingestion/**'
+      - 'orchestrator/**'
+      - 'mcp-ado-server/**'
+      - 'frontend/**'
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Publish these even if unchanged (comma-separated). Empty = automatic.'
+        required: false
+        default: ''
+      dry-run:
+        description: 'Dry run: no version bump commit, no tag, no image push'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# Still one run at a time: each publish pushes a version-bump commit to the branch.
+# Queue depth is no longer a problem because `detect` catches up on anything missed.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  DRY_RUN: ${{ github.event.inputs.dry-run == 'true' && 'true' || 'false' }}
+
+jobs:
+  wait-ci:
+    name: ⏳ wait for CI
+    runs-on: ubuntu-latest
+    steps:
+      # Blocks until the CI workflow run for THIS commit has completed
+      # successfully; anything else aborts before anything is bumped or built.
+      # A [skip ci] commit (this repo's automated version bumps) never gets a CI
+      # run, so walk back to its parent first -- a manual run can start on one.
+      - name: Wait for the CI run on the trigger commit
+        env:
+          GH_TOKEN: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+        run: |
+          SHA="${{ github.sha }}"
+          for i in $(seq 1 10); do
+            # Written to a file: a raw commit object can carry content (for
+            # example a GPG signature block) that breaks `echo "$VAR" | jq`.
+            gh api "repos/${{ github.repository }}/commits/$SHA" > /tmp/commit.json
+            COMMIT_MSG=$(jq -r '.commit.message' /tmp/commit.json)
+            if echo "$COMMIT_MSG" | grep -qiE '\[skip ci\]|\[ci skip\]'; then
+              PARENT_SHA=$(jq -r '.parents[0].sha' /tmp/commit.json)
+              echo "$SHA is a [skip ci] commit ('$COMMIT_MSG') -- walking back to parent $PARENT_SHA"
+              SHA="$PARENT_SHA"
+              continue
+            fi
+            break
+          done
+          echo "Waiting for the 'CI' workflow to complete on $SHA..."
+          for i in $(seq 1 40); do
+            RUN_JSON=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=$SHA" --jq '[.workflow_runs[] | select(.name=="CI")][0]')
+            if [ -z "$RUN_JSON" ] || [ "$RUN_JSON" = "null" ]; then
+              echo "No CI run found yet for $SHA -- waiting..."
+              sleep 15
+              continue
+            fi
+            RUN_STATUS=$(echo "$RUN_JSON" | jq -r '.status')
+            if [ "$RUN_STATUS" != "completed" ]; then
+              echo "CI run status: $RUN_STATUS -- waiting..."
+              sleep 15
+              continue
+            fi
+            RUN_CONCLUSION=$(echo "$RUN_JSON" | jq -r '.conclusion')
+            echo "CI run completed with conclusion: $RUN_CONCLUSION"
+            if [ "$RUN_CONCLUSION" = "success" ]; then
+              exit 0
+            fi
+            echo "CI did not succeed for $SHA (conclusion: $RUN_CONCLUSION) -- aborting publish."
+            exit 1
+          done
+          echo "Timed out waiting for CI to complete for $SHA."
+          exit 1
+
+  detect:
+    name: 🔎 detect what to publish
+    needs: wait-ci
+    runs-on: ubuntu-latest
+    outputs:
+      ingestion: ${{ steps.detect.outputs.ingestion }}
+      orchestrator: ${{ steps.detect.outputs.orchestrator }}
+      mcp-ado-server: ${{ steps.detect.outputs.mcp-ado-server }}
+      frontend: ${{ steps.detect.outputs.frontend }}
+    steps:
+      - name: 📚 checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - name: Work out which packages are behind
+        id: detect
+        env:
+          FORCE: ${{ github.event.inputs.packages }}
+        run: |
+          FORCE=",$(echo "$FORCE" | tr -d ' '),"
+          for pkg in ingestion orchestrator mcp-ado-server frontend; do
+            BASE="$(git log -1 --format=%H --grep="^CI: bumps ${pkg} version to" || true)"
+            if [[ "$FORCE" == *",${pkg},"* ]]; then
+              CHANGED=true; WHY="requested"
+            elif [[ -z "$BASE" ]]; then
+              CHANGED=true; WHY="never published by CI"
+            elif [[ -n "$(git diff --name-only "$BASE" HEAD -- "$pkg")" ]]; then
+              CHANGED=true; WHY="changed since ${BASE:0:7}"
+            else
+              CHANGED=false; WHY="no changes since ${BASE:0:7}"
+            fi
+            echo "$pkg: $CHANGED ($WHY)"
+            echo "${pkg}=${CHANGED}" >> "$GITHUB_OUTPUT"
+          done
+
+  publish-ingestion:
+    name: 🚀 ingestion
+    needs: detect
+    if: ${{ !cancelled() && needs.detect.outputs.ingestion == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - name: Version bump
+        id: bump
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: .github/scripts/bump-version.sh ingestion python
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to DockerHub
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ingestion
+          platforms: linux/amd64
+          push: ${{ env.DRY_RUN != 'true' }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            elisradevops/req2ado-ingestion:${{ steps.bump.outputs.current-version }}
+            elisradevops/req2ado-ingestion:latest
+
+  publish-orchestrator:
+    name: 🚀 orchestrator
+    needs: [detect, publish-ingestion]
+    if: ${{ !cancelled() && needs.detect.outputs.orchestrator == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Version bump
+        id: bump
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: .github/scripts/bump-version.sh orchestrator npm
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to DockerHub
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          # Repo root, not ./orchestrator -- orchestrator/Dockerfile also COPYs the
+          # root docs/ folder (WikiController reads it at runtime). See that
+          # Dockerfile's own doc comment; docker-compose.yml builds it the same way.
+          context: .
+          file: orchestrator/Dockerfile
+          platforms: linux/amd64
+          push: ${{ env.DRY_RUN != 'true' }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            elisradevops/req2ado-orchestrator:${{ steps.bump.outputs.current-version }}
+            elisradevops/req2ado-orchestrator:latest
+      # Second build of the SAME Dockerfile and context, stopping at the `builder`
+      # stage. The k8s migrate Job runs `npx prisma migrate deploy` against this
+      # image: the `prisma` CLI is a devDependency that the `runtime` stage strips.
+      # `latest-builder` is the tag the migrate Job tracks, like its sibling
+      # manifests track `:latest`.
+      - name: Build and push (builder stage, for the migrate Job)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: orchestrator/Dockerfile
+          target: builder
+          # amd64 only, deliberately: it only runs as a short-lived migrate Job on
+          # amd64 nodes, and building its full npm install under arm64 QEMU crashed
+          # ("qemu: uncaught target signal 4").
+          platforms: linux/amd64
+          push: ${{ env.DRY_RUN != 'true' }}
+          # The default OCI attestations do not pull through this org's Artifactory
+          # Docker remote-repo config.
+          provenance: false
+          sbom: false
+          # cache-from only, deliberately no cache-to: `builder` is a parent stage of
+          # `runtime`, whose mode=max export already holds these layers; re-exporting
+          # collides on an immutable GHA cache key (a noisy 409 for no added coverage).
+          cache-from: type=gha
+          tags: |
+            elisradevops/req2ado-orchestrator:${{ steps.bump.outputs.current-version }}-builder
+            elisradevops/req2ado-orchestrator:latest-builder
+
+  publish-mcp-ado-server:
+    name: 🚀 mcp-ado-server
+    needs: [detect, publish-orchestrator]
+    if: ${{ !cancelled() && needs.detect.outputs.mcp-ado-server == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Version bump
+        id: bump
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: .github/scripts/bump-version.sh mcp-ado-server npm
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to DockerHub
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./mcp-ado-server
+          platforms: linux/amd64
+          push: ${{ env.DRY_RUN != 'true' }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            elisradevops/req2ado-mcp-ado-server:${{ steps.bump.outputs.current-version }}
+            elisradevops/req2ado-mcp-ado-server:latest
+
+  publish-frontend:
+    name: 🚀 frontend
+    needs: [detect, publish-mcp-ado-server]
+    if: ${{ !cancelled() && needs.detect.outputs.frontend == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Version bump
+        id: bump
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: .github/scripts/bump-version.sh frontend npm
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to DockerHub
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/amd64
+          push: ${{ env.DRY_RUN != 'true' }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            elisradevops/req2ado-frontend:${{ steps.bump.outputs.current-version }}
+            elisradevops/req2ado-frontend:latest
