@@ -41,6 +41,14 @@ async function bootstrap(): Promise<void> {
   if (process.env.CORS_ORIGIN) {
     app.enableCors({ origin: process.env.CORS_ORIGIN, credentials: true });
   }
+  // Backstop: Node 22 exits with code 1 on any unhandled rejection, and with
+  // a single `Recreate` replica that kills in-flight jobs for every user.
+  // Known sources are caught at their call sites; this only covers a future
+  // one nobody has guarded yet.
+  process.on('unhandledRejection', (reason) => {
+    // eslint-disable-next-line no-console -- no structured logger in this module yet
+    console.error('Unhandled promise rejection (process kept alive):', reason);
+  });
   const port = process.env.PORT ?? 3001;
   await app.listen(port);
 

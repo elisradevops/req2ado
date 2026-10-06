@@ -48,7 +48,13 @@ export class JobRetentionService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     this.intervalHandle = setInterval(() => {
-      void this.sweep();
+      // Only the $transaction in sweep() is guarded -- the initial findMany
+      // is not, so a transient Postgres failure would be an unhandled
+      // rejection (process exit on Node 22). The next tick simply retries.
+      this.sweep().catch((err) => {
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        console.error('JobRetentionService sweep failed, will retry next interval:', err);
+      });
     }, this.checkIntervalMs);
   }
 

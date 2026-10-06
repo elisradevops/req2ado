@@ -42,7 +42,14 @@ export class StaleJobWatchdogService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     this.intervalHandle = setInterval(() => {
-      void this.sweep();
+      // sweep()'s findMany/groupBy are unguarded -- a transient Postgres
+      // failure would otherwise be an unhandled rejection, which Node 22
+      // turns into a process exit (killing every in-flight job). The next
+      // tick simply retries.
+      this.sweep().catch((err) => {
+        // eslint-disable-next-line no-console -- no structured logger in this module yet
+        console.error('StaleJobWatchdogService sweep failed, will retry next interval:', err);
+      });
     }, this.checkIntervalMs);
   }
 

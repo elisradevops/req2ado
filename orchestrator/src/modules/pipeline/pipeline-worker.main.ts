@@ -111,6 +111,13 @@ worker.on('stalled', (jobId) => {
   console.error(`Pipeline job ${jobId} stalled (lock lapsed -- will be reprocessed)`);
 });
 
+// Backstop: Node 22 exits with code 1 on any unhandled rejection, which would
+// take this worker (and its in-flight job) down. Log it instead.
+process.on('unhandledRejection', (reason) => {
+  // eslint-disable-next-line no-console -- worker process logging, not app logging
+  console.error('Unhandled promise rejection (worker kept alive):', reason);
+});
+
 // eslint-disable-next-line no-console -- startup banner
 process.stdout.write('req2ado pipeline worker listening for jobs on queue "req2ado-pipeline"\n');
 

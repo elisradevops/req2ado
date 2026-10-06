@@ -74,4 +74,30 @@ describe('JobRetentionService', () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(prisma.job.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['job-a', 'job-b', 'job-c'] } } });
   });
+
+  it('a failing sweep tick (findMany rejects) is logged, never an unhandled rejection -- and the next tick still runs', async () => {
+    jest.useFakeTimers();
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const prisma = fakePrisma([]);
+      prisma.job.findMany.mockRejectedValueOnce(new Error('db stalled'));
+      const service = new JobRetentionService(prisma as any, CHECK_INTERVAL_MS, MAX_AGE_MS);
+
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
+
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('JobRetentionService sweep failed'),
+        expect.any(Error),
+      );
+
+      await jest.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
+
+      expect(prisma.job.findMany).toHaveBeenCalledTimes(2);
+      service.onModuleDestroy();
+    } finally {
+      consoleError.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 });

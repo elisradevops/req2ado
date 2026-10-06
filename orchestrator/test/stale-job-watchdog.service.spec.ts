@@ -110,4 +110,34 @@ describe('StaleJobWatchdogService', () => {
 
     expect(prisma.jobEvent.groupBy).not.toHaveBeenCalled();
   });
+
+  it('a failing sweep tick is logged, never an unhandled rejection -- and the next tick still runs', async () => {
+    jest.useFakeTimers();
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const prisma = {
+        job: {
+          findMany: jest.fn().mockRejectedValueOnce(new Error('db stalled')).mockResolvedValue([]),
+        },
+        jobEvent: { groupBy: jest.fn() },
+      };
+      const watchdog = new StaleJobWatchdogService(prisma as any, { cancel: jest.fn() } as any, CHECK_INTERVAL_MS, STALE_THRESHOLD_MS);
+
+      watchdog.onModuleInit();
+      await jest.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
+
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('StaleJobWatchdogService sweep failed'),
+        expect.any(Error),
+      );
+
+      await jest.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
+
+      expect(prisma.job.findMany).toHaveBeenCalledTimes(2);
+      watchdog.onModuleDestroy();
+    } finally {
+      consoleError.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 });

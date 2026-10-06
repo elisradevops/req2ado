@@ -25,10 +25,21 @@ import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
 
 const serviceName = process.env.OTEL_SERVICE_NAME ?? 'req2ado-orchestrator';
 
+// OTEL_SDK_DISABLED makes sdk.start() a no-op, but constructing the
+// auto-instrumentations still monkey-patches http/express/undici/openai at
+// require() time. That is not harmless: @opentelemetry/instrumentation-openai
+// (0.19.0) resets its metric histograms to undefined right after its base
+// constructor creates them, and only recreates them when the SDK hands it a
+// meter provider -- which a disabled SDK never does. Any failed OpenAI-SDK
+// call then throws inside the instrumentation's unguarded rejection handler,
+// an unhandled rejection that exits Node 22 (observed live: orchestrator
+// crash on the temperature=1 retry path). When tracing is off, patch nothing.
+const sdkDisabled = process.env.OTEL_SDK_DISABLED?.toLowerCase() === 'true';
+
 const sdk = new NodeSDK({
   resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: serviceName }),
   traceExporter: new OTLPTraceExporter(),
-  instrumentations: [getNodeAutoInstrumentations()],
+  instrumentations: sdkDisabled ? [] : [getNodeAutoInstrumentations()],
 });
 
 sdk.start();
