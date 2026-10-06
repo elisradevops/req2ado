@@ -1,0 +1,14 @@
+{
+  "name": "@req2ado/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser tests for the running-job screen. Standalone on purpose (not in pnpm-workspace.yaml): it needs its own browser download and must not affect the app builds.",
+  "scripts": {
+    "test": "playwright test",
+    "test:update": "playwright test --update-snapshots"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "1.59.1"
+  }
+}

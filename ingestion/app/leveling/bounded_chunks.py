@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Generic, NamedTuple, TypeVar
+
+from app.config import settings
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -85,10 +88,19 @@ def run_chunks_bounded(
             yield _run_one(index, chunk, worker)
         return
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = [
-            executor.submit(_run_one, index, chunk, worker)
-            for index, chunk in enumerate(chunks)
-        ]
+        # Job transparency: with live progress on, each worker runs in a copy of
+        # the caller's context so code beneath it can still find the job (and its
+        # live emitter). Off, the submission is exactly what it always was.
+        if settings.live_progress:
+            futures = [
+                executor.submit(contextvars.copy_context().run, _run_one, index, chunk, worker)
+                for index, chunk in enumerate(chunks)
+            ]
+        else:
+            futures = [
+                executor.submit(_run_one, index, chunk, worker)
+                for index, chunk in enumerate(chunks)
+            ]
         # Yielded by INDEX (list position of the future), never by
         # completion order -- see this function's own docstring.
         for future in futures:

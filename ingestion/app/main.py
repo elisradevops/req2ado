@@ -31,6 +31,8 @@ from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_se
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.retrieval import retrieve_context
+from app.leveling.document_map import publish_document_map
+from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
 from app.leveling.id_hierarchy import rows_from_table
 from app.leveling.llm_leveling import build_survey_tree
 from app.leveling.id_tree_builder import _TITLE_TAG_CHUNK_SIZE, synthesis_updates, title_tag_updates
@@ -680,7 +682,14 @@ def _build_survey_tree_with_scoring(
     progress_callback = None
     if job_id is not None:
         progress_callback = NarrationPublisher(_narration_redis, job_id).publish
-    with job_id_scope(job_id):
+    with job_id_scope(job_id), live_emitter_scope(job_id, _narration_redis):
+        # Job transparency (B2b): describe the document for the running
+        # screen. Off by default; observation only, never raises, and runs
+        # before any model call so the map is available from the first poll.
+        # live_emitter_scope (B9) makes the job's live-frame emitter reachable
+        # from deep inside the build; it is a no-op unless LIVE_PROGRESS is on.
+        if settings.live_progress and job_id is not None:
+            publish_document_map(_narration_redis, job_id, doc)
         return build_survey_tree(
             doc,
             analysis_client=client,
@@ -750,6 +759,10 @@ class DedupCheckRequest(BaseModel):
     text: str
     title: str
     area_path: str
+    # Job transparency (B9b): the job this check belongs to, so a confirmed
+    # duplicate can be shown side by side on that job's running screen. Optional
+    # and display-only; omitted by every caller that predates it.
+    job_id: str | None = None
     # Settings-window-driven override (NEW-07) -- orchestrator's own
     # AppSettings row; omitted (None) falls through to
     # check_for_duplicates's own 0.90 default, identical to before this
@@ -1031,13 +1044,18 @@ async def ingest(
         # LLM_VISION_MODEL is configured, on top of the CPU-bound
         # parsing/OCR work it already did -- must not block the event loop
         # (same reasoning as /level's SURVEY path).
-        doc = await run_in_threadpool(
-            dispatch_by_extension,
-            file.filename or "",
-            tmp_path,
-            languages=languages,
-            describe_figure=describe_figure_fn,
-        )
+        # Job transparency (B10): scanned-page progress, only with live progress on.
+        ocr_progress = ocr_progress_callback(job_id, _narration_redis)
+        dispatch_extra = {"on_ocr_page": ocr_progress} if ocr_progress is not None else {}
+        with live_emitter_scope(job_id, _narration_redis):
+            doc = await run_in_threadpool(
+                dispatch_by_extension,
+                file.filename or "",
+                tmp_path,
+                languages=languages,
+                describe_figure=describe_figure_fn,
+                **dispatch_extra,
+            )
         # Real page numbers for a docx's own blocks/tables/figures -- a docx
         # carries none in its own file format (see docx_pagination.py's own
         # module docstring; pagination is a rendering-time computation, not
@@ -1675,7 +1693,7 @@ async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
     # check_for_duplicates's own default (0.90) governs otherwise, exactly
     # as before this field existed.
     kwargs = {"threshold": body.threshold} if body.threshold is not None else {}
-    return check_for_duplicates(
+    result = check_for_duplicates(
         body.text,
         body.title,
         item_id="",
@@ -1686,6 +1704,17 @@ async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
         user_id=body.user_id,
         **kwargs,
     )
+    if body.job_id and result.is_duplicate and result.matched_text is not None:
+        # Display only: a no-op unless LIVE_PROGRESS is on, and never raises.
+        with live_emitter_scope(body.job_id, _narration_redis) as emitter:
+            if emitter is not None:
+                emitter.compare(
+                    kind="duplicate",
+                    a_ref="proposed", a_text=body.text,
+                    b_ref=result.matched_item_id or "existing", b_text=result.matched_text,
+                    similarity=result.similarity or 0.0,
+                )
+    return result
 
 
 @app.post("/dedup/upsert")

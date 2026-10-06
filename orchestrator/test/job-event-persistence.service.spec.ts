@@ -68,6 +68,36 @@ describe('JobEventPersistenceService', () => {
     expect(subscriber.psubscribe).toHaveBeenCalledWith('job-events:*');
   });
 
+  it('persists a typed notice as phase notice with its kind as the message and the payload as detail', async () => {
+    const subscriber = makeSubscriber();
+    const prisma = { jobEvent: { create: jest.fn().mockResolvedValue(undefined) } };
+    const service = new JobEventPersistenceService(subscriber as any, makeEmptyCommandClient() as any, prisma as any);
+    service.onModuleInit();
+
+    const payload = {
+      type: 'notice',
+      id: 'n1',
+      kind: 'output_limit_reached',
+      severity: 'warning',
+      count: 1,
+      facts: { step: 'write', lastRef: 'det0_3' },
+      emittedAt: '2026-10-06T10:00:00.000Z',
+    };
+    subscriber.__handlers.pmessage('job-events:*', 'job-events:job-1', JSON.stringify(payload));
+    await flush();
+
+    expect(prisma.jobEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        jobId: 'job-1',
+        phase: 'notice',
+        message: 'output_limit_reached',
+        detail: payload,
+        severity: 'info',
+        createdAt: new Date('2026-10-06T10:00:00.000Z'),
+      }),
+    });
+  });
+
   it('persists a narration event with its full payload as detail', async () => {
     const subscriber = makeSubscriber();
     const prisma = { jobEvent: { create: jest.fn().mockResolvedValue(undefined) } };

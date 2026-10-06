@@ -8,6 +8,9 @@ from typing import Callable, Literal
 
 import redis
 
+from app.config import settings
+from app.leveling.stage_units import publish_stage_units
+
 logger = logging.getLogger(__name__)
 
 # Mirrors JobEventsPublisher's (orchestrator) TTL for the last-known stage
@@ -594,3 +597,7 @@ class NarrationPublisher:
             self._redis.publish(f"job-events:{self._job_id}", payload)
         except Exception as exc:  # noqa: BLE001 - narration must never fail a SURVEY job
             logger.warning("Failed to publish narration for job %s: %s", self._job_id, exc)
+        # Job transparency (B3): the exact units this event proves, on a
+        # separate channel the browser stream never sees. Off by default.
+        if settings.live_progress:
+            publish_stage_units(self._redis, self._job_id, progress)

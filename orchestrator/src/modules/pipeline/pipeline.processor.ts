@@ -7,6 +7,7 @@ import { DryRunService } from '../writeback/dry-run.service';
 import { IdempotencyService } from '../writeback/idempotency.service';
 import { BackfillService } from '../writeback/backfill.service';
 import { JobEventsPublisher } from './job-events.publisher';
+import { ProgressService } from './progress.service';
 import { McpClient } from './mcp.client';
 import { runPipelineJob, type PipelineJobInput } from './pipeline.worker';
 import { CredentialVaultService } from '../auth/credential-vault.service';
@@ -52,6 +53,19 @@ jobEventsPublisherRedis.on('error', (err) => {
   console.error('JobEventsPublisher Redis error:', err);
 });
 const jobEventsPublisher = new JobEventsPublisher(jobEventsPublisherRedis as any);
+// Job transparency (B4): counted progress, only when LIVE_PROGRESS is on. Same
+// per-process direct-Redis pattern as above (this child has no DI container).
+const progressService = config.LIVE_PROGRESS
+  ? new ProgressService(jobEventsPublisherRedis as any, () => {
+      const subscriber = new Redis(config.REDIS_URL);
+      // ioredis throws on an unhandled 'error' event; one subscriber per tracked job.
+      subscriber.on('error', (err) => {
+        // eslint-disable-next-line no-console -- worker process logging, not app logging
+        console.error('ProgressService subscriber Redis error:', err);
+      });
+      return subscriber as any;
+    })
+  : undefined;
 const mcpClient = new McpClient(`${config.MCP_URL}/api/ado`, config.MCP_BEARER, config.MCP_REQUEST_TIMEOUT_MS);
 const backfillService = new BackfillService(mcpClient, ingestionClient, idempotencyService);
 const credentialVault = new CredentialVaultService(prisma, config.CREDENTIAL_ENC_KEY, config.CREDENTIAL_ENC_KEY_PREVIOUS);
@@ -108,6 +122,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     idempotencyService,
     prisma,
     jobEventsPublisher,
+    progressService,
     mcpClient,
     backfillService,
     adoCredentialResolver,

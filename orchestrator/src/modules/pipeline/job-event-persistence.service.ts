@@ -128,9 +128,13 @@ export class JobEventPersistenceService implements OnModuleInit, OnModuleDestroy
     // -- same convention JobEventsController.streamEvents already relies on
     // to tell the two apart on this shared channel.
     const isNarration = payload.type === 'narration';
-    const phase = (isNarration ? payload.phase : payload.stage) as string | undefined;
+    // Typed notice (B12): stored as phase `notice` with the kind as its message,
+    // the whole payload in `detail`, so the run summary can be built from history.
+    const isNotice = payload.type === 'notice' && typeof payload.kind === 'string';
+    const phase = (isNotice ? 'notice' : isNarration ? payload.phase : payload.stage) as string | undefined;
     if (!phase) return null;
-    const message_ = (isNarration ? (payload.message as string | undefined) : undefined) ?? phase;
+    const message_ =
+      (isNotice ? (payload.kind as string) : isNarration ? (payload.message as string | undefined) : undefined) ?? phase;
     // Real gap this closes: backfillMissedEvents() runs long after an event
     // actually happened, and Prisma's `createdAt @default(now())` would
     // otherwise stamp a backfilled row with the BACKFILL's own timestamp --

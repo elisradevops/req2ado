@@ -144,6 +144,52 @@ describe('LlmController', () => {
     expect(res.end).toHaveBeenCalled();
   });
 
+  describe('terminal done line (job transparency B7)', () => {
+    const run = async (chunks: Array<Record<string, unknown>>, body: Record<string, unknown>, failAfter = false) => {
+      async function* fake() {
+        for (const c of chunks) yield c;
+        if (failAfter) throw new Error('upstream dropped');
+      }
+      const { controller } = makeController({ streamChat: jest.fn().mockReturnValue(fake()) });
+      const written: string[] = [];
+      const res = { setHeader: jest.fn(), write: jest.fn((c: string) => written.push(c)), end: jest.fn(), on: jest.fn() };
+      const outcome = await controller
+        .chatStream({ messages: [{ role: 'user', content: 'hi' }], ...body }, res as any, USER_ID)
+        .then(() => 'ok', () => 'error');
+      return { written, res, outcome };
+    };
+
+    it('ends with {done, finishReason, model} when asked, and writes no empty line for the reason chunk', async () => {
+      const { written } = await run([{ content: 'Hi' }, { finishReason: 'stop' }], { includeDone: true, model: 'gemma4:12b' });
+      expect(written).toEqual([
+        `${JSON.stringify({ delta: 'Hi' })}\n`,
+        `${JSON.stringify({ done: true, finishReason: 'stop', model: 'gemma4:12b' })}\n`,
+      ]);
+    });
+
+    it('reports a length cut-off so the caller knows the answer is incomplete', async () => {
+      const { written } = await run([{ content: '{"a":' }, { finishReason: 'length' }], { includeDone: true });
+      expect(JSON.parse(written[written.length - 1])).toEqual({ done: true, finishReason: 'length' });
+    });
+
+    it('omits finishReason when the upstream gave none', async () => {
+      const { written } = await run([{ content: 'Hi' }], { includeDone: true });
+      expect(JSON.parse(written[written.length - 1])).toEqual({ done: true });
+    });
+
+    it('writes nothing extra unless asked, even when the upstream reports a reason', async () => {
+      const { written } = await run([{ content: 'Hi' }, { finishReason: 'stop' }], {});
+      expect(written).toEqual([`${JSON.stringify({ delta: 'Hi' })}\n`]);
+    });
+
+    it('never writes the done line when the stream fails part-way', async () => {
+      const { written, res, outcome } = await run([{ content: 'Hi' }], { includeDone: true }, true);
+      expect(outcome).toBe('error');
+      expect(written).toEqual([`${JSON.stringify({ delta: 'Hi' })}\n`]);
+      expect(res.end).toHaveBeenCalled();
+    });
+  });
+
   it('threads an explicit seed from the request body into llmClient.streamChat', async () => {
     async function* fakeDeltas() {
       yield { content: 'Hi' };

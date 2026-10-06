@@ -157,6 +157,26 @@ class Settings(BaseSettings):
     # shared backend, raise it only in coordination with whoever operates
     # that backend's own concurrency limit.
     survey_chunk_concurrency: int = 1
+    # Job transparency (docs/job-transparency-implementation-plan.md). Every
+    # capability is its own kill switch and ships OFF: with both false this
+    # service behaves byte-identically to before the feature existed.
+    #
+    # live_progress: counts the document at parse, publishes the document map
+    # and exact stage units, and lets the orchestrator compute a counted
+    # percentage. Read-only observation; never changes a job's result.
+    live_progress: bool = False
+    # llm_stream_drafting: stream the large drafting calls so the screen can
+    # show items as the model writes them. The streamed text only feeds a
+    # display observer -- the returned value still comes from the existing
+    # full-text parse, so results are unchanged either way.
+    llm_stream_drafting: bool = False
+    # Longest excerpt of the owner's own document text sent on the live
+    # channel, in characters. Bounded so a misconfiguration cannot turn the
+    # event bus into a document copy.
+    live_excerpt_max_chars: int = Field(default=240, ge=40, le=1000)
+    # Upper bound on live frames per job per second (frames are coalesced at
+    # the source, so this caps Redis and browser load, not the model).
+    live_publish_hz: float = Field(default=4.0, gt=0, le=10)
     # Kill switch for scoring.py's §7 canary/drift probe (the fixed,
     # known-bad sentinel requirement injected into every quality-scoring
     # batch -- see _CANARY_NODE_ID's own module comment). Default on,

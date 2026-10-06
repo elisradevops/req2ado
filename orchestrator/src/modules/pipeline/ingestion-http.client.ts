@@ -325,6 +325,9 @@ export class IngestionHttpClient {
     // LLM tie-break judge, same "no LLM judge available" degrade
     // check_for_duplicates.py already has for judge_client=None.
     userId?: string,
+    // Job transparency (B9b): lets ingestion show a confirmed duplicate side by
+    // side on this job's running screen. Display only, optional.
+    jobId?: string,
   ): Promise<{ isDuplicate: boolean; matchedItemId: string | null; similarity: number | null }> {
     const response = await fetch(`${this.baseUrl}/dedup/check`, {
       method: 'POST',
@@ -335,6 +338,7 @@ export class IngestionHttpClient {
         area_path: areaPath,
         ...(threshold !== undefined ? { threshold } : {}),
         ...(userId ? { user_id: userId } : {}),
+        ...(jobId ? { job_id: jobId } : {}),
       }),
     });
     if (!response.ok) {

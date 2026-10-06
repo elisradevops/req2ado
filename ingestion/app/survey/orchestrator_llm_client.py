@@ -35,6 +35,9 @@ from app.survey._response_schemas import (
     trace_links_schema,
 )
 from app.config import settings
+from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
+from app.leveling.live_stream import DraftingDisplay
+from app.logging_context import current_job_id
 from app.survey.llm_cache import LlmResponseCache, cache_key
 from app.workitem.model import RequirementTag
 
@@ -72,6 +75,8 @@ _JSON_FENCE_ANYWHERE_PATTERN = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.D
 # before this was configurable. See config.py's own doc comment for this
 # rung's place in the wider SURVEY call ladder.
 _LLM_REQUEST_TIMEOUT_SECONDS = settings.llm_request_timeout_seconds
+# Returned by _chat_json_streaming when the call must be made the plain way.
+_NOT_STREAMED = object()
 
 # Caps output length (forwarded as maxTokens -> OpenAI-compat max_tokens ->
 # Ollama's num_predict) on the three call sites that lost response_format
@@ -971,9 +976,67 @@ class OrchestratorLlmClient:
                     response.status_code, attempt + 1, _MAX_CHAT_RETRY_ATTEMPTS,
                     _CHAT_RETRY_BACKOFF_SECONDS[attempt],
                 )
+                notice("server_retry", status=response.status_code)
                 time.sleep(_CHAT_RETRY_BACKOFF_SECONDS[attempt])
         assert response is not None  # loop always runs >=1 iteration
         return response
+
+    def _chat_json_streaming(
+        self, payload: dict, user_id: str | None, display: DraftingDisplay,
+    ) -> Any:
+        """Same call as `_chat_json`'s plain path, read as a stream so the screen
+        can show what the model is writing (job transparency, B7). The text it
+        collects is parsed by the very same `_strip_json_fence` +
+        `_parse_json_object` the plain path uses, so the result is identical; the
+        observer only feeds the display.
+
+        Returns `_NOT_STREAMED` (the caller then makes the ordinary call, which
+        keeps its own retry ladder) when streaming was not possible: the request
+        failed or was refused before any output arrived, the stream broke part
+        way (the lane is cleared first), or it ended without the terminal line
+        that proves the answer is complete."""
+        headers = {"Authorization": f"Bearer {self._bearer_token}"}
+        if user_id:
+            headers["X-Req2Ado-User-Id"] = user_id
+        parts: list[str] = []
+        finished = False
+        got_output = False
+        try:
+            timeout = _LLM_REQUEST_TIMEOUT_SECONDS
+            with httpx.Client(transport=self._transport, timeout=timeout) as client:
+                with client.stream(
+                    "POST", f"{self._base_url}/llm/chat/stream",
+                    json={**payload, "includeDone": True}, headers=headers,
+                ) as response:
+                    if response.is_error:
+                        notice("stream_fallback", reason="refused")
+                        return _NOT_STREAMED
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        got_output = True
+                        message = json.loads(line)
+                        if message.get("done"):
+                            finished = True
+                            if message.get("finishReason") == "length":
+                                notice("output_limit_reached", "warning", with_last_item=True, step="drafting")
+                            continue
+                        delta = message.get("delta")
+                        if delta:
+                            parts.append(delta)
+                            display.feed(delta)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("Streamed /llm/chat/stream call failed, using the plain call: %s", exc)
+            notice("stream_fallback", reason="stream_error")
+            if got_output:
+                display.reset()
+            return _NOT_STREAMED
+        if not finished:
+            logger.warning("Streamed call ended without its terminal line, using the plain call")
+            notice("stream_fallback", reason="no_terminal_line")
+            display.reset()
+            return _NOT_STREAMED
+        return _parse_json_object(_strip_json_fence("".join(parts)))
 
     def _chat_json(
         self,
@@ -983,6 +1046,8 @@ class OrchestratorLlmClient:
         schema: dict | None = None,
         max_tokens: int = _MAX_OUTPUT_TOKENS,
         user_id: str | None = None,
+        stream_inputs: dict[str, str | None] | None = None,
+        stream_stage: str | None = None,
     ) -> Any:
         """Shared payload-envelope + response-parsing shape for this class's
         simple, single-shot structured-extraction calls (schema in, JSON
@@ -993,7 +1058,12 @@ class OrchestratorLlmClient:
         docstrings for why. `schema=None` omits `responseSchema` entirely
         (see infer_trace_links's own comment on the array-schema grammar-cost
         cliff this supports). `user_id` -- see _post_chat's own docstring;
-        forwarded straight through, never stored."""
+        forwarded straight through, never stored.
+
+        `stream_inputs` (row id -> the owner's text for it) marks a drafting
+        call that may be streamed for the live screen: it is, only when both
+        LIVE_PROGRESS and LLM_STREAM_DRAFTING are on and the job has a live
+        emitter. Otherwise this is exactly the plain call it always was."""
         payload = {
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1009,6 +1079,22 @@ class OrchestratorLlmClient:
             **({"minP": self._min_p} if self._min_p else {}),
             **({"seed": self._seed} if self._seed is not None else {}),
         }
+        emitter = (
+            live_emitter_for(current_job_id())
+            if stream_inputs is not None and settings.live_progress and settings.llm_stream_drafting
+            else None
+        )
+        if emitter is not None:
+            display = DraftingDisplay(
+                emitter, stream_inputs or {}, stage=stream_stage, counter=current_stage_counter(),
+            )
+            try:
+                display.start()
+                parsed = self._chat_json_streaming(payload, user_id, display)
+            finally:
+                display.end()
+            if parsed is not _NOT_STREAMED:
+                return parsed
         response = self._post_chat(payload, user_id)
         response.raise_for_status()
         content = _strip_json_fence(response.json()["content"])
@@ -1460,6 +1546,7 @@ class OrchestratorLlmClient:
         )
         return self._chat_json(
             system_prompt, json.dumps(texts_by_row_id), schema=title_tags_schema(), user_id=user_id,
+            stream_inputs=dict(texts_by_row_id), stream_stage="improve",
         )
 
     def summarize_parent_nodes(
@@ -1495,6 +1582,10 @@ class OrchestratorLlmClient:
         system_prompt = load_prompt("summarize_parent_nodes", node_count=str(len(nodes_by_id)))
         return self._chat_json(
             system_prompt, json.dumps(nodes_by_id), schema=parent_summary_schema(), user_id=user_id,
+            stream_inputs={
+                k: v.get("title") if isinstance(v, dict) else None for k, v in nodes_by_id.items()
+            },
+            stream_stage="summarize",
         )
 
     def synthesize_leaf_requirements(
@@ -1528,6 +1619,10 @@ class OrchestratorLlmClient:
         )
         return self._chat_json(
             system_prompt, json.dumps(items_by_id), schema=synthesis_schema(), user_id=user_id,
+            stream_inputs={
+                k: v.get("text") if isinstance(v, dict) else None for k, v in items_by_id.items()
+            },
+            stream_stage="draft",
         )
 
     def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
@@ -1848,6 +1943,8 @@ class OrchestratorLlmClient:
             nodes = _nodes_from_parsed(_parse_json_object(content))
             span.set_attribute("gen_ai.response.node_count", len(nodes))
         truncated = body.get("finishReason") == "length"
+        if truncated:
+            notice("output_limit_reached", "warning", with_last_item=True, step="analyze")
         logger.warning(
             "analyze_section result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
             len(nodes), body.get("finishReason"), truncated, options.topic_count,
@@ -2065,6 +2162,8 @@ class OrchestratorLlmClient:
             nodes = _nodes_from_parsed(_parse_json_object(content))
             span.set_attribute("gen_ai.response.node_count", len(nodes))
         truncated = body.get("finishReason") == "length"
+        if truncated:
+            notice("output_limit_reached", "warning", with_last_item=True, step="skeleton")
         logger.warning(
             "analyze_section_skeleton result: node_count=%d finishReason=%r truncated=%s topic_count=%r",
             len(nodes), body.get("finishReason"), truncated, options.topic_count,
@@ -2233,6 +2332,8 @@ class OrchestratorLlmClient:
             result = parsed if isinstance(parsed, dict) else {}
             span.set_attribute("gen_ai.response.node_count", len(result))
         truncated = body.get("finishReason") == "length"
+        if truncated:
+            notice("output_limit_reached", "warning", with_last_item=True, step="write")
         logger.warning(
             "author_content result: requested=%d returned=%d finishReason=%r truncated=%s",
             len(skeleton_nodes), len(result), body.get("finishReason"), truncated,
@@ -2341,6 +2442,8 @@ class OrchestratorLlmClient:
         # signal analyze_section/author_content guard their caches with) and
         # a response that simply came back short of what was asked.
         incomplete = body.get("finishReason") == "length" or len(result) < len(items)
+        if body.get("finishReason") == "length":
+            notice("output_limit_reached", "warning", with_last_item=True, step="figures")
         logger.warning(
             "map_figures_tables result: candidates=%d requested=%d returned=%d "
             "finishReason=%r incomplete=%s",

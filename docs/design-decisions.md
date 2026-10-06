@@ -90,6 +90,30 @@ for the product context and `phase1-spec.md` for the build detail.
   (would require chunking the LLM calls — out of scope, a backend architecture change beyond this
   phase).
 
+## Stream the drafting calls; the stream is a view
+
+- **Context.** A run gave almost no insight: a percentage that sat still for a whole model call and then jumped,
+  narration that repeated, a clock. Users wanted to see the document being worked on, items appearing, and a
+  percentage that is counted, not guessed. The three drafting calls (title/tags, parent summary, text synthesis)
+  are single large requests whose answer is one JSON object.
+- **Decision.** Read those calls as a stream and show each item as it closes, but keep the final result exactly what
+  it was: the collected text goes through the same fence-stripping and tolerant JSON parse as the plain call, and
+  the stream only feeds an observer that produces display frames. If the stream cannot be used (refused or broken
+  before output, broken part-way, no terminal line), the plain call is made instead, with its own retry ladder.
+  Everything is behind flags, ships off, and requires both `LIVE_PROGRESS` and `LLM_STREAM_DRAFTING`.
+- **Why.** Items are the honest unit for a percentage and the thing a reader wants to watch. Because the result
+  still comes from the existing parse, streaming cannot change what a job produces; a real run with the flags off
+  and on gave identical trees on every field.
+- **Rejected.** Token-by-token typing of the output (needs the order of output to follow the input, costs frames,
+  adds nothing the finished item does not show); a percentage estimated from elapsed time (what the screen did
+  before); a raw activity log (superseded earlier, see section 11.3 of `DESIGN.md`); showing token counts on the
+  main screen (not what the user asked to see).
+- **Consequences.** Frames are rate-limited at the source (4 a second per job) and coalesced per lane, except
+  finished items, which are never dropped. Excerpts of the user's text exist only in short-lived Redis keys and
+  on the wire to the owner; they are not stored or logged. The orchestrator's stream endpoint gains an opt-in
+  terminal line. A single long model call still shows no movement inside it unless the model emits items as it goes;
+  the screen says so instead of inventing progress.
+
 ## Stack & structure
 
 - **Routing:** `react-router-dom` — makes every page URL-addressable and refresh-safe (today,

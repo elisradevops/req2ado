@@ -619,6 +619,27 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'llama3.1', stream: true }));
   });
 
+  it('streamChat ends with a text-free finishReason chunk when upstream reports one, and never invents one (B7)', async () => {
+    const client = new OpenWebUiClient(config);
+    const collect = async (stream: AsyncGenerator<unknown>) => {
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = jest.fn().mockResolvedValue(stream);
+      const out: unknown[] = [];
+      for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }])) out.push(chunk);
+      return out;
+    };
+    async function* withReason() {
+      yield { choices: [{ delta: { content: 'Hel' }, finish_reason: null }] };
+      yield { choices: [{ delta: { content: 'lo' }, finish_reason: null }] };
+      yield { choices: [{ delta: {}, finish_reason: 'length' }] };
+    }
+    async function* withoutReason() {
+      yield { choices: [{ delta: { content: 'Hi' } }] };
+    }
+    expect(await collect(withReason())).toEqual([{ content: 'Hel' }, { content: 'lo' }, { finishReason: 'length' }]);
+    expect(await collect(withoutReason())).toEqual([{ content: 'Hi' }]);
+  });
+
   it('streamChat forwards seed when provided, and omits it otherwise (same pinned-sampling passthrough as chat())', async () => {
     // LLM_SEND_SEED: true -- tests the seed-forwarding path when the flag is on.
     const client = new OpenWebUiClient({ ...config, LLM_SEND_SEED: true });

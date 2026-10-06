@@ -2469,3 +2469,102 @@ describe('runPipelineJob', () => {
     });
   });
 });
+
+describe('runPipelineJob progress service wiring (job transparency B4)', () => {
+  const ingestion = { ingest: jest.fn(), level: jest.fn(), checkDuplicate: jest.fn(), deleteDedupEntry: jest.fn() };
+  const dryRun = { diff: jest.fn() };
+  const prisma = {
+    job: { update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }), findUnique: jest.fn().mockResolvedValue({ status: 'running' }) },
+    auditEntry: { create: jest.fn() },
+    dedupSkipAudit: { createMany: jest.fn() },
+    jobFigureFile: { deleteMany: jest.fn() },
+    areaPathBackfill: {
+      findUnique: jest.fn().mockResolvedValue({ areaPath: 'Project\\Area1', lastBackfilledAt: new Date() }),
+      upsert: jest.fn(),
+    },
+  };
+  const publisher = { publish: jest.fn(), publishNarration: jest.fn() };
+  const mcp = {
+    discoverLinkTypes: jest.fn().mockResolvedValue([]),
+    discoverFields: jest.fn().mockResolvedValue([]),
+    queryIds: jest.fn().mockResolvedValue([]),
+    getWorkItemsBatch: jest.fn().mockResolvedValue([]),
+  };
+  const baseDeps = () => ({
+    ingestionClient: ingestion as any,
+    dryRunService: dryRun as any,
+    idempotencyService: { lookup: jest.fn(), record: jest.fn(), deleteByAdoWorkItemId: jest.fn() } as any,
+    prisma: prisma as any,
+    jobEventsPublisher: publisher as any,
+    mcpClient: mcp as any,
+    backfillService: { backfillAreaPath: jest.fn().mockResolvedValue({ scanned: 0, seeded: 0, skipped: 0, skippedReasons: {} }) } as any,
+    adoCredentialResolver: { resolve: jest.fn().mockResolvedValue(undefined) } as any,
+    defaultLlmModel: 'gemma4:12b',
+  });
+  const job = { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey' as const, fileBuffer: Buffer.from(''), filename: 'x.txt' };
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('tracks the leveling call, records duplicate-check units and finishes at diff_ready', async () => {
+    ingestion.ingest.mockResolvedValue({ blocks: [] });
+    ingestion.level.mockResolvedValue({ nodes: [] });
+    dryRun.diff.mockImplementation(async (_inputs: unknown, _idem: unknown, _check: unknown, onProgress: (c: number, t: number, title: string) => void) => {
+      onProgress(1, 2, 'Item');
+      return [];
+    });
+    const stop = jest.fn().mockResolvedValue(undefined);
+    const progressService = { track: jest.fn().mockResolvedValue(stop), record: jest.fn().mockResolvedValue(undefined), finish: jest.fn().mockResolvedValue(undefined) };
+
+    await runPipelineJob(job, { ...baseDeps(), progressService: progressService as any });
+
+    expect(progressService.track).toHaveBeenCalledWith('job-1');
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(progressService.record).toHaveBeenCalledWith('job-1', { stage: 'dedup', unit: 'items', done: 1, total: 2 });
+    expect(progressService.finish).toHaveBeenCalledWith('job-1');
+    // 100% must be published before diff_ready, which closes the browser's event stream.
+    const diffReadyCall = publisher.publish.mock.calls.findIndex((c: unknown[]) => c[1] === 'diff_ready');
+    expect(progressService.finish.mock.invocationCallOrder[0]).toBeLessThan(
+      publisher.publish.mock.invocationCallOrder[diffReadyCall],
+    );
+    // Tracking started before the leveling call and stopped only after it.
+    expect(progressService.track.mock.invocationCallOrder[0]).toBeLessThan(ingestion.level.mock.invocationCallOrder[0]);
+    expect(ingestion.level.mock.invocationCallOrder[0]).toBeLessThan(stop.mock.invocationCallOrder[0]);
+  });
+
+  it('passes the job id to the duplicate check only when a progress service is configured (B9b)', async () => {
+    ingestion.ingest.mockResolvedValue({ blocks: [] });
+    ingestion.level.mockResolvedValue({ nodes: [] });
+    ingestion.checkDuplicate.mockResolvedValue({ isDuplicate: false, matchedItemId: null, similarity: null });
+    dryRun.diff.mockImplementation(async (_inputs: unknown, _idem: unknown, check: (t: string, ti: string, a: string) => Promise<unknown>) => {
+      await check('Desc', 'Title', 'Project\\Area1');
+      return [];
+    });
+    const stop = jest.fn().mockResolvedValue(undefined);
+    const progressService = { track: jest.fn().mockResolvedValue(stop), record: jest.fn(), finish: jest.fn() };
+
+    await runPipelineJob(job, { ...baseDeps(), progressService: progressService as any });
+    expect(ingestion.checkDuplicate).toHaveBeenLastCalledWith('Desc', 'Title', 'Project\\Area1', undefined, undefined, 'job-1');
+
+    await runPipelineJob(job, baseDeps());
+    expect(ingestion.checkDuplicate).toHaveBeenLastCalledWith('Desc', 'Title', 'Project\\Area1', undefined, undefined);
+  });
+
+  it('stops tracking even when the leveling call fails', async () => {
+    ingestion.ingest.mockResolvedValue({ blocks: [] });
+    ingestion.level.mockRejectedValue(new Error('ingestion exploded'));
+    const stop = jest.fn().mockResolvedValue(undefined);
+    const progressService = { track: jest.fn().mockResolvedValue(stop), record: jest.fn(), finish: jest.fn() };
+
+    await runPipelineJob(job, { ...baseDeps(), progressService: progressService as any }).catch(() => undefined);
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(progressService.finish).not.toHaveBeenCalled();
+  });
+
+  it('behaves exactly as before when no progress service is configured', async () => {
+    ingestion.ingest.mockResolvedValue({ blocks: [] });
+    ingestion.level.mockResolvedValue({ nodes: [] });
+    dryRun.diff.mockResolvedValue([]);
+    await expect(runPipelineJob(job, baseDeps())).resolves.toEqual([]);
+  });
+});

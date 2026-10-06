@@ -126,6 +126,9 @@ export interface LlmChatOptions {
 export interface LlmStreamChunk {
   content?: string;
   reasoning?: string;
+  // Only ever on the last chunk, and only when the upstream reported one
+  // ('stop', 'length', ...). Carries no text.
+  finishReason?: string;
 }
 
 export interface LlmClient {

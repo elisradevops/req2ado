@@ -194,3 +194,76 @@ def test_load_pdf_with_ocr_fallback_forwards_languages_to_load_pdf_when_a_page_i
         mock_load_pdf.return_value = fake_doc
         load_pdf_with_ocr_fallback(str(FIXTURES / "scanned_sample.pdf"), languages="heb+eng")
     mock_load_pdf.assert_called_once_with(str(FIXTURES / "scanned_sample.pdf"), describe_figure=None, languages="heb+eng")
+
+
+def _mixed_pdf_mocks(  # noqa: ANN202
+    mock_load_pdf, mock_page_has_extractable_text, mock_ocr, mock_pdf_reader, scanned,  # noqa: ANN001
+):
+    mock_pdf_reader.return_value.pages = [MagicMock() for _ in range(5)]
+    mock_page_has_extractable_text.side_effect = lambda _path, i: i not in scanned
+    path = str(FIXTURES / "sample.pdf")
+    mock_load_pdf.return_value = CanonicalDoc(
+        document=Document(path=path, format=DocumentFormat.PDF, sha256="fake"),
+        blocks=[], tables=[],
+    )
+    mock_ocr.side_effect = lambda _p, i, languages="eng": f"text of page {i + 1}"
+    return path
+
+
+@patch("app.loaders.ocr.PdfReader")
+@patch("app.loaders.ocr.ocr_page_to_text_filtered")
+@patch("app.loaders.ocr.page_has_extractable_text")
+@patch("app.loaders.ocr.load_pdf")
+def test_on_ocr_page_reports_each_scanned_page_with_counts(
+    mock_load_pdf: MagicMock, mock_has_text: MagicMock, mock_ocr: MagicMock, mock_reader: MagicMock,
+) -> None:
+    path = _mixed_pdf_mocks(mock_load_pdf, mock_has_text, mock_ocr, mock_reader, scanned={1, 3, 4})
+    calls: list[tuple] = []
+
+    doc = load_pdf_with_ocr_fallback(path, on_ocr_page=lambda *args: calls.append(args))
+
+    # (done, total scanned, PDF page, PDF page count, recognised text)
+    assert calls == [
+        (1, 3, 2, 5, "text of page 2"),
+        (2, 3, 4, 5, "text of page 4"),
+        (3, 3, 5, 5, "text of page 5"),
+    ]
+    assert [b.source_ref.page for b in doc.blocks] == [2, 4, 5]
+
+
+@patch("app.loaders.ocr.PdfReader")
+@patch("app.loaders.ocr.ocr_page_to_text_filtered")
+@patch("app.loaders.ocr.page_has_extractable_text")
+@patch("app.loaders.ocr.load_pdf")
+def test_a_failing_on_ocr_page_callback_never_changes_the_result(
+    mock_load_pdf: MagicMock, mock_has_text: MagicMock, mock_ocr: MagicMock, mock_reader: MagicMock,
+) -> None:
+    path = _mixed_pdf_mocks(mock_load_pdf, mock_has_text, mock_ocr, mock_reader, scanned={1, 3})
+    calls: list[int] = []
+
+    def boom(*args) -> None:  # noqa: ANN002
+        calls.append(args[0])
+        raise RuntimeError("observer exploded")
+
+    with_callback = load_pdf_with_ocr_fallback(path, on_ocr_page=boom)
+    without = load_pdf_with_ocr_fallback(path)
+
+    assert calls == [1]  # dropped after the first failure
+    assert [(b.text, b.source_ref.page) for b in with_callback.blocks] == [
+        (b.text, b.source_ref.page) for b in without.blocks
+    ]
+
+
+@patch("app.loaders.ocr.PdfReader")
+@patch("app.loaders.ocr.ocr_page_to_text_filtered")
+@patch("app.loaders.ocr.page_has_extractable_text")
+@patch("app.loaders.ocr.load_pdf")
+def test_on_ocr_page_is_not_called_for_a_text_pdf(
+    mock_load_pdf: MagicMock, mock_has_text: MagicMock, mock_ocr: MagicMock, mock_reader: MagicMock,
+) -> None:
+    path = _mixed_pdf_mocks(mock_load_pdf, mock_has_text, mock_ocr, mock_reader, scanned=set())
+    calls: list[tuple] = []
+
+    load_pdf_with_ocr_fallback(path, on_ocr_page=lambda *args: calls.append(args))
+
+    assert calls == []

@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_survey_chunk_concurrency_defaults_to_one() -> None:
     # Same default and same reasoning as survey_branch_concurrency (see
     # config.py's own doc comment): opting in is an operator decision made
@@ -80,3 +83,52 @@ def test_log_level_treats_a_blank_env_var_as_unset(monkeypatch) -> None:
     monkeypatch.setenv("LOG_LEVEL", "")
 
     assert Settings().log_level == "INFO"
+
+
+def test_job_transparency_flags_ship_off_with_bounded_defaults() -> None:
+    # docs/job-transparency-implementation-plan.md B0: with both flags false
+    # the service must behave exactly as before the feature existed.
+    from app.config import Settings
+
+    s = Settings()
+    assert s.live_progress is False
+    assert s.llm_stream_drafting is False
+    assert s.live_excerpt_max_chars == 240
+    assert s.live_publish_hz == 4.0
+
+
+def test_job_transparency_flags_read_their_env_vars(monkeypatch) -> None:
+    from app.config import Settings
+
+    monkeypatch.setenv("LIVE_PROGRESS", "true")
+    monkeypatch.setenv("LLM_STREAM_DRAFTING", "true")
+    monkeypatch.setenv("LIVE_EXCERPT_MAX_CHARS", "120")
+    monkeypatch.setenv("LIVE_PUBLISH_HZ", "2")
+
+    s = Settings()
+    assert s.live_progress is True
+    assert s.llm_stream_drafting is True
+    assert s.live_excerpt_max_chars == 120
+    assert s.live_publish_hz == 2.0
+
+
+def test_job_transparency_flags_treat_blank_env_vars_as_unset(monkeypatch) -> None:
+    from app.config import Settings
+
+    monkeypatch.setenv("LIVE_PROGRESS", "")
+    monkeypatch.setenv("LIVE_EXCERPT_MAX_CHARS", "")
+
+    s = Settings()
+    assert s.live_progress is False
+    assert s.live_excerpt_max_chars == 240
+
+
+@pytest.mark.parametrize("name,value", [("LIVE_EXCERPT_MAX_CHARS", "5"), ("LIVE_EXCERPT_MAX_CHARS", "100000"), ("LIVE_PUBLISH_HZ", "0"), ("LIVE_PUBLISH_HZ", "500")])
+def test_job_transparency_bounds_reject_out_of_range_values(monkeypatch, name, value) -> None:
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError):
+        Settings()

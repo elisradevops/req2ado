@@ -303,3 +303,134 @@ def test_dedup_check_scopes_by_area_path_and_finds_no_match_across_area_paths(tm
     assert check_response.status_code == 200
     body = check_response.json()
     assert body["is_duplicate"] is False
+
+
+class _RecordingEmitter:
+    def __init__(self) -> None:
+        self.compares: list[dict] = []
+
+    def compare(self, **kwargs) -> None:  # noqa: ANN003
+        self.compares.append(kwargs)
+
+
+def _seed_duplicate(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    client.post(
+        "/dedup/upsert",
+        json={"item_id": "item-1", "text": "The unit shall survive a drop.",
+              "title": "The unit shall survive a drop.", "area_path": "Project\\Area1"},
+    )
+
+
+def _check(job_id: str | None) -> dict:
+    payload = {"text": "The unit shall survive a drop.", "title": "The unit shall survive a drop.",
+               "area_path": "Project\\Area1"}
+    if job_id is not None:
+        payload["job_id"] = job_id
+    response = client.post("/dedup/check", json=payload)
+    assert response.status_code == 200
+    return response.json()
+
+
+def _patch_scope(monkeypatch, emitter: _RecordingEmitter | None) -> list[str]:  # noqa: ANN001
+    from contextlib import contextmanager
+
+    seen: list[str] = []
+
+    @contextmanager
+    def fake_scope(job_id, redis):  # noqa: ANN001, ANN202
+        seen.append(job_id)
+        yield emitter
+
+    monkeypatch.setattr(main, "live_emitter_scope", fake_scope)
+    return seen
+
+
+def test_dedup_check_emits_a_duplicate_comparison_for_a_job(tmp_path, monkeypatch) -> None:
+    _seed_duplicate(tmp_path, monkeypatch)
+    emitter = _RecordingEmitter()
+    _patch_scope(monkeypatch, emitter)
+
+    body = _check("job-9")
+
+    assert body["is_duplicate"] is True
+    assert len(emitter.compares) == 1
+    frame = emitter.compares[0]
+    assert frame["kind"] == "duplicate"
+    assert frame["a_ref"] == "proposed" and frame["b_ref"] == "item-1"
+    assert frame["a_text"] == frame["b_text"] == "The unit shall survive a drop."
+
+
+def test_dedup_check_response_never_carries_the_matched_text(tmp_path, monkeypatch) -> None:
+    _seed_duplicate(tmp_path, monkeypatch)
+    _patch_scope(monkeypatch, _RecordingEmitter())
+
+    body = _check("job-9")
+
+    assert "matched_text" not in body
+    assert set(body) == {"is_duplicate", "matched_item_id", "similarity", "judge_verdict"}
+
+
+def test_dedup_check_emits_nothing_without_a_job_id(tmp_path, monkeypatch) -> None:
+    _seed_duplicate(tmp_path, monkeypatch)
+    emitter = _RecordingEmitter()
+    seen = _patch_scope(monkeypatch, emitter)
+
+    assert _check(None)["is_duplicate"] is True
+    assert emitter.compares == [] and seen == []
+
+
+def test_dedup_check_emits_nothing_when_it_is_not_a_duplicate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    main._embed_client._transport = httpx.MockTransport(_mock_embed_handler)
+    emitter = _RecordingEmitter()
+    _patch_scope(monkeypatch, emitter)
+
+    assert _check("job-9")["is_duplicate"] is False
+    assert emitter.compares == []
+
+
+def test_dedup_check_with_live_progress_off_is_unchanged(tmp_path, monkeypatch) -> None:
+    # Real scope, flag off: no emitter exists, the call just returns the result.
+    _seed_duplicate(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.settings, "live_progress", False)
+
+    assert _check("job-9")["is_duplicate"] is True
+
+
+class _CapturingRedis:
+    def __init__(self) -> None:
+        self.published: list[tuple[str, str]] = []
+
+    def incr(self, name):  # noqa: ANN001, ANN201
+        return len(self.published) + 1
+
+    def expire(self, name, time):  # noqa: ANN001, ANN201
+        return True
+
+    def hset(self, name, key, value):  # noqa: ANN001, ANN201
+        return 1
+
+    def publish(self, channel, message):  # noqa: ANN001, ANN201
+        self.published.append((channel, message))
+
+
+def test_dedup_check_publishes_a_real_comparison_frame_through_the_real_emitter(
+    tmp_path, monkeypatch,  # noqa: ANN001
+) -> None:
+    # No fake scope: the real live_emitter_scope and LiveEmitter, so a lookup that
+    # only works when a job context is set (the dedup route sets none) would fail here.
+    _seed_duplicate(tmp_path, monkeypatch)
+    redis = _CapturingRedis()
+    monkeypatch.setattr(main, "_narration_redis", redis)
+    monkeypatch.setattr(main.settings, "live_progress", True)
+
+    assert _check("job-real")["is_duplicate"] is True
+
+    frames = [json.loads(m) for c, m in redis.published if c == "job-events:job-real:live"]
+    assert len(frames) == 1
+    compare = frames[0]["compare"]
+    assert frames[0]["kind"] == "compare" and compare["kind"] == "duplicate"
+    assert compare["a"]["ref"] == "proposed" and compare["b"]["ref"] == "item-1"
+    assert compare["a"]["text"] == compare["b"]["text"] == "The unit shall survive a drop."

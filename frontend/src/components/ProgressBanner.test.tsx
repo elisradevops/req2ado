@@ -1,8 +1,13 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { act } from 'react';
 import { ProgressBanner } from './ProgressBanner';
 import type { NarrationEvent } from '../api/events';
+import { FLUSH_INTERVAL_MS, useLiveRunStore } from '../store/liveRunStore';
+import { clearDocumentMapCache } from '../hooks/useDocumentMap';
+import { getRunMap } from '../api/runMap';
+
+vi.mock('../api/runMap', () => ({ getRunMap: vi.fn().mockResolvedValue(null) }));
 
 describe('ProgressBanner', () => {
   afterEach(() => {
@@ -1084,5 +1089,137 @@ describe('ProgressBanner', () => {
     expect(screen.getByText('682 blocks')).toBeInTheDocument();
     expect(screen.getByText('5 tables')).toBeInTheDocument();
     expect(screen.getByText('39 figures')).toBeInTheDocument();
+  });
+});
+
+
+// Job transparency: the counted percentage, the fallback to today's estimate,
+// and the live view. One phase, one bar -- the counted figure replaces the
+// block-based estimate rather than adding a second bar.
+describe('ProgressBanner live run view', () => {
+  const analyze: NarrationEvent = {
+    phase: 'analyze_section', branchIndex: 1, branchCount: 4, blocksDone: 100, blocksTotal: 400,
+    kbGrounded: false, kbCitations: [], message: 'x',
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useLiveRunStore.getState().reset();
+    useLiveRunStore.getState().begin('job-1');
+    clearDocumentMapCache();
+    vi.mocked(getRunMap).mockReset();
+    vi.mocked(getRunMap).mockResolvedValue(null);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    useLiveRunStore.getState().reset();
+  });
+
+  const send = (progress: Record<string, unknown>): void => {
+    act(() => {
+      useLiveRunStore.getState().ingestProgress({
+        type: 'progress', seq: 1, pct: 38, stage: 'improve', unit: 'items', done: 12, total: 36,
+        estimated: true, emittedAt: 'x', ...progress,
+      } as never);
+      vi.advanceTimersByTime(FLUSH_INTERVAL_MS);
+    });
+  };
+
+  it('keeps today\'s block-based estimate and label when there are no progress events', () => {
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    expect(screen.getByText(/of this section \(est\.\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/of the run/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('live-run-panel')).not.toBeInTheDocument();
+  });
+
+  it('shows the counted percentage, named for what is counted, instead of the estimate', () => {
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    send({});
+    expect(screen.getByText('38%')).toBeInTheDocument();
+    expect(screen.getByText('38% of the run (est.) — 12 of 36 items in this step')).toBeInTheDocument();
+    expect(screen.queryByText(/of this section \(est\.\)/)).not.toBeInTheDocument();
+  });
+
+  it('has exactly one progress bar, named, with an honest reading of its value', () => {
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    send({ pct: 38 });
+    const bars = screen.getAllByRole('progressbar');
+    expect(bars).toHaveLength(1);
+    expect(bars[0]).toHaveAttribute('aria-label', 'Run progress');
+    expect(bars[0]).toHaveAttribute('aria-valuenow', '38');
+    expect(bars[0]).toHaveAttribute('aria-valuetext', '38 percent of the run, estimated');
+  });
+
+  it('drops the start-of-chunk blocks chip once a counted figure says the same thing', () => {
+    const props = { stage: 'infer_hierarchy_start' as const, startedAt: '2026-07-09T10:00:00Z', mode: 'survey' as const, narrations: [analyze], jobId: 'job-1' };
+    const { rerender } = render(<ProgressBanner {...props} />);
+    expect(screen.getByText('100 / 400 blocks')).toBeInTheDocument();
+    send({});
+    rerender(<ProgressBanner {...props} />);
+    expect(screen.queryByText('100 / 400 blocks')).not.toBeInTheDocument();
+    expect(screen.getByText(/12 of 36 items in this step/)).toBeInTheDocument();
+  });
+
+  it('names the bar and says so when there is no estimate at all', () => {
+    render(<ProgressBanner stage="parse" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[{ ...analyze, phase: 'preparing_analysis', blocksTotal: 0, blocksDone: 0, branchCount: 0 }]} jobId="job-1" />);
+    const bar = screen.getByRole('progressbar');
+    expect(bar).toHaveAttribute('aria-label', 'Run progress');
+    expect(bar).toHaveAttribute('aria-valuetext', 'No progress estimate for this step');
+  });
+
+  it('explains how the percentage is counted', () => {
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    send({});
+    expect(screen.getByRole('button', { name: 'How the percentage is counted' })).toBeInTheDocument();
+  });
+
+  it('has the one polite status region from the first render, even with no live events', () => {
+    render(<ProgressBanner stage="parse" startedAt="2026-07-09T10:00:00Z" mode="survey" jobId="job-1" />);
+    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('drops the "bar moves when the call returns" note once the run counts items live', () => {
+    const props = { stage: 'infer_hierarchy_start' as const, startedAt: '2026-07-09T10:00:00Z', mode: 'survey' as const, narrations: [analyze], jobId: 'job-1' };
+    const { rerender } = render(<ProgressBanner {...props} />);
+    expect(screen.getByTestId('model-call-clock')).toBeInTheDocument(); // today's behaviour with no live events
+    send({});
+    rerender(<ProgressBanner {...props} />);
+    expect(screen.queryByTestId('model-call-clock')).not.toBeInTheDocument();
+  });
+
+  it('restarts the "updated … ago" stamp when live frames arrive between narration events', () => {
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    act(() => {
+      vi.advanceTimersByTime(125_000);
+    });
+    expect(screen.getByText(/waiting on model · last update 2m 5s ago/)).toBeInTheDocument();
+    act(() => {
+      useLiveRunStore.getState().ingestLive({ type: 'live', seq: 1, lane: 0, kind: 'item', ref: 'r1', title: 'T', emittedAt: 'x' });
+      vi.advanceTimersByTime(FLUSH_INTERVAL_MS + 1000);
+    });
+    // One more clock tick: the counter restarts when the effect runs, and shows on the next render.
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.getByText(/updated [01]s ago/)).toBeInTheDocument();
+  });
+
+  it('does not let a heartbeat pretend the run produced something', () => {
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    act(() => {
+      vi.advanceTimersByTime(125_000);
+    });
+    act(() => {
+      useLiveRunStore.getState().ingestHeartbeat({ type: 'heartbeat', at: 'x', idleSeconds: 120, inFlight: [] });
+      vi.advanceTimersByTime(FLUSH_INTERVAL_MS + 1000);
+    });
+    expect(screen.getByText(/waiting on model · last update 2m \d+s ago/)).toBeInTheDocument();
+  });
+
+  it('shows the live view only after live events arrive', () => {
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    expect(screen.queryByTestId('live-run-panel')).not.toBeInTheDocument();
+    send({});
+    expect(screen.getByTestId('live-run-panel')).toBeInTheDocument();
   });
 });

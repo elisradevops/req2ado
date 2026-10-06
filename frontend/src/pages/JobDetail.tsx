@@ -29,7 +29,11 @@ import {
   type MoveDiffEntryInput,
   type ValidationResult,
 } from '../api/jobs';
-import { subscribeToJobEvents, isValidNarrationEvent, type JobStage, type NarrationEvent } from '../api/events';
+import { subscribeToJobEvents, isValidNarrationEvent, isValidNotice, type JobStage, type NarrationEvent } from '../api/events';
+import type { Notice } from '../api/liveTypes';
+import { useLiveRunStore, mergeNotice } from '../store/liveRunStore';
+import { RunNotices } from '../components/liveRun/RunNotices';
+import { RUN_SUMMARY_HEADING } from '../utils/liveCopy';
 import { loadRuntimeConfig } from '../api/config';
 import { useOrgUrl } from '../store/authStore';
 import { StatusChip } from '../components/StatusChip';
@@ -364,6 +368,10 @@ export function JobDetail(): React.ReactElement {
     if (!id || !isLive) return;
     let unsubscribe: (() => void) | undefined;
     let cancelled = false;
+    // Job transparency: the live run view keeps its own store (see
+    // liveRunStore.ts), so a stream of small updates never re-renders this page.
+    const live = useLiveRunStore.getState();
+    live.begin(id);
     loadRuntimeConfig().then((config) => {
       if (cancelled) return;
       unsubscribe = subscribeToJobEvents(
@@ -371,6 +379,7 @@ export function JobDetail(): React.ReactElement {
         config.apiBaseUrl,
         (nextStage) => {
           hasShownSseErrorRef.current = false;
+          live.touch();
           setStage(nextStage);
           setStatus((current) => (current === 'pending' ? 'running' : current));
           if (nextStage === 'diff_ready' || nextStage === 'failed' || nextStage === 'cancelled') {
@@ -425,6 +434,7 @@ export function JobDetail(): React.ReactElement {
         },
         (narration) => {
           hasShownSseErrorRef.current = false;
+          live.touch();
           // chunk_warning is deliberately EXCLUDED from `narrations` --
           // that array's `.at(-1)` drives the stepper's current-phase and
           // the ticker's status sentence (JobLifecycleSteps/tickerFor), and
@@ -481,15 +491,23 @@ export function JobDetail(): React.ReactElement {
           // previously a silent infinite reconnect loop. One toast per
           // outage (reset by hasShownSseErrorRef above once a real event
           // arrives again), not one per retry attempt.
+          live.markError();
           if (cancelled || hasShownSseErrorRef.current) return;
           hasShownSseErrorRef.current = true;
           showToast('Lost the live connection to this job -- reconnecting...', 'error');
+        },
+        {
+          onProgress: live.ingestProgress,
+          onLive: live.ingestLive,
+          onHeartbeat: live.ingestHeartbeat,
+          onNotice: live.ingestNotice,
         },
       );
     });
     return () => {
       cancelled = true;
       unsubscribe?.();
+      live.reset();
     };
   }, [id, isLive]);
 
@@ -1246,6 +1264,16 @@ export function JobDetail(): React.ReactElement {
     return result;
   }, [diff]);
 
+  // Typed notices stored with the run (phase 'notice'), for the "How this run went" summary.
+  const historyNotices = useMemo(
+    () =>
+      eventHistory
+        .filter((event) => event.phase === 'notice' && isValidNotice(event.detail))
+        .reduce<Notice[]>((list, event) => mergeNotice(list, event.detail as unknown as Notice), []),
+    [eventHistory],
+  );
+  const titleByLocalIdMap = useMemo(() => new Map(Object.entries(titleByLocalId)), [titleByLocalId]);
+
   // Reviewer progress, from the server-persisted flag on each diff entry.
   const reviewedIds = useMemo(() => new Set(diff.filter((entry) => entry.reviewed).map((entry) => entry.localId)), [diff]);
 
@@ -1688,6 +1716,14 @@ export function JobDetail(): React.ReactElement {
           project={teamProject}
         />
       </div>
+      {!isRunDetailStatus(status) && (
+        <RunNotices
+          notices={historyNotices}
+          heading={RUN_SUMMARY_HEADING}
+          storageKey={`${id}.summary`}
+          titleByRef={titleByLocalIdMap}
+        />
+      )}
       <FigureDescriptions jobId={id!} items={figureDescriptions} />
       <SectionResults items={sectionResults} />
       {showTiles && summary && (
@@ -1986,7 +2022,10 @@ export function JobDetail(): React.ReactElement {
               createdAt) over the coarse AuditEntry list once it's loaded;
               falls back to `audit` for a job that predates this change or
               while the event-history fetch is still in flight. */}
-          <AuditEntryList entries={eventHistory.length > 0 ? eventHistory : audit} className="border-t border-hairline p-4" />
+          <AuditEntryList
+            entries={eventHistory.length > 0 ? eventHistory.filter((event) => event.phase !== 'notice') : audit}
+            className="border-t border-hairline p-4"
+          />
         </Card>
       )}
     </div>

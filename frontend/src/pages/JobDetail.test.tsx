@@ -1023,6 +1023,32 @@ describe('JobDetail', () => {
     expect(screen.getAllByText(sharedMessage).length).toBeLessThanOrEqual(2);
   });
 
+  it('shows "How this run went" from the stored notices of a finished job and keeps them out of the audit list', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
+    vi.spyOn(jobsApi, 'getJob').mockResolvedValue({
+      id: 'job-40', status: 'diff_ready', mode: 'survey',
+      dryRunDiff: [{ localId: 'r1', title: 'Chassis size', type: 'Requirement', action: 'create', description: 'd' }],
+      createdAt: new Date().toISOString(),
+    } as any);
+    const notice = {
+      type: 'notice', id: 'n1', kind: 'output_limit_reached', severity: 'warning', count: 1,
+      facts: { lastRef: 'r1' }, emittedAt: new Date().toISOString(),
+    };
+    vi.spyOn(jobsApi, 'getEventHistory').mockResolvedValue([
+      {
+        id: 'evt-n', jobId: 'job-40', phase: 'notice', message: 'output_limit_reached', severity: 'info',
+        createdAt: new Date().toISOString(), detail: notice,
+      },
+    ] as any);
+
+    renderAt('job-40');
+
+    const summary = await screen.findByTestId('run-notices');
+    expect(summary).toHaveTextContent('How this run went');
+    expect(screen.getByTestId('notice-output_limit_reached')).toHaveTextContent('The last item it finished was "Chassis size"');
+    expect(screen.queryByText('output_limit_reached')).not.toBeInTheDocument();
+  });
+
   it('omits the FigureDescriptions panel entirely when the job has no persisted figure captions', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ json: async () => ({ apiBaseUrl: 'http://localhost' }) }));
     vi.spyOn(jobsApi, 'getJob').mockResolvedValue({

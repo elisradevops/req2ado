@@ -7,6 +7,7 @@ import type { DryRunService, DryRunTreeNode } from '../writeback/dry-run.service
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { BackfillService } from '../writeback/backfill.service';
 import type { JobEventsPublisher } from './job-events.publisher';
+import type { ProgressService } from './progress.service';
 import type { McpClient, AdoRequestCredential } from './mcp.client';
 import { DEFAULT_CUSTOMER_ID_FIELD_CANDIDATES } from '../../config/customer-id-fields';
 import type { AdoCredentialResolver } from '../auth/ado-credential.resolver';
@@ -129,6 +130,10 @@ export interface PipelineWorkerDeps {
   idempotencyService: IdempotencyService;
   prisma: PrismaClient;
   jobEventsPublisher: JobEventsPublisher;
+  // Job transparency (B4): present only when LIVE_PROGRESS is on. Optional so
+  // every existing caller and test is unaffected; with it absent this worker
+  // behaves exactly as before.
+  progressService?: ProgressService;
   mcpClient: McpClient;
   // See maybeBackfillAreaPath's own doc comment.
   backfillService: BackfillService;
@@ -699,7 +704,16 @@ export async function runPipelineJob(
     // _resolve_caps can resolve real caps/tool-support instead of silently
     // falling back to the conservative unknown-model default for the
     // (common) "Default" wizard selection.
-    const tree = (await deps.ingestionClient.level(doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext)) as {
+    // Follow ingestion's exact stage units for the duration of the leveling call
+    // (observation only; tracking failures are swallowed inside the service).
+    const stopProgress = await deps.progressService?.track(job.id);
+    let levelResult: unknown;
+    try {
+      levelResult = await deps.ingestionClient.level(doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext);
+    } finally {
+      await stopProgress?.();
+    }
+    const tree = levelResult as {
       nodes: LeveledNode[];
       warnings?: LeveledWarning[];
       kb_citations?: { source_file: string; similarity: number; relevance: string }[];
@@ -905,11 +919,16 @@ export async function runPipelineJob(
       (settings) => settings.dedupThreshold,
       () => undefined,
     );
+    // Job transparency (B9b): passed only when live progress is configured, so
+    // every existing call keeps exactly its previous arguments.
+    const liveJobIdArg: [string] | [] = deps.progressService ? [job.id] : [];
     const diff = await deps.dryRunService.diff(
       diffInputs,
       deps.idempotencyService,
-      (text, title, areaPath) => deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined),
+      (text, title, areaPath) =>
+        deps.ingestionClient.checkDuplicate(text, title, areaPath, dedupThreshold, job.userId ?? undefined, ...liveJobIdArg),
       (completed, total, currentTitle) => {
+        void deps.progressService?.record(job.id, { stage: 'dedup', unit: 'items', done: completed, total });
         void deps.jobEventsPublisher.publishNarration(job.id, {
           phase: 'dedup_check',
           blocksDone: completed,
@@ -1079,6 +1098,10 @@ export async function runPipelineJob(
       });
     }
 
+    // The 100% progress event goes out BEFORE diff_ready: the browser event
+    // stream closes on diff_ready, so anything published after it is never seen
+    // (verified against the real stack: progress otherwise ends at 99).
+    await deps.progressService?.finish(job.id);
     await deps.jobEventsPublisher.publish(job.id, 'diff_ready');
     return resolvedDiff;
   } catch (error) {

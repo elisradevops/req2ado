@@ -5,7 +5,12 @@ import Redis from 'ioredis';
 import { JobsController } from './jobs.controller';
 import { DocumentOverviewService } from './document-overview.service';
 import { AdoController } from './ado.controller';
-import { JobEventsController, REDIS_COMMAND_CLIENT, REDIS_SUBSCRIBER_FACTORY } from './job-events.controller';
+import {
+  JobEventsController,
+  LIVE_PROGRESS_ENABLED,
+  REDIS_COMMAND_CLIENT,
+  REDIS_SUBSCRIBER_FACTORY,
+} from './job-events.controller';
 import { JobEventPersistenceService } from './job-event-persistence.service';
 import { StaleJobWatchdogService } from './stale-job-watchdog.service';
 import { JobRetentionService } from './job-retention.service';
@@ -146,6 +151,13 @@ import { BatchPumpService } from '../batch/batch-pump.service';
         redis.on('error', (err) => console.error('JobEventsPublisher Redis error:', err));
         return new JobEventsPublisher(redis as any);
       },
+    },
+    {
+      // Job transparency (B6): whether the SSE stream relays progress frames,
+      // sends keepalives and serves the run map. LIVE_PROGRESS ships off.
+      provide: LIVE_PROGRESS_ENABLED,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => config.get<boolean>('LIVE_PROGRESS') === true,
     },
     {
       // Each SSE connection needs its own dedicated Redis client: once
