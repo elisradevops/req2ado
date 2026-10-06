@@ -101,6 +101,11 @@ class LiveEmitter:
         self._excerpt_max = max(1, min(int(excerpt_max_chars), EXCERPT_HARD_MAX_CHARS))
         self._clock = clock
         self._lock = threading.Lock()
+        # Frames are taken and sent under this lock, one thread at a time, so they
+        # reach Redis in the order they were taken. Without it two threads could take
+        # a lane's older and newer frame and publish them the other way round,
+        # leaving a stale "working on" as the lane's latest state after its reset.
+        self._send_lock = threading.Lock()
         self._capacity = max(1.0, self._hz)
         self._tokens = self._capacity
         self._last_refill = clock()
@@ -180,15 +185,16 @@ class LiveEmitter:
     def flush(self) -> None:
         """Sends everything still waiting (end of a chunk or call), ignoring the rate
         limit: this is the catch-up for items that finished faster than it allows."""
-        to_send: list[dict[str, Any]] = []
-        with self._lock:
-            while self._queue:
-                to_send.append(self._queue.popleft())
-            for lane in sorted(self._pending):
-                to_send.append(self._pending[lane])
-            self._pending.clear()
-        for fields in to_send:
-            self._send(fields)
+        with self._send_lock:
+            to_send: list[dict[str, Any]] = []
+            with self._lock:
+                while self._queue:
+                    to_send.append(self._queue.popleft())
+                for lane in sorted(self._pending):
+                    to_send.append(self._pending[lane])
+                self._pending.clear()
+            for fields in to_send:
+                self._send(fields)
 
     # ---- internals --------------------------------------------------------
 
@@ -199,9 +205,11 @@ class LiveEmitter:
                     self._pending[fields["lane"]] = fields
                 else:
                     self._queue.append(fields)
-                to_send = self._take_allowed()
-            for ready in to_send:
-                self._send(ready)
+            with self._send_lock:
+                with self._lock:
+                    to_send = self._take_allowed()
+                for ready in to_send:
+                    self._send(ready)
         except Exception:  # noqa: BLE001 - observation must never break the job
             self._warn_once()
 
