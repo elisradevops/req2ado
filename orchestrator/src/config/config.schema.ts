@@ -61,6 +61,14 @@ export const configSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   LLM_PROXY_BEARER: z.string().min(1),
+  // Job transparency (docs/job-transparency-implementation-plan.md): turns on
+  // the counted percentage, the document-map endpoint and the live/progress
+  // SSE events. Ships OFF -- with it unset the orchestrator behaves exactly
+  // as before. Ingestion has its own LIVE_PROGRESS flag (same name).
+  LIVE_PROGRESS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   // Explicit timeout (ms) for the OpenAI SDK client used by chat()/streamChat()/
   // vision() -- previously relied on the SDK's own undocumented 600000ms
   // default AND its default maxRetries:2, which together silently re-ran a

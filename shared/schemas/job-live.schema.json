@@ -1,0 +1,197 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://req2ado/schemas/job-live.schema.json",
+  "title": "JobLive",
+  "description": "Wire contracts for live job transparency (docs/job-transparency-implementation-plan.md): the static document map, the exact stage units ingestion reports, the weighted progress the orchestrator publishes, and the live frames shown while a job runs. Single source of truth - TS types are generated from this file (shared/ts, `pnpm generate`); the Python producers are hand-written and checked against this schema by ingestion/tests/test_job_live_contract.py. The root object only bundles the definitions so they are all generated.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "documentMap": { "$ref": "#/definitions/DocumentMap" },
+    "stageUnits": { "$ref": "#/definitions/StageUnits" },
+    "progress": { "$ref": "#/definitions/ProgressEvent" },
+    "live": { "$ref": "#/definitions/LiveFrame" },
+    "heartbeat": { "$ref": "#/definitions/Heartbeat" },
+    "notice": { "$ref": "#/definitions/Notice" }
+  },
+  "definitions": {
+    "DocStats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["words", "blocks", "headings", "tables", "tableRows", "figures", "pages"],
+      "properties": {
+        "words": { "type": "integer", "minimum": 0 },
+        "blocks": { "type": "integer", "minimum": 0 },
+        "headings": { "type": "integer", "minimum": 0 },
+        "tables": { "type": "integer", "minimum": 0 },
+        "tableRows": { "type": "integer", "minimum": 0 },
+        "figures": { "type": "integer", "minimum": 0 },
+        "pages": { "type": ["integer", "null"], "minimum": 0, "description": "Highest page number found, or null when the format has no pagination." }
+      }
+    },
+    "MapGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "title", "kind", "itemStart", "itemCount", "words"],
+      "properties": {
+        "ref": { "type": "string" },
+        "title": { "type": "string", "maxLength": 80 },
+        "kind": { "enum": ["heading", "table"] },
+        "itemStart": { "type": "integer", "minimum": 0, "description": "Position of this group's first item in the full item sequence." },
+        "itemCount": { "type": "integer", "minimum": 0 },
+        "words": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "MapItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "title", "words", "depth", "type"],
+      "properties": {
+        "ref": { "type": "string" },
+        "title": { "type": "string", "maxLength": 80 },
+        "words": { "type": "integer", "minimum": 0 },
+        "depth": { "type": "integer", "minimum": 0 },
+        "type": { "type": ["string", "null"], "description": "Epic, Feature or Requirement as resolved by the detector, or null." }
+      }
+    },
+    "DocumentMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "unit", "stats", "truncated", "totalItems", "groups", "items"],
+      "properties": {
+        "version": { "type": "integer", "const": 1 },
+        "unit": { "enum": ["headings", "rows", "items"], "description": "What the running screen should call an item." },
+        "stats": { "$ref": "#/definitions/DocStats" },
+        "truncated": { "type": "boolean", "description": "True when the item list was cut or dropped to respect the size limits; groups and totals are always complete." },
+        "totalItems": { "type": "integer", "minimum": 0 },
+        "groups": { "type": "array", "items": { "$ref": "#/definitions/MapGroup" } },
+        "items": { "type": "array", "items": { "$ref": "#/definitions/MapItem" } }
+      }
+    },
+    "StageName": {
+      "enum": ["parse", "draft", "improve", "summarize", "skeleton", "map", "write", "score", "link", "dedup", "write_ado"]
+    },
+    "StageUnits": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Exact units a stage has finished, derived from existing progress events and published on job-events:{id}:units. Never an estimate.",
+      "required": ["type", "stage", "unit", "done", "total", "complete", "emittedAt"],
+      "properties": {
+        "type": { "const": "units" },
+        "stage": { "$ref": "#/definitions/StageName" },
+        "unit": { "enum": ["figures", "pages", "items", "sections", "requirements", "passes"] },
+        "done": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "complete": { "type": "boolean" },
+        "subtree": { "type": ["integer", "null"], "minimum": 0 },
+        "subtreeCount": { "type": ["integer", "null"], "minimum": 0 },
+        "chunk": { "type": ["integer", "null"], "minimum": 1 },
+        "chunkCount": { "type": ["integer", "null"], "minimum": 1 },
+        "emittedAt": { "type": "string" }
+      }
+    },
+    "ProgressEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Weighted overall progress, computed by the orchestrator (one publisher per job) from the exact stage units. SSE event name: progress.",
+      "required": ["type", "seq", "pct", "stage", "unit", "done", "total", "estimated", "emittedAt"],
+      "properties": {
+        "type": { "const": "progress" },
+        "seq": { "type": "integer", "minimum": 0, "description": "Monotonic per job; clients drop frames older than the newest seen." },
+        "pct": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Never decreases within a job." },
+        "stage": { "$ref": "#/definitions/StageName" },
+        "unit": { "enum": ["figures", "pages", "items", "sections", "requirements", "passes"] },
+        "done": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "estimated": { "type": "boolean", "description": "True while the stage weights are the shipped defaults rather than calibrated from past runs." },
+        "emittedAt": { "type": "string" }
+      }
+    },
+    "CompareSide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "text"],
+      "properties": {
+        "ref": { "type": "string" },
+        "text": { "type": "string", "maxLength": 400 }
+      }
+    },
+    "ComparePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "a", "b", "similarity"],
+      "properties": {
+        "kind": { "enum": ["conflict", "duplicate"] },
+        "a": { "$ref": "#/definitions/CompareSide" },
+        "b": { "$ref": "#/definitions/CompareSide" },
+        "similarity": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "LiveFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What the job is working on right now, coalesced at the source (at most a few per second per job). SSE event name: live. The position shown is inferred from output order, so clients should say 'working on', never 'reading'.",
+      "required": ["type", "seq", "lane", "kind", "emittedAt"],
+      "properties": {
+        "type": { "const": "live" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "lane": { "type": "integer", "minimum": 0, "description": "Concurrent chunks or branches each have their own lane." },
+        "kind": { "enum": ["working_on", "writing", "item", "compare", "ocr_page", "reset"] },
+        "ref": { "type": ["string", "null"], "description": "Map item or group this frame is about." },
+        "title": { "type": ["string", "null"], "maxLength": 200, "description": "Title of the work item as written so far." },
+        "itemType": { "type": ["string", "null"], "description": "Epic, Feature or Requirement." },
+        "excerpt": { "type": ["string", "null"], "maxLength": 1000, "description": "Short excerpt of the owner's own document text; length is also capped by LIVE_EXCERPT_MAX_CHARS. Never persisted." },
+        "cursor": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "Approximate position within the excerpt, only set when output order is known to follow input order." },
+        "partial": { "type": "boolean", "description": "True while the title or text is still being written." },
+        "compare": { "anyOf": [{ "$ref": "#/definitions/ComparePayload" }, { "type": "null" }] },
+        "page": { "type": ["integer", "null"], "minimum": 1 },
+        "pages": { "type": ["integer", "null"], "minimum": 1 },
+        "emittedAt": { "type": "string" }
+      }
+    },
+    "Heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Sent every 15 seconds on an open event stream while live progress is on. SSE event name: heartbeat. Its arrival proves the server and the event bus are reachable; idleSeconds says how long nothing has been published for the job, so a screen can tell 'still working on a long model call' from 'lost contact'. Never stored.",
+      "required": ["type", "at", "idleSeconds", "inFlight"],
+      "properties": {
+        "type": { "const": "heartbeat" },
+        "at": { "type": "string" },
+        "idleSeconds": { "type": "integer", "minimum": 0 },
+        "inFlight": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lane", "kind"],
+            "properties": {
+              "lane": { "type": "integer", "minimum": 0 },
+              "kind": { "enum": ["working_on", "writing", "ocr_page"] },
+              "ref": { "type": ["string", "null"] },
+              "title": { "type": ["string", "null"], "maxLength": 200 }
+            }
+          }
+        }
+      }
+    },
+    "Notice": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A condition that changed what the run produced or how long it took. SSE event name: notice. Kept in the job's event history (JobEvent, phase notice) and replayed on connect. A fixed kind plus a few numbers and short enums: never free text and never document text; the screen owns the wording. count is cumulative for the kind, so a repeating kind is sent at spaced counts only.",
+      "required": ["type", "id", "kind", "severity", "count", "facts", "emittedAt"],
+      "properties": {
+        "type": { "const": "notice" },
+        "id": { "type": "string", "maxLength": 64 },
+        "kind": { "enum": ["output_limit_reached", "server_retry", "context_assumed", "stream_fallback"] },
+        "severity": { "enum": ["info", "warning"] },
+        "count": { "type": "integer", "minimum": 1 },
+        "facts": {
+          "type": "object",
+          "maxProperties": 6,
+          "additionalProperties": { "type": ["string", "number", "boolean"], "maxLength": 40 }
+        },
+        "emittedAt": { "type": "string" }
+      }
+    }
+  }
+}

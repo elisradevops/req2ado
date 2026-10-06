@@ -124,6 +124,37 @@
 - `deploy/` — docker-compose, nginx, env templates.
 - `docs/` — repo wiki (architecture, runbook, API, prompts) feeding the in-app Help page.
 
+### Live run view: events and REST contracts
+
+Observation only: nothing here changes what a job produces. Source of truth for the payloads:
+`shared/schemas/job-live.schema.json` (generated into `@req2ado/shared-ts`; mirrored by hand in
+`frontend/src/api/liveTypes.ts`, with a test that fails on drift). Flags: see `runbook.md`.
+
+Flow: **ingestion** parses, writes the document map, and while leveling publishes exact stage units and rate-limited
+live frames to Redis (`LiveEmitter`, `StageCounter`); the **pipeline worker** turns units into one weighted,
+never-decreasing percentage (`ProgressService`, one publisher per job); the **orchestrator SSE route** relays
+them to the owner's browser; the **frontend** keeps them in a store of its own and renders the live view.
+
+| Redis (per job id) | Written by | Holds | Lifetime |
+|---|---|---|---|
+| `job-events:{id}:map` | ingestion | document map: counts and outline, at most 5,000 items | 24 h |
+| `:units` (channel), `:units-latest` (hash) | ingestion | exact units per stage (`parse`, `draft`, `improve`, `summarize`, `skeleton`, `map`, `write`, `score`, `link`) | 24 h |
+| `:progress` (channel), `:progress-latest` | pipeline worker | the percentage and the step running | 24 h |
+| `:live` (channel), `:live-latest` (hash by lane), `:live-seq`, `:live-done` (hash of finished refs) | ingestion | what each lane is on, finished items, comparisons | 2 h |
+
+| Browser-facing | Contract |
+|---|---|
+| `GET /jobs/:id/events` (SSE) | existing `stage` and `narration`; with the flag also `progress`, `live`, `notice` (typed run notices, also replayed from `job-events:{id}:notices` and stored as phase `notice` job events) and `heartbeat` (every 15 s, with `idleSeconds` and what is in flight). On connect it replays the latest progress and the latest frame per lane. A slow client drops progress and "working on" style frames; it never drops a finished item, a comparison or a lane reset. |
+| `GET /jobs/:id/run-map` | the map; 404 when the feature is off, not parsed yet, or not the caller's job |
+| `GET /jobs/:id/run-done` | `{ refs: [...] }` of finished items, so a page opened mid-run can fill its outline; same access rules |
+
+Every route is owner-scoped (404 for anyone else). Ids on the wire are the run's own node ids; the browser maps them
+to headings through the document map and never shows an id.
+
+Streaming the drafting calls: `POST /llm/chat/stream` accepts an optional `includeDone`; the stream then ends with
+`{done, finishReason, model}`, and a missing terminal line means the answer may be cut off. See the decision record
+"Stream the drafting calls; the stream is a view" in `design-decisions.md`.
+
 ---
 
 ## 1c. Canonical Intermediate Data Model

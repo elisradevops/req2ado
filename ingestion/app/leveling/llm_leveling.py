@@ -38,6 +38,7 @@ from app.leveling.id_tree_builder import (
     recompute_child_types,
 )
 from app.leveling.model_caps import ModelCapsClient, _ModelCaps, _resolve_caps
+from app.leveling.live_context import current_stage_counter
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
 from app.leveling.heading_outline import HeadingOutlineEntry, entries_for_blocks, heading_outline_entries
 from app.leveling.requirement_rows import RequirementRowInfo, qualifying_requirement_rows, repeated_customer_code_in_table
@@ -1187,9 +1188,19 @@ def _apply_det_parent_summary(
     Epic (id_hierarchy.classify_by_nesting's own docstring) -- a fixed
     two-round Feature-then-Epic split would have gotten a nested Epic's
     ordering wrong; this doesn't need rounds at all."""
+    # Job transparency: this runs once, after every subtree's own draft and
+    # improve passes, so those two are over; summarize is counted below.
+    counter = current_stage_counter()
+    if counter is not None:
+        counter.complete("draft")
+        counter.complete("improve")
     if parent_summary_client is None:
         return
     parent_ids = [n.local_id for n in det_nodes if n.type in (WorkItemType.EPIC, WorkItemType.FEATURE)]
+    # Only a document that had deterministic subtrees was planned; for any other
+    # (a text PDF, a scan) a "summarize 0 of 0" marker would be noise.
+    if counter is not None and counter.is_planned("summarize"):
+        counter.set_total("summarize", len(parent_ids))
     # parent_summary_client is the same OrchestratorLlmClient instance
     # already implementing every other Protocol here -- reused as the
     # live per-model token-budget lookup (ModelCapsClient), replacing the
@@ -1197,11 +1208,15 @@ def _apply_det_parent_summary(
     # _MODEL_CAPS. _resolve_caps itself fails open to that same flat
     # default on any lookup failure, so this can never raise.
     token_budget = _resolve_caps(model, caps_client=parent_summary_client).coverage_budget_tokens
-    _apply_parent_summary_pass(
-        det_nodes, parent_ids, parent_summary_client, det_warnings,
-        token_budget=token_budget, progress_callback=progress_callback,
-        tables_by_id=tables_by_id, chunk_concurrency=chunk_concurrency, user_id=user_id,
-    )
+    try:
+        _apply_parent_summary_pass(
+            det_nodes, parent_ids, parent_summary_client, det_warnings,
+            token_budget=token_budget, progress_callback=progress_callback,
+            tables_by_id=tables_by_id, chunk_concurrency=chunk_concurrency, user_id=user_id,
+        )
+    finally:
+        if counter is not None:
+            counter.complete("summarize")
 
 
 def _detect_deterministic_subtrees(
@@ -1281,6 +1296,30 @@ def _detect_deterministic_subtrees(
     if not heading_rows_preview:
         heading_rows_preview, _, _ = rows_from_heading_structure(doc.blocks)
     subtree_count = len(qualifying_table_rows) + (1 if heading_rows_preview else 0)
+
+    # Job transparency: tell the progress tracker up front how many items each
+    # pass will handle (a pass with none is reported as skipped). Estimated from
+    # the rows; each pass then counts what it really finishes.
+    counter = current_stage_counter()
+    if counter is not None and subtree_count:
+        plan = {"draft": 0, "improve": 0, "summarize": 0}
+        subtree_rows = [r for _, r in qualifying_table_rows]
+        if heading_rows_preview:
+            subtree_rows.append(heading_rows_preview)
+        for rows in subtree_rows:
+            requirement_rows = [r for r in rows if r.node_type == "Requirement"]
+            synthesized = (
+                [r for r in requirement_rows if r.needs_synthesis] if synthesis_client else []
+            )
+            if synthesis_client:
+                plan["draft"] += sum(
+                    1 for r in rows if r.needs_synthesis and r.node_type is not None
+                )
+            if title_tag_client:
+                plan["improve"] += len(requirement_rows) - len(synthesized)
+            if parent_summary_client:
+                plan["summarize"] += sum(1 for r in rows if r.node_type in ("Epic", "Feature"))
+        counter.plan(plan)
 
     def _fire_subtree(label: str) -> None:
         if progress_callback is None:

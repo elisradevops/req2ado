@@ -4,9 +4,16 @@ export function ProgressBar({
   // determinate bar that is legitimately not moving for minutes still reads
   // as alive. Never changes the width -- the number stays honest.
   active,
+  label,
+  valueText,
 }: {
   value?: number;
   active?: boolean;
+  // Accessible name and the honest reading of the value ("38 percent of the
+  // run, estimated" or "No progress estimate for this step"). Optional, so
+  // every existing bar is unchanged.
+  label?: string;
+  valueText?: string;
 }): React.ReactElement {
   const determinate = value !== undefined;
   const clamped = determinate ? Math.min(Math.max(value, 0), 100) : undefined;
@@ -14,6 +21,8 @@ export function ProgressBar({
     <div
       role="progressbar"
       aria-valuenow={determinate ? Math.round(clamped!) : undefined}
+      aria-label={label}
+      aria-valuetext={valueText}
       aria-valuemin={0}
       aria-valuemax={100}
       className="relative h-1.5 overflow-hidden rounded-full bg-canvas"

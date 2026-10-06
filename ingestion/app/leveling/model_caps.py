@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import NamedTuple, Protocol
 
+from app.leveling.live_context import notice
+
 # Ceiling on how many blocks a single SURVEY branch's infer_hierarchy/
 # generate_requirements_for_document calls are ever handed at once. Real
 # documents can have very few, wildly unbalanced top-level sections
@@ -200,12 +202,15 @@ def _resolve_caps(
         return _ModelCaps(100_000, 150_000, 150_000, True)
     static_default = _ModelCaps(_MAX_SURVEY_BRANCH_BLOCK_COUNT, 28_000, _COVERAGE_BUDGET_TOKENS, False)
     if not model or caps_client is None:
+        if model:
+            notice("context_assumed", once_key=model, tokens=static_default.context_budget_tokens)
         return static_default
     if model in _LIVE_MODEL_CAPS_CACHE:
         return _LIVE_MODEL_CAPS_CACHE[model]
     try:
         derived = _derive_caps_from_live_lookup(model, caps_client, user_id=user_id)
     except Exception:
+        notice("context_assumed", once_key=model, tokens=static_default.context_budget_tokens)
         return static_default
     _LIVE_MODEL_CAPS_CACHE[model] = derived
     return derived

@@ -26,6 +26,7 @@ from app.canonical.model import SourceRef, Table
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title
 from app.leveling.bounded_chunks import run_chunks_bounded
+from app.leveling.live_context import current_stage_counter
 from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
@@ -46,6 +47,15 @@ from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, Wo
 # needs no change.
 from app.leveling.grounding import grounding_score as _grounding_score
 from app.leveling.grounding import significant_words as _significant_words
+
+
+def _count_done(stage: str, count: int) -> None:
+    """Job transparency: tells the job's exact-count tracker that a chunk of this
+    pass has finished (its call returned, or failed). A no-op unless live
+    progress is on."""
+    counter = current_stage_counter()
+    if counter is not None:
+        counter.advance(stage, count)
 
 
 def _hash_identity_for_row(description: str, source_ref: SourceRef, id_text: str) -> str:
@@ -252,6 +262,7 @@ def _apply_title_tag_pass(
         _fire_chunk_kickoff(kickoff_index)
         outcome = next(outcomes)
         chunk_ids = chunk_id_lists[outcome.chunk_index]
+        _count_done("improve", len(chunk_ids))
         if outcome.error is not None:
             message = (
                 f"Title/tag enhancement call failed for {len(chunk_ids)} deterministic "
@@ -505,6 +516,7 @@ def _apply_parent_summary_pass(
     # mutation, every warning, every narration event.
     for outcome in outcomes:
         chunk_ids = chunks[outcome.chunk_index]
+        _count_done("summarize", len(chunk_ids))
         if outcome.error is not None:
             message = (
                 f"Parent title/description enhancement call failed for {len(chunk_ids)} "
@@ -764,6 +776,7 @@ def _apply_synthesis_pass(
         _fire_chunk_kickoff(kickoff_index)
         outcome = next(outcomes)
         chunk_ids = chunk_id_lists[outcome.chunk_index]
+        _count_done("draft", len(chunk_ids))
         if outcome.error is not None:
             message = (
                 f"Requirement-text synthesis call failed for {len(chunk_ids)} flagged fragment "

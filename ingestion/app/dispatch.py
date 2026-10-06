@@ -78,6 +78,7 @@ def dispatch_by_extension(
     tmp_path: str,
     languages: str = "eng",
     describe_figure: Callable[[bytes], str] | None = None,
+    on_ocr_page: Callable[[int, int, int, int, str], None] | None = None,
 ) -> CanonicalDoc:
     extension = Path(filename).suffix.lower()
     if extension not in _SUPPORTED_EXTENSIONS:
@@ -100,6 +101,8 @@ def dispatch_by_extension(
     elif extension in _IMAGE_EXTENSIONS:
         doc = load_image(tmp_path, describe_figure=describe_figure)
     else:
-        doc = load_pdf_with_ocr_fallback(tmp_path, languages=languages, describe_figure=describe_figure)
+        doc = load_pdf_with_ocr_fallback(
+            tmp_path, languages=languages, describe_figure=describe_figure, on_ocr_page=on_ocr_page,
+        )
     doc = _classify_open_tbd_paragraphs(doc)
     return _normalize_document_identity(doc, filename)

@@ -28,6 +28,7 @@ function banner(schemaFile: string): string {
 const SCHEMAS = [
   { schemaFile: 'work-item-tree.schema.json', generatedFile: 'WorkItemTree.ts' },
   { schemaFile: 'canonical-doc.schema.json', generatedFile: 'CanonicalDoc.ts' },
+  { schemaFile: 'job-live.schema.json', generatedFile: 'JobLive.ts' },
 ];
 
 describe('generated types match the checked-in schemas', () => {

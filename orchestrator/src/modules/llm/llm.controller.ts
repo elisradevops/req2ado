@@ -107,6 +107,8 @@ export class LlmController {
     res.on('close', () => {
       clientDisconnected = true;
     });
+    let finishReason: string | undefined;
+    let completed = false;
     try {
       for await (const chunk of llmClient.streamChat(body.messages, {
         ...(body.model !== undefined ? { model: body.model } : {}),
@@ -123,11 +125,21 @@ export class LlmController {
         ...(body.minP !== undefined ? { minP: body.minP } : {}),
         ...(body.think !== undefined ? { think: body.think } : {}),
       })) {
+        if (chunk.finishReason) {
+          finishReason = chunk.finishReason;
+          if (!chunk.content && !chunk.reasoning) continue;
+        }
         // `delta` stays the wire name for final-answer content (backward
         // compatible with every existing consumer); `reasoningDelta` is new,
         // additive, and only present on a reasoning-model chunk.
         res.write(`${JSON.stringify({ ...(chunk.content ? { delta: chunk.content } : {}), ...(chunk.reasoning ? { reasoningDelta: chunk.reasoning } : {}) })}\n`);
         if (clientDisconnected) break;
+      }
+      completed = !clientDisconnected;
+      // Only written when the stream really ran to its end: a missing terminal
+      // line is how the caller knows the answer may be cut off.
+      if (completed && body.includeDone) {
+        res.write(`${JSON.stringify({ done: true, ...(finishReason ? { finishReason } : {}), ...(body.model !== undefined ? { model: body.model } : {}) })}\n`);
       }
     } finally {
       res.end();

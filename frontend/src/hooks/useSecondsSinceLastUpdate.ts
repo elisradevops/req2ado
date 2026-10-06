@@ -13,14 +13,19 @@ import { useEffect, useRef } from 'react';
 // changes again and a length-keyed counter stopped resetting -- climbing to
 // "updated 900s ago" while events were still arriving. Each live event is a
 // new object, so the reference changes exactly once per real event.
-export function useSecondsSinceLastUpdate(latestNarration: unknown, now: number): number {
+//
+// `activityStamp` (optional) lets another source of real progress restart the
+// counter too: the live run view's progress and live frames arrive between
+// narration events, and "updated 40s ago" while items are finishing would be
+// false. Omitted, behaviour is exactly as before.
+export function useSecondsSinceLastUpdate(latestNarration: unknown, now: number, activityStamp?: unknown): number {
   const lastUpdateAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
     lastUpdateAtRef.current = Date.now();
-    // Deliberately re-runs only when a NEW narration actually arrives, not
-    // on every parent re-render.
-  }, [latestNarration]);
+    // Deliberately re-runs only when a NEW narration (or activity stamp)
+    // actually arrives, not on every parent re-render.
+  }, [latestNarration, activityStamp]);
 
   return Math.max(0, Math.floor((now - lastUpdateAtRef.current) / 1000));
 }

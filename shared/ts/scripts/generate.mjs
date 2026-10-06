@@ -18,6 +18,7 @@ const outDir = path.resolve(here, '../src/generated');
 const SCHEMAS = [
   { file: 'work-item-tree.schema.json', bannerComment: workItemTreeBanner() },
   { file: 'canonical-doc.schema.json', bannerComment: canonicalDocBanner() },
+  { file: 'job-live.schema.json', bannerComment: sharedBanner('job-live.schema.json') },
 ];
 
 function sharedBanner(schemaFile) {

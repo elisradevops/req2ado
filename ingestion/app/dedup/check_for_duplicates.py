@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.dedup.embedding_blend import blend_embeddings
 from app.dedup.vector_store import ChromaVectorStore
@@ -59,6 +59,10 @@ class DuplicateCheckResult(BaseModel):
     # confirmation; a caller/UI should treat this differently from a real
     # "redundant"/"contradictory"/"distinct" verdict.
     judge_verdict: str | None = None
+    # The matched item's own text, kept so the caller can show the two texts
+    # side by side on the running-job screen (job transparency, B9b). Never part
+    # of the HTTP response (exclude=True): it is internal to this process.
+    matched_text: str | None = Field(default=None, exclude=True)
 
 
 def check_for_duplicates(
@@ -156,4 +160,5 @@ def check_for_duplicates(
         judge_verdict=judge_verdict,
         matched_item_id=matched_item_id,
         similarity=similarity,
+        matched_text=matched_document,
     )

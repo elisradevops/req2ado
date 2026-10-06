@@ -6,6 +6,7 @@ from typing import Protocol
 import numpy as np
 
 from app.dedup.embedding_blend import blend_embeddings
+from app.leveling.live_context import current_live_emitter
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.workitem.model import IntegrityWarning, RequirementQualityIssue, WarningKind, WorkItemNode, WorkItemType
 
@@ -197,6 +198,19 @@ def _detect_conflicting_duplicates(
             continue
         if not isinstance(verdict_entry, dict) or verdict_entry.get("verdict") != "contradictory":
             continue
+        # Job transparency (B9): show the first two conflicting statements side
+        # by side on the running screen. Observation only (a no-op unless live
+        # progress is on) and never raises.
+        live_emitter = current_live_emitter()
+        if live_emitter is not None and len(member_indices) >= 2:
+            first, second = member_indices[0], member_indices[1]
+            node_a, node_b = requirement_nodes[first], requirement_nodes[second]
+            live_emitter.compare(
+                kind="conflict",
+                a_ref=node_a.local_id, a_text=node_a.description,
+                b_ref=node_b.local_id, b_text=node_b.description,
+                similarity=float(similarity_matrix[first, second]),
+            )
         conflicting_values = verdict_entry.get("conflicting_values") or []
         # Confirmed real gap (user-reported): a bare local_id list
         # ("det0_h6_1_2_1") means nothing to a reviewer -- it isn't visible

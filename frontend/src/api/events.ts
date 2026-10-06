@@ -1,3 +1,17 @@
+import {
+  COMPARE_KINDS,
+  IN_FLIGHT_KINDS,
+  LIVE_KINDS,
+  NOTICE_KINDS,
+  NOTICE_SEVERITIES,
+  PROGRESS_UNITS,
+  STAGE_NAMES,
+  type Heartbeat,
+  type LiveFrame,
+  type Notice,
+  type ProgressEvent,
+} from './liveTypes';
+
 export type JobStage =
   | 'parse'
   | 'infer_hierarchy_start'
@@ -305,6 +319,105 @@ function isValidStagePayload(payload: unknown): payload is { stage: JobStage } {
   return typeof stage === 'string' && (KNOWN_JOB_STAGES as readonly string[]).includes(stage);
 }
 
+const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const isOptionalString = (value: unknown): boolean => value === undefined || value === null || typeof value === 'string';
+
+// The live run view's three extra event kinds (job transparency). All are
+// forward-compatible: an unknown stage, unit or frame kind is dropped quietly
+// (a newer backend may send more than this build knows) rather than logged as
+// a defect; a known kind with a broken shape is a real defect and is reported.
+export function isValidProgressEvent(payload: unknown): payload is ProgressEvent {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  return (
+    isFiniteNumber(p.seq) &&
+    isFiniteNumber(p.pct) &&
+    p.pct >= 0 &&
+    p.pct <= 100 &&
+    typeof p.stage === 'string' &&
+    (STAGE_NAMES as readonly string[]).includes(p.stage) &&
+    typeof p.unit === 'string' &&
+    (PROGRESS_UNITS as readonly string[]).includes(p.unit) &&
+    isFiniteNumber(p.done) &&
+    isFiniteNumber(p.total) &&
+    typeof p.estimated === 'boolean'
+  );
+}
+
+function isValidCompare(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const c = value as Record<string, unknown>;
+  const side = (s: unknown): boolean =>
+    typeof s === 'object' && s !== null && typeof (s as Record<string, unknown>).ref === 'string' && typeof (s as Record<string, unknown>).text === 'string';
+  return (
+    typeof c.kind === 'string' &&
+    (COMPARE_KINDS as readonly string[]).includes(c.kind) &&
+    isFiniteNumber(c.similarity) &&
+    side(c.a) &&
+    side(c.b)
+  );
+}
+
+export function isValidLiveFrame(payload: unknown): payload is LiveFrame {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  return (
+    isFiniteNumber(p.seq) &&
+    isFiniteNumber(p.lane) &&
+    typeof p.kind === 'string' &&
+    (LIVE_KINDS as readonly string[]).includes(p.kind) &&
+    isOptionalString(p.ref) &&
+    isOptionalString(p.title) &&
+    isOptionalString(p.excerpt) &&
+    (p.kind !== 'compare' || isValidCompare(p.compare))
+  );
+}
+
+export function isValidHeartbeat(payload: unknown): payload is Heartbeat {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  return (
+    isFiniteNumber(p.idleSeconds) &&
+    Array.isArray(p.inFlight) &&
+    p.inFlight.every(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        isFiniteNumber((entry as Record<string, unknown>).lane) &&
+        (IN_FLIGHT_KINDS as readonly string[]).includes((entry as Record<string, unknown>).kind as string),
+    )
+  );
+}
+
+export function isValidNotice(payload: unknown): payload is Notice {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  return (
+    typeof p.id === 'string' &&
+    (NOTICE_KINDS as readonly string[]).includes(p.kind as string) &&
+    (NOTICE_SEVERITIES as readonly string[]).includes(p.severity as string) &&
+    isFiniteNumber(p.count) &&
+    typeof p.facts === 'object' &&
+    p.facts !== null &&
+    !Array.isArray(p.facts)
+  );
+}
+
+export interface LiveRunHandlers {
+  onProgress?: (event: ProgressEvent) => void;
+  onLive?: (frame: LiveFrame) => void;
+  onHeartbeat?: (heartbeat: Heartbeat) => void;
+  onNotice?: (notice: Notice) => void;
+}
+
+function parseJson(event: Event): unknown {
+  try {
+    return JSON.parse((event as MessageEvent).data);
+  } catch {
+    return undefined;
+  }
+}
+
 export function subscribeToJobEvents(
   jobId: string,
   baseUrl: string,
@@ -318,6 +431,10 @@ export function subscribeToJobEvents(
   // surface this once until a real event arrives again, not toast on
   // every retry.
   onError?: () => void,
+  // Job transparency: only present when the page wants the live run view. The
+  // server sends these events only when its LIVE_PROGRESS flag is on, and a
+  // build that does not know them simply never registers the listeners.
+  liveHandlers?: LiveRunHandlers,
 ): () => void {
   // withCredentials: true -- required for the session cookie to be sent at
   // all. EventSource defaults to NOT sending cookies (even same-origin in
@@ -347,5 +464,38 @@ export function subscribeToJobEvents(
   source.addEventListener('error', () => {
     onError?.();
   });
+  if (liveHandlers?.onProgress) {
+    const handle = liveHandlers.onProgress;
+    source.addEventListener('progress', (event) => {
+      const payload = parseJson(event);
+      if (isValidProgressEvent(payload)) handle(payload);
+      else if (payload !== undefined && (payload as { type?: string } | null)?.type === 'progress') {
+        console.error('Received a malformed SSE progress event, skipping', payload);
+      }
+    });
+  }
+  if (liveHandlers?.onLive) {
+    const handle = liveHandlers.onLive;
+    source.addEventListener('live', (event) => {
+      const payload = parseJson(event);
+      if (isValidLiveFrame(payload)) handle(payload);
+      // An unknown kind from a newer backend is ignored without noise.
+    });
+  }
+  if (liveHandlers?.onHeartbeat) {
+    const handle = liveHandlers.onHeartbeat;
+    source.addEventListener('heartbeat', (event) => {
+      const payload = parseJson(event);
+      if (isValidHeartbeat(payload)) handle(payload);
+    });
+  }
+  if (liveHandlers?.onNotice) {
+    const handle = liveHandlers.onNotice;
+    source.addEventListener('notice', (event) => {
+      const payload = parseJson(event);
+      // A kind from a newer backend is ignored without noise.
+      if (isValidNotice(payload)) handle(payload);
+    });
+  }
   return () => source.close();
 }

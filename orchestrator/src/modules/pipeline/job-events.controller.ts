@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, NotFoundException, Param, Res, type OnModuleDestroy } from '@nestjs/common';
+import { Controller, Get, Inject, NotFoundException, Optional, Param, Res, type OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import type { Response } from 'express';
 import type Redis from 'ioredis';
@@ -6,6 +6,8 @@ import { JobsService } from './jobs.service';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
 import { mergeReplayBuffer, pushBoundedReplayBuffer } from './sse-replay-merge';
+import { progressChannel, progressLatestKey } from './progress.service';
+import { liveChannel, liveDoneKey, liveLatestKey } from './live-channels';
 
 export const REDIS_SUBSCRIBER_FACTORY = 'REDIS_SUBSCRIBER_FACTORY';
 // A single shared, never-subscribed connection for the replay reads. The
@@ -21,6 +23,26 @@ export const REDIS_SUBSCRIBER_FACTORY = 'REDIS_SUBSCRIBER_FACTORY';
 // other SSE client in the process.
 export const REDIS_COMMAND_CLIENT = 'REDIS_COMMAND_CLIENT';
 
+// Job transparency (docs/job-transparency-implementation-plan.md, B6). True
+// only when LIVE_PROGRESS is on; absent (tests, older wiring) means false, so
+// every behavior below is exactly what it was before the feature existed.
+export const LIVE_PROGRESS_ENABLED = 'LIVE_PROGRESS_ENABLED';
+
+// SSE comment lines keep proxies and load balancers from timing out an idle
+// stream (a long model call can be silent for minutes).
+const KEEPALIVE_INTERVAL_MS = 15_000;
+
+function emittedAtMs(raw: string): number | undefined {
+  try {
+    const at = Date.parse((JSON.parse(raw) as { emittedAt?: string }).emittedAt ?? '');
+    return Number.isFinite(at) ? at : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const runMapKey = (jobId: string): string => `job-events:${jobId}:map`;
+
 // SSE relay: subscribes to the job-scoped Redis pub/sub channel that
 // JobEventsPublisher (running in the separate pipeline-worker process)
 // publishes to, and forwards each stage event to the HTTP client as an
@@ -35,6 +57,7 @@ export class JobEventsController implements OnModuleDestroy {
     @Inject(REDIS_COMMAND_CLIENT) private readonly redisCommandClient: Redis,
     private readonly jobsService: JobsService,
     private readonly prisma: PrismaClient,
+    @Optional() @Inject(LIVE_PROGRESS_ENABLED) private readonly liveProgress: boolean = false,
   ) {}
 
   // redisCommandClient (REDIS_COMMAND_CLIENT above) is a raw ioredis
@@ -57,6 +80,42 @@ export class JobEventsController implements OnModuleDestroy {
   // (the SSE route) rather than a query flag on it -- one is a long-lived
   // stream, the other a plain JSON fetch, different enough response
   // lifecycles to warrant separate routes.
+  // Job transparency (B6): the static "what is in your document" description
+  // ingestion writes before the first model call. Owner-scoped like every
+  // other job route (404 for anyone else), and 404 when the feature is off or
+  // no map exists yet. Named run-map to stay distinct from the wizard's
+  // step-1 document map (document-map.ts).
+  @Get(':id/run-map')
+  async getRunMap(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<unknown> {
+    const job = await this.jobsService.getById(id);
+    if (!job || job.userId !== user.userId) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    if (!this.liveProgress) throw new NotFoundException('No document map for this job');
+    const raw = await this.redisCommandClient.get(runMapKey(id));
+    if (!raw) throw new NotFoundException('No document map for this job');
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      throw new NotFoundException('No document map for this job');
+    }
+  }
+
+  // Job transparency: the refs of items the run has finished. The event stream
+  // replays only the latest frame per lane, so a page opened mid-run reads this
+  // once to learn which outline items are already done. Same access rules as
+  // run-map.
+  @Get(':id/run-done')
+  async getRunDone(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<{ refs: string[] }> {
+    const job = await this.jobsService.getById(id);
+    if (!job || job.userId !== user.userId) {
+      throw new NotFoundException(`Job ${id} not found`);
+    }
+    if (!this.liveProgress) throw new NotFoundException('No live progress for this job');
+    const done = (await this.redisCommandClient.hgetall(liveDoneKey(id))) ?? {};
+    return { refs: Object.keys(done) };
+  }
+
   @Get(':id/event-history')
   async getEventHistory(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<unknown[]> {
     const job = await this.jobsService.getById(id);
@@ -84,6 +143,9 @@ export class JobEventsController implements OnModuleDestroy {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    // Other proxies in front of the orchestrator (an ingress, for example) may
+    // buffer by default; nginx for /api/ in this repo already does not.
+    if (this.liveProgress) res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
     const subscriber = this.redisSubscriberFactory();
@@ -100,10 +162,12 @@ export class JobEventsController implements OnModuleDestroy {
     // after the response finishes). Guard so unsubscribe()/quit() each run
     // exactly once — a second .quit() on an already-closing ioredis client
     // can reject with an unhandled rejection and crash the process.
+    let keepalive: ReturnType<typeof setInterval> | undefined;
     let cleanedUp = false;
     const cleanup = () => {
       if (cleanedUp) return;
       cleanedUp = true;
+      if (keepalive) clearInterval(keepalive);
       void subscriber.unsubscribe().catch(() => undefined);
       void subscriber.quit().catch(() => undefined);
     };
@@ -134,6 +198,12 @@ export class JobEventsController implements OnModuleDestroy {
         res.write(`event: narration\ndata: ${raw}\n\n`);
         return;
       }
+      // Job transparency (B12): a typed notice about a condition that changed the
+      // run. Same channel as stage/narration, so it is stored with them.
+      if (payload.type === 'notice') {
+        res.write(`event: notice\ndata: ${raw}\n\n`);
+        return;
+      }
       res.write(`event: stage\ndata: ${raw}\n\n`);
       if (payload.stage && terminalStages.has(payload.stage)) {
         streamEnded = true;
@@ -155,7 +225,64 @@ export class JobEventsController implements OnModuleDestroy {
     // below complete.
     let replaying = true;
     const buffer: string[] = [];
-    subscriber.on('message', (_channel: string, message: string) => {
+    // Job transparency (B6, B8): progress and live frames come from their own
+    // channels. They are small and rate-limited at the source, but a slow client
+    // still gets them dropped rather than queued without limit (the next frame
+    // supersedes the last).
+    const sideBuffer: Array<{ event: 'progress' | 'live'; raw: string }> = [];
+    // B11: what the heartbeat reports. `lastActivityMs` is the newest time
+    // anything was published for this job (judged by the frames' own timestamps
+    // where they have one); `inFlight` is the latest "working on / writing / page"
+    // frame of each lane that has not finished or been reset.
+    const connectedMs = Date.now();
+    let lastActivityMs = 0;
+    const inFlight = new Map<number, { lane: number; kind: string; ref?: string | null; title?: string | null }>();
+    const noteActivity = (raw: string, atMs?: number): void => {
+      lastActivityMs = Math.max(lastActivityMs, atMs ?? Date.now());
+      try {
+        const frame = JSON.parse(raw) as { type?: string; lane?: number; kind?: string; ref?: string | null; title?: string | null };
+        if (frame.type !== 'live' || typeof frame.lane !== 'number') return;
+        if (frame.kind === 'working_on' || frame.kind === 'writing' || frame.kind === 'ocr_page') {
+          inFlight.set(frame.lane, { lane: frame.lane, kind: frame.kind, ref: frame.ref ?? null, title: frame.title ?? null });
+        } else if (frame.kind === 'item' || frame.kind === 'reset') {
+          inFlight.delete(frame.lane);
+        }
+      } catch {
+        // Not a frame we understand; it still counted as activity.
+      }
+    };
+    // A slow client drops what the next frame supersedes (progress, "working on"
+    // and "writing" frames, page frames). It never drops what cannot be recreated
+    // from a later frame: a finished item, a comparison, or a lane reset. A burst
+    // of finished items is bounded (see live_emitter MAX_QUEUED_FRAMES).
+    const isSupersededByNext = (event: 'progress' | 'live', raw: string): boolean => {
+      if (event === 'progress') return true;
+      try {
+        const kind = (JSON.parse(raw) as { kind?: string }).kind;
+        return kind === 'working_on' || kind === 'writing' || kind === 'ocr_page';
+      } catch {
+        return true;
+      }
+    };
+    const writeSide = (event: 'progress' | 'live', raw: string): void => {
+      if (streamEnded) return;
+      if ((res as unknown as { writableNeedDrain?: boolean }).writableNeedDrain && isSupersededByNext(event, raw)) return;
+      res.write(`event: ${event}\ndata: ${raw}\n\n`);
+    };
+    const sideEventFor = (channel: string): 'progress' | 'live' | null => {
+      if (!this.liveProgress) return null;
+      if (channel === progressChannel(id)) return 'progress';
+      if (channel === liveChannel(id)) return 'live';
+      return null;
+    };
+    subscriber.on('message', (channel: string, message: string) => {
+      const sideEvent = sideEventFor(channel);
+      if (this.liveProgress) noteActivity(message);
+      if (sideEvent) {
+        if (replaying) sideBuffer.push({ event: sideEvent, raw: message });
+        else writeSide(sideEvent, message);
+        return;
+      }
       if (replaying) {
         pushBoundedReplayBuffer(buffer, message);
         return;
@@ -164,7 +291,11 @@ export class JobEventsController implements OnModuleDestroy {
     });
 
     try {
-      await subscriber.subscribe(`job-events:${id}`);
+      if (this.liveProgress) {
+        await subscriber.subscribe(`job-events:${id}`, progressChannel(id), liveChannel(id));
+      } else {
+        await subscriber.subscribe(`job-events:${id}`);
+      }
     } catch (err) {
       // subscribe() rejected before res.on('close') was registered — the
       // just-created connection would otherwise leak, never .quit()'d. The
@@ -215,14 +346,55 @@ export class JobEventsController implements OnModuleDestroy {
         res.write(`event: narration\ndata: ${narration}\n\n`);
       }
 
+      // Typed notices (B12): the capped replay list, so a stream that connects
+      // late or reconnects still shows what already happened.
+      if (this.liveProgress) {
+        const notices = await this.redisCommandClient.lrange(`job-events:${id}:notices`, 0, -1);
+        for (const notice of notices ?? []) {
+          replayed.push(notice);
+          res.write(`event: notice\ndata: ${notice}\n\n`);
+        }
+      }
+
       // Deliver whatever arrived on the live channel while the two reads
       // above were in flight, minus whatever of it already appeared in the
       // snapshot just replayed (see sse-replay-merge.ts for why full-string
       // identity is the right dedup key here). Fully synchronous: no
       // `await` in this loop, or a further live message could interleave
       // between these buffered ones and break delivery order.
+      const replayedSide = new Set<string>();
+      if (this.liveProgress) {
+        const latestProgress = await this.redisCommandClient.get(progressLatestKey(id));
+        if (latestProgress) {
+          replayedSide.add(latestProgress);
+          writeSide('progress', latestProgress);
+          noteActivity(latestProgress, emittedAtMs(latestProgress));
+        }
+        // The latest live frame of each lane, oldest first.
+        const latestLive = Object.values((await this.redisCommandClient.hgetall(liveLatestKey(id))) ?? {});
+        const seqOf = (raw: string): number => {
+          try {
+            return Number((JSON.parse(raw) as { seq?: number }).seq ?? 0);
+          } catch {
+            return 0;
+          }
+        };
+        latestLive.sort((a, b) => seqOf(a) - seqOf(b));
+        for (const raw of latestLive) {
+          replayedSide.add(raw);
+          writeSide('live', raw);
+          noteActivity(raw, emittedAtMs(raw));
+        }
+      }
+
+      // Nothing published yet (or no live progress): idle counts from connecting.
+      if (lastActivityMs === 0) lastActivityMs = connectedMs;
       const toFlush = mergeReplayBuffer(replayed, buffer);
       replaying = false;
+      for (const { event, raw } of sideBuffer) {
+        if (!replayedSide.has(raw)) writeSide(event, raw);
+      }
+      sideBuffer.length = 0;
       for (const raw of toFlush) {
         if (streamEnded) break;
         dispatch(raw);
@@ -239,6 +411,21 @@ export class JobEventsController implements OnModuleDestroy {
       // rejection handler above.
       cleanup();
       throw err;
+    }
+
+    if (this.liveProgress && !cleanedUp) {
+      keepalive = setInterval(() => {
+        if (streamEnded) return;
+        res.write(': keepalive\n\n');
+        const heartbeat = {
+          type: 'heartbeat',
+          at: new Date().toISOString(),
+          idleSeconds: Math.max(0, Math.round((Date.now() - lastActivityMs) / 1000)),
+          inFlight: [...inFlight.values()].sort((a, b) => a.lane - b.lane).slice(0, 64),
+        };
+        res.write(`event: heartbeat\ndata: ${JSON.stringify(heartbeat)}\n\n`);
+      }, KEEPALIVE_INTERVAL_MS);
+      keepalive.unref?.();
     }
 
     res.on('close', () => {

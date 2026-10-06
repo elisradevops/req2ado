@@ -362,3 +362,94 @@ responses (429 shapes, TLS quirks, field-name conventions that differ from this
 repo's assumptions). Treat a failure here as a real bug report, not a configuration
 mistake, and file it against `mcp-ado-server/src/backends/realAdo.ts` with the exact
 request/response that failed.
+
+## Live run view (job transparency): switches, what to watch, how to roll back
+
+The running-job screen can show the document in numbers, what the model is working on (with a short excerpt of the
+user's own text), an outline that fills in, a side-by-side comparison, and a percentage counted from finished items.
+Everything is behind flags and **ships off**. Design and plan: `job-transparency-design.md`,
+`job-transparency-implementation-plan.md`; contracts: `architecture.md` ("Live run view").
+
+### Switches
+
+| Flag | Service | Effect |
+|---|---|---|
+| `LIVE_PROGRESS=true` | ingestion **and** orchestrator (and the pipeline worker) | Turns on the map, the counted percentage, the live frames, heartbeats and the two REST routes. Off: none of it exists and every code path is exactly the old one. |
+| `LLM_STREAM_DRAFTING=true` | ingestion | The three drafting calls (title/tags, parent summary, text synthesis) are read as a stream so items show as they are written and count while a call runs. Needs `LIVE_PROGRESS` too. Off: those calls are the plain calls. |
+| `LIVE_EXCERPT_MAX_CHARS` | ingestion | Longest excerpt of the user's text on the live channel (40 to 1000, default 240). |
+| `LIVE_PUBLISH_HZ` | ingestion | Ceiling on live frames per job per second (0 to 10, default 4). |
+
+The frontend has no flag: it shows the live view only when the server sends live events, and falls back to the old
+banner and block-based estimate otherwise (also against an older server).
+
+**Turn streaming off, keep the rest:** `LLM_STREAM_DRAFTING=false` on ingestion, restart ingestion. **Turn everything
+off:** `LIVE_PROGRESS=false` on ingestion, orchestrator and pipeline worker, restart them. A run in progress when
+ingestion restarts fails as any restart-interrupted run does; turn it off between runs.
+
+Compose example (what the verification runs used): an extra compose file that sets `LIVE_PROGRESS: "true"` and
+`LLM_STREAM_DRAFTING: "true"` for `ingestion`, `LIVE_PROGRESS` for `orchestrator` and `pipeline-worker`.
+
+### What it writes to Redis (per job id, all expiring)
+
+`job-events:{id}:map` (document map, 24 h), `:units` / `:units-latest` and `:progress` / `:progress-latest` (24 h),
+`:live` channel, `:live-latest`, `:live-seq`, `:live-done` (2 h). Excerpts and comparison texts live only in these
+keys and on the wire to the owner's browser. They are not written to Postgres (the persistence service stores
+only payloads with a `phase` or `stage`; live frames have neither) and not logged.
+
+**Production hardening.** The excerpts and comparison texts are the user's own document text, held in Redis for up to
+2 hours. The development compose file runs Redis without a password and publishes its port; in production keep Redis on a
+private network, require authentication, and do not publish the port. The same Redis already carries the job queue and
+cached model answers, so this is the right setting regardless.
+
+### What to watch
+
+- **Redis memory and key count** (a run adds a few hundred KB at most; keys expire on their own).
+- **Redis connections:** each open job page holds one subscriber connection until it closes. Many viewers means many
+  connections; watch `connected_clients`.
+- **Streaming fallback rate:** ingestion logs "using the plain call" when a stream was refused, broke or ended without
+  its terminal line. A steady stream of these for one model means that backend does not stream structured output
+  well; turn `LLM_STREAM_DRAFTING` off for it.
+- **The percentage never goes down** and reaches 100 just before the diff is ready. A bar stuck for long during
+  a single model call is expected (see below), not a fault.
+- **Stale-job watchdog count:** unchanged by this feature; live frames are deliberately not job events.
+
+- **Typed notices** (live view, "Limits and adjustments"; on a finished job, "How this run went"): the run tells the
+  reader when the model hit its output limit (warning), the model server needed retries, the model's context size was
+  assumed, or a step fell back from streaming. They are stored as job events with phase `notice` (the whole payload in
+  `detail`), and the latest 50 are also kept in Redis at `job-events:{id}:notices` for 24 hours so a late or
+  reconnecting page shows them. To look one up: `GET /jobs/:id/event-history` rows where `phase = notice`. A notice
+  carries only a kind and a few numbers, never document text. Notices missed while the persistence service was down
+  are not backfilled.
+
+### Known behaviors that look like faults but are not
+
+- The bar can hold still for minutes inside one long model call (for example the parent-summary pass). The screen
+  says so ("Still working - the model has been answering one long request for ...") and heartbeats keep arriving.
+- The weights that turn counted items into a percentage are shipped estimates until calibrated; the label says "est.".
+- Cancelling a job marks it cancelled at once, but the model call already in flight keeps running until it returns
+  (up to many minutes on a slow model). That is how cancellation has always behaved, with or without the live view.
+- Restarting the orchestrator while jobs run fails those jobs: ingestion's calls to the LLM proxy are refused while it
+  is down. Restart it between runs.
+- Opening a job page mid-run shows the current state at once: percentage, what is being worked on, and which outline
+  items are finished (read from `GET /jobs/:id/run-done`).
+
+### Checks you can run
+
+- Unit and component suites: `pytest` (ingestion), `pnpm test` (orchestrator, frontend).
+- Browser matrix, no backend needed: `cd e2e && npm install && npx playwright install chromium && npm test`.
+- Server load and soak against a running stack: `docker stop req2ado-pipeline-worker-1` (so jobs stay pending), then
+  `node scripts/load/live-sse-load.mjs --doc some-small.docx --jobs 20 --viewers 3 --seconds 600`; restart the
+  worker afterwards. The script creates and removes its own pending jobs and keys.
+- Real-run comparison, flags off against on: run the same document twice and compare the trees field by field
+  (they must be identical; the live view only observes).
+
+### If something breaks
+
+- **Percentage looks wrong:** check `GET /jobs/{id}/run-map` (404 means no map: feature off or the document has not
+  been parsed yet) and the `job-events:{id}:units-latest` hash in Redis. The weights are in
+  `orchestrator/src/modules/pipeline/progress.service.ts`.
+- **Outline empty after a reload:** `GET /jobs/{id}/run-done` returns the finished refs; an empty list with a run well
+  underway means `job-events:{id}:live-done` expired (2 h) or the emitter could not reach Redis.
+- **Screen shows the old banner on a run that should be live:** the orchestrator did not get `LIVE_PROGRESS=true`
+  (the SSE route then never subscribes to the live channels), or ingestion did not (nothing is published).
+

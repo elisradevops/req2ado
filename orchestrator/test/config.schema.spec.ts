@@ -139,3 +139,18 @@ describe('configSchema batch/folder ingestion fields (NEW-05)', () => {
     expect(result.BATCH_SUBMIT_STUCK_MS).toBe(5 * 60_000);
   });
 });
+
+describe('configSchema job transparency flag', () => {
+  it('ships LIVE_PROGRESS off by default', () => {
+    expect(configSchema.parse(BASE_ENV).LIVE_PROGRESS).toBe(false);
+  });
+
+  it('turns LIVE_PROGRESS on only for the exact value "true"', () => {
+    expect(configSchema.parse({ ...BASE_ENV, LIVE_PROGRESS: 'true' }).LIVE_PROGRESS).toBe(true);
+    expect(configSchema.parse({ ...BASE_ENV, LIVE_PROGRESS: 'false' }).LIVE_PROGRESS).toBe(false);
+  });
+
+  it('rejects any other LIVE_PROGRESS value', () => {
+    expect(() => configSchema.parse({ ...BASE_ENV, LIVE_PROGRESS: 'yes' })).toThrow();
+  });
+});

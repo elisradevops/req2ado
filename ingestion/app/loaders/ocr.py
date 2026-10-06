@@ -36,8 +36,14 @@ def ocr_page_to_text_filtered(
 
 
 def load_pdf_with_ocr_fallback(
-    path: str, languages: str = "eng", describe_figure: Callable[[bytes], str | None] | None = None
+    path: str, languages: str = "eng", describe_figure: Callable[[bytes], str | None] | None = None,
+    on_ocr_page: Callable[[int, int, int, int, str], None] | None = None,
 ) -> CanonicalDoc:
+    """`on_ocr_page(done, total, page_number, page_count, text)` is optional
+    and display-only (job transparency, B10): called after each scanned page is
+    recognised, with how many scanned pages are done of how many there are, the
+    PDF page just read, the PDF's page count and the recognised text. It never
+    changes the result, and an error inside it is ignored."""
     reader = PdfReader(path)
     num_pages = len(reader.pages)
 
@@ -52,10 +58,21 @@ def load_pdf_with_ocr_fallback(
     text_doc = load_pdf(path, describe_figure=describe_figure, languages=languages)
     blocks: list[Block] = list(text_doc.blocks)
 
+    scanned_total = (
+        sum(1 for i in range(num_pages) if not page_has_extractable_text(path, i))
+        if on_ocr_page is not None else 0
+    )
+    scanned_done = 0
     for page_index in range(num_pages):
         if page_has_extractable_text(path, page_index):
             continue
         ocr_text = ocr_page_to_text_filtered(path, page_index, languages=languages).strip()
+        scanned_done += 1
+        if on_ocr_page is not None:
+            try:
+                on_ocr_page(scanned_done, scanned_total, page_index + 1, num_pages, ocr_text)
+            except Exception:  # noqa: BLE001 - observation must never break the job
+                on_ocr_page = None
         if not ocr_text:
             continue
         kind = BlockKind.OPEN_TBD if _OPEN_TBD_PATTERN.search(ocr_text) else BlockKind.PARAGRAPH

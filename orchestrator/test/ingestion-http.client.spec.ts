@@ -339,6 +339,24 @@ describe('IngestionHttpClient', () => {
     expect(JSON.parse(options.body)).toEqual({ text: 'a description', title: 'a title', area_path: 'Proj\\Area' });
   });
 
+  it('checkDuplicate sends job_id only when a job id is given (job transparency B9b)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ is_duplicate: false, matched_item_id: null, similarity: null }),
+    });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.checkDuplicate('a description', 'a title', 'Proj\\Area', undefined, 'user-1', 'job-7');
+
+    const [, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({
+      text: 'a description',
+      title: 'a title',
+      area_path: 'Proj\\Area',
+      user_id: 'user-1',
+      job_id: 'job-7',
+    });
+  });
+
   it('throws on a non-ok /dedup/check response', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 502 });
     const client = new IngestionHttpClient('http://ingestion.internal');

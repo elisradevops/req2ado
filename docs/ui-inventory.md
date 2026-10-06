@@ -29,6 +29,13 @@ see `/DESIGN.md` §0).
    Tree / Audit Trail tabs, virtualized filterable/searchable diff tree
    with work-item-type badges + create/reuse/dedup-skip action badges +
    include/exclude checkboxes.
+   When the server has live progress on, the progress banner also shows the
+   **live run view** (DESIGN.md §11.3.4): document metrics, a "Now" card with an
+   excerpt of the part being worked on, a read-only virtualised outline that
+   fills in as items finish, and a side-by-side comparison of two statements
+   that disagree or of a proposed item and the existing work item it matches.
+   The percentage is then counted from finished items, labelled "of the run
+   (est.)".
 5. **Knowledge Base** (`/knowledge-base`) — SharePoint folder tree +
    document list/preview.
 6. **Help** (`/help`) — markdown docs page.

@@ -1991,6 +1991,85 @@ has a `string[]` in `Job.warnings`; `normalizeWarning` reclassifies it
 plain text and is normalised the same way; neither can be acknowledged, since
 marking is offered only on `diff_ready` jobs and only on structured records.
 
+#### §11.3.4 — The live run view (job transparency)
+
+**Notices (`RunNotices`).** One `<details>` disclosure: "Limits and adjustments" while
+running, "How this run went" on a finished job. Collapsed unless a warning exists; the
+first warning opens it once per job. Each row is an icon plus the word "Check" or "Note",
+cause then remedy, sentence case, items named by heading and never by id. The server
+sends only a kind and numbers; the wording is in `utils/liveCopy.ts`.
+
+**Files:** `components/liveRun/` (`LiveRunPanel`, `DocumentMetrics`,
+`WorkingOnCard`, `DocumentOutline`, `ComparePair`, `RunNotices`, `LiveStatusRegion`),
+`store/liveRunStore.ts`, `hooks/useDocumentMap.ts`, `api/liveTypes.ts`,
+`api/runMap.ts`, `lib/lcsDiff.ts`, `utils/liveCopy.ts`. Mounted by
+`ProgressBanner.tsx` between the status panel and the model-call note.
+
+**What it answers.** "What is the model working on right now, how much of my
+document is that, and how far along is the run?" It shows the document in
+numbers, the part being worked on with a short excerpt of the owner's own text,
+an outline that fills in as items finish, and, when the run finds one, two
+statements side by side.
+
+**It appears only when the server has the feature on.** Every part reads the
+live store or the run map; with neither (the feature off, an older server, a
+BASELINE job) `LiveRunPanel` renders nothing and the banner is exactly what it
+was. Nothing here changes a layout that already worked.
+
+**Structure (§5 geometry: panels inside the banner, not new cards).** Each part
+is a `rounded-md border bg-surface-alt` panel like the status panel above it. No
+card sits inside a card (§16.15). Section order, top to bottom: connection or
+long-wait note (only when true), document metrics, "Now" card, comparison (only
+when one exists), outline.
+
+- **Document metrics** are chips in `font-mono text-meta`. A count the document
+  does not have is absent, not `0` (§16.23); unknown pages are absent.
+- **"Now" card** names what each concurrent part is on (up to three, then "and N
+  more"), with the excerpt in a `border-l-2 border-live` quote. `--color-live` is
+  for in-flight work, which this is (§1.1). A frame older than 15 seconds stops
+  saying "now": the excerpt is replaced by "Still waiting on the model for this
+  step." The excerpt is static text: no typed caret and no moving highlight, so
+  reduced motion has nothing to disable.
+- **Outline** is read-only, virtualised with `react-window` like `DiffTree`, capped at
+  224px tall, with a glyph and a hidden word for each state (written, in
+  progress, waiting). It has no focusable controls, so it is no tab stop and no
+  keyboard trap. It keeps the working row in view until the reader scrolls.
+- **Comparison** underlines the words that differ on both sides (bold, underline
+  and `warning` tint: never colour alone, §13) because two statements that
+  disagree have no side that is the original. Sides stack below `md`. Text is
+  rendered as text, never as HTML. Above about 2,000 words it compares whole
+  lines, above 2,000 lines it shows plain text and says so.
+
+**The percentage (amends §11.3).** When the server sends a counted percentage it
+replaces the block-based estimate: the same single bar, the same header figure
+(§16.20, one phase one bar). The label reads `NN% of the run (est.) — 12 of 36
+items in this step`, with an `InfoTip` explaining it is counted from finished
+items while each step's share of the whole is an estimate. "of this section" is
+used only on the fallback, when no counted percentage exists. The bar gets
+`aria-label="Run progress"` and an honest `aria-valuetext`, including "No
+progress estimate for this step."
+
+**Freshness and failure states.** `role="alert"` for a lost connection (a stream
+error plus 30 seconds with no event of any kind), cleared by the next event. A
+quiet note, not an alert, when heartbeats keep arriving with work in flight and
+nothing new has been published for 60 seconds: "Still working — the model has
+been answering one long request for 1m 20s."
+
+**Data and rendering contract.** Events arrive over the existing job stream as
+`progress`, `live` and `heartbeat` and are validated before use (an unknown
+kind from a newer server is dropped silently). They go into their own zustand
+store, not `JobDetail` state, are applied in batches at most four times a
+second, wait while the tab is hidden, and never move a lane or the percentage
+back to an older event. Types are mirrored by hand in `api/liveTypes.ts`
+because the frontend image builds from `./frontend` alone, and
+`liveTypes.sync.test.ts` fails when they drift from
+`shared/schemas/job-live.schema.json`.
+
+**Copy** lives in `utils/liveCopy.ts` (per-step headlines and one-sentence
+reasons, states, connection notes), sentence case, no internal names (§12). The
+excerpt carries an `InfoTip`: it is a short excerpt of the reader's own document
+and is not stored.
+
 ### §11.4 — The work-item detail dialog
 
 **Files:** `components/NodeDetailDialog.tsx` (the container),
@@ -2794,6 +2873,7 @@ baseline, so any new raw hex, arbitrary size/radius/duration, or bare
   instead. A placeholder is `--`, never `0`. An estimate is a range with
   "typically," never a false-precision point value.
 - No exclamation marks anywhere, including success toasts.
+- The live run view's per-step headlines, reasons and notices have one home: `frontend/src/utils/liveCopy.ts` (§11.3.4). Add copy there, not inline.
 
 ---
 
@@ -2808,6 +2888,13 @@ baseline, so any new raw hex, arbitrary size/radius/duration, or bare
 - Minimum 24×24 CSS px hit target on every interactive element, including
   chips-that-act-as-buttons, checkboxes, and `InfoTip` triggers. Add a
   transparent hit-area expander where the visible control is smaller.
+- **The running screen has one live region.** `LiveStatusRegion` is a `role="status"`
+  (`aria-live="polite"`) element, visually hidden, present and empty in the first
+  render (screen readers announce only changes to a region that already exists).
+  It announces a change of step, at most once per 15 seconds, latest wins, and
+  the title of the first warning notice of each kind (never its detail). It
+  never announces items, excerpts, counts or percentages. A lost connection uses
+  `role="alert"`. The progress bar is named and carries `aria-valuetext` (§11.3.4).
 - **Colour is never the sole carrier of state.** Selected rows and cards set
   real `aria-selected` / `aria-checked` / `aria-pressed`; status carries a chip
   label and usually an icon in addition to colour; the proposed-versus-written
@@ -3045,6 +3132,7 @@ Append-only. Every renamed or removed token, and every closed §1.8 divergence.
 | **[2/3 — orchestrator]** `WarningRecord` (camelCase) mirrors ingestion's `IntegrityWarning`; `Job.warnings` threaded as `(WarningRecord \| string)[]` | `orchestrator/src/modules/writeback/dry-run.service.ts` (`WarningRecord`); `pipeline.worker.ts` (`LeveledWarning` raw-wire type, mapped to `WarningRecord` before the `Job.update` write; `verifyExistingAdoIdsStillExist`'s `onError` string wrapped into a `kind: 'ado_verification_failed'` record at this same call site, not inside `dry-run.service.ts` itself); `jobs.service.ts`/`jobs.controller.ts` (`getById`/`getSummary` return types) | **Closed.** `ado_verification_failed` is deliberately absent from ingestion's own `WarningKind`/schema enum — it's the orchestrator's own post-processing addition, never present in a real `/level` response. No Prisma migration: `warnings` was already `Json?`; old rows keep their literal `string[]`, new rows get `WarningRecord[]`, both are valid `Json`. 3 new tests (`pipeline.worker.spec.ts` ×2, `jobs.service.spec.ts` ×1) proving the mapping and the verification-failure path both produce a structured record, not a string. Full orchestrator suite: 641/641, clean `nest build`. |
 | **[3/3 — frontend]** Severity-tiered `CollapsibleWarnings` (see §11.3.3's own rewrite) + `normalizeWarning`/`titleByLocalId` + the `DiffTree` `selectedId` navigation fix | `utils/warnings.ts` (new: `WarningRecord`, `normalizeWarning`); `components/CollapsibleWarnings.tsx` (full rewrite); `pages/JobDetail.tsx` (`mergedWarnings` now normalizes both `warnings` and `liveWarnings`; `titleByLocalId`; `onJumpToNode` opens the dialog); `components/DiffTree.tsx` (`allRows` memo, two `selectedId` effects) | **Closed.** §11.3.3. 11 tests in `CollapsibleWarnings.test.tsx` (rewritten), 5 in `warnings.test.ts` (new), 3 new in `DiffTree.test.tsx` (mocks `react-window`'s `FixedSizeList` via `vi.hoisted` to spy on `scrollToItem`, since the real component's virtualization has no observable jsdom effect otherwise). Full frontend suite: 452/452, clean `tsc -b && vite build`. |
 | **Follow-up, same day** — `raw` sentence wording still leaked ingestion's own internal identifiers (`det0_h9_3`, `f14`, `[localId: det0_h6_1_2_1]`) into user-facing text, even after the [1/3]-[3/3] structural migration above -- confirmed real gap, user-reported: severity/grouping was the right shape, but the actual prose was still unreadable to anyone who's never seen ingestion's own node-numbering scheme | Every per-node/per-section `raw`-building site across `root_regrouping.py`, `llm_leveling.py` (incl. `_referenced_attachment_warnings`, re-keyed on `section_label` instead of `node_id_prefix`), `scoring.py`, `tree_builder.py`, `conflict_detection.py`; `warnings_finalize.py`'s `_reparented_to_feature`/`_group_reparented` summary builders (now read a `*Title` detail key, not the raw id) | **Closed.** §11.3.3. Systematic substitution: a node/target reference in prose is now always its real `title` (quoted), never `local_id`/`temp_id`; a section reference is `_derive_section_label`'s real heading text (already computed for narration, just not threaded into these messages before), never `node_id_prefix`; a dropped figure/table reference is a count ("referenced 1 figure(s) not offered"), never the raw id list; the near-duplicate-conflict `[localId: ...]` tag is dropped from `raw` entirely now that the structured `node_ids` field (not text-parsing) drives the frontend's Review buttons — `CollapsibleWarnings.tsx`'s tip copy updated to match (no longer explains a tag that no longer appears). Table-group/heading-ID-offset messages were audited and left untouched -- their "ids" (`row.id_text`, a table's own dotted numbering) are the SOURCE DOCUMENT's real numbering, not ingestion's synthetic scheme, and are meaningful to a reviewer holding the original doc. `detail` payloads are unaffected (ids still live there for the UI's own navigation, just never surfaced as prose). 10 existing tests updated for the new wording, 979/979 ingestion suite green; frontend: tip-copy fix + fixture cleanup, 452/452 green. |
+| Banner percentage label `~NN% of this section (est.)` as the only label | `NN% of the run (est.) — N of M items in this step` when the server counts the run; `of this section` kept only as the fallback | `components/ProgressBanner.tsx` (`countedProgress`, `shownProgress`), `utils/liveCopy.ts`, `ui/ProgressBar.tsx` (`label`, `valueText` props) | **Closed.** §11.3.4. One bar still (§16.20): the counted figure replaces the block-based estimate, it does not join it. New: live run view (`components/liveRun/`, `store/liveRunStore.ts`, `hooks/useDocumentMap.ts`, `lib/lcsDiff.ts`), no new tokens, no new keyframes, no new icons beyond `lucide-react` `Check` and `Circle`. |
 
 ### §18.1 — Open migrations
 

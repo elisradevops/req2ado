@@ -459,13 +459,17 @@ export class OpenWebUiClient implements LlmClient {
     // reasoning model's chain-of-thought (the streaming counterpart of the
     // non-stream response's `message.reasoning`, confirmed live above) --
     // not part of the OpenAI SDK's own delta type, hence the inline shape.
-    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string; reasoning?: string } }[] }>) {
+    let finishReason: string | undefined;
+    for await (const chunk of stream as AsyncIterable<{ choices: { delta?: { content?: string; reasoning?: string }; finish_reason?: string | null }[] }>) {
+      const reason = chunk.choices[0]?.finish_reason;
+      if (reason) finishReason = reason;
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
       if (delta.content || delta.reasoning) {
         yield { ...(delta.content ? { content: delta.content } : {}), ...(delta.reasoning ? { reasoning: delta.reasoning } : {}) };
       }
     }
+    if (finishReason) yield { finishReason };
   }
 
   async embed(texts: string[], opts?: { model?: string }): Promise<number[][]> {

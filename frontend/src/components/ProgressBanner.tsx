@@ -11,6 +11,10 @@ import { ProgressBar } from '../ui/ProgressBar';
 import { Spinner } from '../ui/Spinner';
 import { Chip } from '../ui/Chip';
 import { InfoTip } from '../ui/Tooltip';
+import { LiveRunPanel } from './liveRun/LiveRunPanel';
+import { LiveStatusRegion } from './liveRun/LiveStatusRegion';
+import { useLiveRunStore } from '../store/liveRunStore';
+import { COUNTED_EXPLANATION, describeCountedProgress, describeCountedValueText } from '../utils/liveCopy';
 import { Stepper } from '../ui/Stepper';
 import type { JobStage, NarrationEvent } from '../api/events';
 
@@ -300,11 +304,20 @@ export function ProgressBanner({
   const progressValue =
     completedUnits !== undefined && progressTotal ? (100 * completedUnits) / progressTotal : undefined;
   const clampedProgress = progressValue !== undefined ? Math.min(Math.max(progressValue, 0), 100) : undefined;
+  // Job transparency: when the server counts the run from real units it sends
+  // its own percentage. It replaces the block-based estimate above (one phase,
+  // one bar, never two bars for one quantity); with no such events -- the
+  // feature off, or an older server -- the estimate above is shown exactly as
+  // before.
+  const countedProgress = useLiveRunStore((s) => s.progress);
+  const liveActive = useLiveRunStore((s) => s.active);
+  const shownProgress = countedProgress ? countedProgress.pct : clampedProgress;
   // Single shared clock tick -- both the ETA calc below and the "last
   // update Ns ago" counter derive from this one useNow() call instead of
   // each owning its own setInterval.
   const tickingNow = useNow();
-  const secondsSinceUpdate = useSecondsSinceLastUpdate(latest, tickingNow);
+  const liveActivityAt = useLiveRunStore((s) => s.activityAt);
+  const secondsSinceUpdate = useSecondsSinceLastUpdate(latest, tickingNow, liveActivityAt);
   // deterministic_subtree runs as several sequential, whole-chunk-blocking
   // LLM calls (up to 150 nodes each -- see id_tree_builder.py's
   // _apply_synthesis_pass/_apply_title_tag_pass), and also runs TWO
@@ -463,6 +476,7 @@ export function ProgressBanner({
 
   return (
     <div className='rounded-md border border-hairline bg-surface shadow-card'>
+      <LiveStatusRegion />
       {/* DESIGN.md §11.3 -- "the loud element": live pulse dot, the phase
           headline in text-title, one sentence of what that phase is doing
           (the same real, backend-generated narration text the old Activity
@@ -479,8 +493,8 @@ export function ProgressBanner({
           <p className='text-title'>{headline}</p>
           {latest?.message && <p className='truncate text-xs text-ink-3' title={latest.message}>{latest.message}</p>}
         </div>
-        {clampedProgress !== undefined && (
-          <span className='flex-none font-mono text-metric tabular-nums text-ink-1'>{Math.round(clampedProgress)}%</span>
+        {shownProgress !== undefined && (
+          <span className='flex-none font-mono text-metric tabular-nums text-ink-1'>{Math.round(shownProgress)}%</span>
         )}
         <InfoTip content='BASELINE finishes in seconds. SURVEY reads the whole document, merges near-duplicates, infers missing parents, and scores each requirement -- time scales with document size, figures most of all.' />
       </div>
@@ -564,7 +578,10 @@ export function ProgressBanner({
             // browser wraps everything together based on real available
             // width, not a hardcoded break between the two groups.
             <div className='flex flex-wrap items-center gap-2'>
-              {latest?.blocksTotal != null && latest.blocksTotal > 0 && (
+              {/* With a counted percentage the line under the bar already says
+                  "N of M items in this step"; this chip's start-of-chunk figure
+                  would be a second, disagreeing number for the same thing. */}
+              {latest?.blocksTotal != null && latest.blocksTotal > 0 && !countedProgress && (
                 <Chip
                   bg='var(--color-surface)'
                   color='var(--color-ink-2)'
@@ -639,18 +656,38 @@ export function ProgressBanner({
                   as "stuck," indistinguishable from a frozen page. Every
                   branch below is real, honest text -- never a fabricated
                   percentage. */}
-              {clampedProgress !== undefined
-                ? `~${Math.round(clampedProgress)}% of this section (est.)`
-                : isTailPhase || isPreparingAnalysis
-                  ? 'A single whole-document pass -- no fixed step count to measure against.'
-                  : 'Working — no progress estimate for this step yet.'}
+              {countedProgress ? (
+                <span className='inline-flex items-center gap-1.5'>
+                  {describeCountedProgress(countedProgress)}
+                  <InfoTip content={COUNTED_EXPLANATION} label='How the percentage is counted' />
+                </span>
+              ) : clampedProgress !== undefined ? (
+                `~${Math.round(clampedProgress)}% of this section (est.)`
+              ) : isTailPhase || isPreparingAnalysis ? (
+                'A single whole-document pass -- no fixed step count to measure against.'
+              ) : (
+                'Working — no progress estimate for this step yet.'
+              )}
             </div>
-            <ProgressBar value={clampedProgress} active={modelCallInFlight} />
+            <ProgressBar
+              value={shownProgress}
+              active={modelCallInFlight}
+              label='Run progress'
+              valueText={
+                countedProgress
+                  ? describeCountedValueText(countedProgress)
+                  : clampedProgress !== undefined
+                    ? `${Math.round(clampedProgress)} percent of this section, estimated`
+                    : 'No progress estimate for this step'
+              }
+            />
           </div>
         </div>
         )}
 
-        {modelCallInFlight && modelCallElapsedMs !== undefined && !detSubtreeChunk && (
+        <LiveRunPanel jobId={jobId} running />
+
+        {modelCallInFlight && modelCallElapsedMs !== undefined && !detSubtreeChunk && !liveActive && (
           <p className='mt-2.5 rounded-md border border-hairline-strong bg-surface-alt p-3 text-xs text-ink-2' data-testid='model-call-clock'>
             Waiting on the model, {modelCallTarget} — {formatDuration(modelCallElapsedMs)} so far. Each of these steps is a single
             model call, so the bar moves when the call returns.
