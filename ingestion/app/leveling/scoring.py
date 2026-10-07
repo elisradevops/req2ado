@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Protocol, TypeVar
+
+import httpx
 
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
@@ -80,6 +83,42 @@ def _build_criteria_context(criteria_retriever: CriteriaRetriever, nodes: list[W
 # cap for JSON structural overhead (braces, keys, node_id strings) leaves
 # room for ~150 nodes before a single call risks truncation.
 _SCORING_CHUNK_NODE_COUNT = 150
+# A chunk also closes once its description text would exceed this many
+# characters (a lone oversized item still gets its own chunk). The node-count
+# cap alone bounds OUTPUT size, but a chunk of large descriptions has a far
+# bigger INPUT and takes far longer per call -- confirmed in prod, where full
+# 150-node chunks timed out. ~40k chars is roughly 10k input tokens.
+_SCORING_CHUNK_CHAR_BUDGET = 40_000
+
+_T = TypeVar("_T")
+
+
+def _chunk_by_count_and_chars(items: Sequence[_T], size_of: Callable[[_T], int]) -> list[list[_T]]:
+    """Splits `items` (document order preserved) into chunks of at most
+    _SCORING_CHUNK_NODE_COUNT items AND at most _SCORING_CHUNK_CHAR_BUDGET
+    total `size_of` characters; an item larger than the budget on its own
+    still forms a chunk of one."""
+    chunks: list[list[_T]] = []
+    current: list[_T] = []
+    current_chars = 0
+    for item in items:
+        item_chars = size_of(item)
+        if current and (
+            len(current) >= _SCORING_CHUNK_NODE_COUNT or current_chars + item_chars > _SCORING_CHUNK_CHAR_BUDGET
+        ):
+            chunks.append(current)
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_in_half(items: list[_T]) -> tuple[list[_T], list[_T]]:
+    middle = (len(items) + 1) // 2
+    return items[:middle], items[middle:]
 
 # §7 canary/drift probe: one fixed, known-bad sentinel requirement injected
 # into every batched scoring call, asserted server-side, and stripped before
@@ -120,6 +159,26 @@ _CANARY_TEXT = "It should be user-friendly and fast and stuff should be handled 
 # LOW_QUALITY_THRESHOLD (50) in diff-summary.ts/diffFlagging.ts -- the same
 # number this system already calls "low enough that a human should look".
 _CANARY_MAX_SCORE = 50
+
+
+def _scoring_failed_warning(
+    nodes: list[WorkItemNode], error: BaseException, scope: str, message: str,
+) -> IntegrityWarning:
+    """One SCORING_FAILED warning with enough context to diagnose WHY (the
+    job that prompted this had only "timed out" to go on): exception type,
+    the timeout in force, chunk size and the chunk's description size."""
+    return IntegrityWarning.make(
+        WarningKind.SCORING_FAILED,
+        message,
+        node_ids=[n.local_id for n in nodes],
+        detail={
+            "scope": scope,
+            "chunkSize": len(nodes),
+            "chunkChars": sum(len(n.description) for n in nodes),
+            "errorType": type(error).__name__,
+            "timeoutSeconds": settings.llm_request_timeout_seconds,
+        },
+    )
 
 
 def _score_all_requirements(
@@ -206,7 +265,11 @@ def _score_all_requirements(
     # already in hand before this loop starts, so chunk_index/chunk_count
     # and nodes_done/nodes_total below are real progress, not a guess.
     total_nodes = len(representative_nodes)
-    total_chunks = -(-total_nodes // _SCORING_CHUNK_NODE_COUNT) if total_nodes else 0
+    chunks = _chunk_by_count_and_chars(representative_nodes, lambda node: len(node.description))
+    total_chunks = len(chunks)
+    # Chunks are no longer a fixed node count, so cumulative progress is the
+    # running sum of earlier chunk sizes rather than index * chunk size.
+    chunk_start_offsets = [sum(len(c) for c in chunks[:i]) for i in range(len(chunks))]
 
     def _fire(
         phase: Phase, chunk: list[WorkItemNode], nodes_done: int, chunk_index: int, issues_found: int | None = None,
@@ -251,11 +314,6 @@ def _score_all_requirements(
     # with no lock -- the same reasoning
     # llm_leveling._map_figures_tables_to_nodes' _fire_map_scope already
     # documents for its own concurrent batches.
-    chunks: list[list[WorkItemNode]] = []
-    for start in range(0, len(representative_nodes), _SCORING_CHUNK_NODE_COUNT):
-        chunk = representative_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
-        chunks.append(chunk)
-
     # PHASE 2 -- the worker. _apply_quality_scores both appends warnings and
     # fires progress_callback of its own (SCORING_MISSING,
     # SCORING_INCONSISTENT_CATEGORIES), so it is given a per-chunk LOCAL
@@ -276,10 +334,35 @@ def _score_all_requirements(
     def _score_one_chunk(chunk: list[WorkItemNode]) -> tuple[list[IntegrityWarning], list[LevelingProgress]]:
         chunk_warnings: list[IntegrityWarning] = []
         chunk_events: list[LevelingProgress] = []
-        _apply_quality_scores(
-            chunk, scoring_client, chunk_warnings, "", criteria_context, kb_context, category_checklist,
-            category_checklist_definitions, progress_callback=chunk_events.append, user_id=user_id,
-        )
+
+        def _score(nodes_to_score: list[WorkItemNode]) -> None:
+            _apply_quality_scores(
+                nodes_to_score, scoring_client, chunk_warnings, "", criteria_context, kb_context,
+                category_checklist, category_checklist_definitions,
+                progress_callback=chunk_events.append, user_id=user_id,
+            )
+
+        try:
+            _score(chunk)
+        except httpx.TimeoutException as error:
+            if len(chunk) < 2:
+                raise
+            # A full chunk outran the request timeout. Retry each half ONCE
+            # (never recursively -- bounded cost) so a slow model loses at
+            # most a half-chunk instead of the whole chunk. Halves run one
+            # after the other on this worker, so node mutation stays
+            # confined to this chunk's own nodes. The first call raised
+            # before parsing any response, so no node was partly written.
+            logger.warning(
+                "Requirement scoring chunk of %d timed out (%s) -- retrying as two halves", len(chunk), error,
+            )
+            for half in _split_in_half(chunk):
+                try:
+                    _score(half)
+                except Exception as half_error:  # noqa: BLE001 -- same fail-soft contract as a whole-chunk failure
+                    message = f"Requirement quality scoring failed for {len(half)} node(s): {half_error}"
+                    logger.warning(message)
+                    chunk_warnings.append(_scoring_failed_warning(half, half_error, "requirement", message))
         return chunk_warnings, chunk_events
 
     outcomes = run_chunks_bounded(chunks, _score_one_chunk, chunk_concurrency)
@@ -290,7 +373,7 @@ def _score_all_requirements(
         # PHASE 1 for why this is not hoisted above the dispatch.
         _fire(
             "score_requirements", chunks[kickoff_index],
-            nodes_done=kickoff_index * _SCORING_CHUNK_NODE_COUNT, chunk_index=kickoff_index,
+            nodes_done=chunk_start_offsets[kickoff_index], chunk_index=kickoff_index,
         )
         outcome = next(outcomes)
         chunk = chunks[outcome.chunk_index]
@@ -306,14 +389,7 @@ def _score_all_requirements(
             # already uses for the identical kind of call.
             message = f"Requirement quality scoring failed for {len(chunk)} node(s): {outcome.error}"
             logger.warning(message)
-            warnings.append(
-                IntegrityWarning.make(
-                    WarningKind.SCORING_FAILED,
-                    message,
-                    node_ids=[n.local_id for n in chunk],
-                    detail={"scope": "requirement", "chunkSize": len(chunk)},
-                )
-            )
+            warnings.append(_scoring_failed_warning(chunk, outcome.error, "requirement", message))
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -339,7 +415,7 @@ def _score_all_requirements(
                 duplicate.quality_category_checklist = representative.quality_category_checklist
                 duplicate.quality_confidence = representative.quality_confidence
         issues_found = sum(len(node.quality_issues) for node in chunk)
-        nodes_done = chunk_index * _SCORING_CHUNK_NODE_COUNT + len(chunk)
+        nodes_done = chunk_start_offsets[chunk_index] + len(chunk)
         _fire(
             "score_requirements_done", chunk, nodes_done=nodes_done,
             chunk_index=chunk_index, issues_found=issues_found,
@@ -419,7 +495,9 @@ def _score_epics_and_features(
         return
 
     total_epic_feature_nodes = len(epic_feature_nodes)
-    total_chunks = -(-total_epic_feature_nodes // _SCORING_CHUNK_NODE_COUNT)
+    chunks = _chunk_by_count_and_chars(epic_feature_nodes, lambda node: len(node.description))
+    total_chunks = len(chunks)
+    chunk_start_offsets = [sum(len(c) for c in chunks[:i]) for i in range(len(chunks))]
 
     def _fire(phase: Phase, chunk: list[WorkItemNode], nodes_done: int, chunk_index: int) -> None:
         if progress_callback is None:
@@ -439,19 +517,31 @@ def _score_epics_and_features(
     # (see _score_all_requirements' own identical structure). The per-chunk
     # PRE-dispatch narration event fires from the merge loop below, not
     # here -- same reasoning, spelled out there.
-    chunks: list[list[WorkItemNode]] = []
-    payloads: list[dict[str, dict]] = []
-    for start in range(0, len(epic_feature_nodes), _SCORING_CHUNK_NODE_COUNT):
-        chunk = epic_feature_nodes[start : start + _SCORING_CHUNK_NODE_COUNT]
-        chunks.append(chunk)
-        payloads.append(
-            {node.local_id: {"type": node.type.value, "text": node.description} for node in chunk}
-        )
+    payloads: list[dict[str, dict]] = [
+        {node.local_id: {"type": node.type.value, "text": node.description} for node in chunk} for chunk in chunks
+    ]
 
     # PHASE 2 -- only the client call leaves the calling thread.
-    outcomes = run_chunks_bounded(
-        payloads, lambda nodes_by_id: score_fn(nodes_by_id, user_id=user_id), chunk_concurrency,
-    )
+    def _score_payload(nodes_by_id: dict[str, dict]) -> dict[str, dict]:
+        try:
+            return score_fn(nodes_by_id, user_id=user_id)
+        except httpx.TimeoutException:
+            if len(nodes_by_id) < 2:
+                raise
+            # Same bounded split-and-retry as the requirement pass: each
+            # half once, results merged. Unlike the requirement pass a
+            # failed half fails the whole chunk (the response is a plain
+            # dict, so there is no per-half warning channel here) -- still
+            # no worse than before.
+            logger.warning("Epic/Feature scoring chunk of %d timed out -- retrying as two halves", len(nodes_by_id))
+            keys = list(nodes_by_id)
+            first, second = _split_in_half(keys)
+            merged: dict[str, dict] = {}
+            for half in (first, second):
+                merged.update(score_fn({key: nodes_by_id[key] for key in half}, user_id=user_id))
+            return merged
+
+    outcomes = run_chunks_bounded(payloads, _score_payload, chunk_concurrency)
 
     # PHASE 3 -- merge in fixed CHUNK order on the calling thread.
     for kickoff_index in range(len(chunks)):
@@ -459,7 +549,7 @@ def _score_epics_and_features(
         # _score_all_requirements' PHASE 1 comment.
         _fire(
             "score_requirements", chunks[kickoff_index],
-            nodes_done=kickoff_index * _SCORING_CHUNK_NODE_COUNT, chunk_index=kickoff_index,
+            nodes_done=chunk_start_offsets[kickoff_index], chunk_index=kickoff_index,
         )
         outcome = next(outcomes)
         chunk = chunks[outcome.chunk_index]
@@ -470,17 +560,10 @@ def _score_epics_and_features(
             if debug_capture is not None:
                 debug_capture.capture(
                     "score_epics_and_features",
-                    f"chunk_{chunk_index * _SCORING_CHUNK_NODE_COUNT}",
+                    f"chunk_{chunk_start_offsets[chunk_index]}",
                     str(outcome.error),
                 )
-            warnings.append(
-                IntegrityWarning.make(
-                    WarningKind.SCORING_FAILED,
-                    message,
-                    node_ids=[n.local_id for n in chunk],
-                    detail={"scope": "epic_feature", "chunkSize": len(chunk)},
-                )
-            )
+            warnings.append(_scoring_failed_warning(chunk, outcome.error, "epic_feature", message))
             if progress_callback is not None:
                 progress_callback(
                     LevelingProgress(
@@ -500,7 +583,7 @@ def _score_epics_and_features(
             if is_int and 0 <= raw_score <= 100:
                 node.quality_score = raw_score
             node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
-        nodes_done = chunk_index * _SCORING_CHUNK_NODE_COUNT + len(chunk)
+        nodes_done = chunk_start_offsets[chunk_index] + len(chunk)
         _fire("score_requirements_done", chunk, nodes_done=nodes_done, chunk_index=chunk_index)
 
 

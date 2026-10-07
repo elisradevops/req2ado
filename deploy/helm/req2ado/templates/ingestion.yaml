@@ -52,14 +52,23 @@ spec:
               value: "8000"
           ports:
             - containerPort: 8000
+          # Liveness previously used the k8s default 1s timeout / 3 failures, so
+          # a busy ingest (CPU-bound parsing/OCR) could get the pod killed.
+          startupProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            failureThreshold: 30
           livenessProbe:
             httpGet: { path: /health, port: 8000 }
             initialDelaySeconds: 30
             periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             httpGet: { path: /ready, port: 8000 }
             initialDelaySeconds: 10
             periodSeconds: 10
+          terminationMessagePolicy: FallbackToLogsOnError
           resources:
             {{- toYaml .Values.ingestion.resources | nindent 12 }}
       terminationGracePeriodSeconds: 30

@@ -457,6 +457,14 @@ class WarningKind(str, Enum):
     # kind means "no id was ever offered"; this one means "an id WAS
     # offered but couldn't be trusted").
     DUPLICATE_CUSTOMER_ID = "duplicate_customer_id"
+    # An Epic/Feature's model-written title (the parent-summary pass) matched
+    # one of its own descendant requirement titles, so the original heading
+    # title was kept instead -- a Feature with a single Requirement child was
+    # otherwise given exactly the child's title. See
+    # id_tree_builder._apply_parent_summary_pass. needs_review: when even the
+    # heading title collides, both nodes keep the same title and a human
+    # should rename one.
+    PARENT_TITLE_COLLISION = "parent_title_collision"
 
 
 WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
@@ -498,6 +506,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.MISSING_SOURCE_REFERENCE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.SURVEY_TITLE_DISTILLED: WarningSeverity.AUTO_FIXED,
     WarningKind.DUPLICATE_CUSTOMER_ID: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.PARENT_TITLE_COLLISION: WarningSeverity.NEEDS_REVIEW,
 }
 
 

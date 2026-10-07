@@ -410,6 +410,36 @@ async function resolveDefaultChatModel(job: PipelineJobInput, deps: PipelineWork
   return deps.defaultLlmModel;
 }
 
+// SURVEY-only: decides, before /ingest, whether the job's selected model can
+// caption figures. Vision always uses the job's own model (there is no
+// separate vision-model setting), so a text-only model must skip vision up
+// front with a stated reason -- otherwise it either fails once per figure or
+// (worse) answers without ever looking at the image. Fails open: if the
+// model catalog can't be read, or the model isn't listed (the catalog hides
+// presets/custom models), vision is attempted and ingestion's consecutive-
+// failure breaker is the safety net.
+async function resolveVisionPlan(
+  job: PipelineJobInput,
+  model: string,
+  deps: PipelineWorkerDeps,
+): Promise<{ skip: boolean; skipReason?: string }> {
+  if (!job.userId || !deps.openWebUiClientFactory) {
+    return { skip: false };
+  }
+  try {
+    const client = await deps.openWebUiClientFactory.getClientFor(job.userId);
+    const catalog = await client.listSelectableModels();
+    const entry = catalog.find((candidate) => candidate.id === model);
+    if (entry && !entry.vision) {
+      return { skip: true, skipReason: 'model_not_vision_capable' };
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console -- worker process logging, not app logging
+    console.error(`Vision capability check failed for job ${job.id} (attempting vision anyway):`, error);
+  }
+  return { skip: false };
+}
+
 export async function runPipelineJob(
   job: PipelineJobInput,
   deps: PipelineWorkerDeps,
@@ -586,8 +616,20 @@ export async function runPipelineJob(
     // maybeBackfillAreaPath's own doc comment) -- an independent concern
     // with no data dependency on ingest, so there's no reason to pay its
     // cost serially on top of /ingest's own wall-clock time.
+    // BASELINE never captions, so it keeps the exact pre-vision call shape.
+    const visionPlan = job.mode === 'survey' ? await resolveVisionPlan(job, model, deps) : null;
     const [doc] = await Promise.all([
-      deps.ingestionClient.ingest(job.fileBuffer, job.filename, false, job.mode, job.id, primerContext, deps.ocrLanguages, job.userId ?? undefined),
+      deps.ingestionClient.ingest(
+        job.fileBuffer,
+        job.filename,
+        visionPlan?.skip ?? false,
+        job.mode,
+        job.id,
+        primerContext,
+        deps.ocrLanguages,
+        job.userId ?? undefined,
+        ...(visionPlan ? [model, visionPlan.skipReason] : []),
+      ),
       maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential),
     ]);
 

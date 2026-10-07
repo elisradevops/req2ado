@@ -3,8 +3,10 @@ import hashlib
 import json
 import logging
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
@@ -69,7 +71,17 @@ for _handler in logging.getLogger().handlers:
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="req2ado-ingestion")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    # Container logs are lost on a pod restart and the k8s events expire
+    # quickly, so this single line is the only breadcrumb that the process
+    # received a graceful stop (SIGTERM, e.g. a liveness-probe kill) rather
+    # than being OOM-killed (which never reaches here).
+    logger.warning("ingestion service shutting down (graceful stop signal received)")
+
+
+app = FastAPI(title="req2ado-ingestion", lifespan=_lifespan)
 
 from app.otel import setup_otel  # noqa: E402 -- must instrument after `app` exists, before it serves
 
@@ -194,22 +206,16 @@ _SURVEY_MIN_P = 0.05
 _dedup_judge_client = OrchestratorLlmClient(
     settings.orchestrator_url, settings.llm_proxy_bearer, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P
 )
-# None (default: llm_vision_model unset) means figure extraction stays a
-# placeholder -- identical behavior to before vision support existed.
-_vision_client = (
-    OrchestratorVisionClient(settings.orchestrator_url, settings.llm_proxy_bearer)
-    if settings.llm_vision_model
-    else None
-)
-# Same bearer/base_url, same "None means feature off" convention as
-# _vision_client -- storing figure bytes for later ADO attachment only ever
-# makes sense alongside real vision-based figure description in the first
-# place (see _describe_figure_with_progress).
-_figure_file_client = (
-    OrchestratorFigureFileClient(settings.orchestrator_url, settings.llm_proxy_bearer)
-    if settings.llm_vision_model
-    else None
-)
+# Always built: the vision model is no longer a global setting (the
+# orchestrator resolves it per call -- the job's own model when /ingest is
+# given one, else the user's profile vision/chat model). Whether vision runs
+# for a given /ingest request is decided per request (see ingest()'s
+# vision_active), not by whether a client exists.
+_vision_client = OrchestratorVisionClient(settings.orchestrator_url, settings.llm_proxy_bearer)
+# Same bearer/base_url -- storing figure bytes for later ADO attachment
+# only ever makes sense alongside real vision-based figure description in
+# the first place (see _caption_and_store_one_figure).
+_figure_file_client = OrchestratorFigureFileClient(settings.orchestrator_url, settings.llm_proxy_bearer)
 # KB quality-checklist extraction (runs ONCE per document, at ingest time --
 # see OrchestratorLlmClient.extract_quality_checklist's own docstring for
 # the cross-run scoring-determinism problem this fixes). Same always-on
@@ -274,7 +280,9 @@ def _sniff_image_mime_type(image_bytes: bytes) -> str | None:
 _FIGURE_CAPTION_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7
 
 
-def _figure_caption_cache_key(original_image_bytes: bytes, document_context: str | None) -> str:
+def _figure_caption_cache_key(
+    original_image_bytes: bytes, document_context: str | None, model: str | None = None,
+) -> str:
     # Keyed on the ORIGINAL bytes handed to _describe_figure, before any
     # EMF/WMF->PNG conversion below -- two callers with byte-identical
     # source images must hit the same cache entry regardless of which
@@ -288,7 +296,12 @@ def _figure_caption_cache_key(original_image_bytes: bytes, document_context: str
     # debugging session already) would silently keep serving captions
     # generated under the OLD wording for up to the full 1-week TTL.
     context_hash = hashlib.sha256((document_context or "").encode("utf-8")).hexdigest()[:16]
-    return f"figcap:{PROMPT_VERSION}:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}"
+    # The captioning model is part of the key too: two models can judge the
+    # same figure differently, and a caption cached under one must not be
+    # served for a job that selected another. None (KB routes, no explicit
+    # model) keeps the pre-model key shape.
+    model_part = f":{hashlib.sha256(model.encode('utf-8')).hexdigest()[:16]}" if model else ""
+    return f"figcap:{PROMPT_VERSION}:{hashlib.sha256(original_image_bytes).hexdigest()}:{context_hash}{model_part}"
 
 
 def _rasterize_for_vision(image_bytes: bytes) -> tuple[bytes, str | None]:
@@ -346,6 +359,9 @@ def _describe_figure(
     # never ran) -- that caller must still rasterize its own copy then.
     caption_status_out: dict[str, str | bytes] | None = None,
     user_id: str | None = None,
+    # The job's selected model, threaded from /ingest's `vision_model`.
+    # None (KB routes) lets the orchestrator use the user's profile model.
+    model: str | None = None,
 ) -> str | None:
     # SCOPE NOTE (KB ingestion): this function is shared by SURVEY-mode
     # /ingest AND the three KB-ingestion routes below (/kb/ingest-url,
@@ -372,7 +388,7 @@ def _describe_figure(
     # once document context feeds the judgment (an image byte-identical
     # cache key alone would silently leak document A's verdict onto
     # document B). Fails open on any Redis error in either direction.
-    cache_key = _figure_caption_cache_key(image_bytes, document_context)
+    cache_key = _figure_caption_cache_key(image_bytes, document_context, model)
     try:
         cached = _narration_redis.get(cache_key)
         if cached is not None:
@@ -406,7 +422,9 @@ def _describe_figure(
     describe_bytes, mime_type = _rasterize_for_vision(image_bytes)
     if caption_status_out is not None:
         caption_status_out["rasterized_bytes"] = describe_bytes
-    result = _vision_client.describe_figure(describe_bytes, mime_type, document_context, user_id=user_id)
+    result = _vision_client.describe_figure(
+        describe_bytes, mime_type, document_context, user_id=user_id, **({"model": model} if model else {}),
+    )
     if result is None:
         # The vision client's single "ambiguous result" outcome: a totally
         # unparseable response OR a well-formed significant=True whose
@@ -437,6 +455,41 @@ def _describe_figure(
     return result.description if result.significant else None
 
 
+# Consecutive failed vision calls after which captioning stops for the rest
+# of the document. A model that cannot do vision (or a down backend) fails
+# every figure; without this a 36-figure document pays 36 full timeouts and
+# a text-only model may invent captions instead of failing.
+_VISION_BREAKER_THRESHOLD = 3
+
+
+class _VisionBreaker:
+    """Counts consecutive `vision_failed` outcomes across the captioning
+    pass (workers may record concurrently, hence the lock). Any real
+    caption or insignificant verdict resets the streak; skipped figures
+    neither count nor reset."""
+
+    def __init__(self, threshold: int) -> None:
+        self._threshold = threshold
+        self._consecutive_failures = 0
+        self._tripped = False
+        self._lock = threading.Lock()
+
+    @property
+    def tripped(self) -> bool:
+        return self._tripped
+
+    def record(self, outcome: "FigureCaptionOutcome") -> None:
+        if outcome.skipped:
+            return
+        with self._lock:
+            if outcome.status == "vision_failed":
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._threshold:
+                    self._tripped = True
+            else:
+                self._consecutive_failures = 0
+
+
 class FigureCaptionOutcome(NamedTuple):
     """One figure's complete captioning result, as plain data returned to
     the calling thread.
@@ -459,6 +512,30 @@ class FigureCaptionOutcome(NamedTuple):
     status: str | None
     title: str | None
     storage_failed: bool
+    # True when the breaker had tripped and no vision call was made.
+    skipped: bool = False
+
+
+def _store_figure_only(figure_id: str, image_bytes: bytes, job_id: str | None) -> FigureCaptionOutcome:
+    """Breaker-tripped path: no vision call, but the figure's bytes are still
+    stored (best-effort, same as the captioning path) so it stays
+    viewable/attachable in the review UI."""
+    storage_failed = False
+    if job_id is not None:
+        try:
+            rasterized_bytes, _ = _rasterize_for_vision(image_bytes)
+            compressed = compress_figure_for_storage(rasterized_bytes)
+            if compressed is not None:
+                _figure_file_client.store(job_id, figure_id, compressed[0], compressed[1])
+        except Exception:
+            logger.warning(
+                "Figure-file storage failed for %s -- it will not be attachable in ADO", figure_id, exc_info=True
+            )
+            storage_failed = True
+    return FigureCaptionOutcome(
+        figure_id=figure_id, caption=None, status="vision_failed", title=None,
+        storage_failed=storage_failed, skipped=True,
+    )
 
 
 def _caption_and_store_one_figure(
@@ -467,6 +544,11 @@ def _caption_and_store_one_figure(
     document_context: str | None,
     job_id: str | None,
     user_id: str | None = None,
+    model: str | None = None,
+    # True once the consecutive-failure breaker has tripped: no vision call
+    # is made (the figure is left uncaptioned, status "vision_failed"), but
+    # its bytes are still stored so it stays viewable/attachable.
+    skip_caption: bool = False,
 ) -> FigureCaptionOutcome:
     """One figure's vision caption AND its figure-file storage, deliberately
     in ONE function.
@@ -485,6 +567,8 @@ def _caption_and_store_one_figure(
     it safe to run on a worker thread: it returns everything the caller
     needs as plain data instead."""
     caption_status_out: dict[str, str | bytes] = {}
+    if skip_caption:
+        return _store_figure_only(figure_id, image_bytes, job_id)
     # Fail-soft per figure, and NOT optional: before captioning moved out of
     # the parse walk, every loader wrapped its own describe_figure call in
     # exactly this try/except ("a vision failure must not abort the whole
@@ -498,7 +582,7 @@ def _caption_and_store_one_figure(
     # same call the loader's except swallowed, so a failed caption never
     # attempted a store either.
     try:
-        caption = _describe_figure(image_bytes, document_context, caption_status_out, user_id=user_id)
+        caption = _describe_figure(image_bytes, document_context, caption_status_out, user_id=user_id, model=model)
     except Exception:  # noqa: BLE001 -- one figure's vision failure must not abort the whole document
         logger.warning("Vision captioning failed for %s -- figure left uncaptioned", figure_id, exc_info=True)
         return FigureCaptionOutcome(
@@ -526,7 +610,7 @@ def _caption_and_store_one_figure(
     # on a cache hit (rasterization never ran that time), so this still falls
     # back to rasterizing its own copy in that case.
     storage_failed = False
-    if job_id is not None and _figure_file_client is not None:
+    if job_id is not None:
         try:
             cached_rasterized = caption_status_out.get("rasterized_bytes")
             if isinstance(cached_rasterized, bytes):
@@ -874,7 +958,10 @@ class ChatTurnRequest(BaseModel):
 
 
 @app.get("/health")
-def health() -> dict[str, bool]:
+async def health() -> dict[str, bool]:
+    # async def on purpose: answered on the event loop, so a saturated
+    # threadpool (CPU-bound parse/OCR work shares it) cannot starve the
+    # liveness probe.
     # Liveness: process is up, nothing more. Deliberately does NOT check
     # Chroma -- a k8s liveness-probe failure restarts the pod, the wrong
     # response to "a dependency blipped" (that's what /ready is for).
@@ -954,6 +1041,16 @@ async def ingest(
     # available," not a fabricated fallback, and the orchestrator's own 401
     # on /llm/vision is the correct, honest failure signal for that case.
     user_id: str | None = None,
+    # The job's selected model -- figure captions are generated by the SAME
+    # model as the rest of the job (there is no separate vision model
+    # setting). Optional/omitted: the orchestrator then falls back to the
+    # user's own profile vision/chat model.
+    vision_model: str | None = None,
+    # Set by the orchestrator when it already decided to skip vision for a
+    # reason ingestion cannot see (e.g. "model_not_vision_capable", from the
+    # model catalog check). Only meaningful together with skip_vision=true;
+    # surfaced on CanonicalDoc.vision_skip_reason for the job warning.
+    vision_skip_reason: str | None = None,
 ) -> CanonicalDoc:
     # skip_vision: /jobs/preview (orchestrator) only needs blockCount/
     # sectionCount/fileType to show the user before they even pick a mode --
@@ -964,7 +1061,7 @@ async def ingest(
     # (pipeline.worker.ts) never sets this -- captions still matter there.
     #
     # mode: BASELINE is contractually verbatim/no-AI -- describe_figure must
-    # never run for it regardless of skip_vision or LLM_VISION_MODEL, so a
+    # never run for it regardless of skip_vision or the job's model, so a
     # figure's caption cannot become model-authored text inside a contract-
     # baseline System.Description. Only the literal string "survey" opens the
     # vision gate below (fail-safe default, same direction as /level's own
@@ -993,7 +1090,19 @@ async def ingest(
             tmp.write(chunk)
 
     narration_publisher = NarrationPublisher(_narration_redis, job_id) if job_id else None
-    vision_active = _vision_client is not None and not skip_vision and mode == "survey"
+    vision_active = not skip_vision and mode == "survey" and bool(user_id)
+    # Why the gate is shut, for CanonicalDoc.vision_skip_reason (None when
+    # vision is active). Order matters: BASELINE is the contractual reason
+    # and wins over anything else.
+    if vision_active:
+        skip_reason: str | None = None
+    elif mode != "survey":
+        skip_reason = "baseline_mode"
+    elif skip_vision:
+        skip_reason = vision_skip_reason or "skip_vision_requested"
+    else:
+        skip_reason = "no_user"
+    breaker = _VisionBreaker(_VISION_BREAKER_THRESHOLD)
 
     describe_figure_fn = None
     # Populated below on a store() failure (figure captioned fine, but its
@@ -1041,7 +1150,7 @@ async def ingest(
     try:
         # run_in_threadpool: dispatch_by_extension can now make a real
         # network call per figure (vision description) when
-        # LLM_VISION_MODEL is configured, on top of the CPU-bound
+        # vision is active for this request, on top of the CPU-bound
         # parsing/OCR work it already did -- must not block the event loop
         # (same reasoning as /level's SURVEY path).
         # Job transparency (B10): scanned-page progress, only with live progress on.
@@ -1166,13 +1275,17 @@ async def ingest(
             # both make a live call; harmless, and unreachable within one
             # document anyway, since every loader already dedupes identical
             # figures by sha256 before the collector ever sees the second.
-            return _caption_and_store_one_figure(
+            outcome = _caption_and_store_one_figure(
                 f"f{figure_position}",
                 collected_figure_bytes[figure_position],
                 primer_context,
                 job_id,
                 user_id=user_id,
+                model=vision_model,
+                skip_caption=breaker.tripped,
             )
+            breaker.record(outcome)
+            return outcome
 
         def _merge_one(outcome: FigureCaptionOutcome) -> None:
             """Everything one finished figure changes, all on the CALLING
@@ -1239,6 +1352,7 @@ async def ingest(
 
     doc.failed_figure_storage_ids = failed_figure_ids
     doc.vision_active = vision_active
+    doc.vision_skip_reason = "breaker_tripped" if breaker.tripped else skip_reason
     # Patch each figure's caption_status from the per-request side channel
     # populated above -- can't be set until now since the Figure objects
     # themselves don't exist until dispatch_by_extension returns `doc`.
@@ -1300,6 +1414,16 @@ async def ingest(
     return doc
 
 
+_VISION_SKIP_EXPLANATIONS = {
+    "model_not_vision_capable": "the selected model does not support image input",
+    "skip_vision_requested": "vision was explicitly turned off for this job",
+    "no_user": "no submitting user identity was available to resolve the model",
+    "vision_client_unavailable": "no vision client was available",
+    "baseline_mode": "baseline mode never uses AI",
+    "breaker_tripped": "several consecutive vision calls failed",
+}
+
+
 def _append_vision_disabled_warning(
     tree: WorkItemTree, doc: CanonicalDoc, mode: str,
 ) -> WorkItemTree:
@@ -1326,11 +1450,25 @@ def _append_vision_disabled_warning(
     run. SURVEY jobs where vision was explicitly turned off still get the
     warning, since there it reflects a real per-job configuration choice
     worth surfacing."""
-    if mode == "survey" and not doc.vision_active and doc.figures:
+    breaker_tripped = doc.vision_skip_reason == "breaker_tripped"
+    if mode == "survey" and doc.figures and (not doc.vision_active or breaker_tripped):
+        reason = doc.vision_skip_reason
+        explanation = _VISION_SKIP_EXPLANATIONS.get(reason or "", "vision captioning was disabled for this run")
+        if breaker_tripped:
+            message = (
+                f"Figure captioning stopped early -- {explanation}. Figures from that point on have no "
+                "description; check that the selected model supports images and that the model backend is reachable."
+            )
+        else:
+            message = (
+                f"Vision captioning was disabled for this run ({explanation}) -- "
+                f"{len(doc.figures)} figure(s) have no description as a result."
+            )
         tree.warnings.append(
             IntegrityWarning.make(
                 WarningKind.VISION_CAPTIONING_DISABLED,
-                f"Vision captioning was disabled for this run -- {len(doc.figures)} figure(s) have no description as a result.",
+                message,
+                detail={"reason": reason, "figureCount": len(doc.figures)},
             )
         )
     return tree

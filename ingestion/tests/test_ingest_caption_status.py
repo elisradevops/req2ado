@@ -20,7 +20,10 @@ def _upload(filename: str, path: Path, **extra_params: object) -> dict:
     with open(path, "rb") as f:
         response = client.post(
             "/ingest",
-            params={"redact": False, **extra_params},
+            # user_id defaults on: vision only runs for a request carrying the
+            # submitting user's identity. Pass user_id=None-equivalent by
+            # overriding with "" to exercise the no-user case.
+            params={"redact": False, "user_id": "test-user", **extra_params},
             files={"file": (filename, f, "application/octet-stream")},
         )
     assert response.status_code == 200
@@ -205,17 +208,37 @@ def test_vision_active_is_false_when_skip_vision_is_set(monkeypatch) -> None:
     assert result["figures"][0]["caption_status"] is None
 
 
-def test_vision_active_is_false_when_no_vision_client_is_configured(monkeypatch) -> None:
-    # No LLM_VISION_MODEL configured at all (the real _vision_client is None
-    # by default in this deployment) -- describe_figure_fn is never built.
+def test_vision_active_is_false_when_the_request_has_no_user_identity(monkeypatch) -> None:
+    # Vision is no longer gated on a global LLM_VISION_MODEL; it needs the
+    # submitting user's identity so the orchestrator can resolve the model.
     import app.main as main_module
 
-    monkeypatch.setattr(main_module, "_vision_client", None)
+    monkeypatch.setattr(main_module, "_vision_client", _SignificantVisionClient())
 
-    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey")
+    result = _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", user_id="")
 
     assert result["vision_active"] is False
+    assert result["vision_skip_reason"] == "no_user"
     assert result["figures"][0]["caption_status"] is None
+
+
+def test_vision_skip_reason_reflects_why_the_gate_stayed_shut(monkeypatch) -> None:
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "_vision_client", _SignificantVisionClient())
+    path = FIXTURES / "sample.docx"
+
+    baseline = _upload("sample.docx", path, mode="baseline")
+    skipped = _upload("sample.docx", path, mode="survey", skip_vision=True)
+    orchestrator_decided = _upload(
+        "sample.docx", path, mode="survey", skip_vision=True, vision_skip_reason="model_not_vision_capable",
+    )
+    active = _upload("sample.docx", path, mode="survey", primer_context="skip-reason-active")
+
+    assert baseline["vision_skip_reason"] == "baseline_mode"
+    assert skipped["vision_skip_reason"] == "skip_vision_requested"
+    assert orchestrator_decided["vision_skip_reason"] == "model_not_vision_capable"
+    assert active["vision_active"] is True and active["vision_skip_reason"] is None
 
 
 MULTI_FIGURE_FIXTURE_NAME = "multi_figure.docx"

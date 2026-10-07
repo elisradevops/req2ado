@@ -383,3 +383,83 @@ def test_a_vision_active_docx_is_parsed_exactly_once(monkeypatch) -> None:
     )
 
     assert len(dispatch_calls) == 1
+
+
+def test_breaker_stops_vision_calls_after_consecutive_failures_but_still_stores_bytes(monkeypatch) -> None:
+    # A model that cannot do vision (or a down backend) fails every figure:
+    # after _VISION_BREAKER_THRESHOLD consecutive failures no further vision
+    # call is made, the remaining figures stay uncaptioned (vision_failed),
+    # their bytes are still stored, and the doc says why.
+    import app.main as main_module
+
+    calls = 0
+
+    class _AlwaysFailingVisionClient:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("model does not support images")
+
+    stored: list[str] = []
+
+    class _FakeFigureFileClient:
+        def store(self, job_id, figure_id, image_bytes, mime_type):
+            stored.append(figure_id)
+
+    monkeypatch.setattr(main_module, "_vision_client", _AlwaysFailingVisionClient())
+    monkeypatch.setattr(main_module, "_figure_file_client", _FakeFigureFileClient())
+    monkeypatch.setattr(main_module.settings, "vision_caption_concurrency", 1)
+    # The multi-figure fixture only has 2 figures, so trip after the first.
+    monkeypatch.setattr(main_module, "_VISION_BREAKER_THRESHOLD", 1)
+
+    result = _upload(
+        MULTI_FIGURE_FIXTURE_NAME, FIXTURES / MULTI_FIGURE_FIXTURE_NAME, mode="survey",
+        job_id="job-breaker", primer_context=f"breaker-{uuid.uuid4()}",
+    )
+
+    figure_count = len(result["figures"])
+    assert figure_count > 1
+    assert calls == 1
+    assert all(f["caption_status"] == "vision_failed" for f in result["figures"])
+    assert result["vision_active"] is True
+    assert result["vision_skip_reason"] == "breaker_tripped"
+    # f0 raised (an erroring call never stores, as before); every figure the
+    # tripped breaker skipped still gets its bytes stored.
+    assert stored == ["f1"]
+
+
+def test_a_success_resets_the_breaker_streak(monkeypatch) -> None:
+    import app.main as main_module
+
+    outcomes = main_module._VisionBreaker(3)
+    failed = main_module.FigureCaptionOutcome("f0", None, "vision_failed", None, False)
+    ok = main_module.FigureCaptionOutcome("f1", "cap", None, None, False)
+
+    for outcome in (failed, failed, ok, failed, failed):
+        outcomes.record(outcome)
+    assert outcomes.tripped is False
+
+    outcomes.record(failed)
+    assert outcomes.tripped is True
+
+
+def test_vision_model_is_forwarded_to_the_vision_client_and_part_of_the_cache_key(monkeypatch) -> None:
+    import app.main as main_module
+
+    seen_models: list[str | None] = []
+
+    class _ModelRecordingVisionClient:
+        def describe_figure(self, image_bytes, mime_type=None, document_context=None, user_id=None, model=None):
+            seen_models.append(model)
+            return FigureVisionResult(significant=True, description="a real caption")
+
+    monkeypatch.setattr(main_module, "_vision_client", _ModelRecordingVisionClient())
+    context = f"model-forwarding-{uuid.uuid4()}"
+
+    _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context=context, vision_model="claude-opus-4-8")
+    _upload("sample.docx", FIXTURES / "sample.docx", mode="survey", primer_context=context, vision_model="other-model")
+
+    # Same image + same context, different model: no cross-model cache hit.
+    assert seen_models == ["claude-opus-4-8", "other-model"]
+    assert main_module._figure_caption_cache_key(b"x", "c", "a") != main_module._figure_caption_cache_key(b"x", "c", "b")
+    assert main_module._figure_caption_cache_key(b"x", "c") == main_module._figure_caption_cache_key(b"x", "c", None)

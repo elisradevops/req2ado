@@ -10,7 +10,7 @@ from app.leveling.id_tree_builder import (
 from app.leveling.llm_leveling import _repair_requirement_hierarchy
 from app.leveling.narration_publisher import LevelingProgress
 from app.leveling.tree_builder import _table_to_html
-from app.workitem.model import WorkItemType
+from app.workitem.model import WarningKind, WorkItemType
 
 
 def _sr(offset: int = 0) -> SourceRef:
@@ -289,6 +289,76 @@ def test_apply_parent_summary_pass_replaces_verbatim_title_and_gives_a_distinct_
     assert epic.title == "Synthesized: Controls:"
     assert epic.description == "A synthesized capability summary."
     assert epic.title != epic.description
+
+
+def _summary_client_returning(title_for):
+    class _Client:
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
+            return {
+                node_id: {"title": title_for(node_id, entry), "description": "A synthesized capability summary."}
+                for node_id, entry in nodes_by_id.items()
+            }
+
+    return _Client()
+
+
+def test_parent_summary_title_equal_to_its_only_requirements_title_keeps_the_heading_and_warns() -> None:
+    nodes = _epic_feature_requirement_nodes()
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+    requirement = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+    warnings: list = []
+
+    _apply_parent_summary_pass(
+        nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: requirement.title), warnings,
+    )
+
+    assert feature.title == "Over 28V VDC input"
+    assert feature.description == "A synthesized capability summary."  # description still accepted
+    assert [w.kind for w in warnings] == [WarningKind.PARENT_TITLE_COLLISION]
+    assert warnings[0].node_ids == [feature.local_id]
+    assert warnings[0].detail["rejectedTitle"] == requirement.title
+    assert warnings[0].detail["headingAlsoCollides"] is False
+
+
+def test_parent_summary_title_collision_ignores_case_whitespace_and_punctuation() -> None:
+    nodes = _epic_feature_requirement_nodes()
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+    requirement = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+    warnings: list = []
+
+    variant = f"  {requirement.title.upper()}.. "
+    _apply_parent_summary_pass(nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: variant), warnings)
+
+    assert feature.title == "Over 28V VDC input"
+    assert [w.kind for w in warnings] == [WarningKind.PARENT_TITLE_COLLISION]
+
+
+def test_parent_summary_flags_when_even_the_heading_title_collides() -> None:
+    nodes = _epic_feature_requirement_nodes()
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+    requirement = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+    feature.title = requirement.title  # the source headings were already identical
+    warnings: list = []
+
+    _apply_parent_summary_pass(
+        nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: requirement.title), warnings,
+    )
+
+    assert feature.title == requirement.title
+    assert warnings[0].detail["headingAlsoCollides"] is True
+
+
+def test_parent_summary_distinct_title_is_applied_without_a_warning() -> None:
+    nodes = _epic_feature_requirement_nodes()
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+    warnings: list = []
+
+    _apply_parent_summary_pass(
+        nodes, [feature.local_id], _summary_client_returning(lambda _id, _entry: "Input overvoltage protection"), warnings,
+    )
+
+    assert feature.title == "Input overvoltage protection"
+    assert warnings == []
 
 
 def test_apply_parent_summary_pass_recomputes_grounding_score_against_descendant_text_not_a_self_comparison() -> None:

@@ -258,10 +258,13 @@ class CanonicalDoc(BaseModel):
     # WarningKind docstring).
     failed_figure_storage_ids: list[str] = Field(default_factory=list)
     # Whether main.py's /ingest actually opened the vision-LLM gate for this
-    # document (see ingest()'s own `vision_active = _vision_client is not
-    # None and not skip_vision and mode == "survey"`) -- False for every
-    # BASELINE doc (vision never runs there), a preview call (skip_vision),
-    # or when no LLM_VISION_MODEL is configured at all. Round-tripped through
+    # document (see ingest()'s own `vision_active = not skip_vision and
+    # mode == "survey" and bool(user_id)`) -- False for every BASELINE doc
+    # (vision never runs there), a preview call (skip_vision), a job whose
+    # selected model cannot do vision, or a request with no user identity.
+    # The vision model is no longer a global setting: it is the job's own
+    # model (see vision_skip_reason below for WHY the gate stayed shut).
+    # Round-tripped through
     # here (not a new /level query param) because /level's own `doc` request
     # body IS this same CanonicalDoc, already flowing unchanged from
     # /ingest's response through the orchestrator's ingestionClient.level()
@@ -271,3 +274,11 @@ class CanonicalDoc(BaseModel):
     # warning (never a per-figure one) when this is False and doc.figures is
     # non-empty -- see main.py's _append_vision_disabled_warning.
     vision_active: bool = False
+    # Why vision did not (fully) run, so the tree-level warning can say so
+    # instead of a generic "disabled". One of: "baseline_mode",
+    # "skip_vision_requested", "model_not_vision_capable", "no_user",
+    # "vision_client_unavailable" (vision_active False), or
+    # "breaker_tripped" (vision_active True, but captioning was stopped
+    # after consecutive failures and the remaining figures left
+    # uncaptioned). None when vision ran normally.
+    vision_skip_reason: str | None = None

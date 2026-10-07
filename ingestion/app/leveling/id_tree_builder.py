@@ -20,6 +20,7 @@ row backing it."""
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Protocol
 
 from app.canonical.model import SourceRef, Table
@@ -413,6 +414,25 @@ def _collect_descendant_requirement_texts(
     return results
 
 
+def _normalize_title(title: str) -> str:
+    """Casefolded, punctuation-stripped, whitespace-collapsed form used only
+    to decide whether two titles are "the same" -- never written back."""
+    return " ".join(re.sub(r"[^\w\s]", " ", title.casefold()).split())
+
+
+def _colliding_child_title(title: str, requirement_titles: list[str], child_titles: list[str]) -> str | None:
+    """The first descendant-requirement or direct-child title that `title`
+    equals after normalisation, else None. An empty normalised title never
+    collides (nothing meaningful to compare)."""
+    normalized = _normalize_title(title)
+    if not normalized:
+        return None
+    for candidate in (*requirement_titles, *child_titles):
+        if _normalize_title(candidate) == normalized:
+            return candidate
+    return None
+
+
 def _apply_parent_summary_pass(
     nodes: list[WorkItemNode],
     parent_node_ids: list[str],
@@ -573,7 +593,50 @@ def _apply_parent_summary_pass(
             raw_title = entry.get("title")
             raw_description = entry.get("description")
             if isinstance(raw_title, str) and raw_title.strip():
-                node.title = raw_title.strip()
+                new_title = raw_title.strip()
+                collided_with = _colliding_child_title(
+                    new_title,
+                    payload_by_id[node_id]["requirement_titles"],
+                    [by_id[child_id].title for child_id in children_by_parent.get(node_id, [])],
+                )
+                if collided_with is None:
+                    node.title = new_title
+                else:
+                    # Keep the verbatim heading title (still on the node --
+                    # this pass hasn't touched it) instead of the model's. A
+                    # Feature with one Requirement child was being given
+                    # exactly its child's title (the prompt only forbids a
+                    # title/DESCRIPTION restatement), which reads as the same
+                    # item twice in the diff tree and in ADO.
+                    heading_also_collides = (
+                        _colliding_child_title(
+                            node.title,
+                            payload_by_id[node_id]["requirement_titles"],
+                            [by_id[child_id].title for child_id in children_by_parent.get(node_id, [])],
+                        )
+                        is not None
+                    )
+                    message = (
+                        f'"{new_title}" was proposed as the title of a parent item but matches the title of '
+                        f'one of the requirements under it -- kept the original heading "{node.title}" instead.'
+                        if not heading_also_collides
+                        else f'The title "{node.title}" is the same as the title of one of the requirements under '
+                        "it, even after keeping the original heading -- rename one of them."
+                    )
+                    warnings.append(
+                        IntegrityWarning.make(
+                            WarningKind.PARENT_TITLE_COLLISION,
+                            message,
+                            node_ids=[node_id],
+                            detail={
+                                "pass": "parent_summary",
+                                "rejectedTitle": new_title,
+                                "fallbackTitle": node.title,
+                                "collidesWith": collided_with,
+                                "headingAlsoCollides": heading_also_collides,
+                            },
+                        )
+                    )
             if isinstance(raw_description, str) and raw_description.strip():
                 description = raw_description.strip()
                 # Captured BEFORE the table-embed loop below -- scoring must
