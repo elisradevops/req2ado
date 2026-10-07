@@ -76,19 +76,22 @@ def _build_criteria_context(criteria_retriever: CriteriaRetriever, nodes: list[W
     return "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
 
 
-# §2c: output-token budget derived cap, not an arbitrary round number --
-# _MAX_OUTPUT_TOKENS (orchestrator_llm_client.py) is 20_000; a scoring
-# response entry (score + up to 7 issue tags + a 5-field categoryScores
-# breakdown) runs ~80 tokens/node observed live, and reserving 40% of the
-# cap for JSON structural overhead (braces, keys, node_id strings) leaves
-# room for ~150 nodes before a single call risks truncation.
-_SCORING_CHUNK_NODE_COUNT = 150
+# Scoring batch size. The output-token cap (_MAX_OUTPUT_TOKENS, 20_000; a
+# scoring entry runs ~80 tokens/node) would allow ~150 nodes per call, but
+# the binding limit is TIME, not tokens: scoring is one blocking, non-streamed
+# call, and in prod a 150-node batch sometimes ran past ~300 s, after which the
+# upstream returned an empty reply or dropped the connection (two of four
+# batches in job 0b9a134f, ~15 minutes lost each once the identical request
+# was re-sent). At the ~1 s per node observed, 50 nodes is ~45 s per call --
+# far under any gateway ceiling -- and a lost batch costs 50 nodes, not 150.
+# It also gives the screen real progress every minute or so.
+_SCORING_CHUNK_NODE_COUNT = 50
 # A chunk also closes once its description text would exceed this many
-# characters (a lone oversized item still gets its own chunk). The node-count
-# cap alone bounds OUTPUT size, but a chunk of large descriptions has a far
-# bigger INPUT and takes far longer per call -- confirmed in prod, where full
-# 150-node chunks timed out. ~40k chars is roughly 10k input tokens.
-_SCORING_CHUNK_CHAR_BUDGET = 40_000
+# characters (a lone oversized item still gets its own chunk): a few huge
+# descriptions make a call slow regardless of the node count. Sized so a
+# typical chunk (~140 chars/node in prod) is bounded by the node count and
+# only description-heavy chunks are cut earlier.
+_SCORING_CHUNK_CHAR_BUDGET = 12_000
 
 _T = TypeVar("_T")
 
@@ -179,6 +182,17 @@ def _scoring_failed_warning(
             "timeoutSeconds": settings.llm_request_timeout_seconds,
         },
     )
+
+
+def _is_splittable_upstream_failure(error: BaseException) -> bool:
+    """A failure that means "this call was too big or too slow", for which
+    scoring the same nodes as two smaller calls can succeed: a request
+    timeout, or a 5xx from the proxy (the orchestrator answers 5xx when the
+    upstream model call hangs, returns an empty completion or drops the
+    connection). A 4xx is the request's own fault and is not retried."""
+    if isinstance(error, httpx.TimeoutException):
+        return True
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code >= 500
 
 
 def _score_all_requirements(
@@ -344,17 +358,17 @@ def _score_all_requirements(
 
         try:
             _score(chunk)
-        except httpx.TimeoutException as error:
-            if len(chunk) < 2:
+        except Exception as error:  # noqa: BLE001 -- narrowed just below; anything else is re-raised
+            if not _is_splittable_upstream_failure(error) or len(chunk) < 2:
                 raise
-            # A full chunk outran the request timeout. Retry each half ONCE
+            # A full chunk timed out or hit a 5xx. Retry each half ONCE
             # (never recursively -- bounded cost) so a slow model loses at
             # most a half-chunk instead of the whole chunk. Halves run one
             # after the other on this worker, so node mutation stays
             # confined to this chunk's own nodes. The first call raised
             # before parsing any response, so no node was partly written.
             logger.warning(
-                "Requirement scoring chunk of %d timed out (%s) -- retrying as two halves", len(chunk), error,
+                "Requirement scoring chunk of %d failed (%s) -- retrying as two halves", len(chunk), error,
             )
             for half in _split_in_half(chunk):
                 try:
@@ -525,15 +539,15 @@ def _score_epics_and_features(
     def _score_payload(nodes_by_id: dict[str, dict]) -> dict[str, dict]:
         try:
             return score_fn(nodes_by_id, user_id=user_id)
-        except httpx.TimeoutException:
-            if len(nodes_by_id) < 2:
+        except Exception as error:  # noqa: BLE001 -- narrowed just below; anything else is re-raised
+            if not _is_splittable_upstream_failure(error) or len(nodes_by_id) < 2:
                 raise
             # Same bounded split-and-retry as the requirement pass: each
             # half once, results merged. Unlike the requirement pass a
             # failed half fails the whole chunk (the response is a plain
             # dict, so there is no per-half warning channel here) -- still
             # no worse than before.
-            logger.warning("Epic/Feature scoring chunk of %d timed out -- retrying as two halves", len(nodes_by_id))
+            logger.warning("Epic/Feature scoring chunk of %d failed (%s) -- retrying as two halves", len(nodes_by_id), error)
             keys = list(nodes_by_id)
             first, second = _split_in_half(keys)
             merged: dict[str, dict] = {}

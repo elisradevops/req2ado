@@ -241,7 +241,11 @@ import threading
 import time
 
 from app.canonical.model import SourceRef
-from app.leveling.scoring import _score_all_requirements, _score_epics_and_features
+from app.leveling.scoring import (
+    _SCORING_CHUNK_NODE_COUNT,
+    _score_all_requirements,
+    _score_epics_and_features,
+)
 from app.workitem.model import WorkItemMode, WorkItemNode, WorkItemType
 
 
@@ -337,10 +341,12 @@ def test_score_all_requirements_narrates_chunks_in_document_order_under_concurre
     # so both must be monotonic regardless of completion order.
     starts = [e for e in fired if e.phase == "score_requirements"]
     dones = [e for e in fired if e.phase == "score_requirements_done"]
-    assert [e.chunk_index for e in starts] == [0, 1, 2]
-    assert [e.blocks_done for e in starts] == [0, 150, 300]
-    assert [e.chunk_index for e in dones] == [0, 1, 2]
-    assert [e.blocks_done for e in dones] == [150, 300, 320]
+    size = _SCORING_CHUNK_NODE_COUNT
+    chunk_starts = list(range(0, 320, size))
+    assert [e.chunk_index for e in starts] == list(range(len(chunk_starts)))
+    assert [e.blocks_done for e in starts] == chunk_starts
+    assert [e.chunk_index for e in dones] == list(range(len(chunk_starts)))
+    assert [e.blocks_done for e in dones] == [min(start + size, 320) for start in chunk_starts]
 
 
 def test_score_all_requirements_one_failing_chunk_still_scores_the_others_under_concurrency() -> None:
@@ -424,10 +430,12 @@ def test_score_epics_and_features_narrates_chunks_in_document_order_under_concur
 
     starts = [e for e in fired if e.phase == "score_requirements"]
     dones = [e for e in fired if e.phase == "score_requirements_done"]
-    assert [e.chunk_index for e in starts] == [0, 1, 2]
-    assert [e.blocks_done for e in starts] == [0, 150, 300]
-    assert [e.chunk_index for e in dones] == [0, 1, 2]
-    assert [e.blocks_done for e in dones] == [150, 300, 320]
+    size = _SCORING_CHUNK_NODE_COUNT
+    chunk_starts = list(range(0, 320, size))
+    assert [e.chunk_index for e in starts] == list(range(len(chunk_starts)))
+    assert [e.blocks_done for e in starts] == chunk_starts
+    assert [e.chunk_index for e in dones] == list(range(len(chunk_starts)))
+    assert [e.blocks_done for e in dones] == [min(start + size, 320) for start in chunk_starts]
 
 
 class _CanaryObservingClient:
@@ -554,12 +562,12 @@ def test_score_all_requirements_splits_a_timed_out_chunk_and_scores_every_node()
         def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             calls.append(len(descriptions_by_node_id))
             # Real batches carry the canary too, so only a call big enough to
-            # be the full 100-node chunk times out; its halves succeed.
-            if len(descriptions_by_node_id) > 60:
+            # be the full chunk times out; its halves succeed.
+            if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:
                 raise httpx.ReadTimeout("timed out")
             return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
 
-    nodes = _requirement_nodes(100)
+    nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
     warnings: list = []
 
     _score_all_requirements(nodes, TimesOutOnFullChunkClient(), warnings, None, None, [], None, None, 0, 1)
@@ -574,21 +582,22 @@ def test_score_all_requirements_reports_only_the_half_that_still_times_out() -> 
 
     class SecondHalfAlwaysTimesOutClient:
         def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
-            if len(descriptions_by_node_id) > 60 or "r99" in descriptions_by_node_id:
+            if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6 or last_id in descriptions_by_node_id:
                 raise httpx.ReadTimeout("timed out")
             return {node_id: {"score": 70, "issues": []} for node_id in descriptions_by_node_id}
 
-    nodes = _requirement_nodes(100)
+    nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
+    last_id = f"r{_SCORING_CHUNK_NODE_COUNT - 1}"
     warnings: list = []
 
     _score_all_requirements(nodes, SecondHalfAlwaysTimesOutClient(), warnings, None, None, [], None, None, 0, 1)
 
     by_id = {n.local_id: n for n in nodes}
     assert by_id["r0"].quality_score == 70
-    assert by_id["r99"].quality_score is None
+    assert by_id[last_id].quality_score is None
     failed = [w for w in warnings if w.kind.value == "scoring_failed"]
     assert len(failed) == 1
-    assert "r99" in failed[0].node_ids and "r0" not in failed[0].node_ids
+    assert last_id in failed[0].node_ids and "r0" not in failed[0].node_ids
     assert failed[0].detail["errorType"] == "ReadTimeout"
     assert failed[0].detail["scope"] == "requirement"
     assert "timeoutSeconds" in failed[0].detail and "chunkChars" in failed[0].detail
@@ -597,11 +606,13 @@ def test_score_all_requirements_reports_only_the_half_that_still_times_out() -> 
 def test_scoring_chunks_close_on_the_character_budget_not_just_the_node_count() -> None:
     from app.leveling import scoring
 
-    items = ["x" * 15_000, "x" * 15_000, "x" * 15_000, "x" * 100]
+    half = scoring._SCORING_CHUNK_CHAR_BUDGET // 2
+    items = ["x" * half, "x" * half, "x" * half, "x" * 100]
     chunks = scoring._chunk_by_count_and_chars(items, len)
 
-    assert [len(c) for c in chunks] == [2, 2]  # 30k fits the 40k budget, a third 15k does not
-    assert scoring._chunk_by_count_and_chars(["y" * 90_000], len) == [["y" * 90_000]]  # oversized item gets its own chunk
+    assert [len(c) for c in chunks] == [2, 2]  # two halves fit the budget exactly, a third does not
+    huge = "y" * (scoring._SCORING_CHUNK_CHAR_BUDGET * 3)
+    assert scoring._chunk_by_count_and_chars([huge], len) == [[huge]]  # an oversized item gets its own chunk
 
 
 def test_scoring_missing_carries_a_reason_telling_total_failure_from_partial() -> None:
@@ -618,3 +629,63 @@ def test_scoring_missing_carries_a_reason_telling_total_failure_from_partial() -
     )
     missing = [w for w in warnings if w.kind.value == "scoring_missing"]
     assert missing and missing[0].detail["reason"] == "partial"
+
+
+def _http_status_error(status: int):
+    import httpx
+
+    request = httpx.Request("POST", "http://orchestrator/llm/chat")
+    return httpx.HTTPStatusError(f"{status}", request=request, response=httpx.Response(status, request=request))
+
+
+def test_scoring_batches_default_to_a_size_that_finishes_well_inside_a_gateway_timeout() -> None:
+    # Prod job 0b9a134f: 150-node batches ran past ~300 s and the upstream gave up. ~1 s/node observed.
+    assert _SCORING_CHUNK_NODE_COUNT <= 50
+
+
+def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_a_4xx_is_not() -> None:
+    calls: list[int] = []
+
+    class Fails500OnFullChunkClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+            calls.append(len(descriptions_by_node_id))
+            if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:
+                raise _http_status_error(500)
+            return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
+
+    nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
+    warnings: list = []
+    _score_all_requirements(nodes, Fails500OnFullChunkClient(), warnings, None, None, [], None, None, 0, 1)
+    assert all(n.quality_score == 80 for n in nodes)
+    assert not any(w.kind.value == "scoring_failed" for w in warnings)
+    assert len(calls) == 3  # full chunk, then each half once
+
+    calls.clear()
+
+    class Fails400Client:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+            calls.append(len(descriptions_by_node_id))
+            raise _http_status_error(400)
+
+    nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
+    warnings = []
+    _score_all_requirements(nodes, Fails400Client(), warnings, None, None, [], None, None, 0, 1)
+    assert len(calls) == 1  # a 4xx is the request's own fault -- no split
+    assert [w.detail["errorType"] for w in warnings if w.kind.value == "scoring_failed"] == ["HTTPStatusError"]
+
+
+def test_epic_feature_scoring_also_splits_on_a_5xx() -> None:
+    calls: list[int] = []
+
+    class Fails500OnFullChunkClient:
+        def score_epics_and_features_for_document(self, nodes_by_id, user_id=None):
+            calls.append(len(nodes_by_id))
+            if len(nodes_by_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:
+                raise _http_status_error(502)
+            return {node_id: {"score": 70, "categoryScores": {}} for node_id in nodes_by_id}
+
+    nodes = _epic_nodes(_SCORING_CHUNK_NODE_COUNT)
+    warnings: list = []
+    _score_epics_and_features(nodes, Fails500OnFullChunkClient(), warnings, None, None, 0, 1)
+    assert len(calls) == 3
+    assert not any(w.kind.value == "scoring_failed" for w in warnings)
