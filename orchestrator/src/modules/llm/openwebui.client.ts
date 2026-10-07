@@ -49,7 +49,11 @@ function buildResponseFormat(opts: LlmChatOptions | undefined, includeSchema: bo
   if (!includeSchema || !opts?.responseSchema) return undefined;
   return {
     type: 'json_schema',
-    json_schema: { name: opts.responseSchema.name, schema: opts.responseSchema.schema },
+    json_schema: {
+      name: opts.responseSchema.name,
+      schema: opts.responseSchema.schema,
+      ...(opts.responseSchema.strict ? { strict: true } : {}),
+    },
   };
 }
 

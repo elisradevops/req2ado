@@ -49,6 +49,7 @@ export const llmChatRequestSchema = z.object({
     .object({
       name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
       schema: z.record(z.unknown()),
+      strict: z.boolean().optional(),
     })
     .optional(),
   maxTokens: z.number().int().positive().optional(),

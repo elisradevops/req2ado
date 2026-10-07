@@ -395,8 +395,19 @@ describe('CollapsibleWarnings', () => {
       ]);
     });
 
-    it('offers no retry for a parent_summary failure, another kind, or without a handler', () => {
-      const { unmount } = renderWarnings([failed('parent_summary', ['a'])], { onRetryEnhancement: vi.fn() });
+    it('offers a retry for a parent_summary failure as its own batch group', async () => {
+      const onRetryEnhancement = vi.fn();
+      renderWarnings([failed('parent_summary', ['p1', 'p2'])], { onRetryEnhancement });
+
+      await userEvent.click(screen.getByRole('button', { name: 'Retry enhancement' }));
+
+      expect(onRetryEnhancement).toHaveBeenCalledWith('enhancement_call_failed', [
+        { pass: 'parent_summary', localIds: ['p1', 'p2'] },
+      ]);
+    });
+
+    it('offers no retry for another kind, an unknown pass, or without a handler', () => {
+      const { unmount } = renderWarnings([failed('scoring', ['a'])], { onRetryEnhancement: vi.fn() });
       expect(screen.queryByRole('button', { name: 'Retry enhancement' })).not.toBeInTheDocument();
       unmount();
 

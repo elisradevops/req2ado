@@ -1529,3 +1529,16 @@ def test_parent_summary_and_synthesis_passes_share_the_zero_match_failure() -> N
     _apply_synthesis_pass(nodes, [requirement.local_id], EmptySynthesisClient(), synthesis_warnings)
     assert [w.kind for w in synthesis_warnings] == [WarningKind.ENHANCEMENT_CALL_FAILED]
     assert synthesis_warnings[0].detail["pass"] == "synthesis"
+
+
+def test_tags_are_matched_case_insensitively_because_enum_casing_is_not_guaranteed() -> None:
+    from app.leveling.id_tree_builder import synthesis_updates, title_tag_updates
+    from app.workitem.model import RequirementTag, WorkItemType
+
+    updates = title_tag_updates({"title": "T", "tags": ["Safety", " NON_FUNCTIONAL ", "bogus", 3, "functional"]})
+    assert updates["tags"] == [RequirementTag.SAFETY, RequirementTag.NON_FUNCTIONAL, RequirementTag.FUNCTIONAL]
+
+    synthesized = synthesis_updates(
+        {"title": "T", "text": "The unit shall do X.", "tags": ["Interface"]}, "Do X", WorkItemType.REQUIREMENT,
+    )
+    assert synthesized["tags"] == [RequirementTag.INTERFACE]

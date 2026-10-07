@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { WarningRecord } from './warnings';
-import { KIND_META, buildKindGroups, isActionableWarning, kindGroupCount, kindMeta, kindProgress, retryableEnhancementBatches, warningGroup } from './warningKinds';
+import { KIND_META, RETRY_ENHANCEMENT_BATCH_SIZE, buildKindGroups, isActionableWarning, kindGroupCount, kindMeta, kindProgress, retryableEnhancementBatches, warningGroup } from './warningKinds';
 
 function warning(kind: string, severity: WarningRecord['severity'], nodeIds: string[] = []): WarningRecord {
   return { kind, severity, nodeIds, detail: {}, raw: `${kind} raw` };
@@ -113,13 +113,19 @@ describe('warningKinds', () => {
       ]);
     });
 
-    it('leaves out parent_summary, which can only be fixed by a resubmit, and records without a pass', () => {
+    it('offers parent_summary as its own batch group, and skips records without a pass or with an unknown one', () => {
       const [entry] = buildKindGroups([
         rec('enhancement_call_failed', 'parent_summary', ['a']),
         rec('enhancement_call_failed', undefined, ['b']),
+        rec('enhancement_call_failed', 'scoring', ['c']),
       ]);
 
-      expect(retryableEnhancementBatches(entry)).toEqual([]);
+      expect(retryableEnhancementBatches(entry)).toEqual([{ pass: 'parent_summary', localIds: ['a'] }]);
+    });
+
+    it('sends parent_summary in smaller batches than the leaf passes', () => {
+      expect(RETRY_ENHANCEMENT_BATCH_SIZE.parent_summary).toBeLessThan(RETRY_ENHANCEMENT_BATCH_SIZE.title_tag);
+      expect(RETRY_ENHANCEMENT_BATCH_SIZE.parent_summary).toBeLessThanOrEqual(25); // the server's cap
     });
 
     it('offers nothing for any other kind', () => {

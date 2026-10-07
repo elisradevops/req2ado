@@ -88,10 +88,14 @@ def _build_criteria_context(criteria_retriever: CriteriaRetriever, nodes: list[W
 _SCORING_CHUNK_NODE_COUNT = 50
 # A chunk also closes once its description text would exceed this many
 # characters (a lone oversized item still gets its own chunk): a few huge
-# descriptions make a call slow regardless of the node count. Sized so a
-# typical chunk (~140 chars/node in prod) is bounded by the node count and
-# only description-heavy chunks are cut earlier.
-_SCORING_CHUNK_CHAR_BUDGET = 12_000
+# descriptions make a call slow regardless of the node count. A typical chunk
+# (~140 chars/node in prod) is bounded by the node count (50 nodes ~ 7k chars);
+# the budget only cuts description-heavy chunks earlier. 12k closed after every
+# one of the few 7k+ char requirements, producing one-to-three-item calls in
+# prod (batches of 3 and 1); 20k lets 2-3 of them share a call while input
+# size stays far from anything that mattered (batch time tracks output tokens,
+# ~1 s per node, not input chars).
+_SCORING_CHUNK_CHAR_BUDGET = 20_000
 
 _T = TypeVar("_T")
 

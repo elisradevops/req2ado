@@ -501,9 +501,18 @@ describe('JobsController.retryEnhancement', () => {
     expect(result).toEqual({ enhanced: ['a'] });
   });
 
+  it('accepts the parent_summary pass (batches of up to 25)', async () => {
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), retryEnhancement: jest.fn().mockResolvedValue({ enhanced: ['p'] }) };
+
+    await make(jobsService).retryEnhancement('job-1', TEST_USER, 'enhancement_call_failed', 'parent_summary', ['p']);
+
+    expect(jobsService.retryEnhancement).toHaveBeenCalledWith('job-1', { kind: 'enhancement_call_failed', pass: 'parent_summary', localIds: ['p'] });
+  });
+
   it.each([
     ['another kind', 'low_grounding', 'synthesis', ['a'], 'kind must be'],
-    ['parent_summary', 'enhancement_call_failed', 'parent_summary', ['a'], "can't be retried"],
+    ['an unknown pass', 'enhancement_call_failed', 'scoring', ['a'], 'pass must be'],
+    ['more than 25 parent_summary ids', 'enhancement_call_failed', 'parent_summary', Array.from({ length: 26 }, (_, i) => `p${i}`), 'at most 25'],
     ['no ids', 'enhancement_call_failed', 'synthesis', [], 'localIds must be'],
     ['more than 100 ids', 'enhancement_call_failed', 'synthesis', Array.from({ length: 101 }, (_, i) => `n${i}`), 'at most 100'],
     ['non-string ids', 'enhancement_call_failed', 'synthesis', ['a', 3], 'localIds must be'],

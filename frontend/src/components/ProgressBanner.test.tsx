@@ -22,22 +22,91 @@ describe('ProgressBanner', () => {
     expect(screen.queryByText(/left/i)).not.toBeInTheDocument();
   });
 
-  it('shows a real calculated ETA (not a hardcoded guess) once enough progress data exists', () => {
-    // startedAt is far enough in the past that elapsedMs comfortably clears
-    // the 15s/1-unit trust threshold -- this must render an actual "~Xm Ys
-    // left" derived from blocksDone/blocksTotal and real elapsed time, not
-    // the old static "~40 min" text.
-    render(
-      <ProgressBanner
-        stage="infer_hierarchy_start"
-        startedAt="2026-07-09T10:00:00Z"
-        mode="survey"
-        narrations={[
-          { phase: 'analyze_section', branchIndex: 1, branchCount: 4, blocksDone: 100, blocksTotal: 400, kbGrounded: false, kbCitations: [], message: 'x' },
-        ]}
-      />,
-    );
-    expect(screen.getByText(/~.+ left/i)).toBeInTheDocument();
+  describe('time left in this step', () => {
+    const scoring = (done: number, total = 427): NarrationEvent => ({
+      phase: done >= total ? 'score_requirements_done' : 'score_requirements',
+      branchIndex: null, branchCount: 0, blocksDone: done, blocksTotal: total,
+      kbGrounded: false, kbCitations: [], message: 'x', chunkIndex: Math.floor(done / 50), chunkCount: 9,
+    });
+    // "~5m 30s left in this step" -> 330 ; "~40s left ..." -> 40 ; "~12m left ..." -> 720
+    const secondsLeft = (): number | null => {
+      const match = /~(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?\s*left in this step/i.exec(document.body.textContent ?? '');
+      if (!match) return null;
+      return Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0);
+    };
+    const mount = (narrations: NarrationEvent[]) =>
+      render(
+        // startedAt is years in the past: the estimate must not depend on it at all.
+        <ProgressBanner stage="infer_hierarchy_start" startedAt="2020-01-01T00:00:00Z" mode="survey" narrations={narrations} />,
+      );
+
+    it('says "Estimating…" until it has watched enough of the step, whatever the job start time says', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-09T10:00:00Z'));
+      mount([scoring(0)]);
+      expect(screen.getByText('Estimating time left…')).toBeInTheDocument();
+      expect(screen.queryByText(/left in this step/i)).not.toBeInTheDocument();
+    });
+
+    it('counts down between completions and never rises, then re-fits when the next batch lands', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-09T10:00:00Z'));
+      const view = mount([scoring(0)]);
+
+      act(() => vi.advanceTimersByTime(46_000)); // first batch of 50 lands after 46 s
+      view.rerender(
+        <ProgressBanner stage="infer_hierarchy_start" startedAt="2020-01-01T00:00:00Z" mode="survey" narrations={[scoring(0), scoring(50)]} />,
+      );
+      const first = secondsLeft();
+      expect(first).not.toBeNull();
+      // ~377 units left at ~1.09 units/s -> a bit under 6 minutes, nowhere near "hours since the job started".
+      expect(first!).toBeGreaterThan(240);
+      expect(first!).toBeLessThan(420);
+
+      // 3 minutes pass with NO batch landing: the shown time may only go down.
+      let previous = first!;
+      for (let i = 0; i < 6; i += 1) {
+        act(() => vi.advanceTimersByTime(30_000));
+        const now = secondsLeft();
+        expect(now).not.toBeNull();
+        expect(now!).toBeLessThanOrEqual(previous);
+        previous = now!;
+      }
+      expect(previous).toBeLessThan(first! - 120);
+    });
+
+    it('says it is taking longer than expected, instead of a growing number, once the predicted time has passed', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-09T10:00:00Z'));
+      const view = mount([scoring(0)]);
+      act(() => vi.advanceTimersByTime(46_000));
+      view.rerender(
+        <ProgressBanner stage="infer_hierarchy_start" startedAt="2020-01-01T00:00:00Z" mode="survey" narrations={[scoring(0), scoring(50)]} />,
+      );
+      expect(secondsLeft()).not.toBeNull();
+
+      act(() => vi.advanceTimersByTime(20 * 60_000)); // a batch that never returns (the 911 s case, and then some)
+
+      expect(screen.getByText('Taking longer than expected…')).toBeInTheDocument();
+      expect(secondsLeft()).toBeNull();
+    });
+
+    it('starts a fresh estimate when the next scoring pass begins (a different total)', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-09T10:00:00Z'));
+      const view = mount([scoring(0)]);
+      act(() => vi.advanceTimersByTime(46_000));
+      view.rerender(
+        <ProgressBanner stage="infer_hierarchy_start" startedAt="2020-01-01T00:00:00Z" mode="survey" narrations={[scoring(50)]} />,
+      );
+      expect(secondsLeft()).not.toBeNull();
+
+      view.rerender(
+        <ProgressBanner stage="infer_hierarchy_start" startedAt="2020-01-01T00:00:00Z" mode="survey" narrations={[scoring(0, 115)]} />,
+      );
+
+      expect(screen.getByText('Estimating time left…')).toBeInTheDocument();
+    });
   });
 
   it('shows "Estimating..." (never a literal NaN) for an unparseable startedAt', () => {

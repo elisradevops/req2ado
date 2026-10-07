@@ -37,7 +37,13 @@ from app.leveling.document_map import publish_document_map
 from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
 from app.leveling.id_hierarchy import rows_from_table
 from app.leveling.llm_leveling import build_survey_tree
-from app.leveling.id_tree_builder import _TITLE_TAG_CHUNK_SIZE, synthesis_updates, title_tag_updates
+from app.leveling.id_tree_builder import (
+    _TITLE_TAG_CHUNK_SIZE,
+    _hash_description,
+    parent_summary_updates,
+    synthesis_updates,
+    title_tag_updates,
+)
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
 from app.leveling.scoring import score_single_requirement_text
@@ -1732,21 +1738,32 @@ class EnhanceItem(BaseModel):
     type: str
     # " > "-joined parent chain titles, root first. Synthesis pass only.
     context: str = ""
+    # parent_summary only: `text` is then the Epic/Feature's CURRENT TITLE, and these carry what
+    # its summary is written from -- every descendant Requirement's title and description,
+    # however deep (the caller holds the whole tree) -- plus the titles of its direct children,
+    # which the proposed title is checked against.
+    requirement_titles: list[str] = []
+    requirement_descriptions: list[str] = []
+    child_titles: list[str] = []
 
 
 class EnhanceItemsRequest(BaseModel):
     """Post-hoc retry of the optional enhancement passes that failed during a
     run (see WarningKind.ENHANCEMENT_CALL_FAILED), for just the affected
-    items. `parent_summary` is deliberately not retryable here -- it needs
-    every descendant's text, which the caller doesn't send."""
+    items. `parent_summary` additionally needs each node's descendants' text
+    (EnhanceItem.requirement_titles / requirement_descriptions), which the
+    caller -- it holds the whole tree -- sends."""
 
-    enhancement_pass: Literal["title_tag", "synthesis"]
+    enhancement_pass: Literal["title_tag", "synthesis", "parent_summary"]
     items: list[EnhanceItem]
     user_id: str | None = None
     model: str | None = None
 
 
 class EnhancedItem(BaseModel):
+    # parent_summary: True when the proposed title matched a title under the node, so the
+    # heading was kept (`title` is then None).
+    title_collision: bool = False
     title: str | None = None
     tags: list[str] | None = None
     # Synthesis only: new description, with the hash/score recomputed the
@@ -1764,20 +1781,25 @@ class EnhanceItemsResponse(BaseModel):
 
 # Same size the pipeline's own passes chunk at -- one LLM call per request.
 _ENHANCE_ITEMS_MAX = _TITLE_TAG_CHUNK_SIZE
+# A parent's request carries every descendant's text, so far fewer fit in one call.
+_ENHANCE_PARENT_ITEMS_MAX = 25
 
 
 @app.post("/enhance-items", response_model=EnhanceItemsResponse)
 async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
     if not body.items:
         raise HTTPException(status_code=400, detail="items must not be empty")
-    if len(body.items) > _ENHANCE_ITEMS_MAX:
-        raise HTTPException(
-            status_code=400, detail=f"at most {_ENHANCE_ITEMS_MAX} items per request",
-        )
+    max_items = _ENHANCE_PARENT_ITEMS_MAX if body.enhancement_pass == "parent_summary" else _ENHANCE_ITEMS_MAX
+    if len(body.items) > max_items:
+        raise HTTPException(status_code=400, detail=f"at most {max_items} items per request")
     try:
         node_types = {item.id: WorkItemType(item.type) for item in body.items}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=f"unknown item type: {error}") from error
+    if body.enhancement_pass == "parent_summary" and any(
+        node_type not in (WorkItemType.EPIC, WorkItemType.FEATURE) for node_type in node_types.values()
+    ):
+        raise HTTPException(status_code=400, detail="parent_summary applies to Epic and Feature items only")
 
     # Blank text can't be enhanced; report it rather than spend a call on it.
     sendable = [item for item in body.items if item.text.strip()]
@@ -1807,6 +1829,19 @@ async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
                 {item.id: item.text for item in sendable},
                 body.user_id,
             )
+        elif body.enhancement_pass == "parent_summary":
+            raw = await run_in_threadpool(
+                client.summarize_parent_nodes,
+                {
+                    item.id: {
+                        "title": item.text,
+                        "requirement_titles": item.requirement_titles,
+                        "requirement_descriptions": item.requirement_descriptions,
+                    }
+                    for item in sendable
+                },
+                body.user_id,
+            )
         else:
             raw = await run_in_threadpool(
                 client.synthesize_leaf_requirements,
@@ -1826,6 +1861,24 @@ async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
         entry = (raw or {}).get(item.id)
         if not isinstance(entry, dict) or not entry:
             omitted.append(item.id)
+            continue
+        if body.enhancement_pass == "parent_summary":
+            parent_updates = parent_summary_updates(
+                entry, item.text, item.requirement_titles, item.requirement_descriptions, item.child_titles,
+            )
+            if not parent_updates:
+                omitted.append(item.id)
+                continue
+            proposed_title = parent_updates.get("title")
+            parent_description = parent_updates.get("description")
+            results[item.id] = EnhancedItem(
+                # Unchanged or colliding titles are not reported as changes.
+                title=proposed_title if proposed_title and proposed_title != item.text else None,
+                title_collision="collision" in parent_updates,
+                description=parent_description,
+                grounding_score=parent_updates.get("grounding_score"),
+                fidelity_hash=_hash_description(parent_description) if parent_description else None,
+            )
             continue
         if body.enhancement_pass == "title_tag":
             updates = title_tag_updates(entry)

@@ -787,7 +787,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   // never overwriting an edit made while the call was in flight.
   async retryEnhancement(
     id: string,
-    input: { kind: string; pass: 'title_tag' | 'synthesis'; localIds: string[] },
+    input: { kind: string; pass: 'title_tag' | 'synthesis' | 'parent_summary'; localIds: string[] },
   ): Promise<{
     dryRunDiff: DryRunDiffEntry[];
     warnings: (WarningRecord | string)[];
@@ -830,13 +830,71 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       }
       return titles.reverse().join(' > ');
     };
+    // parent_summary is written from everything underneath a node, so it needs the tree: the titles
+    // and descriptions of every descendant Requirement (however deep) and the titles of the direct
+    // children (the proposed title is checked against them). Excluded entries are not part of what
+    // will be written, so they are not part of what the summary is about either.
+    const childrenOf = new Map<string, DryRunDiffEntry[]>();
+    for (const candidate of diff) {
+      if (candidate.parentLocalId && !candidate.excluded) {
+        const siblings = childrenOf.get(candidate.parentLocalId) ?? [];
+        siblings.push(candidate);
+        childrenOf.set(candidate.parentLocalId, siblings);
+      }
+    }
+    const descendantRequirements = (entry: DryRunDiffEntry): DryRunDiffEntry[] => {
+      const found: DryRunDiffEntry[] = [];
+      const seen = new Set<string>([entry.localId]);
+      const stack = [...(childrenOf.get(entry.localId) ?? [])];
+      while (stack.length > 0) {
+        const next = stack.pop()!;
+        if (seen.has(next.localId)) continue;
+        seen.add(next.localId);
+        if (next.type === 'Requirement') found.push(next);
+        stack.push(...(childrenOf.get(next.localId) ?? []));
+      }
+      return found.sort((x, y) => diff.indexOf(x) - diff.indexOf(y));
+    };
+    const isParentPass = input.pass === 'parent_summary';
+    // What each item was written from, so a result is only applied if that text is still what is on the
+    // item (leaf passes: the description; parent_summary: the title).
     const sentText = new Map<string, string>();
     const skipped: string[] = [];
-    const items: { id: string; text: string; type: string; context: string }[] = [];
+    const items: {
+      id: string;
+      text: string;
+      type: string;
+      context: string;
+      requirement_titles?: string[];
+      requirement_descriptions?: string[];
+      child_titles?: string[];
+    }[] = [];
     for (const localId of input.localIds) {
       const entry = byId.get(localId);
       if (!entry || entry.action !== 'create' || entry.excluded || entry.isManual) {
         skipped.push(localId);
+        continue;
+      }
+      if (isParentPass) {
+        if (entry.type !== 'Epic' && entry.type !== 'Feature') {
+          skipped.push(localId);
+          continue;
+        }
+        const requirements = descendantRequirements(entry);
+        if (requirements.length === 0) {
+          skipped.push(localId); // nothing underneath to summarise
+          continue;
+        }
+        sentText.set(localId, entry.title);
+        items.push({
+          id: localId,
+          text: entry.title,
+          type: entry.type,
+          context: parentChain(entry),
+          requirement_titles: requirements.map((requirement) => requirement.title),
+          requirement_descriptions: requirements.map((requirement) => requirement.description),
+          child_titles: (childrenOf.get(localId) ?? []).map((child) => child.title),
+        });
         continue;
       }
       sentText.set(localId, entry.description);
@@ -857,7 +915,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
     // Phase 3: apply under the version/status guard. A pure re-derivation
     // from what it reads on each attempt -- the results above are fixed.
-    const passLabel = { title_tag: 'title/tag', synthesis: 'text synthesis' }[input.pass];
+    const passLabel = { title_tag: 'title/tag', synthesis: 'text synthesis', parent_summary: 'parent title/description' }[input.pass];
     for (let attempt = 1; attempt <= DIFF_WRITE_MAX_ATTEMPTS; attempt += 1) {
       const fresh = await this.prisma.job.findUnique({ where: { id } });
       if (!fresh) throw new NotFoundException(`Job ${id} not found`);
@@ -870,7 +928,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       for (const entry of freshDiff) {
         const result = outcome.results[entry.localId];
         if (!result || !sentText.has(entry.localId)) continue;
-        if (entry.excluded || entry.description !== sentText.get(entry.localId)) {
+        if (entry.excluded || (isParentPass ? entry.title : entry.description) !== sentText.get(entry.localId)) {
           changedSince.push(entry.localId);
           continue;
         }
@@ -878,6 +936,16 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // Tags are a Requirement-only attribute everywhere else (editDiffEntry,
         // confirm()), so never set them on an Epic/Feature.
         if (result.tags && entry.type === 'Requirement') entry.tags = result.tags;
+        if (isParentPass && result.description && !(entry.tableIds && entry.tableIds.length > 0)) {
+          // A node that folded a table has that table's HTML inside its description; replacing the
+          // description with the summary would drop it while `tableIds` keeps pointing at content that
+          // is no longer there (the "chip with zero content" the ingestion pass already guards). Such a
+          // node gets the new title only.
+          entry.description = result.description;
+          if (result.groundingScore != null) entry.groundingScore = result.groundingScore;
+          // The score (if any) judged the OLD text -- same stale marking as a manual edit.
+          if (entry.qualityScore != null) entry.qualityStale = true;
+        }
         if (input.pass === 'synthesis' && result.description) {
           entry.description = result.description;
           if (result.groundingScore != null) entry.groundingScore = result.groundingScore;

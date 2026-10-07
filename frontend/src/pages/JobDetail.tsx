@@ -71,7 +71,14 @@ import { AnimatedNumber } from '../ui/AnimatedNumber';
 import { Select } from '../ui/Select';
 import { CollapsibleWarnings } from '../components/CollapsibleWarnings';
 import { normalizeWarning, type WarningRecord } from '../utils/warnings';
-import { buildKindGroups, kindMeta, kindProgress, type ReasonTone, type RetryablePass } from '../utils/warningKinds';
+import {
+  buildKindGroups,
+  kindMeta,
+  kindProgress,
+  RETRY_ENHANCEMENT_BATCH_SIZE,
+  type ReasonTone,
+  type RetryablePass,
+} from '../utils/warningKinds';
 import { matchesDiffFilter } from '../utils/diffFilterMatch';
 import { FigureDescriptions, type FigureDescriptionEntry } from '../components/FigureDescriptions';
 import { SectionResults, type SectionResultEntry } from '../components/SectionResults';
@@ -87,10 +94,6 @@ import { LABEL_MICRO } from '../utils/labelMicro';
 // convention as SourceProvenance/other single-line previews elsewhere in
 // this app.
 const VALIDATION_MISMATCH_PREVIEW_LENGTH = 80;
-// Items per retry request: one LLM call, and well under the server's cap of
-// 100, so a stop request takes effect within a short wait.
-const RETRY_ENHANCEMENT_BATCH_SIZE = 50;
-
 function truncateForDisplay(text: string): string {
   const collapsed = text.replace(/\s+/g, ' ').trim();
   if (collapsed.length <= VALIDATION_MISMATCH_PREVIEW_LENGTH) return collapsed;
@@ -902,9 +905,10 @@ export function JobDetail(): React.ReactElement {
     setRetryProgress({ kind, done, total });
     try {
       outer: for (const { pass, localIds } of batches) {
-        for (let start = 0; start < localIds.length; start += RETRY_ENHANCEMENT_BATCH_SIZE) {
+        const batchSize = RETRY_ENHANCEMENT_BATCH_SIZE[pass];
+        for (let start = 0; start < localIds.length; start += batchSize) {
           if (retryCancelRef.current) break outer;
-          const batch = localIds.slice(start, start + RETRY_ENHANCEMENT_BATCH_SIZE);
+          const batch = localIds.slice(start, start + batchSize);
           const result = await retryEnhancement(id, { kind, pass, localIds: batch });
           const serverById = new Map(((result.dryRunDiff as DryRunDiffEntry[] | null) ?? []).map((entry) => [entry.localId, entry]));
           const enhancedSet = new Set(result.enhanced);

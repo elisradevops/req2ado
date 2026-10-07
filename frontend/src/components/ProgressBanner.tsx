@@ -1,10 +1,11 @@
 import { useMemo } from 'react';
 import { Check, Circle } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { formatStepRemaining } from '../utils/stepEta';
 import { useNow } from '../hooks/useNow';
 import { useSecondsSinceLastUpdate } from '../hooks/useSecondsSinceLastUpdate';
 import { useWindowStartedAt } from '../hooks/useWindowStartedAt';
-import { useWindowBaselineUnits } from '../hooks/useWindowBaselineUnits';
+import { useStepEta } from '../hooks/useStepEta';
 import { parseDeterministicSubtreeChunk } from '../utils/deterministicSubtreeChunk';
 import { ElapsedTimer } from './ElapsedTimer';
 import { ProgressBar } from '../ui/ProgressBar';
@@ -318,35 +319,13 @@ export function ProgressBanner({
   const tickingNow = useNow();
   const liveActivityAt = useLiveRunStore((s) => s.activityAt);
   const secondsSinceUpdate = useSecondsSinceLastUpdate(latest, tickingNow, liveActivityAt);
-  // deterministic_subtree runs as several sequential, whole-chunk-blocking
-  // LLM calls (up to 150 nodes each -- see id_tree_builder.py's
-  // _apply_synthesis_pass/_apply_title_tag_pass), and also runs TWO
-  // distinct passes back to back (synthesis, then title/tag enhancement)
-  // that share this same phase string but carry different blocksTotal
-  // values. Confirmed live on a real 679-block document: computing the
-  // rate from `now - job startedAt` blends in whatever phase ran before
-  // this one (here, ~3.5 real minutes of unrelated figure-captioning work)
-  // AND, once a second pass starts, blends in the FIRST pass's own
-  // duration too -- producing an ETA that is not just imprecise but
-  // actively wrong in either direction (confirmed live: an 8-minute
-  // estimate on a phase that took under 5, followed by a "~20s left"
-  // reading that stayed flat for over two real minutes). Re-baselining to
-  // when this exact (phase, blocksTotal) window started fixes both: a new
-  // pass beginning (blocksTotal changing) restarts the clock exactly like
-  // a new phase starting does.
+  // deterministic_subtree runs as several sequential, whole-chunk-blocking LLM calls, and runs TWO
+  // distinct passes back to back (synthesis, then title/tag enhancement) that share this phase string
+  // but carry different blocksTotal values -- so (phase, blocksTotal) identifies the window. It names
+  // the estimate's step (a new pass restarts the countdown) and keys the per-chunk clock below.
   const detSubtreeWindowKey =
     latest?.phase === 'deterministic_subtree' ? `${latest.phase}:${latest.blocksTotal}` : undefined;
-  // Confirmed live: reloading the SAME running job in the SAME tab
-  // partway through a chunk remounts this whole component -- without a
-  // storageKey, the window-start ref re-baselines to the reload moment
-  // even though completedUnits already reflects several real minutes of
-  // prior work, producing a briefly wildly-optimistic ETA (~40s instead
-  // of ~5-6 real minutes left) right after reload. jobId-scoped so a
-  // different job's leftover sessionStorage entry is never read.
-  const detSubtreeStorageKey =
-    detSubtreeWindowKey && jobId ? `progress-window:${jobId}:${detSubtreeWindowKey}` : undefined;
-  const detSubtreeWindowStartedAt = useWindowStartedAt(detSubtreeWindowKey, tickingNow, detSubtreeStorageKey);
-  // Real gap this closes (confirmed live): the ETA fixes above make the
+  // Real gap this closes (confirmed live): an honest estimate makes the
   // wait honest, not informative -- for most of a run the user still
   // watches a static line for 4-9 real minutes with zero content. Chunk
   // position/pass name aren't emitted as structured fields (unlike
@@ -392,54 +371,37 @@ export function ProgressBanner({
   const modelCallStartedAt = useWindowStartedAt(modelCallKey, tickingNow, modelCallStorageKey);
   const modelCallElapsedMs = modelCallKey ? tickingNow - modelCallStartedAt : undefined;
   const modelCallTarget = latest ? describeModelCallTarget(latest) : null;
-  // Companion to the window-start recovery above: even with the TRUE
-  // window-start timestamp recovered, a tab that starts observing an
-  // ALREADY-in-flight chunk (confirmed live: a frontend redeploy mid-run
-  // meant the fixed bundle's first render of a window was mid-chunk, even
-  // though sessionStorage correctly recovered the window's real start
-  // time) would still divide real elapsed time by the FULL completedUnits
-  // value, including work that finished before this tab ever started
-  // watching -- producing a briefly, confidently wrong small ETA. See
-  // useWindowBaselineUnits's own comment for the full story.
-  const detSubtreeBaselineUnits = useWindowBaselineUnits(
-    detSubtreeWindowKey,
-    completedUnits,
-    detSubtreeStorageKey ? `${detSubtreeStorageKey}:baseline` : undefined,
-  );
-  // Real calculated ETA -- NOT a hardcoded guess: derives a rate (ms per
-  // "unit" of work, the same completedUnits basis the progress bar itself
-  // uses) from THIS job's own actual elapsed time so far, then projects it
-  // across the remaining units. Needs at least ~1 real completed unit and
-  // 15s of real elapsed time before trusting the rate at all -- one lone
-  // block finishing after 2s would otherwise extrapolate a wildly wrong
-  // "seconds left" estimate off essentially no data. None at all during a
-  // tail phase (see isTailPhase above) -- honest silence beats a fake number.
+  // "Time left in THIS step", from progress observed during the step only (see utils/stepEta.ts).
+  // It used to be (time since the job started) / (units done) * (units remaining), recomputed every
+  // second: the clock included upload, parsing and every earlier step, and because units only move
+  // when a long blocking model call returns, the number CLIMBED between completions (seen live: a
+  // scoring step whose estimate rose for 20+ minutes). A step is identified by its unit basis, so a new
+  // basis -- the second scoring pass, the next deterministic-subtree window -- starts a fresh estimate.
+  const stepKey =
+    latest && completedUnits !== undefined && progressTotal
+      ? latest.phase === 'describe_figure'
+        ? `figures:${progressTotal}`
+        : isScoringPhase
+          ? `scoring:${progressTotal}`
+          : detSubtreeWindowKey !== undefined
+            ? `subtree:${detSubtreeWindowKey}`
+            : `analysis:${progressTotal}`
+      : undefined;
+  const stepEtaResult = useStepEta(stepKey, completedUnits, progressTotal, tickingNow);
   let etaText: string | null = null;
-  if (mode === 'survey' && latest && completedUnits !== undefined && progressTotal) {
-    // An unparseable startedAt (new Date(...).getTime() -> NaN) already
-    // fell through to the >= 15_000 check below evaluating false, so this
-    // never crashed/rendered a literal NaN -- but it relied on that
-    // NaN-comparison coincidence rather than an explicit check, and only
-    // matters on the non-deterministic_subtree branch (which doesn't read
-    // startedAt at all). Number.isFinite here makes the guard intentional.
-    const elapsedMs =
-      detSubtreeWindowKey !== undefined
-        ? tickingNow - detSubtreeWindowStartedAt
-        : tickingNow - new Date(startedAt).getTime();
-    // deterministic_subtree only trusts progress THIS tab personally
-    // witnessed accumulate since it started observing the current window
-    // -- every other phase's rate is unchanged (witnessedUnits ===
-    // completedUnits there, same as before).
-    const witnessedUnits =
-      detSubtreeWindowKey !== undefined
-        ? completedUnits - (detSubtreeBaselineUnits ?? completedUnits)
-        : completedUnits;
-    if (witnessedUnits >= 1 && elapsedMs >= 15_000 && Number.isFinite(elapsedMs)) {
-      const msPerUnit = elapsedMs / witnessedUnits;
-      const remainingUnits = Math.max(0, progressTotal - completedUnits);
-      etaText = `~${formatDuration(msPerUnit * remainingUnits)} left`;
-    } else {
-      etaText = 'Estimating time left…';
+  if (mode === 'survey' && stepEtaResult) {
+    switch (stepEtaResult.kind) {
+      case 'left':
+        etaText = `~${formatStepRemaining(stepEtaResult.ms)} left in this step`;
+        break;
+      case 'overdue':
+        etaText = 'Taking longer than expected…';
+        break;
+      case 'done':
+        etaText = 'Finishing up…';
+        break;
+      default:
+        etaText = 'Estimating time left…';
     }
   } else if (mode === 'survey' && isTailPhase) {
     etaText = 'Finishing up…';

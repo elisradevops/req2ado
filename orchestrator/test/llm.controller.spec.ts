@@ -49,6 +49,16 @@ describe('LlmController', () => {
     expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { model: 'qwen2.5:14b' });
   });
 
+  it('threads a strict responseSchema from the request body into llmClient.chat (the flag survives validation)', async () => {
+    const chat = jest.fn().mockResolvedValue({ content: '{}' });
+    const { controller } = makeController({ chat });
+    const responseSchema = { name: 'title_tags_by_row', schema: { type: 'object' }, strict: true };
+
+    await controller.chat({ messages: [{ role: 'user', content: 'hi' }], responseSchema }, USER_ID);
+
+    expect(chat).toHaveBeenCalledWith([{ role: 'user', content: 'hi' }], { responseSchema });
+  });
+
   it('omits model from opts when not provided in the request body', async () => {
     const chat = jest.fn().mockResolvedValue('reply');
     const { controller } = makeController({ chat });

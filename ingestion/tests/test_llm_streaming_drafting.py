@@ -56,8 +56,11 @@ def _ndjson(text: str, *, pieces: int = 5, done: dict | None = None) -> bytes:
 class Server:
     """Routes the two endpoints; records what was asked."""
 
-    def __init__(self, content: str, *, stream: bytes | Exception | int | None = None) -> None:
+    def __init__(
+        self, content: str, *, stream: bytes | Exception | int | None = None, plain_finish_reason: str | None = None
+    ) -> None:
         self.content = content
+        self.plain_finish_reason = plain_finish_reason
         finished = {"done": True, "finishReason": "stop"}
         self.stream = stream if stream is not None else _ndjson(content, done=finished)
         self.requests: list[tuple[str, dict]] = []
@@ -66,7 +69,10 @@ class Server:
         body = json.loads(request.content)
         self.requests.append((request.url.path, body))
         if request.url.path == "/llm/chat":
-            return httpx.Response(200, json={"content": self.content})
+            body = {"content": self.content}
+            if self.plain_finish_reason is not None:
+                body["finishReason"] = self.plain_finish_reason
+            return httpx.Response(200, json=body)
         assert request.url.path == "/llm/chat/stream"
         if isinstance(self.stream, int):
             return httpx.Response(self.stream, json={"message": "no"})
@@ -139,7 +145,8 @@ def test_a_length_cut_off_is_parsed_like_the_plain_call_does(live) -> None:  # n
         streamed = ("error", str(exc))
     client_module.settings.llm_stream_drafting = False
     try:
-        plain = _run(_client(Server(content)), live)
+        # The orchestrator reports the same finish reason on the plain call as on the stream.
+        plain = _run(_client(Server(content, plain_finish_reason="length")), live)
     except ValueError as exc:
         plain = ("error", str(exc))
     assert streamed == plain

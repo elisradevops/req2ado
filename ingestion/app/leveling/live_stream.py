@@ -97,9 +97,14 @@ class DraftingDisplay:
             self._counter.in_flight(self._stage, self._lane, self._items)
         value: Any = item.value
         title = text = None
+        # An element of the array wire format ({"items": [{"id": ...}]}) is observed as "items[3]";
+        # the row it answers is named by its own "id", which is what the screen should show.
+        ref = item.key
+        if isinstance(value, dict) and isinstance(value.get("id"), str) and value["id"]:
+            ref = value["id"]
         if isinstance(value, dict):
             raw_title = value.get("title")
             title = raw_title if isinstance(raw_title, str) else None
             raw_text = value.get("text") or value.get("description")
             text = raw_text if isinstance(raw_text, str) else None
-        self._emitter.item(lane=self._lane, ref=item.key, title=title, excerpt=text)
+        self._emitter.item(lane=self._lane, ref=ref, title=title, excerpt=text)

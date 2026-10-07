@@ -284,12 +284,25 @@ export class IngestionHttpClient {
   // `omitted` lists ids the model returned nothing usable for. A non-2xx
   // (including the 502 ingestion uses for a failed LLM call) throws.
   async enhanceItems(
-    enhancementPass: 'title_tag' | 'synthesis',
-    items: { id: string; text: string; type: string; context: string }[],
+    enhancementPass: 'title_tag' | 'synthesis' | 'parent_summary',
+    // parent_summary: `text` is the node's current title and the three optional fields carry what its
+    // summary is written from (every descendant Requirement's title/description, the direct children's titles).
+    items: {
+      id: string;
+      text: string;
+      type: string;
+      context: string;
+      requirement_titles?: string[];
+      requirement_descriptions?: string[];
+      child_titles?: string[];
+    }[],
     userId?: string | null,
     model?: string | null,
   ): Promise<{
-    results: Record<string, { title?: string; tags?: string[]; description?: string; groundingScore?: number }>;
+    results: Record<
+      string,
+      { title?: string; tags?: string[]; description?: string; groundingScore?: number; titleCollision?: boolean }
+    >;
     omitted: string[];
   }> {
     const response = await fetch(`${this.baseUrl}/enhance-items`, {
@@ -303,14 +316,24 @@ export class IngestionHttpClient {
     const body = (await response.json()) as {
       results: Record<
         string,
-        { title: string | null; tags: string[] | null; description: string | null; grounding_score: number | null }
+        {
+          title: string | null;
+          tags: string[] | null;
+          description: string | null;
+          grounding_score: number | null;
+          title_collision?: boolean;
+        }
       >;
       omitted: string[];
     };
-    const results: Record<string, { title?: string; tags?: string[]; description?: string; groundingScore?: number }> = {};
+    const results: Record<
+      string,
+      { title?: string; tags?: string[]; description?: string; groundingScore?: number; titleCollision?: boolean }
+    > = {};
     for (const [id, entry] of Object.entries(body.results)) {
       results[id] = {
         ...(entry.title != null ? { title: entry.title } : {}),
+        ...(entry.title_collision ? { titleCollision: true } : {}),
         ...(entry.tags != null ? { tags: entry.tags } : {}),
         ...(entry.description != null ? { description: entry.description } : {}),
         ...(entry.grounding_score != null ? { groundingScore: entry.grounding_score } : {}),
