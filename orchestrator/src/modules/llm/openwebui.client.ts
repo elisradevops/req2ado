@@ -171,6 +171,19 @@ export class OpenWebUiClient implements LlmClient {
   // OpenWebUiClientFactory) so a figure-heavy document pays the
   // reject-then-retry round trip once per model, not once per figure.
   private readonly visionRejectedParams = new Map<string, Set<string>>();
+  // chat()/streamChat() counterpart: what an upstream told us about a model,
+  // remembered for this client's lifetime so every later call sends the right
+  // temperature / leaves rejected params out from the start instead of paying
+  // a failed first attempt each time (a prod job logged ~57 such retries for
+  // claude-opus-4-8, which requires temperature=1).
+  private readonly chatModelConstraints = new Map<string, { temperature?: number; rejected: Set<string> }>();
+
+  private rememberChatConstraint(model: string, update: { temperature?: number; rejected?: Iterable<string> }): void {
+    const current = this.chatModelConstraints.get(model) ?? { rejected: new Set<string>() };
+    if (update.temperature !== undefined) current.temperature = update.temperature;
+    for (const param of update.rejected ?? []) current.rejected.add(param);
+    this.chatModelConstraints.set(model, current);
+  }
 
   constructor(private readonly config: OpenWebUiClientConfig) {
     this.openai = new OpenAI({
@@ -207,10 +220,18 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
-    const buildParams = (includeSchema: boolean, includeSeed = true, includeReasoningEffort = true) => ({
-      model: opts?.model ?? this.config.LLM_CHAT_MODEL,
+    const chatModel = opts?.model ?? this.config.LLM_CHAT_MODEL;
+    const learned = this.chatModelConstraints.get(chatModel);
+    const buildParams = (
+      includeSchema: boolean,
+      includeSeed = !learned?.rejected.has('seed'),
+      includeReasoningEffort = !learned?.rejected.has('reasoning_effort'),
+    ) => ({
+      model: chatModel,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
-      ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      // A temperature this model's upstream already demanded wins over the
+      // caller's, once learned (see chatModelConstraints).
+      ...(opts?.temperature !== undefined ? { temperature: learned?.temperature ?? opts.temperature } : {}),
       // seed: gated on LLM_SEND_SEED (false by default -- Azure-backed models via
       // LiteLLM reject it with a 400). includeSeed:false is the retry path when the
       // upstream signals the param is unsupported even with LLM_SEND_SEED:true.
@@ -235,11 +256,24 @@ export class OpenWebUiClient implements LlmClient {
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
     });
-    const toResult = (response: OpenAI.Chat.ChatCompletion): LlmChatResult => ({
-      content: response.choices[0]?.message?.content ?? '',
-      toolCalls: response.choices[0]?.message?.tool_calls as LlmChatResult['toolCalls'],
-      finishReason: response.choices[0]?.finish_reason,
-    });
+    const toResult = (response: OpenAI.Chat.ChatCompletion): LlmChatResult => {
+      const finishReason = response.choices[0]?.finish_reason;
+      // Only the abnormal endings are logged (a normal call ends 'stop' /
+      // 'tool_calls'), with token counts and never content. A prod job got
+      // empty structured answers and nothing anywhere recorded why: no
+      // finish reason, no usage.
+      if (finishReason && finishReason !== 'stop' && finishReason !== 'tool_calls') {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[OpenWebUiClient.chat] finishReason=${finishReason} model=${chatModel} promptTokens=${response.usage?.prompt_tokens ?? 'n/a'} completionTokens=${response.usage?.completion_tokens ?? 'n/a'} maxTokens=${opts?.maxTokens ?? 'n/a'}`,
+        );
+      }
+      return {
+        content: response.choices[0]?.message?.content ?? '',
+        toolCalls: response.choices[0]?.message?.tool_calls as LlmChatResult['toolCalls'],
+        finishReason,
+      };
+    };
     try {
       const response = await this.openai.chat.completions.create(buildParams(true));
       return toResult(response);
@@ -261,6 +295,7 @@ export class OpenWebUiClient implements LlmClient {
       if (tempConstraint !== null) {
         // eslint-disable-next-line no-console
         console.warn(`[OpenWebUiClient.chat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+        this.rememberChatConstraint(chatModel, { temperature: tempConstraint });
         try {
           const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
           return toResult(response);
@@ -272,9 +307,10 @@ export class OpenWebUiClient implements LlmClient {
       if (unsupported.size > 0) {
         // eslint-disable-next-line no-console
         console.warn(`[OpenWebUiClient.chat] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+        this.rememberChatConstraint(chatModel, { rejected: [...unsupported].filter((param) => param === 'seed' || param === 'reasoning_effort') });
         try {
           const response = await this.openai.chat.completions.create(
-            buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
+            buildParams(true, !unsupported.has('seed') && !learned?.rejected.has('seed'), !unsupported.has('reasoning_effort') && !learned?.rejected.has('reasoning_effort')),
           );
           return toResult(response);
         } catch (retryErr) {
@@ -415,11 +451,17 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.numCtx !== undefined) ollamaOptions.num_ctx = opts.numCtx;
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
-    const buildParams = (includeSchema: boolean, includeSeed = true, includeReasoningEffort = true) => ({
-      model: opts?.model ?? this.config.LLM_CHAT_MODEL,
+    const chatModel = opts?.model ?? this.config.LLM_CHAT_MODEL;
+    const learned = this.chatModelConstraints.get(chatModel);
+    const buildParams = (
+      includeSchema: boolean,
+      includeSeed = !learned?.rejected.has('seed'),
+      includeReasoningEffort = !learned?.rejected.has('reasoning_effort'),
+    ) => ({
+      model: chatModel,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       stream: true as const,
-      ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      ...(opts?.temperature !== undefined ? { temperature: learned?.temperature ?? opts.temperature } : {}),
       // seed: gated on LLM_SEND_SEED -- see chat()'s own seed comment.
       // includeSeed:false is the retry path when upstream rejects the param.
       ...(this.config.LLM_SEND_SEED && includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
@@ -444,12 +486,14 @@ export class OpenWebUiClient implements LlmClient {
         if (tempConstraint !== null) {
           // eslint-disable-next-line no-console
           console.warn(`[OpenWebUiClient.streamChat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+          this.rememberChatConstraint(chatModel, { temperature: tempConstraint });
           stream = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
         } else if (unsupported.size > 0) {
           // eslint-disable-next-line no-console
           console.warn(`[OpenWebUiClient.streamChat] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
+          this.rememberChatConstraint(chatModel, { rejected: [...unsupported].filter((param) => param === 'seed' || param === 'reasoning_effort') });
           stream = await this.openai.chat.completions.create(
-            buildParams(true, !unsupported.has('seed'), !unsupported.has('reasoning_effort')),
+            buildParams(true, !unsupported.has('seed') && !learned?.rejected.has('seed'), !unsupported.has('reasoning_effort') && !learned?.rejected.has('reasoning_effort')),
           );
         } else if (opts?.responseSchema && isSchemaRejection(err)) {
           stream = await this.openai.chat.completions.create(buildParams(false));

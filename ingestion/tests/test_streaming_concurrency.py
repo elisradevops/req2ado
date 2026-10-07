@@ -54,8 +54,16 @@ class Server:
         self.max_in_flight = 0
 
     def answer(self, payload: dict) -> str:
-        name = payload["responseSchema"]["name"]
         given = json.loads(payload["messages"][1]["content"])
+        # The keyed passes send no responseSchema by default, so the pass is told apart by the
+        # shape of what it was asked about.
+        first = next(iter(given.values()))
+        if isinstance(first, str):
+            name = "title_tags_by_row"
+        elif "requirement_titles" in first:
+            name = "parent_summary_by_node"
+        else:
+            name = "synthesized_requirements_by_row"
         if name == "title_tags_by_row":
             return json.dumps(
                 {k: {"title": f"T {v[:14]}", "tags": ["safety"]} for k, v in given.items()}

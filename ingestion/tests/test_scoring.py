@@ -602,3 +602,19 @@ def test_scoring_chunks_close_on_the_character_budget_not_just_the_node_count() 
 
     assert [len(c) for c in chunks] == [2, 2]  # 30k fits the 40k budget, a third 15k does not
     assert scoring._chunk_by_count_and_chars(["y" * 90_000], len) == [["y" * 90_000]]  # oversized item gets its own chunk
+
+
+def test_scoring_missing_carries_a_reason_telling_total_failure_from_partial() -> None:
+    nodes = [_requirement_node("a", "The system shall do A."), _requirement_node("b", "The system shall do B.")]
+    warnings: list = []
+    _apply_quality_scores(nodes, _FakeScoringClient({}), warnings, "")
+    missing = [w for w in warnings if w.kind.value == "scoring_missing"]
+    assert missing and missing[0].detail["reason"] == "no_matching_keys"
+
+    nodes = [_requirement_node("a", "The system shall do A."), _requirement_node("b", "The system shall do B.")]
+    warnings = []
+    _apply_quality_scores(
+        nodes, _FakeScoringClient({"a": {"score": 80, "issues": [], "categoryScores": {}, "confidence": "high"}}), warnings, "",
+    )
+    missing = [w for w in warnings if w.kind.value == "scoring_missing"]
+    assert missing and missing[0].detail["reason"] == "partial"
