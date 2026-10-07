@@ -1957,6 +1957,20 @@ describe('OpenWebUiClient upstream negotiation (attempt loop)', () => {
     expect(create.mock.calls[2][0]).not.toHaveProperty('temperature');
   });
 
+  it('chat() sends strict: true in response_format only for a schema that asked for it', async () => {
+    const create = jest.fn().mockResolvedValue(ok);
+    const client = makeClient(create);
+
+    await client.chat([{ role: 'user', content: 'a' }], { responseSchema: { name: 'keyed', schema: { type: 'object' }, strict: true } });
+    await client.chat([{ role: 'user', content: 'b' }], { responseSchema: { name: 'legacy', schema: { type: 'object' } } });
+
+    expect(create.mock.calls[0][0].response_format).toEqual({
+      type: 'json_schema',
+      json_schema: { name: 'keyed', schema: { type: 'object' }, strict: true },
+    });
+    expect(create.mock.calls[1][0].response_format.json_schema).not.toHaveProperty('strict');
+  });
+
   it('chat() reports an empty upstream completion as UpstreamHttpError(502), not a TypeError', async () => {
     // Prod: after a ~300 s hang the SDK resolved null and `response.choices` threw "Cannot read properties of null".
     const client = makeClient(jest.fn().mockResolvedValue(null));

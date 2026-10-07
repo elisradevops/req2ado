@@ -82,8 +82,16 @@ class Settings(BaseSettings):
     #                   valid strict JSON Schema on Anthropic or OpenAI/Azure
     #                   (it collapses to `{}` on Claude via Azure AI, a 400 on
     #                   OpenAI strict); kept only for backends that rely on it.
-    # An "array" mode (fixed array-of-entries schema) follows in a later stage.
-    keyed_schema_mode: Literal["none", "legacy_map"] = "none"
+    #   "array"      -- a FIXED array-of-entries schema ({"items":[{"id": ..., <fields>}]}):
+    #                   constant size at any number of ids, so it stays under every
+    #                   provider's grammar/size limits and is cacheable. TARGET for all
+    #                   passes; only passes that have been migrated honour it (see
+    #                   app.survey.keyed_calls) -- the rest behave as "none".
+    keyed_schema_mode: Literal["none", "legacy_map", "array"] = "none"
+    # Comma-separated pass names forced to "array" regardless of keyed_schema_mode, so a
+    # deployment can enable ONE pass at a time and roll back with a config change only
+    # (KEYED_SCHEMA_PASSES=title_tag). Unknown names are ignored.
+    keyed_schema_passes: str = ""
     # Confirmed real bug: this was hardcoded to 300s while the orchestrator's
     # own LLM_REQUEST_TIMEOUT_MS defaults to 600s (600_000ms) -- a vision
     # call that would have succeeded between 300-600s got aborted here

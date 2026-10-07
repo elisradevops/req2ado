@@ -34,6 +34,7 @@ from app.leveling.customer_id import extract_customer_requirement_code
 from app.leveling.id_hierarchy import HierarchyRow
 from app.leveling.narration_publisher import LevelingProgress, ProgressCallback
 from app.leveling.tree_builder import _hash_description, _table_to_html
+from app.survey.keyed_calls import KeyedEntries, normalize_keyed_result, retry_omitted
 from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, WorkItemMode, WorkItemNode, WorkItemType
 
 # Previously a second, independent copy of llm_leveling.py's own
@@ -55,28 +56,6 @@ from app.leveling.grounding import significant_words as _significant_words
 logger = logging.getLogger(__name__)
 
 
-def _normalize_keyed_result(result: object, requested_ids: list[str]) -> dict:
-    """The model's answer as a plain id -> entry dict, tolerant of two
-    harmless deviations: ids with stray surrounding whitespace, and the whole
-    answer wrapped in a single extra key (`{"results": {id: ...}}`). A wrapper
-    is only unwrapped when the inner object actually contains requested ids,
-    so a genuine one-entry answer is never mistaken for one. Anything that is
-    not a dict yields {}."""
-    if not isinstance(result, dict):
-        return {}
-    wanted = set(requested_ids)
-    normalized = {key.strip(): value for key, value in result.items() if isinstance(key, str)}
-    if wanted & normalized.keys():
-        return normalized
-    if len(result) == 1:
-        inner = next(iter(result.values()))
-        if isinstance(inner, dict):
-            inner_normalized = {key.strip(): value for key, value in inner.items() if isinstance(key, str)}
-            if wanted & inner_normalized.keys():
-                return inner_normalized
-    return normalized
-
-
 def _recover_keyed_result(
     raw_result: object,
     chunk_ids: list[str],
@@ -84,47 +63,28 @@ def _recover_keyed_result(
     call: Callable[[dict], object],
     pass_name: str,
 ) -> tuple[dict, bool]:
-    """Normalises one chunk's keyed answer and, for the ids it omitted, makes
-    ONE bounded retry in halves. Returns (result, nothing_matched) where
-    `nothing_matched` is True only when not a single requested id came back
-    even after the retry -- a systematic failure (the call "worked" but the
-    answer carries none of our keys), reported as a failure rather than as an
-    "omission".
+    """One chunk's keyed answer as (result, nothing_matched). `nothing_matched` is True only
+    when not a single requested id came back even after the retry -- a systematic failure
+    (the call "worked" but the answer carries none of our keys), reported as a failure
+    rather than as an "omission".
 
-    Cost is bounded by design: only the omitted ids are re-sent, each half at
-    most once, and the retry stops as soon as a half yields nothing -- so a
-    systematic fault costs at most ONE extra call per chunk, not one per
-    half. A retry call that raises is swallowed (fail-open, same as the pass
-    itself): the ids simply stay omitted."""
-    result = _normalize_keyed_result(raw_result, chunk_ids)
-    missing = [node_id for node_id in chunk_ids if node_id not in result]
-    if not missing:
-        return result, False
-    if len(missing) == len(chunk_ids):
-        # Ids only, never content. This is the line that was missing when a
-        # prod job returned empty structured answers for every pass and
-        # nothing recorded what the model actually sent back.
-        # Each key is cut short: a model that answers in prose can put document
-        # text in its "keys", and this must never copy that into a log.
+    A pass migrated to the keyed-result module (app.survey.keyed_calls) hands back a
+    `KeyedEntries`, which has already been normalised, retried once for its omitted ids and
+    classified -- it is used as it is, so the retry never runs twice. Any other answer gets
+    the same normalisation and bounded retry here until its pass is migrated."""
+    if isinstance(raw_result, KeyedEntries):
+        return raw_result, raw_result.reason == "no_matching_keys"
+    result = normalize_keyed_result(raw_result, chunk_ids)
+    if any(node_id not in result for node_id in chunk_ids) and not any(node_id in result for node_id in chunk_ids):
+        # Ids only, never content, each key cut short -- the line that was missing when a prod job
+        # returned empty structured answers for every pass and nothing recorded what came back.
         top_level_keys = [str(key)[:40] for key in list(raw_result)[:3]] if isinstance(raw_result, dict) else []
         logger.warning(
             "%s enhancement: response had none of the %d requested ids (type=%s, top-level keys=%d, first keys=%s)",
             pass_name, len(chunk_ids), type(raw_result).__name__,
             len(raw_result) if isinstance(raw_result, dict) else 0, top_level_keys,
         )
-    middle = (len(missing) + 1) // 2
-    halves = [half for half in (missing[:middle], missing[middle:]) if half]
-    result = dict(result)
-    for half in halves:
-        try:
-            half_result = _normalize_keyed_result(call({node_id: payload[node_id] for node_id in half}), half)
-        except Exception as exc:  # noqa: BLE001 -- retry is best-effort, the ids just stay omitted
-            logger.warning("%s enhancement retry for %d omitted id(s) failed: %s", pass_name, len(half), exc)
-            break
-        matched = {node_id: half_result[node_id] for node_id in half if node_id in half_result}
-        if not matched:
-            break
-        result.update(matched)
+    result, _extra_calls = retry_omitted(result, chunk_ids, payload, call, f"{pass_name} enhancement")
     return result, not any(node_id in result for node_id in chunk_ids)
 
 
@@ -218,6 +178,18 @@ _TITLE_TAG_CHUNK_SIZE = 150
 _VALID_TAGS = {t.value for t in RequirementTag}
 
 
+def _coerce_tags(raw_tags: list) -> list[RequirementTag]:
+    """The valid tags in a model's list. Compared case-insensitively and trimmed: structured
+    outputs do not guarantee the capitalisation of enum values (Anthropic documents that a value
+    can come back differing only in case), and a tag the model got right except for its casing
+    should not be silently dropped. Unknown tags and non-strings are still ignored."""
+    tags: list[RequirementTag] = []
+    for raw in raw_tags:
+        if isinstance(raw, str) and raw.strip().lower() in _VALID_TAGS:
+            tags.append(RequirementTag(raw.strip().lower()))
+    return tags
+
+
 def title_tag_updates(entry: dict) -> dict:
     """What one title/tag response entry changes on its node: only the keys
     that carry a usable value (`title`, `tags`). Shared by the pipeline's
@@ -231,7 +203,7 @@ def title_tag_updates(entry: dict) -> dict:
         updates["title"] = extract_baseline_title(raw_title)
     raw_tags = entry.get("tags")
     if isinstance(raw_tags, list):
-        updates["tags"] = [RequirementTag(t) for t in raw_tags if t in _VALID_TAGS]
+        updates["tags"] = _coerce_tags(raw_tags)
     return updates
 
 
@@ -258,7 +230,7 @@ def synthesis_updates(entry: dict, original_text: str, node_type: WorkItemType) 
     # check anywhere upstream of that repair wouldn't reflect the node's
     # final type.
     if isinstance(raw_tags, list) and node_type == WorkItemType.REQUIREMENT:
-        updates["tags"] = [RequirementTag(t) for t in raw_tags if t in _VALID_TAGS]
+        updates["tags"] = _coerce_tags(raw_tags)
     return updates
 
 
@@ -552,6 +524,71 @@ def _colliding_child_title(title: str, requirement_titles: list[str], child_titl
     return None
 
 
+def resolve_parent_title(
+    new_title: str, current_title: str, requirement_titles: list[str], child_titles: list[str],
+) -> dict:
+    """The model's proposed title for an Epic/Feature, checked against the titles under it.
+    Returns {"title": new_title} when it is distinct, else {"collision": {...}} -- the pass
+    then keeps the node's current (verbatim heading) title. One rule shared by the
+    deterministic pass and the post-hoc `/enhance-items` retry, so a retried parent gets the
+    same distinct-title guarantee as one written during the run."""
+    collided_with = _colliding_child_title(new_title, requirement_titles, child_titles)
+    if collided_with is None:
+        return {"title": new_title}
+    return {
+        "collision": {
+            "rejectedTitle": new_title,
+            "fallbackTitle": current_title,
+            "collidesWith": collided_with,
+            "headingAlsoCollides": _colliding_child_title(current_title, requirement_titles, child_titles) is not None,
+        }
+    }
+
+
+def parent_collision_warning(node_id: str, collision: dict) -> IntegrityWarning:
+    """The PARENT_TITLE_COLLISION warning for a `resolve_parent_title` collision."""
+    if collision["headingAlsoCollides"]:
+        message = (
+            f'The title "{collision["fallbackTitle"]}" is the same as the title of one of the requirements under '
+            "it, even after keeping the original heading -- rename one of them."
+        )
+    else:
+        message = (
+            f'"{collision["rejectedTitle"]}" was proposed as the title of a parent item but matches the title of '
+            f'one of the requirements under it -- kept the original heading "{collision["fallbackTitle"]}" instead.'
+        )
+    return IntegrityWarning.make(
+        WarningKind.PARENT_TITLE_COLLISION,
+        message,
+        node_ids=[node_id],
+        detail={"pass": "parent_summary", **collision},
+    )
+
+
+def parent_summary_updates(
+    entry: dict,
+    current_title: str,
+    requirement_titles: list[str],
+    requirement_descriptions: list[str],
+    child_titles: list[str],
+) -> dict:
+    """One Epic/Feature's parent-summary answer as updates: `title` (only when it is
+    distinct from the titles under it), `collision` (when it was not and the heading was
+    kept), `description` and its `grounding_score` against the descendants' text. Empty when
+    the entry carries nothing usable. Used by the retry route; the deterministic pass applies
+    the same pieces itself because it also re-embeds folded tables into the description."""
+    updates: dict = {}
+    raw_title = entry.get("title")
+    if isinstance(raw_title, str) and raw_title.strip():
+        updates.update(resolve_parent_title(raw_title.strip(), current_title, requirement_titles, child_titles))
+    raw_description = entry.get("description")
+    if isinstance(raw_description, str) and raw_description.strip():
+        description = raw_description.strip()
+        updates["description"] = description
+        updates["grounding_score"] = _grounding_score(description, "\n\n".join(requirement_descriptions))
+    return updates
+
+
 def _apply_parent_summary_pass(
     nodes: list[WorkItemNode],
     parent_node_ids: list[str],
@@ -723,50 +760,21 @@ def _apply_parent_summary_pass(
             raw_title = entry.get("title")
             raw_description = entry.get("description")
             if isinstance(raw_title, str) and raw_title.strip():
-                new_title = raw_title.strip()
-                collided_with = _colliding_child_title(
-                    new_title,
+                resolved = resolve_parent_title(
+                    raw_title.strip(),
+                    node.title,
                     payload_by_id[node_id]["requirement_titles"],
                     [by_id[child_id].title for child_id in children_by_parent.get(node_id, [])],
                 )
-                if collided_with is None:
-                    node.title = new_title
+                if "title" in resolved:
+                    node.title = resolved["title"]
                 else:
-                    # Keep the verbatim heading title (still on the node --
-                    # this pass hasn't touched it) instead of the model's. A
-                    # Feature with one Requirement child was being given
-                    # exactly its child's title (the prompt only forbids a
-                    # title/DESCRIPTION restatement), which reads as the same
-                    # item twice in the diff tree and in ADO.
-                    heading_also_collides = (
-                        _colliding_child_title(
-                            node.title,
-                            payload_by_id[node_id]["requirement_titles"],
-                            [by_id[child_id].title for child_id in children_by_parent.get(node_id, [])],
-                        )
-                        is not None
-                    )
-                    message = (
-                        f'"{new_title}" was proposed as the title of a parent item but matches the title of '
-                        f'one of the requirements under it -- kept the original heading "{node.title}" instead.'
-                        if not heading_also_collides
-                        else f'The title "{node.title}" is the same as the title of one of the requirements under '
-                        "it, even after keeping the original heading -- rename one of them."
-                    )
-                    warnings.append(
-                        IntegrityWarning.make(
-                            WarningKind.PARENT_TITLE_COLLISION,
-                            message,
-                            node_ids=[node_id],
-                            detail={
-                                "pass": "parent_summary",
-                                "rejectedTitle": new_title,
-                                "fallbackTitle": node.title,
-                                "collidesWith": collided_with,
-                                "headingAlsoCollides": heading_also_collides,
-                            },
-                        )
-                    )
+                    # Keep the verbatim heading title (still on the node -- this pass hasn't
+                    # touched it) instead of the model's. A Feature with one Requirement child
+                    # was being given exactly its child's title (the prompt only forbids a
+                    # title/DESCRIPTION restatement), which reads as the same item twice in
+                    # the diff tree and in ADO.
+                    warnings.append(parent_collision_warning(node_id, resolved["collision"]))
             if isinstance(raw_description, str) and raw_description.strip():
                 description = raw_description.strip()
                 # Captured BEFORE the table-embed loop below -- scoring must

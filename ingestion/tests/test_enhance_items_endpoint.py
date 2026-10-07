@@ -118,8 +118,8 @@ def test_a_failing_llm_call_is_a_502_not_a_partial_result(monkeypatch) -> None:
     assert "enhancement call failed" in response.json()["detail"]
 
 
-def test_rejects_parent_summary_an_empty_list_an_oversized_batch_and_an_unknown_type() -> None:
-    parent_summary = client.post("/enhance-items", json={"enhancement_pass": "parent_summary", "items": [_item("a")]})
+def test_rejects_an_unknown_pass_an_empty_list_an_oversized_batch_and_an_unknown_type() -> None:
+    unknown_pass = client.post("/enhance-items", json={"enhancement_pass": "scoring", "items": [_item("a")]})
     empty = client.post("/enhance-items", json={"enhancement_pass": "title_tag", "items": []})
     too_many = client.post(
         "/enhance-items",
@@ -129,7 +129,7 @@ def test_rejects_parent_summary_an_empty_list_an_oversized_batch_and_an_unknown_
         "/enhance-items", json={"enhancement_pass": "title_tag", "items": [_item("a", type_="Task")]},
     )
 
-    assert parent_summary.status_code == 422
+    assert unknown_pass.status_code == 422
     assert empty.status_code == 400
     assert too_many.status_code == 400
     assert bad_type.status_code == 400
@@ -146,3 +146,102 @@ def test_the_retry_uses_the_exact_merge_rules_of_the_pipeline_passes() -> None:
     assert "tags" not in synthesis_updates({"tags": ["functional"]}, "x", WorkItemType.FEATURE)
     assert "tags" in synthesis_updates({"tags": ["functional"]}, "x", WorkItemType.REQUIREMENT)
     assert synthesis_updates({"text": "   "}, "x", WorkItemType.REQUIREMENT) == {}
+
+
+def _parent(item_id: str, title: str = "Power", type_: str = "Feature", *, requirement_titles=None, requirement_descriptions=None, child_titles=None) -> dict:
+    return {
+        "id": item_id,
+        "text": title,  # for parent_summary `text` is the node's current title
+        "type": type_,
+        "requirement_titles": requirement_titles if requirement_titles is not None else ["Overcurrent shutdown"],
+        "requirement_descriptions": requirement_descriptions
+        if requirement_descriptions is not None
+        else ["The unit shall shut down on overcurrent."],
+        "child_titles": child_titles if child_titles is not None else [],
+    }
+
+
+def test_parent_summary_returns_a_distinct_title_a_description_and_a_grounding_score(monkeypatch) -> None:
+    _patch_llm(
+        monkeypatch,
+        _reply({"p": {"title": "Overcurrent protection capability", "description": "Shuts the unit down on overcurrent."}}),
+    )
+
+    response = client.post("/enhance-items", json={"enhancement_pass": "parent_summary", "items": [_parent("p")]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["omitted"] == []
+    result = body["results"]["p"]
+    assert result["title"] == "Overcurrent protection capability"
+    assert result["title_collision"] is False
+    assert result["description"] == "Shuts the unit down on overcurrent."
+    assert 0.0 <= result["grounding_score"] <= 1.0
+    assert result["fidelity_hash"]
+    assert result["tags"] is None
+
+
+def test_parent_summary_keeps_the_heading_when_the_proposed_title_matches_a_title_under_it(monkeypatch) -> None:
+    _patch_llm(
+        monkeypatch,
+        _reply({"p": {"title": "overcurrent shutdown.", "description": "Shuts the unit down on overcurrent."}}),
+    )
+
+    response = client.post("/enhance-items", json={"enhancement_pass": "parent_summary", "items": [_parent("p")]})
+
+    result = response.json()["results"]["p"]
+    assert result["title"] is None  # nothing to change: the heading stays
+    assert result["title_collision"] is True
+    assert result["description"] == "Shuts the unit down on overcurrent."  # the summary is still taken
+
+
+def test_parent_summary_reports_ids_the_model_left_out(monkeypatch) -> None:
+    _patch_llm(monkeypatch, _reply({"p1": {"title": "A distinct capability", "description": "Summary."}}))
+
+    response = client.post(
+        "/enhance-items", json={"enhancement_pass": "parent_summary", "items": [_parent("p1"), _parent("p2")]},
+    )
+
+    body = response.json()
+    assert list(body["results"]) == ["p1"]
+    assert body["omitted"] == ["p2"]
+
+
+def test_parent_summary_only_applies_to_epics_and_features(monkeypatch) -> None:
+    _patch_llm(monkeypatch, _reply({}))
+
+    response = client.post(
+        "/enhance-items", json={"enhancement_pass": "parent_summary", "items": [_parent("r", type_="Requirement")]},
+    )
+
+    assert response.status_code == 400
+    assert "Epic and Feature" in response.json()["detail"]
+
+
+def test_parent_summary_requests_are_capped_far_below_the_leaf_passes(monkeypatch) -> None:
+    _patch_llm(monkeypatch, _reply({}))
+
+    response = client.post(
+        "/enhance-items",
+        json={"enhancement_pass": "parent_summary", "items": [_parent(f"p{i}") for i in range(26)]},
+    )
+
+    assert response.status_code == 400
+    assert "at most 25" in response.json()["detail"]
+
+
+def test_parent_summary_sends_the_descendants_text_to_the_model(monkeypatch) -> None:
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(json.loads(request.content)["messages"][1]["content"]))
+        return httpx.Response(200, json={"content": json.dumps({"p": {"title": "Brand new title", "description": "D."}})})
+
+    _patch_llm(monkeypatch, handler)
+    client.post("/enhance-items", json={"enhancement_pass": "parent_summary", "items": [_parent("p")]})
+
+    assert seen[0]["p"] == {
+        "title": "Power",
+        "requirement_titles": ["Overcurrent shutdown"],
+        "requirement_descriptions": ["The unit shall shut down on overcurrent."],
+    }

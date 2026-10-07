@@ -5521,3 +5521,127 @@ describe('JobsService.onModuleInit', () => {
     });
   });
 });
+
+
+describe('JobsService.retryEnhancement (parent_summary)', () => {
+  const node = (localId: string, type: string, parentLocalId: string | null, extra: object = {}) => ({
+    localId, parentLocalId, type, title: `title ${localId}`, description: `desc ${localId}`,
+    action: 'create', existingAdoId: null, sourceHash: `h-${localId}`, customerId: null, tags: [], ...extra,
+  });
+  const warn = (nodeIds: string[]) => ({ kind: 'enhancement_call_failed', severity: 'pipeline_issue', nodeIds, detail: { pass: 'parent_summary' }, raw: 'old raw' });
+  // Epic e -> Feature f -> Requirements r1, r2 ; Feature f2 -> Requirement r3 ; an excluded Requirement r4 under f.
+  const tree = (extra: Record<string, object> = {}) => [
+    node('e', 'Epic', null, extra.e),
+    node('f', 'Feature', 'e', extra.f),
+    node('r1', 'Requirement', 'f'),
+    node('r2', 'Requirement', 'f'),
+    node('r4', 'Requirement', 'f', { excluded: true }),
+    node('f2', 'Feature', 'e'),
+    node('r3', 'Requirement', 'f2'),
+  ];
+  const makeService = (diff: object[], warnings: object[], enhanceItems: jest.Mock) => {
+    const job = { id: 'job-1', status: 'diff_ready', diffVersion: 3, userId: 'u1', model: 'm1', dryRunDiff: diff, warnings };
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = { job: { updateMany, findUnique: jest.fn().mockResolvedValue(job) } };
+    return new JobsService(prisma as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
+  };
+  const input = (localIds: string[]) => ({ kind: 'enhancement_call_failed', pass: 'parent_summary' as const, localIds });
+
+  it('sends every descendant Requirement (however deep, excluded ones left out) and the direct children titles', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({ results: {}, omitted: [] });
+    const service = makeService(tree(), [warn(['e', 'f'])], enhanceItems);
+
+    await service.retryEnhancement('job-1', input(['e', 'f']));
+
+    const [pass, items, userId, model] = enhanceItems.mock.calls[0];
+    expect(pass).toBe('parent_summary');
+    expect([userId, model]).toEqual(['u1', 'm1']);
+    const byId = Object.fromEntries(items.map((item: any) => [item.id, item]));
+    expect(byId.e).toEqual(expect.objectContaining({
+      text: 'title e', type: 'Epic',
+      requirement_titles: ['title r1', 'title r2', 'title r3'],
+      requirement_descriptions: ['desc r1', 'desc r2', 'desc r3'],
+      child_titles: ['title f', 'title f2'],
+    }));
+    expect(byId.f).toEqual(expect.objectContaining({
+      requirement_titles: ['title r1', 'title r2'],
+      child_titles: ['title r1', 'title r2'], // the excluded r4 is not a child worth checking against
+    }));
+  });
+
+  it('applies the new title and description, marks an existing quality score stale, and shrinks the warning', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({
+      results: { f: { title: 'Power protection', description: 'Protects the chassis.', groundingScore: 0.6 } },
+      omitted: [],
+    });
+    const service = makeService(tree({ f: { qualityScore: 70 } }), [warn(['e', 'f'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', input(['f']));
+
+    const f = result.dryRunDiff.find((e) => e.localId === 'f')!;
+    expect(f).toEqual(expect.objectContaining({ title: 'Power protection', description: 'Protects the chassis.', groundingScore: 0.6, qualityStale: true }));
+    expect(f.sourceHash).toBe('h-f');
+    expect(result.enhanced).toEqual(['f']);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ nodeIds: ['e'], raw: 'The parent title/description enhancement call failed for 1 item(s) -- those kept their existing text.' }),
+    ]);
+  });
+
+  it('a node that folded a table gets the title only -- replacing the description would drop the table', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({
+      results: { f: { title: 'Power protection', description: 'Summary that must NOT replace the table text.' } },
+      omitted: [],
+    });
+    const service = makeService(tree({ f: { tableIds: ['t1'], description: '<table>folded</table>' } }), [warn(['f'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', input(['f']));
+
+    const f = result.dryRunDiff.find((e) => e.localId === 'f')!;
+    expect(f.title).toBe('Power protection');
+    expect(f.description).toBe('<table>folded</table>');
+    expect(result.enhanced).toEqual(['f']);
+  });
+
+  it('keeps the heading when the proposed title collided (no title in the result) but still takes the summary', async () => {
+    const enhanceItems = jest.fn().mockResolvedValue({
+      results: { f: { description: 'Protects the chassis.', titleCollision: true } },
+      omitted: [],
+    });
+    const service = makeService(tree(), [warn(['f'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', input(['f']));
+
+    const f = result.dryRunDiff.find((e) => e.localId === 'f')!;
+    expect(f.title).toBe('title f');
+    expect(f.description).toBe('Protects the chassis.');
+  });
+
+  it('does not overwrite a title the reviewer changed while the call was running', async () => {
+    const enhanceItems = jest.fn().mockImplementation(async () => {
+      // the review tree is re-read before the write; simulate a rename that landed in between
+      freshTitle.value = 'Renamed by reviewer';
+      return { results: { f: { title: 'Model title', description: 'D.' } }, omitted: [] };
+    });
+    const freshTitle = { value: 'title f' };
+    const job = { id: 'job-1', status: 'diff_ready', diffVersion: 3, userId: 'u1', model: 'm1', warnings: [warn(['f'])] };
+    const findUnique = jest.fn().mockImplementation(async () => ({ ...job, dryRunDiff: tree({ f: { title: freshTitle.value } }) }));
+    const prisma = { job: { updateMany: jest.fn().mockResolvedValue({ count: 1 }), findUnique } };
+    const service = new JobsService(prisma as any, {} as any, {} as any, { enhanceItems } as any, 'redis://unused');
+
+    const result = await service.retryEnhancement('job-1', input(['f']));
+
+    expect(result.dryRunDiff.find((e) => e.localId === 'f')!.title).toBe('Renamed by reviewer');
+    expect(result.enhanced).toEqual([]);
+    expect(result.skipped).toContain('f');
+  });
+
+  it('skips Requirements and parents with nothing underneath, without calling ingestion', async () => {
+    const enhanceItems = jest.fn();
+    const service = makeService([node('e', 'Epic', null), node('r', 'Requirement', null)], [warn(['e', 'r'])], enhanceItems);
+
+    const result = await service.retryEnhancement('job-1', input(['e', 'r']));
+
+    expect(enhanceItems).not.toHaveBeenCalled();
+    expect(result.skipped.sort()).toEqual(['e', 'r']);
+  });
+});

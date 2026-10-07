@@ -233,7 +233,7 @@ export interface RetryEnhancementResult {
 
 export async function retryEnhancement(
   jobId: string,
-  input: { kind: string; pass: 'title_tag' | 'synthesis'; localIds: string[] },
+  input: { kind: string; pass: 'title_tag' | 'synthesis' | 'parent_summary'; localIds: string[] },
 ): Promise<RetryEnhancementResult> {
   const response = await httpClient.post(`/jobs/${jobId}/warnings/retry-enhancement`, input);
   return response.data;

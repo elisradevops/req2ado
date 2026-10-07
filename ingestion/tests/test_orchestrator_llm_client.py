@@ -934,7 +934,9 @@ def test_title_and_tags_for_rows_sends_the_closed_tag_vocabulary_and_schema() ->
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
+        # First request only: an empty answer makes the keyed call retry the omitted ids, and
+        # this test is about the request for the full set.
+        captured.setdefault("body", json.loads(request.content))
         return httpx.Response(200, json={"content": "{}"})
 
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")

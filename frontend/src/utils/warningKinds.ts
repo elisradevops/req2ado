@@ -497,17 +497,26 @@ export function kindProgress(entry: WarningKindGroup, reviewedIds?: ReadonlySet<
 export type ReasonTone = WarningGroup | 'done';
 
 // Enhancement failures that can be retried for just their affected items.
-// `parent_summary` is not offered: it needs every descendant's text, so the
-// fix for that pass is a resubmit. One batch group per pass, since the
-// server retries one pass at a time.
-export type RetryablePass = 'title_tag' | 'synthesis';
+// One batch group per pass, since the server retries one pass at a time.
+// `parent_summary` is retryable too: the server writes each parent's summary
+// from the descendants in the job's own tree.
+export type RetryablePass = 'title_tag' | 'synthesis' | 'parent_summary';
+
+// Items per retry request. One LLM call each, so a Stop takes effect within a
+// short wait; parent_summary requests are smaller because every item carries
+// all of its descendants' text (the server caps them at 25).
+export const RETRY_ENHANCEMENT_BATCH_SIZE: Record<RetryablePass, number> = {
+  title_tag: 50,
+  synthesis: 50,
+  parent_summary: 25,
+};
 
 export function retryableEnhancementBatches(entry: WarningKindGroup): { pass: RetryablePass; localIds: string[] }[] {
   if (entry.kind !== 'enhancement_call_failed' && entry.kind !== 'enhancement_response_incomplete') return [];
   const byPass = new Map<RetryablePass, string[]>();
   for (const record of entry.records) {
     const pass = record.detail?.pass;
-    if (pass !== 'title_tag' && pass !== 'synthesis') continue;
+    if (pass !== 'title_tag' && pass !== 'synthesis' && pass !== 'parent_summary') continue;
     const ids = byPass.get(pass) ?? [];
     for (const nodeId of record.nodeIds) if (!ids.includes(nodeId)) ids.push(nodeId);
     byPass.set(pass, ids);

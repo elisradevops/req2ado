@@ -13,6 +13,14 @@ import type { ChatMessage } from './redactor';
 export interface LlmResponseSchema {
   name: string;
   schema: Record<string, unknown>;
+  /**
+   * Ask the provider to ENFORCE the schema (`strict: true` on the OpenAI-compatible request). OpenAI and
+   * Azure OpenAI only guarantee the shape in strict mode, which in turn requires a schema that meets its
+   * rules (every property required, `additionalProperties: false`, no unsupported keywords) -- so it is
+   * opt-in per schema: only schemas known to qualify set it; the older fixed-shape ones, some of which
+   * leave fields optional on purpose, do not and keep their current best-effort behaviour.
+   */
+  strict?: boolean;
 }
 
 // OpenAI-compat function-calling tool definition -- forwarded verbatim to

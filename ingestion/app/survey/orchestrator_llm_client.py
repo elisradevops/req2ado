@@ -37,6 +37,8 @@ from app.survey._response_schemas import (
     trace_links_schema,
 )
 from app.config import settings
+from app.survey.keyed_calls import KeyedMode, describe_output, drop_possibly_cut_last_entry, run_keyed, schema_for
+from app.survey.keyed_specs import TITLE_TAGS_SPEC
 from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
 from app.leveling.live_stream import DraftingDisplay
 from app.logging_context import current_job_id
@@ -1019,6 +1021,7 @@ class OrchestratorLlmClient:
         parts: list[str] = []
         finished = False
         got_output = False
+        finish_reason: str | None = None
         try:
             timeout = _LLM_REQUEST_TIMEOUT_SECONDS
             with httpx.Client(transport=self._transport, timeout=timeout) as client:
@@ -1036,6 +1039,7 @@ class OrchestratorLlmClient:
                         message = json.loads(line)
                         if message.get("done"):
                             finished = True
+                            finish_reason = message.get("finishReason")
                             if message.get("finishReason") == "length":
                                 logger.warning("Streamed structured LLM call ended with finishReason=length -- the answer may be incomplete")
                                 notice("output_limit_reached", "warning", with_last_item=True, step="drafting")
@@ -1055,7 +1059,8 @@ class OrchestratorLlmClient:
             notice("stream_fallback", reason="no_terminal_line")
             display.reset()
             return _NOT_STREAMED
-        return _parse_json_object(_strip_json_fence("".join(parts)))
+        parsed = _parse_json_object(_strip_json_fence("".join(parts)))
+        return drop_possibly_cut_last_entry(parsed) if finish_reason == "length" else parsed
 
     def _chat_json(
         self,
@@ -1124,7 +1129,8 @@ class OrchestratorLlmClient:
             # partial keyed answer is no longer unexplained.
             logger.warning("Structured LLM call ended with finishReason=%s -- the answer may be incomplete", finish_reason)
         content = _strip_json_fence(body["content"])
-        return _parse_json_object(content)
+        parsed = _parse_json_object(content)
+        return drop_possibly_cut_last_entry(parsed) if finish_reason == "length" else parsed
 
     def infer_trace_links(
         self,
@@ -1565,15 +1571,24 @@ class OrchestratorLlmClient:
         `_apply_title_tag_pass` already fails open on any exception or
         malformed/partial response, keeping the deterministic title/empty
         tags exactly as constructed."""
-        system_prompt = load_prompt(
-            "title_and_tags_for_rows",
-            tag_vocabulary=", ".join(t.value for t in RequirementTag),
-            row_count=str(len(texts_by_row_id)),
-        )
-        return self._chat_json(
-            system_prompt, json.dumps(texts_by_row_id), schema=keyed_schema(title_tags_schema()), user_id=user_id,
-            stream_inputs=dict(texts_by_row_id), stream_stage="improve",
-        )
+        spec = TITLE_TAGS_SPEC
+
+        def send(payload: dict, mode: KeyedMode) -> object:
+            # The output-format sentence and the strict schema are both generated from `spec`
+            # (app.survey.keyed_calls), so the prompt and the schema cannot drift; a retry of
+            # omitted ids re-enters here with just those ids.
+            system_prompt = load_prompt(
+                "title_and_tags_for_rows",
+                tag_vocabulary=", ".join(t.value for t in RequirementTag),
+                row_count=str(len(payload)),
+                output_format=describe_output(spec, mode),
+            )
+            return self._chat_json(
+                system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
+                stream_inputs=dict(payload), stream_stage="improve",
+            )
+
+        return run_keyed(send, texts_by_row_id, spec, model=self._model)
 
     def summarize_parent_nodes(
         self, nodes_by_id: dict[str, dict], user_id: str | None = None,

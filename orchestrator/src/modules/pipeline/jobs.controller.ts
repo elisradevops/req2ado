@@ -62,6 +62,8 @@ export const MAX_CUSTOMER_ID_LENGTH = 128;
 // One retry request's item cap -- below ingestion's own per-call limit (150), so a
 // batch is always a single LLM call.
 const MAX_RETRY_ENHANCEMENT_ITEMS = 100;
+// A parent's request carries every descendant's text, so far fewer fit in one call (ingestion caps it at 25 too).
+const MAX_RETRY_PARENT_SUMMARY_ITEMS = 25;
 
 // Same free-form-identifier reasoning as MAX_CUSTOMER_ID_LENGTH above --
 // see WorkItemNode.se_coverage_ref's own docstring (ingestion side) for
@@ -412,8 +414,9 @@ export class JobsController {
 
   // Re-runs a failed optional enhancement pass for some of the items its
   // warning lists. The client sends one batch at a time and loops, so no
-  // request runs minutes of LLM work. `parent_summary` isn't retryable (it
-  // needs every descendant's text) -- a resubmit is the fix for that one.
+  // request runs minutes of LLM work. `parent_summary` is retryable too: the
+  // service builds each node's descendants' text from the job's own tree, so
+  // its batches are smaller (every item carries that text).
   @Post(':id/warnings/retry-enhancement')
   async retryEnhancement(
     @Param('id') id: string,
@@ -425,18 +428,17 @@ export class JobsController {
     if (kind !== 'enhancement_call_failed' && kind !== 'enhancement_response_incomplete') {
       throw new BadRequestException("kind must be 'enhancement_call_failed' or 'enhancement_response_incomplete'");
     }
-    if (pass !== 'title_tag' && pass !== 'synthesis') {
-      throw new BadRequestException("pass must be 'title_tag' or 'synthesis' (parent_summary can't be retried)");
+    if (pass !== 'title_tag' && pass !== 'synthesis' && pass !== 'parent_summary') {
+      throw new BadRequestException("pass must be 'title_tag', 'synthesis' or 'parent_summary'");
     }
+    const maxItems = pass === 'parent_summary' ? MAX_RETRY_PARENT_SUMMARY_ITEMS : MAX_RETRY_ENHANCEMENT_ITEMS;
     if (
       !Array.isArray(localIds) ||
       localIds.length === 0 ||
-      localIds.length > MAX_RETRY_ENHANCEMENT_ITEMS ||
+      localIds.length > maxItems ||
       !localIds.every((v) => typeof v === 'string' && v.length > 0)
     ) {
-      throw new BadRequestException(
-        `localIds must be a non-empty array of at most ${MAX_RETRY_ENHANCEMENT_ITEMS} strings`,
-      );
+      throw new BadRequestException(`localIds must be a non-empty array of at most ${maxItems} strings`);
     }
     await this.ownedJob(id, user);
     return this.jobsService.retryEnhancement(id, { kind, pass, localIds: [...new Set(localIds as string[])] });
