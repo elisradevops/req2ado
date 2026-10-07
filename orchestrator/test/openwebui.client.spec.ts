@@ -1827,3 +1827,175 @@ describe('OpenWebUiClient.chatWithFullFileContext', () => {
     expect(url).toBe('http://host:3000/api/chat/completions');
   });
 });
+
+describe('OpenWebUiClient upstream negotiation (attempt loop)', () => {
+  const config = {
+    LLM_BASE_URL: 'http://localhost:11434/v1',
+    LLM_API_KEY: undefined,
+    LLM_CHAT_MODEL: 'llama3.1',
+    LLM_TRUSTED_LOCAL: false,
+    EMBED_TRANSPORT: 'openai' as const,
+    EMBED_BASE_URL: undefined,
+    EMBED_MODEL: 'nomic-embed-text',
+    EMBED_PATH: '/api/embed',
+    SHOW_PATH: '/api/show',
+    FILES_UPLOAD_PATH: '/api/v1/files/',
+    FILES_STATUS_PATH: '/api/v1/files',
+    LLM_REQUEST_TIMEOUT_MS: 600_000,
+    LLM_SEND_SEED: false,
+    LLM_SEND_REASONING_EFFORT: false,
+  };
+  const tempMsg =
+    '400 litellm.UnsupportedParamsError: claude-opus-4-8 does not support temperature=0. Only temperature=1 is supported.';
+  const tempRejection = () => new OpenAI.APIError(400, { message: tempMsg }, tempMsg, {} as any);
+  const grammarMsg =
+    '400 litellm.BadRequestError: Azure_aiException - The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools.';
+  const grammarRejection = () => new OpenAI.APIError(400, { message: grammarMsg }, grammarMsg, {} as any);
+  const seedMsg = "400 azure does not support parameters: ['seed']";
+  const seedRejection = () => new OpenAI.APIError(400, { message: seedMsg }, seedMsg, {} as any);
+  const schema = { name: 'keyed', schema: { type: 'object' } };
+  const ok = { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] };
+
+  const makeClient = (create: jest.Mock, overrides: Record<string, unknown> = {}) => {
+    const client = new OpenWebUiClient({ ...config, ...overrides } as any);
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = create;
+    return client;
+  };
+
+  it('chat() survives the prod chain: a temperature error, then a grammar-too-large schema rejection, then succeeds without the schema', async () => {
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(tempRejection())
+      .mockRejectedValueOnce(grammarRejection())
+      .mockResolvedValueOnce(ok);
+    const client = makeClient(create);
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], { temperature: 0, responseSchema: schema });
+
+    expect(result.content).toBe('ok');
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(create.mock.calls[0][0]).toHaveProperty('response_format');
+    expect(create.mock.calls[1][0]).toHaveProperty('temperature', 1);
+    expect(create.mock.calls[1][0]).toHaveProperty('response_format');
+    expect(create.mock.calls[2][0]).toHaveProperty('temperature', 1);
+    expect(create.mock.calls[2][0]).not.toHaveProperty('response_format');
+  });
+
+  it('streamChat() survives the same chain', async () => {
+    async function* stream() {
+      yield { choices: [{ delta: { content: 'ok' } }] };
+    }
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(tempRejection())
+      .mockRejectedValueOnce(grammarRejection())
+      .mockResolvedValueOnce(stream());
+    const client = makeClient(create);
+
+    const chunks: string[] = [];
+    for await (const chunk of client.streamChat([{ role: 'user', content: 'hi' }], { temperature: 0, responseSchema: schema })) {
+      if (chunk.content) chunks.push(chunk.content);
+    }
+
+    expect(chunks).toEqual(['ok']);
+    expect(create.mock.calls[2][0]).not.toHaveProperty('response_format');
+    expect(create.mock.calls[2][0]).toHaveProperty('temperature', 1);
+  });
+
+  it('adaptations accumulate: rejected seed, then required temperature, in either order', async () => {
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(seedRejection())
+      .mockRejectedValueOnce(tempRejection())
+      .mockResolvedValueOnce(ok);
+    const client = makeClient(create, { LLM_SEND_SEED: true });
+
+    await client.chat([{ role: 'user', content: 'hi' }], { temperature: 0, seed: 7 });
+
+    expect(create.mock.calls[0][0]).toHaveProperty('seed', 7);
+    expect(create.mock.calls[1][0]).not.toHaveProperty('seed');
+    expect(create.mock.calls[2][0]).not.toHaveProperty('seed');
+    expect(create.mock.calls[2][0]).toHaveProperty('temperature', 1);
+  });
+
+  it('gives up after the attempt cap and surfaces the last failure as an UpstreamHttpError', async () => {
+    const create = jest.fn().mockRejectedValue(grammarRejection());
+    const client = makeClient(create);
+
+    await expect(
+      client.chat([{ role: 'user', content: 'hi' }], { responseSchema: schema }),
+    ).rejects.toMatchObject({ name: 'UpstreamHttpError', upstreamStatus: 400 });
+    // 1st attempt with the schema, 2nd without it, then nothing left to adapt.
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not remember a schema rejection: the next call tries the schema again', async () => {
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(grammarRejection())
+      .mockResolvedValue(ok);
+    const client = makeClient(create);
+
+    await client.chat([{ role: 'user', content: 'a' }], { responseSchema: schema });
+    await client.chat([{ role: 'user', content: 'b' }], { responseSchema: schema });
+
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(create.mock.calls[2][0]).toHaveProperty('response_format');
+  });
+
+  it('a learned required temperature is not sent to a caller that never set a temperature', async () => {
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(tempRejection())
+      .mockResolvedValue(ok);
+    const client = makeClient(create);
+
+    await client.chat([{ role: 'user', content: 'a' }], { temperature: 0 });
+    await client.chat([{ role: 'user', content: 'b' }]);
+
+    expect(create.mock.calls[2][0]).not.toHaveProperty('temperature');
+  });
+
+  it('chat() reports an empty upstream completion as UpstreamHttpError(502), not a TypeError', async () => {
+    // Prod: after a ~300 s hang the SDK resolved null and `response.choices` threw "Cannot read properties of null".
+    const client = makeClient(jest.fn().mockResolvedValue(null));
+
+    await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toMatchObject({
+      name: 'UpstreamHttpError',
+      upstreamStatus: 502,
+    });
+  });
+
+  it('chat() reports a completion with no choices the same way', async () => {
+    const client = makeClient(jest.fn().mockResolvedValue({ choices: [] }));
+
+    await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toMatchObject({ upstreamStatus: 502 });
+  });
+
+  it('vision() reports an empty completion as UpstreamHttpError(502)', async () => {
+    const client = makeClient(jest.fn().mockResolvedValue(null));
+
+    await expect(client.vision('describe', [Buffer.from('img')])).rejects.toMatchObject({ upstreamStatus: 502 });
+  });
+
+  it('vision() still rethrows an unadaptable failure unwrapped (its route has no UpstreamHttpError mapping)', async () => {
+    const boom = new OpenAI.APIError(500, { message: 'boom' }, 'boom', {} as any);
+    const client = makeClient(jest.fn().mockRejectedValue(boom));
+
+    await expect(client.vision('describe', [Buffer.from('img')])).rejects.toBe(boom);
+  });
+
+  it('vision() shares what chat() learned about a model (required temperature)', async () => {
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(tempRejection())
+      .mockResolvedValue(ok);
+    const client = makeClient(create, { LLM_VISION_TEMPERATURE: 0 });
+
+    await client.chat([{ role: 'user', content: 'a' }], { temperature: 0, model: 'claude-opus-4-8' });
+    await client.vision('describe', [Buffer.from('img')], { model: 'claude-opus-4-8' });
+
+    expect(create.mock.calls[2][0]).toHaveProperty('temperature', 1);
+  });
+});

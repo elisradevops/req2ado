@@ -143,6 +143,14 @@ _CHECKLIST_MAX_ITEM_CHARS = 60
 _RETRYABLE_CHAT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 _MAX_CHAT_RETRY_ATTEMPTS = 3
 _CHAT_RETRY_BACKOFF_SECONDS = (2.0, 8.0)
+# A retryable status that arrives only AFTER the call has already run this
+# long is not a transient blip: it is a call that hung (an upstream that
+# returned an empty reply or dropped the connection around the ~300 s mark --
+# prod job 0b9a134f lost ~15 minutes per scoring batch re-sending an identical
+# request three times, twice). Re-sending the same request only multiplies the
+# wait, so the failure is returned to the caller, which can split the work
+# into smaller calls instead. Fast failures keep the 2 s / 8 s backoff.
+_SLOW_FAILURE_SECONDS = 120.0
 
 
 def _strip_json_fence(content: str) -> str:
@@ -964,6 +972,7 @@ class OrchestratorLlmClient:
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
         for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
+            started = time.monotonic()
             with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
                 response = client.post(
                     f"{self._base_url}/llm/chat",
@@ -971,6 +980,13 @@ class OrchestratorLlmClient:
                     headers=headers,
                 )
             if response.status_code not in _RETRYABLE_CHAT_STATUS_CODES:
+                return response
+            elapsed = time.monotonic() - started
+            if elapsed >= _SLOW_FAILURE_SECONDS:
+                logger.warning(
+                    "/llm/chat returned %d after %.0fs -- not re-sending an identical request that already ran "
+                    "that long (the caller can split it into smaller calls)", response.status_code, elapsed,
+                )
                 return response
             if attempt < _MAX_CHAT_RETRY_ATTEMPTS - 1:
                 logger.warning(

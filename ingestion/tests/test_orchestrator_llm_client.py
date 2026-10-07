@@ -3823,3 +3823,44 @@ def test_a_structured_call_that_ends_abnormally_logs_its_finish_reason_and_a_nor
         make("length").title_and_tags_for_rows({"det0_h1": "x"})
 
     assert [r.getMessage() for r in caplog.records if "finishReason=length" in r.getMessage()]
+
+
+def test_post_chat_does_not_resend_a_request_that_already_ran_long_before_failing(monkeypatch) -> None:
+    # Prod job 0b9a134f: a scoring call hung ~300 s, the upstream gave up, and the identical
+    # request was re-sent twice more (~15 minutes per batch). A retryable status that only
+    # arrives after the call ran this long is returned to the caller, which can split the work.
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda _seconds: None)
+    clock = iter([0.0, orchestrator_llm_client_module._SLOW_FAILURE_SECONDS + 1.0])
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "monotonic", lambda: next(clock))
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500, json={"message": "empty completion"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    response = client._post_chat({"messages": []}, None)
+
+    assert response.status_code == 500
+    assert calls["n"] == 1
+
+
+def test_post_chat_still_retries_a_fast_5xx_with_backoff(monkeypatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(orchestrator_llm_client_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(503) if calls["n"] < 3 else httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    response = client._post_chat({"messages": []}, None)
+
+    assert response.status_code == 200
+    assert calls["n"] == 3
+    assert sleeps == [2.0, 8.0]

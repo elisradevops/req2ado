@@ -4,6 +4,20 @@ import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmStreamChunk } from './llm-client.interface';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { fetchWithRetry } from './retryWithBackoff';
+import {
+  assertCompletion,
+  negotiate,
+  UpstreamHttpError,
+  type Adaptation,
+} from './upstream-negotiation';
+
+// UpstreamHttpError moved to upstream-negotiation.ts with the rest of the upstream-error handling;
+// re-exported so existing importers (llm.controller.ts, tests) keep working unchanged.
+export { UpstreamHttpError };
+
+// Parameters each call can leave out when an upstream rejects them.
+const CHAT_DROPPABLE: ReadonlySet<string> = new Set(['seed', 'reasoning_effort']);
+const VISION_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'frequency_penalty']);
 
 // Module-level singleton, not per-instance: the cl100k_base rank table load
 // cost should happen once per process, not once per user-scoped
@@ -24,6 +38,13 @@ function getEmbedEncoder(): Tiktoken {
   return cl100kEncoder;
 }
 
+// The temperature to send for a chat/stream attempt. See buildParams in chat(): a demanded temperature wins
+// over the caller's; a caller that sent none only gets one after an attempt failed over it.
+function chatTemperature(requested: number | undefined, adaptation: Adaptation): number | undefined {
+  if (requested !== undefined) return adaptation.temperature ?? requested;
+  return adaptation.attempt > 1 ? adaptation.temperature : undefined;
+}
+
 function buildResponseFormat(opts: LlmChatOptions | undefined, includeSchema: boolean): OpenAI.ResponseFormatJSONSchema | undefined {
   if (!includeSchema || !opts?.responseSchema) return undefined;
   return {
@@ -32,102 +53,6 @@ function buildResponseFormat(opts: LlmChatOptions | undefined, includeSchema: bo
   };
 }
 
-// Ollama version in use is not pinned anywhere in this codebase -- structured
-// output (response_format: json_schema) support can't be statically
-// guaranteed. Rather than hard-failing a job over a backend that doesn't
-// support it, degrade once to a schema-less retry on the specific
-// status codes an unsupported/malformed response_format would produce.
-function isSchemaRejection(err: unknown): boolean {
-  return err instanceof OpenAI.APIError && (err.status === 400 || err.status === 422);
-}
-
-/** Carries an upstream HTTP status so the controller can propagate it instead of collapsing to a generic 500. */
-export class UpstreamHttpError extends Error {
-  constructor(
-    public readonly upstreamStatus: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'UpstreamHttpError';
-  }
-}
-
-// LiteLLM surfaces unsupported-param rejections as a 400 with a body like:
-//   "azure_ai does not support parameters: ['seed']"
-//   "azure does not support parameters: ['reasoning_effort']"
-//   "UnsupportedParamsError"
-// Returns the set of rejected param names so callers can strip exactly the
-// offending params and retry once, rather than hard-failing the whole request.
-function parseUnsupportedParams(err: unknown): Set<string> {
-  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return new Set();
-  const params = new Set<string>();
-  // Primary LiteLLM format: "does not support parameters: ['seed', 'reasoning_effort']"
-  const bracketMatch = err.message.match(/does not support parameters:\s*\[([^\]]+)\]/i);
-  if (bracketMatch) {
-    for (const raw of bracketMatch[1].split(',')) {
-      params.add(raw.trim().replace(/['"]/g, ''));
-    }
-    return params;
-  }
-  // Fallback: generic UnsupportedParamsError -- scan for known param names in the message
-  if (err.message.includes('UnsupportedParamsError') || err.message.toLowerCase().includes('unsupported')) {
-    if (err.message.includes('seed')) params.add('seed');
-    if (err.message.includes('reasoning_effort')) params.add('reasoning_effort');
-    if (err.message.includes('temperature')) params.add('temperature');
-    if (err.message.includes('frequency_penalty')) params.add('frequency_penalty');
-  }
-  return params;
-}
-
-// Detects temperature *value* constraint errors — distinct from "unsupported
-// parameter" errors that parseUnsupportedParams handles. Returns the required
-// temperature, or null when the error is not a value constraint.
-// Example: Anthropic via LiteLLM for claude-opus-4-8 with extended thinking →
-//   "temperature: 0 should be >= 1 and <= 1"
-// Extracting the required value from the error avoids a static model→temperature
-// map and works for any model that surfaces the constraint the same way.
-function parseTemperatureConstraint(err: unknown): number | null {
-  if (!(err instanceof OpenAI.APIError) || err.status !== 400) return null;
-  // "temperature: 0 should be >= 1 and <= 1" (exact range → single allowed value)
-  const rangeMatch = err.message.match(/temperature.*?>=\s*(\d+(?:\.\d+)?)\s*and\s*<=\s*(\d+(?:\.\d+)?)/i);
-  if (rangeMatch && rangeMatch[1] === rangeMatch[2]) return parseFloat(rangeMatch[1]);
-  // "temperature must be 1" / "only allows temperature=1"
-  const mustMatch = err.message.match(/temperature\s*(?:must be|only allows?)\s*=?\s*(\d+(?:\.\d+)?)/i);
-  if (mustMatch) return parseFloat(mustMatch[1]);
-  // Unified "only <value> is (the required one)" wording -- deliberately NOT
-  // anchored to a fixed word order, since two real wordings have been
-  // confirmed live with the required value in different positions relative
-  // to "does not support"/"temperature":
-  //   Azure/LiteLLM (OpenAI/gpt-5.5): "'temperature' does not support 0 with
-  //     this model. Only the default (1) value is supported."
-  //   LiteLLM UnsupportedParamsError (claude-opus-4-8): "claude-opus-4-8
-  //     does not support temperature=0. Only temperature=1 is supported."
-  // Guarded on the message mentioning "temperature" at all, so this can't
-  // misfire on an unrelated parameter's similarly-worded value constraint.
-  // Checked BEFORE parseUnsupportedParams at every call site specifically
-  // because the second wording above also contains "UnsupportedParamsError"
-  // + "temperature", which would otherwise let parseUnsupportedParams's own
-  // loose substring fallback claim it first -- and that retry path has no
-  // mechanism to adjust temperature, only to drop seed/reasoning_effort, so
-  // it would silently resend the identical rejected value forever.
-  if (/temperature/i.test(err.message)) {
-    const requiredValueMatch = err.message.match(
-      /(?:only(?: the default)?|must be)\D{0,20}\(?(\d+(?:\.\d+)?)\)?(?:\s*value)?\s*is\s*(?:supported|allowed)/i,
-    );
-    if (requiredValueMatch) return parseFloat(requiredValueMatch[1]);
-  }
-  return null;
-}
-
-// Normalises an OpenAI.APIError into UpstreamHttpError so the HTTP controller
-// can forward the upstream status code without importing the OpenAI SDK itself.
-// Any other thrown value is re-thrown unchanged.
-function rethrowAsUpstream(err: unknown): never {
-  if (err instanceof OpenAI.APIError && err.status != null) {
-    throw new UpstreamHttpError(err.status, err.message);
-  }
-  throw err;
-}
 
 export interface OpenWebUiClientConfig {
   LLM_BASE_URL: string;
@@ -166,23 +91,17 @@ export interface OpenWebUiClientConfig {
 @Injectable()
 export class OpenWebUiClient implements LlmClient {
   private readonly openai: OpenAI;
-  // vision() params an upstream rejected for a model, remembered for this
-  // client's lifetime (clients are cached per user -- see
-  // OpenWebUiClientFactory) so a figure-heavy document pays the
-  // reject-then-retry round trip once per model, not once per figure.
-  private readonly visionRejectedParams = new Map<string, Set<string>>();
-  // chat()/streamChat() counterpart: what an upstream told us about a model,
-  // remembered for this client's lifetime so every later call sends the right
-  // temperature / leaves rejected params out from the start instead of paying
-  // a failed first attempt each time (a prod job logged ~57 such retries for
-  // claude-opus-4-8, which requires temperature=1).
-  private readonly chatModelConstraints = new Map<string, { temperature?: number; rejected: Set<string> }>();
+  // What upstreams have told us about each model, remembered for this client's lifetime. Clients are cached
+  // per user (see OpenWebUiClientFactory), so a run of calls pays each reject-then-retry round trip once per
+  // model instead of once per call -- a prod job logged ~57 failed first attempts for claude-opus-4-8, which
+  // requires temperature=1. Shared by chat(), streamChat() and vision(); fed by negotiate().
+  private readonly modelConstraints = new Map<string, { temperature?: number; rejected: Set<string> }>();
 
-  private rememberChatConstraint(model: string, update: { temperature?: number; rejected?: Iterable<string> }): void {
-    const current = this.chatModelConstraints.get(model) ?? { rejected: new Set<string>() };
+  private rememberConstraint(model: string, update: { temperature?: number; rejected?: Iterable<string> }): void {
+    const current = this.modelConstraints.get(model) ?? { rejected: new Set<string>() };
     if (update.temperature !== undefined) current.temperature = update.temperature;
     for (const param of update.rejected ?? []) current.rejected.add(param);
-    this.chatModelConstraints.set(model, current);
+    this.modelConstraints.set(model, current);
   }
 
   constructor(private readonly config: OpenWebUiClientConfig) {
@@ -221,42 +140,37 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
     const chatModel = opts?.model ?? this.config.LLM_CHAT_MODEL;
-    const learned = this.chatModelConstraints.get(chatModel);
-    const buildParams = (
-      includeSchema: boolean,
-      includeSeed = !learned?.rejected.has('seed'),
-      includeReasoningEffort = !learned?.rejected.has('reasoning_effort'),
-    ) => ({
+    const buildParams = (a: Adaptation) => ({
       model: chatModel,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
-      // A temperature this model's upstream already demanded wins over the
-      // caller's, once learned (see chatModelConstraints).
-      ...(opts?.temperature !== undefined ? { temperature: learned?.temperature ?? opts.temperature } : {}),
+      // A temperature the upstream demanded (learned earlier, or on this call's previous attempt)
+      // wins over the caller's. A caller that sent none only gets one once an attempt has failed
+      // over it, so a learned requirement never leaks into calls that never set a temperature.
+      ...(chatTemperature(opts?.temperature, a) !== undefined ? { temperature: chatTemperature(opts?.temperature, a) } : {}),
       // seed: gated on LLM_SEND_SEED (false by default -- Azure-backed models via
-      // LiteLLM reject it with a 400). includeSeed:false is the retry path when the
-      // upstream signals the param is unsupported even with LLM_SEND_SEED:true.
-      ...(this.config.LLM_SEND_SEED && includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
-      ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
+      // LiteLLM reject it with a 400); also left out once an upstream has rejected it.
+      ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') && opts?.seed !== undefined ? { seed: opts.seed } : {}),
+      ...(buildResponseFormat(opts, !a.dropSchema) ? { response_format: buildResponseFormat(opts, !a.dropSchema) } : {}),
       // Ollama maps OpenAI-compat max_tokens -> its own num_predict. Bounds
       // worst-case latency for a reasoning model's otherwise-unbounded
       // chain-of-thought + answer (see LlmChatOptions.maxTokens doc comment).
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...(this.config.LLM_TRUSTED_LOCAL && Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
       // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT (false by default --
-      // Azure-backed models via LiteLLM reject it with a 400). includeReasoningEffort:
-      // false is the retry path. `reasoning_effort: 'none'` is NOT an Ollama-native
-      // `options.*` field like numCtx/topK/minP above; it's Ollama's OpenAI-compat
+      // Azure-backed models via LiteLLM reject it with a 400). `reasoning_effort: 'none'` is NOT
+      // an Ollama-native `options.*` field like numCtx/topK/minP above; it's Ollama's OpenAI-compat
       // endpoint's OWN top-level field (confirmed against Ollama's own openai/openai.go:
       // ChatCompletionRequest.ReasoningEffort, mapped internally to api.ThinkValue --
       // a bare `think`/`options.think` field is silently ignored, confirmed live).
       // The SDK's ReasoningEffort type is 'low'|'medium'|'high'|null; 'none' is an
       // Ollama-specific extension, valid server-side despite the narrower SDK union.
       // Only sent when opts.think is explicitly false; omitted otherwise.
-      ...(this.config.LLM_SEND_REASONING_EFFORT && includeReasoningEffort && opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
+      ...(this.config.LLM_SEND_REASONING_EFFORT && !a.dropped.has('reasoning_effort') && opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
     });
     const toResult = (response: OpenAI.Chat.ChatCompletion): LlmChatResult => {
+      assertCompletion(response);
       const finishReason = response.choices[0]?.finish_reason;
       // Only the abnormal endings are logged (a normal call ends 'stop' /
       // 'tool_calls'), with token counts and never content. A prod job got
@@ -274,59 +188,17 @@ export class OpenWebUiClient implements LlmClient {
         finishReason,
       };
     };
-    try {
-      const response = await this.openai.chat.completions.create(buildParams(true));
-      return toResult(response);
-    } catch (err) {
-      // Order matters. The precise classifiers (temperature value constraint,
-      // then unsupported params) must run BEFORE the schema-less fallback:
-      // isSchemaRejection is true for ANY 400/422, so with a responseSchema
-      // present it used to claim every such error first and retry without
-      // the schema but with the identical rejected temperature -- confirmed
-      // live (claude-opus-4-8, SURVEY Score phase). The retry then threw a
-      // raw APIError (HTTP 500), which ingestion retried with backoff.
-      //
-      // parseTemperatureConstraint also precedes parseUnsupportedParams: its
-      // regexes are precise, while parseUnsupportedParams's fallback is a
-      // loose substring heuristic ("unsupported" + "temperature") that
-      // misfires on value-constraint messages (confirmed live against
-      // OpenAI/gpt-5.5 and claude-opus-4-8).
-      const tempConstraint = parseTemperatureConstraint(err);
-      if (tempConstraint !== null) {
-        // eslint-disable-next-line no-console
-        console.warn(`[OpenWebUiClient.chat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-        this.rememberChatConstraint(chatModel, { temperature: tempConstraint });
-        try {
-          const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
-          return toResult(response);
-        } catch (retryErr) {
-          rethrowAsUpstream(retryErr);
-        }
-      }
-      const unsupported = parseUnsupportedParams(err);
-      if (unsupported.size > 0) {
-        // eslint-disable-next-line no-console
-        console.warn(`[OpenWebUiClient.chat] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-        this.rememberChatConstraint(chatModel, { rejected: [...unsupported].filter((param) => param === 'seed' || param === 'reasoning_effort') });
-        try {
-          const response = await this.openai.chat.completions.create(
-            buildParams(true, !unsupported.has('seed') && !learned?.rejected.has('seed'), !unsupported.has('reasoning_effort') && !learned?.rejected.has('reasoning_effort')),
-          );
-          return toResult(response);
-        } catch (retryErr) {
-          rethrowAsUpstream(retryErr);
-        }
-      }
-      if (opts?.responseSchema && isSchemaRejection(err)) {
-        try {
-          const response = await this.openai.chat.completions.create(buildParams(false));
-          return toResult(response);
-        } catch (retryErr) {
-          rethrowAsUpstream(retryErr);
-        }
-      }
-      rethrowAsUpstream(err);
-    }
+    // Classification and retry policy live in negotiate() (upstream-negotiation.ts): a required temperature,
+    // unsupported params and a rejected response schema each adapt the next attempt, and they accumulate.
+    return negotiate({
+      label: 'OpenWebUiClient.chat',
+      model: chatModel,
+      hasSchema: opts?.responseSchema !== undefined,
+      droppable: CHAT_DROPPABLE,
+      learned: this.modelConstraints.get(chatModel),
+      remember: (update) => this.rememberConstraint(chatModel, update),
+      send: async (adaptation) => toResult(await this.openai.chat.completions.create(buildParams(adaptation))),
+    });
   }
 
   // Read-only accessor for this instance's own default chat model -- built
@@ -452,58 +324,35 @@ export class OpenWebUiClient implements LlmClient {
     if (opts?.topK !== undefined) ollamaOptions.top_k = opts.topK;
     if (opts?.minP !== undefined) ollamaOptions.min_p = opts.minP;
     const chatModel = opts?.model ?? this.config.LLM_CHAT_MODEL;
-    const learned = this.chatModelConstraints.get(chatModel);
-    const buildParams = (
-      includeSchema: boolean,
-      includeSeed = !learned?.rejected.has('seed'),
-      includeReasoningEffort = !learned?.rejected.has('reasoning_effort'),
-    ) => ({
+    const buildParams = (a: Adaptation) => ({
       model: chatModel,
       messages: outboundMessages as OpenAI.Chat.ChatCompletionMessageParam[],
       stream: true as const,
-      ...(opts?.temperature !== undefined ? { temperature: learned?.temperature ?? opts.temperature } : {}),
-      // seed: gated on LLM_SEND_SEED -- see chat()'s own seed comment.
-      // includeSeed:false is the retry path when upstream rejects the param.
-      ...(this.config.LLM_SEND_SEED && includeSeed && opts?.seed !== undefined ? { seed: opts.seed } : {}),
-      ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
+      ...(chatTemperature(opts?.temperature, a) !== undefined ? { temperature: chatTemperature(opts?.temperature, a) } : {}),
+      // seed: gated on LLM_SEND_SEED -- see chat()'s own seed comment; left out once an upstream rejected it.
+      ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') && opts?.seed !== undefined ? { seed: opts.seed } : {}),
+      ...(buildResponseFormat(opts, !a.dropSchema) ? { response_format: buildResponseFormat(opts, !a.dropSchema) } : {}),
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...(this.config.LLM_TRUSTED_LOCAL && Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
-      // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT -- see chat()'s
-      // own reasoning_effort comment for why this is the correct field.
-      // includeReasoningEffort:false is the retry path when upstream rejects it.
-      ...(this.config.LLM_SEND_REASONING_EFFORT && includeReasoningEffort && opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
+      // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT -- see chat()'s own reasoning_effort
+      // comment for why this is the correct field; left out once an upstream rejected it.
+      ...(this.config.LLM_SEND_REASONING_EFFORT && !a.dropped.has('reasoning_effort') && opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
     });
-    let stream;
-    try {
-      stream = await this.openai.chat.completions.create(buildParams(true));
-    } catch (err) {
-      // Same ordering as chat() -- see its comment: precise classifiers
-      // (temperature, unsupported params) BEFORE the catch-all schema-less
-      // fallback, and every retry's failure wrapped via rethrowAsUpstream.
-      const tempConstraint = parseTemperatureConstraint(err);
-      const unsupported = tempConstraint === null ? parseUnsupportedParams(err) : new Set<string>();
-      try {
-        if (tempConstraint !== null) {
-          // eslint-disable-next-line no-console
-          console.warn(`[OpenWebUiClient.streamChat] upstream requires temperature=${tempConstraint}; retrying for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-          this.rememberChatConstraint(chatModel, { temperature: tempConstraint });
-          stream = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
-        } else if (unsupported.size > 0) {
-          // eslint-disable-next-line no-console
-          console.warn(`[OpenWebUiClient.streamChat] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${opts?.model ?? this.config.LLM_CHAT_MODEL}`);
-          this.rememberChatConstraint(chatModel, { rejected: [...unsupported].filter((param) => param === 'seed' || param === 'reasoning_effort') });
-          stream = await this.openai.chat.completions.create(
-            buildParams(true, !unsupported.has('seed') && !learned?.rejected.has('seed'), !unsupported.has('reasoning_effort') && !learned?.rejected.has('reasoning_effort')),
-          );
-        } else if (opts?.responseSchema && isSchemaRejection(err)) {
-          stream = await this.openai.chat.completions.create(buildParams(false));
-        } else {
-          rethrowAsUpstream(err);
-        }
-      } catch (retryErr) {
-        rethrowAsUpstream(retryErr);
-      }
-    }
+    // Only the creation of the stream is negotiated (same policy as chat()); an error while the stream is
+    // being read is not retried, as before.
+    const stream = await negotiate({
+      label: 'OpenWebUiClient.streamChat',
+      model: chatModel,
+      hasSchema: opts?.responseSchema !== undefined,
+      droppable: CHAT_DROPPABLE,
+      learned: this.modelConstraints.get(chatModel),
+      remember: (update) => this.rememberConstraint(chatModel, update),
+      send: async (adaptation) => {
+        const created = await this.openai.chat.completions.create(buildParams(adaptation));
+        if (!created) throw new UpstreamHttpError(502, 'Upstream returned an empty stream');
+        return created;
+      },
+    });
     // `reasoning` is Ollama's OpenAI-compat streaming delta field for a
     // reasoning model's chain-of-thought (the streaming counterpart of the
     // non-stream response's `message.reasoning`, confirmed live above) --
@@ -825,12 +674,7 @@ export class OpenWebUiClient implements LlmClient {
         },
       })),
     ];
-    const rejectedForModel = this.visionRejectedParams.get(model);
-    const buildParams = (
-      includeSchema: boolean,
-      includeTemperature = !rejectedForModel?.has('temperature'),
-      includeFrequencyPenalty = !rejectedForModel?.has('frequency_penalty'),
-    ) => ({
+    const buildParams = (a: Adaptation) => ({
       model,
       messages: [{ role: 'user' as const, content }],
       // Confirmed real root cause of run-to-run SURVEY node-count variance
@@ -849,8 +693,8 @@ export class OpenWebUiClient implements LlmClient {
       // LLM_VISION_TEMPERATURE unset → no temperature sent; the backend
       // applies its own default or constraint (parseTemperatureConstraint
       // handles value-constraint retries when they arise).
-      ...(includeTemperature && this.config.LLM_VISION_TEMPERATURE !== undefined ? { temperature: this.config.LLM_VISION_TEMPERATURE } : {}),
-      ...(this.config.LLM_SEND_SEED ? { seed: 0 } : {}),
+      ...(!a.dropped.has('temperature') && this.config.LLM_VISION_TEMPERATURE !== undefined ? { temperature: a.temperature ?? this.config.LLM_VISION_TEMPERATURE } : {}),
+      ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') ? { seed: 0 } : {}),
       // No output cap previously existed here at all -- the prompt asks
       // for "one or two sentences" (orchestrator_vision_client.py's
       // _build_prompt), so a real caption is SUPPOSED to be short, but
@@ -894,7 +738,7 @@ export class OpenWebUiClient implements LlmClient {
       // reasoning caused. Gated on LLM_SEND_REASONING_EFFORT (false by
       // default for Azure backends that reject it); only meaningful when
       // targeting an Ollama-compatible backend that supports 'none'.
-      ...(this.config.LLM_SEND_REASONING_EFFORT ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
+      ...(this.config.LLM_SEND_REASONING_EFFORT && !a.dropped.has('reasoning_effort') ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
       // Third live incident, confirmed via a real completed job's actual
       // figure descriptions (not a synthetic test): 2 of 42 real captions
       // came back with the SAME content repeated near-verbatim within one
@@ -915,50 +759,28 @@ export class OpenWebUiClient implements LlmClient {
       // parameter can promise to eliminate.
       // includeFrequencyPenalty:false is the retry path when the upstream
       // (e.g. an Azure o-series reasoning model) rejects this param.
-      ...(includeFrequencyPenalty ? { frequency_penalty: 0.4 } : {}),
-      ...(buildResponseFormat(opts, includeSchema) ? { response_format: buildResponseFormat(opts, includeSchema) } : {}),
+      ...(!a.dropped.has('frequency_penalty') ? { frequency_penalty: 0.4 } : {}),
+      ...(buildResponseFormat(opts, !a.dropSchema) ? { response_format: buildResponseFormat(opts, !a.dropSchema) } : {}),
     });
-    try {
-      const response = await this.openai.chat.completions.create(buildParams(true));
-      return response.choices[0]?.message?.content ?? '';
-    } catch (err) {
-      // Precise classifiers run BEFORE the catch-all schema-less fallback
-      // (last below) -- see chat()'s own comment on why.
-      // Checked BEFORE parseUnsupportedParams -- see chat()'s own comment on
-      // this same ordering. parseTemperatureConstraint's regexes only match
-      // a genuine value-constraint wording ("does not support 0 ... Only
-      // the default (1)", "should be >= 1 and <= 1", "must be 1") and never
-      // the bracket-listed "does not support parameters: ['temperature']"
-      // form below, so a real unsupported-parameter rejection still falls
-      // through to parseUnsupportedParams unchanged.
-      const tempConstraint = parseTemperatureConstraint(err);
-      if (tempConstraint !== null) {
-        // eslint-disable-next-line no-console
-        console.warn(`[OpenWebUiClient.vision] upstream requires temperature=${tempConstraint}; retrying for model=${model}`);
-        const response = await this.openai.chat.completions.create({ ...buildParams(true), temperature: tempConstraint });
+    // Classification and retry policy live in negotiate() (upstream-negotiation.ts), shared with chat().
+    // A failure that cannot be adapted around is rethrown as-is, as before: vision's controller route has no
+    // UpstreamHttpError mapping, so wrapping it here would only change the HTTP status it ends up with.
+    return negotiate({
+      label: 'OpenWebUiClient.vision',
+      model,
+      hasSchema: opts?.responseSchema !== undefined,
+      droppable: VISION_DROPPABLE,
+      learned: this.modelConstraints.get(model),
+      remember: (update) => this.rememberConstraint(model, update),
+      terminal: (err) => {
+        throw err;
+      },
+      send: async (adaptation) => {
+        const response = await this.openai.chat.completions.create(buildParams(adaptation));
+        assertCompletion(response);
         return response.choices[0]?.message?.content ?? '';
-      }
-      const unsupported = parseUnsupportedParams(err);
-      if (unsupported.size > 0) {
-        // eslint-disable-next-line no-console
-        console.warn(`[OpenWebUiClient.vision] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${model}`);
-        // Remember only the two params this method can actually drop, so the
-        // next call for this model leaves them out from the start.
-        const droppable = [...unsupported].filter((param) => param === 'temperature' || param === 'frequency_penalty');
-        if (droppable.length > 0) {
-          this.visionRejectedParams.set(model, new Set([...(rejectedForModel ?? []), ...droppable]));
-        }
-        const response = await this.openai.chat.completions.create(
-          buildParams(true, !unsupported.has('temperature') && !rejectedForModel?.has('temperature'), !unsupported.has('frequency_penalty') && !rejectedForModel?.has('frequency_penalty')),
-        );
-        return response.choices[0]?.message?.content ?? '';
-      }
-      if (opts?.responseSchema && isSchemaRejection(err)) {
-        const response = await this.openai.chat.completions.create(buildParams(false));
-        return response.choices[0]?.message?.content ?? '';
-      }
-      throw err;
-    }
+      },
+    });
   }
 
   // Derives Open WebUI's true app root from LLM_BASE_URL for its NATIVE
