@@ -1254,7 +1254,18 @@ async def ingest(
     # the number of figures that will actually be captioned.
     figure_total = len(collected_figure_bytes)
     figure_outcomes: list[FigureCaptionOutcome] = []
-    if collected_figure_bytes:
+
+    def _run_captioning_pass() -> None:
+        # Runs on a worker thread via run_in_threadpool (see the call below),
+        # NEVER on the event loop: every figure makes a blocking vision HTTP
+        # call (up to vision_request_timeout_seconds), rasterizes the image,
+        # and talks to Redis and the figure-file store, all synchronously. In
+        # production this pass used to run inline in the `async def` handler,
+        # which froze the event loop for the whole pass -- /health went
+        # unanswered, six liveness probes failed, and kubelet killed the pod
+        # mid-job. Narration publishing and merging stay together on this ONE
+        # thread, in figure-id order, exactly as when they ran on the
+        # handler's own thread.
         def _publish_figure_start(figure_position: int) -> None:
             if narration_publisher is None:
                 return
@@ -1350,6 +1361,9 @@ async def ingest(
                     _merge_one(future.result())
         _reassign_figure_captions(doc, figure_outcomes)
 
+    if collected_figure_bytes:
+        await run_in_threadpool(_run_captioning_pass)
+
     doc.failed_figure_storage_ids = failed_figure_ids
     doc.vision_active = vision_active
     doc.vision_skip_reason = "breaker_tripped" if breaker.tripped else skip_reason
@@ -1410,7 +1424,7 @@ async def ingest(
             )
 
     if redact:
-        doc = redact_canonical_doc(doc)
+        doc = await run_in_threadpool(redact_canonical_doc, doc)
     return doc
 
 
@@ -1667,7 +1681,11 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         raise HTTPException(status_code=400, detail="description must not be blank")
     kb_context = None
     if body.user_id:
-        kb_context, _ = retrieve_context(body.user_id, body.description, _embed_client, _kb_vector_store)
+        # Blocking embed + vector-store calls: off the event loop, like every
+        # other blocking call in this route (a blocked loop fails /health).
+        kb_context, _ = await run_in_threadpool(
+            retrieve_context, body.user_id, body.description, _embed_client, _kb_vector_store,
+        )
     # Mirrors /level's own construct-probe-then-construct-real pattern (see
     # that route's comment for why _resolve_caps's optional live /api/show
     # lookup must be threadpool-dispatched, not run inline in an async
@@ -1691,10 +1709,13 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx,
         top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
     )
-    score, issues, category_scores, confidence = score_single_requirement_text(
-        body.description, client, _get_criteria_retriever(body.user_id), kb_context, body.category_checklist,
-        user_id=body.user_id,
-    )
+    def _score() -> tuple:
+        return score_single_requirement_text(
+            body.description, client, _get_criteria_retriever(body.user_id), kb_context, body.category_checklist,
+            user_id=body.user_id,
+        )
+
+    score, issues, category_scores, confidence = await run_in_threadpool(_score)
     return ScoreItemResponse(
         quality_score=score, quality_issues=issues, quality_category_scores=category_scores,
         quality_confidence=confidence.value if confidence is not None else None,
@@ -1824,7 +1845,7 @@ async def enhance_items(body: EnhanceItemsRequest) -> EnhanceItemsResponse:
 
 
 @app.post("/dedup/check", response_model=DuplicateCheckResult)
-async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
+def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
     # body.threshold is None when the caller didn't override it (the
     # orchestrator's own Settings-window lookup failed or wasn't wired) --
     # only pass an explicit kwarg when it's actually set, so
@@ -1856,7 +1877,7 @@ async def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
 
 
 @app.post("/dedup/upsert")
-async def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
+def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
     title_embedding, description_embedding = _embed_client.embed([body.title, body.text], user_id=body.user_id)
     embedding = blend_embeddings(title_embedding, description_embedding)
     # document=body.text: stores the item's original text alongside its
@@ -1867,7 +1888,7 @@ async def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
 
 
 @app.post("/dedup/delete")
-async def dedup_delete(body: DedupDeleteRequest) -> dict[str, bool]:
+def dedup_delete(body: DedupDeleteRequest) -> dict[str, bool]:
     # Counterpart to /dedup/upsert -- a dedup_skip match downgraded to
     # 'create' because its ADO work item no longer exists (see
     # verifyExistingAdoIdsStillExist) must have its stale Chroma entry
@@ -1877,7 +1898,7 @@ async def dedup_delete(body: DedupDeleteRequest) -> dict[str, bool]:
 
 
 @app.post("/dedup/upsert-batch")
-async def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
+def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     # Previously every confirmed work item triggered its own single-item
     # /dedup/upsert call (one embed() round-trip per item) from
     # JobsService.confirm()'s per-node loop, despite embed() already

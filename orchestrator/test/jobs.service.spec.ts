@@ -1197,6 +1197,9 @@ describe('JobsService.confirm', () => {
     const result = await service.confirm('job-1');
 
     expect(result).toEqual({ status: 'succeeded', createdCount: 1 });
+    // ...but the failure is visible on the job's audit trail, not only in a console line.
+    const messages = prisma.auditEntry.create.mock.calls.map((call: any[]) => call[0].data.message as string);
+    expect(messages.some((m) => m.includes('Dedup index not updated for 1 newly-created item(s)') && m.includes('ingestion unreachable'))).toBe(true);
   });
 
   it('reverts to diff_ready (not stuck in writing) when createWorkItem fails before anything was created', async () => {

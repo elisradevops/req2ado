@@ -157,6 +157,14 @@ export class JobEventPersistenceService implements OnModuleInit, OnModuleDestroy
   private async persist(channel: string, message: string): Promise<void> {
     const jobId = channel.slice('job-events:'.length);
     if (!jobId) return;
+    // The psubscribe pattern ('job-events:*') also matches every per-job
+    // SUB-channel -- `job-events:<id>:units`, `:progress`, `:live` -- whose
+    // payloads are live-progress ticks, not job events. Their "job id" here
+    // would be `<id>:units` etc., which is no Job row, so every one used to
+    // fail the JobEvent.jobId foreign key and flood the log with a Prisma
+    // error per tick (real events for the same job persisted fine). A real
+    // job id never contains ':'.
+    if (jobId.includes(':')) return;
     const parsed = this.parsePayload(message);
     if (!parsed) return;
     try {

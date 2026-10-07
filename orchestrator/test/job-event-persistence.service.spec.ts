@@ -184,6 +184,20 @@ describe('JobEventPersistenceService', () => {
     });
   });
 
+  it('ignores per-job sub-channels (units/progress/live) -- their "job id" is not a Job row and would only fail the foreign key', async () => {
+    const subscriber = makeSubscriber();
+    const prisma = { jobEvent: { create: jest.fn().mockResolvedValue(undefined) } };
+    const service = new JobEventPersistenceService(subscriber as any, makeEmptyCommandClient() as any, prisma as any);
+    service.onModuleInit();
+
+    for (const suffix of ['units', 'progress', 'live', 'notices']) {
+      subscriber.__handlers.pmessage('job-events:*', `job-events:job-2:${suffix}`, JSON.stringify({ stage: 'parse', done: 1 }));
+    }
+    await flush();
+
+    expect(prisma.jobEvent.create).not.toHaveBeenCalled();
+  });
+
   it('marks job_failed/failed narration as severity error', async () => {
     const subscriber = makeSubscriber();
     const prisma = { jobEvent: { create: jest.fn().mockResolvedValue(undefined) } };
