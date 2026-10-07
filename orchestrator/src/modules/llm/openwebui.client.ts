@@ -166,6 +166,11 @@ export interface OpenWebUiClientConfig {
 @Injectable()
 export class OpenWebUiClient implements LlmClient {
   private readonly openai: OpenAI;
+  // vision() params an upstream rejected for a model, remembered for this
+  // client's lifetime (clients are cached per user -- see
+  // OpenWebUiClientFactory) so a figure-heavy document pays the
+  // reject-then-retry round trip once per model, not once per figure.
+  private readonly visionRejectedParams = new Map<string, Set<string>>();
 
   constructor(private readonly config: OpenWebUiClientConfig) {
     this.openai = new OpenAI({
@@ -776,7 +781,12 @@ export class OpenWebUiClient implements LlmClient {
         },
       })),
     ];
-    const buildParams = (includeSchema: boolean, includeTemperature = true, includeFrequencyPenalty = true) => ({
+    const rejectedForModel = this.visionRejectedParams.get(model);
+    const buildParams = (
+      includeSchema: boolean,
+      includeTemperature = !rejectedForModel?.has('temperature'),
+      includeFrequencyPenalty = !rejectedForModel?.has('frequency_penalty'),
+    ) => ({
       model,
       messages: [{ role: 'user' as const, content }],
       // Confirmed real root cause of run-to-run SURVEY node-count variance
@@ -888,8 +898,14 @@ export class OpenWebUiClient implements LlmClient {
       if (unsupported.size > 0) {
         // eslint-disable-next-line no-console
         console.warn(`[OpenWebUiClient.vision] upstream rejected params [${[...unsupported].join(', ')}]; retrying without them for model=${model}`);
+        // Remember only the two params this method can actually drop, so the
+        // next call for this model leaves them out from the start.
+        const droppable = [...unsupported].filter((param) => param === 'temperature' || param === 'frequency_penalty');
+        if (droppable.length > 0) {
+          this.visionRejectedParams.set(model, new Set([...(rejectedForModel ?? []), ...droppable]));
+        }
         const response = await this.openai.chat.completions.create(
-          buildParams(true, !unsupported.has('temperature'), !unsupported.has('frequency_penalty')),
+          buildParams(true, !unsupported.has('temperature') && !rejectedForModel?.has('temperature'), !unsupported.has('frequency_penalty') && !rejectedForModel?.has('frequency_penalty')),
         );
         return response.choices[0]?.message?.content ?? '';
       }

@@ -2293,6 +2293,20 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         } catch (error) {
           // eslint-disable-next-line no-console -- operational visibility for a best-effort path, not app logging
           console.error(`Dedup batch upsert failed for ${dedupUpsertItems.length} newly-created item(s):`, error);
+          // Also on the job's own audit trail: a console line alone left
+          // this invisible to the user (seen live: a 401 from the embed
+          // call meant these items silently never entered the dedup index).
+          // Itself best-effort -- never fails the confirm.
+          try {
+            await this.prisma.auditEntry.create({
+              data: {
+                jobId: id,
+                message: `Dedup index not updated for ${dedupUpsertItems.length} newly-created item(s) -- future near-duplicates of them may not be caught: ${(error as Error).message}`,
+              },
+            });
+          } catch {
+            // The audit write is a courtesy on top of an already-best-effort path.
+          }
         }
       }
 

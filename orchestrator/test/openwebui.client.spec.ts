@@ -833,6 +833,56 @@ describe('OpenWebUiClient', () => {
     expect(fakeCreate).toHaveBeenCalledWith(expect.objectContaining({ frequency_penalty: 0.4 }));
   });
 
+  it('vision() remembers a param the upstream rejected, so later figures for the same model skip the reject-then-retry round trip', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'claude-opus-4-8' });
+    const rejection = new OpenAI.APIError(
+      400,
+      { message: "does not support parameters: ['frequency_penalty']" },
+      "does not support parameters: ['frequency_penalty']",
+      {} as any,
+    );
+    const fakeCreate = jest
+      .fn()
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('img')]);
+    await client.vision('describe', [Buffer.from('img')]);
+    await client.vision('describe', [Buffer.from('img')]);
+
+    // First figure: rejected, then retried without it. Every later figure:
+    // one call, already without it.
+    expect(fakeCreate).toHaveBeenCalledTimes(4);
+    expect(fakeCreate.mock.calls[0][0]).toHaveProperty('frequency_penalty', 0.4);
+    expect(fakeCreate.mock.calls[1][0]).not.toHaveProperty('frequency_penalty');
+    expect(fakeCreate.mock.calls[2][0]).not.toHaveProperty('frequency_penalty');
+    expect(fakeCreate.mock.calls[3][0]).not.toHaveProperty('frequency_penalty');
+  });
+
+  it('vision() keeps sending a rejected param for a DIFFERENT model', async () => {
+    const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'claude-opus-4-8' });
+    const rejection = new OpenAI.APIError(
+      400,
+      { message: "does not support parameters: ['frequency_penalty']" },
+      "does not support parameters: ['frequency_penalty']",
+      {} as any,
+    );
+    const fakeCreate = jest
+      .fn()
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
+    // @ts-expect-error -- reaching into the private SDK client for a test double
+    client.openai.chat.completions.create = fakeCreate;
+
+    await client.vision('describe', [Buffer.from('img')]);
+    await client.vision('describe', [Buffer.from('img')], { model: 'llava' });
+
+    expect(fakeCreate.mock.calls[2][0]).toHaveProperty('model', 'llava');
+    expect(fakeCreate.mock.calls[2][0]).toHaveProperty('frequency_penalty', 0.4);
+  });
+
   it('vision() defaults to image/png in the data URI when opts.mimeType is not supplied', async () => {
     const client = new OpenWebUiClient({ ...config, LLM_VISION_MODEL: 'llava' });
     const fakeCreate = jest.fn().mockResolvedValue({ choices: [{ message: { content: 'ok' } }] });
