@@ -15,6 +15,15 @@ from app.survey.orchestrator_llm_client import _MAX_OUTPUT_TOKENS, OrchestratorL
 from app.workitem.model import RequirementQualityIssue
 
 
+@pytest.fixture(autouse=True)
+def _legacy_keyed_schemas(monkeypatch):
+    """The schema-shape tests in this file check the original open-map schemas, which
+    are only sent in keyed_schema_mode="legacy_map". The production default ("none",
+    no strict schema on keyed passes) is covered by the tests at the end of the file,
+    which switch the mode back explicitly."""
+    monkeypatch.setattr(orchestrator_llm_client_module.settings, "keyed_schema_mode", "legacy_map")
+
+
 def _mock_transport(response_json: dict, expected_status: int = 200) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-bearer"
@@ -3751,3 +3760,66 @@ def test_describe_figure_omits_the_x_req2ado_user_id_header_when_not_supplied() 
     client.describe_figure(b"fake-image-bytes")
 
     assert captured_headers["present"] is False
+
+
+_KEYED_CALLS = [
+    ("title_tags", lambda c: c.title_and_tags_for_rows({"r1": "x", "r2": "y"})),
+    ("parent_summary", lambda c: c.summarize_parent_nodes({"p1": {"title": "t", "requirement_titles": [], "requirement_descriptions": []}})),
+    ("synthesis", lambda c: c.synthesize_leaf_requirements({"s1": {"text": "x", "context": ""}})),
+    ("score_requirements", lambda c: c.score_requirements_for_document({"0": "The unit shall survive a 1m drop."})),
+    ("score_epic_feature", lambda c: c.score_epics_and_features_for_document({"e1": {"type": "Epic", "text": "x"}})),
+    ("authoring", lambda c: c.author_content("Section text.", {"n0": {"type": "Requirement", "title": "T", "parent_id": None}})),
+    ("mapping", lambda c: c.map_figures_tables({"n1": {"type": "Feature", "title": "t"}}, {"f0": {"kind": "figure"}})),
+    ("kb_relevance", lambda c: c.judge_kb_relevance("outline", [{"source_file": "a.docx", "text": "x"}])),
+]
+
+
+def _captured_request_body(call, mode: str, monkeypatch) -> dict:
+    monkeypatch.setattr(orchestrator_llm_client_module.settings, "keyed_schema_mode", mode)
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": "{}"})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    call(client)
+    return captured["body"]
+
+
+@pytest.mark.parametrize(("name", "call"), _KEYED_CALLS, ids=[n for n, _ in _KEYED_CALLS])
+def test_keyed_calls_send_no_strict_schema_by_default(name, call, monkeypatch) -> None:
+    # Prod: the open-map schema collapses to `{}` on claude-opus-4-8 (and is invalid strict
+    # JSON Schema on OpenAI/Azure); per-call explicit keys blow the grammar-size limit. The
+    # prompts state the shape, so keyed passes send no responseSchema.
+    body = _captured_request_body(call, "none", monkeypatch)
+    assert "responseSchema" not in body
+
+
+@pytest.mark.parametrize(("name", "call"), _KEYED_CALLS, ids=[n for n, _ in _KEYED_CALLS])
+def test_keyed_calls_still_send_the_legacy_schema_when_that_mode_is_selected(name, call, monkeypatch) -> None:
+    body = _captured_request_body(call, "legacy_map", monkeypatch)
+    assert body["responseSchema"]["schema"]["additionalProperties"]  # the original open map
+
+
+def test_the_keyed_schema_mode_defaults_to_none() -> None:
+    from app.config import Settings
+
+    assert Settings().keyed_schema_mode == "none"
+
+
+def test_a_structured_call_that_ends_abnormally_logs_its_finish_reason_and_a_normal_stop_does_not(caplog) -> None:
+    import logging
+
+    def make(finish_reason: str) -> OrchestratorLlmClient:
+        client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+        client._transport = _mock_transport({"content": "{}", "finishReason": finish_reason})
+        return client
+
+    with caplog.at_level(logging.WARNING, logger="app.survey.orchestrator_llm_client"):
+        make("stop").title_and_tags_for_rows({"det0_h1": "x"})
+        assert not [r for r in caplog.records if "finishReason" in r.getMessage()]
+        make("length").title_and_tags_for_rows({"det0_h1": "x"})
+
+    assert [r.getMessage() for r in caplog.records if "finishReason=length" in r.getMessage()]

@@ -699,7 +699,7 @@ def _check_scoring_canary(entry: object) -> None:
     if not isinstance(entry, dict):
         logger.warning(
             "Scoring drift probe: the known-bad canary item got no usable entry back (%r) -- the model "
-            "either stopped returning one entry per input key or the response was truncated. Quality "
+            "either stopped returning one entry per input key, returned an empty object, or the response was truncated. Quality "
             "scores in this batch may not be trustworthy.",
             entry,
         )
@@ -879,7 +879,14 @@ def _apply_quality_scores(
                 WarningKind.SCORING_MISSING,
                 message,
                 node_ids=missing_or_invalid,
-                detail={"branch": node_id_prefix or "(root)"},
+                detail={
+                    "branch": node_id_prefix or "(root)",
+                    # "no_matching_keys": not one requested item got a score
+                    # (a systematic fault -- the answer carried none of our
+                    # keys), as opposed to "partial": some were scored and
+                    # these were skipped or invalid.
+                    "reason": "no_matching_keys" if len(missing_nodes) == len(nodes) else "partial",
+                },
             )
         )
         if progress_callback is not None:

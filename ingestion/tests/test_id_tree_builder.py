@@ -1393,3 +1393,139 @@ def test_apply_parent_summary_pass_one_failing_chunk_still_applies_the_others_un
     assert by_id[feature_ids[-1]].title == "T"   # a later chunk still applied
     assert any(w.kind.value == "enhancement_call_failed" for w in warnings)
     assert any(e.phase == "chunk_warning" for e in fired)
+
+
+def _title_tag_pass_nodes(count: int = 6):
+    from app.leveling.id_tree_builder import build_hierarchy_subtree
+
+    nodes, _ = build_hierarchy_subtree(_many_requirement_rows(count), "det0_")
+    return nodes, [n.local_id for n in nodes]
+
+
+def test_keyed_pass_unwraps_a_single_wrapper_key_and_trims_ids_without_a_warning() -> None:
+    from app.leveling.id_tree_builder import _apply_title_tag_pass
+
+    nodes, leaf_ids = _title_tag_pass_nodes(3)
+
+    class WrappedClient:
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
+            return {"results": {f" {node_id} ": {"title": "Wrapped", "tags": []} for node_id in texts_by_row_id}}
+
+    warnings: list = []
+    _apply_title_tag_pass(nodes, leaf_ids, WrappedClient(), warnings)
+
+    assert warnings == []
+    assert {n.title for n in nodes if n.local_id in leaf_ids} == {"Wrapped"}
+
+
+def test_keyed_pass_retries_only_the_omitted_ids_once_in_halves() -> None:
+    from app.leveling.id_tree_builder import _apply_title_tag_pass
+
+    nodes, leaf_ids = _title_tag_pass_nodes(6)
+    calls: list[list[str]] = []
+
+    class OmitsSomeOnFirstCallClient:
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
+            calls.append(list(texts_by_row_id))
+            if len(calls) == 1:  # first, full-chunk call: answers only the first two ids
+                return {node_id: {"title": "Got", "tags": []} for node_id in list(texts_by_row_id)[:2]}
+            return {node_id: {"title": "Retried", "tags": []} for node_id in texts_by_row_id}
+
+    warnings: list = []
+    _apply_title_tag_pass(nodes, leaf_ids, OmitsSomeOnFirstCallClient(), warnings)
+
+    assert len(calls) == 3  # the full chunk, then each half of the 4 omitted ids
+    assert calls[1] + calls[2] == leaf_ids[2:]
+    assert warnings == []
+    assert {n.title for n in nodes if n.local_id in leaf_ids[:2]} == {"Got"}
+    assert {n.title for n in nodes if n.local_id in leaf_ids[2:]} == {"Retried"}
+
+
+def test_keyed_pass_reports_a_failure_not_an_omission_when_no_requested_id_comes_back() -> None:
+    from app.leveling.id_tree_builder import _apply_title_tag_pass
+    from app.workitem.model import WarningKind
+
+    nodes, leaf_ids = _title_tag_pass_nodes(6)
+    original_titles = {n.local_id: n.title for n in nodes}
+    calls = 0
+
+    class AlwaysEmptyClient:
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
+            nonlocal calls
+            calls += 1
+            return {}
+
+    warnings: list = []
+    _apply_title_tag_pass(nodes, leaf_ids, AlwaysEmptyClient(), warnings)
+
+    # A systematic fault costs one extra call, not one per half.
+    assert calls == 2
+    assert [w.kind for w in warnings] == [WarningKind.ENHANCEMENT_CALL_FAILED]
+    assert warnings[0].detail == {"pass": "title_tag", "reason": "no_matching_keys"}
+    assert warnings[0].severity.value == "pipeline_issue"
+    assert {n.local_id: n.title for n in nodes} == original_titles
+
+
+def test_keyed_pass_keeps_the_omission_warning_when_the_retry_cannot_recover_every_id() -> None:
+    from app.leveling.id_tree_builder import _apply_title_tag_pass
+    from app.workitem.model import WarningKind
+
+    nodes, leaf_ids = _title_tag_pass_nodes(6)
+
+    class NeverAnswersTheLastIdClient:
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
+            return {node_id: {"title": "A", "tags": []} for node_id in texts_by_row_id if node_id != leaf_ids[-1]}
+
+    warnings: list = []
+    _apply_title_tag_pass(nodes, leaf_ids, NeverAnswersTheLastIdClient(), warnings)
+
+    assert [w.kind for w in warnings] == [WarningKind.ENHANCEMENT_RESPONSE_INCOMPLETE]
+    assert warnings[0].node_ids == [leaf_ids[-1]]
+
+
+def test_keyed_pass_survives_a_raising_retry_call() -> None:
+    from app.leveling.id_tree_builder import _apply_title_tag_pass
+
+    nodes, leaf_ids = _title_tag_pass_nodes(4)
+    calls = 0
+
+    class RaisesOnRetryClient:
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {leaf_ids[0]: {"title": "Only", "tags": []}}
+            raise RuntimeError("upstream down")
+
+    warnings: list = []
+    _apply_title_tag_pass(nodes, leaf_ids, RaisesOnRetryClient(), warnings)  # must not raise
+
+    assert next(n for n in nodes if n.local_id == leaf_ids[0]).title == "Only"
+    assert [w.kind.value for w in warnings] == ["enhancement_response_incomplete"]
+
+
+def test_parent_summary_and_synthesis_passes_share_the_zero_match_failure() -> None:
+    from app.leveling.id_tree_builder import _apply_parent_summary_pass, _apply_synthesis_pass
+    from app.workitem.model import WarningKind
+
+    class EmptyParentClient:
+        def summarize_parent_nodes(self, nodes_by_id, user_id=None):
+            return {}
+
+    nodes = _epic_feature_requirement_nodes()
+    feature = next(n for n in nodes if n.type == WorkItemType.FEATURE)
+    parent_warnings: list = []
+    _apply_parent_summary_pass(nodes, [feature.local_id], EmptyParentClient(), parent_warnings)
+    assert [w.kind for w in parent_warnings] == [WarningKind.ENHANCEMENT_CALL_FAILED]
+    assert parent_warnings[0].detail == {"pass": "parent_summary", "reason": "no_matching_keys"}
+    assert feature.title == "Over 28V VDC input"  # untouched
+
+    class EmptySynthesisClient:
+        def synthesize_leaf_requirements(self, items_by_id, user_id=None):
+            return {"unexpected": {"title": "x"}}
+
+    requirement = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+    synthesis_warnings: list = []
+    _apply_synthesis_pass(nodes, [requirement.local_id], EmptySynthesisClient(), synthesis_warnings)
+    assert [w.kind for w in synthesis_warnings] == [WarningKind.ENHANCEMENT_CALL_FAILED]
+    assert synthesis_warnings[0].detail["pass"] == "synthesis"

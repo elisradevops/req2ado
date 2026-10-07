@@ -365,6 +365,86 @@ describe('OpenWebUiClient', () => {
       expect(fakeCreate.mock.calls[1][0]).toHaveProperty('response_format');
     });
 
+    it('chat() logs an abnormal finish reason with token usage (never content), and stays silent on a normal stop', async () => {
+      const client = new OpenWebUiClient(config);
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const fakeCreate = jest
+        .fn()
+        .mockResolvedValueOnce({ choices: [{ message: { content: 'cut off' }, finish_reason: 'length' }], usage: { prompt_tokens: 1200, completion_tokens: 2000 } })
+        .mockResolvedValueOnce({ choices: [{ message: { content: 'fine' }, finish_reason: 'stop' }] });
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      await client.chat([{ role: 'user', content: 'a' }], { maxTokens: 2000 });
+      await client.chat([{ role: 'user', content: 'b' }]);
+
+      const lines = warn.mock.calls.map((call) => String(call[0]));
+      warn.mockRestore();
+      expect(lines.filter((l) => l.includes('finishReason=length'))).toHaveLength(1);
+      expect(lines[0]).toContain('completionTokens=2000');
+      expect(lines.some((l) => l.includes('finishReason=stop'))).toBe(false);
+      expect(lines.join('')).not.toContain('cut off');
+    });
+
+    it('chat() remembers the required temperature per model, so later calls send it first instead of failing once each', async () => {
+      const client = new OpenWebUiClient(config);
+      const fakeCreate = jest
+        .fn()
+        .mockRejectedValueOnce(tempRejection())
+        .mockResolvedValue({ choices: [{ message: { content: '[]' } }] });
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      await client.chat([{ role: 'user', content: 'a' }], { temperature: 0, responseSchema: schema });
+      await client.chat([{ role: 'user', content: 'b' }], { temperature: 0, responseSchema: schema });
+      await client.chat([{ role: 'user', content: 'c' }], { temperature: 0, responseSchema: schema });
+
+      // 1st call: rejected at 0, retried at 1. 2nd and 3rd: one call each, already at 1.
+      expect(fakeCreate).toHaveBeenCalledTimes(4);
+      expect(fakeCreate.mock.calls[0][0]).toHaveProperty('temperature', 0);
+      expect(fakeCreate.mock.calls[1][0]).toHaveProperty('temperature', 1);
+      expect(fakeCreate.mock.calls[2][0]).toHaveProperty('temperature', 1);
+      expect(fakeCreate.mock.calls[3][0]).toHaveProperty('temperature', 1);
+    });
+
+    it('a learned temperature is per model -- a different model still gets the caller temperature', async () => {
+      const client = new OpenWebUiClient(config);
+      const fakeCreate = jest
+        .fn()
+        .mockRejectedValueOnce(tempRejection())
+        .mockResolvedValue({ choices: [{ message: { content: '[]' } }] });
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      await client.chat([{ role: 'user', content: 'a' }], { temperature: 0, model: 'claude-opus-4-8' });
+      await client.chat([{ role: 'user', content: 'b' }], { temperature: 0, model: 'gpt-4o' });
+
+      expect(fakeCreate.mock.calls[2][0]).toHaveProperty('model', 'gpt-4o');
+      expect(fakeCreate.mock.calls[2][0]).toHaveProperty('temperature', 0);
+    });
+
+    it('streamChat() shares what chat() learned about the model', async () => {
+      const client = new OpenWebUiClient(config);
+      async function* fakeStream() {
+        yield { choices: [{ delta: { content: 'ok' } }] };
+      }
+      const fakeCreate = jest
+        .fn()
+        .mockRejectedValueOnce(tempRejection())
+        .mockResolvedValueOnce({ choices: [{ message: { content: '[]' } }] })
+        .mockResolvedValue(fakeStream());
+      // @ts-expect-error -- reaching into the private SDK client for a test double
+      client.openai.chat.completions.create = fakeCreate;
+
+      await client.chat([{ role: 'user', content: 'a' }], { temperature: 0 });
+      for await (const _chunk of client.streamChat([{ role: 'user', content: 'b' }], { temperature: 0 })) {
+        // drain
+      }
+
+      expect(fakeCreate).toHaveBeenCalledTimes(3);
+      expect(fakeCreate.mock.calls[2][0]).toHaveProperty('temperature', 1);
+    });
+
     it('vision() retries with temperature 1 and KEEPS response_format', async () => {
       const client = new OpenWebUiClient({ ...config, LLM_VISION_TEMPERATURE: 0 });
       const fakeCreate = jest

@@ -32,6 +32,8 @@ from app.survey._response_schemas import (
     section_skeleton_schema,
     synthesis_schema,
     title_tags_schema,
+    keyed_schema,
+    keyed_schema_field,
     trace_links_schema,
 )
 from app.config import settings
@@ -1019,6 +1021,7 @@ class OrchestratorLlmClient:
                         if message.get("done"):
                             finished = True
                             if message.get("finishReason") == "length":
+                                logger.warning("Streamed structured LLM call ended with finishReason=length -- the answer may be incomplete")
                                 notice("output_limit_reached", "warning", with_last_item=True, step="drafting")
                             continue
                         delta = message.get("delta")
@@ -1097,7 +1100,14 @@ class OrchestratorLlmClient:
                 return parsed
         response = self._post_chat(payload, user_id)
         response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
+        body = response.json()
+        finish_reason = body.get("finishReason")
+        if finish_reason and finish_reason not in ("stop", "tool_calls"):
+            # A normal answer ends "stop". Anything else (typically "length")
+            # means the output may be incomplete -- logged so an empty or
+            # partial keyed answer is no longer unexplained.
+            logger.warning("Structured LLM call ended with finishReason=%s -- the answer may be incomplete", finish_reason)
+        content = _strip_json_fence(body["content"])
         return _parse_json_object(content)
 
     def infer_trace_links(
@@ -1272,7 +1282,7 @@ class OrchestratorLlmClient:
             ],
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
-            "responseSchema": scores_schema(),
+            **keyed_schema_field(scores_schema()),
             # Confirmed real cause of this call being extremely slow (user-
             # reported: a 83-requirement batch stalling well past normal):
             # unlike analyze_section/analyze_section_agentic (which both
@@ -1494,7 +1504,7 @@ class OrchestratorLlmClient:
             ],
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
-            "responseSchema": epic_feature_scores_schema(),
+            **keyed_schema_field(epic_feature_scores_schema()),
             "think": False,
             "maxTokens": _MAX_OUTPUT_TOKENS,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
@@ -1545,7 +1555,7 @@ class OrchestratorLlmClient:
             row_count=str(len(texts_by_row_id)),
         )
         return self._chat_json(
-            system_prompt, json.dumps(texts_by_row_id), schema=title_tags_schema(), user_id=user_id,
+            system_prompt, json.dumps(texts_by_row_id), schema=keyed_schema(title_tags_schema()), user_id=user_id,
             stream_inputs=dict(texts_by_row_id), stream_stage="improve",
         )
 
@@ -1581,7 +1591,7 @@ class OrchestratorLlmClient:
         description exactly as constructed."""
         system_prompt = load_prompt("summarize_parent_nodes", node_count=str(len(nodes_by_id)))
         return self._chat_json(
-            system_prompt, json.dumps(nodes_by_id), schema=parent_summary_schema(), user_id=user_id,
+            system_prompt, json.dumps(nodes_by_id), schema=keyed_schema(parent_summary_schema()), user_id=user_id,
             stream_inputs={
                 k: v.get("title") if isinstance(v, dict) else None for k, v in nodes_by_id.items()
             },
@@ -1618,7 +1628,7 @@ class OrchestratorLlmClient:
             row_count=str(len(items_by_id)),
         )
         return self._chat_json(
-            system_prompt, json.dumps(items_by_id), schema=synthesis_schema(), user_id=user_id,
+            system_prompt, json.dumps(items_by_id), schema=keyed_schema(synthesis_schema()), user_id=user_id,
             stream_inputs={
                 k: v.get("text") if isinstance(v, dict) else None for k, v in items_by_id.items()
             },
@@ -1815,7 +1825,7 @@ class OrchestratorLlmClient:
         return self._chat_json(
             system_prompt,
             json.dumps({"section_content": branch_content, "snippets": snippets_by_index}),
-            schema=kb_relevance_schema(),
+            schema=keyed_schema(kb_relevance_schema()),
             user_id=user_id,
         )
 
@@ -2310,7 +2320,7 @@ class OrchestratorLlmClient:
             ],
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
-            "responseSchema": content_authoring_schema(),
+            **keyed_schema_field(content_authoring_schema()),
             "maxTokens": _MAX_OUTPUT_TOKENS,
             # Same confirmed-live finding as the two section-analysis paths
             # this call was split out of -- structured extraction over text
@@ -2411,7 +2421,7 @@ class OrchestratorLlmClient:
             ],
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
-            "responseSchema": figure_table_mapping_schema(),
+            **keyed_schema_field(figure_table_mapping_schema()),
             "maxTokens": _MAX_OUTPUT_TOKENS,
             # Same confirmed-live finding as every other structured-extraction
             # call in this class -- classification over material already in

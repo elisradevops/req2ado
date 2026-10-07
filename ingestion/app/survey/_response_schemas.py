@@ -47,12 +47,36 @@ Ollama version is in use at the time.
 """
 from __future__ import annotations
 
+from app.config import settings
 from app.workitem.model import QualityConfidence, RequirementQualityIssue, RequirementTag, WorkItemType
 
 _TAGS = [t.value for t in RequirementTag]
 _ISSUES = [t.value for t in RequirementQualityIssue]
 _TYPES = [t.value for t in WorkItemType]
 _CONFIDENCE = [c.value for c in QualityConfidence]
+
+
+def keyed_schema(response_schema: dict) -> dict | None:
+    """The `responseSchema` to send for one of this module's id-keyed
+    (`additionalProperties` map) schemas, per `settings.keyed_schema_mode`:
+    None ("none", the default) means send no strict schema at all.
+
+    Why not the open map by default: it is not valid strict JSON Schema on
+    Anthropic or OpenAI/Azure (both require `additionalProperties: false`), and
+    where it is accepted it collapses to `{}` -- confirmed in prod against
+    claude-opus-4-8 (every keyed pass reported "omitted N of N"). Why not
+    per-call explicit keys: grammar size (>= 50 keys is rejected as "compiled
+    grammar is too large") and Azure's 100-property cap. The prompts already
+    state the exact output shape, so these passes run prompt-only until the
+    fixed array-of-entries schema replaces them."""
+    return response_schema if settings.keyed_schema_mode == "legacy_map" else None
+
+
+def keyed_schema_field(response_schema: dict) -> dict:
+    """`keyed_schema` as a payload fragment: {"responseSchema": ...} or {}, for
+    call sites that build their request dict inline."""
+    schema = keyed_schema(response_schema)
+    return {"responseSchema": schema} if schema is not None else {}
 
 
 def scores_schema() -> dict:

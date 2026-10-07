@@ -1,6 +1,8 @@
 # ingestion/app/config.py
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -70,6 +72,18 @@ class Settings(BaseSettings):
     # call first, with real margin to the outer layer's own ceiling. Same
     # numeric default as before this was configurable (no behavior change).
     llm_request_timeout_seconds: float = 1800.0
+    # How the keyed passes (synthesis, title/tag, parent summary, scoring,
+    # authoring, figure/table mapping, KB relevance -- every call that answers
+    # "one entry per id") ask for structured output.
+    #   "none"       -- send no strict schema; the prompt states the output
+    #                   shape and the tolerant parser + omission recovery do the
+    #                   rest. Valid on every provider. DEFAULT.
+    #   "legacy_map" -- the original open `additionalProperties` map schema. NOT
+    #                   valid strict JSON Schema on Anthropic or OpenAI/Azure
+    #                   (it collapses to `{}` on Claude via Azure AI, a 400 on
+    #                   OpenAI strict); kept only for backends that rely on it.
+    # An "array" mode (fixed array-of-entries schema) follows in a later stage.
+    keyed_schema_mode: Literal["none", "legacy_map"] = "none"
     # Confirmed real bug: this was hardcoded to 300s while the orchestrator's
     # own LLM_REQUEST_TIMEOUT_MS defaults to 600s (600_000ms) -- a vision
     # call that would have succeeded between 300-600s got aborted here

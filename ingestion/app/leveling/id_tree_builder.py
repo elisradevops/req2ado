@@ -20,7 +20,9 @@ row backing it."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+from collections.abc import Callable
 from typing import Protocol
 
 from app.canonical.model import SourceRef, Table
@@ -48,6 +50,112 @@ from app.workitem.model import IntegrityWarning, RequirementTag, WarningKind, Wo
 # needs no change.
 from app.leveling.grounding import grounding_score as _grounding_score
 from app.leveling.grounding import significant_words as _significant_words
+
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_keyed_result(result: object, requested_ids: list[str]) -> dict:
+    """The model's answer as a plain id -> entry dict, tolerant of two
+    harmless deviations: ids with stray surrounding whitespace, and the whole
+    answer wrapped in a single extra key (`{"results": {id: ...}}`). A wrapper
+    is only unwrapped when the inner object actually contains requested ids,
+    so a genuine one-entry answer is never mistaken for one. Anything that is
+    not a dict yields {}."""
+    if not isinstance(result, dict):
+        return {}
+    wanted = set(requested_ids)
+    normalized = {key.strip(): value for key, value in result.items() if isinstance(key, str)}
+    if wanted & normalized.keys():
+        return normalized
+    if len(result) == 1:
+        inner = next(iter(result.values()))
+        if isinstance(inner, dict):
+            inner_normalized = {key.strip(): value for key, value in inner.items() if isinstance(key, str)}
+            if wanted & inner_normalized.keys():
+                return inner_normalized
+    return normalized
+
+
+def _recover_keyed_result(
+    raw_result: object,
+    chunk_ids: list[str],
+    payload: dict,
+    call: Callable[[dict], object],
+    pass_name: str,
+) -> tuple[dict, bool]:
+    """Normalises one chunk's keyed answer and, for the ids it omitted, makes
+    ONE bounded retry in halves. Returns (result, nothing_matched) where
+    `nothing_matched` is True only when not a single requested id came back
+    even after the retry -- a systematic failure (the call "worked" but the
+    answer carries none of our keys), reported as a failure rather than as an
+    "omission".
+
+    Cost is bounded by design: only the omitted ids are re-sent, each half at
+    most once, and the retry stops as soon as a half yields nothing -- so a
+    systematic fault costs at most ONE extra call per chunk, not one per
+    half. A retry call that raises is swallowed (fail-open, same as the pass
+    itself): the ids simply stay omitted."""
+    result = _normalize_keyed_result(raw_result, chunk_ids)
+    missing = [node_id for node_id in chunk_ids if node_id not in result]
+    if not missing:
+        return result, False
+    if len(missing) == len(chunk_ids):
+        # Ids only, never content. This is the line that was missing when a
+        # prod job returned empty structured answers for every pass and
+        # nothing recorded what the model actually sent back.
+        # Each key is cut short: a model that answers in prose can put document
+        # text in its "keys", and this must never copy that into a log.
+        top_level_keys = [str(key)[:40] for key in list(raw_result)[:3]] if isinstance(raw_result, dict) else []
+        logger.warning(
+            "%s enhancement: response had none of the %d requested ids (type=%s, top-level keys=%d, first keys=%s)",
+            pass_name, len(chunk_ids), type(raw_result).__name__,
+            len(raw_result) if isinstance(raw_result, dict) else 0, top_level_keys,
+        )
+    middle = (len(missing) + 1) // 2
+    halves = [half for half in (missing[:middle], missing[middle:]) if half]
+    result = dict(result)
+    for half in halves:
+        try:
+            half_result = _normalize_keyed_result(call({node_id: payload[node_id] for node_id in half}), half)
+        except Exception as exc:  # noqa: BLE001 -- retry is best-effort, the ids just stay omitted
+            logger.warning("%s enhancement retry for %d omitted id(s) failed: %s", pass_name, len(half), exc)
+            break
+        matched = {node_id: half_result[node_id] for node_id in half if node_id in half_result}
+        if not matched:
+            break
+        result.update(matched)
+    return result, not any(node_id in result for node_id in chunk_ids)
+
+
+def _chunk_failure_warning(
+    warnings: list[IntegrityWarning],
+    progress_callback: ProgressCallback | None,
+    message: str,
+    node_ids: list[str],
+    pass_name: str,
+    reason: str,
+) -> None:
+    """The shared "this chunk produced nothing usable" record: an
+    ENHANCEMENT_CALL_FAILED (pipeline_issue, not the auto_fixed of an
+    omission) plus a `chunk_warning` narration event."""
+    warnings.append(
+        IntegrityWarning.make(
+            WarningKind.ENHANCEMENT_CALL_FAILED,
+            message,
+            node_ids=node_ids,
+            detail={"pass": pass_name, "reason": reason},
+        )
+    )
+    if progress_callback is not None:
+        progress_callback(
+            LevelingProgress(
+                phase="chunk_warning", branch_index=None, branch_count=0,
+                blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                warning_message=message,
+            )
+        )
+
 
 
 def _count_done(stage: str, count: int) -> None:
@@ -286,7 +394,18 @@ def _apply_title_tag_pass(
                     )
                 )
             continue
-        result = outcome.value or {}
+        result, nothing_matched = _recover_keyed_result(
+            outcome.value, chunk_ids, chunk_payloads[outcome.chunk_index],
+            lambda payload: title_tag_client.title_and_tags_for_rows(payload, user_id=user_id), "title_tag",
+        )
+        if nothing_matched:
+            _chunk_failure_warning(
+                warnings, progress_callback,
+                f"Title/tag enhancement returned no entries for any of the {len(chunk_ids)} requested node(s), even after a "
+                "retry -- they kept their original text.",
+                chunk_ids, "title_tag", "no_matching_keys",
+            )
+            continue
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:
@@ -560,7 +679,18 @@ def _apply_parent_summary_pass(
                     )
                 )
             continue
-        result = outcome.value or {}
+        result, nothing_matched = _recover_keyed_result(
+            outcome.value, chunk_ids, chunk_payloads[outcome.chunk_index],
+            lambda payload: client.summarize_parent_nodes(payload, user_id=user_id), "parent_summary",
+        )
+        if nothing_matched:
+            _chunk_failure_warning(
+                warnings, progress_callback,
+                f"Parent title/description enhancement returned no entries for any of the {len(chunk_ids)} requested node(s), even after a "
+                "retry -- they kept their original text.",
+                chunk_ids, "parent_summary", "no_matching_keys",
+            )
+            continue
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:
@@ -862,7 +992,18 @@ def _apply_synthesis_pass(
                     )
                 )
             continue
-        result = outcome.value or {}
+        result, nothing_matched = _recover_keyed_result(
+            outcome.value, chunk_ids, chunk_payloads[outcome.chunk_index],
+            lambda payload: synthesis_client.synthesize_leaf_requirements(payload, user_id=user_id), "synthesis",
+        )
+        if nothing_matched:
+            _chunk_failure_warning(
+                warnings, progress_callback,
+                f"Requirement-text synthesis returned no entries for any of the {len(chunk_ids)} requested node(s), even after a "
+                "retry -- they kept their original text.",
+                chunk_ids, "synthesis", "no_matching_keys",
+            )
+            continue
 
         missing = [node_id for node_id in chunk_ids if node_id not in result]
         if missing:
