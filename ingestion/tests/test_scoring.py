@@ -543,3 +543,62 @@ def test_absent_canary_entry_is_itself_logged_as_drift(caplog) -> None:
 
     assert any("got no usable entry back" in r.message for r in caplog.records)
     assert warnings == []
+
+
+def test_score_all_requirements_splits_a_timed_out_chunk_and_scores_every_node() -> None:
+    import httpx
+
+    calls: list[int] = []
+
+    class TimesOutOnFullChunkClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+            calls.append(len(descriptions_by_node_id))
+            # Real batches carry the canary too, so only a call big enough to
+            # be the full 100-node chunk times out; its halves succeed.
+            if len(descriptions_by_node_id) > 60:
+                raise httpx.ReadTimeout("timed out")
+            return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
+
+    nodes = _requirement_nodes(100)
+    warnings: list = []
+
+    _score_all_requirements(nodes, TimesOutOnFullChunkClient(), warnings, None, None, [], None, None, 0, 1)
+
+    assert all(n.quality_score == 80 for n in nodes)
+    assert not any(w.kind.value == "scoring_failed" for w in warnings)
+    assert len(calls) == 3  # the full chunk, then each half once
+
+
+def test_score_all_requirements_reports_only_the_half_that_still_times_out() -> None:
+    import httpx
+
+    class SecondHalfAlwaysTimesOutClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+            if len(descriptions_by_node_id) > 60 or "r99" in descriptions_by_node_id:
+                raise httpx.ReadTimeout("timed out")
+            return {node_id: {"score": 70, "issues": []} for node_id in descriptions_by_node_id}
+
+    nodes = _requirement_nodes(100)
+    warnings: list = []
+
+    _score_all_requirements(nodes, SecondHalfAlwaysTimesOutClient(), warnings, None, None, [], None, None, 0, 1)
+
+    by_id = {n.local_id: n for n in nodes}
+    assert by_id["r0"].quality_score == 70
+    assert by_id["r99"].quality_score is None
+    failed = [w for w in warnings if w.kind.value == "scoring_failed"]
+    assert len(failed) == 1
+    assert "r99" in failed[0].node_ids and "r0" not in failed[0].node_ids
+    assert failed[0].detail["errorType"] == "ReadTimeout"
+    assert failed[0].detail["scope"] == "requirement"
+    assert "timeoutSeconds" in failed[0].detail and "chunkChars" in failed[0].detail
+
+
+def test_scoring_chunks_close_on_the_character_budget_not_just_the_node_count() -> None:
+    from app.leveling import scoring
+
+    items = ["x" * 15_000, "x" * 15_000, "x" * 15_000, "x" * 100]
+    chunks = scoring._chunk_by_count_and_chars(items, len)
+
+    assert [len(c) for c in chunks] == [2, 2]  # 30k fits the 40k budget, a third 15k does not
+    assert scoring._chunk_by_count_and_chars(["y" * 90_000], len) == [["y" * 90_000]]  # oversized item gets its own chunk

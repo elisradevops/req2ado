@@ -20,7 +20,10 @@ def _upload(filename: str, path: Path, redact: bool = False, **extra_params: obj
     with open(path, "rb") as f:
         response = client.post(
             "/ingest",
-            params={"redact": redact, **extra_params},
+            # user_id defaults on: vision only runs for a request that carries
+            # the submitting user's identity (the orchestrator's /llm/vision
+            # needs it to resolve the user's credential/model).
+            params={"redact": redact, "user_id": "test-user", **extra_params},
             files={"file": (filename, f, "application/octet-stream")},
         )
     assert response.status_code == 200
@@ -815,7 +818,7 @@ def test_ingest_baseline_mode_never_captions_even_when_vision_is_configured(monk
     # BASELINE is contractually verbatim/no-AI: a figure caption is
     # model-authored text, and must never reach a contract-baseline
     # System.Description regardless of skip_vision or whether a vision
-    # client is configured (LLM_VISION_MODEL set). This is the mode gate
+    # client is available. This is the mode gate
     # itself -- distinct from skip_vision, which is a latency optimization
     # for /jobs/preview only. Default mode ("baseline", per /ingest's own
     # signature) must behave identically to an explicit mode="baseline".

@@ -74,6 +74,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'ID removed',
     unit: ['requirement', 'requirements'],
   },
+  parent_title_collision: {
+    title: 'Epic/Feature title matches a child requirement',
+    group: 'fix',
+    short: "An Epic or Feature was given the same title as one of the requirements under it, so its original heading was kept.",
+    means: 'The parent and child may still read the same in Azure DevOps if the heading is identical too.',
+    todo: 'Open the parent item and give it a title that names the broader capability before you confirm.',
+    chip: 'Same title',
+    unit: ['item', 'items'],
+  },
   zero_nodes: {
     title: 'A section produced no items',
     group: 'fix',

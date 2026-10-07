@@ -14,7 +14,7 @@ def _upload(filename: str, path: Path, **extra_params: object) -> dict:
     with open(path, "rb") as f:
         response = client.post(
             "/ingest",
-            params={"redact": False, **extra_params},
+            params={"redact": False, "user_id": "test-user", **extra_params},
             files={"file": (filename, f, "application/octet-stream")},
         )
     assert response.status_code == 200

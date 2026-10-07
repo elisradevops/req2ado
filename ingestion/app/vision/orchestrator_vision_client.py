@@ -230,6 +230,7 @@ class OrchestratorVisionClient:
         mime_type: str | None = None,
         document_context: str | None = None,
         user_id: str | None = None,
+        model: str | None = None,
     ) -> FigureVisionResult | None:
         """`mime_type` (e.g. 'image/jpeg'), when supplied, tells the
         orchestrator's real content-type instead of its pre-existing
@@ -242,7 +243,11 @@ class OrchestratorVisionClient:
         WebUI credential to use (no shared/global fallback credential
         exists any more); a request with a valid bearer token but a
         missing/unknown header is rejected with 401. Omitted from the
-        header entirely when falsy, never sent as an empty string."""
+        header entirely when falsy, never sent as an empty string. `model`
+        -- the job's selected model, so figure captions come from the same
+        model as the rest of the job. Omitted from the body when falsy, in
+        which case the orchestrator falls back to the user's own profile
+        vision/chat model (/llm/vision's own resolution)."""
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
@@ -254,6 +259,7 @@ class OrchestratorVisionClient:
                     "images": [base64.b64encode(image_bytes).decode("ascii")],
                     "responseSchema": {"name": "figure_significance", "schema": _FIGURE_SIGNIFICANCE_SCHEMA},
                     **({"mimeType": mime_type} if mime_type else {}),
+                    **({"model": model} if model else {}),
                 },
                 headers=headers,
             )

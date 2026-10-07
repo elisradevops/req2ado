@@ -174,7 +174,12 @@ config:
   # recurs (check orchestrator logs for DocumentOverviewService.generate's
   # own finishReason=length diagnostic first).
   DOCUMENT_OVERVIEW_MAX_TOKENS: "4000"
-  LLM_REQUEST_TIMEOUT_SECONDS: "90"
+  # Ingestion's per-call LLM timeout. 90s was too short for a 150-node
+  # quality-scoring chunk (confirmed in prod: every chunk timed out at ~90s,
+  # leaving nearly all Requirements unscored). 590 matches
+  # VISION_REQUEST_TIMEOUT_SECONDS and stays under the orchestrator's own
+  # LLM_REQUEST_TIMEOUT_MS (600000).
+  LLM_REQUEST_TIMEOUT_SECONDS: "590"
   LLM_TRUSTED_LOCAL: "false"
   LOG_LEVEL: "INFO"
   MAX_BATCH_FILES: "50"

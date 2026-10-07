@@ -191,7 +191,7 @@
             "unsupported_content_note", "empty_table_content",
             "vision_captioning_disabled", "invalid_mapping_target", "mapping_call_failed",
             "ocr_recovered_table_text", "missing_source_reference", "survey_title_distilled",
-            "missing_requirement_row_coverage", "duplicate_customer_id"
+            "missing_requirement_row_coverage", "duplicate_customer_id", "parent_title_collision"
           ]
         },
         "severity": {

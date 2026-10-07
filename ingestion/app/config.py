@@ -21,10 +21,6 @@ class Settings(BaseSettings):
     # a Python traceback so the UI's error-details dialog can show it. Keep off
     # in production: tracebacks expose internal paths and code structure.
     expose_error_details: bool = False
-    # Unset = figure/diagram extraction stays a placeholder, same behavior
-    # as before vision support existed. Set to a real vision-capable model
-    # name (e.g. "llava") to actually describe extracted figure images.
-    llm_vision_model: str | None = None
     # DUPLICATED, deliberately, from the orchestrator's own EMBED_MODEL
     # config (orchestrator/src/config/config.schema.ts) — the /llm/embed
     # proxy response carries only raw vectors, no model identifier, and
@@ -93,7 +89,7 @@ class Settings(BaseSettings):
     # vision calls, each with up to vision_request_timeout_seconds above to
     # spend. Its own dial, separate from survey_branch_concurrency/
     # survey_chunk_concurrency: this is a different model behind a different
-    # client (_vision_client / LLM_VISION_MODEL), whose backend capacity is
+    # client (_vision_client -- the job's own model), whose backend capacity is
     # an independent operational fact, and it runs in /ingest rather than
     # /level so it never overlaps with either of those.
     #

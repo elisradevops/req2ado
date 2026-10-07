@@ -338,3 +338,20 @@ def test_describe_figure_still_parses_an_insignificant_verdict_with_an_empty_des
     client._transport = httpx.MockTransport(handler)
 
     assert client.describe_figure(b"fake-bytes") == FigureVisionResult(significant=False, description="")
+
+
+def test_describe_figure_sends_the_model_only_when_one_is_given() -> None:
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"description": json.dumps({"significant": True, "description": "A diagram."})})
+
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+
+    client.describe_figure(b"fake-png-bytes")
+    client.describe_figure(b"fake-png-bytes", model="claude-opus-4-8")
+
+    assert "model" not in bodies[0]
+    assert bodies[1]["model"] == "claude-opus-4-8"

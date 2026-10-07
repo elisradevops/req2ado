@@ -21,9 +21,13 @@ export interface CanonicalDoc {
    */
   failed_figure_storage_ids?: string[];
   /**
-   * Whether /ingest actually opened the vision-LLM gate for this document (False for BASELINE, a preview call, or no vision model configured). Round-tripped from /ingest's response through /level's own `doc` request body -- consumed there to emit a single tree-level WarningKind.vision_captioning_disabled warning when False and figures is non-empty.
+   * Whether /ingest actually opened the vision-LLM gate for this document (False for BASELINE, a preview call, a model without vision support, or no user identity). Round-tripped from /ingest's response through /level's own `doc` request body -- consumed there to emit a single tree-level WarningKind.vision_captioning_disabled warning when False and figures is non-empty.
    */
   vision_active?: boolean;
+  /**
+   * Why vision did not (fully) run: baseline_mode, skip_vision_requested, model_not_vision_capable, no_user, vision_client_unavailable (vision_active false), or breaker_tripped (vision_active true but captioning stopped after consecutive failures). Null when vision ran normally.
+   */
+  vision_skip_reason?: string | null;
 }
 export interface Block {
   id: string;

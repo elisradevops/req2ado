@@ -235,6 +235,20 @@ def test_survey_title_distilled_warning_matches_work_item_tree_schema(schema) ->
     jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
 
 
+def test_parent_title_collision_warning_matches_work_item_tree_schema(schema) -> None:
+    tree = build_baseline_tree(_baseline_doc())
+    tree.warnings = [
+        IntegrityWarning.make(
+            WarningKind.PARENT_TITLE_COLLISION,
+            '"X" was proposed as the title of a parent item but matches the title of one of the '
+            'requirements under it -- kept the original heading "Y" instead.',
+            node_ids=["n0"],
+            detail={"pass": "parent_summary", "rejectedTitle": "X", "fallbackTitle": "Y", "headingAlsoCollides": False},
+        )
+    ]
+    jsonschema.validate(instance=tree.model_dump(mode="json"), schema=schema)
+
+
 def test_missing_requirement_row_coverage_warning_matches_work_item_tree_schema(schema) -> None:
     tree = build_baseline_tree(_baseline_doc())
     tree.warnings = [

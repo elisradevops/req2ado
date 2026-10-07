@@ -133,6 +133,61 @@ describe('runPipelineJob', () => {
     expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(Buffer.from('text'), 'x.txt', false, 'baseline', 'job-1', undefined, undefined, 'user-1');
   });
 
+  describe('figure vision plan (SURVEY)', () => {
+    const surveyJob = {
+      id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey' as const,
+      fileBuffer: Buffer.from('text'), filename: 'x.txt', model: 'claude-opus-4-8',
+    };
+    const depsWith = (listSelectableModels: jest.Mock) => ({
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: fakePrisma as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      openWebUiClientFactory: { getClientFor: jest.fn().mockResolvedValue({ ...fakeOpenWebUiClient, listSelectableModels }) } as any,
+      defaultLlmModel: 'gemma4:12b',
+    });
+
+    beforeEach(() => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+      fakeDryRunService.diff.mockResolvedValue([]);
+    });
+
+    it("passes the job's model to ingest so figures are captioned by the same model", async () => {
+      const list = jest.fn().mockResolvedValue([{ id: 'claude-opus-4-8', name: 'Opus', vision: true }]);
+      await runPipelineJob(surveyJob, depsWith(list));
+      expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(
+        Buffer.from('text'), 'x.txt', false, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', undefined,
+      );
+    });
+
+    it('skips vision with a stated reason when the job model is not vision capable', async () => {
+      const list = jest.fn().mockResolvedValue([{ id: 'claude-opus-4-8', name: 'Opus', vision: false }]);
+      await runPipelineJob(surveyJob, depsWith(list));
+      expect(fakeIngestionClient.ingest).toHaveBeenCalledWith(
+        Buffer.from('text'), 'x.txt', true, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', 'model_not_vision_capable',
+      );
+    });
+
+    it('fails open (still attempts vision) when the model catalog cannot be read', async () => {
+      const list = jest.fn().mockRejectedValue(new Error('catalog down'));
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      await runPipelineJob(surveyJob, depsWith(list));
+      consoleError.mockRestore();
+      expect(fakeIngestionClient.ingest.mock.calls[0][2]).toBe(false);
+    });
+
+    it('fails open when the model is not listed in the catalog', async () => {
+      const list = jest.fn().mockResolvedValue([{ id: 'something-else', name: 'x', vision: false }]);
+      await runPipelineJob(surveyJob, depsWith(list));
+      expect(fakeIngestionClient.ingest.mock.calls[0][2]).toBe(false);
+    });
+  });
+
   it('throws when a node has neither identity_hash nor fidelity_hash (cannot compute a stable sourceHash)', async () => {
     // Regression guard for a type-honesty bug found while wiring S10's
     // generated WorkItemTree type in: this code previously assumed

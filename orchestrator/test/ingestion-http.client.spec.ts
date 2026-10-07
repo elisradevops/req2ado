@@ -115,6 +115,29 @@ describe('IngestionHttpClient', () => {
     expect(url).not.toContain('primer_context');
   });
 
+  it('forwards visionModel and visionSkipReason as vision_model / vision_skip_reason when provided', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => MINIMAL_DOC });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+
+    await client.ingest(Buffer.from('file'), 'doc.pdf', true, 'survey', 'job-1', undefined, undefined, 'user-1', 'claude-opus-4-8', 'model_not_vision_capable');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    const params = new URL(url).searchParams;
+    expect(params.get('vision_model')).toBe('claude-opus-4-8');
+    expect(params.get('vision_skip_reason')).toBe('model_not_vision_capable');
+  });
+
+  it('omits vision_model and vision_skip_reason when not provided', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => MINIMAL_DOC });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+
+    await client.ingest(Buffer.from('file'), 'doc.pdf', false, 'survey', 'job-1');
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).not.toContain('vision_model');
+    expect(url).not.toContain('vision_skip_reason');
+  });
+
   it('forwards languages as an OCR-language query param when provided (NEW-04)', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => MINIMAL_DOC });
     const client = new IngestionHttpClient('http://ingestion.internal');
