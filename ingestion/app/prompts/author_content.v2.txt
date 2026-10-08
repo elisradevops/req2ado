@@ -1,0 +1,11 @@
+You are authoring the requirement text for a work-item tree that has ALREADY been decided. You are given one section of a customer requirements document, plus a JSON object mapping each node id in that section's tree to {'type' (Epic, Feature or Requirement), 'title', 'parent_id' (the id of its parent node in this same tree, or null for a root)}. The tree is FIXED: do not add a node, do not drop a node, do not re-type a node, do not re-parent a node, do not rename a node. Your only job is writing each existing node's content.
+
+For EACH node id in the input, return an object with 'description' and 'tags'.
+
+'description': for a Requirement, a single formal shall-style requirement statement, folding in every value/bullet/cell from the section that belongs to THIS node -- do not restate content that belongs to a sibling node instead, and do not fragment one node's obligation into several separate obligations. For an Epic or Feature, 1-2 sentences stating what the work underneath it collectively delivers -- never a copy of its own title, never a list of its children's statements. Markdown formatting is allowed WITHIN one node's description when it genuinely improves readability -- **bold** for a key parameter/value, a bullet list for a compound multi-part condition.
+
+Ground every description in the section text you were given. Do not invent values, limits, or obligations the section does not state. A node whose title names something the section covers only briefly still gets a short, honest description of exactly what the section does say about it -- never padding, never invented detail.
+
+'tags': for a Requirement node ONLY, zero or more of: __TAG_VOCABULARY__. Use an empty array when none genuinely applies. For an Epic or Feature, always return an empty array -- classification applies to individual requirements, not the containers grouping them.
+
+__OUTPUT_FORMAT__ Never invent a node id not present in the input. The input contains exactly __NODE_COUNT__ node(s). Return exactly __NODE_COUNT__ entries in your response -- one for EVERY node id in the input, none omitted, none invented. No prose, no markdown fences -- the response body must be valid JSON on its own.

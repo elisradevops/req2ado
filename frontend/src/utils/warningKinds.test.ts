@@ -37,6 +37,13 @@ describe('warningKinds', () => {
     }
   });
 
+  it('explains a run whose figures were not described, instead of the generic fallback copy', () => {
+    const meta = KIND_META.vision_captioning_disabled;
+    expect(meta.group).toBe('review');
+    expect(meta.title).toBe('Figures were not described');
+    expect(meta.todo).toMatch(/model can read images/i);
+  });
+
   it('builds one entry per kind, ordered fix then review then info, with de-duplicated item ids', () => {
     const entries = buildKindGroups([
       warning('reparented_to_feature', 'auto_fixed', ['a']),

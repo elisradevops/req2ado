@@ -112,7 +112,13 @@ def test_summarize_parent_nodes_prompt() -> None:
 
 
 def test_synthesize_leaf_requirements_prompt() -> None:
-    result = load_prompt("synthesize_leaf_requirements", tag_vocabulary=_TAG_VOCABULARY, row_count="3")
+    # The tag vocabulary now arrives inside the generated output-format sentence (keyed_specs.SYNTHESIS_SPEC).
+    from app.survey.keyed_calls import describe_output
+    from app.survey.keyed_specs import SYNTHESIS_SPEC
+
+    result = load_prompt(
+        "synthesize_leaf_requirements", row_count="3", output_format=describe_output(SYNTHESIS_SPEC, "none"),
+    )
     assert _TAG_VOCABULARY in result
     assert "The input contains exactly 3 row(s)." in result
 

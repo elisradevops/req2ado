@@ -17,28 +17,35 @@ from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, Secti
 from app.survey._response_schemas import (
     checklist_definitions_schema,
     checklist_extraction_schema,
-    content_authoring_schema,
     distill_title_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
     epic_feature_scores_schema,
-    figure_table_mapping_schema,
-    kb_relevance_schema,
     leftover_assignment_schema,
-    parent_summary_schema,
     root_grouping_schema,
     scores_schema,
     section_analysis_schema,
     section_skeleton_schema,
-    synthesis_schema,
-    title_tags_schema,
-    keyed_schema,
     keyed_schema_field,
     trace_links_schema,
 )
 from app.config import settings
-from app.survey.keyed_calls import KeyedMode, describe_output, drop_possibly_cut_last_entry, run_keyed, schema_for
-from app.survey.keyed_specs import TITLE_TAGS_SPEC
+from app.survey.keyed_calls import (
+    KeyedMode,
+    describe_output,
+    drop_possibly_cut_last_entry,
+    run_keyed,
+    schema_for,
+    wrap_scalar_entries,
+)
+from app.survey.keyed_specs import (
+    AUTHOR_CONTENT_SPEC,
+    FIGURE_TABLE_MAPPING_SPEC,
+    KB_RELEVANCE_SPEC,
+    PARENT_SUMMARY_SPEC,
+    SYNTHESIS_SPEC,
+    TITLE_TAGS_SPEC,
+)
 from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
 from app.leveling.live_stream import DraftingDisplay
 from app.logging_context import current_job_id
@@ -1620,14 +1627,19 @@ class OrchestratorLlmClient:
         `_apply_parent_summary_pass` already fails open on any exception or
         malformed/partial response, keeping the verbatim heading title and
         description exactly as constructed."""
-        system_prompt = load_prompt("summarize_parent_nodes", node_count=str(len(nodes_by_id)))
-        return self._chat_json(
-            system_prompt, json.dumps(nodes_by_id), schema=keyed_schema(parent_summary_schema()), user_id=user_id,
-            stream_inputs={
-                k: v.get("title") if isinstance(v, dict) else None for k, v in nodes_by_id.items()
-            },
-            stream_stage="summarize",
-        )
+        spec = PARENT_SUMMARY_SPEC
+
+        def send(payload: dict, mode: KeyedMode) -> object:
+            system_prompt = load_prompt(
+                "summarize_parent_nodes", node_count=str(len(payload)), output_format=describe_output(spec, mode),
+            )
+            return self._chat_json(
+                system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
+                stream_inputs={k: v.get("title") if isinstance(v, dict) else None for k, v in payload.items()},
+                stream_stage="summarize",
+            )
+
+        return run_keyed(send, nodes_by_id, spec, model=self._model)
 
     def synthesize_leaf_requirements(
         self, items_by_id: dict[str, dict], user_id: str | None = None,
@@ -1653,18 +1665,21 @@ class OrchestratorLlmClient:
         `_apply_synthesis_pass` already fails open on any exception or
         malformed/partial response, keeping the flagged leaf's verbatim
         source text exactly as constructed."""
-        system_prompt = load_prompt(
-            "synthesize_leaf_requirements",
-            tag_vocabulary=", ".join(t.value for t in RequirementTag),
-            row_count=str(len(items_by_id)),
-        )
-        return self._chat_json(
-            system_prompt, json.dumps(items_by_id), schema=keyed_schema(synthesis_schema()), user_id=user_id,
-            stream_inputs={
-                k: v.get("text") if isinstance(v, dict) else None for k, v in items_by_id.items()
-            },
-            stream_stage="draft",
-        )
+        spec = SYNTHESIS_SPEC
+
+        def send(payload: dict, mode: KeyedMode) -> object:
+            # The tag vocabulary is part of the generated output-format sentence (it comes from the same
+            # field list as the schema), so it is not passed as a separate marker.
+            system_prompt = load_prompt(
+                "synthesize_leaf_requirements", row_count=str(len(payload)), output_format=describe_output(spec, mode),
+            )
+            return self._chat_json(
+                system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
+                stream_inputs={k: v.get("text") if isinstance(v, dict) else None for k, v in payload.items()},
+                stream_stage="draft",
+            )
+
+        return run_keyed(send, items_by_id, spec, model=self._model)
 
     def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
         """Backs the TitleDistillationClient protocol
@@ -1841,7 +1856,7 @@ class OrchestratorLlmClient:
         snippets_by_index = {
             str(i): {"source_file": s["source_file"], "text": s["text"]} for i, s in enumerate(snippets)
         }
-        system_prompt = load_prompt("judge_kb_relevance")
+        spec = KB_RELEVANCE_SPEC
         # Confirmed missing before this used _chat_json: this was the ONE
         # call in this module with no output cap at all -- the exact
         # unbounded-hidden-reasoning exposure _MAX_OUTPUT_TOKENS's own doc
@@ -1853,12 +1868,19 @@ class OrchestratorLlmClient:
         # judgment per snippet is structured classification, not open-ended
         # reasoning -- same confirmed-live finding as every other
         # non-conversational call in this module.
-        return self._chat_json(
-            system_prompt,
-            json.dumps({"section_content": branch_content, "snippets": snippets_by_index}),
-            schema=keyed_schema(kb_relevance_schema()),
-            user_id=user_id,
-        )
+        def send(payload: dict, mode: KeyedMode) -> object:
+            # A retry of omitted indices re-enters here with just those snippets.
+            parsed = self._chat_json(
+                load_prompt("judge_kb_relevance", output_format=describe_output(spec, mode)),
+                json.dumps({"section_content": branch_content, "snippets": payload}),
+                schema=schema_for(spec, mode),
+                user_id=user_id,
+            )
+            # The prompt-only / legacy answer is {index: verdict}; read it as {index: {"verdict": ...}}.
+            return wrap_scalar_entries(parsed, "verdict")
+
+        entries = run_keyed(send, snippets_by_index, spec, model=self._model)
+        return {index: entry["verdict"] for index, entry in entries.items()}
 
     def analyze_section(
         self,
@@ -2333,57 +2355,73 @@ class OrchestratorLlmClient:
             if cached is not None:
                 logger.info("author_content: cache hit, skipping LLM call")
                 return cached["content"], cached["truncated"]
-        system_prompt = _with_kb_context(
-            load_prompt(
-                "author_content",
-                tag_vocabulary=", ".join(t.value for t in RequirementTag),
-                node_count=str(len(skeleton_nodes)),
-            ),
-            kb_context,
-        )
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps({"section": section_text, "nodes": skeleton_nodes}),
-                },
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            **keyed_schema_field(content_authoring_schema()),
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            # Same confirmed-live finding as the two section-analysis paths
-            # this call was split out of -- structured extraction over text
-            # already in the prompt, not open-ended reasoning.
-            "think": False,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-            **({"topK": self._top_k} if self._top_k else {}),
-            **({"minP": self._min_p} if self._min_p else {}),
-        }
-        with _tracer.start_as_current_span("author_content") as span:
-            span.set_attribute("gen_ai.request.model", self._model or "default")
-            span.set_attribute("gen_ai.operation.name", "chat")
-            response = self._post_chat(payload, user_id)
-            response.raise_for_status()
-            body = response.json()
-            content = _strip_json_fence(body["content"])
-            parsed = _parse_json_object(content)
-            result = parsed if isinstance(parsed, dict) else {}
-            span.set_attribute("gen_ai.response.node_count", len(result))
-        truncated = body.get("finishReason") == "length"
+        spec = AUTHOR_CONTENT_SPEC
+        truncated = False
+
+        def send(nodes: dict, mode: KeyedMode) -> object:
+            nonlocal truncated
+            system_prompt = _with_kb_context(
+                load_prompt(
+                    "author_content",
+                    tag_vocabulary=", ".join(t.value for t in RequirementTag),
+                    node_count=str(len(nodes)),
+                    output_format=describe_output(spec, mode),
+                ),
+                kb_context,
+            )
+            schema = schema_for(spec, mode)
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps({"section": section_text, "nodes": nodes}),
+                    },
+                ],
+                "temperature": 0,
+                **({"model": self._model} if self._model else {}),
+                **({"responseSchema": schema} if schema is not None else {}),
+                "maxTokens": _MAX_OUTPUT_TOKENS,
+                # Same confirmed-live finding as the two section-analysis paths
+                # this call was split out of -- structured extraction over text
+                # already in the prompt, not open-ended reasoning.
+                "think": False,
+                **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+                **({"seed": self._seed} if self._seed is not None else {}),
+                **({"topK": self._top_k} if self._top_k else {}),
+                **({"minP": self._min_p} if self._min_p else {}),
+            }
+            with _tracer.start_as_current_span("author_content") as span:
+                span.set_attribute("gen_ai.request.model", self._model or "default")
+                span.set_attribute("gen_ai.operation.name", "chat")
+                response = self._post_chat(payload, user_id)
+                response.raise_for_status()
+                body = response.json()
+                content = _strip_json_fence(body["content"])
+                parsed = _parse_json_object(content)
+                span.set_attribute("gen_ai.response.node_count", len(parsed) if isinstance(parsed, dict) else 0)
+            if body.get("finishReason") == "length":
+                truncated = True
+                # The entry the token limit cut off may have been repaired into something that parses but is
+                # wrong; it is treated as not answered (the caller already degrades for an absent node).
+                parsed = drop_possibly_cut_last_entry(parsed)
+            return parsed
+
+        # No retry of omitted nodes: a long branch's full text is exactly what hits the output cap, so
+        # repeating it would pay twice for the same cut-off, and the caller already decides what an
+        # absent node means (see llm_leveling._author_branch_content).
+        result = run_keyed(send, skeleton_nodes, spec, model=self._model, retry=False)
         if truncated:
             notice("output_limit_reached", "warning", with_last_item=True, step="write")
         logger.warning(
-            "author_content result: requested=%d returned=%d finishReason=%r truncated=%s",
-            len(skeleton_nodes), len(result), body.get("finishReason"), truncated,
+            "author_content result: requested=%d returned=%d truncated=%s",
+            len(skeleton_nodes), len(result), truncated,
         )
         # Never cache a truncated result -- same reasoning as analyze_section's
         # own identical guard.
         if key is not None and not truncated:
-            self._cache.set(key, {"content": result, "truncated": truncated})
-        return result, truncated
+            self._cache.set(key, {"content": dict(result), "truncated": truncated})
+        return dict(result), truncated
 
     def map_figures_tables(
         self, candidates: dict[str, dict], items: dict[str, dict], user_id: str | None = None,
@@ -2441,39 +2479,54 @@ class OrchestratorLlmClient:
             if cached is not None:
                 logger.info("map_figures_tables: cache hit, skipping LLM call")
                 return cached
-        system_prompt = load_prompt("map_figures_tables", item_count=str(len(items)))
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps({"candidates": candidates, "items": items}),
-                },
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            **keyed_schema_field(figure_table_mapping_schema()),
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            # Same confirmed-live finding as every other structured-extraction
-            # call in this class -- classification over material already in
-            # the prompt, not open-ended reasoning.
-            "think": False,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-            **({"topK": self._top_k} if self._top_k else {}),
-            **({"minP": self._min_p} if self._min_p else {}),
-        }
-        with _tracer.start_as_current_span("map_figures_tables") as span:
-            span.set_attribute("gen_ai.request.model", self._model or "default")
-            span.set_attribute("gen_ai.operation.name", "chat")
-            span.set_attribute("gen_ai.request.item_count", len(items))
-            response = self._post_chat(payload, user_id)
-            response.raise_for_status()
-            body = response.json()
-            content = _strip_json_fence(body["content"])
-            parsed = _parse_json_object(content)
-            result = parsed if isinstance(parsed, dict) else {}
-            span.set_attribute("gen_ai.response.item_count", len(result))
+        spec = FIGURE_TABLE_MAPPING_SPEC
+        cut_off = False
+
+        def send(subset: dict, mode: KeyedMode) -> object:
+            nonlocal cut_off
+            system_prompt = load_prompt(
+                "map_figures_tables", item_count=str(len(subset)), output_format=describe_output(spec, mode),
+            )
+            schema = schema_for(spec, mode)
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps({"candidates": candidates, "items": subset}),
+                    },
+                ],
+                "temperature": 0,
+                **({"model": self._model} if self._model else {}),
+                **({"responseSchema": schema} if schema is not None else {}),
+                "maxTokens": _MAX_OUTPUT_TOKENS,
+                # Same confirmed-live finding as every other structured-extraction
+                # call in this class -- classification over material already in
+                # the prompt, not open-ended reasoning.
+                "think": False,
+                **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+                **({"seed": self._seed} if self._seed is not None else {}),
+                **({"topK": self._top_k} if self._top_k else {}),
+                **({"minP": self._min_p} if self._min_p else {}),
+            }
+            with _tracer.start_as_current_span("map_figures_tables") as span:
+                span.set_attribute("gen_ai.request.model", self._model or "default")
+                span.set_attribute("gen_ai.operation.name", "chat")
+                span.set_attribute("gen_ai.request.item_count", len(subset))
+                response = self._post_chat(payload, user_id)
+                response.raise_for_status()
+                body = response.json()
+                content = _strip_json_fence(body["content"])
+                parsed = _parse_json_object(content)
+                span.set_attribute("gen_ai.response.item_count", len(parsed) if isinstance(parsed, dict) else 0)
+            if body.get("finishReason") == "length":
+                cut_off = True
+                parsed = drop_possibly_cut_last_entry(parsed)
+            return parsed
+
+        # No retry of omitted items: the caller sees exactly which ones went unanswered and decides
+        # between escalating them and reporting them (see _map_figures_tables_to_nodes).
+        result = dict(run_keyed(send, items, spec, model=self._model, retry=False))
         # An item this response never answered for costs that item its home
         # (in the escalation tier there is no further tier to fall through
         # to), so an incomplete answer must never be reused: cached, it would
@@ -2482,13 +2535,12 @@ class OrchestratorLlmClient:
         # identically -- the model's own output cap (finishReason, the same
         # signal analyze_section/author_content guard their caches with) and
         # a response that simply came back short of what was asked.
-        incomplete = body.get("finishReason") == "length" or len(result) < len(items)
-        if body.get("finishReason") == "length":
+        incomplete = cut_off or len(result) < len(items)
+        if cut_off:
             notice("output_limit_reached", "warning", with_last_item=True, step="figures")
         logger.warning(
-            "map_figures_tables result: candidates=%d requested=%d returned=%d "
-            "finishReason=%r incomplete=%s",
-            len(candidates), len(items), len(result), body.get("finishReason"), incomplete,
+            "map_figures_tables result: candidates=%d requested=%d returned=%d incomplete=%s",
+            len(candidates), len(items), len(result), incomplete,
         )
         if key is not None and not incomplete:
             self._cache.set(key, result)
