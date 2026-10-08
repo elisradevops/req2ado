@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from app.survey._response_schemas import (
     _TAGS,
+    _CONFIDENCE,
+    _ISSUES,
     content_authoring_schema,
+    epic_feature_scores_schema,
     figure_table_mapping_schema,
     kb_relevance_schema,
     parent_summary_schema,
+    scores_schema,
     synthesis_schema,
     title_tags_schema,
 )
@@ -85,4 +89,49 @@ FIGURE_TABLE_MAPPING_SPEC = KeyedSpec(
     },
     id_noun="item id",
     legacy_schema=figure_table_mapping_schema,
+)
+
+# Quality scoring. `categoryScores` was an open map (category name -> score), which is not valid strict
+# JSON Schema; on the wire it is an array of {"name", "score"} entries and the client turns it back
+# into the same dict the scoring code reads. `score` carries no minimum/maximum (neither vendor
+# supports them) -- the 0-100 range is checked where the score is read (leveling/scoring.py).
+_CATEGORY_SCORES = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {"name": {"type": "string"}, "score": {"type": "integer"}},
+        "required": ["name", "score"],
+        "additionalProperties": False,
+    },
+}
+
+SCORING_SPEC = KeyedSpec(
+    name="scoring",
+    schema_name="scores_by_node",
+    fields={
+        "score": {"type": "integer"},
+        "issues": {"type": "array", "items": {"type": "string", "enum": _ISSUES}},
+        "categoryScores": _CATEGORY_SCORES,
+        "confidence": {"type": "string", "enum": _CONFIDENCE},
+    },
+    field_prompts={
+        "score": "'score' (an integer 0-100)",
+        "issues": "'issues' (a list of zero or more issue tags)",
+        "categoryScores": "'categoryScores' (a list of {\"name\", \"score\"} objects)",
+        "confidence": "'confidence' (one of 'high', 'medium', 'low')",
+    },
+    id_noun="node_id",
+    legacy_schema=scores_schema,
+)
+
+EPIC_FEATURE_SCORING_SPEC = KeyedSpec(
+    name="epic_feature_scoring",
+    schema_name="epic_feature_scores_by_node",
+    fields={"score": {"type": "integer"}, "categoryScores": _CATEGORY_SCORES},
+    field_prompts={
+        "score": "'score' (an integer 0-100)",
+        "categoryScores": "'categoryScores' (a list of {\"name\", \"score\"} objects)",
+    },
+    id_noun="node_id",
+    legacy_schema=epic_feature_scores_schema,
 )

@@ -150,6 +150,23 @@ def schema_for(spec: KeyedSpec, mode: KeyedMode) -> dict | None:
     return None
 
 
+def _array_prefix(spec: KeyedSpec) -> str:
+    return (
+        f'Return ONLY a JSON object of the form {{"items": [...]}} whose "items" array has exactly one '
+        f'element for EVERY {spec.id_noun} in the input, in the same order; each element is an object with '
+        f'"id" (the {spec.id_noun}, copied exactly from the input)'
+    )
+
+
+def output_lead(spec: KeyedSpec, mode: KeyedMode) -> str:
+    """Only the opening of the output-format sentence, up to where the fields start -- for a prompt
+    that describes its own fields in its own words (scoring), so it still gets the wire format from
+    one place. The prompt text continues with the first field."""
+    if mode == "array":
+        return f"{_array_prefix(spec)},"
+    return f"Return ONLY a JSON object with the SAME {spec.id_noun} keys, each mapped to an object with"
+
+
 def describe_output(spec: KeyedSpec, mode: KeyedMode) -> str:
     """The prompt's output-format sentence for `spec` in `mode`, generated from the same
     field list the schema is built from."""
@@ -160,11 +177,7 @@ def describe_output(spec: KeyedSpec, mode: KeyedMode) -> str:
         else ", ".join(described[:-1]) + ", and " + described[-1]
     )
     if mode == "array":
-        return (
-            f'Return ONLY a JSON object of the form {{"items": [...]}} whose "items" array has exactly one '
-            f'element for EVERY {spec.id_noun} in the input, in the same order; each element is an object with '
-            f'"id" (the {spec.id_noun}, copied exactly from the input) and {fields}.'
-        )
+        return f"{_array_prefix(spec)} and {fields}."
     if spec.legacy_output is not None:
         return spec.legacy_output
     return f"Return ONLY a JSON object with the SAME {spec.id_noun} keys, each mapped to an object with {fields}."
