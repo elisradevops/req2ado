@@ -112,7 +112,14 @@ def units_from_progress(progress: LevelingProgress) -> StageUnits | None:
         total = progress.blocks_total
         if total <= 0:
             return None
-        done = total if phase == "score_requirements_done" else progress.blocks_done
+        done = progress.blocks_done
+        if phase == "score_requirements_done":
+            # Scoring runs in batches and a done event is published after EACH one, carrying the cumulative
+            # count -- only the last batch (or an event with no batch info) means the pass is finished. Reporting
+            # the total for every done event put the bar at 100% after the first batch of ten.
+            last_batch = progress.chunk_count is None or progress.chunk_index is None or progress.chunk_index + 1 >= progress.chunk_count
+            if last_batch:
+                done = total
         return StageUnits("score", "requirements", _clamp(done, total), total)
 
     # The three whole-document passes after scoring. Each event marks the START

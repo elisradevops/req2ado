@@ -1194,6 +1194,21 @@ describe('ProgressBanner live run view', () => {
     });
   };
 
+  it('builds the time left from the counted per-item progress, not the chunk-level event that only moves when a chunk lands', () => {
+    // The synthesis step as seen live: the server's event says 0 of 275 until a 150-node chunk returns
+    // (minutes), while the counted progress -- the one the bar and "N of M items" show -- moves per item.
+    render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
+    send({ seq: 1, done: 0, total: 275, pct: 2 });
+    expect(screen.getByText('Estimating time left…')).toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(50_000));
+    send({ seq: 2, done: 21, total: 275, pct: 3 });
+    act(() => vi.advanceTimersByTime(50_000));
+    send({ seq: 3, done: 43, total: 275, pct: 4 });
+
+    expect(screen.getByText(/left in this step/i)).toBeInTheDocument();
+  });
+
   it('keeps today\'s block-based estimate and label when there are no progress events', () => {
     render(<ProgressBanner stage="infer_hierarchy_start" startedAt="2026-07-09T10:00:00Z" mode="survey" narrations={[analyze]} jobId="job-1" />);
     expect(screen.getByText(/of this section \(est\.\)/)).toBeInTheDocument();
