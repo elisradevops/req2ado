@@ -90,7 +90,8 @@ class Settings(BaseSettings):
     keyed_schema_mode: Literal["none", "legacy_map", "array"] = "none"
     # Comma-separated pass names forced to "array" regardless of keyed_schema_mode, so a
     # deployment can enable ONE pass at a time and roll back with a config change only
-    # (KEYED_SCHEMA_PASSES=title_tag). Unknown names are ignored.
+    # (KEYED_SCHEMA_PASSES=title_tag). Unknown names are ignored. Pass names: title_tag, synthesis,
+    # parent_summary, kb_relevance, author_content, figure_table_mapping, scoring, epic_feature_scoring.
     keyed_schema_passes: str = ""
     # Confirmed real bug: this was hardcoded to 300s while the orchestrator's
     # own LLM_REQUEST_TIMEOUT_MS defaults to 600s (600_000ms) -- a vision

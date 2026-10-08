@@ -49,6 +49,9 @@ class KeyedSpec:
     ("'title' (string)"); must have exactly the keys of `fields`.
     `id_noun` -- what an id is called in the prompt ("row id", "node id").
     `legacy_schema` -- factory for the original open-map schema (legacy_map mode only).
+    `legacy_output` -- the prompt's output-format sentence exactly as it was written before the pass
+    moved here, for a pass whose entries are not objects (the default sentence says "each mapped to an
+    object with ..."); used verbatim in the non-array modes.
     """
 
     name: str
@@ -57,6 +60,7 @@ class KeyedSpec:
     field_prompts: Mapping[str, str]
     id_noun: str = "row id"
     legacy_schema: Callable[[], dict] | None = None
+    legacy_output: str | None = None
 
     def __post_init__(self) -> None:
         if set(self.fields) != set(self.field_prompts):
@@ -146,17 +150,52 @@ def schema_for(spec: KeyedSpec, mode: KeyedMode) -> dict | None:
     return None
 
 
+def _array_prefix(spec: KeyedSpec) -> str:
+    return (
+        f'Return ONLY a JSON object of the form {{"items": [...]}} whose "items" array has exactly one '
+        f'element for EVERY {spec.id_noun} in the input, in the same order; each element is an object with '
+        f'"id" (the {spec.id_noun}, copied exactly from the input)'
+    )
+
+
+def output_lead(spec: KeyedSpec, mode: KeyedMode) -> str:
+    """Only the opening of the output-format sentence, up to where the fields start -- for a prompt
+    that describes its own fields in its own words (scoring), so it still gets the wire format from
+    one place. The prompt text continues with the first field."""
+    if mode == "array":
+        return f"{_array_prefix(spec)},"
+    return f"Return ONLY a JSON object with the SAME {spec.id_noun} keys, each mapped to an object with"
+
+
 def describe_output(spec: KeyedSpec, mode: KeyedMode) -> str:
     """The prompt's output-format sentence for `spec` in `mode`, generated from the same
     field list the schema is built from."""
-    fields = " and ".join(spec.field_prompts[name] for name in spec.fields)
+    described = [spec.field_prompts[name] for name in spec.fields]
+    fields = (
+        described[0] if len(described) == 1
+        else " and ".join(described) if len(described) == 2
+        else ", ".join(described[:-1]) + ", and " + described[-1]
+    )
     if mode == "array":
-        return (
-            f'Return ONLY a JSON object of the form {{"items": [...]}} whose "items" array has exactly one '
-            f'element for EVERY {spec.id_noun} in the input, in the same order; each element is an object with '
-            f'"id" (the {spec.id_noun}, copied exactly from the input) and {fields}.'
-        )
+        return f"{_array_prefix(spec)} and {fields}."
+    if spec.legacy_output is not None:
+        return spec.legacy_output
     return f"Return ONLY a JSON object with the SAME {spec.id_noun} keys, each mapped to an object with {fields}."
+
+
+def wrap_scalar_entries(parsed: object, field: str) -> object:
+    """For a pass whose legacy answer maps each id to a bare value (`{"0": "relevant"}`): the same
+    answer as `{"0": {field: "relevant"}}`, which is the entry shape the rest of this module reads.
+    Anything else (the array format, a wrapper around such a map, garbage) is returned as it came."""
+    if not isinstance(parsed, dict) or not parsed:
+        return parsed
+    if all(isinstance(value, (str, int, float, bool)) or value is None for value in parsed.values()):
+        return {key: {field: value} for key, value in parsed.items()}
+    if len(parsed) == 1:
+        (key, inner), = parsed.items()
+        if isinstance(inner, dict) and inner and all(isinstance(v, str) for v in inner.values()):
+            return {key: wrap_scalar_entries(inner, field)}
+    return parsed
 
 
 def normalize_keyed_result(result: object, requested_ids: list[str], fields: Collection[str] | None = None) -> dict:
@@ -290,6 +329,7 @@ def run_keyed(
     payload: Mapping[str, object],
     spec: KeyedSpec,
     model: str | None = None,
+    retry: bool = True,
 ) -> KeyedEntries:
     """One keyed call: `send(payload, mode)` returns the parsed JSON the model produced (it must
     build its own request from `payload` and `mode`, so a retry can send a subset and a fallback
@@ -299,7 +339,10 @@ def run_keyed(
     Fallback: in "array" mode, when NOTHING usable comes back (an empty `items`, a different
     shape, a wrapper the parser cannot read) the same call is made once more prompt-only. If that
     works, this (pass, model) is degraded to prompt-only for the rest of the process, so the
-    schema is not tried -- and paid for -- on every later chunk. Cost: one extra call, once."""
+    schema is not tried -- and paid for -- on every later chunk. Cost: one extra call, once.
+
+    `retry=False` skips the retry of omitted ids, for a pass whose caller already decides what an
+    absent id means (and whose calls are too large to repeat)."""
     ids = list(payload)
     if not ids:
         return KeyedEntries({}, [])
@@ -326,7 +369,7 @@ def run_keyed(
             fallback_failed = True
     merged, retried = (
         (first, 0)
-        if fallback_failed
+        if fallback_failed or not retry
         else retry_omitted(first, ids, payload, lambda subset: send(subset, mode), f"{spec.name} keyed call", spec.fields)
     )
     extra_calls += retried

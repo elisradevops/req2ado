@@ -102,7 +102,17 @@ def test_scoring_counts_requirements_and_completes() -> None:
     mid = units_from_progress(_p("score_requirements", blocks_done=40, blocks_total=153))
     assert (mid.stage, mid.unit, mid.done, mid.total) == ("score", "requirements", 40, 153)
     done = units_from_progress(_p("score_requirements_done", blocks_done=40, blocks_total=153))
-    assert done.done == 153
+    assert done.done == 153  # no batch info: the pass is finished
+
+
+def test_scoring_batch_done_events_report_the_cumulative_count_until_the_last_batch() -> None:
+    # A done event follows every batch; only the last one means the pass is finished.
+    first = units_from_progress(_p("score_requirements_done", blocks_done=50, blocks_total=426, chunk_index=0, chunk_count=10))
+    assert (first.done, first.total) == (50, 426)
+    middle = units_from_progress(_p("score_requirements_done", blocks_done=204, blocks_total=426, chunk_index=4, chunk_count=10))
+    assert middle.done == 204
+    last = units_from_progress(_p("score_requirements_done", blocks_done=426, blocks_total=426, chunk_index=9, chunk_count=10))
+    assert last.done == 426
 
 
 def test_whole_document_passes_count_passes_finished() -> None:

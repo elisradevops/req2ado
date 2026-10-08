@@ -17,28 +17,35 @@ from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, Secti
 from app.survey._response_schemas import (
     checklist_definitions_schema,
     checklist_extraction_schema,
-    content_authoring_schema,
     distill_title_schema,
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
-    epic_feature_scores_schema,
-    figure_table_mapping_schema,
-    kb_relevance_schema,
     leftover_assignment_schema,
-    parent_summary_schema,
     root_grouping_schema,
-    scores_schema,
     section_analysis_schema,
     section_skeleton_schema,
-    synthesis_schema,
-    title_tags_schema,
-    keyed_schema,
-    keyed_schema_field,
     trace_links_schema,
 )
 from app.config import settings
-from app.survey.keyed_calls import KeyedMode, describe_output, drop_possibly_cut_last_entry, run_keyed, schema_for
-from app.survey.keyed_specs import TITLE_TAGS_SPEC
+from app.survey.keyed_calls import (
+    KeyedMode,
+    describe_output,
+    drop_possibly_cut_last_entry,
+    output_lead,
+    run_keyed,
+    schema_for,
+    wrap_scalar_entries,
+)
+from app.survey.keyed_specs import (
+    AUTHOR_CONTENT_SPEC,
+    EPIC_FEATURE_SCORING_SPEC,
+    FIGURE_TABLE_MAPPING_SPEC,
+    KB_RELEVANCE_SPEC,
+    PARENT_SUMMARY_SPEC,
+    SCORING_SPEC,
+    SYNTHESIS_SPEC,
+    TITLE_TAGS_SPEC,
+)
 from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
 from app.leveling.live_stream import DraftingDisplay
 from app.logging_context import current_job_id
@@ -861,6 +868,70 @@ def _with_kb_context_as_scoring_rubric(
     )
 
 
+def _with_category_dict(entry: object) -> object:
+    """A score entry with `categoryScores` as the dict (category name -> score) the scoring code reads:
+    on the array wire format it arrives as a list of {"name", "score"} entries. A malformed list item is
+    skipped, so the consumer's all-or-nothing check sees one fewer category rather than a crash; an
+    entry that is not a dict, or already has a dict, is returned as it is."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("categoryScores"), list):
+        return entry
+    categories: dict[str, object] = {}
+    for item in entry["categoryScores"]:
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            categories.setdefault(item["name"].strip(), item.get("score"))
+    return {**entry, "categoryScores": categories}
+
+
+def _array_category_instruction(category_checklist: list[str] | None, kb_context: str | None) -> str:
+    """The `categoryScores` paragraph for the array wire format -- the same three sources of category
+    names as the map form (a stored checklist, names derived from KB material, the five generic
+    dimensions), phrased for a list of {"name", "score"} entries instead of an object keyed by name."""
+    entry = '{"name": <category>, "score": <integer 0-100>}'
+    if category_checklist:
+        instruction = (
+            f"'categoryScores' -- an array with EXACTLY one {entry} object for each of these categories "
+            "(this organization's own ingested quality-checklist category names, fixed for this document -- "
+            f"do not add, omit, rename, or reorder any): {json.dumps(category_checklist)}. Each score is an "
+            "independent integer 0-100 judgment (100 = fully compliant on that dimension alone).\n"
+        )
+    elif kb_context:
+        instruction = (
+            f"'categoryScores' -- an array of {entry} objects whose NAMES you derive from the "
+            "organization's own ingested quality-checklist material referenced above (e.g. if it defines a "
+            "checklist like Necessary, Correct level, Unambiguous, Singular, Complete, Feasible, Verifiable, "
+            "Consistent, Traceable, Modifiable, use exactly those names), each score an independent integer "
+            "0-100 judgment (100 = fully compliant on that dimension alone). Decide the category names ONCE "
+            "from that material and use the EXACT SAME set of names, spelled identically, for every single "
+            "node_id in your response -- never a different set per node. If the material defines no clear "
+            "checklist to score against, fall back to these five generic dimensions instead: clarity, "
+            "testability, atomicity, style, rationale.\n"
+        )
+    else:
+        instruction = (
+            f"'categoryScores' -- an array of FIVE {entry} objects, one per dimension (100 = fully "
+            "compliant on that dimension alone, judge each one on its own merits, do not just derive them "
+            "mechanically from whether an issue tag was flagged):\n"
+            "  - clarity: is the wording unambiguous and free of vague terms?\n"
+            "  - testability: can this be objectively verified, with clear "
+            "acceptance criteria?\n"
+            "  - atomicity: is this ONE single requirement, not several "
+            "bundled together? A bare fragment or label (see "
+            "completeness_as_requirement below) is NOT atomic just because "
+            "it is short -- score it low here too, not high.\n"
+            "  - style: active voice, EARS-style phrasing?\n"
+            "  - rationale: does it state WHY when the reason isn't "
+            "self-evident?\n"
+        )
+    return instruction + (
+        "  - completeness_as_requirement: is this a COMPLETE candidate "
+        "requirement -- a subject, a modal (shall/should/must), and a "
+        "verifiable predicate? A bare label, value, or table cell (e.g. "
+        "'Size: 3U 1\"', 'Over-current', 'ON/OFF control') scores 0-10 here "
+        "regardless of how clear or short it is. Always include this "
+        "category in categoryScores, in addition to the categories above.\n"
+    )
+
+
 class OrchestratorLlmClient:
     """SURVEY mode's real LLM client. Calls the orchestrator's POST
     /llm/chat proxy — NEVER calls Open WebUI/Ollama directly, per the
@@ -1167,48 +1238,15 @@ class OrchestratorLlmClient:
         result = self._chat_json(system_prompt, nodes_json, schema=trace_links_schema(), user_id=user_id)
         return result.get("links", []) if isinstance(result, dict) else []
 
-    def score_requirements_for_document(
-        self,
-        descriptions_by_node_id: dict[str, str],
-        criteria_context: str | None = None,
-        kb_context: str | None = None,
-        category_checklist: list[str] | None = None,
-        user_id: str | None = None,
-    ) -> dict[str, dict]:
-        """Batched quality-scoring call: one LLM call judging every node's
-        FINAL formalized description in the branch, not one call per node —
-        same batching philosophy as generate_requirements_for_document.
-        Judged against EARS/INCOSE/ISO/IEC/IEEE-29148 criteria baked into
-        the prompt (this codebase's general knowledge of these public
-        standards). `criteria_context` (see
-        app.quality.criteria_retrieval.CriteriaRetriever), when supplied,
-        adds retrieved reference material the model is told to cite instead
-        of relying solely on that parametric knowledge. `kb_context` (see
-        app.kb.retrieval.retrieve_context), when supplied, is prepended as
-        additive org-specific reference material -- the two grounding
-        sources are independent and orthogonal (customer content vs quality
-        criteria) and either or both may be omitted, keeping the prompt
-        byte-identical to before either capability existed.
-
-        `category_checklist` (see app.kb.checklist_extraction), when
-        supplied, is a FIXED list of categoryScores key names extracted ONCE
-        at KB ingestion time -- a genuine cross-run determinism guarantee
-        (user-reported requirement: the SAME document run 4 times must
-        yield the SAME categories), since the model is told to use this
-        EXACT list rather than derive anything live. Takes priority over
-        `kb_context`'s own (live, best-effort) derive-from-material
-        fallback, which only applies when no stored checklist exists yet
-        for the grounding document (e.g. ingested before this existed)."""
-        key = None
-        if self._cache is not None:
-            key = cache_key(
-                "score_requirements_for_document", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
-                descriptions_by_node_id, criteria_context, kb_context, category_checklist,
-            )
-            cached = self._cache.get(key)
-            if cached is not None:
-                logger.info("score_requirements_for_document: cache hit, skipping LLM call")
-                return cached
+    @staticmethod
+    def _scoring_category_instruction(
+        mode: KeyedMode, category_checklist: list[str] | None, kb_context: str | None,
+    ) -> str:
+        """The `categoryScores` paragraph of the requirement-scoring prompt. In array mode the
+        categories are a list of {"name", "score"} entries (an open map is not valid strict JSON
+        Schema); otherwise it is the original text, unchanged."""
+        if mode == "array":
+            return _array_category_instruction(category_checklist, kb_context)
         # categoryScores' key vocabulary, in priority order:
         # 1. `category_checklist` -- a FIXED, pre-extracted list (genuinely
         #    deterministic across runs, see this method's own docstring).
@@ -1276,85 +1314,143 @@ class OrchestratorLlmClient:
             "regardless of how clear or short it is. Always include this key "
             "in categoryScores, in addition to the categories above.\n"
         )
-        # Concrete, countable completeness instruction -- same confirmed-live
-        # pattern as _whole_document_hint/_branch_topic_hint ("a concrete,
-        # countable floor beats a qualitative reminder"). Addresses a real,
-        # already-observed failure mode (llm_leveling.py's "Quality scoring
-        # returned no valid score for N node(s)" warning): nothing previously
-        # told the model it must cover EVERY input key, only that it must not
-        # invent new ones. node_count fills BOTH occurrences of the
-        # __NODE_COUNT__ marker in the template.
-        system_prompt = load_prompt(
-            "score_requirements_for_document",
-            category_instruction=category_instruction,
-            node_count=str(len(descriptions_by_node_id)),
-        )
-        if criteria_context:
-            system_prompt += (
-                "\n\nThe following reference criteria were retrieved as most relevant "
-                f"to these requirements -- cite them in your judgment:\n{criteria_context}"
+        return category_instruction
+
+    def score_requirements_for_document(
+        self,
+        descriptions_by_node_id: dict[str, str],
+        criteria_context: str | None = None,
+        kb_context: str | None = None,
+        category_checklist: list[str] | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, dict]:
+        """Batched quality-scoring call: one LLM call judging every node's
+        FINAL formalized description in the branch, not one call per node —
+        same batching philosophy as generate_requirements_for_document.
+        Judged against EARS/INCOSE/ISO/IEC/IEEE-29148 criteria baked into
+        the prompt (this codebase's general knowledge of these public
+        standards). `criteria_context` (see
+        app.quality.criteria_retrieval.CriteriaRetriever), when supplied,
+        adds retrieved reference material the model is told to cite instead
+        of relying solely on that parametric knowledge. `kb_context` (see
+        app.kb.retrieval.retrieve_context), when supplied, is prepended as
+        additive org-specific reference material -- the two grounding
+        sources are independent and orthogonal (customer content vs quality
+        criteria) and either or both may be omitted, keeping the prompt
+        byte-identical to before either capability existed.
+
+        `category_checklist` (see app.kb.checklist_extraction), when
+        supplied, is a FIXED list of categoryScores key names extracted ONCE
+        at KB ingestion time -- a genuine cross-run determinism guarantee
+        (user-reported requirement: the SAME document run 4 times must
+        yield the SAME categories), since the model is told to use this
+        EXACT list rather than derive anything live. Takes priority over
+        `kb_context`'s own (live, best-effort) derive-from-material
+        fallback, which only applies when no stored checklist exists yet
+        for the grounding document (e.g. ingested before this existed)."""
+        key = None
+        if self._cache is not None:
+            key = cache_key(
+                "score_requirements_for_document", self._model, self._num_ctx, self._top_k, self._min_p, self._seed,
+                descriptions_by_node_id, criteria_context, kb_context, category_checklist,
             )
-        system_prompt = _with_kb_context_as_scoring_rubric(
-            system_prompt, kb_context, categories_are_fixed=bool(category_checklist)
-        )
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(descriptions_by_node_id)},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            **keyed_schema_field(scores_schema()),
-            # Confirmed real cause of this call being extremely slow (user-
-            # reported: a 83-requirement batch stalling well past normal):
-            # unlike analyze_section/analyze_section_agentic (which both
-            # already disable this with the identical doc comment/finding),
-            # this call never set `think: False` -- a reasoning-capable
-            # model (qwen3.6:35b) burns hidden chain-of-thought tokens
-            # before ANY output, for EVERY one of the 83 items in one call,
-            # with no observed accuracy benefit on this kind of structured-
-            # extraction task. maxTokens caps worst-case output the same
-            # way the other two calls already do.
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            # Same numCtx gap as infer_trace_links/judge_kb_relevance --
-            # without it, Ollama silently truncates this call's input to
-            # its own small default regardless of how many requirements are
-            # actually being scored. Very likely the real cause of the
-            # "Quality scoring returned no valid score for N node(s)"
-            # warning below: the tail of a large descriptions_by_node_id
-            # JSON blob past the truncation point is never seen by the
-            # model at all, so those node_ids can never appear in its
-            # response no matter how well-behaved the model is.
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"topK": self._top_k} if self._top_k else {}),
-            **({"minP": self._min_p} if self._min_p else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        # Perf-investigation instrumentation (2026-08-01): wall time + payload
-        # size per call, logged at call granularity -- lets a real job's logs
-        # answer "does call duration scale with chunk size, or is it flat/
-        # backend-queue-dominated" without guessing (see the performance
-        # review that flagged this as unmeasured before touching
-        # _SCORING_CHUNK_NODE_COUNT).
-        request_chars = len(json.dumps(payload))
-        started_at = time.monotonic()
-        # Token counts not set -- see analyze_section's own comment on why
-        # (LlmChatResult doesn't forward `usage` yet).
-        with _tracer.start_as_current_span("score_requirements_for_document") as span:
-            span.set_attribute("gen_ai.request.model", self._model or "default")
-            span.set_attribute("gen_ai.operation.name", "chat")
-            span.set_attribute("req2ado.node_count", len(descriptions_by_node_id))
-            response = self._post_chat(payload, user_id)
-            elapsed_seconds = time.monotonic() - started_at
-            logger.info(
-                "score_requirements_for_document: %d node(s), %d request char(s), %.1fs wall time",
-                len(descriptions_by_node_id), request_chars, elapsed_seconds,
+            cached = self._cache.get(key)
+            if cached is not None:
+                logger.info("score_requirements_for_document: cache hit, skipping LLM call")
+                return cached
+        spec = SCORING_SPEC
+
+        def send(descriptions: dict, mode: KeyedMode) -> object:
+            category_instruction = self._scoring_category_instruction(mode, category_checklist, kb_context)
+            # Concrete, countable completeness instruction -- same confirmed-live
+            # pattern as _whole_document_hint/_branch_topic_hint ("a concrete,
+            # countable floor beats a qualitative reminder"). Addresses a real,
+            # already-observed failure mode (llm_leveling.py's "Quality scoring
+            # returned no valid score for N node(s)" warning): nothing previously
+            # told the model it must cover EVERY input key, only that it must not
+            # invent new ones. node_count fills BOTH occurrences of the
+            # __NODE_COUNT__ marker in the template.
+            system_prompt = load_prompt(
+                "score_requirements_for_document",
+                output_lead=output_lead(spec, mode),
+                category_instruction=category_instruction,
+                node_count=str(len(descriptions)),
             )
-            response.raise_for_status()
-            content = _strip_json_fence(response.json()["content"])
-            result = _parse_json_object(content)
-        if key is not None:
+            if criteria_context:
+                system_prompt += (
+                    "\n\nThe following reference criteria were retrieved as most relevant "
+                    f"to these requirements -- cite them in your judgment:\n{criteria_context}"
+                )
+            system_prompt = _with_kb_context_as_scoring_rubric(
+                system_prompt, kb_context, categories_are_fixed=bool(category_checklist)
+            )
+            schema = schema_for(spec, mode)
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(descriptions)},
+                ],
+                "temperature": 0,
+                **({"model": self._model} if self._model else {}),
+                **({"responseSchema": schema} if schema is not None else {}),
+                # Confirmed real cause of this call being extremely slow (user-
+                # reported: a 83-requirement batch stalling well past normal):
+                # unlike analyze_section/analyze_section_agentic (which both
+                # already disable this with the identical doc comment/finding),
+                # this call never set `think: False` -- a reasoning-capable
+                # model (qwen3.6:35b) burns hidden chain-of-thought tokens
+                # before ANY output, for EVERY one of the 83 items in one call,
+                # with no observed accuracy benefit on this kind of structured-
+                # extraction task. maxTokens caps worst-case output the same
+                # way the other two calls already do.
+                "think": False,
+                "maxTokens": _MAX_OUTPUT_TOKENS,
+                # Same numCtx gap as infer_trace_links/judge_kb_relevance --
+                # without it, Ollama silently truncates this call's input to
+                # its own small default regardless of how many requirements are
+                # actually being scored. Very likely the real cause of the
+                # "Quality scoring returned no valid score for N node(s)"
+                # warning below: the tail of a large descriptions_by_node_id
+                # JSON blob past the truncation point is never seen by the
+                # model at all, so those node_ids can never appear in its
+                # response no matter how well-behaved the model is.
+                **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+                **({"topK": self._top_k} if self._top_k else {}),
+                **({"minP": self._min_p} if self._min_p else {}),
+                **({"seed": self._seed} if self._seed is not None else {}),
+            }
+            # Perf-investigation instrumentation (2026-08-01): wall time + payload
+            # size per call, logged at call granularity -- lets a real job's logs
+            # answer "does call duration scale with chunk size, or is it flat/
+            # backend-queue-dominated" without guessing (see the performance
+            # review that flagged this as unmeasured before touching
+            # _SCORING_CHUNK_NODE_COUNT).
+            request_chars = len(json.dumps(payload))
+            started_at = time.monotonic()
+            # Token counts not set -- see analyze_section's own comment on why
+            # (LlmChatResult doesn't forward `usage` yet).
+            with _tracer.start_as_current_span("score_requirements_for_document") as span:
+                span.set_attribute("gen_ai.request.model", self._model or "default")
+                span.set_attribute("gen_ai.operation.name", "chat")
+                span.set_attribute("req2ado.node_count", len(descriptions))
+                response = self._post_chat(payload, user_id)
+                elapsed_seconds = time.monotonic() - started_at
+                logger.info(
+                    "score_requirements_for_document: %d node(s), %d request char(s), %.1fs wall time",
+                    len(descriptions), request_chars, elapsed_seconds,
+                )
+                response.raise_for_status()
+                body = response.json()
+                parsed = _parse_json_object(_strip_json_fence(body["content"]))
+            if body.get("finishReason") == "length":
+                # The entry the token limit cut off may parse but be wrong; it is treated as not scored.
+                parsed = drop_possibly_cut_last_entry(parsed)
+            return parsed
+
+        entries = run_keyed(send, descriptions_by_node_id, spec, model=self._model)
+        result = {node_id: _with_category_dict(entry) for node_id, entry in entries.items()}
+        # Only a complete answer is reused: a cached partial one would repeat the same gap on every re-run.
+        if key is not None and not entries.missing:
             self._cache.set(key, result)
         return result
 
@@ -1518,37 +1614,56 @@ class OrchestratorLlmClient:
             if cached is not None:
                 logger.info("score_epics_and_features_for_document: cache hit, skipping LLM call")
                 return cached
-        system_prompt = load_prompt("score_epics_and_features_for_document", node_count=str(len(nodes_by_id)))
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(nodes_by_id)},
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            **keyed_schema_field(epic_feature_scores_schema()),
-            "think": False,
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"topK": self._top_k} if self._top_k else {}),
-            **({"minP": self._min_p} if self._min_p else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-        }
-        # Same perf-investigation instrumentation as
-        # score_requirements_for_document -- see its own comment.
-        request_chars = len(json.dumps(payload))
-        started_at = time.monotonic()
-        response = self._post_chat(payload, user_id)
-        elapsed_seconds = time.monotonic() - started_at
-        logger.info(
-            "score_epics_and_features_for_document: %d node(s), %d request char(s), "
-            "%.1fs wall time",
-            len(nodes_by_id), request_chars, elapsed_seconds,
-        )
-        response.raise_for_status()
-        content = _strip_json_fence(response.json()["content"])
-        result = _parse_json_object(content)
-        if key is not None:
+        spec = EPIC_FEATURE_SCORING_SPEC
+
+        def send(nodes: dict, mode: KeyedMode) -> object:
+            system_prompt = load_prompt(
+                "score_epics_and_features_for_document",
+                output_lead=output_lead(spec, mode),
+                category_scores_form=(
+                    "'categoryScores' (an array of {\"name\": <category name>, \"score\": <integer 0-100>} objects, "
+                    "one for each category listed below)"
+                    if mode == "array" else "'categoryScores'"
+                ),
+                node_count=str(len(nodes)),
+            )
+            schema = schema_for(spec, mode)
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(nodes)},
+                ],
+                "temperature": 0,
+                **({"model": self._model} if self._model else {}),
+                **({"responseSchema": schema} if schema is not None else {}),
+                "think": False,
+                "maxTokens": _MAX_OUTPUT_TOKENS,
+                **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+                **({"topK": self._top_k} if self._top_k else {}),
+                **({"minP": self._min_p} if self._min_p else {}),
+                **({"seed": self._seed} if self._seed is not None else {}),
+            }
+            # Same perf-investigation instrumentation as
+            # score_requirements_for_document -- see its own comment.
+            request_chars = len(json.dumps(payload))
+            started_at = time.monotonic()
+            response = self._post_chat(payload, user_id)
+            elapsed_seconds = time.monotonic() - started_at
+            logger.info(
+                "score_epics_and_features_for_document: %d node(s), %d request char(s), "
+                "%.1fs wall time",
+                len(nodes), request_chars, elapsed_seconds,
+            )
+            response.raise_for_status()
+            body = response.json()
+            parsed = _parse_json_object(_strip_json_fence(body["content"]))
+            if body.get("finishReason") == "length":
+                parsed = drop_possibly_cut_last_entry(parsed)
+            return parsed
+
+        entries = run_keyed(send, nodes_by_id, spec, model=self._model)
+        result = {node_id: _with_category_dict(entry) for node_id, entry in entries.items()}
+        if key is not None and not entries.missing:
             self._cache.set(key, result)
         return result
 
@@ -1620,14 +1735,19 @@ class OrchestratorLlmClient:
         `_apply_parent_summary_pass` already fails open on any exception or
         malformed/partial response, keeping the verbatim heading title and
         description exactly as constructed."""
-        system_prompt = load_prompt("summarize_parent_nodes", node_count=str(len(nodes_by_id)))
-        return self._chat_json(
-            system_prompt, json.dumps(nodes_by_id), schema=keyed_schema(parent_summary_schema()), user_id=user_id,
-            stream_inputs={
-                k: v.get("title") if isinstance(v, dict) else None for k, v in nodes_by_id.items()
-            },
-            stream_stage="summarize",
-        )
+        spec = PARENT_SUMMARY_SPEC
+
+        def send(payload: dict, mode: KeyedMode) -> object:
+            system_prompt = load_prompt(
+                "summarize_parent_nodes", node_count=str(len(payload)), output_format=describe_output(spec, mode),
+            )
+            return self._chat_json(
+                system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
+                stream_inputs={k: v.get("title") if isinstance(v, dict) else None for k, v in payload.items()},
+                stream_stage="summarize",
+            )
+
+        return run_keyed(send, nodes_by_id, spec, model=self._model)
 
     def synthesize_leaf_requirements(
         self, items_by_id: dict[str, dict], user_id: str | None = None,
@@ -1653,18 +1773,21 @@ class OrchestratorLlmClient:
         `_apply_synthesis_pass` already fails open on any exception or
         malformed/partial response, keeping the flagged leaf's verbatim
         source text exactly as constructed."""
-        system_prompt = load_prompt(
-            "synthesize_leaf_requirements",
-            tag_vocabulary=", ".join(t.value for t in RequirementTag),
-            row_count=str(len(items_by_id)),
-        )
-        return self._chat_json(
-            system_prompt, json.dumps(items_by_id), schema=keyed_schema(synthesis_schema()), user_id=user_id,
-            stream_inputs={
-                k: v.get("text") if isinstance(v, dict) else None for k, v in items_by_id.items()
-            },
-            stream_stage="draft",
-        )
+        spec = SYNTHESIS_SPEC
+
+        def send(payload: dict, mode: KeyedMode) -> object:
+            # The tag vocabulary is part of the generated output-format sentence (it comes from the same
+            # field list as the schema), so it is not passed as a separate marker.
+            system_prompt = load_prompt(
+                "synthesize_leaf_requirements", row_count=str(len(payload)), output_format=describe_output(spec, mode),
+            )
+            return self._chat_json(
+                system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
+                stream_inputs={k: v.get("text") if isinstance(v, dict) else None for k, v in payload.items()},
+                stream_stage="draft",
+            )
+
+        return run_keyed(send, items_by_id, spec, model=self._model)
 
     def distill_title(self, text: str, max_length: int, user_id: str | None = None) -> str:
         """Backs the TitleDistillationClient protocol
@@ -1841,7 +1964,7 @@ class OrchestratorLlmClient:
         snippets_by_index = {
             str(i): {"source_file": s["source_file"], "text": s["text"]} for i, s in enumerate(snippets)
         }
-        system_prompt = load_prompt("judge_kb_relevance")
+        spec = KB_RELEVANCE_SPEC
         # Confirmed missing before this used _chat_json: this was the ONE
         # call in this module with no output cap at all -- the exact
         # unbounded-hidden-reasoning exposure _MAX_OUTPUT_TOKENS's own doc
@@ -1853,12 +1976,19 @@ class OrchestratorLlmClient:
         # judgment per snippet is structured classification, not open-ended
         # reasoning -- same confirmed-live finding as every other
         # non-conversational call in this module.
-        return self._chat_json(
-            system_prompt,
-            json.dumps({"section_content": branch_content, "snippets": snippets_by_index}),
-            schema=keyed_schema(kb_relevance_schema()),
-            user_id=user_id,
-        )
+        def send(payload: dict, mode: KeyedMode) -> object:
+            # A retry of omitted indices re-enters here with just those snippets.
+            parsed = self._chat_json(
+                load_prompt("judge_kb_relevance", output_format=describe_output(spec, mode)),
+                json.dumps({"section_content": branch_content, "snippets": payload}),
+                schema=schema_for(spec, mode),
+                user_id=user_id,
+            )
+            # The prompt-only / legacy answer is {index: verdict}; read it as {index: {"verdict": ...}}.
+            return wrap_scalar_entries(parsed, "verdict")
+
+        entries = run_keyed(send, snippets_by_index, spec, model=self._model)
+        return {index: entry["verdict"] for index, entry in entries.items()}
 
     def analyze_section(
         self,
@@ -2333,57 +2463,73 @@ class OrchestratorLlmClient:
             if cached is not None:
                 logger.info("author_content: cache hit, skipping LLM call")
                 return cached["content"], cached["truncated"]
-        system_prompt = _with_kb_context(
-            load_prompt(
-                "author_content",
-                tag_vocabulary=", ".join(t.value for t in RequirementTag),
-                node_count=str(len(skeleton_nodes)),
-            ),
-            kb_context,
-        )
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps({"section": section_text, "nodes": skeleton_nodes}),
-                },
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            **keyed_schema_field(content_authoring_schema()),
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            # Same confirmed-live finding as the two section-analysis paths
-            # this call was split out of -- structured extraction over text
-            # already in the prompt, not open-ended reasoning.
-            "think": False,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-            **({"topK": self._top_k} if self._top_k else {}),
-            **({"minP": self._min_p} if self._min_p else {}),
-        }
-        with _tracer.start_as_current_span("author_content") as span:
-            span.set_attribute("gen_ai.request.model", self._model or "default")
-            span.set_attribute("gen_ai.operation.name", "chat")
-            response = self._post_chat(payload, user_id)
-            response.raise_for_status()
-            body = response.json()
-            content = _strip_json_fence(body["content"])
-            parsed = _parse_json_object(content)
-            result = parsed if isinstance(parsed, dict) else {}
-            span.set_attribute("gen_ai.response.node_count", len(result))
-        truncated = body.get("finishReason") == "length"
+        spec = AUTHOR_CONTENT_SPEC
+        truncated = False
+
+        def send(nodes: dict, mode: KeyedMode) -> object:
+            nonlocal truncated
+            system_prompt = _with_kb_context(
+                load_prompt(
+                    "author_content",
+                    tag_vocabulary=", ".join(t.value for t in RequirementTag),
+                    node_count=str(len(nodes)),
+                    output_format=describe_output(spec, mode),
+                ),
+                kb_context,
+            )
+            schema = schema_for(spec, mode)
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps({"section": section_text, "nodes": nodes}),
+                    },
+                ],
+                "temperature": 0,
+                **({"model": self._model} if self._model else {}),
+                **({"responseSchema": schema} if schema is not None else {}),
+                "maxTokens": _MAX_OUTPUT_TOKENS,
+                # Same confirmed-live finding as the two section-analysis paths
+                # this call was split out of -- structured extraction over text
+                # already in the prompt, not open-ended reasoning.
+                "think": False,
+                **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+                **({"seed": self._seed} if self._seed is not None else {}),
+                **({"topK": self._top_k} if self._top_k else {}),
+                **({"minP": self._min_p} if self._min_p else {}),
+            }
+            with _tracer.start_as_current_span("author_content") as span:
+                span.set_attribute("gen_ai.request.model", self._model or "default")
+                span.set_attribute("gen_ai.operation.name", "chat")
+                response = self._post_chat(payload, user_id)
+                response.raise_for_status()
+                body = response.json()
+                content = _strip_json_fence(body["content"])
+                parsed = _parse_json_object(content)
+                span.set_attribute("gen_ai.response.node_count", len(parsed) if isinstance(parsed, dict) else 0)
+            if body.get("finishReason") == "length":
+                truncated = True
+                # The entry the token limit cut off may have been repaired into something that parses but is
+                # wrong; it is treated as not answered (the caller already degrades for an absent node).
+                parsed = drop_possibly_cut_last_entry(parsed)
+            return parsed
+
+        # No retry of omitted nodes: a long branch's full text is exactly what hits the output cap, so
+        # repeating it would pay twice for the same cut-off, and the caller already decides what an
+        # absent node means (see llm_leveling._author_branch_content).
+        result = run_keyed(send, skeleton_nodes, spec, model=self._model, retry=False)
         if truncated:
             notice("output_limit_reached", "warning", with_last_item=True, step="write")
         logger.warning(
-            "author_content result: requested=%d returned=%d finishReason=%r truncated=%s",
-            len(skeleton_nodes), len(result), body.get("finishReason"), truncated,
+            "author_content result: requested=%d returned=%d truncated=%s",
+            len(skeleton_nodes), len(result), truncated,
         )
         # Never cache a truncated result -- same reasoning as analyze_section's
         # own identical guard.
         if key is not None and not truncated:
-            self._cache.set(key, {"content": result, "truncated": truncated})
-        return result, truncated
+            self._cache.set(key, {"content": dict(result), "truncated": truncated})
+        return dict(result), truncated
 
     def map_figures_tables(
         self, candidates: dict[str, dict], items: dict[str, dict], user_id: str | None = None,
@@ -2441,39 +2587,54 @@ class OrchestratorLlmClient:
             if cached is not None:
                 logger.info("map_figures_tables: cache hit, skipping LLM call")
                 return cached
-        system_prompt = load_prompt("map_figures_tables", item_count=str(len(items)))
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps({"candidates": candidates, "items": items}),
-                },
-            ],
-            "temperature": 0,
-            **({"model": self._model} if self._model else {}),
-            **keyed_schema_field(figure_table_mapping_schema()),
-            "maxTokens": _MAX_OUTPUT_TOKENS,
-            # Same confirmed-live finding as every other structured-extraction
-            # call in this class -- classification over material already in
-            # the prompt, not open-ended reasoning.
-            "think": False,
-            **({"numCtx": self._num_ctx} if self._num_ctx else {}),
-            **({"seed": self._seed} if self._seed is not None else {}),
-            **({"topK": self._top_k} if self._top_k else {}),
-            **({"minP": self._min_p} if self._min_p else {}),
-        }
-        with _tracer.start_as_current_span("map_figures_tables") as span:
-            span.set_attribute("gen_ai.request.model", self._model or "default")
-            span.set_attribute("gen_ai.operation.name", "chat")
-            span.set_attribute("gen_ai.request.item_count", len(items))
-            response = self._post_chat(payload, user_id)
-            response.raise_for_status()
-            body = response.json()
-            content = _strip_json_fence(body["content"])
-            parsed = _parse_json_object(content)
-            result = parsed if isinstance(parsed, dict) else {}
-            span.set_attribute("gen_ai.response.item_count", len(result))
+        spec = FIGURE_TABLE_MAPPING_SPEC
+        cut_off = False
+
+        def send(subset: dict, mode: KeyedMode) -> object:
+            nonlocal cut_off
+            system_prompt = load_prompt(
+                "map_figures_tables", item_count=str(len(subset)), output_format=describe_output(spec, mode),
+            )
+            schema = schema_for(spec, mode)
+            payload = {
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps({"candidates": candidates, "items": subset}),
+                    },
+                ],
+                "temperature": 0,
+                **({"model": self._model} if self._model else {}),
+                **({"responseSchema": schema} if schema is not None else {}),
+                "maxTokens": _MAX_OUTPUT_TOKENS,
+                # Same confirmed-live finding as every other structured-extraction
+                # call in this class -- classification over material already in
+                # the prompt, not open-ended reasoning.
+                "think": False,
+                **({"numCtx": self._num_ctx} if self._num_ctx else {}),
+                **({"seed": self._seed} if self._seed is not None else {}),
+                **({"topK": self._top_k} if self._top_k else {}),
+                **({"minP": self._min_p} if self._min_p else {}),
+            }
+            with _tracer.start_as_current_span("map_figures_tables") as span:
+                span.set_attribute("gen_ai.request.model", self._model or "default")
+                span.set_attribute("gen_ai.operation.name", "chat")
+                span.set_attribute("gen_ai.request.item_count", len(subset))
+                response = self._post_chat(payload, user_id)
+                response.raise_for_status()
+                body = response.json()
+                content = _strip_json_fence(body["content"])
+                parsed = _parse_json_object(content)
+                span.set_attribute("gen_ai.response.item_count", len(parsed) if isinstance(parsed, dict) else 0)
+            if body.get("finishReason") == "length":
+                cut_off = True
+                parsed = drop_possibly_cut_last_entry(parsed)
+            return parsed
+
+        # No retry of omitted items: the caller sees exactly which ones went unanswered and decides
+        # between escalating them and reporting them (see _map_figures_tables_to_nodes).
+        result = dict(run_keyed(send, items, spec, model=self._model, retry=False))
         # An item this response never answered for costs that item its home
         # (in the escalation tier there is no further tier to fall through
         # to), so an incomplete answer must never be reused: cached, it would
@@ -2482,13 +2643,12 @@ class OrchestratorLlmClient:
         # identically -- the model's own output cap (finishReason, the same
         # signal analyze_section/author_content guard their caches with) and
         # a response that simply came back short of what was asked.
-        incomplete = body.get("finishReason") == "length" or len(result) < len(items)
-        if body.get("finishReason") == "length":
+        incomplete = cut_off or len(result) < len(items)
+        if cut_off:
             notice("output_limit_reached", "warning", with_last_item=True, step="figures")
         logger.warning(
-            "map_figures_tables result: candidates=%d requested=%d returned=%d "
-            "finishReason=%r incomplete=%s",
-            len(candidates), len(items), len(result), body.get("finishReason"), incomplete,
+            "map_figures_tables result: candidates=%d requested=%d returned=%d incomplete=%s",
+            len(candidates), len(items), len(result), incomplete,
         )
         if key is not None and not incomplete:
             self._cache.set(key, result)

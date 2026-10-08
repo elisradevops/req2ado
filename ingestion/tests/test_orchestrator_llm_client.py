@@ -206,7 +206,8 @@ def test_score_requirements_for_document_prompt_states_the_exact_expected_entry_
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
+        # The first request only: an empty answer is followed by one retry of the ids it left out.
+        captured.setdefault("body", json.loads(request.content))
         return httpx.Response(200, json={"content": "{}"})
 
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
@@ -778,7 +779,7 @@ def test_score_epics_and_features_for_document_sends_type_aware_prompt_and_schem
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content)
+        captured.setdefault("body", json.loads(request.content))
         return httpx.Response(200, json={"content": "{}"})
 
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")

@@ -387,7 +387,18 @@ export function ProgressBanner({
             ? `subtree:${detSubtreeWindowKey}`
             : `analysis:${progressTotal}`
       : undefined;
-  const stepEtaResult = useStepEta(stepKey, completedUnits, progressTotal, tickingNow);
+  // With the server's counted progress on, the bar and the "N of M items" line already run on its units
+  // (they move per item as drafts stream in); the event-derived `completedUnits` above only moves when a
+  // whole chunk lands. The countdown must be built from the same units the bar shows.
+  const countedEtaKey = countedProgress
+    ? `counted:${countedProgress.stage}:${countedProgress.unit}:${countedProgress.total}`
+    : undefined;
+  const stepEtaResult = useStepEta(
+    countedEtaKey ?? stepKey,
+    countedProgress ? countedProgress.done : completedUnits,
+    countedProgress ? countedProgress.total : progressTotal,
+    tickingNow,
+  );
   let etaText: string | null = null;
   if (mode === 'survey' && stepEtaResult) {
     switch (stepEtaResult.kind) {

@@ -149,6 +149,16 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Source dropped',
     unit: ['section', 'sections'],
   },
+  vision_captioning_disabled: {
+    title: 'Figures were not described',
+    group: 'review',
+    short: 'The figures in this document have no AI-written description.',
+    means:
+      'Figure captioning was off for this run, or it stopped after several failed calls. Items that rely on a figure have only the figure itself, with no description of what it shows.',
+    todo: 'Check that the selected model can read images and that the model backend is reachable, then resubmit the job. Or describe the important figures by hand.',
+    chip: 'No figure captions',
+    unit: ['notice', 'notices'],
+  },
   missing_requirement_row_coverage: {
     title: 'A numbered source requirement is missing',
     group: 'review',
