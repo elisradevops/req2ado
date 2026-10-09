@@ -493,7 +493,7 @@ describe('JobsController.retryEnhancement', () => {
     new JobsController(jobsService, {} as any, {} as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
 
   it('delegates with de-duplicated ids and returns the service result', async () => {
-    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), retryEnhancement: jest.fn().mockResolvedValue({ enhanced: ['a'] }) };
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), modelOf: jest.fn().mockResolvedValue(null), retryEnhancement: jest.fn().mockResolvedValue({ enhanced: ['a'] }) };
 
     const result = await make(jobsService).retryEnhancement('job-1', TEST_USER, 'enhancement_call_failed', 'synthesis', ['a', 'a', 'b']);
 
@@ -502,7 +502,7 @@ describe('JobsController.retryEnhancement', () => {
   });
 
   it('accepts the parent_summary pass (batches of up to 25)', async () => {
-    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), retryEnhancement: jest.fn().mockResolvedValue({ enhanced: ['p'] }) };
+    const jobsService = { getById: jest.fn().mockResolvedValue(TEST_JOB), modelOf: jest.fn().mockResolvedValue(null), retryEnhancement: jest.fn().mockResolvedValue({ enhanced: ['p'] }) };
 
     await make(jobsService).retryEnhancement('job-1', TEST_USER, 'enhancement_call_failed', 'parent_summary', ['p']);
 
@@ -815,5 +815,58 @@ describe('JobsController.list', () => {
 
     await expect(controller.list({ userId: 'user-1' } as any, { take: '9999' })).rejects.toThrow(BadRequestException);
     expect(jobsService.list).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobsController hidden models (LLM_MODEL_HIDE_PATTERNS)', () => {
+  const TEST_USER = { userId: 'user-descriptor-1', displayName: 'Jane Doe' } as any;
+  const OWN_JOB = { id: 'job-1', userId: 'user-descriptor-1', status: 'diff_ready' };
+  const hidden = (name: string) => name.startsWith('contracts-ai-') || name === 'fai-checker';
+  const factory = { isModelHidden: jest.fn(hidden) };
+  const make = (jobsService: any) =>
+    new JobsController(jobsService, {} as any, factory as any, {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any);
+  const file = { buffer: Buffer.from('x'), originalname: 'a.docx', size: 1 } as any;
+
+  it('refuses a submit that names a hidden model, before reading the file', async () => {
+    const jobsService = { submit: jest.fn() };
+
+    await expect(
+      make(jobsService).submit(file, TEST_USER, 'Project', 'P', 'survey', undefined, undefined, 'fai-checker', undefined),
+    ).rejects.toThrow(/not available for requirement extraction/);
+    expect(jobsService.submit).not.toHaveBeenCalled();
+  });
+
+  it('does not touch the factory when no model is named', async () => {
+    factory.isModelHidden.mockClear();
+    const jobsService = { submit: jest.fn() };
+
+    await expect(make(jobsService).submit(undefined, TEST_USER, 'Project', 'P', 'survey', undefined, undefined, undefined, undefined)).rejects.toThrow('file is required');
+    expect(factory.isModelHidden).not.toHaveBeenCalled();
+  });
+
+  it('refuses a resubmit and an enhancement retry of a job whose model has since been hidden', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(OWN_JOB),
+      modelOf: jest.fn().mockResolvedValue('contracts-ai-poc'),
+      resubmit: jest.fn(),
+      retryEnhancement: jest.fn(),
+    };
+
+    await expect(make(jobsService).resubmit('job-1', TEST_USER)).rejects.toThrow(/not available/);
+    await expect(
+      make(jobsService).retryEnhancement('job-1', TEST_USER, 'enhancement_call_failed', 'synthesis', ['a']),
+    ).rejects.toThrow(/not available/);
+    expect(jobsService.resubmit).not.toHaveBeenCalled();
+    expect(jobsService.retryEnhancement).not.toHaveBeenCalled();
+  });
+
+  it('lets a visible model through', async () => {
+    const jobsService = {
+      getById: jest.fn().mockResolvedValue(OWN_JOB),
+      modelOf: jest.fn().mockResolvedValue('claude-opus-4-8'),
+      resubmit: jest.fn().mockResolvedValue({ jobId: 'job-2' }),
+    };
+
+    await expect(make(jobsService).resubmit('job-1', TEST_USER)).resolves.toEqual({ jobId: 'job-2' });
   });
 });

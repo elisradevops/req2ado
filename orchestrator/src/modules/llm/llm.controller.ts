@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpException, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpException, NotFoundException, Post, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { llmChatRequestSchema } from './llm-chat.dto';
@@ -8,7 +8,7 @@ import { llmVisionRequestSchema } from './llm-vision.dto';
 import type { LlmToolCall } from './llm-client.interface';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
 import { OpenWebUiClientFactory } from './openwebui-client.factory';
-import { UpstreamHttpError } from './openwebui.client';
+import { ModelInfoUnavailableError, UpstreamHttpError, type ModelInfo } from './openwebui.client';
 import { Public } from '../auth/public.decorator';
 
 // Every route here is internal service-to-service traffic already gated by
@@ -181,13 +181,20 @@ export class LlmController {
   async show(
     @Body() rawBody: unknown,
     @Headers('x-req2ado-user-id') userId: string | undefined,
-  ): Promise<{ contextLength: number | null; capabilities: string[] }> {
+  ): Promise<ModelInfo> {
     const parseResult = llmShowRequestSchema.safeParse(rawBody);
     if (!parseResult.success) {
       throw new BadRequestException('Invalid request body: model must be a non-empty string');
     }
     const llmClient = await this.resolveClient(userId);
-    return llmClient.showModel(parseResult.data.model);
+    try {
+      return await llmClient.showModel(parseResult.data.model);
+    } catch (err) {
+      // A model nothing can describe is an expected answer (ingestion then sizes it from its own rules), not a
+      // server fault.
+      if (err instanceof ModelInfoUnavailableError) throw new NotFoundException(err.message);
+      throw err;
+    }
   }
 
   @Post('vision')

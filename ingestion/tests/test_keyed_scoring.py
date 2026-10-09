@@ -151,8 +151,8 @@ def test_requirement_scoring_in_array_mode_returns_the_dict_shape_the_scorer_rea
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
-        ({}, "an array of FIVE"),
-        ({"category_checklist": ["Necessary", "Verifiable"]}, "EXACTLY one"),
+        ({}, "an array of EXACTLY SIX"),
+        ({"category_checklist": ["Necessary", "Verifiable"]}, "3 entries in total, never fewer"),
         ({"kb_context": "KB material"}, "whose NAMES you derive"),
     ],
 )
@@ -163,6 +163,14 @@ def test_the_prompt_describes_the_category_list_the_schema_expects(array_mode, k
     assert output_lead(SCORING_SPEC, "array") in prompt and "exactly 2 node_id(s)" in prompt
     assert "completeness_as_requirement" in prompt
     assert "an object with FIVE" not in prompt and "EXACTLY these categories as keys" not in prompt
+    assert "FIVE" not in prompt  # the count and the list must agree: completeness_as_requirement is the sixth
+
+
+def test_the_default_array_prompt_names_all_six_categories_and_says_none_may_be_left_out(array_mode) -> None:
+    prompt = _first_body(lambda c: c.score_requirements_for_document(DESCRIPTIONS))["messages"][0]["content"]
+    for name in ("clarity", "testability", "atomicity", "style", "rationale", "completeness_as_requirement"):
+        assert name in prompt.split("never fewer")[0]  # the list sits in the same sentence as the count
+    assert "score it 100 instead of leaving it out" in prompt
 
 
 def test_the_checklist_names_still_reach_the_model_in_array_mode(array_mode) -> None:

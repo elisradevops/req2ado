@@ -1,6 +1,7 @@
 import 'reflect-metadata';
-import { BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { LlmController } from '../src/modules/llm/llm.controller';
+import { ModelInfoUnavailableError } from '../src/modules/llm/openwebui.client';
 
 const USER_ID = 'user-1';
 
@@ -117,6 +118,13 @@ describe('LlmController', () => {
 
     expect(showModel).toHaveBeenCalledWith('qwen3.6:35b');
     expect(result).toEqual({ contextLength: 32000, capabilities: ['completion', 'tools'] });
+  });
+
+  it('POST /llm/show answers 404 for a model no source can describe, not a server error', async () => {
+    const showModel = jest.fn().mockRejectedValue(new ModelInfoUnavailableError('mystery', 'not listed by the proxy'));
+    const { controller } = makeController({ showModel });
+
+    await expect(controller.show({ model: 'mystery' }, USER_ID)).rejects.toThrow(NotFoundException);
   });
 
   it('POST /llm/show throws BadRequestException when model is missing', async () => {

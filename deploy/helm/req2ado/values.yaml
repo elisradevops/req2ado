@@ -155,6 +155,21 @@ config:
   # Set to "true" only when targeting a local Ollama-compatible backend that supports them.
   LLM_SEND_SEED: "false"
   LLM_SEND_REASONING_EFFORT: "false"
+  # Models hidden from every model picker and refused at job submit / preview / resubmit / retry: entries that fail
+  # req2ado's request contract (condor_*, data-frames, fai-checker, ins-sw, azure_ai/mistral-document-ai), persona /
+  # agent presets that inject their own prompt (contracts-ai-*, find-a-material-*, *-coc--atr) and aliases Azure
+  # has retired (gpt-5-chat, gpt-5.1-chat, gpt-5.2-chat, gpt-5.3-chat; gpt-chat-latest is the live replacement).
+  # Comma-separated globs (* and ?), case-insensitive. Add a model here to hide it without a code change.
+  LLM_MODEL_HIDE_PATTERNS: "condor_*,data-frames,fai-checker,azure_ai/mistral-document-ai,ins-sw,contracts-ai-*,find-a-material-*,*-coc--atr,*gpt-5-chat*,*gpt-5.1-chat*,*gpt-5.2-chat*,*gpt-5.3-chat*"
+  # Ingestion: per-model sizing overrides as JSON (any subset of context_budget_tokens, branch_cap, supports_tools,
+  # max_output_tokens), keyed by model name with or without the provider prefix. Optional; unset by default.
+  # MODEL_PROFILES: '{"OpenAI/gpt-5.4": {"context_budget_tokens": 120000}}'
+  # Ingestion: turn on the knowledge-base agentic path (tool calling) for models recognised by family (Claude,
+  # GPT-4.x/5.x/6, gpt-oss) beyond claude-opus* / gpt-5*. The Elbichat probe passed a single tool call on all 16
+  # working models, but keep "false" until one KB-grounded job has run cleanly on a non-opus model.
+  # TOOLS_FOR_KNOWN_FAMILIES: "false"
+  # Ingestion: take tool support from a proxy that publishes model info (LiteLLM). Elbichat (Open WebUI) does not.
+  # TOOLS_FROM_MODEL_INFO: "false"
   # Optional: temperature for vision() calls only (figure/image captioning).
   # Unset (default) sends no temperature -- the backend model applies its own
   # default, and a value-constraint 400 (e.g. a model that only accepts

@@ -29,6 +29,7 @@ import { AuthModule } from '../auth/auth.module';
           LLM_CHAT_BASE_URL: config.get<string>('LLM_CHAT_BASE_URL'),
           LLM_SEND_SEED: config.get<string>('LLM_SEND_SEED') === 'true',
           LLM_SEND_REASONING_EFFORT: config.get<string>('LLM_SEND_REASONING_EFFORT') === 'true',
+          LLM_MODEL_HIDE_PATTERNS: config.get<string>('LLM_MODEL_HIDE_PATTERNS'),
           LLM_VISION_TEMPERATURE: config.get<number | undefined>('LLM_VISION_TEMPERATURE'),
           LLM_TRUSTED_LOCAL: config.get<boolean>('LLM_TRUSTED_LOCAL')!,
           EMBED_TRANSPORT: config.get<'ollama' | 'openai'>('EMBED_TRANSPORT')!,
