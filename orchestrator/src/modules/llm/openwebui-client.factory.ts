@@ -1,3 +1,4 @@
+import { isModelHidden, parseModelHidePatterns } from './model-visibility';
 import { Injectable } from '@nestjs/common';
 import { LlmConfigResolver } from '../auth/llm-config.resolver';
 import { OpenWebUiClient, type OpenWebUiClientConfig } from './openwebui.client';
@@ -66,6 +67,14 @@ export class OpenWebUiClientFactory {
   // model) would keep serving that user's requests until process restart.
   invalidate(userId: string): void {
     this.cache.delete(userId);
+  }
+
+  private hidePatterns?: RegExp[];
+
+  /** True when LLM_MODEL_HIDE_PATTERNS hides this model (see model-visibility.ts). Global, not per user. */
+  isModelHidden(model: string): boolean {
+    this.hidePatterns ??= parseModelHidePatterns(this.globalConfig.LLM_MODEL_HIDE_PATTERNS);
+    return isModelHidden(model, this.hidePatterns);
   }
 
   // Builds a throwaway client for a candidate token that ISN'T vaulted yet

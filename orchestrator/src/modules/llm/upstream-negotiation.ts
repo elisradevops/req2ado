@@ -55,6 +55,8 @@ export function parseUnsupportedParams(err: unknown): Set<string> {
     if (err.message.includes('reasoning_effort')) params.add('reasoning_effort');
     if (err.message.includes('temperature')) params.add('temperature');
     if (err.message.includes('frequency_penalty')) params.add('frequency_penalty');
+    if (err.message.includes('presence_penalty')) params.add('presence_penalty');
+    if (err.message.includes('top_p')) params.add('top_p');
   }
   return params;
 }
@@ -99,6 +101,105 @@ export function parseTemperatureConstraint(err: unknown): number | null {
   return null;
 }
 
+// --- Token-limit, tool and reasoning negotiation -------------------------------------------------
+// Newer reasoning models (the GPT-5/GPT-6 lines on Azure OpenAI) take `max_completion_tokens` instead of
+// `max_tokens`, have output ceilings below what a caller asks for, and (gpt-5.6) refuse function tools on
+// Chat Completions unless reasoning is off. LiteLLM decides which of these apply by matching the deployment
+// NAME, so an alias (`gpt-chat-latest`) or a model newer than the proxy release (`gpt-6-*` on an old
+// LiteLLM) is passed through unchanged and the provider rejects it. The wordings below are the ones the
+// vendors document; each parser is deliberately tolerant about the exact phrasing and returns a plain value.
+
+function badRequestMessage(err: unknown): string | null {
+  return err instanceof OpenAI.APIError && err.status === 400 ? err.message : null;
+}
+
+/**
+ * True when the upstream says `max_tokens` is not accepted by this model and `max_completion_tokens` is the
+ * parameter to use. Azure: "Unsupported parameter: 'max_tokens' is not supported with this model. Use
+ * 'max_completion_tokens' instead."; LiteLLM: "... does not support parameters: ['max_tokens']".
+ */
+export function parseMaxTokensUnsupported(err: unknown): boolean {
+  const message = badRequestMessage(err);
+  if (!message) return false;
+  if (/max_completion_tokens/i.test(message) && /max_tokens/i.test(message) && /(not supported|unsupported|\buse\b)/i.test(message)) {
+    return true;
+  }
+  if (/['"`]?max_tokens['"`]?\s+is\s+not\s+supported/i.test(message)) return true;
+  const bracket = message.match(/does not support parameters:\s*\[([^\]]+)\]/i);
+  return bracket !== null && /max_tokens/.test(bracket[1]);
+}
+
+/**
+ * The output-token ceiling an upstream states when a request asked for more, or null. OpenAI/Azure: "max_tokens
+ * is too large: 200000. This model supports at most 16384 completion tokens, whereas you provided 200000.";
+ * Anthropic: "max_tokens: 20000 > 8192, which is the maximum allowed number of output tokens for ...".
+ */
+export function parseMaxOutputCap(err: unknown): number | null {
+  const message = badRequestMessage(err);
+  if (!message) return null;
+  const patterns = [
+    /supports at most (\d[\d,]*) (?:completion |output )?tokens/i,
+    /max_tokens:\s*\d[\d,]*\s*>\s*(\d[\d,]*)/i,
+    /(?:max_tokens|max_completion_tokens)[^.\n]{0,80}?(?:less than or equal to|at most|no more than|maximum (?:allowed )?(?:value )?(?:is|of))\s*:?\s*(\d[\d,]*)/i,
+    /maximum (?:allowed )?(?:number of )?(?:output |completion )?tokens (?:is|of|for this model is)\s*(\d[\d,]*)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (match) {
+      const value = parseInt(match[1].replace(/,/g, ''), 10);
+      if (Number.isFinite(value) && value > 0) return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * gpt-5.6 on Chat Completions: "Function tools with reasoning_effort are not supported for gpt-5.6-sol in
+ * /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'." It is
+ * returned even when no reasoning_effort was sent, because the model defaults to medium.
+ */
+export function isToolsWithReasoningRejection(err: unknown): boolean {
+  const message = badRequestMessage(err);
+  if (!message) return false;
+  return (
+    /function tools with reasoning_effort (?:are|is) not supported/i.test(message) ||
+    (/tools/i.test(message) && /reasoning_effort/i.test(message) && /not supported/i.test(message) && /['"]none['"]/i.test(message))
+  );
+}
+
+/**
+ * A 2xx answer with no content because the model spent the whole output budget on hidden reasoning
+ * (`finish_reason: length`; gpt-5-mini/nano at 50 tokens, vision at 300). Thrown by a caller's attempt so the
+ * loop retries once with a larger budget; `target` is that budget.
+ */
+export class EmptyLengthCompletion extends Error {
+  constructor(public readonly target: number) {
+    super(`Upstream returned no content at the output limit (retrying with a limit of ${target})`);
+    this.name = 'EmptyLengthCompletion';
+  }
+}
+
+/** Hard ceiling for a raised budget when the model's own output ceiling is unknown. */
+export const RAISED_BUDGET_CEILING = 64_000;
+
+/** The output limit to send under this adaptation: raised floor first, then the model's learned ceiling. */
+export function effectiveMaxTokens(requested: number | undefined, adaptation: Adaptation): number | undefined {
+  if (requested === undefined) return undefined;
+  let value = Math.max(requested, adaptation.maxTokensFloor ?? 0);
+  if (adaptation.maxTokensCap !== undefined) value = Math.min(value, adaptation.maxTokensCap);
+  return value;
+}
+
+/** The budget to retry with after an empty length-truncated answer, or null when raising cannot help. */
+export function raisedBudgetFor(sent: number | undefined, adaptation: Adaptation): number | null {
+  // Once per model: a floor is already in force (learned earlier, or raised on this call), so a second empty
+  // answer is a result, not a reason to keep spending.
+  if (sent === undefined || adaptation.maxTokensFloor !== undefined) return null;
+  const ceiling = adaptation.maxTokensCap ?? RAISED_BUDGET_CEILING;
+  const target = Math.min(Math.max(sent * 4, 4_000), ceiling);
+  return target > sent ? target : null;
+}
+
 // Normalises an OpenAI.APIError into UpstreamHttpError so the HTTP controller
 // can forward the upstream status code without importing the OpenAI SDK itself.
 // Any other thrown value is re-thrown unchanged.
@@ -117,6 +218,14 @@ export interface Adaptation {
   dropped: Set<string>;
   /** Send the request without its response_format schema. */
   dropSchema: boolean;
+  /** Which output-limit parameter the model accepts. */
+  tokenParam: 'max_tokens' | 'max_completion_tokens';
+  /** The model's stated output ceiling; a requested limit is clamped to it. */
+  maxTokensCap: number | undefined;
+  /** An output limit raised after an empty, length-truncated answer; used as a floor for later calls. */
+  maxTokensFloor: number | undefined;
+  /** Send `reasoning_effort: 'none'` (the model refused function tools while reasoning). */
+  forceReasoningNone: boolean;
   /** 1 for the first attempt, 2 for the next, and so on. */
   attempt: number;
 }
@@ -125,6 +234,20 @@ export interface Adaptation {
 export interface LearnedConstraints {
   temperature?: number;
   rejected: ReadonlySet<string>;
+  tokenParam?: 'max_tokens' | 'max_completion_tokens';
+  maxTokensCap?: number;
+  maxTokensFloor?: number;
+  forceReasoningNone?: boolean;
+}
+
+/** What one failure taught us, passed to `remember` so later calls start from it. */
+export interface LearnedUpdate {
+  temperature?: number;
+  rejected?: Iterable<string>;
+  tokenParam?: 'max_tokens' | 'max_completion_tokens';
+  maxTokensCap?: number;
+  maxTokensFloor?: number;
+  forceReasoningNone?: boolean;
 }
 
 export interface NegotiationArgs<T> {
@@ -137,12 +260,14 @@ export interface NegotiationArgs<T> {
   droppable: ReadonlySet<string>;
   learned?: LearnedConstraints;
   /** Called with what a failure taught us, so later calls start from it. */
-  remember: (update: { temperature?: number; rejected?: Iterable<string> }) => void;
+  remember: (update: LearnedUpdate) => void;
+  /** Whether the request carries tools (enables the "function tools need reasoning off" adaptation). */
+  hasTools?: boolean;
   /** Builds and sends ONE attempt under the given adaptation. */
   send: (adaptation: Adaptation) => Promise<T>;
   /** How a failure that cannot be adapted around leaves the loop. Defaults to rethrowAsUpstream. */
   terminal?: (err: unknown) => never;
-  /** Hard cap on attempts, including the first. Default 4. */
+  /** Hard cap on attempts, including the first. Default 6 (adaptations accumulate across attempts). */
   maxAttempts?: number;
 }
 
@@ -159,12 +284,16 @@ export interface NegotiationArgs<T> {
  * adaptation already applied, leaves through `terminal`.
  */
 export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
-  const maxAttempts = args.maxAttempts ?? 4;
+  const maxAttempts = args.maxAttempts ?? 6;
   const terminal = args.terminal ?? rethrowAsUpstream;
   const adaptation: Adaptation = {
     temperature: args.learned?.temperature,
     dropped: new Set(args.learned?.rejected ?? []),
     dropSchema: false,
+    tokenParam: args.learned?.tokenParam ?? 'max_tokens',
+    maxTokensCap: args.learned?.maxTokensCap,
+    maxTokensFloor: args.learned?.maxTokensFloor,
+    forceReasoningNone: args.learned?.forceReasoningNone ?? false,
     attempt: 1,
   };
   for (let attempt = 1; ; attempt += 1) {
@@ -172,6 +301,13 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
     try {
       return await args.send(adaptation);
     } catch (err) {
+      if (err instanceof EmptyLengthCompletion && attempt < maxAttempts) {
+        // eslint-disable-next-line no-console
+        console.warn(`[${args.label}] empty answer at the output limit; retrying with limit ${err.target} for model=${args.model}`);
+        adaptation.maxTokensFloor = err.target;
+        args.remember({ maxTokensFloor: err.target });
+        continue;
+      }
       if (attempt >= maxAttempts) return terminal(err);
 
       const requiredTemperature = parseTemperatureConstraint(err);
@@ -181,6 +317,33 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         adaptation.temperature = requiredTemperature;
         args.remember({ temperature: requiredTemperature });
         continue;
+      }
+
+      if (requiredTemperature === null && adaptation.tokenParam === 'max_tokens' && parseMaxTokensUnsupported(err)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[${args.label}] upstream requires max_completion_tokens instead of max_tokens; retrying for model=${args.model}`);
+        adaptation.tokenParam = 'max_completion_tokens';
+        args.remember({ tokenParam: 'max_completion_tokens' });
+        continue;
+      }
+
+      if (requiredTemperature === null && args.hasTools && !adaptation.forceReasoningNone && isToolsWithReasoningRejection(err)) {
+        // eslint-disable-next-line no-console
+        console.warn(`[${args.label}] upstream refuses tools while reasoning; retrying with reasoning_effort=none for model=${args.model}`);
+        adaptation.forceReasoningNone = true;
+        args.remember({ forceReasoningNone: true });
+        continue;
+      }
+
+      if (requiredTemperature === null) {
+        const cap = parseMaxOutputCap(err);
+        if (cap !== null && (adaptation.maxTokensCap === undefined || cap < adaptation.maxTokensCap)) {
+          // eslint-disable-next-line no-console
+          console.warn(`[${args.label}] upstream caps output at ${cap} tokens; clamping for model=${args.model}`);
+          adaptation.maxTokensCap = cap;
+          args.remember({ maxTokensCap: cap });
+          continue;
+        }
       }
 
       if (requiredTemperature === null) {

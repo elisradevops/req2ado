@@ -28,6 +28,10 @@ export const configSchema = z.object({
   // backends that accept them.
   LLM_SEND_SEED: z.enum(['true', 'false']).default('false'),
   LLM_SEND_REASONING_EFFORT: z.enum(['true', 'false']).default('false'),
+  // Comma-separated glob patterns (`*`, `?`, case-insensitive) of model names that are hidden from every model
+  // picker and refused at job submit/preview/resubmit/retry: models that fail the request contract, persona/agent
+  // presets that inject their own prompt, and retired aliases. Empty by default.
+  LLM_MODEL_HIDE_PATTERNS: z.string().optional(),
   // Temperature for vision() calls. Unset (default) → no temperature sent,
   // letting the backend model apply its own default or constraint (e.g.
   // claude-opus-4-8 requires temperature=1 for extended thinking -- the

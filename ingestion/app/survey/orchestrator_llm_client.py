@@ -48,6 +48,7 @@ from app.survey.keyed_specs import (
 )
 from app.leveling.live_context import current_stage_counter, live_emitter_for, notice
 from app.leveling.live_stream import DraftingDisplay
+from app.leveling.model_caps import output_token_budget
 from app.logging_context import current_job_id
 from app.survey.llm_cache import LlmResponseCache, cache_key
 from app.workitem.model import RequirementTag
@@ -891,8 +892,11 @@ def _array_category_instruction(category_checklist: list[str] | None, kb_context
         instruction = (
             f"'categoryScores' -- an array with EXACTLY one {entry} object for each of these categories "
             "(this organization's own ingested quality-checklist category names, fixed for this document -- "
-            f"do not add, omit, rename, or reorder any): {json.dumps(category_checklist)}. Each score is an "
-            "independent integer 0-100 judgment (100 = fully compliant on that dimension alone).\n"
+            f"do not add, omit, rename, or reorder any): {json.dumps(category_checklist)}, plus the "
+            f"completeness_as_requirement entry described below -- {len(category_checklist) + 1} entries in "
+            "total, never fewer. Each score is an independent integer 0-100 judgment (100 = fully compliant "
+            "on that dimension alone); when a category does not seem to apply, still include it and give it "
+            "your best-effort score instead of leaving it out.\n"
         )
     elif kb_context:
         instruction = (
@@ -902,15 +906,19 @@ def _array_category_instruction(category_checklist: list[str] | None, kb_context
             "Consistent, Traceable, Modifiable, use exactly those names), each score an independent integer "
             "0-100 judgment (100 = fully compliant on that dimension alone). Decide the category names ONCE "
             "from that material and use the EXACT SAME set of names, spelled identically, for every single "
-            "node_id in your response -- never a different set per node. If the material defines no clear "
+            "node_id in your response -- never a different set per node, and never leave a category out of "
+            "a node's list because it seems not to apply (give it a best-effort score). If the material defines no clear "
             "checklist to score against, fall back to these five generic dimensions instead: clarity, "
             "testability, atomicity, style, rationale.\n"
         )
     else:
         instruction = (
-            f"'categoryScores' -- an array of FIVE {entry} objects, one per dimension (100 = fully "
-            "compliant on that dimension alone, judge each one on its own merits, do not just derive them "
-            "mechanically from whether an issue tag was flagged):\n"
+            f"'categoryScores' -- an array of EXACTLY SIX {entry} objects, one for EACH of these six "
+            "dimensions, named exactly clarity, testability, atomicity, style, rationale and "
+            "completeness_as_requirement -- never fewer. When a dimension does not seem to apply (for "
+            "example no rationale is needed), still include it and score it 100 instead of leaving it out. "
+            "100 = fully compliant on that dimension alone; judge each one on its own merits, do not just "
+            "derive them mechanically from whether an issue tag was flagged:\n"
             "  - clarity: is the wording unambiguous and free of vague terms?\n"
             "  - testability: can this be objectively verified, with clear "
             "acceptance criteria?\n"
@@ -980,6 +988,9 @@ class OrchestratorLlmClient:
         # configured LLM_CHAT_MODEL default, matching pre-model-selection
         # behavior exactly.
         self._model = model
+        # The answer budget for this model: the default, or its stated output ceiling when that is lower (e.g. the
+        # 16,384-token `-chat` aliases). See app.leveling.model_caps.output_token_budget.
+        self._max_output_tokens = output_token_budget(model)
         # Ollama's actual runtime context window (§6 of the whole-document
         # redesign) -- originally forwarded only on analyze_section/
         # analyze_section_agentic, the two calls the §3 whole-document gate
@@ -1139,7 +1150,7 @@ class OrchestratorLlmClient:
         user_content: str,
         *,
         schema: dict | None = None,
-        max_tokens: int = _MAX_OUTPUT_TOKENS,
+        max_tokens: int | None = None,
         user_id: str | None = None,
         stream_inputs: dict[str, str | None] | None = None,
         stream_stage: str | None = None,
@@ -1168,7 +1179,7 @@ class OrchestratorLlmClient:
             **({"model": self._model} if self._model else {}),
             **({"responseSchema": schema} if schema is not None else {}),
             "think": False,
-            "maxTokens": max_tokens,
+            "maxTokens": self._max_output_tokens if max_tokens is None else max_tokens,
             **({"numCtx": self._num_ctx} if self._num_ctx else {}),
             **({"topK": self._top_k} if self._top_k else {}),
             **({"minP": self._min_p} if self._min_p else {}),
@@ -1404,7 +1415,7 @@ class OrchestratorLlmClient:
                 # extraction task. maxTokens caps worst-case output the same
                 # way the other two calls already do.
                 "think": False,
-                "maxTokens": _MAX_OUTPUT_TOKENS,
+                "maxTokens": self._max_output_tokens,
                 # Same numCtx gap as infer_trace_links/judge_kb_relevance --
                 # without it, Ollama silently truncates this call's input to
                 # its own small default regardless of how many requirements are
@@ -1637,7 +1648,7 @@ class OrchestratorLlmClient:
                 **({"model": self._model} if self._model else {}),
                 **({"responseSchema": schema} if schema is not None else {}),
                 "think": False,
-                "maxTokens": _MAX_OUTPUT_TOKENS,
+                "maxTokens": self._max_output_tokens,
                 **({"numCtx": self._num_ctx} if self._num_ctx else {}),
                 **({"topK": self._top_k} if self._top_k else {}),
                 **({"minP": self._min_p} if self._min_p else {}),
@@ -1944,7 +1955,13 @@ class OrchestratorLlmClient:
             )
         response.raise_for_status()
         body = response.json()
-        return {"context_length": body.get("contextLength"), "capabilities": body.get("capabilities") or []}
+        return {
+            "context_length": body.get("contextLength"),
+            "capabilities": body.get("capabilities") or [],
+            # Present when the orchestrator got the answer from a LiteLLM proxy (limits stated per deployment).
+            "max_output_tokens": body.get("maxOutputTokens"),
+            "source": body.get("source"),
+        }
 
     def judge_kb_relevance(
         self, branch_content: str, snippets: list[dict], user_id: str | None = None,
@@ -2083,7 +2100,7 @@ class OrchestratorLlmClient:
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
             "responseSchema": section_analysis_schema(),
-            "maxTokens": _MAX_OUTPUT_TOKENS,
+            "maxTokens": self._max_output_tokens,
             # Confirmed live (qwen3.6:35b, gemma4:31b): a reasoning-capable
             # model's hidden chain-of-thought adds 3-10x wall-clock time on
             # this holistic-JSON-extraction call with no observed accuracy
@@ -2313,7 +2330,7 @@ class OrchestratorLlmClient:
             "temperature": 0,
             **({"model": self._model} if self._model else {}),
             "responseSchema": section_skeleton_schema(),
-            "maxTokens": _MAX_OUTPUT_TOKENS,
+            "maxTokens": self._max_output_tokens,
             # Same confirmed-live finding as analyze_section's identical doc
             # comment -- this call inherits that finding directly, being the
             # same holistic-JSON-extraction work minus the content half.
@@ -2489,7 +2506,7 @@ class OrchestratorLlmClient:
                 "temperature": 0,
                 **({"model": self._model} if self._model else {}),
                 **({"responseSchema": schema} if schema is not None else {}),
-                "maxTokens": _MAX_OUTPUT_TOKENS,
+                "maxTokens": self._max_output_tokens,
                 # Same confirmed-live finding as the two section-analysis paths
                 # this call was split out of -- structured extraction over text
                 # already in the prompt, not open-ended reasoning.
@@ -2607,7 +2624,7 @@ class OrchestratorLlmClient:
                 "temperature": 0,
                 **({"model": self._model} if self._model else {}),
                 **({"responseSchema": schema} if schema is not None else {}),
-                "maxTokens": _MAX_OUTPUT_TOKENS,
+                "maxTokens": self._max_output_tokens,
                 # Same confirmed-live finding as every other structured-extraction
                 # call in this class -- classification over material already in
                 # the prompt, not open-ended reasoning.
@@ -2724,7 +2741,7 @@ class OrchestratorLlmClient:
                 # since the skeleton stage constrains the same loop to its
                 # own, much lighter shape.
                 "responseSchema": response_schema,
-                "maxTokens": _MAX_OUTPUT_TOKENS,
+                "maxTokens": self._max_output_tokens,
                 # See analyze_section's identical doc comment -- same
                 # confirmed-live finding, same two SURVEY call sites.
                 "think": False,

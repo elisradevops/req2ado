@@ -136,6 +136,16 @@ export class JobsController {
   // string[]} wire shape -- this picker only ever needed model ids, and
   // changing the shape would require an unrelated frontend rewrite outside
   // this fix's scope.
+  // A model hidden by LLM_MODEL_HIDE_PATTERNS (unusable entries, persona agents, retired aliases) is also refused
+  // here, so an API caller or an old job that names one fails fast and clearly instead of breaking mid-run.
+  private assertModelAllowed(model: string | null | undefined): void {
+    if (model && this.clientFactory.isModelHidden(model)) {
+      throw new BadRequestException(
+        `Model "${model}" is not available for requirement extraction. Choose another model.`,
+      );
+    }
+  }
+
   @Get('models')
   async listModels(@CurrentUser() user: SessionUser): Promise<{ models: string[] }> {
     const client = await this.clientFactory.getClientFor(user.userId);
@@ -160,6 +170,7 @@ export class JobsController {
     @Body('model') model: string | undefined,
     @Body('documentOverview') documentOverviewRaw: string | undefined,
   ): Promise<{ jobId: string }> {
+    this.assertModelAllowed(model);
     if (!file) {
       throw new BadRequestException('file is required');
     }
@@ -254,6 +265,7 @@ export class JobsController {
     openTbdCount: number;
     documentMap: DocumentMapSection[];
   }> {
+    this.assertModelAllowed(model);
     if (!file) {
       throw new BadRequestException('file is required');
     }
@@ -441,6 +453,7 @@ export class JobsController {
       throw new BadRequestException(`localIds must be a non-empty array of at most ${maxItems} strings`);
     }
     await this.ownedJob(id, user);
+    this.assertModelAllowed(await this.jobsService.modelOf(id));
     return this.jobsService.retryEnhancement(id, { kind, pass, localIds: [...new Set(localIds as string[])] });
   }
 
@@ -644,6 +657,7 @@ export class JobsController {
   @Post(':id/resubmit')
   async resubmit(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<{ jobId: string }> {
     await this.ownedJob(id, user);
+    this.assertModelAllowed(await this.jobsService.modelOf(id));
     return this.jobsService.resubmit(id);
   }
 

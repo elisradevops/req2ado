@@ -3,20 +3,52 @@ import OpenAI from 'openai';
 import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmStreamChunk } from './llm-client.interface';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
+import { isModelHidden, parseModelHidePatterns } from './model-visibility';
 import { fetchWithRetry } from './retryWithBackoff';
 import {
   assertCompletion,
+  effectiveMaxTokens,
+  EmptyLengthCompletion,
   negotiate,
+  raisedBudgetFor,
   UpstreamHttpError,
   type Adaptation,
+  type LearnedUpdate,
 } from './upstream-negotiation';
 
 // UpstreamHttpError moved to upstream-negotiation.ts with the rest of the upstream-error handling;
 // re-exported so existing importers (llm.controller.ts, tests) keep working unchanged.
 export { UpstreamHttpError };
 
+/** What the orchestrator can tell ingestion about one model. `contextLength` is the INPUT capacity when a source states it. */
+export interface ModelInfo {
+  contextLength: number | null;
+  capabilities: string[];
+  /** The model's stated output-token ceiling, when a source states one. */
+  maxOutputTokens?: number | null;
+  source?: 'litellm' | 'ollama';
+}
+
+/** No source (LiteLLM model info, Ollama /api/show) could describe this model. Not the same as a failure of the call itself. */
+export class ModelInfoUnavailableError extends Error {
+  constructor(model: string, detail: string) {
+    super(`No model information available for "${model}": ${detail}`);
+    this.name = 'ModelInfoUnavailableError';
+  }
+}
+
 // Parameters each call can leave out when an upstream rejects them.
-const CHAT_DROPPABLE: ReadonlySet<string> = new Set(['seed', 'reasoning_effort']);
+// temperature / top_p / penalties: a model that answers "unsupported parameter" (rather than demanding a value,
+// which is handled first) is called without it instead of failing; reasoning models other than GPT-6 reject all
+// of them (Azure OpenAI reasoning-model documentation).
+const CHAT_DROPPABLE: ReadonlySet<string> = new Set([
+  'seed',
+  'reasoning_effort',
+  'temperature',
+  'top_p',
+  'presence_penalty',
+  'frequency_penalty',
+]);
 const VISION_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'frequency_penalty']);
 
 // Module-level singleton, not per-instance: the cl100k_base rank table load
@@ -41,6 +73,7 @@ function getEmbedEncoder(): Tiktoken {
 // The temperature to send for a chat/stream attempt. See buildParams in chat(): a demanded temperature wins
 // over the caller's; a caller that sent none only gets one after an attempt failed over it.
 function chatTemperature(requested: number | undefined, adaptation: Adaptation): number | undefined {
+  if (adaptation.dropped.has('temperature')) return undefined;
   if (requested !== undefined) return adaptation.temperature ?? requested;
   return adaptation.attempt > 1 ? adaptation.temperature : undefined;
 }
@@ -76,6 +109,8 @@ export interface OpenWebUiClientConfig {
    * Azure-backed models via LiteLLM reject it with a 400. Set true only for
    * Ollama/compatible backends that support it. */
   LLM_SEND_REASONING_EFFORT: boolean;
+  /** Comma-separated glob patterns of model names to hide from pickers and refuse (see model-visibility.ts). */
+  LLM_MODEL_HIDE_PATTERNS?: string;
   /** Temperature for vision() calls. When undefined (default), no temperature
    * is sent and the backend model applies its own default or constraint.
    * Set to 0 for deterministic extraction on permissive models; set to 1
@@ -99,12 +134,26 @@ export class OpenWebUiClient implements LlmClient {
   // per user (see OpenWebUiClientFactory), so a run of calls pays each reject-then-retry round trip once per
   // model instead of once per call -- a prod job logged ~57 failed first attempts for claude-opus-4-8, which
   // requires temperature=1. Shared by chat(), streamChat() and vision(); fed by negotiate().
-  private readonly modelConstraints = new Map<string, { temperature?: number; rejected: Set<string> }>();
+  private readonly modelConstraints = new Map<
+    string,
+    {
+      temperature?: number;
+      rejected: Set<string>;
+      tokenParam?: 'max_tokens' | 'max_completion_tokens';
+      maxTokensCap?: number;
+      maxTokensFloor?: number;
+      forceReasoningNone?: boolean;
+    }
+  >();
 
-  private rememberConstraint(model: string, update: { temperature?: number; rejected?: Iterable<string> }): void {
+  private rememberConstraint(model: string, update: LearnedUpdate): void {
     const current = this.modelConstraints.get(model) ?? { rejected: new Set<string>() };
     if (update.temperature !== undefined) current.temperature = update.temperature;
     for (const param of update.rejected ?? []) current.rejected.add(param);
+    if (update.tokenParam !== undefined) current.tokenParam = update.tokenParam;
+    if (update.maxTokensCap !== undefined) current.maxTokensCap = update.maxTokensCap;
+    if (update.maxTokensFloor !== undefined) current.maxTokensFloor = update.maxTokensFloor;
+    if (update.forceReasoningNone !== undefined) current.forceReasoningNone = update.forceReasoningNone;
     this.modelConstraints.set(model, current);
   }
 
@@ -158,7 +207,7 @@ export class OpenWebUiClient implements LlmClient {
       // Ollama maps OpenAI-compat max_tokens -> its own num_predict. Bounds
       // worst-case latency for a reasoning model's otherwise-unbounded
       // chain-of-thought + answer (see LlmChatOptions.maxTokens doc comment).
-      ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...(effectiveMaxTokens(opts?.maxTokens, a) !== undefined ? { [a.tokenParam]: effectiveMaxTokens(opts?.maxTokens, a) } : {}),
       ...(this.config.LLM_TRUSTED_LOCAL && Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
       // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT (false by default --
       // Azure-backed models via LiteLLM reject it with a 400). `reasoning_effort: 'none'` is NOT
@@ -169,13 +218,24 @@ export class OpenWebUiClient implements LlmClient {
       // The SDK's ReasoningEffort type is 'low'|'medium'|'high'|null; 'none' is an
       // Ollama-specific extension, valid server-side despite the narrower SDK union.
       // Only sent when opts.think is explicitly false; omitted otherwise.
-      ...(this.config.LLM_SEND_REASONING_EFFORT && !a.dropped.has('reasoning_effort') && opts?.think === false ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort } : {}),
+      // Also sent, whatever that setting says, once a model has refused function tools while reasoning
+      // (gpt-5.6 on Chat Completions): `none` is the only value it accepts together with tools.
+      ...(!a.dropped.has('reasoning_effort') &&
+      ((this.config.LLM_SEND_REASONING_EFFORT && opts?.think === false) || (a.forceReasoningNone && opts?.tools !== undefined))
+        ? { reasoning_effort: 'none' as OpenAI.ReasoningEffort }
+        : {}),
       ...(opts?.tools !== undefined ? { tools: opts.tools as OpenAI.Chat.ChatCompletionTool[] } : {}),
       ...(opts?.toolChoice !== undefined ? { tool_choice: opts.toolChoice } : {}),
     });
-    const toResult = (response: OpenAI.Chat.ChatCompletion): LlmChatResult => {
+    const toResult = (response: OpenAI.Chat.ChatCompletion, adaptation: Adaptation): LlmChatResult => {
       assertCompletion(response);
       const finishReason = response.choices[0]?.finish_reason;
+      // The whole output budget went on hidden reasoning (gpt-5-mini/nano at a small limit): nothing usable came
+      // back. Ask again once with a larger budget; a second empty answer is returned as it is.
+      if (finishReason === 'length' && !response.choices[0]?.message?.content && !response.choices[0]?.message?.tool_calls?.length) {
+        const target = raisedBudgetFor(effectiveMaxTokens(opts?.maxTokens, adaptation), adaptation);
+        if (target !== null) throw new EmptyLengthCompletion(target);
+      }
       // Only the abnormal endings are logged (a normal call ends 'stop' /
       // 'tool_calls'), with token counts and never content. A prod job got
       // empty structured answers and nothing anywhere recorded why: no
@@ -201,7 +261,8 @@ export class OpenWebUiClient implements LlmClient {
       droppable: CHAT_DROPPABLE,
       learned: this.modelConstraints.get(chatModel),
       remember: (update) => this.rememberConstraint(chatModel, update),
-      send: async (adaptation) => toResult(await this.openai.chat.completions.create(buildParams(adaptation))),
+      hasTools: opts?.tools !== undefined,
+      send: async (adaptation) => toResult(await this.openai.chat.completions.create(buildParams(adaptation)), adaptation),
     });
   }
 
@@ -218,9 +279,17 @@ export class OpenWebUiClient implements LlmClient {
     return this.config.LLM_CHAT_MODEL;
   }
 
+  private hidePatternsCache?: RegExp[];
+
+  /** True when this deployment hides the model from pickers and refuses to run jobs on it. */
+  isModelHidden(model: string): boolean {
+    this.hidePatternsCache ??= parseModelHidePatterns(this.config.LLM_MODEL_HIDE_PATTERNS);
+    return isModelHidden(model, this.hidePatternsCache);
+  }
+
   async listModels(): Promise<string[]> {
     const page = await this.openai.models.list();
-    return page.data.map((m) => m.id);
+    return page.data.map((m) => m.id).filter((id) => !this.isModelHidden(id));
   }
 
   // Base-model-only catalog for user-facing model pickers (the per-user
@@ -292,7 +361,7 @@ export class OpenWebUiClient implements LlmClient {
       }[];
     };
     return body.data
-      .filter((model) => model.preset !== true && !model.info?.base_model_id)
+      .filter((model) => model.preset !== true && !model.info?.base_model_id && !this.isModelHidden(model.id))
       .map((model) => ({
         id: model.id,
         name: model.name ?? model.id,
@@ -336,7 +405,7 @@ export class OpenWebUiClient implements LlmClient {
       // seed: gated on LLM_SEND_SEED -- see chat()'s own seed comment; left out once an upstream rejected it.
       ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') && opts?.seed !== undefined ? { seed: opts.seed } : {}),
       ...(buildResponseFormat(opts, !a.dropSchema) ? { response_format: buildResponseFormat(opts, !a.dropSchema) } : {}),
-      ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...(effectiveMaxTokens(opts?.maxTokens, a) !== undefined ? { [a.tokenParam]: effectiveMaxTokens(opts?.maxTokens, a) } : {}),
       ...(this.config.LLM_TRUSTED_LOCAL && Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
       // reasoning_effort: gated on LLM_SEND_REASONING_EFFORT -- see chat()'s own reasoning_effort
       // comment for why this is the correct field; left out once an upstream rejected it.
@@ -617,7 +686,99 @@ export class OpenWebUiClient implements LlmClient {
 
   private static readonly VIRTUAL_MODEL_NAMES = new Set(['Arena Model']);
 
-  async showModel(model: string): Promise<{ contextLength: number | null; capabilities: string[] }> {
+  // Model information, from whichever source this deployment has. An Ollama-backed Open WebUI answers the native
+  // /api/show; a LiteLLM proxy (the Elbichat route) states each deployment's limits and capabilities in
+  // GET /v1/model/info. Ollama is asked first (unchanged behaviour for existing deployments); an answer that
+  // states nothing falls through to LiteLLM, and if neither states anything the (empty) Ollama answer is returned as
+  // before. The result is cached per model for a few minutes (static facts). A model no source can describe is
+  // reported as ModelInfoUnavailableError so ingestion sizes it from its own rules instead of caching an empty answer.
+  private readonly modelInfoCache = new Map<string, { at: number; info: ModelInfo }>();
+  private static readonly MODEL_INFO_TTL_MS = 10 * 60_000;
+
+  async showModel(model: string): Promise<ModelInfo> {
+    if (OpenWebUiClient.VIRTUAL_MODEL_NAMES.has(model)) {
+      throw new Error(
+        `showModel() called with "${model}" -- an Open WebUI virtual multi-model construct, not a real Ollama model with its own /api/show entry. Caller should fall back to conservative capability defaults, same as any unreachable/unrecognized model.`,
+      );
+    }
+    const cached = this.modelInfoCache.get(model);
+    if (cached && Date.now() - cached.at < OpenWebUiClient.MODEL_INFO_TTL_MS) return cached.info;
+    const failures: string[] = [];
+    let statesNothing: ModelInfo | null = null;
+    const hasInfo = (info: ModelInfo) => info.contextLength !== null || info.capabilities.length > 0 || (info.maxOutputTokens ?? null) !== null;
+    for (const source of [() => this.ollamaShowModelOrNull(model), () => this.litellmModelInfo(model)]) {
+      try {
+        const info = await source();
+        if (!info) continue;
+        if (hasInfo(info)) {
+          this.modelInfoCache.set(model, { at: Date.now(), info });
+          return info;
+        }
+        statesNothing ??= info;
+      } catch (err) {
+        failures.push(err instanceof Error ? err.message : String(err));
+      }
+    }
+    if (statesNothing) return statesNothing;
+    throw new ModelInfoUnavailableError(model, failures.length > 0 ? failures.join('; ') : 'not listed by the proxy');
+  }
+
+  private async ollamaShowModelOrNull(model: string): Promise<ModelInfo | null> {
+    // The Ollama answer keeps its original shape ({contextLength, capabilities}) so existing callers see no change.
+    return this.ollamaShowModel(model);
+  }
+
+  /**
+   * LiteLLM proxy GET /v1/model/info (older releases: /model/info): `data[]` of deployments, each with
+   * `model_name` and `model_info` carrying max_input_tokens, max_output_tokens, supports_vision,
+   * supports_function_calling, supports_response_schema, supports_reasoning. Returns null when the model is not
+   * listed (or the endpoint does not exist on this deployment). LiteLLM only knows the names it has registered, so
+   * an alias can come back with nothing stated; the caller treats absent limits as "unknown", never as zero.
+   */
+  private async litellmModelInfo(model: string): Promise<ModelInfo | null> {
+    const root = this.config.LLM_BASE_URL.replace(/\/v1\/?$/, '');
+    let failedStatus: number | undefined;
+    for (const path of ['/v1/model/info', '/model/info']) {
+      const response = await fetch(`${root}${path}`, {
+        headers: { Authorization: `Bearer ${this.config.LLM_API_KEY ?? ''}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) {
+        // 404 just means this release does not have that path; anything else (a rejected token, a server error) is
+        // worth reporting if nothing else answers.
+        if (response.status !== 404) failedStatus ??= response.status;
+        continue;
+      }
+      // Open WebUI answers an unknown path with its web page (HTML, status 200): that means this route does not exist
+      // here, not that the lookup failed.
+      const contentType = response.headers?.get?.('content-type');
+      if (contentType && !contentType.includes('json')) continue;
+      const body = (await response.json()) as { data?: unknown };
+      const entries = Array.isArray(body.data) ? (body.data as Record<string, unknown>[]) : [];
+      const wanted = model.toLowerCase();
+      const entry =
+        entries.find((e) => typeof e.model_name === 'string' && e.model_name === model) ??
+        entries.find((e) => typeof e.model_name === 'string' && e.model_name.toLowerCase() === wanted);
+      if (!entry) return null;
+      const info = (entry.model_info ?? {}) as Record<string, unknown>;
+      const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
+      const capabilities: string[] = [];
+      if (info.supports_vision === true) capabilities.push('vision');
+      if (info.supports_function_calling === true) capabilities.push('tools');
+      if (info.supports_reasoning === true) capabilities.push('reasoning');
+      if (info.supports_response_schema === true) capabilities.push('structured_output');
+      return {
+        contextLength: num(info.max_input_tokens),
+        capabilities,
+        maxOutputTokens: num(info.max_output_tokens) ?? num(info.max_tokens),
+        source: 'litellm',
+      };
+    }
+    if (failedStatus !== undefined) throw new Error(`LiteLLM model info request failed: ${failedStatus}`);
+    return null;
+  }
+
+  private async ollamaShowModel(model: string): Promise<{ contextLength: number | null; capabilities: string[] }> {
     if (OpenWebUiClient.VIRTUAL_MODEL_NAMES.has(model)) {
       throw new Error(
         `showModel() called with "${model}" -- an Open WebUI virtual multi-model construct, not a real Ollama model with its own /api/show entry. Caller should fall back to conservative capability defaults, same as any unreachable/unrecognized model.`,
@@ -725,7 +886,7 @@ export class OpenWebUiClient implements LlmClient {
       // non-compliant response MORE expensive per call, not prevent it.
       // 300 is a defensive backstop a few times wider than a real
       // one-or-two-sentence caption ever needs, not the primary defense.
-      max_tokens: 300,
+      [a.tokenParam]: effectiveMaxTokens(300, a),
       // Real, 100%-reproducible root cause (confirmed live: every single
       // figure in a real document came back "no useful caption returned"
       // on a genuinely fresh, uncached run): unlike chat()'s own
@@ -782,7 +943,13 @@ export class OpenWebUiClient implements LlmClient {
       send: async (adaptation) => {
         const response = await this.openai.chat.completions.create(buildParams(adaptation));
         assertCompletion(response);
-        return response.choices[0]?.message?.content ?? '';
+        const text = response.choices[0]?.message?.content ?? '';
+        if (!text && response.choices[0]?.finish_reason === 'length') {
+          // A reasoning model that spent the 300-token budget thinking: ask once with a larger one.
+          const target = raisedBudgetFor(effectiveMaxTokens(300, adaptation), adaptation);
+          if (target !== null) throw new EmptyLengthCompletion(target);
+        }
+        return text;
       },
     });
   }

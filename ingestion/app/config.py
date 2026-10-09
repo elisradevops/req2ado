@@ -93,6 +93,20 @@ class Settings(BaseSettings):
     # (KEYED_SCHEMA_PASSES=title_tag). Unknown names are ignored. Pass names: title_tag, synthesis,
     # parent_summary, kb_relevance, author_content, figure_table_mapping, scoring, epic_feature_scoring.
     keyed_schema_passes: str = ""
+    # Per-model sizing overrides, as JSON: {"<model name>": {"context_budget_tokens": 150000, "branch_cap": 100000,
+    # "supports_tools": true, "max_output_tokens": 16384}} (any subset of the keys). Matched on the model name as sent
+    # or with a provider prefix and date suffix removed, case-insensitively. Beats every other source, so a model
+    # that is mis-sized or newly released can be fixed without a deploy.
+    model_profiles: str = ""
+    # Whether a model's own reported tool-calling support (the proxy's model info) turns on the knowledge-base
+    # agentic path for models that are not already known to handle it. Off until the tool-call probe has passed
+    # on the deployment's proxy; flip it on with config, no deploy.
+    tools_from_model_info: bool = False
+    # Whether the knowledge-base agentic path (tool calling) is turned on for models recognised by family (Claude,
+    # GPT-4.x/5.x/6, gpt-oss) that are not already known to handle it. The proxy in front of the models may publish no
+    # capability metadata at all (Open WebUI), so the documented families are the source. Off until a job on one such
+    # model has run the agentic path cleanly; flip it on with config, no deploy.
+    tools_for_known_families: bool = False
     # Confirmed real bug: this was hardcoded to 300s while the orchestrator's
     # own LLM_REQUEST_TIMEOUT_MS defaults to 600s (600_000ms) -- a vision
     # call that would have succeeded between 300-600s got aborted here

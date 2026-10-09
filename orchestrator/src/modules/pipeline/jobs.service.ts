@@ -590,6 +590,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       : `${sourceRef.documentPath}#offset=${range}`;
   }
 
+  /** The model a job runs on (null = the user's default), for guards that must not widen JobDetail's public shape. */
+  async modelOf(id: string): Promise<string | null> {
+    const job = await this.prisma.job.findUnique({ where: { id }, select: { model: true } });
+    return job?.model ?? null;
+  }
+
   async getById(id: string): Promise<JobDetail | null> {
     const job = await this.prisma.job.findUnique({
       where: { id },

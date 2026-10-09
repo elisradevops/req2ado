@@ -38,6 +38,8 @@ describe('JobsController (e2e)', () => {
     cancel: jest.fn(),
     delete: jest.fn(),
     resubmit: jest.fn(),
+    // The hidden-model guard in resubmit / retry-enhancement reads the job's model (null = the user's default).
+    modelOf: jest.fn().mockResolvedValue(null),
     getAuditTrail: jest.fn(),
     getDebugCaptures: jest.fn(),
     getSummary: jest.fn(),
