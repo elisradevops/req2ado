@@ -64,11 +64,17 @@ describe('negotiation parsers (documented wordings)', () => {
     dropped: new Set(),
     dropSchema: false,
     tokenParam: 'max_tokens',
+    omitTokenLimit: false,
     maxTokensCap: undefined,
     maxTokensFloor: undefined,
     forceReasoningNone: false,
     attempt: 1,
     ...over,
+  });
+
+  it('sends no limit at all once the model has refused both parameters', () => {
+    expect(effectiveMaxTokens(20000, adaptation({ omitTokenLimit: true }))).toBeUndefined();
+    expect(raisedBudgetFor(50, adaptation({ omitTokenLimit: true }))).toBeNull();
   });
 
   it('applies the raised floor first and the learned ceiling last', () => {
@@ -289,6 +295,67 @@ describe('OpenWebUiClient model negotiation', () => {
 
     expect(chunks).toEqual(['ok']);
     expect(create.mock.calls[1][0]).toHaveProperty('max_completion_tokens', 100);
+  });
+
+  it('sends no output limit when the proxy turns max_completion_tokens back into max_tokens (gpt-chat-latest on Elbichat)', async () => {
+    // Observed in prod: after the switch the request still reached Azure with max_tokens, because LiteLLM does not
+    // recognise the alias as a reasoning model and maps the parameter back.
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(apiError(AZURE_MAX_TOKENS))
+      .mockRejectedValueOnce(apiError(AZURE_MAX_TOKENS))
+      .mockResolvedValue(ok);
+    const client = makeClient(create);
+
+    const result = await client.chat(user, { model: 'OpenAI/gpt-chat-latest', maxTokens: 20000, responseSchema: { name: 's', schema: { type: 'object' } } });
+
+    expect(result.content).toBe('ok');
+    expect(create.mock.calls[0][0]).toHaveProperty('max_tokens', 20000);
+    expect(create.mock.calls[1][0]).toHaveProperty('max_completion_tokens', 20000);
+    expect(create.mock.calls[2][0]).not.toHaveProperty('max_tokens');
+    expect(create.mock.calls[2][0]).not.toHaveProperty('max_completion_tokens');
+    // A token-limit refusal is not a schema problem: the schema stays.
+    expect(create.mock.calls[2][0]).toHaveProperty('response_format');
+  });
+
+  it('remembers that for the model: the next call never sends a limit and costs one request', async () => {
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(apiError(AZURE_MAX_TOKENS))
+      .mockRejectedValueOnce(apiError(AZURE_MAX_TOKENS))
+      .mockResolvedValue(ok);
+    const client = makeClient(create);
+
+    await client.chat(user, { model: 'OpenAI/gpt-chat-latest', maxTokens: 100 });
+    await client.chat(user, { model: 'OpenAI/gpt-chat-latest', maxTokens: 100 });
+    await client.vision('describe', [Buffer.from('img')], { model: 'OpenAI/gpt-chat-latest' });
+
+    expect(create).toHaveBeenCalledTimes(5);
+    for (const call of create.mock.calls.slice(2)) {
+      expect(call[0]).not.toHaveProperty('max_tokens');
+      expect(call[0]).not.toHaveProperty('max_completion_tokens');
+    }
+  });
+
+  it('streamChat() sends no limit either once the model has refused both', async () => {
+    async function* stream() {
+      yield { choices: [{ delta: { content: 'ok' } }] };
+    }
+    const create = jest
+      .fn()
+      .mockRejectedValueOnce(apiError(AZURE_MAX_TOKENS))
+      .mockRejectedValueOnce(apiError(AZURE_MAX_TOKENS))
+      .mockResolvedValueOnce(stream());
+    const client = makeClient(create);
+
+    const chunks: string[] = [];
+    for await (const chunk of client.streamChat(user, { model: 'OpenAI/gpt-chat-latest', maxTokens: 100 })) {
+      if (chunk.content) chunks.push(chunk.content);
+    }
+
+    expect(chunks).toEqual(['ok']);
+    expect(create.mock.calls[2][0]).not.toHaveProperty('max_tokens');
+    expect(create.mock.calls[2][0]).not.toHaveProperty('max_completion_tokens');
   });
 
   it('keeps the attempt cap: a model that keeps failing ends as an upstream error, not an endless loop', async () => {
