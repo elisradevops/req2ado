@@ -184,7 +184,7 @@ export const RAISED_BUDGET_CEILING = 64_000;
 
 /** The output limit to send under this adaptation: raised floor first, then the model's learned ceiling. */
 export function effectiveMaxTokens(requested: number | undefined, adaptation: Adaptation): number | undefined {
-  if (requested === undefined) return undefined;
+  if (requested === undefined || adaptation.omitTokenLimit) return undefined;
   let value = Math.max(requested, adaptation.maxTokensFloor ?? 0);
   if (adaptation.maxTokensCap !== undefined) value = Math.min(value, adaptation.maxTokensCap);
   return value;
@@ -194,7 +194,7 @@ export function effectiveMaxTokens(requested: number | undefined, adaptation: Ad
 export function raisedBudgetFor(sent: number | undefined, adaptation: Adaptation): number | null {
   // Once per model: a floor is already in force (learned earlier, or raised on this call), so a second empty
   // answer is a result, not a reason to keep spending.
-  if (sent === undefined || adaptation.maxTokensFloor !== undefined) return null;
+  if (sent === undefined || adaptation.omitTokenLimit || adaptation.maxTokensFloor !== undefined) return null;
   const ceiling = adaptation.maxTokensCap ?? RAISED_BUDGET_CEILING;
   const target = Math.min(Math.max(sent * 4, 4_000), ceiling);
   return target > sent ? target : null;
@@ -220,6 +220,8 @@ export interface Adaptation {
   dropSchema: boolean;
   /** Which output-limit parameter the model accepts. */
   tokenParam: 'max_tokens' | 'max_completion_tokens';
+  /** Send no output limit at all (the model refused both parameters, e.g. a proxy that turns one into the other). */
+  omitTokenLimit: boolean;
   /** The model's stated output ceiling; a requested limit is clamped to it. */
   maxTokensCap: number | undefined;
   /** An output limit raised after an empty, length-truncated answer; used as a floor for later calls. */
@@ -235,6 +237,7 @@ export interface LearnedConstraints {
   temperature?: number;
   rejected: ReadonlySet<string>;
   tokenParam?: 'max_tokens' | 'max_completion_tokens';
+  omitTokenLimit?: boolean;
   maxTokensCap?: number;
   maxTokensFloor?: number;
   forceReasoningNone?: boolean;
@@ -245,6 +248,7 @@ export interface LearnedUpdate {
   temperature?: number;
   rejected?: Iterable<string>;
   tokenParam?: 'max_tokens' | 'max_completion_tokens';
+  omitTokenLimit?: boolean;
   maxTokensCap?: number;
   maxTokensFloor?: number;
   forceReasoningNone?: boolean;
@@ -291,6 +295,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
     dropped: new Set(args.learned?.rejected ?? []),
     dropSchema: false,
     tokenParam: args.learned?.tokenParam ?? 'max_tokens',
+    omitTokenLimit: args.learned?.omitTokenLimit ?? false,
     maxTokensCap: args.learned?.maxTokensCap,
     maxTokensFloor: args.learned?.maxTokensFloor,
     forceReasoningNone: args.learned?.forceReasoningNone ?? false,
@@ -316,6 +321,17 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         console.warn(`[${args.label}] upstream requires temperature=${requiredTemperature}; retrying for model=${args.model}`);
         adaptation.temperature = requiredTemperature;
         args.remember({ temperature: requiredTemperature });
+        continue;
+      }
+
+      if (requiredTemperature === null && adaptation.tokenParam === 'max_completion_tokens' && !adaptation.omitTokenLimit && parseMaxTokensUnsupported(err)) {
+        // The switch did not help: a proxy in between (LiteLLM treats a model name it does not recognise as a plain
+        // chat model) turns max_completion_tokens back into max_tokens. Send no output limit; the model's own default
+        // applies. Remembered for the model.
+        // eslint-disable-next-line no-console
+        console.warn(`[${args.label}] upstream refuses both output-limit parameters; sending none for model=${args.model}`);
+        adaptation.omitTokenLimit = true;
+        args.remember({ omitTokenLimit: true });
         continue;
       }
 
@@ -362,7 +378,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
 
       // A temperature error that is still being returned after the temperature was fixed is not a schema
       // problem, so it does not trigger the schema fallback (dropping the schema would not help).
-      if (requiredTemperature === null && args.hasSchema && !adaptation.dropSchema && isSchemaRejection(err)) {
+      if (requiredTemperature === null && args.hasSchema && !adaptation.dropSchema && isSchemaRejection(err) && !parseMaxTokensUnsupported(err)) {
         // eslint-disable-next-line no-console
         console.warn(`[${args.label}] upstream rejected the response schema; retrying without it for model=${args.model}`);
         adaptation.dropSchema = true;

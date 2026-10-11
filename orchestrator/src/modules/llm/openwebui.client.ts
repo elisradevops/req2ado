@@ -140,6 +140,7 @@ export class OpenWebUiClient implements LlmClient {
       temperature?: number;
       rejected: Set<string>;
       tokenParam?: 'max_tokens' | 'max_completion_tokens';
+      omitTokenLimit?: boolean;
       maxTokensCap?: number;
       maxTokensFloor?: number;
       forceReasoningNone?: boolean;
@@ -151,6 +152,7 @@ export class OpenWebUiClient implements LlmClient {
     if (update.temperature !== undefined) current.temperature = update.temperature;
     for (const param of update.rejected ?? []) current.rejected.add(param);
     if (update.tokenParam !== undefined) current.tokenParam = update.tokenParam;
+    if (update.omitTokenLimit !== undefined) current.omitTokenLimit = update.omitTokenLimit;
     if (update.maxTokensCap !== undefined) current.maxTokensCap = update.maxTokensCap;
     if (update.maxTokensFloor !== undefined) current.maxTokensFloor = update.maxTokensFloor;
     if (update.forceReasoningNone !== undefined) current.forceReasoningNone = update.forceReasoningNone;
@@ -886,7 +888,7 @@ export class OpenWebUiClient implements LlmClient {
       // non-compliant response MORE expensive per call, not prevent it.
       // 300 is a defensive backstop a few times wider than a real
       // one-or-two-sentence caption ever needs, not the primary defense.
-      [a.tokenParam]: effectiveMaxTokens(300, a),
+      ...(effectiveMaxTokens(300, a) !== undefined ? { [a.tokenParam]: effectiveMaxTokens(300, a) } : {}),
       // Real, 100%-reproducible root cause (confirmed live: every single
       // figure in a real document came back "no useful caption returned"
       // on a genuinely fresh, uncached run): unlike chat()'s own
