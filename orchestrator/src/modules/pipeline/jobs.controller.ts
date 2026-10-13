@@ -14,6 +14,7 @@ import {
   UploadedFile,
   UseGuards,
   UseInterceptors,
+  Optional,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
@@ -29,6 +30,7 @@ import { buildDocumentMap, type DocumentMapSection } from './document-map';
 import { DocumentOverviewService } from './document-overview.service';
 import { createHash } from 'crypto';
 import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
+import { ModelHealthService } from '../llm/model-health.service';
 import { LlmProxyBearerGuard } from '../llm/llm-proxy-bearer.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
@@ -104,6 +106,7 @@ export class JobsController {
     private readonly etaService: EtaService,
     @Inject('MAX_UPLOAD_SIZE_BYTES') private readonly maxUploadSizeBytes: number,
     private readonly documentOverviewService: DocumentOverviewService,
+    @Optional() private readonly modelHealth?: ModelHealthService,
   ) {}
 
   @Get()
@@ -138,8 +141,9 @@ export class JobsController {
   // this fix's scope.
   // A model hidden by LLM_MODEL_HIDE_PATTERNS (unusable entries, persona agents, retired aliases) is also refused
   // here, so an API caller or an old job that names one fails fast and clearly instead of breaking mid-run.
-  private assertModelAllowed(model: string | null | undefined): void {
-    if (model && this.clientFactory.isModelHidden(model)) {
+  private async assertModelAllowed(model: string | null | undefined): Promise<void> {
+    if (!model) return;
+    if (this.clientFactory.isModelHidden(model) || (await this.modelHealth?.isFailed(model))) {
       throw new BadRequestException(
         `Model "${model}" is not available for requirement extraction. Choose another model.`,
       );
@@ -150,7 +154,8 @@ export class JobsController {
   async listModels(@CurrentUser() user: SessionUser): Promise<{ models: string[] }> {
     const client = await this.clientFactory.getClientFor(user.userId);
     const models = await client.listSelectableModels();
-    return { models: models.map((m) => m.id) };
+    const visible = (await this.modelHealth?.filterVisible(user.userId, models)) ?? models;
+    return { models: visible.map((m) => m.id) };
   }
 
   @Post()
@@ -170,7 +175,7 @@ export class JobsController {
     @Body('model') model: string | undefined,
     @Body('documentOverview') documentOverviewRaw: string | undefined,
   ): Promise<{ jobId: string }> {
-    this.assertModelAllowed(model);
+    await this.assertModelAllowed(model);
     if (!file) {
       throw new BadRequestException('file is required');
     }
@@ -265,7 +270,7 @@ export class JobsController {
     openTbdCount: number;
     documentMap: DocumentMapSection[];
   }> {
-    this.assertModelAllowed(model);
+    await this.assertModelAllowed(model);
     if (!file) {
       throw new BadRequestException('file is required');
     }
@@ -453,7 +458,7 @@ export class JobsController {
       throw new BadRequestException(`localIds must be a non-empty array of at most ${maxItems} strings`);
     }
     await this.ownedJob(id, user);
-    this.assertModelAllowed(await this.jobsService.modelOf(id));
+    await this.assertModelAllowed(await this.jobsService.modelOf(id));
     return this.jobsService.retryEnhancement(id, { kind, pass, localIds: [...new Set(localIds as string[])] });
   }
 
@@ -657,7 +662,7 @@ export class JobsController {
   @Post(':id/resubmit')
   async resubmit(@Param('id') id: string, @CurrentUser() user: SessionUser): Promise<{ jobId: string }> {
     await this.ownedJob(id, user);
-    this.assertModelAllowed(await this.jobsService.modelOf(id));
+    await this.assertModelAllowed(await this.jobsService.modelOf(id));
     return this.jobsService.resubmit(id);
   }
 
