@@ -1829,6 +1829,19 @@ describe('OpenWebUiClient.chatWithFullFileContext', () => {
     expect(JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body).model).toBe('test-model');
   });
 
+  it('leaves Ollama\'s options.num_ctx out for a deployment that is not trusted-local, and drops it when the upstream refuses it', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(accepted);
+    await new OpenWebUiClient({ ...config, LLM_TRUSTED_LOCAL: false }).chatWithFullFileContext('Describe.', 'file-1', { numCtx: 16_384 });
+    expect(JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body)).not.toHaveProperty('options');
+
+    (global.fetch as jest.Mock).mockReset();
+    (global.fetch as jest.Mock).mockResolvedValueOnce(rejected(400, "Unknown parameter: 'options'.")).mockResolvedValue(accepted);
+    await new OpenWebUiClient(config).chatWithFullFileContext('Describe.', 'file-1', { numCtx: 16_384 });
+    const bodies = (global.fetch as jest.Mock).mock.calls.map(([, o]) => JSON.parse(o.body));
+    expect(bodies[0]).toHaveProperty('options');
+    expect(bodies[1]).not.toHaveProperty('options');
+  });
+
   it('throws when the response is not ok', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
     const client = new OpenWebUiClient(config);

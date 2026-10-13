@@ -52,6 +52,14 @@ export function parseUnsupportedParams(err: unknown): Set<string> {
     }
     return params;
   }
+  // OpenAI/Azure: "Unknown parameter: 'options'." / "Unrecognized request argument supplied: options"
+  const unknownMatch =
+    err.message.match(/unknown parameter[^'"\w]*['"]?([A-Za-z_]\w*)/i) ??
+    err.message.match(/unrecognized request argument supplied:\s*['"]?([A-Za-z_]\w*)/i);
+  if (unknownMatch) {
+    params.add(unknownMatch[1]);
+    return params;
+  }
   // Fallback: generic UnsupportedParamsError -- scan for known param names in the message
   if (err.message.includes('UnsupportedParamsError') || err.message.toLowerCase().includes('unsupported')) {
     if (err.message.includes('seed')) params.add('seed');
@@ -169,10 +177,15 @@ const CONTEXT_MARGIN_TOKENS = 32;
 export function parseContextLengthCap(err: unknown): number | null {
   const message = badRequestMessage(err);
   if (!message) return null;
-  const context = message.match(/maximum context length is (\d[\d,]*) tokens/i);
+  // "maximum context length is N tokens" (OpenAI/Azure) or "the model's maximum context length of N tokens" (vLLM-style,
+  // gpt-oss-120b: "Requested token count exceeds the model's maximum context length of 131072 tokens. You requested a
+  // total of 131146 tokens: 74 tokens from the input messages and 131072 tokens for the completion.").
+  const context = message.match(/maximum context length (?:is|of) (\d[\d,]*) tokens/i);
   if (!context) return null;
   const input =
-    message.match(/\((\d[\d,]*) (?:tokens )?in the (?:messages|prompt)/i) ?? message.match(/your (?:messages|prompt) resulted in (\d[\d,]*) tokens/i);
+    message.match(/\((\d[\d,]*) (?:tokens )?in the (?:messages|prompt)/i) ??
+    message.match(/your (?:messages|prompt) resulted in (\d[\d,]*) tokens/i) ??
+    message.match(/(\d[\d,]*) tokens? from the (?:input|prompt)(?: messages)?/i);
   if (!input) return null;
   const cap = parseInt(context[1].replace(/,/g, ''), 10) - parseInt(input[1].replace(/,/g, ''), 10) - CONTEXT_MARGIN_TOKENS;
   return Number.isFinite(cap) && cap > 0 ? cap : null;
@@ -227,6 +240,17 @@ export function raisedBudgetFor(sent: number | undefined, adaptation: Adaptation
 
 /** Longest stretch of an upstream error message that is ever logged. */
 const LOGGED_ERROR_CHARS = 300;
+
+/**
+ * An identifier the upstream attached to its answer, for matching a failure to the proxy's own log when the body is
+ * empty (LiteLLM's call id, or a generic request id). Undefined when there is none.
+ */
+export function upstreamRequestId(err: unknown): string | undefined {
+  if (!(err instanceof OpenAI.APIError)) return undefined;
+  const headers = (err.headers ?? {}) as Record<string, string | null | undefined>;
+  const id = err.request_id ?? headers['x-litellm-call-id'] ?? headers['x-request-id'];
+  return id ? String(id).slice(0, 80) : undefined;
+}
 
 /**
  * What to log about a failed upstream call: its HTTP status (or the kind of failure when there is none) and the
@@ -359,7 +383,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
     const logFailure = (err: unknown): void => {
       const { status, message } = summarizeUpstreamError(err);
       logger.warn(
-        `upstream call failed: label=${args.label} model=${args.model} attempt=${attempt} status=${status} elapsedMs=${Date.now() - startedAt} requestChars=${args.requestChars ?? "n/a"} schema=${args.hasSchema} message="${message}"`,
+        `upstream call failed: label=${args.label} model=${args.model} attempt=${attempt} status=${status} elapsedMs=${Date.now() - startedAt} requestChars=${args.requestChars ?? "n/a"} schema=${args.hasSchema} message="${message}" requestId=${upstreamRequestId(err) ?? "none"}`,
       );
     };
     // The failure itself was already logged above; this only records that nothing more could be adapted.

@@ -55,7 +55,7 @@ const CHAT_DROPPABLE: ReadonlySet<string> = new Set([
   'presence_penalty',
   'frequency_penalty',
 ]);
-const FILE_CONTEXT_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'seed']);
+const FILE_CONTEXT_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'seed', 'options']);
 const VISION_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'frequency_penalty']);
 
 // Module-level singleton, not per-instance: the cl100k_base rank table load
@@ -1044,7 +1044,9 @@ export class OpenWebUiClient implements LlmClient {
         ...(!a.dropped.has('temperature') ? { temperature: a.temperature ?? 0 } : {}),
         ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') ? { seed: 0 } : {}),
         ...(maxTokens !== undefined ? { [a.tokenParam]: maxTokens } : {}),
-        ...(opts.numCtx !== undefined ? { options: { num_ctx: opts.numCtx } } : {}),
+        // Ollama's own context option: only a trusted-local (Ollama) deployment understands it; an OpenAI/Azure
+        // backend answers 400 'Unknown parameter' (and it is dropped on that answer if it was sent anyway).
+        ...(opts.numCtx !== undefined && this.config.LLM_TRUSTED_LOCAL && !a.dropped.has('options') ? { options: { num_ctx: opts.numCtx } } : {}),
       });
     };
     // Same adaptation policy as chat()/vision() (negotiate): required temperature, output-limit parameter and

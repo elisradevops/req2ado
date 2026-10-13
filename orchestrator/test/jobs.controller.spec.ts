@@ -836,6 +836,32 @@ describe('JobsController hidden models (LLM_MODEL_HIDE_PATTERNS)', () => {
     expect(jobsService.submit).not.toHaveBeenCalled();
   });
 
+  it('refuses a model that automatic model health has found failing, and lets an unknown or healthy one through', async () => {
+    const modelHealth = { isFailed: jest.fn(async (model: string) => model === 'persona-bot') };
+    const controller = new JobsController(
+      { submit: jest.fn().mockResolvedValue({ jobId: 'j' }) } as any, { ingest: jest.fn() } as any, { isModelHidden: () => false } as any,
+      {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any, modelHealth as any,
+    );
+
+    await expect(
+      controller.submit(undefined, TEST_USER, 'Project', 'P', 'survey', undefined, undefined, 'persona-bot', undefined),
+    ).rejects.toThrow(/not available for requirement extraction/);
+    // a healthy model gets past the model guard (and fails later, on the missing file)
+    await expect(
+      controller.submit(undefined, TEST_USER, 'Project', 'P', 'survey', undefined, undefined, 'claude-opus-4-8', undefined),
+    ).rejects.toThrow('file is required');
+  });
+
+  it('lists only the models health has not found failing', async () => {
+    const listSelectableModels = jest.fn().mockResolvedValue([{ id: 'good', name: 'good', vision: false }, { id: 'persona-bot', name: 'p', vision: false }]);
+    const modelHealth = { filterVisible: jest.fn(async (_u: string, models: { id: string }[]) => models.filter((m) => m.id !== 'persona-bot')) };
+    const controller = new JobsController(
+      {} as any, {} as any, { getClientFor: jest.fn().mockResolvedValue({ listSelectableModels }) } as any,
+      {} as any, {} as any, {} as any, 500 * 1024 * 1024, {} as any, modelHealth as any,
+    );
+    expect(await controller.listModels(TEST_USER)).toEqual({ models: ['good'] });
+  });
+
   it('does not touch the factory when no model is named', async () => {
     factory.isModelHidden.mockClear();
     const jobsService = { submit: jest.fn() };

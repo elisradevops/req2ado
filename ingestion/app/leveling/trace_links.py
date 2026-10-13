@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -65,9 +66,10 @@ class TraceLinkInferenceClient(Protocol):
 
 
 # Bounds for one trace-link request: node count and the characters of node text it carries. The upstream cuts
-# a request at ~300 s; a whole 545-block tree in one call ran into that, chunks of this size are far below it.
-_TRACE_CHUNK_MAX_NODES = 150
-_TRACE_CHUNK_MAX_CHARS = 60_000
+# a request at ~300 s; a whole 545-block tree in one call ran into that, and a Sonnet run of 4-5 large chunks took ~530 s in total
+# (about 2 min each), so chunks stay small enough for one call to finish well under that cut.
+_TRACE_CHUNK_MAX_NODES = 80
+_TRACE_CHUNK_MAX_CHARS = 30_000
 
 
 def _chunk_nodes(llm_nodes: list[dict]) -> list[list[dict]]:
@@ -92,10 +94,20 @@ def _infer_chunk_once(
     user_id: str | None,
 ) -> tuple[list[dict] | None, str | None]:
     """(links, None) on success, (None, short reason) when the call failed or answered with something unusable."""
+    started = time.monotonic()
+    chars = sum(len(n["text"]) for n in nodes)
     try:
         links = client.infer_trace_links(nodes, catalog, kb_context=kb_context, user_id=user_id)
     except Exception as exc:  # noqa: BLE001 -- enrichment must never fail the job
-        return None, " ".join(str(exc).split())[:200] or type(exc).__name__
+        reason = " ".join(str(exc).split())[:200] or type(exc).__name__
+        logger.warning(
+            "Trace-link call failed: nodes=%d chars=%d seconds=%.1f reason=%s", len(nodes), chars, time.monotonic() - started, reason,
+        )
+        return None, reason
+    logger.info(
+        "Trace-link call: nodes=%d chars=%d seconds=%.1f links=%d", len(nodes), chars, time.monotonic() - started,
+        len(links) if isinstance(links, list) else 0,
+    )
     return (links if isinstance(links, list) else []), None
 
 

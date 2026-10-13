@@ -32,6 +32,12 @@ export const configSchema = z.object({
   // picker and refused at job submit/preview/resubmit/retry: models that fail the request contract, persona/agent
   // presets that inject their own prompt, and retired aliases. Empty by default.
   LLM_MODEL_HIDE_PATTERNS: z.string().optional(),
+  // Automatic model health (model-health.ts): probe each listed model in the background and hide the ones that fail.
+  // On by default; 'false' restores the plain catalog (the rollback switch).
+  MODEL_HEALTH_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
   // Temperature for vision() calls. Unset (default) → no temperature sent,
   // letting the backend model apply its own default or constraint (e.g.
   // claude-opus-4-8 requires temperature=1 for extended thinking -- the

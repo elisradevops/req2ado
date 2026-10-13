@@ -4,7 +4,10 @@ import { LlmController } from './llm.controller';
 import { LlmStatusController } from './llm-status.controller';
 import { LlmConnectionController } from './llm-connection.controller';
 import { LlmProxyBearerGuard } from './llm-proxy-bearer.guard';
+import Redis from 'ioredis';
+import { Queue } from 'bullmq';
 import { OpenWebUiClientFactory, type OpenWebUiGlobalConfig } from './openwebui-client.factory';
+import { MODEL_HEALTH_QUEUE, ModelHealthService } from './model-health.service';
 import { LlmConfigResolver } from '../auth/llm-config.resolver';
 import { AuthModule } from '../auth/auth.module';
 
@@ -44,6 +47,34 @@ import { AuthModule } from '../auth/auth.module';
         return new OpenWebUiClientFactory(globalConfig, llmConfigResolver);
       },
     },
+    {
+      // Automatic model health: a managed BullMQ queue + worker (the same Redis the pipeline queue uses) probes the
+      // catalog's models and a Redis store remembers the verdicts. See model-health.ts.
+      provide: ModelHealthService,
+      inject: [ConfigService, OpenWebUiClientFactory],
+      useFactory: (config: ConfigService, factory: OpenWebUiClientFactory) => {
+        const enabled = config.get<boolean>('MODEL_HEALTH_ENABLED') ?? true;
+        if (!enabled) {
+          // The rollback switch: no connections are opened and the catalog is listed as it always was.
+          return new ModelHealthService({
+            enabled,
+            store: { mget: async () => [], set: async () => 'OK' },
+            queue: { add: async () => undefined },
+            clients: factory,
+          });
+        }
+        const redisUrl = config.get<string>('REDIS_URL')!;
+        const store = new Redis(redisUrl);
+        store.on('error', (err) => console.error('ModelHealth Redis error:', err));
+        return new ModelHealthService({
+          enabled,
+          store,
+          queue: new Queue(MODEL_HEALTH_QUEUE, { connection: { url: redisUrl } as never }),
+          clients: factory,
+          redisUrl,
+        });
+      },
+    },
   ],
   // LlmProxyBearerGuard exported too -- JobsModule reuses this same
   // ingestion-service-to-service bearer guard for its new figure-file
@@ -53,6 +84,6 @@ import { AuthModule } from '../auth/auth.module';
   // JobsModule, DocumentOverviewService's consumers) can resolve a
   // per-user client without a circular import back through this module's
   // own controllers.
-  exports: [OpenWebUiClientFactory, LlmProxyBearerGuard],
+  exports: [OpenWebUiClientFactory, LlmProxyBearerGuard, ModelHealthService],
 })
 export class LlmModule {}

@@ -1,9 +1,10 @@
-import { BadRequestException, Controller, Get, Post, Body, Query } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Optional, Post, Body, Query } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
 import { CredentialVaultService, userOwnerKey } from '../auth/credential-vault.service';
 import { LlmConfigResolver } from '../auth/llm-config.resolver';
 import { OpenWebUiClientFactory } from './openwebui-client.factory';
+import { ModelHealthService } from './model-health.service';
 import { llmConnectionRequestSchema } from './llm-connection.dto';
 
 export interface LlmConnectionStatus {
@@ -33,6 +34,7 @@ export class LlmConnectionController {
     private readonly vault: CredentialVaultService,
     private readonly llmConfigResolver: LlmConfigResolver,
     private readonly clientFactory: OpenWebUiClientFactory,
+    @Optional() private readonly modelHealth?: ModelHealthService,
   ) {}
 
   @Get()
@@ -54,14 +56,14 @@ export class LlmConnectionController {
   ): Promise<{ models: { id: string; name: string; vision: boolean }[] }> {
     if (token) {
       const models = await this.clientFactory.listModelsForToken(token);
-      return { models };
+      return { models: (await this.modelHealth?.filterVisible(user.userId, models)) ?? models };
     }
     const profile = await this.llmConfigResolver.resolve(user.userId);
     if (!profile) {
       throw new BadRequestException('No Open WebUI connection configured -- pass a token to preview models before saving one');
     }
     const models = await this.clientFactory.listModelsForToken(profile.apiKey);
-    return { models };
+    return { models: (await this.modelHealth?.filterVisible(user.userId, models)) ?? models };
   }
 
   @Post()

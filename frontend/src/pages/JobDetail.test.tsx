@@ -522,16 +522,19 @@ describe('JobDetail', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     expect(screen.getByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByText('Root'));
-
-    // findByRole's own timeout, not the global asyncUtilTimeout (setup.ts,
-    // 3000ms) -- same race as the toast-appear fix elsewhere in this file
-    // (see 9e6a6b4): the "Root" click's own re-render (mounting the node
-    // detail panel with this chip) can exceed 3000ms under real CI
-    // contention even though the underlying mock resolves immediately.
-    // Widening just this one call adds headroom without touching the
-    // global ceiling anywhere else in the suite.
-    const retryButton = await screen.findByRole('button', { name: /retry writing "covers" trace link/i }, { timeout: 8000 });
+    // Open the node's detail dialog. Under CI contention a click can be lost when the tree row re-renders
+    // between pointer-down and pointer-up (it failed on main after passing on its PR, with the dialog never
+    // opening), so the click is repeated until the dialog is there rather than waiting longer for one that
+    // never happened. The retry button is looked up in the same loop, inside the widened window.
+    const retryName = /retry writing "covers" trace link/i;
+    await waitFor(
+      async () => {
+        if (!screen.queryByRole('dialog')) await userEvent.click(screen.getByText('Root'));
+        expect(screen.getByRole('button', { name: retryName })).toBeInTheDocument();
+      },
+      { timeout: 8000 },
+    );
+    const retryButton = screen.getByRole('button', { name: retryName });
     await userEvent.click(retryButton);
 
     expect(jobsApi.retryTraceLinkWrite).toHaveBeenCalledWith('job-20', 'failure-1');

@@ -6,6 +6,8 @@ import {
   effectiveMaxTokens,
   isToolsWithReasoningRejection,
   parseContextLengthCap,
+  parseUnsupportedParams,
+  upstreamRequestId,
   parseMaxOutputCap,
   summarizeUpstreamError,
   parseMaxTokensUnsupported,
@@ -65,6 +67,23 @@ describe('negotiation parsers (documented wordings)', () => {
     expect(parseContextLengthCap(apiError('max_tokens is too large: 200000. This model supports at most 16384 completion tokens'))).toBeNull();
     expect(parseContextLengthCap(apiError(modern, 500))).toBeNull();
     expect(parseContextLengthCap(apiError("400 This model's maximum context length is 100 tokens. However, your messages resulted in 500 tokens."))).toBeNull();
+  });
+
+  it('reads the gpt-oss-120b context wording seen in prod ("maximum context length of N", "X tokens from the input messages")', () => {
+    const prod =
+      "400 litellm.BadRequestError: AzureException - Requested token count exceeds the model's maximum context length of 131072 tokens. You requested a total of 131146 tokens: 74 tokens from the input messages and 131072 tokens for the completion. Please reduce the number of tokens in the input messages or the completion to fit within the limit.";
+    expect(parseContextLengthCap(apiError(prod))).toBe(131072 - 74 - 32);
+  });
+
+  it('reads "Unknown parameter: \'x\'" as a parameter to leave out', () => {
+    expect(parseUnsupportedParams(apiError("400 Unknown parameter: 'options'."))).toEqual(new Set(['options']));
+    expect(parseUnsupportedParams(apiError('400 Unrecognized request argument supplied: options'))).toEqual(new Set(['options']));
+  });
+
+  it('puts the upstream request id on the failure line when the body is empty', () => {
+    const err = new OpenAI.APIError(400, undefined, '400 status code (no body)', { 'x-litellm-call-id': 'call-123' } as any);
+    expect(upstreamRequestId(err)).toBe('call-123');
+    expect(upstreamRequestId(new Error('x'))).toBeUndefined();
   });
 
   it('summarises a failure as a status and one short line, never more than 300 characters of the upstream text', () => {
