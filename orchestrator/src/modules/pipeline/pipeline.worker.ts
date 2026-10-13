@@ -562,7 +562,7 @@ export async function runPipelineJob(
               // so a re-sampled primer after this primer cache's own TTL
               // would invalidate every figure's 7-day cache entry for the
               // SAME document.
-              const result = await openWebUiClient.chatWithFullFileContext(
+              const askPrimer = (primerModel: string) => openWebUiClient.chatWithFullFileContext(
                 'Read the attached document in full. In 2-3 short sentences, describe: the ' +
                   'document type and purpose, the system it specifies (if any), and the domain ' +
                   "conventions or phrasing style it uses. Do not list sections or definitions.",
@@ -580,7 +580,7 @@ export async function runPipelineJob(
                   // backstops against the same real risk.
                   maxTokens: 300,
                   // The job's own model (also part of the cache key above), not the client's configured default.
-                  model,
+                  model: primerModel,
                   // Fixed at PRIMER_FIXED_NUM_CTX (see its own comment
                   // above for why) -- passed explicitly because Ollama
                   // otherwise runs at its own small default window
@@ -589,6 +589,18 @@ export async function runPipelineJob(
                   numCtx: PRIMER_FIXED_NUM_CTX,
                 },
               );
+              // The native file-context route only answers for models Open WebUI itself lists (claude-sonnet-4-6
+              // came back "Model not found" there while working everywhere else). The primer is only an
+              // orientation hint, so a job model it refuses falls back once to the client's configured model.
+              let result;
+              try {
+                result = await askPrimer(model);
+              } catch (primerError) {
+                if (model === openWebUiClient.chatModel) throw primerError;
+                // eslint-disable-next-line no-console -- worker process logging
+                console.warn(`Whole-document primer refused model ${model} for job ${job.id}; retrying with ${openWebUiClient.chatModel}`);
+                result = await askPrimer(openWebUiClient.chatModel);
+              }
               primerContext = result.content?.trim().slice(0, PRIMER_CONTEXT_MAX_CHARS) || undefined;
               if (primerContext) {
                 await primerCacheRedis.set(cacheKey, primerContext, 'EX', PRIMER_CONTEXT_CACHE_TTL_SECONDS);

@@ -189,14 +189,16 @@ def _scoring_failed_warning(
 
 
 def _is_splittable_upstream_failure(error: BaseException) -> bool:
-    """A failure that means "this call was too big or too slow", for which
-    scoring the same nodes as two smaller calls can succeed: a request
-    timeout, or a 5xx from the proxy (the orchestrator answers 5xx when the
-    upstream model call hangs, returns an empty completion or drops the
-    connection). A 4xx is the request's own fault and is not retried."""
+    """A failure for which scoring the same nodes as two smaller calls can succeed: a request timeout, a 5xx from
+    the proxy (the orchestrator answers 5xx when the upstream model call hangs, returns an empty completion or drops
+    the connection), or a 400. A 400 here is the orchestrator's answer after its own schema-less retry also failed;
+    prod saw Claude answer one batch with an instant, body-less 400 while every other batch of the same shape passed,
+    so a smaller request is worth one more try (bounded: each half once). Other 4xx (auth, not found) are not."""
     if isinstance(error, httpx.TimeoutException):
         return True
-    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code >= 500
+    return isinstance(error, httpx.HTTPStatusError) and (
+        error.response.status_code >= 500 or error.response.status_code == 400
+    )
 
 
 def _score_all_requirements(

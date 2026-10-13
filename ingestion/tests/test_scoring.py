@@ -643,7 +643,7 @@ def test_scoring_batches_default_to_a_size_that_finishes_well_inside_a_gateway_t
     assert _SCORING_CHUNK_NODE_COUNT <= 50
 
 
-def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_a_4xx_is_not() -> None:
+def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_an_auth_error_is_not() -> None:
     calls: list[int] = []
 
     class Fails500OnFullChunkClient:
@@ -665,13 +665,31 @@ def test_a_5xx_scoring_failure_is_retried_as_two_halves_but_a_4xx_is_not() -> No
     class Fails400Client:
         def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
             calls.append(len(descriptions_by_node_id))
-            raise _http_status_error(400)
+            raise _http_status_error(401)
 
     nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
     warnings = []
     _score_all_requirements(nodes, Fails400Client(), warnings, None, None, [], None, None, 0, 1)
-    assert len(calls) == 1  # a 4xx is the request's own fault -- no split
+    assert len(calls) == 1  # an auth failure is not about size -- no split
     assert [w.detail["errorType"] for w in warnings if w.kind.value == "scoring_failed"] == ["HTTPStatusError"]
+
+
+def test_a_400_scoring_failure_is_retried_as_two_halves_and_the_survivor_half_is_kept() -> None:
+    calls: list[int] = []
+
+    class Fails400OnFullChunkClient:
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+            calls.append(len(descriptions_by_node_id))
+            if len(descriptions_by_node_id) > _SCORING_CHUNK_NODE_COUNT * 0.6:
+                raise _http_status_error(400)
+            return {node_id: {"score": 80, "issues": []} for node_id in descriptions_by_node_id}
+
+    nodes = _requirement_nodes(_SCORING_CHUNK_NODE_COUNT)
+    warnings: list = []
+    _score_all_requirements(nodes, Fails400OnFullChunkClient(), warnings, None, None, [], None, None, 0, 1)
+    assert all(n.quality_score == 80 for n in nodes)
+    assert not any(w.kind.value == "scoring_failed" for w in warnings)
+    assert len(calls) == 3
 
 
 def test_epic_feature_scoring_also_splits_on_a_5xx() -> None:
