@@ -1919,10 +1919,21 @@ class OrchestratorLlmClient:
         real root under a group that already exists and already traces to
         real source content."""
         system_prompt = load_prompt("assign_leftover_roots")
-        return self._chat_json(
+        result = self._chat_json(
             system_prompt, json.dumps({"leftovers": leftover_titles_by_id, "groups": group_titles_by_id}),
             schema=leftover_assignment_schema(), user_id=user_id,
         )
+        # The schema asks for [{id, group_id}] (a strict-compatible shape); callers read {leftover_id: group_id}.
+        # A model that still answers with the older map is accepted as is.
+        assignments = result.get("assignments") if isinstance(result, dict) else None
+        if isinstance(assignments, list):
+            folded = {
+                str(entry["id"]): str(entry["group_id"])
+                for entry in assignments
+                if isinstance(entry, dict) and "id" in entry and "group_id" in entry
+            }
+            return {**result, "assignments": folded}
+        return result
 
     def show_model(self, model: str, user_id: str | None = None) -> dict:
         """Backs the ModelCapsClient protocol (llm_leveling.py) -- a live

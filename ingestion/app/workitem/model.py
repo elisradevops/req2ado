@@ -343,6 +343,9 @@ class WarningKind(str, Enum):
     ROOTS_REGROUPED = "roots_regrouped"
     CATCHALL_EPIC_WRAP = "catchall_epic_wrap"
     NEAR_DUPLICATE_CONFLICT = "near_duplicate_conflict"
+    # A near-duplicate cluster the conflict judge could not be asked about (its model call failed, retry and split
+    # included): the items were NOT checked for conflicting values and a reviewer should compare them.
+    CONFLICT_JUDGMENT_SKIPPED = "conflict_judgment_skipped"
     OUTPUT_TRUNCATED = "output_truncated"
     NO_MODEL_TITLE = "no_model_title"
     INVALID_FIGURE_IDS = "invalid_figure_ids"
@@ -368,6 +371,7 @@ class WarningKind(str, Enum):
     DROPPED_ROW = "dropped_row"
     FRONT_MATTER_FOLDED = "front_matter_folded"
     TRACE_LINK_INFERENCE_FAILED = "trace_link_inference_failed"
+    TRACE_LINKS_PARTIAL = "trace_links_partial"
     HEADING_ID_OFFSET_MISMATCH = "heading_id_offset_mismatch"
     UNSUPPORTED_CONTENT_NOTE = "unsupported_content_note"
     EMPTY_TABLE_CONTENT = "empty_table_content"
@@ -474,6 +478,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.ROOTS_REGROUPED: WarningSeverity.AUTO_FIXED,
     WarningKind.CATCHALL_EPIC_WRAP: WarningSeverity.AUTO_FIXED,
     WarningKind.NEAR_DUPLICATE_CONFLICT: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.CONFLICT_JUDGMENT_SKIPPED: WarningSeverity.NEEDS_REVIEW,
     WarningKind.OUTPUT_TRUNCATED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.NO_MODEL_TITLE: WarningSeverity.AUTO_FIXED,
     WarningKind.INVALID_FIGURE_IDS: WarningSeverity.NEEDS_REVIEW,
@@ -495,6 +500,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.DROPPED_ROW: WarningSeverity.NEEDS_REVIEW,
     WarningKind.FRONT_MATTER_FOLDED: WarningSeverity.AUTO_FIXED,
     WarningKind.TRACE_LINK_INFERENCE_FAILED: WarningSeverity.PIPELINE_ISSUE,
+    WarningKind.TRACE_LINKS_PARTIAL: WarningSeverity.NEEDS_REVIEW,
     WarningKind.HEADING_ID_OFFSET_MISMATCH: WarningSeverity.NEEDS_REVIEW,
     WarningKind.UNSUPPORTED_CONTENT_NOTE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.EMPTY_TABLE_CONTENT: WarningSeverity.NEEDS_REVIEW,

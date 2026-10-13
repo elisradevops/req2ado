@@ -131,6 +131,16 @@ export const KIND_META: Record<string, KindMeta> = {
     unit: ['conflict', 'conflicts'],
     actionLabel: 'Compare',
   },
+  conflict_judgment_skipped: {
+    title: 'Near-duplicates not checked for conflicts',
+    group: 'review',
+    short: 'The model could not compare these near-duplicate items for conflicting values.',
+    means: 'The check failed, so these items may still state different values for the same thing.',
+    todo: 'Compare the listed items yourself and keep the correct value.',
+    chip: 'Not checked',
+    unit: ['cluster', 'clusters'],
+    actionLabel: 'Compare',
+  },
   low_grounding: {
     title: 'Low grounding: possible fabrication',
     group: 'review',
@@ -305,6 +315,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'No links',
     unit: ['run', 'runs'],
   },
+  trace_links_partial: {
+    title: 'Trace links missing for some items',
+    group: 'review',
+    short: 'Link inference failed for part of the document.',
+    means: 'The listed items have no suggested trace links. All other items were processed normally.',
+    todo: 'Add the missing links in Azure DevOps after you confirm.',
+    chip: 'Links missing',
+    unit: ['group', 'groups'],
+  },
   ado_verification_failed: {
     title: 'Could not verify Azure DevOps items',
     group: 'info',
@@ -313,6 +332,15 @@ export const KIND_META: Record<string, KindMeta> = {
     todo: 'Nothing required. Check the item in Azure DevOps if it matters.',
     chip: 'Unverified',
     unit: ['batch', 'batches'],
+  },
+  primer_unavailable: {
+    title: 'Document overview unavailable',
+    group: 'info',
+    short: 'The whole-document overview could not be generated.',
+    means: 'The analysis ran without that orientation hint. Items are otherwise unaffected.',
+    todo: 'Nothing required. Ask your administrator if it happens on every job.',
+    chip: 'No overview',
+    unit: ['job', 'jobs'],
   },
   reparented_to_feature: {
     title: 'Re-parented under a Feature',

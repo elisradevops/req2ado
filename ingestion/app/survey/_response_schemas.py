@@ -223,10 +223,12 @@ def trace_links_schema() -> dict:
                             "evidence_quote": {"type": "string"},
                         },
                         "required": ["source_node_id", "reference_name", "target_ref", "evidence_quote"],
+                        "additionalProperties": False,
                     },
                 }
             },
             "required": ["links"],
+            "additionalProperties": False,
         },
     }
 
@@ -480,6 +482,7 @@ def duplicate_cluster_verdict_schema() -> dict:
                 "conflicting_values": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["verdict", "conflicting_values"],
+            "additionalProperties": False,
         },
     }
 
@@ -500,6 +503,7 @@ def duplicate_pair_verdict_schema() -> dict:
                 "verdict": {"type": "string", "enum": ["redundant", "contradictory", "distinct"]},
             },
             "required": ["verdict"],
+            "additionalProperties": False,
         },
     }
 
@@ -544,28 +548,38 @@ def root_grouping_schema() -> dict:
                             "member_ids": {"type": "array", "items": {"type": "string"}},
                         },
                         "required": ["title", "member_ids"],
+                        "additionalProperties": False,
                     },
                 },
             },
             "required": ["groups"],
+            "additionalProperties": False,
         },
     }
 
 
 def leftover_assignment_schema() -> dict:
-    """assign_leftover_roots (OrchestratorLlmClient): a single free-form
-    'assignments' object mapping a leftover node id to a group id --
-    unbounded (no fixed property list), same "unbounded is the cheap case
-    for Ollama's GBNF grammar compilation" reasoning as root_grouping_
-    schema above, and the natural shape for "however many of these end up
-    placed, could be zero"."""
+    """assign_leftover_roots (OrchestratorLlmClient): an 'assignments' ARRAY of {id, group_id} pairs (the client
+    folds it back into the {leftover_id: group_id} map callers read). A free-form object has no fixed property
+    list, which strict-schema providers refuse; an array of closed objects is accepted everywhere. Unbounded (no
+    maxItems) -- "however many end up placed, could be zero" -- see this module's header on why a bounded array is
+    the costly case."""
     return {
         "name": "leftover_root_assignments",
         "schema": {
             "type": "object",
             "properties": {
-                "assignments": {"type": "object"},
+                "assignments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}, "group_id": {"type": "string"}},
+                        "required": ["id", "group_id"],
+                        "additionalProperties": False,
+                    },
+                },
             },
             "required": ["assignments"],
+            "additionalProperties": False,
         },
     }

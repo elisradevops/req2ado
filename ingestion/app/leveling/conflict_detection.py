@@ -37,6 +37,52 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+# A cluster is judged in one call. If that call fails it is asked again once -- split in halves when it is big enough
+# for a half to still be a comparison (a smaller, simpler request), the same call once more otherwise -- and anything
+# still unanswered is reported, never dropped silently.
+_MIN_NODES_TO_SPLIT = 4
+
+
+def _judge_once(
+    conflict_client: ConflictJudgeClient, nodes: list[WorkItemNode], user_id: str | None,
+) -> tuple[dict | None, str | None]:
+    """(verdict, None) on success, (None, short reason) when the call failed or answered with something unusable."""
+    try:
+        entry = conflict_client.judge_duplicate_cluster({n.local_id: n.description for n in nodes}, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001 -- a failed judgment must never fail the job
+        reason = " ".join(str(exc).split())[:200] or type(exc).__name__
+        logger.warning("Duplicate-cluster conflict judgment failed for %d node(s): %s", len(nodes), reason)
+        return None, reason
+    if not isinstance(entry, dict):
+        return None, "the model returned no usable verdict"
+    return entry, None
+
+
+def _judge_cluster_resilient(
+    conflict_client: ConflictJudgeClient, nodes: list[WorkItemNode], user_id: str | None,
+) -> tuple[list[tuple[list[WorkItemNode], dict]], list[tuple[list[WorkItemNode], str]]]:
+    """(judged, skipped): `judged` is [(nodes, verdict)] for every group the model answered about, `skipped` is
+    [(nodes, reason)] for every group it could not be asked about after the retry."""
+    verdict, reason = _judge_once(conflict_client, nodes, user_id)
+    if verdict is not None:
+        return [(nodes, verdict)], []
+    if len(nodes) >= _MIN_NODES_TO_SPLIT:
+        middle = len(nodes) // 2
+        judged: list[tuple[list[WorkItemNode], dict]] = []
+        skipped: list[tuple[list[WorkItemNode], str]] = []
+        for half in (nodes[:middle], nodes[middle:]):
+            half_verdict, half_reason = _judge_once(conflict_client, half, user_id)
+            if half_verdict is not None:
+                judged.append((half, half_verdict))
+            else:
+                skipped.append((half, half_reason or "unknown"))
+        return judged, skipped
+    verdict, reason = _judge_once(conflict_client, nodes, user_id)
+    if verdict is not None:
+        return [(nodes, verdict)], []
+    return [], [(nodes, reason or "unknown")]
+
+
 def _detect_conflicting_duplicates(
     all_nodes: list[WorkItemNode],
     embed_client: object | None,
@@ -183,61 +229,71 @@ def _detect_conflicting_duplicates(
     for i in range(len(requirement_nodes)):
         clusters.setdefault(find(i), []).append(i)
 
+    index_of = {node.local_id: i for i, node in enumerate(requirement_nodes)}
     for member_indices in clusters.values():
         if len(member_indices) < 2:
             continue
-        cluster_nodes = [requirement_nodes[i] for i in member_indices]
-        texts_by_id = {n.local_id: n.description for n in cluster_nodes}
-        try:
-            verdict_entry = conflict_client.judge_duplicate_cluster(texts_by_id, user_id=user_id)
-        except Exception as exc:
-            logger.warning(
-                "Duplicate-cluster conflict judgment failed for %d node(s), skipping cluster: %s",
-                len(cluster_nodes), exc,
+        full_cluster = [requirement_nodes[i] for i in member_indices]
+        judged, skipped = _judge_cluster_resilient(conflict_client, full_cluster, user_id)
+        for skipped_nodes, reason in skipped:
+            titles = ", ".join(f"'{n.title}'" for n in skipped_nodes)
+            skipped_message = (
+                f"Could not check these near-duplicate items for conflicting values: {titles} (the model call "
+                "failed) -- compare them manually."
             )
-            continue
-        if not isinstance(verdict_entry, dict) or verdict_entry.get("verdict") != "contradictory":
-            continue
-        # Job transparency (B9): show the first two conflicting statements side
-        # by side on the running screen. Observation only (a no-op unless live
-        # progress is on) and never raises.
-        live_emitter = current_live_emitter()
-        if live_emitter is not None and len(member_indices) >= 2:
-            first, second = member_indices[0], member_indices[1]
-            node_a, node_b = requirement_nodes[first], requirement_nodes[second]
-            live_emitter.compare(
-                kind="conflict",
-                a_ref=node_a.local_id, a_text=node_a.description,
-                b_ref=node_b.local_id, b_text=node_b.description,
-                similarity=float(similarity_matrix[first, second]),
-            )
-        conflicting_values = verdict_entry.get("conflicting_values") or []
-        # Confirmed real gap (user-reported): a bare local_id list
-        # ("det0_h6_1_2_1") means nothing to a reviewer -- it isn't visible
-        # anywhere in the diff-tree UI on its own. Each member's real TITLE
-        # (what the reviewer actually sees in the tree) is all the prose
-        # carries; the structured `node_ids` field below (not a text tag) is
-        # what the frontend uses to build a real jump-to-node link -- see
-        # CollapsibleWarnings.tsx, which reads warning.nodeIds directly and
-        # never parses this sentence.
-        member_descriptions = ", ".join(f"'{n.title}'" for n in cluster_nodes)
-        message = (
-            f"Near-duplicate items {member_descriptions} appear to state conflicting "
-            f"values for the same parameter ({conflicting_values}) -- resolve before this "
-            "can be finalized."
-        )
-        logger.warning(message)
-        warnings.append(
-            IntegrityWarning.make(
-                WarningKind.NEAR_DUPLICATE_CONFLICT,
-                message,
-                node_ids=[n.local_id for n in cluster_nodes],
-                detail={"conflictingValues": conflicting_values},
-            )
-        )
-        for node in cluster_nodes:
-            if RequirementQualityIssue.CONFLICTING_VALUE not in node.quality_issues:
-                node.quality_issues = sorted(
-                    [*node.quality_issues, RequirementQualityIssue.CONFLICTING_VALUE],
-                    key=lambda i: i.value,
+            logger.warning(skipped_message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.CONFLICT_JUDGMENT_SKIPPED,
+                    skipped_message,
+                    node_ids=[n.local_id for n in skipped_nodes],
+                    detail={"reason": reason},
                 )
+            )
+        for cluster_nodes, verdict_entry in judged:
+            if verdict_entry.get("verdict") != "contradictory":
+                continue
+            member_indices = [index_of[n.local_id] for n in cluster_nodes]
+            # Job transparency (B9): show the first two conflicting statements side
+            # by side on the running screen. Observation only (a no-op unless live
+            # progress is on) and never raises.
+            live_emitter = current_live_emitter()
+            if live_emitter is not None and len(member_indices) >= 2:
+                first, second = member_indices[0], member_indices[1]
+                node_a, node_b = requirement_nodes[first], requirement_nodes[second]
+                live_emitter.compare(
+                    kind="conflict",
+                    a_ref=node_a.local_id, a_text=node_a.description,
+                    b_ref=node_b.local_id, b_text=node_b.description,
+                    similarity=float(similarity_matrix[first, second]),
+                )
+            conflicting_values = verdict_entry.get("conflicting_values") or []
+            # Confirmed real gap (user-reported): a bare local_id list
+            # ("det0_h6_1_2_1") means nothing to a reviewer -- it isn't visible
+            # anywhere in the diff-tree UI on its own. Each member's real TITLE
+            # (what the reviewer actually sees in the tree) is all the prose
+            # carries; the structured `node_ids` field below (not a text tag) is
+            # what the frontend uses to build a real jump-to-node link -- see
+            # CollapsibleWarnings.tsx, which reads warning.nodeIds directly and
+            # never parses this sentence.
+            member_descriptions = ", ".join(f"'{n.title}'" for n in cluster_nodes)
+            message = (
+                f"Near-duplicate items {member_descriptions} appear to state conflicting "
+                f"values for the same parameter ({conflicting_values}) -- resolve before this "
+                "can be finalized."
+            )
+            logger.warning(message)
+            warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.NEAR_DUPLICATE_CONFLICT,
+                    message,
+                    node_ids=[n.local_id for n in cluster_nodes],
+                    detail={"conflictingValues": conflicting_values},
+                )
+            )
+            for node in cluster_nodes:
+                if RequirementQualityIssue.CONFLICTING_VALUE not in node.quality_issues:
+                    node.quality_issues = sorted(
+                        [*node.quality_issues, RequirementQualityIssue.CONFLICTING_VALUE],
+                        key=lambda i: i.value,
+                    )

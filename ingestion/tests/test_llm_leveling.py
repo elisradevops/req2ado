@@ -4385,6 +4385,90 @@ def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises()
     assert any("Trace/coverage link inference failed" in w.raw for w in tree.warnings)
 
 
+def _trace_nodes(count: int) -> list[WorkItemNode]:
+    return [_req_node(f"n{i}", f"Requirement number {i} shall do thing {i}.") for i in range(count)]
+
+
+class _ChunkRecordingTraceClient:
+    """Records each call's node ids; raises a 502 for any call that includes a node in `poison`."""
+
+    def __init__(self, poison: set[str] | None = None, links: list[dict] | None = None) -> None:
+        self.calls: list[list[str]] = []
+        self._poison = poison or set()
+        self._links = links
+
+    def infer_trace_links(self, nodes, link_type_catalog, kb_context=None, user_id=None):
+        ids = [n["node_id"] for n in nodes]
+        self.calls.append(ids)
+        if self._poison & set(ids):
+            import httpx
+
+            raise httpx.HTTPStatusError(
+                "502", request=httpx.Request("POST", "http://x"), response=httpx.Response(502),
+            )
+        return [
+            {"source_node_id": ids[0], "target_ref": "REQ-9", "reference_name": "System.LinkTypes.Related",
+             "evidence_quote": "Requirement"}
+        ] if self._links is None else self._links
+
+
+def test_trace_links_are_requested_in_bounded_chunks() -> None:
+    from app.leveling import trace_links as tl
+
+    nodes = _trace_nodes(tl._TRACE_CHUNK_MAX_NODES * 2 + 1)
+    client = _ChunkRecordingTraceClient()
+
+    links = _infer_trace_links_for_nodes(nodes, client, [], [], None, 0, 0)
+
+    assert [len(c) for c in client.calls] == [tl._TRACE_CHUNK_MAX_NODES, tl._TRACE_CHUNK_MAX_NODES, 1]
+    assert len(links) == 3  # every chunk's link is merged
+
+
+def test_trace_link_chunks_also_respect_the_request_size() -> None:
+    from app.leveling import trace_links as tl
+
+    big = "x" * (tl._TRACE_CHUNK_MAX_CHARS // 2 + 1)
+    nodes = [_req_node(f"n{i}", big) for i in range(3)]
+    client = _ChunkRecordingTraceClient(links=[])
+
+    _infer_trace_links_for_nodes(nodes, client, [], [], None, 0, 0)
+
+    assert [len(c) for c in client.calls] == [1, 1, 1]
+
+
+def test_a_failed_trace_link_chunk_is_retried_as_halves_and_the_rest_is_kept() -> None:
+    from app.leveling import trace_links as tl
+    from app.workitem.model import WarningKind
+
+    nodes = _trace_nodes(tl._TRACE_CHUNK_MAX_NODES + 4)
+    client = _ChunkRecordingTraceClient(poison={"n0"})
+    warnings: list = []
+
+    links = _infer_trace_links_for_nodes(nodes, client, [], warnings, None, 0, 0)
+
+    # chunk 1 failed whole, then as two halves; the half without n0 answered, the half with n0 was skipped;
+    # chunk 2 answered.
+    half = tl._TRACE_CHUNK_MAX_NODES // 2
+    assert [len(c) for c in client.calls] == [tl._TRACE_CHUNK_MAX_NODES, half, half, 4]
+    assert len(links) == 2
+    partial = [w for w in warnings if w.kind == WarningKind.TRACE_LINKS_PARTIAL]
+    assert len(partial) == 1 and len(partial[0].node_ids) == half and "n0" in partial[0].node_ids
+    assert not any(w.kind == WarningKind.TRACE_LINK_INFERENCE_FAILED for w in warnings)
+
+
+def test_trace_links_never_raise_when_every_call_fails_with_an_http_error() -> None:
+    from app.workitem.model import WarningKind
+
+    nodes = _trace_nodes(3)
+    client = _ChunkRecordingTraceClient(poison={"n0", "n1", "n2"})
+    warnings: list = []
+
+    links = _infer_trace_links_for_nodes(nodes, client, [], warnings, None, 0, 0)
+
+    assert links == []
+    assert [w.kind for w in warnings] == [WarningKind.TRACE_LINK_INFERENCE_FAILED]
+
+
 def test_build_survey_tree_captures_the_raw_response_when_trace_link_inference_fails() -> None:
     class _RaisingTraceLinkClient:
         def infer_trace_links(self, nodes, link_type_catalog, kb_context=None, user_id=None):
@@ -6163,6 +6247,68 @@ def test_detect_conflicting_duplicates_emits_no_narration_when_it_is_a_noop() ->
     _detect_conflicting_duplicates(nodes, None, None, [], events.append)
 
     assert events == []
+
+
+class _FlakyConflictClient:
+    """Fails whenever the cluster holds more than `max_ok` nodes (or always when max_ok is None)."""
+
+    def __init__(self, max_ok: int | None, verdict: dict | None = None) -> None:
+        self._max_ok = max_ok
+        self._verdict = verdict or {"verdict": "redundant", "conflicting_values": []}
+        self.calls: list[int] = []
+
+    def judge_duplicate_cluster(self, texts_by_id: dict[str, str], user_id: str | None = None) -> dict:
+        self.calls.append(len(texts_by_id))
+        if self._max_ok is None or len(texts_by_id) > self._max_ok:
+            raise RuntimeError("400 schema rejected")
+        return self._verdict
+
+
+def _four_near_duplicates() -> tuple[list, _FakeEmbedClientForConflicts]:
+    texts = [f"Efficiency shall be at least {v}%." for v in (85, 86, 87, 88)]
+    nodes = [_req_node(f"n{i}", t) for i, t in enumerate(texts)]
+    embed = _FakeEmbedClientForConflicts({t: [1.0, 0.001 * i] for i, t in enumerate(texts)})
+    return nodes, embed
+
+
+def test_conflict_judgment_failure_is_retried_split_and_succeeds_without_a_warning() -> None:
+    nodes, embed = _four_near_duplicates()
+    client = _FlakyConflictClient(max_ok=2)
+    warnings: list = []
+
+    _detect_conflicting_duplicates(nodes, embed, client, warnings)
+
+    assert client.calls == [4, 2, 2]
+    assert warnings == []
+
+
+def test_conflict_judgment_that_still_fails_emits_one_warning_with_the_node_ids() -> None:
+    from app.workitem.model import WarningKind
+
+    nodes, embed = _four_near_duplicates()
+    client = _FlakyConflictClient(max_ok=None)
+    warnings: list = []
+
+    _detect_conflicting_duplicates(nodes, embed, client, warnings)
+
+    skipped = [w for w in warnings if w.kind == WarningKind.CONFLICT_JUDGMENT_SKIPPED]
+    assert sorted(i for w in skipped for i in w.node_ids) == ["n0", "n1", "n2", "n3"]
+    assert all("schema rejected" in w.detail["reason"] for w in skipped)
+
+
+def test_small_cluster_is_asked_once_more_then_reported() -> None:
+    from app.workitem.model import WarningKind
+
+    nodes, embed = _four_near_duplicates()
+    nodes, embed = nodes[:2], embed
+    client = _FlakyConflictClient(max_ok=None)
+    warnings: list = []
+
+    _detect_conflicting_duplicates(nodes, embed, client, warnings)
+
+    assert client.calls == [2, 2]
+    assert [w.kind for w in warnings] == [WarningKind.CONFLICT_JUDGMENT_SKIPPED]
+    assert warnings[0].node_ids == ["n0", "n1"]
 
 
 def test_detect_conflicting_duplicates_leaves_a_redundant_cluster_untagged() -> None:
