@@ -1,4 +1,7 @@
+import { Logger } from '@nestjs/common';
 import OpenAI from 'openai';
+
+const logger = new Logger('UpstreamNegotiation');
 
 // Upstream negotiation: everything about "make this call succeed on this model"
 // that is NOT the call's own business logic. The OpenAI-compatible proxy in
@@ -153,6 +156,28 @@ export function parseMaxOutputCap(err: unknown): number | null {
   return null;
 }
 
+/** Tokens kept free when the answer limit is derived from the context window (the error states exact counts). */
+const CONTEXT_MARGIN_TOKENS = 32;
+
+/**
+ * The answer limit that fits when the request was refused because input plus output exceeded the model's context
+ * window, or null. OpenAI/Azure: "This model's maximum context length is 131072 tokens. However, you requested 131146
+ * tokens (74 in the messages, 131072 in the completion). Please reduce the length of the messages or completion." (the
+ * older wording says "your messages resulted in 74 tokens"). A model whose output ceiling equals its context window
+ * (gpt-oss-120b) cannot be asked for the ceiling plus any input.
+ */
+export function parseContextLengthCap(err: unknown): number | null {
+  const message = badRequestMessage(err);
+  if (!message) return null;
+  const context = message.match(/maximum context length is (\d[\d,]*) tokens/i);
+  if (!context) return null;
+  const input =
+    message.match(/\((\d[\d,]*) (?:tokens )?in the (?:messages|prompt)/i) ?? message.match(/your (?:messages|prompt) resulted in (\d[\d,]*) tokens/i);
+  if (!input) return null;
+  const cap = parseInt(context[1].replace(/,/g, ''), 10) - parseInt(input[1].replace(/,/g, ''), 10) - CONTEXT_MARGIN_TOKENS;
+  return Number.isFinite(cap) && cap > 0 ? cap : null;
+}
+
 /**
  * gpt-5.6 on Chat Completions: "Function tools with reasoning_effort are not supported for gpt-5.6-sol in
  * /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'." It is
@@ -198,6 +223,29 @@ export function raisedBudgetFor(sent: number | undefined, adaptation: Adaptation
   const ceiling = adaptation.maxTokensCap ?? RAISED_BUDGET_CEILING;
   const target = Math.min(Math.max(sent * 4, 4_000), ceiling);
   return target > sent ? target : null;
+}
+
+/** Longest stretch of an upstream error message that is ever logged. */
+const LOGGED_ERROR_CHARS = 300;
+
+/**
+ * What to log about a failed upstream call: its HTTP status (or the kind of failure when there is none) and the
+ * vendor's error text collapsed to one line and cut to 300 characters. The text is the upstream's own error, never
+ * the request, so it carries no document content.
+ */
+export function summarizeUpstreamError(err: unknown): { status: string; message: string } {
+  let status = 'none';
+  let message = err instanceof Error ? err.message : String(err);
+  if (err instanceof OpenAI.APIError) {
+    status = err.status != null ? String(err.status) : 'none';
+  } else if (err instanceof UpstreamHttpError) {
+    status = String(err.upstreamStatus);
+  } else if (err instanceof Error) {
+    status = err.name;
+  }
+  message = message.replace(/\s+/g, ' ').trim();
+  if (message.length > LOGGED_ERROR_CHARS) message = `${message.slice(0, LOGGED_ERROR_CHARS)}...`;
+  return { status, message };
 }
 
 // Normalises an OpenAI.APIError into UpstreamHttpError so the HTTP controller
@@ -260,6 +308,8 @@ export interface NegotiationArgs<T> {
   model: string;
   /** Whether the request carries a response_format schema that can be dropped. */
   hasSchema: boolean;
+  /** Size of the request text in characters, for the failure log (never its content). */
+  requestChars?: number;
   /** Parameters this call is able to leave out when an upstream rejects them. */
   droppable: ReadonlySet<string>;
   learned?: LearnedConstraints;
@@ -303,6 +353,20 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
   };
   for (let attempt = 1; ; attempt += 1) {
     adaptation.attempt = attempt;
+    const startedAt = Date.now();
+    // Every failure is logged with the upstream's own status and text: a failing call used to leave nothing in
+    // this service's log (four 502s and a 400 in one prod job were invisible).
+    const logFailure = (err: unknown): void => {
+      const { status, message } = summarizeUpstreamError(err);
+      logger.warn(
+        `upstream call failed: label=${args.label} model=${args.model} attempt=${attempt} status=${status} elapsedMs=${Date.now() - startedAt} requestChars=${args.requestChars ?? "n/a"} schema=${args.hasSchema} message="${message}"`,
+      );
+    };
+    // The failure itself was already logged above; this only records that nothing more could be adapted.
+    const giveUp = (err: unknown): never => {
+      logger.error(`upstream call gave up: label=${args.label} model=${args.model} attempts=${attempt} status=${summarizeUpstreamError(err).status}`);
+      return terminal(err);
+    };
     try {
       return await args.send(adaptation);
     } catch (err) {
@@ -313,7 +377,8 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         args.remember({ maxTokensFloor: err.target });
         continue;
       }
-      if (attempt >= maxAttempts) return terminal(err);
+      logFailure(err);
+      if (attempt >= maxAttempts) return giveUp(err);
 
       const requiredTemperature = parseTemperatureConstraint(err);
       if (requiredTemperature !== null && adaptation.temperature !== requiredTemperature) {
@@ -352,7 +417,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
       }
 
       if (requiredTemperature === null) {
-        const cap = parseMaxOutputCap(err);
+        const cap = parseContextLengthCap(err) ?? parseMaxOutputCap(err);
         if (cap !== null && (adaptation.maxTokensCap === undefined || cap < adaptation.maxTokensCap)) {
           // eslint-disable-next-line no-console
           console.warn(`[${args.label}] upstream caps output at ${cap} tokens; clamping for model=${args.model}`);
@@ -385,7 +450,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
         continue;
       }
 
-      return terminal(err);
+      return giveUp(err);
     }
   }
 }

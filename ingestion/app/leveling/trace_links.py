@@ -64,6 +64,62 @@ class TraceLinkInferenceClient(Protocol):
     ) -> list[dict]: ...
 
 
+# Bounds for one trace-link request: node count and the characters of node text it carries. The upstream cuts
+# a request at ~300 s; a whole 545-block tree in one call ran into that, chunks of this size are far below it.
+_TRACE_CHUNK_MAX_NODES = 150
+_TRACE_CHUNK_MAX_CHARS = 60_000
+
+
+def _chunk_nodes(llm_nodes: list[dict]) -> list[list[dict]]:
+    """Consecutive (document-order) chunks, each within both bounds; a single oversized node is its own chunk."""
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_chars = 0
+    for node in llm_nodes:
+        size = len(node["text"])
+        if current and (len(current) >= _TRACE_CHUNK_MAX_NODES or current_chars + size > _TRACE_CHUNK_MAX_CHARS):
+            chunks.append(current)
+            current, current_chars = [], 0
+        current.append(node)
+        current_chars += size
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _infer_chunk_once(
+    client: "TraceLinkInferenceClient", nodes: list[dict], catalog: list[dict], kb_context: str | None,
+    user_id: str | None,
+) -> tuple[list[dict] | None, str | None]:
+    """(links, None) on success, (None, short reason) when the call failed or answered with something unusable."""
+    try:
+        links = client.infer_trace_links(nodes, catalog, kb_context=kb_context, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001 -- enrichment must never fail the job
+        return None, " ".join(str(exc).split())[:200] or type(exc).__name__
+    return (links if isinstance(links, list) else []), None
+
+
+def _infer_chunk_resilient(
+    client: "TraceLinkInferenceClient", nodes: list[dict], catalog: list[dict], kb_context: str | None,
+    user_id: str | None,
+) -> tuple[list[list[dict]], list[tuple[list[dict], str]]]:
+    """(answered link lists, [(skipped nodes, reason)]): one retry as two halves (a smaller request) when the
+    chunk has more than one node, the same call once more otherwise."""
+    links, reason = _infer_chunk_once(client, nodes, catalog, kb_context, user_id)
+    if links is not None:
+        return [links], []
+    groups = [nodes[: len(nodes) // 2], nodes[len(nodes) // 2:]] if len(nodes) > 1 else [nodes]
+    answered: list[list[dict]] = []
+    skipped: list[tuple[list[dict], str]] = []
+    for group in groups:
+        group_links, group_reason = _infer_chunk_once(client, group, catalog, kb_context, user_id)
+        if group_links is not None:
+            answered.append(group_links)
+        else:
+            skipped.append((group, group_reason or reason or "unknown"))
+    return answered, skipped
+
+
 def _infer_trace_links_for_nodes(
     all_nodes: list[WorkItemNode],
     link_type_client: TraceLinkInferenceClient,
@@ -113,24 +169,24 @@ def _infer_trace_links_for_nodes(
                 model=getattr(link_type_client, "model", None),
             )
         )
-    # Confirmed real job failure: this call serializes EVERY node in the
-    # whole document into one prompt (the largest single payload in this
-    # module) and, unlike analyze_section/scoring, has no fallback
-    # degradation of its own -- a model occasionally ignoring the "no
-    # prose" instruction (observed live: a 5-character non-JSON reply,
-    # 'Based') previously raised ValueError and aborted the ENTIRE job,
-    # discarding all already-completed analysis and scoring work over
-    # what is purely an enrichment pass. Same "must never fail a SURVEY
-    # job" fail-open philosophy already applied to KB retrieval
-    # (retrieve_context) and KB relevance verification
-    # (_resolve_kb_citations) above -- trace links degrade to [], not
-    # the whole job.
-    try:
-        raw_links = link_type_client.infer_trace_links(llm_nodes, catalog, kb_context=kb_context, user_id=user_id)
-    except ValueError as exc:
-        logger.warning("Trace-link inference failed: %s", exc)
+    # Trace links are an enrichment pass over finished analysis and scoring work, so no failure here may fail the
+    # job (a ValueError from a prose reply aborted whole jobs; a 502 after the upstream's ~300 s cut did the same
+    # after 25 minutes). The nodes go in bounded chunks (count and request characters); a failed chunk is asked
+    # again as two halves, and whatever is still unanswered is reported, never dropped silently.
+    raw_links: list[dict] = []
+    skipped_groups: list[tuple[list[dict], str]] = []
+    any_answered = False
+    for chunk in _chunk_nodes(llm_nodes):
+        answered, skipped = _infer_chunk_resilient(link_type_client, chunk, catalog, kb_context, user_id)
+        for links in answered:
+            any_answered = True
+            raw_links.extend(links)
+        skipped_groups.extend(skipped)
+    if skipped_groups and not any_answered:
+        first_reason = skipped_groups[0][1]
+        logger.warning("Trace-link inference failed: %s", first_reason)
         if debug_capture is not None:
-            debug_capture.capture("infer_trace_links", "document", str(exc))
+            debug_capture.capture("infer_trace_links", "document", first_reason)
         all_warnings.append(
             IntegrityWarning.make(
                 WarningKind.TRACE_LINK_INFERENCE_FAILED,
@@ -138,7 +194,18 @@ def _infer_trace_links_for_nodes(
                 "but every proposed work item above is otherwise unaffected.",
             )
         )
-        raw_links = []
+    else:
+        for group, reason in skipped_groups:
+            logger.warning("Trace-link inference skipped %d node(s): %s", len(group), reason)
+            all_warnings.append(
+                IntegrityWarning.make(
+                    WarningKind.TRACE_LINKS_PARTIAL,
+                    f"Trace/coverage links could not be inferred for {len(group)} item(s) (the model call failed) "
+                    "-- add their links in Azure DevOps after you confirm.",
+                    node_ids=[n["node_id"] for n in group],
+                    detail={"reason": reason},
+                )
+            )
     catalog_by_ref = {entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog}
     text_by_node_id = {n["node_id"]: n["text"] for n in llm_nodes}
     for raw_link in raw_links:

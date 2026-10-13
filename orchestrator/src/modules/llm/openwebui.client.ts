@@ -11,10 +11,16 @@ import {
   EmptyLengthCompletion,
   negotiate,
   raisedBudgetFor,
+  summarizeUpstreamError,
   UpstreamHttpError,
   type Adaptation,
   type LearnedUpdate,
 } from './upstream-negotiation';
+
+/** Characters of text in a message list (a length for failure logs, never content). */
+function messageChars(messages: readonly { content?: unknown }[]): number {
+  return messages.reduce((sum, m) => sum + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0);
+}
 
 // UpstreamHttpError moved to upstream-negotiation.ts with the rest of the upstream-error handling;
 // re-exported so existing importers (llm.controller.ts, tests) keep working unchanged.
@@ -49,6 +55,7 @@ const CHAT_DROPPABLE: ReadonlySet<string> = new Set([
   'presence_penalty',
   'frequency_penalty',
 ]);
+const FILE_CONTEXT_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'seed']);
 const VISION_DROPPABLE: ReadonlySet<string> = new Set(['temperature', 'frequency_penalty']);
 
 // Module-level singleton, not per-instance: the cl100k_base rank table load
@@ -260,6 +267,7 @@ export class OpenWebUiClient implements LlmClient {
       label: 'OpenWebUiClient.chat',
       model: chatModel,
       hasSchema: opts?.responseSchema !== undefined,
+      requestChars: messageChars(outboundMessages),
       droppable: CHAT_DROPPABLE,
       learned: this.modelConstraints.get(chatModel),
       remember: (update) => this.rememberConstraint(chatModel, update),
@@ -419,6 +427,7 @@ export class OpenWebUiClient implements LlmClient {
       label: 'OpenWebUiClient.streamChat',
       model: chatModel,
       hasSchema: opts?.responseSchema !== undefined,
+      requestChars: messageChars(outboundMessages),
       droppable: CHAT_DROPPABLE,
       learned: this.modelConstraints.get(chatModel),
       remember: (update) => this.rememberConstraint(chatModel, update),
@@ -1021,40 +1030,61 @@ export class OpenWebUiClient implements LlmClient {
   async chatWithFullFileContext(
     content: string,
     fileId: string,
-    opts: { maxTokens?: number; numCtx?: number },
+    opts: { maxTokens?: number; numCtx?: number; model?: string },
   ): Promise<LlmChatResult> {
     const outboundContent = this.config.LLM_TRUSTED_LOCAL ? content : redactText(content);
-    const response = await fetch(`${this.openWebUiAppRoot()}/api/chat/completions`, {
-      method: 'POST',
-      // `context: 'full'` is an undocumented Open WebUI extension field on
-      // the files array entry that instructs the native route to return the
-      // file's full stored content instead of routing it into chunked RAG.
-      // Confirmed working live (canary phrase test) but not in the public
-      // API reference -- a future Open WebUI upgrade could change this
-      // behavior silently (failure mode: falls back to chunked RAG, not a
-      // 400). Confirmed against Open WebUI v0.8.12 source.
-      signal: AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS),
-      headers: {
-        'Content-Type': 'application/json',
-        ...(this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {}),
-      },
-      body: JSON.stringify({
-        model: this.config.LLM_CHAT_MODEL,
+    const model = opts.model ?? this.config.LLM_CHAT_MODEL;
+    const buildBody = (a: Adaptation): string => {
+      const maxTokens = effectiveMaxTokens(opts.maxTokens, a);
+      return JSON.stringify({
+        model,
         messages: [{ role: 'user', content: outboundContent }],
         files: [{ type: 'file', id: fileId, context: 'full' }],
-        temperature: 0,
-        ...(this.config.LLM_SEND_SEED ? { seed: 0 } : {}),
-        ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+        // A temperature the upstream demanded wins over the primer's 0 (claude-opus-4-8 only takes 1).
+        ...(!a.dropped.has('temperature') ? { temperature: a.temperature ?? 0 } : {}),
+        ...(this.config.LLM_SEND_SEED && !a.dropped.has('seed') ? { seed: 0 } : {}),
+        ...(maxTokens !== undefined ? { [a.tokenParam]: maxTokens } : {}),
         ...(opts.numCtx !== undefined ? { options: { num_ctx: opts.numCtx } } : {}),
-      }),
+      });
+    };
+    // Same adaptation policy as chat()/vision() (negotiate): required temperature, output-limit parameter and
+    // ceiling, rejected params. This route is a plain fetch, so a non-2xx answer is turned into the SDK's own
+    // error type for negotiate() to classify; a failure that cannot be adapted around leaves as before.
+    return negotiate({
+      label: 'OpenWebUiClient.chatWithFullFileContext',
+      model,
+      hasSchema: false,
+      requestChars: outboundContent.length,
+      droppable: FILE_CONTEXT_DROPPABLE,
+      learned: this.modelConstraints.get(model),
+      remember: (update) => this.rememberConstraint(model, update),
+      terminal: (err) => {
+        const { status, message } = summarizeUpstreamError(err);
+        throw new Error(`OpenWebUiClient.chatWithFullFileContext failed: ${status} — ${message}`);
+      },
+      send: async (adaptation) => {
+        const response = await fetch(`${this.openWebUiAppRoot()}/api/chat/completions`, {
+          method: 'POST',
+          // `context: 'full'` is an undocumented Open WebUI extension field on the files array entry that
+          // instructs the native route to return the file's full stored content instead of routing it into
+          // chunked RAG (confirmed against Open WebUI v0.8.12 source; a future upgrade could change it silently).
+          signal: AbortSignal.timeout(this.config.LLM_REQUEST_TIMEOUT_MS),
+          headers: {
+            'Content-Type': 'application/json',
+            ...(this.config.LLM_API_KEY ? { Authorization: `Bearer ${this.config.LLM_API_KEY}` } : {}),
+          },
+          body: buildBody(adaptation),
+        });
+        if (!response.ok) {
+          let bodyText = '';
+          try { bodyText = await response.text(); } catch { /* ignore read failure */ }
+          const text = bodyText.slice(0, 500) || `HTTP ${response.status}`;
+          throw OpenAI.APIError.generate(response.status, { message: text }, text, Object.fromEntries(response.headers?.entries?.() ?? []));
+        }
+        const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+        return { content: data.choices?.[0]?.message?.content ?? '' };
+      },
     });
-    if (!response.ok) {
-      let bodyText = '';
-      try { bodyText = await response.text(); } catch { /* ignore read failure */ }
-      throw new Error(`OpenWebUiClient.chatWithFullFileContext failed: ${response.status}${bodyText ? ` — ${bodyText.slice(0, 200)}` : ''}`);
-    }
-    const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
-    return { content: data.choices?.[0]?.message?.content ?? '' };
   }
 
   // Uploads a source document to Open WebUI's native file API (not the

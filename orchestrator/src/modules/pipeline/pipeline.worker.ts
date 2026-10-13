@@ -525,6 +525,7 @@ export async function runPipelineJob(
     // proceeds without this one optional orientation hint, same as it
     // always has.
     let primerContext: string | undefined;
+    const primerWarnings: WarningRecord[] = [];
     if (job.mode === 'survey' && deps.openWebUiClientFactory && deps.primerCacheRedis && job.userId) {
       const openWebUiClientFactory = deps.openWebUiClientFactory;
       const primerCacheRedis = deps.primerCacheRedis;
@@ -578,6 +579,8 @@ export async function runPipelineJob(
                   // -- this cap plus that clamp are two independent
                   // backstops against the same real risk.
                   maxTokens: 300,
+                  // The job's own model (also part of the cache key above), not the client's configured default.
+                  model,
                   // Fixed at PRIMER_FIXED_NUM_CTX (see its own comment
                   // above for why) -- passed explicitly because Ollama
                   // otherwise runs at its own small default window
@@ -609,6 +612,13 @@ export async function runPipelineJob(
         // already uses.
         // eslint-disable-next-line no-console -- worker process logging, not app logging
         console.error(`Whole-document primer failed for job ${job.id} (leveling proceeds without it):`, error);
+        primerWarnings.push({
+          kind: 'primer_unavailable',
+          severity: 'pipeline_issue',
+          nodeIds: [],
+          detail: {},
+          raw: 'The whole-document overview could not be generated, so analysis ran without it. Items are otherwise unaffected.',
+        });
       }
     }
 
@@ -1077,6 +1087,7 @@ export async function runPipelineJob(
           ),
           ...verificationWarnings,
           ...figureStorageWarnings,
+          ...primerWarnings,
         ] as any,
         kbCitations: (tree.kb_citations ?? []).map((c) => ({
           sourceFile: c.source_file,

@@ -1792,6 +1792,43 @@ describe('OpenWebUiClient.chatWithFullFileContext', () => {
     expect(result).toEqual({ content: '' });
   });
 
+  const rejected = (status: number, message: string) => ({ ok: false, status, text: async () => message });
+  const accepted = { ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) };
+
+  it('retries with the temperature the upstream requires, and remembers it for the model', async () => {
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(rejected(400, 'litellm.UnsupportedParamsError: claude-opus-4-8 does not support temperature=0. Only temperature=1 is supported.'))
+      .mockResolvedValue(accepted);
+    const client = new OpenWebUiClient(config);
+    await client.chatWithFullFileContext('Describe.', 'file-1', { model: 'claude-opus-4-8' });
+    const bodies = (global.fetch as jest.Mock).mock.calls.map(([, o]) => JSON.parse(o.body));
+    expect(bodies.map((b) => b.temperature)).toEqual([0, 1]);
+    expect(bodies[0].model).toBe('claude-opus-4-8');
+
+    await client.chatWithFullFileContext('Describe.', 'file-1', { model: 'claude-opus-4-8' });
+    expect(JSON.parse((global.fetch as jest.Mock).mock.calls[2][1].body).temperature).toBe(1);
+  });
+
+  it('switches to max_completion_tokens when the upstream demands it', async () => {
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce(rejected(400, "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."))
+      .mockResolvedValue(accepted);
+    const client = new OpenWebUiClient(config);
+    await client.chatWithFullFileContext('Describe.', 'file-1', { maxTokens: 300 });
+    const second = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+    expect(second.max_completion_tokens).toBe(300);
+    expect(second).not.toHaveProperty('max_tokens');
+  });
+
+  it('uses the configured model when none is given, and still fails with the status and reason when nothing can adapt', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(rejected(401, 'bad key'));
+    const client = new OpenWebUiClient(config);
+    await expect(client.chatWithFullFileContext('Describe.', 'file-1', {})).rejects.toThrow(
+      'OpenWebUiClient.chatWithFullFileContext failed: 401',
+    );
+    expect(JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body).model).toBe('test-model');
+  });
+
   it('throws when the response is not ok', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
     const client = new OpenWebUiClient(config);

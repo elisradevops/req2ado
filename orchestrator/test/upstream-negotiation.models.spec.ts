@@ -1,10 +1,13 @@
+import { Logger } from '@nestjs/common';
 import OpenAI from 'openai';
 import { isModelHidden, parseModelHidePatterns } from '../src/modules/llm/model-visibility';
 import { ModelInfoUnavailableError, OpenWebUiClient } from '../src/modules/llm/openwebui.client';
 import {
   effectiveMaxTokens,
   isToolsWithReasoningRejection,
+  parseContextLengthCap,
   parseMaxOutputCap,
+  summarizeUpstreamError,
   parseMaxTokensUnsupported,
   raisedBudgetFor,
   type Adaptation,
@@ -51,6 +54,27 @@ describe('negotiation parsers (documented wordings)', () => {
     expect(parseMaxOutputCap(apiError('Something else went wrong'))).toBeNull();
     expect(parseMaxOutputCap(apiError(OPENAI_TOO_LARGE, 500))).toBeNull();
     expect(parseMaxOutputCap(undefined)).toBeNull();
+  });
+
+  it('derives the answer limit that fits from the context window and the input size', () => {
+    const modern =
+      "400 This model's maximum context length is 131072 tokens. However, you requested 131146 tokens (74 in the messages, 131072 in the completion). Please reduce the length of the messages or completion.";
+    const older = "400 This model's maximum context length is 8192 tokens. However, your messages resulted in 1000 tokens. Please reduce the length of the messages.";
+    expect(parseContextLengthCap(apiError(modern))).toBe(131072 - 74 - 32);
+    expect(parseContextLengthCap(apiError(older))).toBe(8192 - 1000 - 32);
+    expect(parseContextLengthCap(apiError('max_tokens is too large: 200000. This model supports at most 16384 completion tokens'))).toBeNull();
+    expect(parseContextLengthCap(apiError(modern, 500))).toBeNull();
+    expect(parseContextLengthCap(apiError("400 This model's maximum context length is 100 tokens. However, your messages resulted in 500 tokens."))).toBeNull();
+  });
+
+  it('summarises a failure as a status and one short line, never more than 300 characters of the upstream text', () => {
+    const long = `400 ${'x'.repeat(500)}\n  second   line`;
+    const summary = summarizeUpstreamError(apiError(long));
+    expect(summary.status).toBe('400');
+    expect(summary.message.length).toBeLessThanOrEqual(303);
+    expect(summary.message).not.toMatch(/\n/);
+    expect(summarizeUpstreamError(new Error('socket hang up'))).toEqual({ status: 'Error', message: 'socket hang up' });
+    expect(summarizeUpstreamError('plain')).toEqual({ status: 'none', message: 'plain' });
   });
 
   it('recognises the gpt-5.6 function-tools-with-reasoning refusal', () => {
@@ -297,7 +321,7 @@ describe('OpenWebUiClient model negotiation', () => {
     expect(create.mock.calls[1][0]).toHaveProperty('max_completion_tokens', 100);
   });
 
-  it('sends no output limit when the proxy turns max_completion_tokens back into max_tokens (gpt-chat-latest on Elbichat)', async () => {
+  it('sends no output limit when the proxy turns max_completion_tokens back into max_tokens (gpt-chat-latest behind the proxy)', async () => {
     // Observed in prod: after the switch the request still reached Azure with max_tokens, because LiteLLM does not
     // recognise the alias as a reasoning model and maps the parameter back.
     const create = jest
@@ -356,6 +380,72 @@ describe('OpenWebUiClient model negotiation', () => {
     expect(chunks).toEqual(['ok']);
     expect(create.mock.calls[2][0]).not.toHaveProperty('max_tokens');
     expect(create.mock.calls[2][0]).not.toHaveProperty('max_completion_tokens');
+  });
+
+  it('clamps to what fits in the context window when input plus output would exceed it (gpt-oss-120b at 200000)', async () => {
+    const message =
+      "400 This model's maximum context length is 131072 tokens. However, you requested 131146 tokens (74 in the messages, 131072 in the completion). Please reduce the length of the messages or completion.";
+    const create = jest.fn().mockRejectedValueOnce(apiError(message)).mockResolvedValue(ok);
+    const client = makeClient(create);
+
+    await client.chat(user, { model: 'OpenAI/gpt-oss-120b', maxTokens: 131072 });
+    await client.chat(user, { model: 'OpenAI/gpt-oss-120b', maxTokens: 200000 });
+
+    expect(create.mock.calls[1][0]).toHaveProperty('max_tokens', 131072 - 74 - 32);
+    expect(create.mock.calls[2][0]).toHaveProperty('max_tokens', 131072 - 74 - 32);
+  });
+
+  describe('failure logging (every failed upstream attempt leaves a line)', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it('logs a failed attempt that is then retried successfully, with status, model, attempt and elapsed time', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const create = jest.fn().mockRejectedValueOnce(apiError(AZURE_MAX_TOKENS)).mockResolvedValue(ok);
+
+      await makeClient(create).chat(user, { model: 'OpenAI/gpt-chat-latest', maxTokens: 100 });
+
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('upstream call failed'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/label=OpenWebUiClient\.chat model=OpenAI\/gpt-chat-latest attempt=1 status=400 elapsedMs=\d+ requestChars=\d+ schema=false message="(?:400 )+Unsupported parameter/);
+    });
+
+    it('logs the terminal failure and a gave-up line, and never the request content', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const error = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const create = jest.fn().mockRejectedValue(apiError('502 Bad gateway upstream timed out', 502));
+
+      await expect(
+        makeClient(create).chat([{ role: 'user', content: 'SECRET-DOCUMENT-TEXT' }], { model: 'm', maxTokens: 100 }),
+      ).rejects.toMatchObject({ upstreamStatus: 502 });
+
+      const all = [...warn.mock.calls, ...error.mock.calls].map((c) => String(c[0])).join('\n');
+      expect(all).toMatch(/upstream call failed: label=OpenWebUiClient\.chat model=m attempt=1 status=502/);
+      expect(all).toMatch(/upstream call gave up: label=OpenWebUiClient\.chat model=m attempts=1 status=502/);
+      expect(all).not.toContain('SECRET-DOCUMENT-TEXT');
+    });
+
+    it('logs a failure that is not an HTTP error (a dropped connection) with its kind', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const create = jest.fn().mockRejectedValue(new Error('socket hang up'));
+
+      await expect(makeClient(create).chat(user, { model: 'm' })).rejects.toThrow('socket hang up');
+
+      expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/status=Error elapsedMs=\d+ requestChars=\d+ schema=false message="socket hang up"/);
+    });
+
+    it('logs a streaming failure and a vision failure under their own labels', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const boom = apiError('500 Internal server error', 500);
+
+      await expect((async () => { for await (const _ of makeClient(jest.fn().mockRejectedValue(boom)).streamChat(user, { model: 'm' })) { /* drain */ } })()).rejects.toBeTruthy();
+      await expect(makeClient(jest.fn().mockRejectedValue(boom)).vision('describe', [Buffer.from('i')], { model: 'm' })).rejects.toBeTruthy();
+
+      const lines = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(lines).toContain('label=OpenWebUiClient.streamChat');
+      expect(lines).toContain('label=OpenWebUiClient.vision');
+    });
   });
 
   it('keeps the attempt cap: a model that keeps failing ends as an upstream error, not an endless loop', async () => {

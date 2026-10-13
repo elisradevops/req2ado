@@ -1117,12 +1117,49 @@ def test_assign_leftover_roots_sends_leftovers_and_groups_and_the_assignments_sc
 
 
 def test_assign_leftover_roots_parses_a_valid_response() -> None:
-    response_json = {"content": json.dumps({"assignments": {"n2": "regroup_synth_group_0"}})}
+    response_json = {"content": json.dumps({"assignments": [{"id": "n2", "group_id": "regroup_synth_group_0"}]})}
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = _mock_transport(response_json)
 
     result = client.assign_leftover_roots({"n2": "SBC Serial Communication Routing"}, {"regroup_synth_group_0": "Bus Interfaces"})
     assert result["assignments"] == {"n2": "regroup_synth_group_0"}
+
+
+def test_assign_leftover_roots_still_accepts_the_older_map_answer() -> None:
+    response_json = {"content": json.dumps({"assignments": {"n2": "regroup_synth_group_0"}})}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport(response_json)
+
+    result = client.assign_leftover_roots({"n2": "T"}, {"regroup_synth_group_0": "G"})
+    assert result["assignments"] == {"n2": "regroup_synth_group_0"}
+
+
+def _strict_violations(node: object, path: str = "") -> list[str]:
+    """Vendor strict-mode rules: every object closed and fully required, no free-form object."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        if node.get("type") == "object":
+            props = node.get("properties")
+            if props is None or node.get("additionalProperties") is not False:
+                found.append(f"{path}: object not closed")
+            elif set(node.get("required", [])) != set(props):
+                found.append(f"{path}: not every property required")
+        for key, child in node.items():
+            found += _strict_violations(child, f"{path}/{key}")
+    elif isinstance(node, list):
+        for i, child in enumerate(node):
+            found += _strict_violations(child, f"{path}[{i}]")
+    return found
+
+
+def test_post_scoring_schemas_follow_the_strict_vendor_rules() -> None:
+    from app.survey import _response_schemas as rs
+
+    for build in (
+        rs.duplicate_cluster_verdict_schema, rs.duplicate_pair_verdict_schema, rs.root_grouping_schema,
+        rs.leftover_assignment_schema, rs.trace_links_schema,
+    ):
+        assert _strict_violations(build()["schema"]) == [], build.__name__
 
 
 def test_infer_trace_links_sends_response_schema_even_with_a_nonempty_catalog() -> None:
