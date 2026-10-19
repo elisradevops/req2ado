@@ -6,6 +6,9 @@ import {
   effectiveMaxTokens,
   isToolsWithReasoningRejection,
   parseContextLengthCap,
+  rateLimitWaitMs,
+  RATE_LIMIT_DEFAULT_WAIT_MS,
+  RATE_LIMIT_MAX_WAIT_MS,
   parseUnsupportedParams,
   upstreamRequestId,
   parseMaxOutputCap,
@@ -660,5 +663,21 @@ describe('model visibility (LLM_MODEL_HIDE_PATTERNS)', () => {
     const models = await new OpenWebUiClient(config as any).listSelectableModels();
 
     expect(models.map((m) => m.id)).toEqual(['claude-opus-4-8', 'OpenAI/gpt-5.4']);
+  });
+});
+
+describe('rateLimitWaitMs', () => {
+  const limited = (headers: Record<string, string>) => new OpenAI.APIError(429, { message: 'slow down' }, '429 slow down', headers as any);
+
+  it('waits what the provider asked for, bounded', () => {
+    expect(rateLimitWaitMs(limited({ 'retry-after-ms': '1500' }))).toBe(1500);
+    expect(rateLimitWaitMs(limited({ 'retry-after': '3' }))).toBe(3000);
+    expect(rateLimitWaitMs(limited({ 'retry-after': '3600' }))).toBe(RATE_LIMIT_MAX_WAIT_MS);
+  });
+
+  it('uses a default when the 429 states nothing, and is null for any other error', () => {
+    expect(rateLimitWaitMs(limited({}))).toBe(RATE_LIMIT_DEFAULT_WAIT_MS);
+    expect(rateLimitWaitMs(apiError('bad request', 400))).toBeNull();
+    expect(rateLimitWaitMs(new Error('socket hang up'))).toBeNull();
   });
 });

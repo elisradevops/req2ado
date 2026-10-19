@@ -95,20 +95,17 @@ describe('OpenWebUiClient against the fake proxy', () => {
 describe('rate limits', () => {
   const limited = () => startFakeProxy({ 'claude-opus-4-8': { ...BEHAVIORS.claudeOpus, rateLimitedCalls: { count: 1, retryAfterSeconds: 0 } } });
 
-  it('today a single 429 fails the call (the SDK is built with maxRetries 0): recorded so the change below is deliberate', async () => {
-    await proxy.close();
-    proxy = await limited();
-    await expect(clientFor('claude-opus-4-8').chat(user, { model: 'claude-opus-4-8', maxTokens: 100 })).rejects.toMatchObject({ upstreamStatus: 429 });
-    expect(proxy.requests).toHaveLength(1);
-  });
-
-  // WP4(d): a 429 carries the provider's Retry-After; the call should wait that long (bounded) and try again once.
-  // `it.failing` passes while the behaviour is missing and fails the day it is implemented, which forces this test to be
-  // switched to a plain `it`.
-  it.failing('retries a 429 once after the stated Retry-After and then succeeds', async () => {
+  it('a 429 is repeated after the provider\'s Retry-After and then succeeds', async () => {
     await proxy.close();
     proxy = await limited();
     expect((await clientFor('claude-opus-4-8').chat(user, { model: 'claude-opus-4-8', maxTokens: 100 })).content).toBe('OK');
     expect(proxy.requests).toHaveLength(2);
+  });
+
+  it('gives up after the bounded number of repeats and reports the 429', async () => {
+    await proxy.close();
+    proxy = await startFakeProxy({ 'claude-opus-4-8': { ...BEHAVIORS.claudeOpus, rateLimitedCalls: { count: 99, retryAfterSeconds: 0 } } });
+    await expect(clientFor('claude-opus-4-8').chat(user, { model: 'claude-opus-4-8', maxTokens: 100 })).rejects.toMatchObject({ upstreamStatus: 429 });
+    expect(proxy.requests).toHaveLength(3); // the first call and two repeats
   });
 });
