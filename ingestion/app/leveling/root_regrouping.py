@@ -180,7 +180,9 @@ def _regroup_disconnected_roots(
     roots = [n for n in nodes if n.parent_local_id is None]
     if len(roots) < 2:
         return
-    titles_by_id = {n.local_id: n.title for n in roots}
+    # The heading each root was built from, not its current title: the model rewrites titles after the hierarchy is
+    # built, differently on every run, so grouping on them made the group count depend on the model again.
+    titles_by_id = {n.local_id: (n.source_title or n.title) for n in roots}
     if progress_callback is not None:
         progress_callback(
             LevelingProgress(

@@ -1542,3 +1542,21 @@ def test_tags_are_matched_case_insensitively_because_enum_casing_is_not_guarante
         {"title": "T", "text": "The unit shall do X.", "tags": ["Interface"]}, "Do X", WorkItemType.REQUIREMENT,
     )
     assert synthesized["tags"] == [RequirementTag.INTERFACE]
+
+
+def test_nodes_remember_the_heading_text_they_were_built_from_even_after_a_title_pass_rewrites_them() -> None:
+    # The model rewrites titles after the hierarchy is built (title/tag pass, parent summaries), differently on every
+    # run. Anything that must not depend on the model (root grouping) reads the verbatim source heading instead.
+    class RewritingClient:
+        def title_and_tags_for_rows(self, texts_by_row_id, user_id=None):
+            return {row_id: {"title": f"Rewritten {row_id}", "tags": []} for row_id in texts_by_row_id}
+
+    rows = [
+        _row("Audio Control", "Feature", None, "1.1"),
+        _row("The system shall control volume.", "Requirement", 0, "1.1.1", has_shall=True),
+    ]
+    nodes, _ = build_hierarchy_subtree(rows, "det0_", title_tag_client=RewritingClient())
+    requirement = next(n for n in nodes if n.type == WorkItemType.REQUIREMENT)
+    assert requirement.title.startswith("Rewritten")
+    assert requirement.source_title == "The system shall control volume."
+    assert next(n for n in nodes if n.type == WorkItemType.FEATURE).source_title == "Audio Control"

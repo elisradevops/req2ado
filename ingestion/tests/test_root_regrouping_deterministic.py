@@ -190,3 +190,25 @@ def test_shuffling_the_input_order_of_ids_does_not_change_group_membership() -> 
         memberships.add(frozenset(frozenset(m.local_id for m in nodes if m.parent_local_id == g.local_id)
                                   for g in nodes if "synth_group" in g.local_id))
     assert len(memberships) == 1
+
+
+def test_groups_are_built_from_the_source_headings_not_from_titles_the_model_rewrote() -> None:
+    spec = [("A1", 0), ("A2", 0), ("B1", 1), ("B2", 1), ("C1", 2), ("C2", 2)]
+    vecs = dict(zip([t for t, _ in spec], _topic_vectors([k for _, k in spec])))
+    totals = set()
+    shapes = set()
+    for run in range(3):
+        nodes = [_root(f"n{i}", f"Model title {run}-{i}") for i in range(len(spec))]
+        for node, (source, _) in zip(nodes, spec):
+            node.source_title = source  # what the document's heading said; the title above changes every run
+        _run(nodes, _Embed(vecs), _Namer({}))
+        totals.add(len(nodes))
+        shapes.add(frozenset(frozenset(m.local_id for m in nodes if m.parent_local_id == g.local_id) for g in nodes if "synth_group" in g.local_id))
+    assert len(totals) == 1 and len(shapes) == 1
+
+
+def test_the_source_title_is_never_serialized_and_survives_a_copy() -> None:
+    node = _root("a", "T")
+    node.source_title = "Heading"
+    assert "source_title" not in node.model_dump() and "source_title" not in node.model_dump_json()
+    assert node.model_copy().source_title == "Heading"
