@@ -315,6 +315,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'No links',
     unit: ['run', 'runs'],
   },
+  items_lost: {
+    title: 'Items restored after a processing step',
+    group: 'review',
+    short: 'A processing step dropped items that came straight from your document.',
+    means: 'The listed items were put back automatically. A bug may be behind it.',
+    todo: 'Check the listed items, and report the job if this appears again.',
+    chip: 'Restored',
+    unit: ['item', 'items'],
+  },
   trace_links_partial: {
     title: 'Trace links missing for some items',
     group: 'review',

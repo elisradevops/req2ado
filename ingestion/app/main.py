@@ -835,6 +835,8 @@ def _build_survey_tree_with_scoring(
             # comment). Default 1 = the previous strictly-sequential
             # behavior for all five chunked enhancement passes.
             chunk_concurrency=settings.survey_chunk_concurrency,
+            root_regroup_mode=settings.root_regroup_mode,
+            root_regroup_cosine_threshold=settings.root_regroup_cosine_threshold,
             primer_context=primer_context,
             # Same client, implements TitleDistillationClient directly --
             # 300553's smart-title fallback: a stage-1 title too generic/

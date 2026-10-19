@@ -167,6 +167,7 @@ export interface IntegrityWarning {
     | 'front_matter_folded'
     | 'trace_link_inference_failed'
     | 'trace_links_partial'
+    | 'items_lost'
     | 'heading_id_offset_mismatch'
     | 'unsupported_content_note'
     | 'empty_table_content'
