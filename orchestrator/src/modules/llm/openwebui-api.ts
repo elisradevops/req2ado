@@ -85,6 +85,88 @@ export const modelsResponseSchema = z.object({
   ),
 });
 
+// ---- Request body of `POST /api/chat/completions` (and the OpenAI-compatible `<LLM_BASE_URL>/chat/completions`) ----
+// The full set of fields the route accepts: OpenAI Chat Completions parameters, the Open WebUI additions
+// (`files`, `chat_id`/`id`/`session_id`/`parent_id`, `features`, `variables`, `params`, `tool_servers`,
+// `background_tasks`, `model_item`) and Ollama's `options`. Strict on purpose: a field this list does not know is
+// either a typo in our own request or a new field of the route, and both should fail a contract test, not go unseen.
+// The fields THIS app sends are listed in APP_REQUEST_KEYS; the others exist for mocks of the web client.
+
+const textPart = z.object({ type: z.literal('text'), text: z.string() }).strict();
+const imagePart = z.object({ type: z.literal('image_url'), image_url: z.object({ url: z.string(), detail: z.enum(['low', 'high', 'auto']).optional() }).strict() }).strict();
+const contentPart = z.union([textPart, imagePart]);
+
+const requestMessage = z
+  .object({
+    role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']),
+    content: z.union([z.string(), z.array(contentPart), z.null()]).optional(),
+    name: z.string().optional(),
+    tool_calls: z.array(toolCall).optional(),
+    tool_call_id: z.string().optional(),
+    // Added by the web client on assistant turns (Responses-style output items); ignored by the route.
+    output: z.unknown().optional(),
+  })
+  .strict();
+
+const responseFormat = z.union([
+  z.object({ type: z.literal('text') }).strict(),
+  z.object({ type: z.literal('json_object') }).strict(),
+  z
+    .object({
+      type: z.literal('json_schema'),
+      json_schema: z.object({ name: z.string().min(1), strict: z.boolean().optional(), schema: z.record(z.unknown()), description: z.string().optional() }).strict(),
+    })
+    .strict(),
+]);
+
+const fileReference = z.object({ type: z.enum(['file', 'collection']), id: z.string().min(1), context: z.literal('full').optional() }).strict();
+
+export const openWebUiCompletionRequestSchema = z
+  .object({
+    model: z.string().min(1),
+    messages: z.array(requestMessage).min(1),
+    stream: z.boolean().optional(),
+    stream_options: z.object({ include_usage: z.boolean().optional() }).strict().optional(),
+    // Sampling and limits (which of them a model accepts is the capability table's business, not the schema's).
+    temperature: z.number().optional(),
+    top_p: z.number().optional(),
+    seed: z.number().int().optional(),
+    stop: z.union([z.string(), z.array(z.string())]).optional(),
+    max_tokens: z.number().int().positive().optional(),
+    max_completion_tokens: z.number().int().positive().optional(),
+    frequency_penalty: z.number().optional(),
+    presence_penalty: z.number().optional(),
+    logit_bias: z.record(z.number()).optional(),
+    reasoning_effort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
+    response_format: responseFormat.optional(),
+    tools: z.array(z.object({ type: z.literal('function'), function: z.object({ name: z.string(), description: z.string().optional(), parameters: z.record(z.unknown()).optional() }).strict() }).strict()).optional(),
+    tool_choice: z.union([z.enum(['none', 'auto', 'required']), z.record(z.unknown())]).optional(),
+    // Ollama's own options (`num_ctx`, ...): only a trusted-local deployment understands them.
+    options: z.record(z.unknown()).optional(),
+    // Open WebUI additions.
+    files: z.array(fileReference).optional(),
+    chat_id: z.string().optional(),
+    id: z.string().optional(),
+    session_id: z.string().optional(),
+    parent_id: z.string().nullable().optional(),
+    parent_message: z.record(z.unknown()).optional(),
+    params: z.record(z.unknown()).optional(),
+    features: z.record(z.boolean()).optional(),
+    variables: z.record(z.string()).optional(),
+    tool_servers: z.array(z.unknown()).optional(),
+    background_tasks: z.record(z.boolean()).optional(),
+    model_item: openWebUiModelEntrySchema.optional(),
+  })
+  .strict();
+
+export type OpenWebUiCompletionRequest = z.infer<typeof openWebUiCompletionRequestSchema>;
+
+/** The request fields this app sends (the rest of the schema documents the route for the web client and for mocks). */
+export const APP_REQUEST_KEYS: readonly (keyof OpenWebUiCompletionRequest)[] = [
+  'model', 'messages', 'stream', 'stream_options', 'temperature', 'seed', 'max_tokens', 'max_completion_tokens',
+  'reasoning_effort', 'frequency_penalty', 'response_format', 'files', 'options',
+];
+
 /**
  * `POST /api/chat/completed`: runs the deployment's outlet filters over a finished conversation. Only a caller that
  * needs those filters' output has to call it; this app does not (it reads the answer from `/api/chat/completions`

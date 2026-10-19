@@ -7,6 +7,7 @@ import { isModelHidden, parseModelHidePatterns } from './model-visibility';
 import { chatCompletionResponseSchema, errorMessageFromBody, modelsResponseSchema } from './openwebui-api';
 import { seedConstraints } from './model-capabilities';
 import { modelFactsFromEntry } from './openwebui-model-entry';
+import type { OpenWebUiCompletionRequest } from './openwebui-api';
 import { fetchWithRetry } from './retryWithBackoff';
 import {
   assertCompletion,
@@ -1065,7 +1066,7 @@ export class OpenWebUiClient implements LlmClient {
     const model = opts.model ?? this.config.LLM_CHAT_MODEL;
     const buildBody = (a: Adaptation): string => {
       const maxTokens = effectiveMaxTokens(opts.maxTokens, a);
-      return JSON.stringify({
+      const body: OpenWebUiCompletionRequest = {
         model,
         messages: [{ role: 'user', content: outboundContent }],
         files: [{ type: 'file', id: fileId, context: 'full' }],
@@ -1076,7 +1077,8 @@ export class OpenWebUiClient implements LlmClient {
         // Ollama's own context option: only a trusted-local (Ollama) deployment understands it; an OpenAI/Azure
         // backend answers 400 'Unknown parameter' (and it is dropped on that answer if it was sent anyway).
         ...(opts.numCtx !== undefined && this.config.LLM_TRUSTED_LOCAL && !a.dropped.has('options') ? { options: { num_ctx: opts.numCtx } } : {}),
-      });
+      };
+      return JSON.stringify(body);
     };
     // Same adaptation policy as chat()/vision() (negotiate): required temperature, output-limit parameter and
     // ceiling, rejected params. This route is a plain fetch, so a non-2xx answer is turned into the SDK's own
