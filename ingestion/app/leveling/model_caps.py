@@ -211,8 +211,11 @@ def family_facts(model: str | None) -> FamilyFacts | None:
     claude = _CLAUDE.match(name)
     if claude:
         tier, major, minor = claude.group(1), int(claude.group(2)), int(claude.group(3) or 0)
-        if tier in ("fable", "mythos") or major >= 5 or (major == 4 and minor >= 6 and tier != "haiku"):
+        if tier in ("fable", "mythos") or major >= 5:
             return FamilyFacts(1_000_000, 1_000_000, 128_000, True)
+        if major == 4 and minor >= 6 and tier != "haiku":
+            # Opus 4.6+ answers up to 128k tokens; Sonnet 4.6 up to 64k (the proxy's own model listing states 64,000).
+            return FamilyFacts(1_000_000, 1_000_000, 128_000 if tier == "opus" else 64_000, True)
         if tier == "haiku":
             return FamilyFacts(200_000, 200_000, 64_000, False)
         return FamilyFacts(200_000, 200_000, 32_000 if tier == "opus" else 64_000, False)
