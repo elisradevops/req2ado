@@ -67,3 +67,47 @@ def test_degrades_to_none_for_one_user_without_affecting_a_different_user(monkey
 
     assert broken is None  # ungrounded scoring for this user, not a hard failure
     assert healthy is not None  # a different user's own connection is unaffected
+
+
+def test_two_parallel_jobs_of_one_user_share_one_build_and_neither_fails(monkeypatch) -> None:
+    # Prod: two jobs of the same user started a minute apart; the second one read the cache while the first was still
+    # building the retriever and died with KeyError (the user id was marked "attempted" before the entry existed).
+    import threading
+    import time
+
+    class SlowEmbedClient(_RecordingEmbedClient):
+        def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
+            time.sleep(0.2)
+            return super().embed(texts, user_id=user_id)
+
+    embed_client = _reset_criteria_retriever_cache(monkeypatch, SlowEmbedClient())
+    results: list[object] = []
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            results.append(main_module._get_criteria_retriever("user-a"))
+        except BaseException as exc:  # noqa: BLE001 -- the test is about any failure
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 4 and all(r is results[0] and r is not None for r in results)
+    assert embed_client.calls == ["user-a"]  # built once
+
+
+def test_a_failed_build_is_remembered_as_ungrounded_and_not_retried(monkeypatch) -> None:
+    class FailingEmbedClient(_RecordingEmbedClient):
+        def embed(self, texts: list[str], user_id: str | None = None) -> list[list[float]]:
+            super().embed(texts, user_id=user_id)
+            raise RuntimeError("embed proxy down")
+
+    embed_client = _reset_criteria_retriever_cache(monkeypatch, FailingEmbedClient())
+    assert main_module._get_criteria_retriever("user-a") is None
+    assert main_module._get_criteria_retriever("user-a") is None
+    assert embed_client.calls == ["user-a"]

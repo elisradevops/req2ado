@@ -718,16 +718,27 @@ _criteria_retrievers: dict[str | None, CriteriaRetriever | None] = {}
 _criteria_retrievers_build_attempted: set[str | None] = set()
 
 
+# One lock per user id (and one to hand them out): two jobs of the same user can start together, and the second must wait
+# for the first one's build instead of reading a cache entry that does not exist yet (that raced into a KeyError and
+# failed the job after 9 s). Different users never wait for each other. The user id is only marked "attempted" once its
+# entry (a retriever, or None for "ungrounded") is stored.
+_criteria_retriever_locks: dict[str | None, threading.Lock] = {}
+_criteria_retriever_locks_guard = threading.Lock()
+
+
 def _get_criteria_retriever(user_id: str | None) -> CriteriaRetriever | None:
-    if user_id in _criteria_retrievers_build_attempted:
+    with _criteria_retriever_locks_guard:
+        build_lock = _criteria_retriever_locks.setdefault(user_id, threading.Lock())
+    with build_lock:
+        if user_id in _criteria_retrievers_build_attempted and user_id in _criteria_retrievers:
+            return _criteria_retrievers[user_id]
+        try:
+            _criteria_retrievers[user_id] = CriteriaRetriever(_embed_client, user_id=user_id)
+        except Exception:
+            logger.warning("Failed to build CriteriaRetriever for user_id=%s -- SURVEY quality scoring will run ungrounded", user_id, exc_info=True)
+            _criteria_retrievers[user_id] = None
+        _criteria_retrievers_build_attempted.add(user_id)
         return _criteria_retrievers[user_id]
-    _criteria_retrievers_build_attempted.add(user_id)
-    try:
-        _criteria_retrievers[user_id] = CriteriaRetriever(_embed_client, user_id=user_id)
-    except Exception:
-        logger.warning("Failed to build CriteriaRetriever for user_id=%s -- SURVEY quality scoring will run ungrounded", user_id, exc_info=True)
-        _criteria_retrievers[user_id] = None
-    return _criteria_retrievers[user_id]
 
 
 def _build_survey_tree_with_scoring(
