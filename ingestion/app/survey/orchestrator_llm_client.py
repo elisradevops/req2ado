@@ -812,6 +812,19 @@ def _with_kb_context(system_prompt: str, kb_context: str | None) -> str:
     )
 
 
+def _with_authoring_standard(system_prompt: str, standard: str | None) -> str:
+    """Prepends the organization's authoring standard (app.kb.profile.render_authoring_standard) to a prompt that writes
+    a work item's title or description. Authoritative, unlike the soft background framing of retrieved KB text: where the
+    standard and the generic guidance below disagree, the standard wins. None: the prompt is returned untouched."""
+    if not standard:
+        return system_prompt
+    return (
+        "The organization's authoring standard, taken from its own knowledge base. Follow it when you write titles and "
+        "descriptions; where it disagrees with the general guidance below, the standard wins:\n\n"
+        f"{standard}\n\n---\n\n{system_prompt}"
+    )
+
+
 def _with_kb_context_as_scoring_rubric(
     system_prompt: str, kb_context: str | None, categories_are_fixed: bool = False
 ) -> str:
@@ -1020,6 +1033,9 @@ class OrchestratorLlmClient:
         self._top_k = top_k
         self._min_p = min_p
         self._seed = seed
+        # Set by /level when the user's KB profile has content (app.kb.profile.render_authoring_standard); None leaves every
+        # prompt that writes an item exactly as it was.
+        self.authoring_standard: str | None = None
         self._cache = cache
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
 
@@ -1709,11 +1725,14 @@ class OrchestratorLlmClient:
             # The output-format sentence and the strict schema are both generated from `spec`
             # (app.survey.keyed_calls), so the prompt and the schema cannot drift; a retry of
             # omitted ids re-enters here with just those ids.
-            system_prompt = load_prompt(
-                "title_and_tags_for_rows",
-                tag_vocabulary=", ".join(t.value for t in RequirementTag),
-                row_count=str(len(payload)),
-                output_format=describe_output(spec, mode),
+            system_prompt = _with_authoring_standard(
+                load_prompt(
+                    "title_and_tags_for_rows",
+                    tag_vocabulary=", ".join(t.value for t in RequirementTag),
+                    row_count=str(len(payload)),
+                    output_format=describe_output(spec, mode),
+                ),
+                self.authoring_standard,
             )
             return self._chat_json(
                 system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
@@ -1755,8 +1774,9 @@ class OrchestratorLlmClient:
         spec = PARENT_SUMMARY_SPEC
 
         def send(payload: dict, mode: KeyedMode) -> object:
-            system_prompt = load_prompt(
-                "summarize_parent_nodes", node_count=str(len(payload)), output_format=describe_output(spec, mode),
+            system_prompt = _with_authoring_standard(
+                load_prompt("summarize_parent_nodes", node_count=str(len(payload)), output_format=describe_output(spec, mode)),
+                self.authoring_standard,
             )
             return self._chat_json(
                 system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
@@ -1795,8 +1815,9 @@ class OrchestratorLlmClient:
         def send(payload: dict, mode: KeyedMode) -> object:
             # The tag vocabulary is part of the generated output-format sentence (it comes from the same
             # field list as the schema), so it is not passed as a separate marker.
-            system_prompt = load_prompt(
-                "synthesize_leaf_requirements", row_count=str(len(payload)), output_format=describe_output(spec, mode),
+            system_prompt = _with_authoring_standard(
+                load_prompt("synthesize_leaf_requirements", row_count=str(len(payload)), output_format=describe_output(spec, mode)),
+                self.authoring_standard,
             )
             return self._chat_json(
                 system_prompt, json.dumps(payload), schema=schema_for(spec, mode), user_id=user_id,
@@ -2556,14 +2577,17 @@ class OrchestratorLlmClient:
 
         def send(nodes: dict, mode: KeyedMode) -> object:
             nonlocal truncated
-            system_prompt = _with_kb_context(
-                load_prompt(
-                    "author_content",
-                    tag_vocabulary=", ".join(t.value for t in RequirementTag),
-                    node_count=str(len(nodes)),
-                    output_format=describe_output(spec, mode),
+            system_prompt = _with_authoring_standard(
+                _with_kb_context(
+                    load_prompt(
+                        "author_content",
+                        tag_vocabulary=", ".join(t.value for t in RequirementTag),
+                        node_count=str(len(nodes)),
+                        output_format=describe_output(spec, mode),
+                    ),
+                    kb_context,
                 ),
-                kb_context,
+                self.authoring_standard,
             )
             schema = schema_for(spec, mode)
             payload = {

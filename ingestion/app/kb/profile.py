@@ -347,3 +347,30 @@ def scoring_inputs(profile: KbProfile | None) -> tuple[list[str] | None, dict[st
         lines += [f"- {r.text}" for r in profile.rules]
     context = "\n".join(lines)
     return names, definitions, context[:SCORING_CONTEXT_MAX_CHARS]
+
+
+AUTHORING_STANDARD_MAX_CHARS = 6_000
+
+
+def render_authoring_standard(profile: KbProfile | None) -> str | None:
+    """The profile as the text that leads every prompt that writes a work item's title or description: what the
+    organization's own knowledge base says an Epic, Feature and Requirement are, the rules that make a way of writing
+    mandatory, its defined terms, and the quality bar a requirement is judged against. None when the profile has none of
+    these, so prompts are then byte-identical to what they were before profiles."""
+    if profile is None:
+        return None
+    sections: list[str] = []
+    if profile.type_definitions:
+        sections.append("Definitions:\n" + "\n".join(f"- {d.item_type.capitalize()}: {d.text}" for d in profile.type_definitions))
+    if profile.rules:
+        sections.append("Mandatory rules:\n" + "\n".join(f"- {r.text}" for r in profile.rules))
+    if profile.categories:
+        sections.append(
+            "A good requirement is:\n"
+            + "\n".join(f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}" for c in profile.categories)
+        )
+    if profile.glossary:
+        sections.append("Terms:\n" + "\n".join(f"- {g.term}: {g.definition}" for g in profile.glossary))
+    if not sections:
+        return None
+    return "\n\n".join(sections)[:AUTHORING_STANDARD_MAX_CHARS]

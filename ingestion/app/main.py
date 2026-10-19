@@ -33,7 +33,7 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
-from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile
+from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard
 from app.kb.retrieval import retrieve_context
 from app.leveling.document_map import publish_document_map
 from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
@@ -818,13 +818,18 @@ def _build_survey_tree_with_scoring(
         # from deep inside the build; it is a no-op unless LIVE_PROGRESS is on.
         if settings.live_progress and job_id is not None:
             publish_document_map(_narration_redis, job_id, doc)
+        profile = _profile_for_job(user_id, model)
+        try:
+            client.authoring_standard = render_authoring_standard(profile) if settings.kb_profile_generation else None
+        except AttributeError:  # a client double that is not an OrchestratorLlmClient has nowhere to put it
+            pass
         return build_survey_tree(
             doc,
             analysis_client=client,
             scoring_client=client,
             criteria_retriever=_get_criteria_retriever(user_id),
             user_id=user_id,
-            kb_profile=_profile_for_job(user_id, model),
+            kb_profile=profile,
             embed_client=_embed_client,
             vector_store=_kb_vector_store,
             link_type_client=client if link_type_catalog else None,

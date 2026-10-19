@@ -201,6 +201,9 @@ class Settings(BaseSettings):
     # Requirement scoring from the user's KB profile (one fixed category list built from every KB document) instead of the
     # single best-matching document's checklist. "False" restores the earlier behaviour (KB_PROFILE_SCORING=false).
     kb_profile_scoring: bool = True
+    # The profile's definitions, rules, terms and quality bar lead every prompt that writes an item's title or description
+    # (KB_PROFILE_GENERATION=false removes them).
+    kb_profile_generation: bool = True
     # The model that reads the KB documents into the profile. Empty: the model of the job that first needs it, and from then
     # on the model that built the stored profile, so two models alternating on one KB never rebuild it back and forth.
     kb_profile_model: str = ""

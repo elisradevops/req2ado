@@ -78,3 +78,33 @@ def test_no_knowledge_base_or_a_failing_build_or_the_switch_off_means_no_profile
 
     monkeypatch.setattr(settings, "kb_profile_scoring", False)
     assert _level(InMemoryProfileStore(), _Kb(DOCS), FakeProfileClient()) is None
+
+
+def _client_after_level(store, kb, fake):
+    captured: dict = {}
+
+    def fake_build(*args, **kwargs):
+        captured.update(kwargs)
+        return WorkItemTree(nodes=[], warnings=[])
+
+    with patch("app.main._kb_profile_store", store), patch("app.main._kb_vector_store", kb), \
+            patch("app.main._make_profile_client", lambda m: fake), patch("app.main.build_survey_tree", fake_build):
+        response = client.post(
+            "/level?mode=survey&model=job-model", content=_doc_json(),
+            headers={"Content-Type": "application/json", "X-Req2Ado-User-Id": "u1"},
+        )
+    assert response.status_code == 200, response.text
+    return captured["analysis_client"]
+
+
+def test_item_writing_prompts_get_the_authoring_standard_from_the_profile(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "kb_profile_model", "")
+    writer = _client_after_level(InMemoryProfileStore(), _Kb(DOCS), FakeProfileClient())
+    assert writer.authoring_standard and "Requirement: A verifiable statement of need" in writer.authoring_standard
+
+
+def test_without_a_kb_or_with_the_generation_switch_off_prompts_are_untouched(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "kb_profile_model", "")
+    assert _client_after_level(InMemoryProfileStore(), _Kb({}), FakeProfileClient()).authoring_standard is None
+    monkeypatch.setattr(settings, "kb_profile_generation", False)
+    assert _client_after_level(InMemoryProfileStore(), _Kb(DOCS), FakeProfileClient()).authoring_standard is None

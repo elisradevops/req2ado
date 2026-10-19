@@ -239,3 +239,32 @@ def test_the_scoring_context_does_not_grow_with_the_knowledge_base() -> None:
     big = {f"d{i}.pptx": "\n".join(f"CAT: Category {i}-{j} | " + "condition " * 40 for j in range(30)) for i in range(10)}
     _, _, context = scoring_inputs(build_profile(big, FakeProfileClient(), model="m1"))
     assert len(context) < 8_000
+
+
+# --- the authoring standard in generation prompts ---------------------------------------------------------------
+
+def test_the_authoring_standard_states_definitions_rules_terms_and_the_quality_bar_within_a_budget() -> None:
+    from app.kb.profile import render_authoring_standard
+
+    profile = build_profile(DOCS, FakeProfileClient(), model="m1")
+    text = render_authoring_standard(profile)
+    assert text is not None and len(text) < 6_500
+    assert "Requirement: A verifiable statement of need" in text and "Epic: A large body of work" in text
+    assert "One requirement per statement" in text
+    assert "SRS: software requirements specification" in text
+    assert "Implementable: Can be built" in text
+    assert render_authoring_standard(profile) == text  # deterministic
+
+
+def test_there_is_no_authoring_standard_without_a_profile_or_without_content() -> None:
+    from app.kb.profile import render_authoring_standard
+
+    assert render_authoring_standard(None) is None
+    assert render_authoring_standard(build_profile({"n.docx": "prose"}, FakeProfileClient(), model="m1")) is None
+
+
+def test_the_authoring_standard_stays_inside_its_budget_for_a_huge_knowledge_base() -> None:
+    from app.kb.profile import render_authoring_standard
+
+    big = {f"d{i}.pptx": "\n".join(f"RULE: rule {i}-{j} " + "words " * 40 for j in range(60)) for i in range(5)}
+    assert len(render_authoring_standard(build_profile(big, FakeProfileClient(), model="m1"))) < 6_500

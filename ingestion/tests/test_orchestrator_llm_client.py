@@ -3974,3 +3974,38 @@ def test_extract_kb_document_profile_accepts_nothing_found_and_raises_on_a_non_o
     client._transport = _mock_transport({"content": json.dumps(["x"])})
     with pytest.raises(ValueError):
         client.extract_kb_document_profile("a.pptx", "t")
+
+
+def _system_prompts(call) -> list[str]:
+    prompts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        prompts.append(body["messages"][0]["content"])
+        return httpx.Response(200, json={"content": json.dumps({"rows": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    call(client)
+    return prompts
+
+
+_WRITING_CALLS = {
+    "title_and_tags_for_rows": lambda c: c.title_and_tags_for_rows({"r1": "The receiver shall lock."}),
+    "summarize_parent_nodes": lambda c: c.summarize_parent_nodes({"p1": {"title": "T", "type": "Feature", "children": ["The receiver shall lock."]}}),
+    "synthesize_leaf_requirements": lambda c: c.synthesize_leaf_requirements({"s1": {"label": "Size: 3U", "context": ""}}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_WRITING_CALLS))
+def test_the_authoring_standard_leads_every_item_writing_prompt_once_and_changes_nothing_without_it(name: str) -> None:
+    plain = _system_prompts(_WRITING_CALLS[name])
+    assert plain and all("authoring standard" not in p for p in plain)
+
+    def with_standard(client: OrchestratorLlmClient) -> None:
+        client.authoring_standard = "Requirement: A verifiable statement of need"
+        _WRITING_CALLS[name](client)
+
+    standard = _system_prompts(with_standard)
+    assert standard and all(p.count("Requirement: A verifiable statement of need") == 1 for p in standard)
+    assert all(p.endswith(plain[0]) for p in standard)  # the original prompt is intact, the standard is only prepended
