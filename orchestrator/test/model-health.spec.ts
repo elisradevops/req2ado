@@ -74,10 +74,13 @@ describe('probeModel', () => {
     expect((await probeModel(client, 'm', { sleep: noSleep })).status).toBe('ok');
   });
 
-  it('fails a model that does not answer within the timeout', async () => {
+  it('is inconclusive, not failed, for a timeout or a rate limit (they say nothing about the model)', async () => {
     const hang: ProbeClient = { chat: () => new Promise(() => undefined) };
-    const verdict = await probeModel(hang, 'slow', { sleep: noSleep, timeoutMs: 10 });
-    expect(verdict).toMatchObject({ status: 'failed', reason: 'timeout' });
+    expect(await probeModel(hang, 'slow', { sleep: noSleep, timeoutMs: 10 })).toMatchObject({ status: 'inconclusive', reason: 'timeout' });
+    const limited = Object.assign(new Error('x'), { status: 429 });
+    expect(await probeModel(clientWith(() => limited), 'busy', { sleep: noSleep })).toMatchObject({ status: 'inconclusive', reason: 'status_429' });
+    const overloaded = Object.assign(new Error('x'), { status: 503 });
+    expect(await probeModel(clientWith(() => overloaded), 'busy', { sleep: noSleep })).toMatchObject({ status: 'inconclusive' });
   });
 });
 
@@ -165,6 +168,19 @@ describe('ModelHealthService', () => {
     const { service, queue } = makeService({ stored });
     queue.add.mockRejectedValue(new Error('queue down'));
     expect((await service.filterVisible('u', catalog)).map((m) => m.id)).toEqual(['good', 'new', 'old-ok']);
+  });
+
+  it('an inconclusive probe leaves a known verdict in place and lists an unknown model, retried after 10 minutes', async () => {
+    const limited = Object.assign(new Error('x'), { status: 429 });
+    const failedBefore = makeService({ stored: { bad: { status: 'failed', checkedAt: 1, reason: 'status_404' } }, now: 9000, client: clientWith(() => limited) });
+    const kept = await failedBefore.service.runProbe({ userId: 'u', model: 'bad' });
+    expect(kept).toEqual({ status: 'failed', checkedAt: 9000, reason: 'status_404' });
+
+    const fresh = makeService({ now: 9000, client: clientWith(() => limited) });
+    const unknown = await fresh.service.runProbe({ userId: 'u', model: 'new' });
+    expect(unknown).toMatchObject({ status: 'unknown', checkedAt: 9000, reason: 'status_429' });
+    expect((await fresh.service.filterVisible('u', [{ id: 'new' }])).map((m) => m.id)).toEqual(['new']);
+    expect(fresh.queue.add).not.toHaveBeenCalled(); // not re-queued within the 10 minutes
   });
 
   it('says a model is failed only when its verdict is failed', async () => {

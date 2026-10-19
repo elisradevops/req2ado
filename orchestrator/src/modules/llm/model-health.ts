@@ -8,18 +8,24 @@ import type { LlmChatOptions, LlmChatResult } from './llm-client.interface';
 export const OK_TTL_MS = 24 * 60 * 60 * 1000;
 /** A failing verdict is re-checked sooner so a transient outage heals (the model stays hidden meanwhile). */
 export const FAILED_TTL_MS = 60 * 60 * 1000;
+/** An inconclusive result is retried after this long. */
+export const UNKNOWN_TTL_MS = 10 * 60 * 1000;
 /** Each probe call must answer within this long. */
 export const PROBE_TIMEOUT_MS = 45_000;
 /** Pause before the one repeat of a failed probe. */
 export const PROBE_RETRY_DELAY_MS = 2_000;
 
 export interface ModelVerdict {
-  status: 'ok' | 'failed';
+  /** 'unknown': probes so far were inconclusive (rate limit, overload, timeout); listed, probed again soon. */
+  status: 'ok' | 'failed' | 'unknown';
   /** epoch ms */
   checkedAt: number;
   /** A short code, never model output or request content. */
   reason?: string;
 }
+
+/** What a probe round concluded: a verdict, or 'inconclusive' when every failure was transient. */
+export type ProbeOutcome = (ModelVerdict & { status: 'ok' | 'failed' }) | { status: 'inconclusive'; checkedAt: number; reason: string };
 
 /** A model with no verdict yet is listed (a fresh deployment is never empty); only a failed one is hidden. */
 export function isListed(verdict: ModelVerdict | undefined): boolean {
@@ -29,14 +35,15 @@ export function isListed(verdict: ModelVerdict | undefined): boolean {
 /** True when the verdict is missing or past its time-to-live. */
 export function needsProbe(verdict: ModelVerdict | undefined, now: number): boolean {
   if (!verdict) return true;
-  return now - verdict.checkedAt >= (verdict.status === 'ok' ? OK_TTL_MS : FAILED_TTL_MS);
+  const ttl = verdict.status === 'ok' ? OK_TTL_MS : verdict.status === 'failed' ? FAILED_TTL_MS : UNKNOWN_TTL_MS;
+  return now - verdict.checkedAt >= ttl;
 }
 
 export function parseVerdict(raw: string | null | undefined): ModelVerdict | undefined {
   if (!raw) return undefined;
   try {
     const parsed = JSON.parse(raw) as Partial<ModelVerdict>;
-    if ((parsed.status === 'ok' || parsed.status === 'failed') && typeof parsed.checkedAt === 'number') {
+    if ((parsed.status === 'ok' || parsed.status === 'failed' || parsed.status === 'unknown') && typeof parsed.checkedAt === 'number') {
       return { status: parsed.status, checkedAt: parsed.checkedAt, ...(parsed.reason ? { reason: String(parsed.reason) } : {}) };
     }
   } catch {
@@ -94,6 +101,20 @@ function reasonOf(err: unknown): string {
   return status ? `status_${status}` : 'error';
 }
 
+/**
+ * A reason that says nothing about the model itself: the upstream was rate limiting, overloaded or unreachable, or the
+ * call timed out. Such a probe must not hide a model that works (a rate-limited probe round hid healthy models for an
+ * hour); the model keeps its earlier verdict and is probed again later.
+ */
+export function isTransientReason(reason: string | undefined): boolean {
+  if (!reason) return false;
+  if (reason === 'timeout' || reason === 'error') return true;
+  const status = /^status_(\d+)$/.exec(reason);
+  if (!status) return false;
+  const code = Number(status[1]);
+  return code === 408 || code === 425 || code === 429 || code >= 500;
+}
+
 function parseRows(content: string): { id?: unknown }[] | null {
   const text = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try {
@@ -148,7 +169,7 @@ export interface ProbeOptions {
  * Probes one model. A failure is repeated once after a short pause, so a single transient upstream error does not
  * hide a model for an hour. Never throws: the result is the verdict.
  */
-export async function probeModel(client: ProbeClient, model: string, opts: ProbeOptions = {}): Promise<ModelVerdict> {
+export async function probeModel(client: ProbeClient, model: string, opts: ProbeOptions = {}): Promise<ProbeOutcome> {
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const timeoutMs = opts.timeoutMs ?? PROBE_TIMEOUT_MS;
@@ -162,5 +183,7 @@ export async function probeModel(client: ProbeClient, model: string, opts: Probe
       if (attempt === 1) await sleep(PROBE_RETRY_DELAY_MS);
     }
   }
-  return { status: 'failed', checkedAt: now(), reason };
+  return isTransientReason(reason)
+    ? { status: 'inconclusive', checkedAt: now(), reason }
+    : { status: 'failed', checkedAt: now(), reason };
 }

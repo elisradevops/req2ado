@@ -234,6 +234,8 @@ async function assertNotCancelled(prisma: PrismaClient, jobId: string): Promise<
 interface LeveledFigure {
   id: string;
   caption: string | null;
+  // Why a figure has no caption when the vision call itself failed (ingestion's Figure.caption_status).
+  caption_status?: 'insignificant' | 'vision_failed' | null;
   // The author's own short title for this figure (parsed from a document
   // "Figure N: Title" caption line, or an LLM-generated fallback -- see
   // ingestion's Figure.name docstring) -- distinct from `caption`, which
@@ -676,6 +678,24 @@ export async function runPipelineJob(
       });
     }
 
+    // A figure whose vision call failed has no caption and, until now, no signal anywhere (4 of 36 in a prod job).
+    // Same orchestrator-added pattern as figureStorageWarnings above.
+    const captionFailedIds = ((doc.figures ?? []) as LeveledFigure[])
+      .filter((figure) => figure.caption_status === 'vision_failed')
+      .map((figure) => figure.id);
+    const figureCaptionWarnings: WarningRecord[] =
+      captionFailedIds.length > 0
+        ? [
+            {
+              kind: 'figure_caption_failed',
+              severity: 'needs_review',
+              nodeIds: [],
+              detail: { figureIds: captionFailedIds },
+              raw: `${captionFailedIds.length} figure(s) could not be described by the vision model and have no caption: ${captionFailedIds.join(', ')}`,
+            },
+          ]
+        : [];
+
     // Captions/names are already here -- no ingestion/`/level` change
     // needed. 1-based index by array position matches the sequential
     // order main.py's per-request vision-call counter narrates figures
@@ -1099,6 +1119,7 @@ export async function runPipelineJob(
           ),
           ...verificationWarnings,
           ...figureStorageWarnings,
+          ...figureCaptionWarnings,
           ...primerWarnings,
         ] as any,
         kbCitations: (tree.kb_citations ?? []).map((c) => ({

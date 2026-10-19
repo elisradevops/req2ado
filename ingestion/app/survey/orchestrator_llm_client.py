@@ -1489,6 +1489,9 @@ class OrchestratorLlmClient:
             system_prompt, document_text[:_CHECKLIST_EXTRACTION_MAX_CHARS],
             schema=checklist_extraction_schema(), max_tokens=2000, user_id=user_id,
         )
+        # The schema asks for {"categories": [...]}; a model that still answers with the bare array is accepted.
+        if isinstance(parsed, dict) and isinstance(parsed.get("categories"), list):
+            parsed = parsed["categories"]
         if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
             raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
         return self._sanitize_checklist(parsed)

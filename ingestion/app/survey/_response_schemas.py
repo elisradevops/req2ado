@@ -344,15 +344,20 @@ def figure_table_mapping_schema() -> dict:
 
 
 def checklist_extraction_schema() -> dict:
-    """extract_quality_checklist (app.kb.checklist_extraction): a plain
-    unbounded array of strings -- the document's own quality-checklist
-    category/question names, or an empty array when none exists. No
-    minItems/maxItems -- same "unbounded array avoids Ollama's expensive
-    bounded-repetition GBNF grammar" reasoning as section_analysis_schema's
-    own 'nodes' array (see this module's header docstring)."""
+    """extract_quality_checklist (app.kb.checklist_extraction): an object with one unbounded 'categories' array of
+    strings -- the document's own quality-checklist category/question names, or an empty array when none exists.
+    The array is wrapped because Azure OpenAI strict mode refuses a root that is not an object ("schema must be a
+    JSON Schema of 'type: object', got 'type: array'" on every GPT call); the client unwraps it. No minItems/
+    maxItems -- same "unbounded array avoids Ollama's expensive bounded-repetition GBNF grammar" reasoning as
+    section_analysis_schema's own 'nodes' array (see this module's header docstring)."""
     return {
         "name": "quality_checklist",
-        "schema": {"type": "array", "items": {"type": "string"}},
+        "schema": {
+            "type": "object",
+            "properties": {"categories": {"type": "array", "items": {"type": "string"}}},
+            "required": ["categories"],
+            "additionalProperties": False,
+        },
     }
 
 

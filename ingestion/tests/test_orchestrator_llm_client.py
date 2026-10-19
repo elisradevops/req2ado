@@ -296,6 +296,22 @@ def test_extract_quality_checklist_parses_a_real_list() -> None:
     assert result == ["Necessary", "Unambiguous", "Verifiable"]
 
 
+def test_extract_quality_checklist_reads_the_object_the_schema_asks_for() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"categories": ["Necessary", "Unambiguous"]})})
+    assert client.extract_quality_checklist("doc") == ["Necessary", "Unambiguous"]
+    client._transport = _mock_transport({"content": json.dumps({"categories": []})})
+    assert client.extract_quality_checklist("doc") == []
+
+
+def test_the_checklist_schema_has_an_object_root_for_azure_strict_mode() -> None:
+    from app.survey._response_schemas import checklist_extraction_schema
+
+    schema = checklist_extraction_schema()["schema"]
+    assert schema["type"] == "object" and schema["required"] == ["categories"]
+    assert _strict_violations(schema) == []
+
+
 def test_extract_quality_checklist_returns_empty_list_when_document_has_no_checklist() -> None:
     client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
     client._transport = _mock_transport({"content": "[]"})
