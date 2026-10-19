@@ -22,6 +22,24 @@ vi.mock('../hooks/useChatSocket', async () => {
   return { ...actual, useChatSocket: vi.fn() };
 });
 
+/**
+ * Opens a tree node's detail dialog. A single click can be lost on a loaded CI runner (failed CI runs show the row
+ * unselected and no dialog, i.e. the page never saw the click), and no wait helps a click that did not happen. So the
+ * click is repeated until the dialog is there.
+ */
+async function openNodeDetails(
+  userEvent: { click: (element: Element) => Promise<void> },
+  label: string | RegExp,
+): Promise<void> {
+  await waitFor(
+    async () => {
+      if (!screen.queryByRole('dialog')) await userEvent.click(screen.getByText(label));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    },
+    { timeout: 8000 },
+  );
+}
+
 function renderAt(id: string) {
   // Wrapped in ToastProvider matching App.tsx's real composition -- the
   // diff tree's NodeDetailPanel renders ChatPanel (and, since Fix D, calls
@@ -86,7 +104,7 @@ describe('JobDetail', () => {
     expect(screen.queryByText(/select a node/i)).not.toBeInTheDocument();
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByText('Root'));
+    await openNodeDetails(userEvent, 'Root');
     expect(await screen.findAllByText('Root')).not.toHaveLength(0);
   });
 
@@ -121,7 +139,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Req Title')).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByText('Req Title'));
+    await openNodeDetails(userEvent, 'Req Title');
 
     // findByRole (async), not getByRole (sync) -- same race as the second
     // Edit click below: the node-detail-panel render triggered by selecting
@@ -228,7 +246,7 @@ describe('JobDetail', () => {
       const { default: userEvent } = await import('@testing-library/user-event');
 
       await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
-      await userEvent.click(screen.getByText('Affected one'));
+      await openNodeDetails(userEvent, 'Affected one');
 
       const note = await screen.findByRole('note');
       expect(note).toHaveTextContent('Low grounding: possible fabrication.');
@@ -298,7 +316,7 @@ describe('JobDetail', () => {
         await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
         const { default: userEvent } = await import('@testing-library/user-event');
         await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
-        await userEvent.click(screen.getByText('Affected one'));
+        await openNodeDetails(userEvent, 'Affected one');
 
         await userEvent.click(await screen.findByRole('button', { name: 'Mark reviewed and next' }));
 
@@ -316,7 +334,7 @@ describe('JobDetail', () => {
         await waitFor(() => expect(screen.getByText('Untouched')).toBeInTheDocument());
         const { default: userEvent } = await import('@testing-library/user-event');
         await userEvent.click(screen.getByRole('button', { name: 'Review in tree' }));
-        await userEvent.click(screen.getByText('Affected one'));
+        await openNodeDetails(userEvent, 'Affected one');
         await userEvent.click(await screen.findByRole('button', { name: 'Mark reviewed and next' }));
         await userEvent.click(await screen.findByRole('button', { name: 'Mark reviewed and next' }));
 
@@ -522,18 +540,9 @@ describe('JobDetail', () => {
     const { default: userEvent } = await import('@testing-library/user-event');
     expect(screen.getByText('Trace links failed to write to Azure DevOps')).toBeInTheDocument();
 
-    // Open the node's detail dialog. Under CI contention a click can be lost when the tree row re-renders
-    // between pointer-down and pointer-up (it failed on main after passing on its PR, with the dialog never
-    // opening), so the click is repeated until the dialog is there rather than waiting longer for one that
-    // never happened. The retry button is looked up in the same loop, inside the widened window.
     const retryName = /retry writing "covers" trace link/i;
-    await waitFor(
-      async () => {
-        if (!screen.queryByRole('dialog')) await userEvent.click(screen.getByText('Root'));
-        expect(screen.getByRole('button', { name: retryName })).toBeInTheDocument();
-      },
-      { timeout: 8000 },
-    );
+    await openNodeDetails(userEvent, 'Root');
+    await waitFor(() => expect(screen.getByRole('button', { name: retryName })).toBeInTheDocument(), { timeout: 8000 });
     const retryButton = screen.getByRole('button', { name: retryName });
     await userEvent.click(retryButton);
 
