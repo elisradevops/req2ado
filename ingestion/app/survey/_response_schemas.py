@@ -529,6 +529,7 @@ def distill_title_schema() -> dict:
                 "title": {"type": "string"},
             },
             "required": ["title"],
+            "additionalProperties": False,
         },
     }
 

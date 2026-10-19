@@ -1150,22 +1150,11 @@ def test_assign_leftover_roots_still_accepts_the_older_map_answer() -> None:
     assert result["assignments"] == {"n2": "regroup_synth_group_0"}
 
 
-def _strict_violations(node: object, path: str = "") -> list[str]:
-    """Vendor strict-mode rules: every object closed and fully required, no free-form object."""
-    found: list[str] = []
-    if isinstance(node, dict):
-        if node.get("type") == "object":
-            props = node.get("properties")
-            if props is None or node.get("additionalProperties") is not False:
-                found.append(f"{path}: object not closed")
-            elif set(node.get("required", [])) != set(props):
-                found.append(f"{path}: not every property required")
-        for key, child in node.items():
-            found += _strict_violations(child, f"{path}/{key}")
-    elif isinstance(node, list):
-        for i, child in enumerate(node):
-            found += _strict_violations(child, f"{path}[{i}]")
-    return found
+def _strict_violations(schema: dict) -> list[str]:
+    """The shared portable-schema rules (app.survey.portable_schema), one definition for every schema test."""
+    from app.survey.portable_schema import portable_schema_violations
+
+    return portable_schema_violations(schema)
 
 
 def test_post_scoring_schemas_follow_the_strict_vendor_rules() -> None:
