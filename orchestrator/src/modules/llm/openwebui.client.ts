@@ -5,6 +5,7 @@ import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmSt
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { isModelHidden, parseModelHidePatterns } from './model-visibility';
 import { chatCompletionResponseSchema, errorMessageFromBody, modelsResponseSchema } from './openwebui-api';
+import { seedConstraints } from './model-capabilities';
 import { modelFactsFromEntry } from './openwebui-model-entry';
 import { fetchWithRetry } from './retryWithBackoff';
 import {
@@ -156,6 +157,19 @@ export class OpenWebUiClient implements LlmClient {
     }
   >();
 
+  /** What is known about a model before its first call: what the capability table says about its family, then what was learned. */
+  private learnedFor(model: string) {
+    let known = this.modelConstraints.get(model);
+    if (!known) {
+      const seed = seedConstraints(model);
+      if (seed) {
+        this.modelConstraints.set(model, seed);
+        known = seed;
+      }
+    }
+    return known;
+  }
+
   private rememberConstraint(model: string, update: LearnedUpdate): void {
     const current = this.modelConstraints.get(model) ?? { rejected: new Set<string>() };
     if (update.temperature !== undefined) current.temperature = update.temperature;
@@ -271,7 +285,7 @@ export class OpenWebUiClient implements LlmClient {
       hasSchema: opts?.responseSchema !== undefined,
       requestChars: messageChars(outboundMessages),
       droppable: CHAT_DROPPABLE,
-      learned: this.modelConstraints.get(chatModel),
+      learned: this.learnedFor(chatModel),
       remember: (update) => this.rememberConstraint(chatModel, update),
       hasTools: opts?.tools !== undefined,
       send: async (adaptation) => toResult(await this.openai.chat.completions.create(buildParams(adaptation)), adaptation),
@@ -419,7 +433,7 @@ export class OpenWebUiClient implements LlmClient {
       hasSchema: opts?.responseSchema !== undefined,
       requestChars: messageChars(outboundMessages),
       droppable: CHAT_DROPPABLE,
-      learned: this.modelConstraints.get(chatModel),
+      learned: this.learnedFor(chatModel),
       remember: (update) => this.rememberConstraint(chatModel, update),
       send: async (adaptation) => {
         const created = await this.openai.chat.completions.create(buildParams(adaptation));
@@ -961,7 +975,7 @@ export class OpenWebUiClient implements LlmClient {
       model,
       hasSchema: opts?.responseSchema !== undefined,
       droppable: VISION_DROPPABLE,
-      learned: this.modelConstraints.get(model),
+      learned: this.learnedFor(model),
       remember: (update) => this.rememberConstraint(model, update),
       terminal: (err) => {
         throw err;
@@ -1073,7 +1087,7 @@ export class OpenWebUiClient implements LlmClient {
       hasSchema: false,
       requestChars: outboundContent.length,
       droppable: FILE_CONTEXT_DROPPABLE,
-      learned: this.modelConstraints.get(model),
+      learned: this.learnedFor(model),
       remember: (update) => this.rememberConstraint(model, update),
       terminal: (err) => {
         const { status, message } = summarizeUpstreamError(err);

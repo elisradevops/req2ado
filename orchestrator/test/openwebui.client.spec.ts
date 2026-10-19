@@ -1,6 +1,14 @@
 import OpenAI from 'openai';
 import { OpenWebUiClient, type OpenWebUiClientConfig } from '../src/modules/llm/openwebui.client';
 
+// These tests exercise the LEARNING loop (what a model's refusal teaches the client), so they use real model names
+// without the capability table's head start; the table itself is covered by model-capabilities.spec.ts.
+jest.mock('../src/modules/llm/model-capabilities', () => ({
+  ...jest.requireActual('../src/modules/llm/model-capabilities'),
+  seedConstraints: () => undefined,
+}));
+
+
 describe('OpenWebUiClient', () => {
   const config = {
     LLM_BASE_URL: 'http://localhost:11434/v1',

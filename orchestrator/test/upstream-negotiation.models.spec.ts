@@ -18,6 +18,14 @@ import {
   type Adaptation,
 } from '../src/modules/llm/upstream-negotiation';
 
+// These tests exercise the LEARNING loop (what a model's refusal teaches the client), so they use real model names
+// without the capability table's head start; the table itself is covered by model-capabilities.spec.ts.
+jest.mock('../src/modules/llm/model-capabilities', () => ({
+  ...jest.requireActual('../src/modules/llm/model-capabilities'),
+  seedConstraints: () => undefined,
+}));
+
+
 // Newer model families (GPT-5.x/6 reasoning models on Azure OpenAI, Claude 5) differ in which parameters they
 // accept. These tests use the error wordings the vendors document; the parsers must be tolerant about phrasing
 // and the client must remember what a model taught it.

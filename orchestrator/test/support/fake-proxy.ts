@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { capabilitiesFor } from '../../src/modules/llm/model-capabilities';
 
 // A fake of the LLM proxy as the app sees it (Open WebUI in front of LiteLLM in front of Azure/Anthropic): a real HTTP
 // server, so the client under test runs its real fetch/SDK path. What each model refuses, and the exact error texts, come
@@ -153,5 +154,19 @@ export async function startFakeProxy(models: Record<string, ProxyBehavior>): Pro
     url: `http://127.0.0.1:${port}`,
     requests,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+/** The proxy behaviour the capability table describes for a model, or null for a model the table does not know. */
+export function behaviorFromCapabilities(model: string): ProxyBehavior | null {
+  const capability = capabilitiesFor(model);
+  if (!capability) return null;
+  return {
+    tokenParam: capability.tokenParam === 'none' ? 'neither' : capability.tokenParam,
+    temperature: capability.temperature.mode === 'fixed' ? 'fixed-1' : 'any',
+    temperatureWording: capability.family.startsWith('claude') ? 'litellm-unsupported-params' : 'azure-unsupported-value',
+    ...(capability.outputCountsInContext && capability.contextTokens ? { contextWindow: capability.contextTokens } : {}),
+    toolsNeedReasoningNone: Boolean(capability.toolsRequireReasoningNoneFor && new RegExp(capability.toolsRequireReasoningNoneFor, 'i').test(model)),
+    schema: 'ok',
   };
 }

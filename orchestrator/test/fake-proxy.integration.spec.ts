@@ -42,13 +42,20 @@ afterEach(async () => {
 });
 
 describe('OpenWebUiClient against the fake proxy', () => {
-  it('Claude (temperature fixed at 1): a call at temperature 0 is retried at 1, and the next call starts at 1', async () => {
+  it('Claude (temperature fixed at 1): the table makes the very first call go out at 1', async () => {
     const client = clientFor('claude-opus-4-8');
     expect((await client.chat(user, { model: 'claude-opus-4-8', temperature: 0, maxTokens: 100 })).content).toBe('OK');
-    expect(hits('claude-opus-4-8').map((r) => r.body.temperature)).toEqual([0, 1]);
+    expect(hits('claude-opus-4-8').map((r) => r.body.temperature)).toEqual([1]);
+  });
 
-    await client.chat(user, { model: 'claude-opus-4-8', temperature: 0, maxTokens: 100 });
-    expect(hits('claude-opus-4-8').map((r) => r.body.temperature)).toEqual([0, 1, 1]);
+  it('a model the table does not know is learned from the refusal: retried at 1, and the next call starts at 1', async () => {
+    await proxy.close();
+    proxy = await startFakeProxy({ 'mystery-model-1': BEHAVIORS.claudeOpus });
+    const client = clientFor('mystery-model-1');
+    await client.chat(user, { model: 'mystery-model-1', temperature: 0, maxTokens: 100 });
+    expect(hits('mystery-model-1').map((r) => r.body.temperature)).toEqual([0, 1]);
+    await client.chat(user, { model: 'mystery-model-1', temperature: 0, maxTokens: 100 });
+    expect(hits('mystery-model-1').map((r) => r.body.temperature)).toEqual([0, 1, 1]);
   });
 
   it('GPT-5.x reasoning: max_tokens is switched to max_completion_tokens and temperature 0 to 1 in one call, both remembered', async () => {
