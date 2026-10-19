@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { Injectable, Logger } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import type { FolderChild, IngestionHttpClient, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CredentialVaultService, SHARED_OWNER_KEY } from '../auth/credential-vault.service';
@@ -68,6 +69,8 @@ export interface BrowseFolderEntry {
   // /kb/ingest-item without a share link for this specific file.
   downloadUrl: string | null;
 }
+
+const logger = new Logger('KbService');
 
 @Injectable()
 export class KbService {
@@ -174,6 +177,8 @@ export class KbService {
     }
     await this.ingestionClient.deleteDocument(document.userId, document.name, document.driveItemId);
     await this.prisma.ingestedDocument.delete({ where: { id } });
+    // An audit line for a destructive action: the file and a short hash of the user (for correlating events, not for identifying a person).
+    logger.log(`KB document removed: user=${createHash('sha256').update(document.userId).digest('hex').slice(0, 10)} file="${document.name}" id=${id}`);
     await this.profileScheduler?.schedule(document.userId);
     return document;
   }

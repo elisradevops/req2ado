@@ -96,3 +96,23 @@ describe('KbService schedules a profile rebuild after a change of the knowledge 
     expect(scheduler.schedule).toHaveBeenCalledWith('u1');
   });
 });
+
+
+describe('KbService audit trail', () => {
+  it('logs a removed document by file name and a hashed user, never the user identity', async () => {
+    const { Logger } = await import('@nestjs/common');
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const prisma = {
+      ingestedDocument: {
+        findUnique: jest.fn(async () => ({ id: 'row-1', userId: 'vstfs:///Framework/Identity/abc', name: 'a.pptx', driveItemId: 'd1' })),
+        delete: jest.fn(async () => undefined),
+      },
+    };
+    const service = new KbService(prisma as never, { deleteDocument: jest.fn() } as never, { get: jest.fn() } as never);
+    await service.deleteDocument('row-1', 'vstfs:///Framework/Identity/abc');
+    const line = String(log.mock.calls.map((c) => c[0]).find((m) => String(m).includes('KB document removed')));
+    expect(line).toContain('a.pptx');
+    expect(line).not.toContain('Identity/abc');
+    log.mockRestore();
+  });
+});

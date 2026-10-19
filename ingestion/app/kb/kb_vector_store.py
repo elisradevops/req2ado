@@ -277,6 +277,13 @@ class KbVectorStore:
             ids=["profile"], documents=[profile_json], embeddings=[[0.0]], metadatas=[{"profile_version": version}],
         )
 
+    def chunk_count(self, user_id: str) -> int:
+        """How many chunks this user's KB holds (0 when there is none); for the audit line of a destructive action."""
+        try:
+            return int(self._get_collection(user_id).count())
+        except Exception:  # noqa: BLE001 -- only an audit number
+            return 0
+
     def purge_user(self, user_id: str) -> None:
         """Irreversibly drops this user_id's entire KB collection -- the
         admin/CLI remediation for a deleted-and-recreated ADO account whose

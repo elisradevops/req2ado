@@ -450,6 +450,8 @@ export class IngestionHttpClient {
   async purgeUserKb(userId: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/kb/collection?user_id=${encodeURIComponent(userId)}`, {
       method: 'DELETE',
+      // Ingestion refuses to drop a whole collection unless the exact user id is repeated here.
+      headers: { 'X-Req2Ado-Confirm-Purge': userId },
     });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /kb/collection delete request failed: `);

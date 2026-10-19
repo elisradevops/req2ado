@@ -419,6 +419,8 @@ describe('IngestionHttpClient', () => {
     const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/kb/collection?user_id=vstfs%3A%2F%2F%2FFramework%2FIdentity%2Fold-user');
     expect(options.method).toBe('DELETE');
+    // the destructive route needs the exact user id repeated as a confirmation
+    expect(options.headers['X-Req2Ado-Confirm-Purge']).toBe('vstfs:///Framework/Identity/old-user');
   });
 
   it('throws on a non-ok purgeUserKb response', async () => {

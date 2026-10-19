@@ -2215,11 +2215,20 @@ async def kb_delete_document(user_id: str, source_file: str, source_id: str) -> 
     # remove. run_in_threadpool: same reasoning as every other route here --
     # Chroma's client is synchronous I/O, must not block the event loop.
     await run_in_threadpool(_kb_vector_store.delete_file_chunks, user_id, source_file, source_id)
+    # An audit line for a destructive action (a KB once vanished with no trace of what removed it). The user is shown as a
+    # short hash: the line is for correlating events, not for identifying a person.
+    logger.info("KB document removed: user=%s file=%r source_id=%s", _audit_user(user_id), source_file, source_id)
     return {"ok": True}
 
 
+def _audit_user(user_id: str) -> str:
+    return hashlib.sha256(user_id.encode()).hexdigest()[:10]
+
+
 @app.delete("/kb/collection")
-async def kb_purge_collection(user_id: str) -> dict[str, bool]:
+async def kb_purge_collection(
+    user_id: str, x_confirm_purge: str | None = Header(default=None, alias="X-Req2Ado-Confirm-Purge"),
+) -> dict[str, bool]:
     # Admin/CLI-only remediation (see docs/runbook.md) for a deleted-and-
     # recreated ADO account whose new session resolves to the same
     # descriptor-derived user_id as the old one -- KbVectorStore.purge_user
@@ -2233,7 +2242,13 @@ async def kb_purge_collection(user_id: str) -> dict[str, bool]:
     # collided with a real descriptor) drop the wrong user's KB.
     if not user_id.strip():
         raise HTTPException(status_code=400, detail="user_id is required")
+    # The whole collection is dropped, irreversibly: the caller must repeat the exact user id in a confirmation header, so a
+    # bare or mistaken request (a script, a retry, a wrong URL) cannot delete a knowledge base.
+    if x_confirm_purge != user_id:
+        raise HTTPException(status_code=400, detail="Purging a KB needs X-Req2Ado-Confirm-Purge set to the user id")
+    chunks = await run_in_threadpool(_kb_vector_store.chunk_count, user_id)
     await run_in_threadpool(_kb_vector_store.purge_user, user_id)
+    logger.warning("KB collection purged: user=%s chunks=%d", _audit_user(user_id), chunks)
     return {"ok": True}
 
 
