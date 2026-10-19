@@ -93,3 +93,18 @@ def test_describe_exception_never_carries_a_user_identity() -> None:
     assert redact_identity("vstfs:///Framework/Identity/abc-123 failed") == "[user] failed"
     assert redact_identity("a normal message about the Receiver") == "a normal message about the Receiver"
     assert redact_identity("") == ""
+
+
+def test_ingest_reads_the_user_from_the_header_so_figure_captioning_still_runs() -> None:
+    # Review finding: the orchestrator sends the user only in a header; /ingest read it from the query alone, so vision (which
+    # needs a user to pick a model credential) silently stayed off and no figure was captioned.
+    files = {"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")}
+    by_header = client.post("/ingest?mode=survey", files=files, headers={"X-Req2Ado-User-Id": "user-1"})
+    assert by_header.status_code == 200, by_header.text
+    assert by_header.json()["vision_active"] is True
+
+    by_query = client.post("/ingest?mode=survey&user_id=user-1", files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")})
+    assert by_query.json()["vision_active"] is True  # the old form still works for one release
+
+    neither = client.post("/ingest?mode=survey", files={"file": ("x.txt", b"The receiver shall lock.\n", "text/plain")})
+    assert neither.json()["vision_active"] is False

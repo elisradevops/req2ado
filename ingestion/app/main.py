@@ -1116,7 +1116,11 @@ async def ingest(
     # model catalog check). Only meaningful together with skip_vision=true;
     # surfaced on CanonicalDoc.vision_skip_reason for the job warning.
     vision_skip_reason: str | None = None,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+    x_primer_context: str | None = Header(default=None, alias=PRIMER_HEADER),
 ) -> CanonicalDoc:
+    user_id = resolve_user_id(user_id, x_user_id)
+    primer_context = resolve_primer_context(primer_context, x_primer_context)
     # skip_vision: /jobs/preview (orchestrator) only needs blockCount/
     # sectionCount/fileType to show the user before they even pick a mode --
     # it never reads figure captions. Without this, every embedded image in
