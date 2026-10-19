@@ -126,7 +126,18 @@ export class ModelHealthService implements OnModuleInit, OnModuleDestroy {
       return undefined;
     }
     const previous = (await this.verdicts([data.model])).get(data.model);
-    const verdict = await probeModel(client, data.model, { now: this.deps.now });
+    const outcome = await probeModel(client, data.model, { now: this.deps.now });
+    if (outcome.status === 'inconclusive') {
+      // Rate limit, overload or timeout says nothing about the model: keep what is known. A model that had no verdict
+      // stays listed; one that had a verdict keeps it, with a fresh time so it is probed again after its normal wait.
+      logger.warn(`model health: model=${data.model} probe inconclusive reason=${outcome.reason}; verdict unchanged`);
+      const kept: ModelVerdict = previous
+        ? { ...previous, checkedAt: outcome.checkedAt }
+        : { status: 'unknown', checkedAt: outcome.checkedAt, reason: outcome.reason };
+      await this.deps.store.set(this.key(data.model), JSON.stringify(kept), 'EX', STORE_RETENTION_SECONDS);
+      return kept;
+    }
+    const verdict = outcome;
     await this.deps.store.set(this.key(data.model), JSON.stringify(verdict), 'EX', STORE_RETENTION_SECONDS);
     if (previous?.status !== verdict.status) {
       logger.log(`model health: model=${data.model} ${previous?.status ?? 'unknown'} -> ${verdict.status}${verdict.reason ? ` reason=${verdict.reason}` : ''}`);

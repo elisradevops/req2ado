@@ -1825,6 +1825,49 @@ describe('runPipelineJob', () => {
     );
   });
 
+  it('persists a figure_caption_failed warning naming the figures whose vision call failed', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({
+      blocks: [],
+      figures: [
+        { id: 'f1', caption: 'A diagram.', name: null, caption_status: null },
+        { id: 'f2', caption: null, name: null, caption_status: 'vision_failed' },
+        { id: 'f3', caption: null, name: null, caption_status: 'insignificant' },
+        { id: 'f4', caption: null, name: null, caption_status: 'vision_failed' },
+      ],
+    });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.job.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          warnings: [
+            expect.objectContaining({
+              kind: 'figure_caption_failed',
+              severity: 'needs_review',
+              detail: { figureIds: ['f2', 'f4'] },
+            }),
+          ],
+        }),
+      }),
+    );
+  });
+
   it('never fails the job when the stale-mapping cleanup call itself throws', async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({ nodes: [] });

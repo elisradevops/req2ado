@@ -333,6 +333,15 @@ export const KIND_META: Record<string, KindMeta> = {
     chip: 'Unverified',
     unit: ['batch', 'batches'],
   },
+  figure_caption_failed: {
+    title: 'Figures without a description',
+    group: 'review',
+    short: 'The vision model could not describe some figures.',
+    means: 'These figures have no caption, so items that rely on them were written without that detail.',
+    todo: 'Open the figures in the source document and add what matters to the affected items, or resubmit the job.',
+    chip: 'No caption',
+    unit: ['figure', 'figures'],
+  },
   primer_unavailable: {
     title: 'Document overview unavailable',
     group: 'info',
