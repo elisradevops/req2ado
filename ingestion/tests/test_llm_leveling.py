@@ -120,7 +120,7 @@ _DEFAULT_NODES = [
 # _DEFAULT_NODES' n0/n1).
 _SIBLING_NODES = [
     {"temp_id": "s0", "type": "Feature", "parent_temp_id": None, "title": "Root", "text": "Root feature.", "tags": []},
-    {"temp_id": "s1", "type": "Requirement", "parent_temp_id": "s0", "title": "Sibling A", "text": "Requirement A.", "tags": []},
+    {"temp_id": "s1", "type": "Requirement", "parent_temp_id": "s0", "title": "Sibling A", "text": "Requirement A, see Sibling B.", "tags": []},
     {"temp_id": "s2", "type": "Requirement", "parent_temp_id": "s0", "title": "Sibling B", "text": "Requirement B.", "tags": []},
 ]
 
@@ -4170,7 +4170,7 @@ def test_build_survey_tree_skips_a_non_object_trace_link_entry_without_crashing(
     # philosophy.
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "Requirement A"},
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "see Sibling B"},
             "a malformed bare string entry",
         ]
     )
@@ -4351,7 +4351,7 @@ def test_build_survey_tree_keeps_a_trace_link_between_non_hierarchy_related_node
     # parent) are a legitimate trace/coverage relationship and must survive.
     catalog = [{"reference_name": "Microsoft.VSTS.Common.Affects-Forward", "name": "Affects", "semantic_hint": None}]
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "s1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "s2", "evidence_quote": "Requirement A"}]
+        results=[{"source_node_id": "s1", "reference_name": "Microsoft.VSTS.Common.Affects-Forward", "target_ref": "s2", "evidence_quote": "see Sibling B"}]
     )
     tree = build_survey_tree(
         _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
@@ -4386,7 +4386,7 @@ def test_build_survey_tree_degrades_to_empty_trace_links_when_inference_raises()
 
 
 def _trace_nodes(count: int) -> list[WorkItemNode]:
-    return [_req_node(f"n{i}", f"Requirement number {i} shall do thing {i}.") for i in range(count)]
+    return [_req_node(f"n{i}", f"Requirement number {i} shall do thing {i} per REQ-9.") for i in range(count)]
 
 
 class _ChunkRecordingTraceClient:
@@ -4408,7 +4408,7 @@ class _ChunkRecordingTraceClient:
             )
         return [
             {"source_node_id": ids[0], "target_ref": "REQ-9", "reference_name": "System.LinkTypes.Related",
-             "evidence_quote": "Requirement"}
+             "evidence_quote": "per REQ-9"}
         ] if self._links is None else self._links
 
 
@@ -4499,7 +4499,7 @@ def test_build_survey_tree_resolves_intra_job_link_target() -> None:
     # pair -- see _SIBLING_NODES' own comment for why this test can't use
     # _DEFAULT_NODES' n0/n1 anymore.
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "Requirement A"}]
+        results=[{"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "see Sibling B"}]
     )
     tree = build_survey_tree(
         _small_doc(), FakeSectionAnalysisClient(nodes=_SIBLING_NODES),
@@ -4515,10 +4515,14 @@ def test_build_survey_tree_resolves_intra_job_link_target() -> None:
 
 def test_build_survey_tree_treats_a_non_node_id_target_ref_as_cross_job_customer_id() -> None:
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "n1", "target_ref": "REQ-SYS-012", "reference_name": "Elisra.CoveredBy-Reverse", "evidence_quote": "support HDR"}]
+        results=[{"source_node_id": "n1", "target_ref": "REQ-SYS-012", "reference_name": "Elisra.CoveredBy-Reverse", "evidence_quote": "support HDR per REQ-SYS-012"}]
     )
+    nodes = [
+        {**_DEFAULT_NODES[0]},
+        {**_DEFAULT_NODES[1], "text": "The display shall support HDR per REQ-SYS-012."},
+    ]
     tree = build_survey_tree(
-        _small_doc(), FakeSectionAnalysisClient(),
+        _small_doc(), FakeSectionAnalysisClient(nodes=nodes),
         link_type_client=fake_client, link_type_catalog=[],
     )
     link = tree.trace_links[0]
@@ -4530,8 +4534,8 @@ def test_build_survey_tree_treats_a_non_node_id_target_ref_as_cross_job_customer
 def test_build_survey_tree_drops_a_link_with_a_reference_name_not_in_the_catalog() -> None:
     fake_client = FakeTraceLinkInferenceClient(
         results=[
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "Hallucinated.NotReal", "evidence_quote": "Requirement A"},
-            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "Requirement A"},
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "Hallucinated.NotReal", "evidence_quote": "see Sibling B"},
+            {"source_node_id": "s1", "target_ref": "s2", "reference_name": "System.LinkTypes.Related", "evidence_quote": "see Sibling B"},
         ]
     )
     catalog = [{"reference_name": "System.LinkTypes.Related", "name": "Related", "semantic_hint": None}]
@@ -6129,11 +6133,13 @@ def test_build_survey_tree_infers_trace_links_on_the_pure_deterministic_path() -
     # (root -> its own child), which the parent/child redundancy filter
     # below now correctly drops on its own merits.
     fake_client = FakeTraceLinkInferenceClient(
-        results=[{"source_node_id": "det0_h1_1", "reference_name": "Rel", "target_ref": "det0_h1_2", "evidence_quote": "do A"}]
+        results=[{"source_node_id": "det0_h1_1", "reference_name": "Rel", "target_ref": "det0_h1_2", "evidence_quote": "The system shall do B"}]
     )
     catalog = [{"reference_name": "Rel", "name": "Related", "semantic_hint": None}]
+    doc = _structural_heading_doc()
+    doc.blocks[1] = doc.blocks[1].model_copy(update={"text": "The system shall do A per The system shall do B."})
     tree = build_survey_tree(
-        _structural_heading_doc(), FakeSectionAnalysisClient(),
+        doc, FakeSectionAnalysisClient(),
         link_type_client=fake_client, link_type_catalog=catalog,
     )
     assert len(fake_client.calls) == 1
