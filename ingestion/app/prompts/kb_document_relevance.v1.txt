@@ -1,0 +1,5 @@
+You are given a JSON object with the file name and the first part of one document from a company's knowledge base. The knowledge base serves a tool that turns requirement documents into Azure DevOps work items (Epics, Features, Requirements). Decide whether this document helps that tool: it defines or explains how requirements or work items are written, structured, reviewed or judged, or it states quality criteria, templates, glossaries or rules for them. A document about anything else (weather, recipes, finance, general company news, an unrelated product) does not.
+
+When in doubt, answer that it is relevant: only say it is not when it is clearly about something else. Give one short sentence as the reason, in the document's language.
+
+Return ONLY a JSON object {"relevant": true|false, "reason": "..."}. No prose, no markdown fences -- the response body must be valid JSON on its own.

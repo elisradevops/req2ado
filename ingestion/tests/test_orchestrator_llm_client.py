@@ -3924,3 +3924,53 @@ def test_the_group_naming_schema_follows_the_strict_vendor_rules() -> None:
     from app.survey._response_schemas import root_group_names_schema
 
     assert _strict_violations(root_group_names_schema()["schema"]) == []
+
+
+def test_judge_kb_document_relevance_sends_the_name_and_excerpt_and_reads_the_verdict() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"relevant": False, "reason": "A recipe."})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    verdict = client.judge_kb_document_relevance("recipe.pdf", "Mix flour and water.")
+
+    assert verdict == {"relevant": False, "reason": "A recipe."}
+    user = json.loads(captured["body"]["messages"][1]["content"])
+    assert user == {"file_name": "recipe.pdf", "excerpt": "Mix flour and water."}
+    assert captured["body"]["responseSchema"]["name"] == "kb_document_relevance"
+
+
+def test_judge_kb_document_relevance_rejects_a_malformed_answer() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"relevant": "maybe"})})
+    with pytest.raises(ValueError):
+        client.judge_kb_document_relevance("a.pdf", "text")
+
+
+def test_extract_kb_document_profile_keeps_only_well_formed_entries() -> None:
+    answer = {
+        "categories": [{"name": "Testable", "pass_condition": "Can be verified"}, {"name": "", "pass_condition": "x"}, "junk"],
+        "type_definitions": [{"item_type": "requirement", "text": "A statement of need"}, {"item_type": "story", "text": "no"}],
+        "rules": ["One requirement per statement", "", 7],
+        "glossary": [{"term": "SRS", "definition": "software requirements specification"}, {"term": "", "definition": "x"}],
+    }
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(answer)})
+    result = client.extract_kb_document_profile("HowTo.pptx", "window text")
+
+    assert result["categories"] == [{"name": "Testable", "pass_condition": "Can be verified"}]
+    assert result["type_definitions"] == [{"item_type": "requirement", "text": "A statement of need"}]
+    assert result["rules"] == ["One requirement per statement"]
+    assert result["glossary"] == [{"term": "SRS", "definition": "software requirements specification"}]
+
+
+def test_extract_kb_document_profile_accepts_nothing_found_and_raises_on_a_non_object() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"categories": [], "type_definitions": [], "rules": [], "glossary": []})})
+    assert client.extract_kb_document_profile("a.pptx", "t") == {"categories": [], "type_definitions": [], "rules": [], "glossary": []}
+    client._transport = _mock_transport({"content": json.dumps(["x"])})
+    with pytest.raises(ValueError):
+        client.extract_kb_document_profile("a.pptx", "t")

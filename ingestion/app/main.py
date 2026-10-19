@@ -33,6 +33,7 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
+from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile
 from app.kb.retrieval import retrieve_context
 from app.leveling.document_map import publish_document_map
 from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
@@ -195,6 +196,15 @@ _kb_vector_store = KbVectorStore(
     host=settings.chroma_host,
     port=settings.chroma_port,
 )
+# The per-user KB profile (what the whole knowledge base says about defining, writing and judging work items), stored
+# beside the user's KB chunks.
+_kb_profile_store = ChromaProfileStore(_kb_vector_store)
+
+
+def _make_profile_client(model: str) -> OrchestratorLlmClient:
+    return OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer, model=model)
+
+
 # Gemma4 repetition-collapse mitigation (confirmed upstream bug,
 # ollama/ollama#15502) -- these are the Gemma4 team's own release-note-
 # recommended sampler settings, confirmed in ollama/ollama#15502 to reduce
@@ -2006,6 +2016,43 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     for area_path, items in items_by_area_path.items():
         _vector_store.upsert_many(items, area_path)
     return {"ok": True}
+
+
+class KbProfileRequest(BaseModel):
+    user_id: str
+    # The model that reads the documents; recorded in the profile (built_with) and part of its version, so changing the
+    # model rebuilds it and a rerun with the same model does not.
+    model: str
+
+
+def _profile_response(profile: KbProfile) -> dict:
+    return {
+        "version": profile.version,
+        "builtWith": profile.built_with,
+        "docsInKb": profile.docs_in_kb,
+        "docsContributing": profile.docs_contributing,
+        "profile": profile.model_dump(mode="json"),
+    }
+
+
+@app.post("/kb/profile")
+async def kb_build_profile(body: KbProfileRequest) -> dict:
+    """The user's KB profile: the stored one while their documents and the model are unchanged, otherwise rebuilt from
+    every document and stored. 404 when the user has no KB documents."""
+    profile = await run_in_threadpool(
+        ensure_profile, body.user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(body.model), model=body.model,
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No knowledge-base documents for this user")
+    return _profile_response(profile)
+
+
+@app.get("/kb/profile")
+async def kb_get_profile(user_id: str) -> dict:
+    profile = await run_in_threadpool(_kb_profile_store.get, user_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No stored KB profile for this user")
+    return _profile_response(profile)
 
 
 @app.post("/kb/ingest-url", response_model=IngestResult)

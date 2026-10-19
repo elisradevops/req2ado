@@ -21,6 +21,8 @@ from app.survey._response_schemas import (
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
     leftover_assignment_schema,
+    kb_document_profile_schema,
+    kb_document_relevance_schema,
     root_group_names_schema,
     root_grouping_schema,
     section_analysis_schema,
@@ -1894,6 +1896,43 @@ class OrchestratorLlmClient:
         return self._chat_json(
             system_prompt, json.dumps(titles_by_id), schema=root_grouping_schema(), user_id=user_id,
         )
+
+    def judge_kb_document_relevance(self, name: str, excerpt: str, user_id: str | None = None) -> dict:
+        """Backs the KB profile's relevance step (app.kb.profile): does this document help create work-item hierarchies?
+        Returns {"relevant": bool, "reason": str}; raises ValueError on an answer without a boolean verdict."""
+        system_prompt = load_prompt("kb_document_relevance")
+        parsed = self._chat_json(
+            system_prompt, json.dumps({"file_name": name, "excerpt": excerpt}, ensure_ascii=False),
+            schema=kb_document_relevance_schema(), max_tokens=400, user_id=user_id,
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("relevant"), bool):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        return {"relevant": parsed["relevant"], "reason": str(parsed.get("reason") or "")}
+
+    def extract_kb_document_profile(self, name: str, window_text: str, user_id: str | None = None) -> dict:
+        """Backs the KB profile's map step: what one window of a KB document states about quality categories, type
+        definitions, writing rules and glossary terms. Malformed entries are dropped, never trusted."""
+        system_prompt = load_prompt("extract_kb_document_profile")
+        parsed = self._chat_json(
+            system_prompt, json.dumps({"file_name": name, "text": window_text}, ensure_ascii=False),
+            schema=kb_document_profile_schema(), max_tokens=4000, user_id=user_id,
+        )
+        if not isinstance(parsed, dict):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+
+        def objects(key: str, *fields: str) -> list[dict]:
+            return [
+                {f: str(item[f]) for f in fields}
+                for item in (parsed.get(key) or [])
+                if isinstance(item, dict) and all(isinstance(item.get(f), str) for f in fields)
+            ]
+
+        return {
+            "categories": [c for c in objects("categories", "name", "pass_condition") if c["name"].strip()],
+            "type_definitions": [d for d in objects("type_definitions", "item_type", "text") if d["item_type"] in ("epic", "feature", "requirement") and d["text"].strip()],
+            "rules": [r for r in (parsed.get("rules") or []) if isinstance(r, str) and r.strip()],
+            "glossary": [g for g in objects("glossary", "term", "definition") if g["term"].strip()],
+        }
 
     def name_root_groups(self, titles_by_group_id: dict[str, list[str]], user_id: str | None = None) -> dict[str, str]:
         """Names groups that were already decided by a fixed rule (root_regrouping.deterministic_root_groups). The
