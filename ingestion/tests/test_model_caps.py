@@ -242,3 +242,24 @@ def test_a_client_sends_its_models_budget_on_every_keyed_call() -> None:
         client._transport = httpx.MockTransport(handler)
         client.title_and_tags_for_rows({"r1": "The unit shall do X."})
         assert seen[0]["maxTokens"] == expected, model
+
+
+class _ListingCapsClient:
+    """What the orchestrator now answers for a Claude entry of the model listing (captured shape, 19 Oct)."""
+
+    def show_model(self, model: str, user_id: str | None = None) -> dict:
+        return {"context_length": 1_000_000, "capabilities": [], "max_output_tokens": 64_000, "source": "litellm"}
+
+
+def test_the_stated_listing_limits_size_sonnet_exactly_like_the_family_rule_so_nothing_shifts() -> None:
+    from_listing = _resolve_caps("claude-sonnet-4-6", caps_client=_ListingCapsClient())
+    _LIVE_MODEL_CAPS_CACHE.clear()
+    _LIVE_MAX_OUTPUT.clear()
+    from_family = _resolve_caps("claude-sonnet-4-6", caps_client=None)
+    assert from_listing == from_family == _ModelCaps(100_000, 150_000, 150_000, False)
+
+
+def test_the_stated_output_ceiling_is_remembered_and_only_ever_lowers_the_answer_budget() -> None:
+    _resolve_caps("claude-sonnet-4-6", caps_client=_ListingCapsClient())
+    assert _LIVE_MAX_OUTPUT["claude-sonnet-4-6"] == 64_000
+    assert output_token_budget("claude-sonnet-4-6") == DEFAULT_OUTPUT_TOKEN_BUDGET  # 64,000 is above the default

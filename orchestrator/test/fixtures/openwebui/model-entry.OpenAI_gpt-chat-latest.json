@@ -1,0 +1,73 @@
+{
+  "id": "OpenAI/gpt-chat-latest",
+  "object": "model",
+  "created": 1677610602,
+  "owned_by": "openai",
+  "connection_type": "external",
+  "name": "OpenAI/gpt-chat-latest",
+  "openai": {
+    "id": "OpenAI/gpt-chat-latest",
+    "object": "model",
+    "created": 1677610602,
+    "owned_by": "openai",
+    "connection_type": "external"
+  },
+  "urlIdx": 0,
+  "info": {
+    "id": "OpenAI/gpt-chat-latest",
+    "user_id": "[REDACTED_USER_ID]",
+    "base_model_id": null,
+    "name": "OpenAI/gpt-chat-latest",
+    "meta": {
+      "description": "Cost: \\$\\$\\$ — High cost",
+      "capabilities": {
+        "file_context": true,
+        "vision": true,
+        "file_upload": true,
+        "web_search": true,
+        "image_generation": true,
+        "code_interpreter": true,
+        "citations": true,
+        "status_updates": true,
+        "builtin_tools": true
+      },
+      "tags": [
+        {
+          "name": "Balanced & Chat"
+        }
+      ],
+      "builtinTools": {
+        "time": true,
+        "memory": true,
+        "chats": true,
+        "notes": true,
+        "knowledge": true,
+        "channels": true,
+        "web_search": true,
+        "image_generation": true,
+        "code_interpreter": true
+      }
+    },
+    "access_grants": [
+      {
+        "id": "[REDACTED_GRANT_ID]",
+        "resource_type": "model",
+        "resource_id": "OpenAI/gpt-chat-latest",
+        "principal_type": "user",
+        "principal_id": "*",
+        "permission": "read",
+        "created_at": 1
+      }
+    ],
+    "is_active": true,
+    "updated_at": 1,
+    "created_at": 1
+  },
+  "actions": [],
+  "filters": [],
+  "tags": [
+    {
+      "name": "Balanced & Chat"
+    }
+  ]
+}
