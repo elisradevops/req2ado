@@ -76,6 +76,8 @@ export class ChatService implements OnModuleDestroy {
         description: entry.description,
         childType: entry.childType ?? null,
         qualityIssues: entry.qualityIssues ?? [],
+        // The item's score per quality category, so ingestion can aim a rewrite at the weakest one.
+        qualityCategoryScores: entry.qualityCategoryScores ?? null,
       },
       history: history.map((h: { role: string; content: string }) => ({ role: h.role, content: h.content })),
       message,

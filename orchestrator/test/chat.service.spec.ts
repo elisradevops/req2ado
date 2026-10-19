@@ -1,4 +1,5 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import axios from 'axios';
 import { ChatService } from '../src/modules/chat/chat.service';
 
 function makeDiffJob(overrides: Partial<{ status: string; entryOverrides: Record<string, unknown> }> = {}) {
@@ -72,6 +73,29 @@ describe('ChatService.sendTurn', () => {
     expect(create).toHaveBeenCalledWith({
       data: { jobId: 'job-1', localId: 'n0', role: 'user', content: 'hello there', model: 'llama3.1' },
     });
+  });
+});
+
+describe('ChatService.sendTurn: what ingestion is told about the item', () => {
+  it("sends the item's score per quality category so a rewrite can be aimed at the weakest one", async () => {
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({ data: {} } as never);
+    const prisma = {
+      job: { findUnique: jest.fn().mockResolvedValue({ ...makeDiffJob({ entryOverrides: { qualityCategoryScores: { Testable: 40, Clear: 90 } } }), userId: 'user-1' }) },
+      chatMessage: { create: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+    };
+    await new ChatService(prisma as any, 'http://ingestion:8000', { set: jest.fn() } as any).sendTurn('job-1', 'n0', 'rewrite it', undefined);
+
+    const payload = post.mock.calls[0][1] as { item: Record<string, unknown> };
+    expect(payload.item.qualityCategoryScores).toEqual({ Testable: 40, Clear: 90 });
+    post.mockRestore();
+  });
+
+  it('sends null when the item has no category scores', async () => {
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({ data: {} } as never);
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue({ ...makeDiffJob(), userId: 'user-1' }) }, chatMessage: { create: jest.fn(), findMany: jest.fn().mockResolvedValue([]) } };
+    await new ChatService(prisma as any, 'http://ingestion:8000', { set: jest.fn() } as any).sendTurn('job-1', 'n0', 'why?', undefined);
+    expect((post.mock.calls[0][1] as { item: Record<string, unknown> }).item.qualityCategoryScores).toBeNull();
+    post.mockRestore();
   });
 });
 

@@ -217,6 +217,16 @@ def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | 
         return None
 
 
+def _stored_profile_or_none(user_id: str | None) -> KbProfile | None:
+    """The user's stored KB profile for a chat turn (never built here), or None."""
+    if not user_id:
+        return None
+    try:
+        return _kb_profile_store.get(user_id)
+    except Exception:  # noqa: BLE001 -- the profile only sharpens a rewrite
+        return None
+
+
 def _make_profile_client(model: str) -> OrchestratorLlmClient:
     return OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer, model=model)
 
@@ -995,6 +1005,8 @@ class ChatTurnItem(BaseModel):
     description: str
     childType: str | None = None
     qualityIssues: list[str] = []
+    # The item's score per quality category (from its scoring pass); used to aim a rewrite at the weakest one.
+    qualityCategoryScores: dict[str, float] | None = None
 
 
 class ChatTurnMessage(BaseModel):
@@ -2301,5 +2313,6 @@ async def chat_turn(job_id: str, local_id: str, body: ChatTurnRequest) -> dict[s
         _kb_vector_store,
         chat_client,
         _chat_redis_publisher,
+        profile=await run_in_threadpool(_stored_profile_or_none, body.user_id),
     )
     return {"ok": True}
