@@ -326,3 +326,24 @@ class ChromaProfileStore:
 
     def put(self, user_id: str, profile: KbProfile) -> None:
         self._kb_store.put_profile_json(user_id, profile.model_dump_json(), profile.version)
+
+
+SCORING_CONTEXT_MAX_CHARS = 7_500
+
+
+def scoring_inputs(profile: KbProfile | None) -> tuple[list[str] | None, dict[str, str] | None, str | None]:
+    """What requirement scoring takes from the profile: ONE fixed category list (the same for every batch of the job), the
+    pass condition of each category, and a short constant context with those conditions and the mandatory writing rules.
+    Its size does not depend on how large the knowledge base is, so scoring requests stay small. (None, None, None) when
+    there is no profile or it has no categories: scoring then behaves exactly as it did before profiles."""
+    if profile is None or not profile.categories:
+        return None, None, None
+    names = [c.name for c in profile.categories]
+    definitions = {c.name: c.pass_condition for c in profile.categories if c.pass_condition}
+    lines = ["The organization's own standard for judging a requirement (from its knowledge base):"]
+    lines += [f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}" for c in profile.categories]
+    if profile.rules:
+        lines.append("Mandatory writing rules:")
+        lines += [f"- {r.text}" for r in profile.rules]
+    context = "\n".join(lines)
+    return names, definitions, context[:SCORING_CONTEXT_MAX_CHARS]

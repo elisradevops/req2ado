@@ -198,6 +198,12 @@ class Settings(BaseSettings):
     # Who decides how many items a document has when no deterministic detector claims it: "baseline" (the document's own
     # structure, the same for every model and run) or "model" (the chat model, whose count varied from run to run).
     structure_mode: str = "baseline"
+    # Requirement scoring from the user's KB profile (one fixed category list built from every KB document) instead of the
+    # single best-matching document's checklist. "False" restores the earlier behaviour (KB_PROFILE_SCORING=false).
+    kb_profile_scoring: bool = True
+    # The model that reads the KB documents into the profile. Empty: the model of the job that first needs it, and from then
+    # on the model that built the stored profile, so two models alternating on one KB never rebuild it back and forth.
+    kb_profile_model: str = ""
     root_regroup_cosine_threshold: float = 0.75
     # Job transparency (docs/job-transparency-implementation-plan.md). Every
     # capability is its own kill switch and ships OFF: with both false this

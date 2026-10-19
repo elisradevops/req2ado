@@ -42,6 +42,7 @@ from app.leveling.live_context import current_stage_counter
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
 from app.leveling.heading_outline import HeadingOutlineEntry, entries_for_blocks, heading_outline_entries
 from app.leveling.requirement_rows import RequirementRowInfo, qualifying_requirement_rows, repeated_customer_code_in_table
+from app.kb.profile import KbProfile, scoring_inputs
 from app.leveling.baseline_structure import adopt_baseline_structure
 from app.leveling.conservation import restore_lost_nodes
 from app.leveling.root_regrouping import (
@@ -1633,6 +1634,9 @@ def build_survey_tree(
     # model; the model only writes wording and judges quality. "model": the earlier behaviour, where the model chose how
     # many items exist (its count varied from run to run).
     structure_mode: str = "model",
+    # The user's KB profile (app.kb.profile): when it has categories, requirement scoring uses its ONE fixed category list
+    # and a short constant context instead of the single best document's checklist and the raw retrieved KB text.
+    kb_profile: KbProfile | None = None,
     link_type_client: TraceLinkInferenceClient | None = None,
     link_type_catalog: list[dict] | None = None,
     kb_relevance_client: KbRelevanceClient | None = None,
@@ -1999,9 +2003,13 @@ def build_survey_tree(
                                 user_id, citation.source_file,
                             )
                             break
+                scoring_kb_context = doc_kb_context
+                profile_checklist, profile_definitions, profile_context = scoring_inputs(kb_profile)
+                if profile_checklist is not None:
+                    category_checklist, category_checklist_definitions, scoring_kb_context = profile_checklist, profile_definitions, profile_context
                 _score_all_requirements(
                     requirement_nodes, scoring_client, all_warnings, criteria_retriever,
-                    doc_kb_context, doc_kb_citations, progress_callback, model_name,
+                    scoring_kb_context, doc_kb_citations, progress_callback, model_name,
                     len(det_nodes), 0, category_checklist, category_checklist_definitions,
                     chunk_concurrency=chunk_concurrency, user_id=user_id,
                 )
@@ -2614,6 +2622,9 @@ def build_survey_tree(
                             user_id, citation.source_file,
                         )
                         break
+            profile_checklist, profile_definitions, profile_context = scoring_inputs(kb_profile)
+            if profile_checklist is not None:
+                category_checklist, category_checklist_definitions, combined_kb_context = profile_checklist, profile_definitions, profile_context
             _score_all_requirements(
                 requirement_nodes, scoring_client, all_warnings, criteria_retriever,
                 combined_kb_context, deduped_citations, progress_callback, model_name, blocks_total,

@@ -208,3 +208,34 @@ def test_a_stored_profile_round_trips() -> None:
 def test_merge_is_a_pure_function_of_the_per_document_results() -> None:
     per_doc = {"b.pptx": {"categories": [{"name": "X", "pass_condition": "1"}], "type_definitions": [], "rules": [], "glossary": []}}
     assert merge_document_profiles(per_doc, "m1", "v").categories[0].sources == ["b.pptx"]
+
+
+# --- scoring from the profile ---------------------------------------------------------------------------------
+
+def test_the_scoring_inputs_are_one_fixed_category_list_with_its_pass_conditions_and_a_small_constant_context() -> None:
+    from app.kb.profile import scoring_inputs
+
+    profile = build_profile(DOCS, FakeProfileClient(), model="m1")
+    categories, definitions, context = scoring_inputs(profile)
+
+    assert [c.casefold() for c in categories] == [c.name.casefold() for c in profile.categories]
+    assert definitions["Clear and unambiguous"] == "One reading only"
+    assert context is not None and "Testable" in context and "Implementable: Can be built" in context
+    assert "One requirement per statement" in context  # the mandatory rules judge a requirement too
+    assert len(context) < 8_000
+
+
+def test_scoring_inputs_ignore_a_profile_with_no_categories_so_the_old_behaviour_applies() -> None:
+    from app.kb.profile import scoring_inputs
+
+    assert scoring_inputs(None) == (None, None, None)
+    empty = build_profile({"notes.docx": "prose"}, FakeProfileClient(), model="m1")
+    assert scoring_inputs(empty) == (None, None, None)
+
+
+def test_the_scoring_context_does_not_grow_with_the_knowledge_base() -> None:
+    from app.kb.profile import scoring_inputs
+
+    big = {f"d{i}.pptx": "\n".join(f"CAT: Category {i}-{j} | " + "condition " * 40 for j in range(30)) for i in range(10)}
+    _, _, context = scoring_inputs(build_profile(big, FakeProfileClient(), model="m1"))
+    assert len(context) < 8_000

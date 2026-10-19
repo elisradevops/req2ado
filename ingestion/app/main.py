@@ -201,6 +201,22 @@ _kb_vector_store = KbVectorStore(
 _kb_profile_store = ChromaProfileStore(_kb_vector_store)
 
 
+def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | None:
+    """The KB profile this job scores with, or None (no user, no KB, switched off, or any failure: the job then scores as it
+    did before profiles). Builds it when stale; pinned to the configured model, else to the model that built the stored one."""
+    if not user_id or not settings.kb_profile_scoring:
+        return None
+    try:
+        stored = _kb_profile_store.get(user_id)
+        model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
+        if not model:
+            return None
+        return ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+    except Exception:  # noqa: BLE001 -- the profile improves scoring; it must never fail a job
+        logger.warning("KB profile unavailable for this job; scoring without it", exc_info=True)
+        return None
+
+
 def _make_profile_client(model: str) -> OrchestratorLlmClient:
     return OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer, model=model)
 
@@ -808,6 +824,7 @@ def _build_survey_tree_with_scoring(
             scoring_client=client,
             criteria_retriever=_get_criteria_retriever(user_id),
             user_id=user_id,
+            kb_profile=_profile_for_job(user_id, model),
             embed_client=_embed_client,
             vector_store=_kb_vector_store,
             link_type_client=client if link_type_catalog else None,
