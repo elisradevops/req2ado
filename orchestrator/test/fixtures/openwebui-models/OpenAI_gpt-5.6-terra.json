@@ -1,0 +1,49 @@
+{
+  "id": "OpenAI/gpt-5.6-terra",
+  "object": "model",
+  "created": 1677610602,
+  "owned_by": "openai",
+  "connection_type": "external",
+  "name": "OpenAI/gpt-5.6-terra",
+  "openai": {
+    "id": "OpenAI/gpt-5.6-terra",
+    "object": "model",
+    "created": 1677610602,
+    "owned_by": "openai",
+    "connection_type": "external"
+  },
+  "urlIdx": 0,
+  "info": {
+    "id": "OpenAI/gpt-5.6-terra",
+    "user_id": "[REDACTED_USER_ID]",
+    "base_model_id": null,
+    "name": "OpenAI/gpt-5.6-terra",
+    "meta": {
+      "description": "Cost: $$ - Mid cost",
+      "capabilities": {
+        "file_context": true,
+        "vision": true,
+        "file_upload": true,
+        "web_search": true,
+        "image_generation": true,
+        "code_interpreter": true,
+        "citations": true,
+        "status_updates": true,
+        "builtin_tools": true
+      },
+      "tags": [
+        {
+          "name": "balanced & chat"
+        }
+      ]
+    },
+    "is_active": true
+  },
+  "actions": [],
+  "filters": [],
+  "tags": [
+    {
+      "name": "balanced & chat"
+    }
+  ]
+}

@@ -5,6 +5,8 @@ import traceback
 
 import httpx
 
+from app.request_identity import redact_identity
+
 _BODY_SNIPPET_CHARS = 500
 
 
@@ -42,8 +44,8 @@ def describe_exception(exc: BaseException) -> str:
         response = exc.response
         message = f"{request.method} {request.url} returned {response.status_code}"
         detail = _response_detail(response)
-        return f"{message}: {detail}" if detail else message
-    return str(exc)
+        return redact_identity(f"{message}: {detail}" if detail else message)
+    return redact_identity(str(exc))
 
 
 def exception_details(exc: BaseException, include_traceback: bool) -> dict:

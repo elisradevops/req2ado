@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
 import redis
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -20,6 +20,7 @@ from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
 from app.chat.redis_publisher import RedisChatPublisher
+from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id
 from app.config import settings
 from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
@@ -1608,7 +1609,13 @@ async def level(
     model: str | None = None,
     job_id: str | None = None,
     primer_context: str | None = None,
+    # Identity and the document overview travel in headers (see app.request_identity); the query form above is kept
+    # for one release so an older orchestrator still works.
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+    x_primer_context: str | None = Header(default=None, alias=PRIMER_HEADER),
 ) -> WorkItemTree:
+    user_id = resolve_user_id(user_id, x_user_id)
+    primer_context = resolve_primer_context(primer_context, x_primer_context)
     if mode == "survey":
         # One real client instance satisfies SectionAnalysisClient (and every
         # other build_survey_tree Protocol). run_in_threadpool:

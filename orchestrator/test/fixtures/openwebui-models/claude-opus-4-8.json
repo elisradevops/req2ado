@@ -1,0 +1,55 @@
+{
+  "id": "claude-opus-4-8",
+  "object": "model",
+  "created": 1677610602,
+  "owned_by": "openai",
+  "mode": "chat",
+  "max_input_tokens": 1000000,
+  "max_output_tokens": 128000,
+  "connection_type": "external",
+  "name": "claude-opus-4-8",
+  "openai": {
+    "id": "claude-opus-4-8",
+    "object": "model",
+    "created": 1677610602,
+    "owned_by": "openai",
+    "mode": "chat",
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 128000,
+    "connection_type": "external"
+  },
+  "urlIdx": 0,
+  "info": {
+    "id": "claude-opus-4-8",
+    "user_id": "[REDACTED_USER_ID]",
+    "base_model_id": null,
+    "name": "claude-opus-4-8",
+    "meta": {
+      "description": "Cost: $$$ - High cost",
+      "capabilities": {
+        "file_context": true,
+        "vision": true,
+        "file_upload": true,
+        "web_search": true,
+        "image_generation": true,
+        "code_interpreter": true,
+        "citations": true,
+        "status_updates": true,
+        "builtin_tools": true
+      },
+      "tags": [
+        {
+          "name": "Thinking"
+        }
+      ]
+    },
+    "is_active": true
+  },
+  "actions": [],
+  "filters": [],
+  "tags": [
+    {
+      "name": "Thinking"
+    }
+  ]
+}
