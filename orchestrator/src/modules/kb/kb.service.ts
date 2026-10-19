@@ -75,6 +75,8 @@ export class KbService {
     private readonly prisma: PrismaClient,
     private readonly ingestionClient: IngestionHttpClient,
     private readonly credentialVault: CredentialVaultService,
+    // Rebuilds the user's KB profile in the background after a change of their knowledge base (never fails the action).
+    private readonly profileScheduler?: { schedule(userId: string): Promise<void> },
   ) {}
 
   /**
@@ -144,6 +146,7 @@ export class KbService {
         ingestedAt: new Date(),
       },
     });
+    await this.profileScheduler?.schedule(userId);
     return result;
   }
 
@@ -171,6 +174,7 @@ export class KbService {
     }
     await this.ingestionClient.deleteDocument(document.userId, document.name, document.driveItemId);
     await this.prisma.ingestedDocument.delete({ where: { id } });
+    await this.profileScheduler?.schedule(document.userId);
     return document;
   }
 
@@ -261,6 +265,7 @@ export class KbService {
     // remove action -- IngestUrlResult alone only carries the Graph
     // driveitemId, not the Prisma row's own id that DELETE
     // /kb/documents/:id needs.
+    await this.profileScheduler?.schedule(userId);
     return { ...result, ingestedDocumentId: row.id };
   }
 
@@ -305,6 +310,7 @@ export class KbService {
         file.reason = `KB store succeeded but database persistence failed: ${outcome.reason?.message ?? outcome.reason}`;
       }
     });
+    await this.profileScheduler?.schedule(userId);
     return result;
   }
 }

@@ -41,6 +41,9 @@ export const configSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  // The model that reads a user's KB documents into their KB profile (empty: the user's own default chat model). Set the same
+  // value as ingestion's KB_PROFILE_MODEL so the background build and a job's lazy build agree.
+  KB_PROFILE_MODEL: z.string().optional(),
   RESULT_CACHE_VERSION: z.string().default('1'),
   MODEL_HEALTH_ENABLED: z
     .enum(['true', 'false'])

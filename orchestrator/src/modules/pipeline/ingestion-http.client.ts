@@ -456,6 +456,27 @@ export class IngestionHttpClient {
     }
   }
 
+  /**
+   * Builds (or returns the stored) KB profile of a user: what their whole knowledge base says about defining, writing and
+   * judging work items. Ingestion only rebuilds when a document or the model changed. null: the user has no KB documents.
+   */
+  async buildKbProfile(
+    userId: string,
+    model: string,
+  ): Promise<{ version: string; builtWith: string; docsInKb: number; docsContributing: number } | null> {
+    const response = await fetch(`${this.baseUrl}/kb/profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, model }),
+      dispatcher: this.longRunningAgent,
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion /kb/profile request failed: `);
+    }
+    return (await response.json()) as { version: string; builtWith: string; docsInKb: number; docsContributing: number };
+  }
+
   async ingestUrl(
     url: string,
     userId: string,
