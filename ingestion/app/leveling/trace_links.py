@@ -291,7 +291,6 @@ def _infer_trace_links_for_nodes(
             continue
         if links_per_source.get(source_node_id, 0) >= MAX_LINKS_PER_SOURCE:
             continue
-        links_per_source[source_node_id] = links_per_source.get(source_node_id, 0) + 1
         if target_ref == source_node_id:
             # A self-referencing "link" carries no information -- confirmed
             # a real possibility, not a hypothetical: the model has no
@@ -316,6 +315,7 @@ def _infer_trace_links_for_nodes(
                 # is meant to capture relationships the hierarchy does NOT
                 # already express.
                 continue
+            links_per_source[source_node_id] = links_per_source.get(source_node_id, 0) + 1
             trace_links.append(
                 TraceLink(
                     source_local_id=source_node_id,
@@ -327,6 +327,7 @@ def _infer_trace_links_for_nodes(
                 )
             )
         elif target_ref:
+            links_per_source[source_node_id] = links_per_source.get(source_node_id, 0) + 1
             trace_links.append(
                 TraceLink(
                     source_local_id=source_node_id,

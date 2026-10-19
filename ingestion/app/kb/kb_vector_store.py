@@ -261,12 +261,9 @@ class KbVectorStore:
         return self._client.get_or_create_collection(name=_profile_collection_name_for_user(user_id, self._embed_model))
 
     def get_profile_json(self, user_id: str) -> str | None:
-        """The stored KB profile document of this user, or None. A missing collection or document is simply None."""
-        try:
-            found = self._profile_collection(user_id).get(ids=["profile"], include=["documents"])
-        except Exception:  # noqa: BLE001 -- an unreadable profile is a missing profile: it is rebuilt
-            logger.warning("KB profile read failed for a user", exc_info=True)
-            return None
+        """The stored KB profile document of this user, or None when none is stored. A store failure is raised, not
+        reported as "missing": callers decide (a job scores without it; a build must not overwrite a good profile)."""
+        found = self._profile_collection(user_id).get(ids=["profile"], include=["documents"])
         documents = found.get("documents") or []
         return documents[0] if documents else None
 

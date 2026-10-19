@@ -47,3 +47,13 @@ def test_both_stores_satisfy_the_same_contract() -> None:
     memory = InMemoryProfileStore()
     memory.put("u", profile)
     assert isinstance(memory.get("u"), KbProfile)
+
+
+def test_a_store_failure_is_not_mistaken_for_a_missing_profile(kb_store, monkeypatch) -> None:
+    # A Chroma outage must not look like "no profile": that would trigger a paid rebuild and overwrite a good profile.
+    def broken(_user_id):
+        raise RuntimeError("chroma unavailable")
+
+    monkeypatch.setattr(kb_store, "_profile_collection", broken)
+    with pytest.raises(RuntimeError):
+        kb_store.get_profile_json("u")

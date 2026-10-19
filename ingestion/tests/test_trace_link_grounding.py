@@ -86,3 +86,16 @@ def test_the_whole_title_of_the_target_grounds_a_link_even_when_its_words_are_ge
     ]
     links = _infer_trace_links_for_nodes(nodes, _Client([_link("n0", "n1", "The system shall provide support")]), CATALOG, [], None, 0, 0)
     assert len(links) == 1
+
+
+def test_links_dropped_later_do_not_use_up_the_per_source_cap() -> None:
+    targets = [_node(f"t{i}", f"Target number {i}", f"Text of target {i}.") for i in range(MAX_LINKS_PER_SOURCE)]
+    quote = " and ".join(["Source", *(f"Target number {i}" for i in range(len(targets)))])
+    source = _node("s", "Source", f"This item mentions {quote}.")
+    child = _node("c", "Source child", "Child text.")
+    child.parent_local_id = "s"
+    # Self-links and parent/child links are rejected after the cap check; they must not consume it.
+    proposals = [_link("s", "s", "Source") for _ in range(MAX_LINKS_PER_SOURCE)]
+    proposals += [_link("s", f"t{i}", f"Target number {i}") for i in range(len(targets))]
+    links = _infer_trace_links_for_nodes([source, child, *targets], _Client(proposals), CATALOG, [], None, 0, 0)
+    assert len(links) == MAX_LINKS_PER_SOURCE
