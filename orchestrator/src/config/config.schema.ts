@@ -34,6 +34,14 @@ export const configSchema = z.object({
   LLM_MODEL_HIDE_PATTERNS: z.string().optional(),
   // Automatic model health (model-health.ts): probe each listed model in the background and hide the ones that fail.
   // On by default; 'false' restores the plain catalog (the rollback switch).
+  // A SURVEY job whose file, user, model, knowledge base and release equal an earlier one's gets that job's stored result
+  // instead of a fresh, differently-sampled one (see pipeline/result-cache.ts). 'false' turns it off. RESULT_CACHE_VERSION
+  // invalidates every stored result when changed without a release.
+  RESULT_CACHE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  RESULT_CACHE_VERSION: z.string().default('1'),
   MODEL_HEALTH_ENABLED: z
     .enum(['true', 'false'])
     .default('true')

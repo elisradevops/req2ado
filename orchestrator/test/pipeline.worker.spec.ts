@@ -1,5 +1,7 @@
 import { runPipelineJob } from '../src/modules/pipeline/pipeline.worker';
 
+import { JobResultCache } from '../src/modules/pipeline/result-cache';
+
 describe('runPipelineJob', () => {
   const fakeIngestionClient = { ingest: jest.fn(), level: jest.fn(), checkDuplicate: jest.fn(), deleteDedupEntry: jest.fn() };
   const fakeDryRunService = { diff: jest.fn() };
@@ -1866,6 +1868,69 @@ describe('runPipelineJob', () => {
         }),
       }),
     );
+  });
+
+  describe('job result cache: the same inputs give the identical stored result', () => {
+    const cacheStore = () => {
+      const data = new Map<string, string>();
+      return { get: async (k: string) => data.get(k) ?? null, set: async (k: string, v: string) => { data.set(k, v); return 'OK'; } };
+    };
+    const survey = (id: string) => ({ id, areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'survey' as const, model: 'claude-opus-4-8', fileBuffer: Buffer.from('same file'), filename: 'x.txt' });
+    const deps = (resultCache: JobResultCache, kbRows: { id: string; ingestedAt: Date }[] = []) => ({
+      ingestionClient: fakeIngestionClient as any,
+      dryRunService: fakeDryRunService as any,
+      idempotencyService: fakeIdempotencyService as any,
+      prisma: { ...fakePrisma, ingestedDocument: { findMany: jest.fn().mockResolvedValue(kbRows) } } as any,
+      jobEventsPublisher: fakeJobEventsPublisher as any,
+      mcpClient: fakeMcpClient as any,
+      backfillService: fakeBackfillService as any,
+      adoCredentialResolver: fakeAdoCredentialResolver as any,
+      defaultLlmModel: 'gemma4:12b',
+      resultCache,
+    });
+    beforeEach(() => {
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0' }], figures: [] });
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [{ local_id: 'n0', source_ref: {}, fidelity_hash: 'h', customer_id: null }], warnings: [] });
+      fakeDryRunService.diff.mockResolvedValue([{ localId: 'n0', action: 'create', existingAdoId: null }]);
+    });
+
+    it('a second identical job reuses the stored document and tree and calls neither ingest nor level', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      const first = await runPipelineJob(survey('job-1'), deps(cache));
+      expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(1);
+
+      fakeIngestionClient.level.mockResolvedValue({ nodes: [{ local_id: 'DIFFERENT', source_ref: {}, fidelity_hash: 'x', customer_id: null }] });
+      const second = await runPipelineJob(survey('job-2'), deps(cache));
+      expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(1);
+      expect(second).toEqual(first);
+    });
+
+    it('a changed knowledge base, model or file runs the pipeline again', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      await runPipelineJob(survey('job-1'), deps(cache, [{ id: 'd1', ingestedAt: new Date('2026-10-01') }]));
+      await runPipelineJob(survey('job-2'), deps(cache, [{ id: 'd1', ingestedAt: new Date('2026-10-01') }, { id: 'd2', ingestedAt: new Date('2026-10-02') }]));
+      await runPipelineJob({ ...survey('job-3'), model: 'OpenAI/gpt-5.6-terra' }, deps(cache, [{ id: 'd1', ingestedAt: new Date('2026-10-01') }]));
+      await runPipelineJob({ ...survey('job-4'), fileBuffer: Buffer.from('another file') }, deps(cache, [{ id: 'd1', ingestedAt: new Date('2026-10-01') }]));
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(4);
+    });
+
+    it('a different link-type catalog re-levels the cached document instead of serving trace links for another catalog', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      await runPipelineJob(survey('job-1'), deps(cache));
+      fakeMcpClient.discoverLinkTypes.mockResolvedValueOnce([{ referenceName: 'Custom.Covers', name: 'Covers' }]);
+      await runPipelineJob(survey('job-2'), deps(cache));
+      expect(fakeIngestionClient.ingest).toHaveBeenCalledTimes(1);
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not cache or reuse a BASELINE job (it has no model variance to remove)', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      await runPipelineJob({ ...survey('job-1'), mode: 'baseline' as const }, deps(cache));
+      await runPipelineJob({ ...survey('job-2'), mode: 'baseline' as const }, deps(cache));
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('never fails the job when the stale-mapping cleanup call itself throws', async () => {

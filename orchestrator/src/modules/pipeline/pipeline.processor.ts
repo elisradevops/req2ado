@@ -1,3 +1,4 @@
+import { JobResultCache, releaseVersion, type ResultCacheStore } from './result-cache';
 import type { SandboxedJob } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
@@ -112,6 +113,13 @@ primerCacheRedis.on('error', (err) => {
   console.error('PrimerCache Redis error:', err);
 });
 
+const release = releaseVersion();
+const resultCache = new JobResultCache(
+  primerCacheRedis as unknown as ResultCacheStore,
+  `${release ?? 'unknown'}+${config.RESULT_CACHE_VERSION}`,
+  config.RESULT_CACHE_ENABLED && release !== null,
+);
+
 type QueuedJobData = Omit<PipelineJobInput, 'fileBuffer'> & { fileBufferBase64: string };
 
 export default async function processPipelineJob(job: SandboxedJob<QueuedJobData>) {
@@ -130,6 +138,7 @@ export default async function processPipelineJob(job: SandboxedJob<QueuedJobData
     defaultLlmModel: config.LLM_CHAT_MODEL,
     openWebUiClientFactory,
     primerCacheRedis: primerCacheRedis as any,
+    resultCache,
     settingsService,
     ocrLanguages: config.OCR_LANGUAGES,
   });
