@@ -42,6 +42,7 @@ from app.leveling.live_context import current_stage_counter
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
 from app.leveling.heading_outline import HeadingOutlineEntry, entries_for_blocks, heading_outline_entries
 from app.leveling.requirement_rows import RequirementRowInfo, qualifying_requirement_rows, repeated_customer_code_in_table
+from app.leveling.conservation import restore_lost_nodes
 from app.leveling.root_regrouping import (
     RootGroupingClient,
     _ensure_root_features_have_epic_parent,
@@ -1622,6 +1623,10 @@ def build_survey_tree(
     user_id: str | None = None,
     embed_client: object | None = None,
     vector_store: KbVectorStore | None = None,
+    # "deterministic": disconnected roots are grouped by a fixed embedding rule, so the group count cannot depend on
+    # the chat model (see root_regrouping.deterministic_root_groups); "llm": the model chooses the groups.
+    root_regroup_mode: str = "llm",
+    root_regroup_cosine_threshold: float = 0.75,
     link_type_client: TraceLinkInferenceClient | None = None,
     link_type_catalog: list[dict] | None = None,
     kb_relevance_client: KbRelevanceClient | None = None,
@@ -2001,9 +2006,13 @@ def build_survey_tree(
         _regroup_disconnected_roots(
             all_nodes, "regroup_", grouping_client, all_warnings,
             progress_callback, len(det_nodes), 0, debug_capture=debug_capture, user_id=user_id,
+            embed_client=embed_client, deterministic=root_regroup_mode == "deterministic",
+            cosine_threshold=root_regroup_cosine_threshold,
         )
         _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
         recompute_child_types(all_nodes)
+        # Every node that came from the document's own structure must have survived the stages above.
+        restore_lost_nodes(det_nodes, all_nodes, all_warnings, "structure stages")
 
         trace_links: list[TraceLink] = []
         if link_type_client is not None:
@@ -2450,8 +2459,11 @@ def build_survey_tree(
     # own stepper-regression problem.
     _regroup_disconnected_roots(
         all_nodes, "regroup_", grouping_client, all_warnings, debug_capture=debug_capture, user_id=user_id,
+        embed_client=embed_client, deterministic=root_regroup_mode == "deterministic",
+        cosine_threshold=root_regroup_cosine_threshold,
     )
     _ensure_root_features_have_epic_parent(all_nodes, "regroup_", all_warnings)
+    restore_lost_nodes(det_nodes, all_nodes, all_warnings, "structure stages")
 
     # STAGE 2: whole-document figure/table -> EXACT node mapping, run here
     # and only here -- exact-node binding is impossible before stage 1 built

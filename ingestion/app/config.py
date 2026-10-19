@@ -190,6 +190,12 @@ class Settings(BaseSettings):
     # shared backend, raise it only in coordination with whoever operates
     # that backend's own concurrency limit.
     survey_chunk_concurrency: int = 1
+    # How disconnected root sections are grouped under synthetic topical Epics: "deterministic" clusters their titles by
+    # embedding similarity with a fixed rule (same input, same groups, whichever chat model runs the job; the model only
+    # names the groups), "llm" is the earlier model-chosen grouping, whose group count varied from 1 to 14 between runs
+    # of the same document. The threshold is the cosine similarity above which two clusters are merged.
+    root_regroup_mode: str = "deterministic"
+    root_regroup_cosine_threshold: float = 0.75
     # Job transparency (docs/job-transparency-implementation-plan.md). Every
     # capability is its own kill switch and ships OFF: with both false this
     # service behaves byte-identically to before the feature existed.

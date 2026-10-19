@@ -4,6 +4,8 @@ import hashlib
 import logging
 from typing import TYPE_CHECKING, Protocol
 
+import numpy as np
+
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
@@ -42,6 +44,94 @@ class RootGroupingClient(Protocol):
     ) -> dict: ...
 
 
+# Above this many disconnected roots the pairwise clustering below would be slow; such a document keeps its roots
+# (and the catch-all Epic) rather than spend minutes on structure.
+_MAX_ROOTS_TO_CLUSTER = 1500
+
+
+def deterministic_root_groups(vectors: list[list[float]], threshold: float) -> list[list[int]]:
+    """Groups of indexes (>= 2 each) of vectors that belong together, by a FIXED rule: average-linkage agglomerative
+    clustering on cosine similarity, merging the most similar pair of clusters while their similarity is at least
+    `threshold`. Pure and order-stable: vectors are rounded to 6 decimals first, ties go to the first pair in index
+    order, groups come out ordered by their first member and members in input order, so the same vectors always give
+    the same groups and nothing about the chat model (or a shuffle-free rerun) can change them."""
+    count = len(vectors)
+    if count < 2:
+        return []
+    matrix = np.round(np.asarray(vectors, dtype=np.float64), 6)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    matrix = matrix / np.where(norms == 0, 1.0, norms)
+    similarity = matrix @ matrix.T
+    members: list[list[int] | None] = [[i] for i in range(count)]
+    sizes = np.ones(count)
+    active = np.ones(count, dtype=bool)
+    upper = np.triu(np.ones((count, count), dtype=bool), k=1)
+    while True:
+        usable = upper & active[:, None] & active[None, :]
+        masked = np.where(usable, similarity, -np.inf)
+        flat = int(np.argmax(masked))  # first maximum in row-major order: a deterministic tie-break
+        i, j = divmod(flat, count)
+        if not np.isfinite(masked[i, j]) or masked[i, j] < threshold:
+            break
+        # Lance-Williams update for average linkage: the merged cluster lives at index i.
+        merged = (sizes[i] * similarity[i] + sizes[j] * similarity[j]) / (sizes[i] + sizes[j])
+        similarity[i, :] = merged
+        similarity[:, i] = merged
+        sizes[i] += sizes[j]
+        members[i] = sorted(members[i] + members[j])  # type: ignore[operator]
+        members[j] = None
+        active[j] = False
+    groups = [sorted(m) for m in members if m is not None and len(m) >= 2]
+    return sorted(groups, key=lambda group: group[0])
+
+
+def _fallback_group_title(member_titles: list[str]) -> str:
+    first = " ".join(member_titles[0].split())[:60].rstrip()
+    return f"{first} and related sections"
+
+
+def _deterministic_raw_groups(
+    roots: list[WorkItemNode],
+    titles_by_id: dict[str, str],
+    grouping_client: "RootGroupingClient",
+    embed_client: object,
+    cosine_threshold: float,
+    node_id_prefix: str,
+    debug_capture: "DebugCapture | None",
+    user_id: str | None,
+) -> list[dict] | None:
+    """The groups as the same {'title', 'member_ids'} dicts the model path returns, so one loop builds the nodes for
+    both. None means "leave every root as it is" (too many roots, or the embeddings were unavailable)."""
+    if len(roots) > _MAX_ROOTS_TO_CLUSTER:
+        logger.warning("Root grouping skipped: %d disconnected roots exceed the %d the deterministic rule handles", len(roots), _MAX_ROOTS_TO_CLUSTER)
+        return None
+    ordered = list(roots)
+    try:
+        vectors = embed_client.embed([titles_by_id[n.local_id] for n in ordered], user_id=user_id)  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001 -- structure only: no embeddings, no grouping, never a failed job
+        logger.warning("Root grouping skipped, title embeddings unavailable: %s", exc)
+        if debug_capture is not None:
+            debug_capture.capture("group_root_topics", "document", str(exc))
+        return None
+    index_groups = deterministic_root_groups(vectors, cosine_threshold)
+    ids_by_group = [[ordered[i].local_id for i in group] for group in index_groups]
+    group_keys = [f"{node_id_prefix}synth_group_{index}" for index in range(len(ids_by_group))]
+    titles_by_group = {key: [titles_by_id[member] for member in members] for key, members in zip(group_keys, ids_by_group)}
+    names: dict[str, str] = {}
+    namer = getattr(grouping_client, "name_root_groups", None)
+    if namer is not None and titles_by_group:
+        try:
+            names = namer(titles_by_group, user_id=user_id) or {}
+        except Exception as exc:  # noqa: BLE001 -- a name never changes the structure
+            logger.warning("Naming root groups failed, using fallback titles: %s", exc)
+            if debug_capture is not None:
+                debug_capture.capture("name_root_groups", "document", str(exc))
+    return [
+        {"title": names.get(key) or _fallback_group_title(titles_by_group[key]), "member_ids": members}
+        for key, members in zip(group_keys, ids_by_group)
+    ]
+
+
 def _regroup_disconnected_roots(
     nodes: list[WorkItemNode],
     node_id_prefix: str,
@@ -52,6 +142,9 @@ def _regroup_disconnected_roots(
     branch_count: int = 0,
     debug_capture: "DebugCapture | None" = None,
     user_id: str | None = None,
+    embed_client: object | None = None,
+    deterministic: bool = False,
+    cosine_threshold: float = 0.75,
 ) -> None:
     """Real gap closed here, confirmed against a real document (AirPro):
     77 disconnected root nodes, because the document's own Word outline
@@ -96,18 +189,26 @@ def _regroup_disconnected_roots(
                 kb_grounded=False, kb_citations=[],
             )
         )
-    try:
-        result = grouping_client.group_root_topics(titles_by_id, user_id=user_id)
-    except Exception as exc:
-        logger.warning("Root topical regrouping failed, leaving disconnected roots as-is: %s", exc)
-        if debug_capture is not None:
-            debug_capture.capture("group_root_topics", "document", str(exc))
-        return
-    if not isinstance(result, dict):
-        return
-    raw_groups = result.get("groups")
-    if not isinstance(raw_groups, list):
-        return
+    use_deterministic = deterministic and embed_client is not None
+    if use_deterministic:
+        raw_groups = _deterministic_raw_groups(
+            roots, titles_by_id, grouping_client, embed_client, cosine_threshold, node_id_prefix, debug_capture, user_id,
+        )
+        if raw_groups is None:
+            return
+    else:
+        try:
+            result = grouping_client.group_root_topics(titles_by_id, user_id=user_id)
+        except Exception as exc:
+            logger.warning("Root topical regrouping failed, leaving disconnected roots as-is: %s", exc)
+            if debug_capture is not None:
+                debug_capture.capture("group_root_topics", "document", str(exc))
+            return
+        if not isinstance(result, dict):
+            return
+        raw_groups = result.get("groups")
+        if not isinstance(raw_groups, list):
+            return
 
     root_ids = set(titles_by_id)
     by_id = {n.local_id: n for n in nodes}
@@ -199,7 +300,9 @@ def _regroup_disconnected_roots(
     # own "never invent, never double-count" discipline above, not a new
     # exception to it.
     leftover_ids = root_ids - already_grouped
-    if leftover_ids and created_group_nodes:
+    # The deterministic path already considered every root: a leftover is a root that genuinely belongs nowhere, and
+    # no second model pass may change that (it would make the count depend on the model again).
+    if leftover_ids and created_group_nodes and not use_deterministic:
         leftover_titles_by_id = {leftover_id: titles_by_id[leftover_id] for leftover_id in leftover_ids}
         group_titles_by_id = {group_id: node.title for group_id, node in created_group_nodes.items()}
         try:

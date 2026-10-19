@@ -588,3 +588,27 @@ def leftover_assignment_schema() -> dict:
             "additionalProperties": False,
         },
     }
+
+
+def root_group_names_schema() -> dict:
+    """name_root_groups (OrchestratorLlmClient): one short title per already-decided group. An array of closed
+    {group_id, title} objects (strict-schema compatible); the client folds it into {group_id: title}."""
+    return {
+        "name": "root_group_names",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "names": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"group_id": {"type": "string"}, "title": {"type": "string"}},
+                        "required": ["group_id", "title"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["names"],
+            "additionalProperties": False,
+        },
+    }

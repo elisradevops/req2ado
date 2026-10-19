@@ -21,6 +21,7 @@ from app.survey._response_schemas import (
     duplicate_cluster_verdict_schema,
     duplicate_pair_verdict_schema,
     leftover_assignment_schema,
+    root_group_names_schema,
     root_grouping_schema,
     section_analysis_schema,
     section_skeleton_schema,
@@ -1893,6 +1894,23 @@ class OrchestratorLlmClient:
         return self._chat_json(
             system_prompt, json.dumps(titles_by_id), schema=root_grouping_schema(), user_id=user_id,
         )
+
+    def name_root_groups(self, titles_by_group_id: dict[str, list[str]], user_id: str | None = None) -> dict[str, str]:
+        """Names groups that were already decided by a fixed rule (root_regrouping.deterministic_root_groups). The
+        model only chooses wording: it cannot move, add or remove a member, so it cannot change any count. Returns
+        {group_id: title}; a group the model skipped is simply absent (the caller supplies a fallback title)."""
+        system_prompt = load_prompt("name_root_groups")
+        result = self._chat_json(
+            system_prompt, json.dumps(titles_by_group_id), schema=root_group_names_schema(), user_id=user_id,
+        )
+        names = result.get("names") if isinstance(result, dict) else None
+        if not isinstance(names, list):
+            return {}
+        return {
+            str(entry["group_id"]): " ".join(str(entry["title"]).split())
+            for entry in names
+            if isinstance(entry, dict) and "group_id" in entry and isinstance(entry.get("title"), str) and entry["title"].strip()
+        }
 
     def assign_leftover_roots(
         self,

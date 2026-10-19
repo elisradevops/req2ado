@@ -3920,3 +3920,18 @@ def test_post_chat_still_retries_a_fast_5xx_with_backoff(monkeypatch) -> None:
     assert response.status_code == 200
     assert calls["n"] == 3
     assert sleeps == [2.0, 8.0]
+
+
+def test_name_root_groups_folds_the_names_array_and_ignores_malformed_entries() -> None:
+    answer = {"names": [{"group_id": "g0", "title": " Bus   Interfaces "}, {"group_id": "g1", "title": ""}, "junk", {"title": "x"}]}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(answer)})
+    assert client.name_root_groups({"g0": ["I2C", "UART"], "g1": ["a", "b"]}) == {"g0": "Bus Interfaces"}
+    client._transport = _mock_transport({"content": json.dumps({"names": "nope"})})
+    assert client.name_root_groups({"g0": ["a", "b"]}) == {}
+
+
+def test_the_group_naming_schema_follows_the_strict_vendor_rules() -> None:
+    from app.survey._response_schemas import root_group_names_schema
+
+    assert _strict_violations(root_group_names_schema()["schema"]) == []

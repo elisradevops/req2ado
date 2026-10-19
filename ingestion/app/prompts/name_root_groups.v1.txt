@@ -1,0 +1,3 @@
+You are given a JSON object mapping group ids to the SHORT TITLES of the specification-document sections already placed in that group. The grouping is final; do not move, add or remove any title. Your only job is to give each group a short, descriptive name (2 to 6 words) that says what its sections have in common, in the same language as the titles (never translate).
+
+Return ONLY a JSON object with a 'names' array, one entry per group id given, each entry an object with 'group_id' (exactly as given) and 'title' (the name). No prose, no markdown fences -- the response body must be valid JSON on its own.

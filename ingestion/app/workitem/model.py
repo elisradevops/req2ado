@@ -372,6 +372,7 @@ class WarningKind(str, Enum):
     FRONT_MATTER_FOLDED = "front_matter_folded"
     TRACE_LINK_INFERENCE_FAILED = "trace_link_inference_failed"
     TRACE_LINKS_PARTIAL = "trace_links_partial"
+    ITEMS_LOST = "items_lost"
     HEADING_ID_OFFSET_MISMATCH = "heading_id_offset_mismatch"
     UNSUPPORTED_CONTENT_NOTE = "unsupported_content_note"
     EMPTY_TABLE_CONTENT = "empty_table_content"
@@ -501,6 +502,7 @@ WARNING_SEVERITY: dict[WarningKind, WarningSeverity] = {
     WarningKind.FRONT_MATTER_FOLDED: WarningSeverity.AUTO_FIXED,
     WarningKind.TRACE_LINK_INFERENCE_FAILED: WarningSeverity.PIPELINE_ISSUE,
     WarningKind.TRACE_LINKS_PARTIAL: WarningSeverity.NEEDS_REVIEW,
+    WarningKind.ITEMS_LOST: WarningSeverity.NEEDS_REVIEW,
     WarningKind.HEADING_ID_OFFSET_MISMATCH: WarningSeverity.NEEDS_REVIEW,
     WarningKind.UNSUPPORTED_CONTENT_NOTE: WarningSeverity.NEEDS_REVIEW,
     WarningKind.EMPTY_TABLE_CONTENT: WarningSeverity.NEEDS_REVIEW,
