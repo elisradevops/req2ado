@@ -42,6 +42,7 @@ from app.leveling.live_context import current_stage_counter
 from app.leveling.narration_publisher import LevelingProgress, Phase, ProgressCallback
 from app.leveling.heading_outline import HeadingOutlineEntry, entries_for_blocks, heading_outline_entries
 from app.leveling.requirement_rows import RequirementRowInfo, qualifying_requirement_rows, repeated_customer_code_in_table
+from app.leveling.baseline_structure import adopt_baseline_structure
 from app.leveling.conservation import restore_lost_nodes
 from app.leveling.root_regrouping import (
     RootGroupingClient,
@@ -1627,6 +1628,11 @@ def build_survey_tree(
     # the chat model (see root_regrouping.deterministic_root_groups); "llm": the model chooses the groups.
     root_regroup_mode: str = "llm",
     root_regroup_cosine_threshold: float = 0.75,
+    # "baseline": whatever the deterministic detectors above do not claim is structured by the BASELINE rules (the same
+    # `build_baseline_tree` every format already has), so the item set depends only on the document and never on the chat
+    # model; the model only writes wording and judges quality. "model": the earlier behaviour, where the model chose how
+    # many items exist (its count varied from run to run).
+    structure_mode: str = "model",
     link_type_client: TraceLinkInferenceClient | None = None,
     link_type_catalog: list[dict] | None = None,
     kb_relevance_client: KbRelevanceClient | None = None,
@@ -1914,6 +1920,12 @@ def build_survey_tree(
         chunk_concurrency=chunk_concurrency,
         user_id=user_id,
     )
+
+    if structure_mode == "baseline" and (llm_doc.blocks or llm_doc.tables or llm_doc.figures):
+        residual_nodes, residual_warnings = adopt_baseline_structure(llm_doc)
+        det_nodes = [*det_nodes, *residual_nodes]
+        det_warnings = [*det_warnings, *residual_warnings]
+        llm_doc = llm_doc.model_copy(update={"blocks": [], "tables": [], "figures": []})
 
     if llm_doc.blocks == [] and llm_doc.tables == [] and llm_doc.figures == []:
         # Pure-deterministic guard: this document's ENTIRE real content was

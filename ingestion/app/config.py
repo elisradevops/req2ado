@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     # names the groups), "llm" is the earlier model-chosen grouping, whose group count varied from 1 to 14 between runs
     # of the same document. The threshold is the cosine similarity above which two clusters are merged.
     root_regroup_mode: str = "deterministic"
+    # Who decides how many items a document has when no deterministic detector claims it: "baseline" (the document's own
+    # structure, the same for every model and run) or "model" (the chat model, whose count varied from run to run).
+    structure_mode: str = "baseline"
     root_regroup_cosine_threshold: float = 0.75
     # Job transparency (docs/job-transparency-implementation-plan.md). Every
     # capability is its own kill switch and ships OFF: with both false this

@@ -1,4 +1,7 @@
 import json
+from unittest.mock import patch
+
+import pytest
 
 import httpx
 from fastapi.testclient import TestClient
@@ -51,6 +54,46 @@ def _authored_content(nodes: list[dict], request: httpx.Request) -> httpx.Respon
 
 def _sr(path: str) -> SourceRef:
     return SourceRef(document_path=path, start_offset=0, end_offset=10)
+
+
+@pytest.fixture
+def model_structure(monkeypatch):
+    """The model-structured path (STRUCTURE_MODE=model), kept as the rollback: these tests exercise its mechanics."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "structure_mode", "model")
+
+
+def test_level_endpoint_survey_mode_structures_the_document_itself_by_default() -> None:
+    # Default STRUCTURE_MODE=baseline: the model is never asked how many items exist, whatever it would have answered.
+    import httpx
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body["messages"][0]["content"][:60])
+        return httpx.Response(200, json={"content": "{}"})
+
+    doc = CanonicalDoc(
+        document=Document(path="x.txt", format=DocumentFormat.TXT, sha256="h"),
+        blocks=[
+            Block(id="b0", kind=BlockKind.PARAGRAPH, text="The receiver shall acquire a lock.", source_ref=_sr("x.txt")),
+            Block(id="b1", kind=BlockKind.PARAGRAPH, text="The receiver shall report its status.", source_ref=_sr("x.txt")),
+        ],
+    )
+    original = OrchestratorLlmClient.__init__
+
+    def patched(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self._transport = httpx.MockTransport(handler)
+
+    with patch.object(OrchestratorLlmClient, "__init__", patched):
+        response = client.post("/level?mode=survey", content=doc.model_dump_json(), headers={"Content-Type": "application/json"})
+    assert response.status_code == 200, response.text
+    titles = [n["title"] for n in response.json()["nodes"]]
+    assert any("receiver shall acquire" in t.lower() for t in titles) and any("report its status" in t.lower() for t in titles)
+    assert not any(_ANALYZE_SECTION_MARKER in c for c in calls)
 
 
 def test_level_endpoint_returns_worktree_json() -> None:
@@ -114,7 +157,7 @@ def test_level_endpoint_derives_customer_id_per_requirement_from_its_own_numberi
     assert body["nodes"][2]["customer_id"] is None
 
 
-def test_level_endpoint_survey_mode_never_returns_tags_on_a_non_requirement_node(monkeypatch) -> None:
+def test_level_endpoint_survey_mode_never_returns_tags_on_a_non_requirement_node(monkeypatch, model_structure) -> None:
     # End-to-end guard for the same invariant test_content_stage_never_tags_
     # an_epic_or_feature_even_when_the_model_returns_tags_for_it pins at the
     # unit level: even a real model response carrying tags for an Epic/
@@ -199,7 +242,7 @@ def test_level_endpoint_default_mode_still_uses_baseline_tree(monkeypatch) -> No
     assert body["nodes"][0]["mode"] == "BASELINE"
 
 
-def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch) -> None:
+def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch, model_structure) -> None:
     nodes = [
         {
             "temp_id": "n0", "type": "Epic", "parent_temp_id": None, "title": "Power on",
@@ -240,7 +283,7 @@ def test_level_endpoint_mode_survey_routes_to_build_survey_tree(monkeypatch) -> 
     assert "shall" in body["nodes"][0]["description"]
 
 
-def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatch) -> None:
+def test_level_endpoint_survey_mode_with_area_path_injects_kb_context(monkeypatch, model_structure) -> None:
     captured_system_prompts: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -441,7 +484,7 @@ def test_level_endpoint_survey_mode_empty_link_type_catalog_skips_trace_link_inf
     assert captured == {}
 
 
-def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(monkeypatch) -> None:
+def test_level_endpoint_survey_mode_populates_quality_score_from_a_real_scoring_call(monkeypatch, model_structure) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         system_prompt = json.loads(request.content)["messages"][0]["content"]
         # Requirement, not Epic -- quality scoring is scoped to
