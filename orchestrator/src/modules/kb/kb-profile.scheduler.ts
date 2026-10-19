@@ -40,6 +40,9 @@ export function profileJobId(userId: string): string {
  */
 export class KbProfileScheduler implements OnModuleInit, OnModuleDestroy {
   private worker?: { close(): Promise<void> };
+  /** Users whose build is running now, and those that changed meanwhile (a queue add with the active job id is ignored). */
+  private readonly running = new Set<string>();
+  private readonly changedWhileRunning = new Set<string>();
 
   constructor(private readonly deps: KbProfileSchedulerDeps) {}
 
@@ -60,6 +63,10 @@ export class KbProfileScheduler implements OnModuleInit, OnModuleDestroy {
   }
 
   async schedule(userId: string): Promise<void> {
+    if (this.running.has(userId)) {
+      this.changedWhileRunning.add(userId);
+      return;
+    }
     try {
       await this.deps.queue.add('build', { userId }, { jobId: profileJobId(userId), delay: DEBOUNCE_MS, removeOnComplete: true, removeOnFail: true });
     } catch (err) {
@@ -68,6 +75,16 @@ export class KbProfileScheduler implements OnModuleInit, OnModuleDestroy {
   }
 
   async run(data: { userId: string }): Promise<void> {
+    this.running.add(data.userId);
+    try {
+      await this.build(data);
+    } finally {
+      this.running.delete(data.userId);
+      if (this.changedWhileRunning.delete(data.userId)) await this.schedule(data.userId);
+    }
+  }
+
+  private async build(data: { userId: string }): Promise<void> {
     try {
       const model = this.deps.profileModel || (await this.deps.resolver.resolve(data.userId))?.chatModel;
       if (!model) return; // no model connection: the first job builds it lazily with its own model

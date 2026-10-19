@@ -102,3 +102,10 @@ export function releaseVersion(): string | null {
     return null;
   }
 }
+
+/** Warning kinds that mean a stage fell short for a transient reason; such a result is not stored, so a rerun can do better. */
+const DEGRADED_WARNING_KINDS = new Set(['scoring_failed', 'trace_links_partial', 'items_lost', 'conflict_judgment_skipped']);
+
+export function isDegradedResult(warnings: { kind: string }[] | undefined, figures: { caption_status?: string }[] | undefined): boolean {
+  return (warnings ?? []).some((w) => DEGRADED_WARNING_KINDS.has(w.kind)) || (figures ?? []).some((f) => f.caption_status === 'vision_failed');
+}

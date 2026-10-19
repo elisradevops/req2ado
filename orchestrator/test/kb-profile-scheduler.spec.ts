@@ -29,6 +29,20 @@ describe('KbProfileScheduler', () => {
     await expect(scheduler.schedule('user-1')).resolves.toBeUndefined();
   });
 
+  it('a KB change that arrives while a build runs is built afterwards, not dropped by the fixed job id', async () => {
+    const q = queue();
+    let release: () => void = () => undefined;
+    const ingestion = { buildKbProfile: jest.fn(() => new Promise((resolve) => { release = () => resolve({ docsInKb: 1, docsContributing: 1, builtWith: 'm' }); })) };
+    const scheduler = new KbProfileScheduler({ queue: q, ingestion: ingestion as never, resolver: resolver('m') as never, profileModel: '' });
+    const running = scheduler.run({ userId: 'user-1' });
+    await new Promise((r) => setImmediate(r));
+    await scheduler.schedule('user-1'); // arrives mid-build
+    expect(q.add).not.toHaveBeenCalled(); // same job id is active: a queue add would be ignored
+    release();
+    await running;
+    expect(q.add).toHaveBeenCalledTimes(1);
+  });
+
   it('builds with the configured profile model, else the user\'s own default chat model', async () => {
     const ingestion = { buildKbProfile: jest.fn(async () => ({ docsInKb: 3, docsContributing: 3 })) };
     await new KbProfileScheduler({ queue: queue(), ingestion: ingestion as never, resolver: resolver('user-default') as never, profileModel: '' }).run({ userId: 'u1' });

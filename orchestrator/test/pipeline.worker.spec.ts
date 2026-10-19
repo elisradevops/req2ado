@@ -1925,6 +1925,28 @@ describe('runPipelineJob', () => {
       expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
     });
 
+    it.each(['scoring_failed', 'trace_links_partial', 'items_lost', 'conflict_judgment_skipped'])(
+      'does not store a result that carries a %s warning, so a rerun can do better',
+      async (kind) => {
+        const cache = new JobResultCache(cacheStore(), 'code-1');
+        fakeIngestionClient.level.mockResolvedValue({
+          nodes: [{ local_id: 'n0', source_ref: {}, fidelity_hash: 'h', customer_id: null }],
+          warnings: [{ kind, severity: 'needs_review', node_ids: [], detail: {}, raw: 'x' }],
+        });
+        await runPipelineJob(survey('job-1'), deps(cache));
+        await runPipelineJob(survey('job-2'), deps(cache));
+        expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('does not store a result whose document has a figure without a caption', async () => {
+      const cache = new JobResultCache(cacheStore(), 'code-1');
+      fakeIngestionClient.ingest.mockResolvedValue({ blocks: [{ id: 'b0' }], figures: [{ id: 'f1', caption_status: 'vision_failed' }] });
+      await runPipelineJob(survey('job-1'), deps(cache));
+      await runPipelineJob(survey('job-2'), deps(cache));
+      expect(fakeIngestionClient.level).toHaveBeenCalledTimes(2);
+    });
+
     it('does not cache or reuse a BASELINE job (it has no model variance to remove)', async () => {
       const cache = new JobResultCache(cacheStore(), 'code-1');
       await runPipelineJob({ ...survey('job-1'), mode: 'baseline' as const }, deps(cache));

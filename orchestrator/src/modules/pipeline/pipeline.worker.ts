@@ -1,4 +1,4 @@
-import { JobResultCache, hashCatalog, kbVersionFor, type CachedResult } from './result-cache';
+import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import crypto from 'crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
@@ -823,7 +823,9 @@ export async function runPipelineJob(
         levelResult = cached.tree;
       } else {
         levelResult = await deps.ingestionClient.level(doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext);
-        if (deps.resultCache && cacheKey) await deps.resultCache.save(cacheKey, { doc, tree: levelResult, catalogHash });
+        const leveled = levelResult as { warnings?: { kind: string }[] };
+        const degraded = primerWarnings.length > 0 || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
+        if (deps.resultCache && cacheKey && !degraded) await deps.resultCache.save(cacheKey, { doc, tree: levelResult, catalogHash });
       }
     } finally {
       await stopProgress?.();
