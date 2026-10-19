@@ -670,3 +670,26 @@ def kb_document_profile_schema() -> dict:
             "additionalProperties": False,
         },
     }
+
+
+def rule_conformance_schema() -> dict:
+    """judge_rule_conformance: for each given item, whether its text follows one stated writing rule."""
+    return {
+        "name": "rule_conformance",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "verdicts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}, "conforms": {"type": "boolean"}},
+                        "required": ["id", "conforms"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["verdicts"],
+            "additionalProperties": False,
+        },
+    }

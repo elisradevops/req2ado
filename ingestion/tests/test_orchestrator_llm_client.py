@@ -4009,3 +4009,13 @@ def test_the_authoring_standard_leads_every_item_writing_prompt_once_and_changes
     standard = _system_prompts(with_standard)
     assert standard and all(p.count("Requirement: A verifiable statement of need") == 1 for p in standard)
     assert all(p.endswith(plain[0]) for p in standard)  # the original prompt is intact, the standard is only prepended
+
+
+def test_judge_rule_conformance_returns_verdicts_for_the_given_items_only() -> None:
+    answer = {"verdicts": [{"id": "n1", "conforms": True}, {"id": "n2", "conforms": False}, {"id": "ghost", "conforms": True}, {"id": "n3", "conforms": "yes"}]}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(answer)})
+    assert client.judge_rule_conformance("One shall per sentence", {"n1": "a", "n2": "b", "n3": "c"}) == {"n1": True, "n2": False}
+    client._transport = _mock_transport({"content": json.dumps({"verdicts": "no"})})
+    with pytest.raises(ValueError):
+        client.judge_rule_conformance("r", {"n1": "a"})

@@ -1,0 +1,3 @@
+You are given a JSON object with one writing rule from an organization's standard and a map of item ids to the text of work items. For each item decide whether its text follows the rule. Judge only against that rule, not against general quality, and judge in the language of the text. When the rule does not apply to an item, it conforms.
+
+Return ONLY a JSON object {"verdicts": [{"id": <item id>, "conforms": true|false}, ...]} with exactly one entry per item id given. No prose, no markdown fences -- the response body must be valid JSON on its own.

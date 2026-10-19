@@ -24,6 +24,7 @@ from app.survey._response_schemas import (
     kb_document_profile_schema,
     kb_document_relevance_schema,
     root_group_names_schema,
+    rule_conformance_schema,
     root_grouping_schema,
     section_analysis_schema,
     section_skeleton_schema,
@@ -1953,6 +1954,22 @@ class OrchestratorLlmClient:
             "type_definitions": [d for d in objects("type_definitions", "item_type", "text") if d["item_type"] in ("epic", "feature", "requirement") and d["text"].strip()],
             "rules": [r for r in (parsed.get("rules") or []) if isinstance(r, str) and r.strip()],
             "glossary": [g for g in objects("glossary", "term", "definition") if g["term"].strip()],
+        }
+
+    def judge_rule_conformance(self, rule: str, items: dict[str, str], user_id: str | None = None) -> dict[str, bool]:
+        """Backs the KB conformance report (app.kb.conformance): does each item follow one stated writing rule? Returns
+        {item id: bool} for the ids the model answered about; ids it skipped are absent, malformed entries dropped."""
+        system_prompt = load_prompt("judge_rule_conformance")
+        parsed = self._chat_json(
+            system_prompt, json.dumps({"rule": rule, "items": items}, ensure_ascii=False),
+            schema=rule_conformance_schema(), max_tokens=2000, user_id=user_id,
+        )
+        verdicts = parsed.get("verdicts") if isinstance(parsed, dict) else None
+        if not isinstance(verdicts, list):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        return {
+            str(v["id"]): v["conforms"] for v in verdicts
+            if isinstance(v, dict) and str(v.get("id")) in items and isinstance(v.get("conforms"), bool)
         }
 
     def name_root_groups(self, titles_by_group_id: dict[str, list[str]], user_id: str | None = None) -> dict[str, str]:
