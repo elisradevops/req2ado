@@ -1,0 +1,853 @@
+{
+ "description": "Portable strict-schema rules: the intersection of Azure OpenAI and Anthropic structured outputs. Violation codes are sorted; a path-prefixed code names the schema location (JSON pointer).",
+ "vectors": [
+  {
+   "name": "minimal valid",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "answer": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "answer"
+    ],
+    "additionalProperties": false
+   },
+   "violations": []
+  },
+  {
+   "name": "array of closed objects",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "rows": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string"
+        },
+        "label": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "id",
+        "label"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "rows"
+    ],
+    "additionalProperties": false
+   },
+   "violations": []
+  },
+  {
+   "name": "enum of strings and nested anyOf",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "a",
+       "b"
+      ]
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "kind",
+     "note"
+    ],
+    "additionalProperties": false
+   },
+   "violations": []
+  },
+  {
+   "name": "root is an array",
+   "schema": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   },
+   "violations": [
+    "root_not_object"
+   ]
+  },
+  {
+   "name": "root anyOf",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "object",
+      "properties": {
+       "a": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "a"
+      ],
+      "additionalProperties": false
+     },
+     {
+      "type": "object",
+      "properties": {
+       "b": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "b"
+      ],
+      "additionalProperties": false
+     }
+    ]
+   },
+   "violations": [
+    "root_not_object"
+   ]
+  },
+  {
+   "name": "open object (additionalProperties missing)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "a"
+    ]
+   },
+   "violations": [
+    "/:object_not_closed"
+   ]
+  },
+  {
+   "name": "additionalProperties true",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "a"
+    ],
+    "additionalProperties": true
+   },
+   "violations": [
+    "/:object_not_closed"
+   ]
+  },
+  {
+   "name": "optional property",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     },
+     "b": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "a"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "/:not_all_required"
+   ]
+  },
+  {
+   "name": "free-form object map",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "scores": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "integer"
+      }
+     }
+    },
+    "required": [
+     "scores"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "/properties/scores:free_form_object"
+   ]
+  },
+  {
+   "name": "numeric bounds",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "n": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+     }
+    },
+    "required": [
+     "n"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "/properties/n:forbidden:minimum",
+    "/properties/n:forbidden:maximum"
+   ]
+  },
+  {
+   "name": "string constraints",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "s": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 5,
+      "pattern": "^a",
+      "format": "email"
+     }
+    },
+    "required": [
+     "s"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "/properties/s:forbidden:format",
+    "/properties/s:forbidden:maxLength",
+    "/properties/s:forbidden:minLength",
+    "/properties/s:forbidden:pattern"
+   ]
+  },
+  {
+   "name": "array size constraints",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true
+     }
+    },
+    "required": [
+     "a"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "/properties/a:forbidden:maxItems",
+    "/properties/a:forbidden:minItems",
+    "/properties/a:forbidden:uniqueItems"
+   ]
+  },
+  {
+   "name": "enum with non-scalar value",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "e": {
+      "enum": [
+       {
+        "x": 1
+       },
+       "b"
+      ]
+     }
+    },
+    "required": [
+     "e"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "/properties/e:enum_not_scalar"
+   ]
+  },
+  {
+   "name": "reference",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "$ref": "#/$defs/x"
+     }
+    },
+    "required": [
+     "a"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "/properties/a:forbidden:$ref"
+   ]
+  },
+  {
+   "name": "too deep (6 object levels)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "object",
+      "properties": {
+       "b": {
+        "type": "object",
+        "properties": {
+         "c": {
+          "type": "object",
+          "properties": {
+           "d": {
+            "type": "object",
+            "properties": {
+             "e": {
+              "type": "object",
+              "properties": {
+               "f": {
+                "type": "string"
+               }
+              },
+              "required": [
+               "f"
+              ],
+              "additionalProperties": false
+             }
+            },
+            "required": [
+             "e"
+            ],
+            "additionalProperties": false
+           }
+          },
+          "required": [
+           "d"
+          ],
+          "additionalProperties": false
+         }
+        },
+        "required": [
+         "c"
+        ],
+        "additionalProperties": false
+       }
+      },
+      "required": [
+       "b"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "a"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "too_deep"
+   ]
+  },
+  {
+   "name": "5 object levels is allowed",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "object",
+      "properties": {
+       "b": {
+        "type": "object",
+        "properties": {
+         "c": {
+          "type": "object",
+          "properties": {
+           "d": {
+            "type": "object",
+            "properties": {
+             "e": {
+              "type": "string"
+             }
+            },
+            "required": [
+             "e"
+            ],
+            "additionalProperties": false
+           }
+          },
+          "required": [
+           "d"
+          ],
+          "additionalProperties": false
+         }
+        },
+        "required": [
+         "c"
+        ],
+        "additionalProperties": false
+       }
+      },
+      "required": [
+       "b"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "a"
+    ],
+    "additionalProperties": false
+   },
+   "violations": []
+  },
+  {
+   "name": "101 properties",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p0": {
+      "type": "string"
+     },
+     "p1": {
+      "type": "string"
+     },
+     "p2": {
+      "type": "string"
+     },
+     "p3": {
+      "type": "string"
+     },
+     "p4": {
+      "type": "string"
+     },
+     "p5": {
+      "type": "string"
+     },
+     "p6": {
+      "type": "string"
+     },
+     "p7": {
+      "type": "string"
+     },
+     "p8": {
+      "type": "string"
+     },
+     "p9": {
+      "type": "string"
+     },
+     "p10": {
+      "type": "string"
+     },
+     "p11": {
+      "type": "string"
+     },
+     "p12": {
+      "type": "string"
+     },
+     "p13": {
+      "type": "string"
+     },
+     "p14": {
+      "type": "string"
+     },
+     "p15": {
+      "type": "string"
+     },
+     "p16": {
+      "type": "string"
+     },
+     "p17": {
+      "type": "string"
+     },
+     "p18": {
+      "type": "string"
+     },
+     "p19": {
+      "type": "string"
+     },
+     "p20": {
+      "type": "string"
+     },
+     "p21": {
+      "type": "string"
+     },
+     "p22": {
+      "type": "string"
+     },
+     "p23": {
+      "type": "string"
+     },
+     "p24": {
+      "type": "string"
+     },
+     "p25": {
+      "type": "string"
+     },
+     "p26": {
+      "type": "string"
+     },
+     "p27": {
+      "type": "string"
+     },
+     "p28": {
+      "type": "string"
+     },
+     "p29": {
+      "type": "string"
+     },
+     "p30": {
+      "type": "string"
+     },
+     "p31": {
+      "type": "string"
+     },
+     "p32": {
+      "type": "string"
+     },
+     "p33": {
+      "type": "string"
+     },
+     "p34": {
+      "type": "string"
+     },
+     "p35": {
+      "type": "string"
+     },
+     "p36": {
+      "type": "string"
+     },
+     "p37": {
+      "type": "string"
+     },
+     "p38": {
+      "type": "string"
+     },
+     "p39": {
+      "type": "string"
+     },
+     "p40": {
+      "type": "string"
+     },
+     "p41": {
+      "type": "string"
+     },
+     "p42": {
+      "type": "string"
+     },
+     "p43": {
+      "type": "string"
+     },
+     "p44": {
+      "type": "string"
+     },
+     "p45": {
+      "type": "string"
+     },
+     "p46": {
+      "type": "string"
+     },
+     "p47": {
+      "type": "string"
+     },
+     "p48": {
+      "type": "string"
+     },
+     "p49": {
+      "type": "string"
+     },
+     "p50": {
+      "type": "string"
+     },
+     "p51": {
+      "type": "string"
+     },
+     "p52": {
+      "type": "string"
+     },
+     "p53": {
+      "type": "string"
+     },
+     "p54": {
+      "type": "string"
+     },
+     "p55": {
+      "type": "string"
+     },
+     "p56": {
+      "type": "string"
+     },
+     "p57": {
+      "type": "string"
+     },
+     "p58": {
+      "type": "string"
+     },
+     "p59": {
+      "type": "string"
+     },
+     "p60": {
+      "type": "string"
+     },
+     "p61": {
+      "type": "string"
+     },
+     "p62": {
+      "type": "string"
+     },
+     "p63": {
+      "type": "string"
+     },
+     "p64": {
+      "type": "string"
+     },
+     "p65": {
+      "type": "string"
+     },
+     "p66": {
+      "type": "string"
+     },
+     "p67": {
+      "type": "string"
+     },
+     "p68": {
+      "type": "string"
+     },
+     "p69": {
+      "type": "string"
+     },
+     "p70": {
+      "type": "string"
+     },
+     "p71": {
+      "type": "string"
+     },
+     "p72": {
+      "type": "string"
+     },
+     "p73": {
+      "type": "string"
+     },
+     "p74": {
+      "type": "string"
+     },
+     "p75": {
+      "type": "string"
+     },
+     "p76": {
+      "type": "string"
+     },
+     "p77": {
+      "type": "string"
+     },
+     "p78": {
+      "type": "string"
+     },
+     "p79": {
+      "type": "string"
+     },
+     "p80": {
+      "type": "string"
+     },
+     "p81": {
+      "type": "string"
+     },
+     "p82": {
+      "type": "string"
+     },
+     "p83": {
+      "type": "string"
+     },
+     "p84": {
+      "type": "string"
+     },
+     "p85": {
+      "type": "string"
+     },
+     "p86": {
+      "type": "string"
+     },
+     "p87": {
+      "type": "string"
+     },
+     "p88": {
+      "type": "string"
+     },
+     "p89": {
+      "type": "string"
+     },
+     "p90": {
+      "type": "string"
+     },
+     "p91": {
+      "type": "string"
+     },
+     "p92": {
+      "type": "string"
+     },
+     "p93": {
+      "type": "string"
+     },
+     "p94": {
+      "type": "string"
+     },
+     "p95": {
+      "type": "string"
+     },
+     "p96": {
+      "type": "string"
+     },
+     "p97": {
+      "type": "string"
+     },
+     "p98": {
+      "type": "string"
+     },
+     "p99": {
+      "type": "string"
+     },
+     "p100": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "p0",
+     "p1",
+     "p2",
+     "p3",
+     "p4",
+     "p5",
+     "p6",
+     "p7",
+     "p8",
+     "p9",
+     "p10",
+     "p11",
+     "p12",
+     "p13",
+     "p14",
+     "p15",
+     "p16",
+     "p17",
+     "p18",
+     "p19",
+     "p20",
+     "p21",
+     "p22",
+     "p23",
+     "p24",
+     "p25",
+     "p26",
+     "p27",
+     "p28",
+     "p29",
+     "p30",
+     "p31",
+     "p32",
+     "p33",
+     "p34",
+     "p35",
+     "p36",
+     "p37",
+     "p38",
+     "p39",
+     "p40",
+     "p41",
+     "p42",
+     "p43",
+     "p44",
+     "p45",
+     "p46",
+     "p47",
+     "p48",
+     "p49",
+     "p50",
+     "p51",
+     "p52",
+     "p53",
+     "p54",
+     "p55",
+     "p56",
+     "p57",
+     "p58",
+     "p59",
+     "p60",
+     "p61",
+     "p62",
+     "p63",
+     "p64",
+     "p65",
+     "p66",
+     "p67",
+     "p68",
+     "p69",
+     "p70",
+     "p71",
+     "p72",
+     "p73",
+     "p74",
+     "p75",
+     "p76",
+     "p77",
+     "p78",
+     "p79",
+     "p80",
+     "p81",
+     "p82",
+     "p83",
+     "p84",
+     "p85",
+     "p86",
+     "p87",
+     "p88",
+     "p89",
+     "p90",
+     "p91",
+     "p92",
+     "p93",
+     "p94",
+     "p95",
+     "p96",
+     "p97",
+     "p98",
+     "p99",
+     "p100"
+    ],
+    "additionalProperties": false
+   },
+   "violations": [
+    "too_many_properties"
+   ]
+  }
+ ]
+}

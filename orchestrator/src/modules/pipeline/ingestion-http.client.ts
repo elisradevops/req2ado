@@ -78,6 +78,17 @@ async function _ingestionError(response: Response, prefix: string): Promise<Inge
  * orchestrator's job here is orchestration, not re-validating Python's own
  * pydantic-enforced shapes.
  */
+// The caller's identity and the whole-document overview (a model-written summary of the customer's document) travel in
+// headers, never in the URL: the ingestion server's access log records the full URL of every request, which put both
+// in its pod log on every job. The overview can be in any language, so it is base64 of its UTF-8 text. Ingestion still
+// accepts the old query form for one release.
+function identityHeaders(userId?: string, primerContext?: string): Record<string, string> {
+  return {
+    ...(userId ? { 'X-Req2Ado-User-Id': userId } : {}),
+    ...(primerContext ? { 'X-Req2Ado-Primer-Context': Buffer.from(primerContext, 'utf8').toString('base64') } : {}),
+  };
+}
+
 @Injectable()
 export class IngestionHttpClient {
   private readonly longRunningAgent: Agent;
@@ -161,14 +172,8 @@ export class IngestionHttpClient {
     if (jobId) {
       params.set('job_id', jobId);
     }
-    if (primerContext) {
-      params.set('primer_context', primerContext);
-    }
     if (languages) {
       params.set('languages', languages);
-    }
-    if (userId) {
-      params.set('user_id', userId);
     }
     if (visionModel) {
       params.set('vision_model', visionModel);
@@ -177,7 +182,7 @@ export class IngestionHttpClient {
       params.set('vision_skip_reason', visionSkipReason);
     }
     const url = `${this.baseUrl}/ingest?${params.toString()}`;
-    const response = await fetch(url, { method: 'POST', body: form, dispatcher: this.longRunningAgent });
+    const response = await fetch(url, { method: 'POST', headers: identityHeaders(userId, primerContext), body: form, dispatcher: this.longRunningAgent });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /ingest request failed: `);
     }
@@ -204,10 +209,8 @@ export class IngestionHttpClient {
     primerContext?: string,
   ): Promise<WorkItemTree> {
     const params = new URLSearchParams({ mode });
-    if (userId) params.set('user_id', userId);
     if (model) params.set('model', model);
     if (jobId) params.set('job_id', jobId);
-    if (primerContext) params.set('primer_context', primerContext);
     if (linkTypeCatalog) {
       // ingestion (Python) expects snake_case keys (reference_name/name/
       // semantic_hint) -- AdoLinkType on this side is camelCase. Map at the
@@ -225,7 +228,7 @@ export class IngestionHttpClient {
     }
     const response = await fetch(`${this.baseUrl}/level?${params.toString()}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...identityHeaders(userId, primerContext) },
       body: JSON.stringify(doc),
       dispatcher: this.longRunningAgent,
     });
@@ -447,10 +450,33 @@ export class IngestionHttpClient {
   async purgeUserKb(userId: string): Promise<void> {
     const response = await fetch(`${this.baseUrl}/kb/collection?user_id=${encodeURIComponent(userId)}`, {
       method: 'DELETE',
+      // Ingestion refuses to drop a whole collection unless the exact user id is repeated here.
+      headers: { 'X-Req2Ado-Confirm-Purge': userId },
     });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /kb/collection delete request failed: `);
     }
+  }
+
+  /**
+   * Builds (or returns the stored) KB profile of a user: what their whole knowledge base says about defining, writing and
+   * judging work items. Ingestion only rebuilds when a document or the model changed. null: the user has no KB documents.
+   */
+  async buildKbProfile(
+    userId: string,
+    model: string,
+  ): Promise<{ version: string; builtWith: string; docsInKb: number; docsContributing: number } | null> {
+    const response = await fetch(`${this.baseUrl}/kb/profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, model }),
+      dispatcher: this.longRunningAgent,
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion /kb/profile request failed: `);
+    }
+    return (await response.json()) as { version: string; builtWith: string; docsInKb: number; docsContributing: number };
   }
 
   async ingestUrl(

@@ -4,6 +4,10 @@ import { getEncoding, type Tiktoken } from 'js-tiktoken';
 import type { LlmChatOptions, LlmChatResult, LlmClient, LlmResponseSchema, LlmStreamChunk } from './llm-client.interface';
 import { redactMessages, redactText, type ChatMessage } from './redactor';
 import { isModelHidden, parseModelHidePatterns } from './model-visibility';
+import { chatCompletionResponseSchema, errorMessageFromBody, modelsResponseSchema } from './openwebui-api';
+import { seedConstraints } from './model-capabilities';
+import { modelFactsFromEntry } from './openwebui-model-entry';
+import type { OpenWebUiCompletionRequest } from './openwebui-api';
 import { fetchWithRetry } from './retryWithBackoff';
 import {
   assertCompletion,
@@ -154,6 +158,19 @@ export class OpenWebUiClient implements LlmClient {
     }
   >();
 
+  /** What is known about a model before its first call: what the capability table says about its family, then what was learned. */
+  private learnedFor(model: string) {
+    let known = this.modelConstraints.get(model);
+    if (!known) {
+      const seed = seedConstraints(model);
+      if (seed) {
+        this.modelConstraints.set(model, seed);
+        known = seed;
+      }
+    }
+    return known;
+  }
+
   private rememberConstraint(model: string, update: LearnedUpdate): void {
     const current = this.modelConstraints.get(model) ?? { rejected: new Set<string>() };
     if (update.temperature !== undefined) current.temperature = update.temperature;
@@ -269,7 +286,7 @@ export class OpenWebUiClient implements LlmClient {
       hasSchema: opts?.responseSchema !== undefined,
       requestChars: messageChars(outboundMessages),
       droppable: CHAT_DROPPABLE,
-      learned: this.modelConstraints.get(chatModel),
+      learned: this.learnedFor(chatModel),
       remember: (update) => this.rememberConstraint(chatModel, update),
       hasTools: opts?.tools !== undefined,
       send: async (adaptation) => toResult(await this.openai.chat.completions.create(buildParams(adaptation)), adaptation),
@@ -361,22 +378,10 @@ export class OpenWebUiClient implements LlmClient {
     if (!response.ok) {
       throw new Error(`OpenWebUiClient.listSelectableModels failed: ${response.status}`);
     }
-    const body = (await response.json()) as {
-      data: {
-        id: string;
-        name?: string;
-        preset?: boolean;
-        info?: { base_model_id?: string | null; meta?: { capabilities?: { vision?: boolean } } };
-        ollama?: { capabilities?: string[] };
-      }[];
-    };
-    return body.data
-      .filter((model) => model.preset !== true && !model.info?.base_model_id && !this.isModelHidden(model.id))
-      .map((model) => ({
-        id: model.id,
-        name: model.name ?? model.id,
-        vision: (model.ollama?.capabilities?.includes('vision') || model.info?.meta?.capabilities?.vision) ?? false,
-      }));
+    const listing = modelsResponseSchema.parse(await response.json());
+    return listing.data
+      .filter((entry) => entry.preset !== true && !entry.info?.base_model_id && !this.isModelHidden(entry.id))
+      .map((entry) => ({ id: entry.id, name: entry.name ?? entry.id, vision: modelFactsFromEntry(entry).vision }));
   }
 
   // Cheap reachability probe for the sidebar's connection-status LED --
@@ -429,7 +434,7 @@ export class OpenWebUiClient implements LlmClient {
       hasSchema: opts?.responseSchema !== undefined,
       requestChars: messageChars(outboundMessages),
       droppable: CHAT_DROPPABLE,
-      learned: this.modelConstraints.get(chatModel),
+      learned: this.learnedFor(chatModel),
       remember: (update) => this.rememberConstraint(chatModel, update),
       send: async (adaptation) => {
         const created = await this.openai.chat.completions.create(buildParams(adaptation));
@@ -717,7 +722,7 @@ export class OpenWebUiClient implements LlmClient {
     const failures: string[] = [];
     let statesNothing: ModelInfo | null = null;
     const hasInfo = (info: ModelInfo) => info.contextLength !== null || info.capabilities.length > 0 || (info.maxOutputTokens ?? null) !== null;
-    for (const source of [() => this.ollamaShowModelOrNull(model), () => this.litellmModelInfo(model)]) {
+    for (const source of [() => this.ollamaShowModelOrNull(model), () => this.litellmModelInfo(model), () => this.listedModelInfo(model)]) {
       try {
         const info = await source();
         if (!info) continue;
@@ -737,6 +742,31 @@ export class OpenWebUiClient implements LlmClient {
   private async ollamaShowModelOrNull(model: string): Promise<ModelInfo | null> {
     // The Ollama answer keeps its original shape ({contextLength, capabilities}) so existing callers see no change.
     return this.ollamaShowModel(model);
+  }
+
+  /**
+   * The model listing the app already reads (`GET /api/models`): for models the connection knows (the Claude entries
+   * here) it states `max_input_tokens` and `max_output_tokens`. This is the source that works on a deployment whose
+   * Open WebUI hides both the Ollama and the LiteLLM info routes. Reported as source 'litellm' because the limits are LiteLLM's own model information, relayed by Open WebUI; ingestion sizes such an answer exactly like a direct LiteLLM lookup. Capabilities are left empty on purpose: the listing's
+   * feature flags are Open WebUI defaults, not a measurement of the model. Returns null when the model is not listed.
+   */
+  private async listedModelInfo(model: string): Promise<ModelInfo | null> {
+    const response = await fetch(`${this.openWebUiAppRoot()}/api/models`, {
+      headers: { Authorization: `Bearer ${this.config.LLM_API_KEY ?? ''}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return null;
+    const contentType = response.headers?.get?.('content-type');
+    if (contentType && !contentType.includes('json')) return null;
+    const listing = modelsResponseSchema.safeParse(await response.json());
+    if (!listing.success) return null;
+    const wanted = model.toLowerCase();
+    for (const entry of listing.data.data) {
+      if (entry.id.toLowerCase() !== wanted) continue;
+      const facts = modelFactsFromEntry(entry);
+      return { contextLength: facts.contextTokens, capabilities: [], maxOutputTokens: facts.maxOutputTokens, source: 'litellm' };
+    }
+    return null;
   }
 
   /**
@@ -946,7 +976,7 @@ export class OpenWebUiClient implements LlmClient {
       model,
       hasSchema: opts?.responseSchema !== undefined,
       droppable: VISION_DROPPABLE,
-      learned: this.modelConstraints.get(model),
+      learned: this.learnedFor(model),
       remember: (update) => this.rememberConstraint(model, update),
       terminal: (err) => {
         throw err;
@@ -1036,7 +1066,7 @@ export class OpenWebUiClient implements LlmClient {
     const model = opts.model ?? this.config.LLM_CHAT_MODEL;
     const buildBody = (a: Adaptation): string => {
       const maxTokens = effectiveMaxTokens(opts.maxTokens, a);
-      return JSON.stringify({
+      const body: OpenWebUiCompletionRequest = {
         model,
         messages: [{ role: 'user', content: outboundContent }],
         files: [{ type: 'file', id: fileId, context: 'full' }],
@@ -1047,7 +1077,8 @@ export class OpenWebUiClient implements LlmClient {
         // Ollama's own context option: only a trusted-local (Ollama) deployment understands it; an OpenAI/Azure
         // backend answers 400 'Unknown parameter' (and it is dropped on that answer if it was sent anyway).
         ...(opts.numCtx !== undefined && this.config.LLM_TRUSTED_LOCAL && !a.dropped.has('options') ? { options: { num_ctx: opts.numCtx } } : {}),
-      });
+      };
+      return JSON.stringify(body);
     };
     // Same adaptation policy as chat()/vision() (negotiate): required temperature, output-limit parameter and
     // ceiling, rejected params. This route is a plain fetch, so a non-2xx answer is turned into the SDK's own
@@ -1058,7 +1089,7 @@ export class OpenWebUiClient implements LlmClient {
       hasSchema: false,
       requestChars: outboundContent.length,
       droppable: FILE_CONTEXT_DROPPABLE,
-      learned: this.modelConstraints.get(model),
+      learned: this.learnedFor(model),
       remember: (update) => this.rememberConstraint(model, update),
       terminal: (err) => {
         const { status, message } = summarizeUpstreamError(err);
@@ -1080,11 +1111,12 @@ export class OpenWebUiClient implements LlmClient {
         if (!response.ok) {
           let bodyText = '';
           try { bodyText = await response.text(); } catch { /* ignore read failure */ }
-          const text = bodyText.slice(0, 500) || `HTTP ${response.status}`;
+          const text = errorMessageFromBody(bodyText).slice(0, 500) || `HTTP ${response.status}`;
           throw OpenAI.APIError.generate(response.status, { message: text }, text, Object.fromEntries(response.headers?.entries?.() ?? []));
         }
-        const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
-        return { content: data.choices?.[0]?.message?.content ?? '' };
+        // An answer without choices (the proxy's empty completion) is an empty result, as before, not an error.
+        const parsed = chatCompletionResponseSchema.safeParse(await response.json());
+        return { content: parsed.success ? (parsed.data.choices[0].message.content ?? '') : '' };
       },
     });
   }

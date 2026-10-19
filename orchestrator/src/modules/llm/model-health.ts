@@ -59,7 +59,7 @@ export interface ProbeClient {
 
 const PLAIN_TOKEN = 'QX7';
 const STRUCTURED_IDS = ['a1', 'b2', 'c3'];
-const ROWS_SCHEMA = {
+export const ROWS_SCHEMA = {
   name: 'health_rows',
   strict: true,
   schema: {

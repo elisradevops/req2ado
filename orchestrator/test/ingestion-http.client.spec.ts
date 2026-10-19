@@ -97,12 +97,11 @@ describe('IngestionHttpClient', () => {
 
     await client.ingest(Buffer.from('file'), 'doc.pdf', false, 'survey', 'job-1', 'This is an avionics ICD.');
 
-    const [url] = (global.fetch as jest.Mock).mock.calls[0];
-    // URLSearchParams encodes spaces as `+`, not `%20` -- comparing via
-    // encodeURIComponent (which produces `%20`) would never match a real
-    // URLSearchParams-built query string. Parsed the same way the sibling
-    // level() primer_context test above (:223) already does.
-    expect(new URL(url).searchParams.get('primer_context')).toBe('This is an avionics ICD.');
+    // The overview is model-written text about the customer's document: it travels in a header (base64 of the UTF-8
+    // text, any language), never in the URL, because the server's access log records the whole URL.
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(url).searchParams.has('primer_context')).toBe(false);
+    expect(options.headers['X-Req2Ado-Primer-Context']).toBe(Buffer.from('This is an avionics ICD.', 'utf8').toString('base64'));
   });
 
   it('omits primer_context from the query string when not provided -- unchanged from pre-Task-4 behavior', async () => {
@@ -111,8 +110,21 @@ describe('IngestionHttpClient', () => {
 
     await client.ingest(Buffer.from('file'), 'doc.pdf', false, 'survey', 'job-1');
 
-    const [url] = (global.fetch as jest.Mock).mock.calls[0];
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).not.toContain('primer_context');
+    expect(options.headers?.['X-Req2Ado-Primer-Context']).toBeUndefined();
+  });
+
+  it('sends the user id and a non-ASCII primer in headers, never in the URL, on /ingest', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => MINIMAL_DOC });
+    const client = new IngestionHttpClient('http://ingestion.internal');
+    await client.ingest(Buffer.from('file'), 'doc.pdf', false, 'survey', 'job-1', 'מסמך דרישות', undefined, 'user-1');
+
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).not.toContain('user-1');
+    expect(url).not.toContain('primer');
+    expect(options.headers['X-Req2Ado-User-Id']).toBe('user-1');
+    expect(Buffer.from(options.headers['X-Req2Ado-Primer-Context'], 'base64').toString('utf8')).toBe('מסמך דרישות');
   });
 
   it('forwards visionModel and visionSkipReason as vision_model / vision_skip_reason when provided', async () => {
@@ -203,8 +215,9 @@ describe('IngestionHttpClient', () => {
     const client = new IngestionHttpClient('http://ingestion.internal');
     await client.level(MINIMAL_DOC, 'survey', 'user-descriptor-1');
 
-    const [url] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(url).toBe('http://ingestion.internal/level?mode=survey&user_id=user-descriptor-1');
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/level?mode=survey');
+    expect(options.headers['X-Req2Ado-User-Id']).toBe('user-descriptor-1');
   });
 
   it('omits user_id when not provided, matching pre-existing behavior', async () => {
@@ -257,8 +270,9 @@ describe('IngestionHttpClient', () => {
     const client = new IngestionHttpClient('http://ingestion.internal');
     await client.level(MINIMAL_DOC, 'survey', undefined, undefined, undefined, undefined, 'This is an avionics ICD.');
 
-    const [url] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(new URL(url).searchParams.get('primer_context')).toBe('This is an avionics ICD.');
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(new URL(url).searchParams.has('primer_context')).toBe(false);
+    expect(options.headers['X-Req2Ado-Primer-Context']).toBe(Buffer.from('This is an avionics ICD.', 'utf8').toString('base64'));
   });
 
   it('omits primer_context when not provided, matching pre-Phase-6c behavior', async () => {
@@ -405,6 +419,8 @@ describe('IngestionHttpClient', () => {
     const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('http://ingestion.internal/kb/collection?user_id=vstfs%3A%2F%2F%2FFramework%2FIdentity%2Fold-user');
     expect(options.method).toBe('DELETE');
+    // the destructive route needs the exact user id repeated as a confirmation
+    expect(options.headers['X-Req2Ado-Confirm-Purge']).toBe('vstfs:///Framework/Identity/old-user');
   });
 
   it('throws on a non-ok purgeUserKb response', async () => {

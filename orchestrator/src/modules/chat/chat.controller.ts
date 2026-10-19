@@ -1,8 +1,9 @@
-import { BadRequestException, Controller, Get, Param, Post, Body } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Optional, Param, Post, Body } from '@nestjs/common';
 import { z } from 'zod';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
 import { OpenWebUiClientFactory } from '../llm/openwebui-client.factory';
+import { ModelHealthService } from '../llm/model-health.service';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { SessionUser } from '../auth/session.service';
 
@@ -17,6 +18,7 @@ export class ChatController {
     private readonly chatService: ChatService,
     private readonly chatGateway: ChatGateway,
     private readonly clientFactory: OpenWebUiClientFactory,
+    @Optional() private readonly modelHealth?: ModelHealthService,
   ) {}
 
   // Filtered through listSelectableModels() (base models only, see B2's own
@@ -28,7 +30,9 @@ export class ChatController {
   async models(@CurrentUser() user: SessionUser): Promise<{ models: string[] }> {
     const client = await this.clientFactory.getClientFor(user.userId);
     const models = await client.listSelectableModels();
-    return { models: models.map((m) => m.id) };
+    // The same filter as the job picker (models automatic health has found failing are not offered).
+    const visible = (await this.modelHealth?.filterVisible(user.userId, models)) ?? models;
+    return { models: visible.map((m) => m.id) };
   }
 
   @Post('jobs/:jobId/diff/:localId/chat')

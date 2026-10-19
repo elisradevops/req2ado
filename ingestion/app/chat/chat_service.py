@@ -67,10 +67,41 @@ _SYSTEM_PROMPT_TEMPLATE = (
 )
 
 
-def _build_system_prompt(item: dict, kb_context: str | None) -> str:
+_WEAK_CATEGORY_SCORE = 70
+_WEAKEST_SHOWN = 2
+
+
+def weakest_category_note(scores: dict | None, profile) -> str | None:
+    """A note for the chat prompt naming the item's weakest quality categories (score below 70, at most two, weakest first)
+    with the organization's pass condition from its KB profile when it has one, so a rewrite is aimed at what actually
+    lowers the item's score. None when there are no usable scores or every category is good."""
+    if not isinstance(scores, dict):
+        return None
+    usable = sorted(
+        ((name, float(value)) for name, value in scores.items() if isinstance(name, str) and isinstance(value, (int, float)) and not isinstance(value, bool)),
+        key=lambda pair: (pair[1], pair[0]),
+    )
+    weak = [(name, value) for name, value in usable if value < _WEAK_CATEGORY_SCORE][:_WEAKEST_SHOWN]
+    if not weak:
+        return None
+    conditions = {c.name.casefold(): c.pass_condition for c in (profile.categories if profile else []) if c.pass_condition}
+    parts = []
+    for name, value in weak:
+        condition = conditions.get(name.casefold())
+        parts.append(f"{name} ({value:g})" + (f", whose pass condition is: {condition}" if condition else ""))
+    return (
+        "The item's weakest quality categories are " + "; ".join(parts) + ". When the user asks for a rewrite, aim it at "
+        "improving the weakest category first without losing what the item already does well, and say which category the "
+        "rewrite targets. "
+    )
+
+
+def _build_system_prompt(item: dict, kb_context: str | None, weakest_note: str | None = None) -> str:
     quality_note = ""
     if item.get("qualityIssues"):
         quality_note = f"Known quality issues: {', '.join(item['qualityIssues'])}. "
+    if weakest_note:
+        quality_note += weakest_note
     prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         item_type=item.get("childType") or item.get("type") or "Requirement",
         title=item["title"],
@@ -97,6 +128,7 @@ async def run_chat_turn(
     vector_store: object | None,
     chat_client: ChatLlmClient,
     publisher: RedisChatPublisher,
+    profile: object | None = None,
 ) -> None:
     """Drives one chat turn end-to-end: retrieves KB context (best-effort),
     builds the prompt, streams the reply, publishes chunks to Redis as they
@@ -114,7 +146,7 @@ async def run_chat_turn(
                 retrieve_context, user_id, user_message, embed_client, vector_store
             )
 
-        system_prompt = _build_system_prompt(item, kb_context)
+        system_prompt = _build_system_prompt(item, kb_context, weakest_category_note(item.get("qualityCategoryScores"), profile))
         capped_history = history[-_MAX_HISTORY_TURNS:]
         messages = (
             [{"role": "system", "content": system_prompt}]

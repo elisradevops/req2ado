@@ -6,6 +6,9 @@ import {
   effectiveMaxTokens,
   isToolsWithReasoningRejection,
   parseContextLengthCap,
+  rateLimitWaitMs,
+  RATE_LIMIT_DEFAULT_WAIT_MS,
+  RATE_LIMIT_MAX_WAIT_MS,
   parseUnsupportedParams,
   upstreamRequestId,
   parseMaxOutputCap,
@@ -14,6 +17,14 @@ import {
   raisedBudgetFor,
   type Adaptation,
 } from '../src/modules/llm/upstream-negotiation';
+
+// These tests exercise the LEARNING loop (what a model's refusal teaches the client), so they use real model names
+// without the capability table's head start; the table itself is covered by model-capabilities.spec.ts.
+jest.mock('../src/modules/llm/model-capabilities', () => ({
+  ...jest.requireActual('../src/modules/llm/model-capabilities'),
+  seedConstraints: () => undefined,
+}));
+
 
 // Newer model families (GPT-5.x/6 reasoning models on Azure OpenAI, Claude 5) differ in which parameters they
 // accept. These tests use the error wordings the vendors document; the parsers must be tolerant about phrasing
@@ -660,5 +671,21 @@ describe('model visibility (LLM_MODEL_HIDE_PATTERNS)', () => {
     const models = await new OpenWebUiClient(config as any).listSelectableModels();
 
     expect(models.map((m) => m.id)).toEqual(['claude-opus-4-8', 'OpenAI/gpt-5.4']);
+  });
+});
+
+describe('rateLimitWaitMs', () => {
+  const limited = (headers: Record<string, string>) => new OpenAI.APIError(429, { message: 'slow down' }, '429 slow down', headers as any);
+
+  it('waits what the provider asked for, bounded', () => {
+    expect(rateLimitWaitMs(limited({ 'retry-after-ms': '1500' }))).toBe(1500);
+    expect(rateLimitWaitMs(limited({ 'retry-after': '3' }))).toBe(3000);
+    expect(rateLimitWaitMs(limited({ 'retry-after': '3600' }))).toBe(RATE_LIMIT_MAX_WAIT_MS);
+  });
+
+  it('uses a default when the 429 states nothing, and is null for any other error', () => {
+    expect(rateLimitWaitMs(limited({}))).toBe(RATE_LIMIT_DEFAULT_WAIT_MS);
+    expect(rateLimitWaitMs(apiError('bad request', 400))).toBeNull();
+    expect(rateLimitWaitMs(new Error('socket hang up'))).toBeNull();
   });
 });

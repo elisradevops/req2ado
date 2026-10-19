@@ -355,3 +355,101 @@ def test_describe_figure_sends_the_model_only_when_one_is_given() -> None:
 
     assert "model" not in bodies[0]
     assert bodies[1]["model"] == "claude-opus-4-8"
+
+
+# --- a failed figure is tried again before it is given up on -----------------------------------------------------
+
+def _big_png() -> bytes:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGBA", (3200, 2400), (200, 30, 30, 128)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _ok_body() -> dict:
+    return {"description": json.dumps({"significant": True, "description": "A block diagram.", "title": "Block diagram"})}
+
+
+def _client_with(handler) -> OrchestratorVisionClient:
+    client = OrchestratorVisionClient(base_url="http://orchestrator.internal", bearer_token="tok")
+    client._transport = httpx.MockTransport(handler)
+    return client
+
+
+def test_a_body_less_400_is_retried_once_with_the_image_downscaled_and_re_encoded() -> None:
+    # Prod: 4 of 36 figures got an instant "400 (no body)" on GPT vision while the other 32 passed: the upstream refuses
+    # some images (size or encoding), and the same bytes would be refused again.
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        return httpx.Response(400) if len(seen) == 1 else httpx.Response(200, json=_ok_body())
+
+    result = _client_with(handler).describe_figure(_big_png(), "image/png")
+
+    assert result is not None and result.description == "A block diagram."
+    assert len(seen) == 2
+    import base64
+    import io
+
+    from PIL import Image
+
+    first, second = (base64.b64decode(b["images"][0]) for b in seen)
+    assert seen[1]["mimeType"] == "image/jpeg"
+    assert max(Image.open(io.BytesIO(second)).size) <= 1600 < max(Image.open(io.BytesIO(first)).size)
+
+
+def test_a_server_error_or_timeout_is_retried_once_with_the_same_image() -> None:
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if len(seen) == 1:
+            return httpx.Response(502, text="empty completion")
+        return httpx.Response(200, json=_ok_body())
+
+    client = _client_with(handler)
+    client._retry_pause_seconds = 0
+    assert client.describe_figure(b"\x89PNG-small", "image/png") is not None
+    assert len(seen) == 2 and seen[0]["images"] == seen[1]["images"]
+
+
+def test_a_figure_that_fails_twice_still_raises_so_the_caller_records_it() -> None:
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(400)
+
+    client = _client_with(handler)
+    client._retry_pause_seconds = 0
+    with pytest.raises(httpx.HTTPStatusError):
+        client.describe_figure(_big_png(), "image/png")
+    assert attempts["n"] == 2  # never a loop
+
+
+def test_an_authentication_failure_is_not_retried() -> None:
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(401)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        _client_with(handler).describe_figure(_big_png(), "image/png")
+    assert attempts["n"] == 1
+
+
+def test_an_image_that_cannot_be_decoded_is_retried_as_it_is_not_crashed_on() -> None:
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(400) if attempts["n"] == 1 else httpx.Response(200, json=_ok_body())
+
+    assert _client_with(handler).describe_figure(b"not an image at all", None) is not None
+    assert attempts["n"] == 2

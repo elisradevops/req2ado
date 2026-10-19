@@ -1,0 +1,8 @@
+You are given one part (a window) of a document from a company's requirements-engineering knowledge base, as JSON with the file name and the text. Extract only what THIS text itself states; never add knowledge of your own and never infer what is not written.
+
+- categories: the named quality criteria, questions or attributes used to judge whether a requirement is well written, exactly as named in the text (short, in the text's own language, never translated), each with its pass condition in the text's own words, or an empty string when the text states none.
+- type_definitions: what the text says an Epic, a Feature or a Requirement is (item_type is epic, feature or requirement), in the text's own words.
+- rules: statements that make a way of writing or structuring work items mandatory (for example "one requirement per statement"), one rule per entry, in the text's own words.
+- glossary: defined terms with their definitions.
+
+If the part contains none of these, return empty arrays. Return ONLY a JSON object with exactly the keys categories, type_definitions, rules and glossary. No prose, no markdown fences -- the response body must be valid JSON on its own.

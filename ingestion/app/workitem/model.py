@@ -163,6 +163,10 @@ class WorkItemNode(BaseModel):
     type: WorkItemType
     parent_local_id: str | None
     title: str = Field(max_length=256)
+    # The heading text this node was built from, before any model pass rewrote its title. In-process only (never
+    # serialized, so no contract change): whatever must not depend on the model's wording, such as grouping root
+    # sections, reads this instead of `title`. None for nodes the model itself created.
+    source_title: str | None = Field(default=None, exclude=True)
     description: str
     # Per-Requirement, document-derived attribute -- the requirement's own
     # source reference number (e.g. "1.1.2.2"), populated ONLY for a

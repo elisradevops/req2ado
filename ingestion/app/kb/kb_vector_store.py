@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 
 import chromadb
@@ -26,6 +27,9 @@ _MAX_DOCUMENT_CHUNKS = 2000
 _MAX_LISTED_DOCUMENTS = 5000
 
 
+logger = logging.getLogger(__name__)
+
+
 def _kb_collection_name_for_user(user_id: str, embed_model: str) -> str:
     # Separate namespace from dedup's `req2ado_<hash>` collections (see
     # dedup/vector_store.py) — KB chunks store real source text and are a
@@ -43,6 +47,12 @@ def _kb_collection_name_for_user(user_id: str, embed_model: str) -> str:
     # ingest re-chunks and re-embeds under the current model.
     digest = hashlib.sha256(f"{embed_model}\x00{user_id}".encode()).hexdigest()[:32]
     return f"req2ado_kb_{digest}"
+
+
+def _profile_collection_name_for_user(user_id: str, embed_model: str) -> str:
+    # The user's KB profile (app.kb.profile) lives beside, never inside, the chunk collection: one stored JSON document.
+    digest = hashlib.sha256(f"{embed_model}\x00{user_id}".encode()).hexdigest()[:32]
+    return f"req2ado_kbprofile_{digest}"
 
 
 class KbVectorStore:
@@ -247,6 +257,30 @@ class KbVectorStore:
             offset += _GET_PAGE_SIZE
         collection.update(ids=ids, metadatas=[{**m, "source_file": source_file} for m in metadatas])
 
+    def _profile_collection(self, user_id: str):
+        return self._client.get_or_create_collection(name=_profile_collection_name_for_user(user_id, self._embed_model))
+
+    def get_profile_json(self, user_id: str) -> str | None:
+        """The stored KB profile document of this user, or None when none is stored. A store failure is raised, not
+        reported as "missing": callers decide (a job scores without it; a build must not overwrite a good profile)."""
+        found = self._profile_collection(user_id).get(ids=["profile"], include=["documents"])
+        documents = found.get("documents") or []
+        return documents[0] if documents else None
+
+    def put_profile_json(self, user_id: str, profile_json: str, version: str) -> None:
+        """Stores (replaces) the user's KB profile. Chroma needs an embedding; the profile is not searched, so it is a
+        constant placeholder."""
+        self._profile_collection(user_id).upsert(
+            ids=["profile"], documents=[profile_json], embeddings=[[0.0]], metadatas=[{"profile_version": version}],
+        )
+
+    def chunk_count(self, user_id: str) -> int:
+        """How many chunks this user's KB holds (0 when there is none); for the audit line of a destructive action."""
+        try:
+            return int(self._get_collection(user_id).count())
+        except Exception:  # noqa: BLE001 -- only an audit number
+            return 0
+
     def purge_user(self, user_id: str) -> None:
         """Irreversibly drops this user_id's entire KB collection -- the
         admin/CLI remediation for a deleted-and-recreated ADO account whose
@@ -267,6 +301,10 @@ class KbVectorStore:
             # (handled above). Any other such error is real.
             if "does not exist" not in str(exc):
                 raise
+        try:
+            self._client.delete_collection(name=_profile_collection_name_for_user(user_id, self._embed_model))
+        except Exception:  # noqa: BLE001 -- no profile collection is the same as nothing to purge
+            pass
         # The cached handle (if any) now points at a deleted collection --
         # unlike dedup's ChromaVectorStore, this store can drop a whole
         # collection, not just individual items, so the collection-handle

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import time
 import hashlib
 import json
 from typing import NamedTuple
@@ -213,6 +214,33 @@ def _parse_figure_response(raw: str) -> FigureVisionResult | None:
     return None
 
 
+_VISION_RETRY_MAX_SIDE = 1600
+
+
+def _normalize_for_vision(image_bytes: bytes) -> tuple[bytes, str] | None:
+    """The image downscaled to at most 1600 px on its longer side and re-encoded as an opaque JPEG: what an upstream that
+    refused the original (size, alpha channel, an unusual encoding) can accept. None when the bytes cannot be decoded."""
+    import io
+
+    try:
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(image_bytes))
+        image.load()
+        if image.mode in ("RGBA", "LA", "P"):
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            background.paste(image.convert("RGBA"), mask=image.convert("RGBA").split()[-1])
+            image = background
+        else:
+            image = image.convert("RGB")
+        image.thumbnail((_VISION_RETRY_MAX_SIDE, _VISION_RETRY_MAX_SIDE))
+        out = io.BytesIO()
+        image.save(out, format="JPEG", quality=85)
+        return out.getvalue(), "image/jpeg"
+    except Exception:  # noqa: BLE001 -- not decodable: the caller retries the original bytes
+        return None
+
+
 class OrchestratorVisionClient:
     """Calls the orchestrator's POST /llm/vision proxy -- NEVER calls Open
     WebUI/Ollama directly, same 'backend proxy, redact-first' boundary as
@@ -223,6 +251,7 @@ class OrchestratorVisionClient:
         self._base_url = base_url.rstrip("/")
         self._bearer_token = bearer_token
         self._transport: httpx.BaseTransport | None = None  # test-only injection seam
+        self._retry_pause_seconds = 2.0
 
     def describe_figure(
         self,
@@ -251,17 +280,39 @@ class OrchestratorVisionClient:
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
-        with httpx.Client(transport=self._transport, timeout=_VISION_REQUEST_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{self._base_url}/llm/vision",
-                json={
-                    "prompt": _build_prompt(document_context),
-                    "images": [base64.b64encode(image_bytes).decode("ascii")],
-                    "responseSchema": {"name": "figure_significance", "schema": _FIGURE_SIGNIFICANCE_SCHEMA},
-                    **({"mimeType": mime_type} if mime_type else {}),
-                    **({"model": model} if model else {}),
-                },
-                headers=headers,
-            )
-        response.raise_for_status()
-        return _parse_figure_response(response.json()["description"])
+
+        def attempt(data: bytes, mime: str | None) -> FigureVisionResult | None:
+            with httpx.Client(transport=self._transport, timeout=_VISION_REQUEST_TIMEOUT_SECONDS) as client:
+                response = client.post(
+                    f"{self._base_url}/llm/vision",
+                    json={
+                        "prompt": _build_prompt(document_context),
+                        "images": [base64.b64encode(data).decode("ascii")],
+                        "responseSchema": {"name": "figure_significance", "schema": _FIGURE_SIGNIFICANCE_SCHEMA},
+                        **({"mimeType": mime} if mime else {}),
+                        **({"model": model} if model else {}),
+                    },
+                    headers=headers,
+                )
+            response.raise_for_status()
+            return _parse_figure_response(response.json()["description"])
+
+        # One more try before a figure is given up on (a figure with no caption stays uncaptioned for the whole job). A 400
+        # means the upstream refused this image (4 of 36 on GPT in prod, instantly and without a reason), and the same bytes
+        # would be refused again, so the retry sends the image downscaled and re-encoded as JPEG. A 5xx, a 429 or a timeout
+        # says nothing about the image, so the same image is sent again after a short pause. Anything else (401, 403, 404)
+        # is not about this image at all and is raised as it was.
+        try:
+            return attempt(image_bytes, mime_type)
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == 400:
+                normalized = _normalize_for_vision(image_bytes)
+                return attempt(*(normalized if normalized is not None else (image_bytes, mime_type)))
+            if status >= 500 or status == 429:
+                time.sleep(self._retry_pause_seconds)
+                return attempt(image_bytes, mime_type)
+            raise
+        except httpx.TimeoutException:
+            time.sleep(self._retry_pause_seconds)
+            return attempt(image_bytes, mime_type)

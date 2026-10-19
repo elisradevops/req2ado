@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import OpenAI from 'openai';
+import { retryAfterMsFromHeaders } from './openwebui-api';
 
 const logger = new Logger('UpstreamNegotiation');
 
@@ -347,6 +348,23 @@ export interface NegotiationArgs<T> {
   terminal?: (err: unknown) => never;
   /** Hard cap on attempts, including the first. Default 6 (adaptations accumulate across attempts). */
   maxAttempts?: number;
+  /** Waits before a rate-limited call is repeated; tests replace it so they do not really wait. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Longest a rate-limited call waits for the provider's Retry-After before it is repeated. */
+export const RATE_LIMIT_MAX_WAIT_MS = 20_000;
+/** Used when a 429 states no Retry-After. */
+export const RATE_LIMIT_DEFAULT_WAIT_MS = 2_000;
+/** A rate-limited call is repeated at most this many times (the first attempt not counted). */
+export const RATE_LIMIT_RETRIES = 2;
+
+/** How long to wait before repeating a call the upstream answered with 429, or null when the error is not a 429. */
+export function rateLimitWaitMs(err: unknown): number | null {
+  if (!(err instanceof OpenAI.APIError) || err.status !== 429) return null;
+  const headers = (err.headers ?? {}) as Record<string, string | null | undefined>;
+  const stated = retryAfterMsFromHeaders(headers);
+  return Math.min(stated ?? RATE_LIMIT_DEFAULT_WAIT_MS, RATE_LIMIT_MAX_WAIT_MS);
 }
 
 /**
@@ -375,6 +393,7 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
     forceReasoningNone: args.learned?.forceReasoningNone ?? false,
     attempt: 1,
   };
+  let rateLimitRetries = 0;
   for (let attempt = 1; ; attempt += 1) {
     adaptation.attempt = attempt;
     const startedAt = Date.now();
@@ -403,6 +422,16 @@ export async function negotiate<T>(args: NegotiationArgs<T>): Promise<T> {
       }
       logFailure(err);
       if (attempt >= maxAttempts) return giveUp(err);
+
+      // A rate limit says nothing about the request: wait what the provider asked (bounded) and send the same call.
+      const rateLimitWait = rateLimitWaitMs(err);
+      if (rateLimitWait !== null && rateLimitRetries < RATE_LIMIT_RETRIES) {
+        rateLimitRetries += 1;
+        // eslint-disable-next-line no-console
+        console.warn(`[${args.label}] rate limited; repeating after ${rateLimitWait} ms for model=${args.model}`);
+        await (args.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(rateLimitWait);
+        continue;
+      }
 
       const requiredTemperature = parseTemperatureConstraint(err);
       if (requiredTemperature !== null && adaptation.temperature !== requiredTemperature) {

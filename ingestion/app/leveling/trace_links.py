@@ -20,6 +20,39 @@ from app.workitem.model import (
 
 logger = logging.getLogger(__name__)
 
+# One item cannot attach to more targets than this: a source that "references" dozens of others is the model listing
+# everything, not a reference (a Sonnet run proposed 124 links where the other models proposed 27 to 31).
+MAX_LINKS_PER_SOURCE = 8
+_MIN_TARGET_WORD_CHARS = 4
+
+
+# Words that appear in requirement titles everywhere and therefore say nothing about which item a quote refers to.
+_GENERIC_WORDS = frozenset(
+    "shall should must will that this with from have each when where which their there than then into only also such "
+    "system systems requirement requirements item items document section provide provides support supports".split()
+)
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", text.casefold())
+
+
+def _quote_names_target(quote: str, target_ref: str, target_node: "WorkItemNode | None") -> bool:
+    """True when the evidence quote refers to the item it links to: it contains the target's customer id, the target's whole
+    title, or a distinctive word of that title (not a word every requirement uses); for a target in another job, the target
+    reference itself. A quote that is real but says nothing about the target is no evidence that the source refers to it."""
+    lowered = quote.casefold()
+    if target_node is None:
+        return target_ref.casefold() in lowered
+    if target_node.customer_id and target_node.customer_id.casefold() in lowered:
+        return True
+    title_words = _words(target_node.title)
+    quote_words = _words(quote)
+    if title_words and any(quote_words[i:i + len(title_words)] == title_words for i in range(len(quote_words) - len(title_words) + 1)):
+        return True
+    return any(w in quote_words for w in title_words if len(w) >= _MIN_TARGET_WORD_CHARS and w not in _GENERIC_WORDS)
+
+
 _EMBEDDED_TABLE_HTML_PATTERN = re.compile(r"<table.*?</table>", re.DOTALL)
 
 
@@ -220,6 +253,7 @@ def _infer_trace_links_for_nodes(
             )
     catalog_by_ref = {entry["reference_name"]: entry.get("name", entry["reference_name"]) for entry in catalog}
     text_by_node_id = {n["node_id"]: n["text"] for n in llm_nodes}
+    links_per_source: dict[str, int] = {}
     for raw_link in raw_links:
         # Confirmed real job failure (live SURVEY run): the model can return
         # a syntactically-valid JSON list where most entries are proper
@@ -252,6 +286,11 @@ def _infer_trace_links_for_nodes(
             continue
         if catalog and reference_name not in valid_reference_names:
             continue
+        if not isinstance(target_ref, str) or not _quote_names_target(evidence_quote, target_ref, node_by_local_id.get(target_ref)):
+            logger.info("Trace-link inference proposed a link whose evidence does not name its target, skipped: %r", raw_link)
+            continue
+        if links_per_source.get(source_node_id, 0) >= MAX_LINKS_PER_SOURCE:
+            continue
         if target_ref == source_node_id:
             # A self-referencing "link" carries no information -- confirmed
             # a real possibility, not a hypothetical: the model has no
@@ -276,6 +315,7 @@ def _infer_trace_links_for_nodes(
                 # is meant to capture relationships the hierarchy does NOT
                 # already express.
                 continue
+            links_per_source[source_node_id] = links_per_source.get(source_node_id, 0) + 1
             trace_links.append(
                 TraceLink(
                     source_local_id=source_node_id,
@@ -287,6 +327,7 @@ def _infer_trace_links_for_nodes(
                 )
             )
         elif target_ref:
+            links_per_source[source_node_id] = links_per_source.get(source_node_id, 0) + 1
             trace_links.append(
                 TraceLink(
                     source_local_id=source_node_id,

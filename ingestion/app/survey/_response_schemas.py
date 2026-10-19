@@ -529,6 +529,7 @@ def distill_title_schema() -> dict:
                 "title": {"type": "string"},
             },
             "required": ["title"],
+            "additionalProperties": False,
         },
     }
 
@@ -609,6 +610,86 @@ def root_group_names_schema() -> dict:
                 },
             },
             "required": ["names"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def kb_document_relevance_schema() -> dict:
+    """judge_kb_document_relevance: is this knowledge-base document about creating requirements and the Epic/Feature/
+    Requirement hierarchy at all, with a one-sentence reason."""
+    return {
+        "name": "kb_document_relevance",
+        "schema": {
+            "type": "object",
+            "properties": {"relevant": {"type": "boolean"}, "reason": {"type": "string"}},
+            "required": ["relevant", "reason"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def kb_document_profile_schema() -> dict:
+    """extract_kb_document_profile: what one window of a knowledge-base document states about quality categories (with
+    pass conditions), the Epic/Feature/Requirement definitions, mandatory writing rules and glossary terms."""
+    return {
+        "name": "kb_document_profile",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "categories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string"}, "pass_condition": {"type": "string"}},
+                        "required": ["name", "pass_condition"],
+                        "additionalProperties": False,
+                    },
+                },
+                "type_definitions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"item_type": {"type": "string", "enum": ["epic", "feature", "requirement"]}, "text": {"type": "string"}},
+                        "required": ["item_type", "text"],
+                        "additionalProperties": False,
+                    },
+                },
+                "rules": {"type": "array", "items": {"type": "string"}},
+                "glossary": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"term": {"type": "string"}, "definition": {"type": "string"}},
+                        "required": ["term", "definition"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["categories", "type_definitions", "rules", "glossary"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def rule_conformance_schema() -> dict:
+    """judge_rule_conformance: for each given item, whether its text follows one stated writing rule."""
+    return {
+        "name": "rule_conformance",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "verdicts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"id": {"type": "string"}, "conforms": {"type": "boolean"}},
+                        "required": ["id", "conforms"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["verdicts"],
             "additionalProperties": False,
         },
     }

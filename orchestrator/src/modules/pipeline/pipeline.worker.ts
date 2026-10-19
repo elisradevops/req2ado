@@ -1,3 +1,4 @@
+import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import crypto from 'crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { IngestionHttpClient } from './ingestion-http.client';
@@ -163,6 +164,9 @@ export interface PipelineWorkerDeps {
   // hazard this factory pattern exists to close everywhere else.
   openWebUiClientFactory?: OpenWebUiClientFactory;
   primerCacheRedis?: PrimerCacheRedis;
+  // Stores a SURVEY job's parsed document and leveled tree so an identical rerun (same file, user, model, knowledge base and
+  // release) returns the identical result; see result-cache.ts. Absent: nothing is cached (every older caller and test).
+  resultCache?: JobResultCache;
   // LAST-RESORT fallback only, when job.model is unset (the wizard's
   // "Default" option) AND the per-user default can't be resolved (no
   // job.userId, no openWebUiClientFactory wired, or the user's profile was
@@ -642,18 +646,39 @@ export async function runPipelineJob(
     // cost serially on top of /ingest's own wall-clock time.
     // BASELINE never captions, so it keeps the exact pre-vision call shape.
     const visionPlan = job.mode === 'survey' ? await resolveVisionPlan(job, model, deps) : null;
+    // An identical earlier SURVEY job (same file, user, model, knowledge base, release) already has its document and tree
+    // stored: reuse them instead of asking the models again, so the result is identical. Any problem reading it is a miss.
+    let cacheKey: string | null = null;
+    let cached: CachedResult | undefined;
+    if (deps.resultCache && job.mode === 'survey' && job.userId) {
+      const kbVersion = await kbVersionFor(deps.prisma as never, job.userId);
+      if (kbVersion !== null) {
+        cacheKey = deps.resultCache.keyFor({
+          fileHash: crypto.createHash('sha256').update(job.fileBuffer).digest('hex'),
+          userId: job.userId,
+          model,
+          mode: job.mode,
+          kbVersion,
+        });
+        cached = await deps.resultCache.lookup(cacheKey);
+        // eslint-disable-next-line no-console -- worker process logging
+        if (cached) console.info(`Job ${job.id}: reusing the stored result of an identical earlier job`);
+      }
+    }
     const [doc] = await Promise.all([
-      deps.ingestionClient.ingest(
-        job.fileBuffer,
-        job.filename,
-        visionPlan?.skip ?? false,
-        job.mode,
-        job.id,
-        primerContext,
-        deps.ocrLanguages,
-        job.userId ?? undefined,
-        ...(visionPlan ? [model, visionPlan.skipReason] : []),
-      ),
+      cached
+        ? Promise.resolve(cached.doc as Awaited<ReturnType<typeof deps.ingestionClient.ingest>>)
+        : deps.ingestionClient.ingest(
+            job.fileBuffer,
+            job.filename,
+            visionPlan?.skip ?? false,
+            job.mode,
+            job.id,
+            primerContext,
+            deps.ocrLanguages,
+            job.userId ?? undefined,
+            ...(visionPlan ? [model, visionPlan.skipReason] : []),
+          ),
       maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential),
     ]);
 
@@ -792,8 +817,16 @@ export async function runPipelineJob(
     // (observation only; tracking failures are swallowed inside the service).
     const stopProgress = await deps.progressService?.track(job.id);
     let levelResult: unknown;
+    const catalogHash = hashCatalog(linkTypeCatalog);
     try {
-      levelResult = await deps.ingestionClient.level(doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext);
+      if (cached && cached.catalogHash === catalogHash) {
+        levelResult = cached.tree;
+      } else {
+        levelResult = await deps.ingestionClient.level(doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext);
+        const leveled = levelResult as { warnings?: { kind: string }[] };
+        const degraded = primerWarnings.length > 0 || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
+        if (deps.resultCache && cacheKey && !degraded) await deps.resultCache.save(cacheKey, { doc, tree: levelResult, catalogHash });
+      }
     } finally {
       await stopProgress?.();
     }

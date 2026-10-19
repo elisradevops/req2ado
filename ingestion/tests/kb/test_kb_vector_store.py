@@ -570,4 +570,6 @@ def test_purge_user_deletes_the_model_scoped_collection_name() -> None:
         deleted: list[str] = []
         store._client.delete_collection = lambda name: deleted.append(name)
         store.purge_user("Project\\Area1")
-        assert deleted == [_kb_collection_name_for_user("Project\\Area1", "bge-m3")]
+        # the user's chunk collection and, beside it, the stored KB profile built from those chunks
+        assert deleted[0] == _kb_collection_name_for_user("Project\\Area1", "bge-m3")
+        assert len(deleted) == 2 and deleted[1].startswith("req2ado_kbprofile_")

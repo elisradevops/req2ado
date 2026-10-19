@@ -46,7 +46,7 @@ def test_tiny_float_noise_does_not_change_the_groups() -> None:
 def test_threshold_boundaries_and_degenerate_inputs() -> None:
     vectors = _topic_vectors([0, 1, 2])
     assert deterministic_root_groups(vectors, 0.75) == []
-    assert deterministic_root_groups(vectors, -1.0) == [[0, 1, 2]]
+    assert deterministic_root_groups(vectors, -1.0) == []  # unrelated vectors are never merged, whatever the threshold
     assert deterministic_root_groups([], 0.75) == []
     assert deterministic_root_groups([[1.0, 0.0]], 0.75) == []
     assert deterministic_root_groups([[0.0, 0.0], [0.0, 0.0]], 0.75) == []  # zero vectors are never "similar"
@@ -190,3 +190,62 @@ def test_shuffling_the_input_order_of_ids_does_not_change_group_membership() -> 
         memberships.add(frozenset(frozenset(m.local_id for m in nodes if m.parent_local_id == g.local_id)
                                   for g in nodes if "synth_group" in g.local_id))
     assert len(memberships) == 1
+
+
+def test_groups_are_built_from_the_source_headings_not_from_titles_the_model_rewrote() -> None:
+    spec = [("A1", 0), ("A2", 0), ("B1", 1), ("B2", 1), ("C1", 2), ("C2", 2)]
+    vecs = dict(zip([t for t, _ in spec], _topic_vectors([k for _, k in spec])))
+    totals = set()
+    shapes = set()
+    for run in range(3):
+        nodes = [_root(f"n{i}", f"Model title {run}-{i}") for i in range(len(spec))]
+        for node, (source, _) in zip(nodes, spec):
+            node.source_title = source  # what the document's heading said; the title above changes every run
+        _run(nodes, _Embed(vecs), _Namer({}))
+        totals.add(len(nodes))
+        shapes.add(frozenset(frozenset(m.local_id for m in nodes if m.parent_local_id == g.local_id) for g in nodes if "synth_group" in g.local_id))
+    assert len(totals) == 1 and len(shapes) == 1
+
+
+def test_the_source_title_is_never_serialized_and_survives_a_copy() -> None:
+    node = _root("a", "T")
+    node.source_title = "Heading"
+    assert "source_title" not in node.model_dump() and "source_title" not in node.model_dump_json()
+    assert node.model_copy().source_title == "Heading"
+
+
+# --- the cut adapts to the embedding scale (prod: at a fixed 0.75 only 8 of 77 short headings were grouped) ------------
+
+def _clusters_with_similarity(topics: list[int], within: float, dim: int = 24, seed: int = 3) -> list[list[float]]:
+    """Unit vectors where members of one topic have cosine similarity close to `within` and different topics are near 0."""
+    rng = np.random.default_rng(seed)
+    base = {t: np.eye(dim)[t] for t in set(topics)}
+    shared = (1 - within) ** 0.5
+    vectors = []
+    for t in topics:
+        noise = rng.normal(0, 1, dim)
+        noise -= noise @ base[t] * base[t]
+        noise /= np.linalg.norm(noise)
+        vectors.append(list(within ** 0.5 * base[t] + shared * noise))
+    return vectors
+
+
+def test_the_same_clusters_are_found_whether_related_headings_embed_close_together_or_loosely() -> None:
+    topics = [0, 0, 0, 1, 1, 1, 2, 2, 3, 4, 5, 6, 6, 6, 6]
+    tight = deterministic_root_groups(_clusters_with_similarity(topics, 0.9), 0.75)
+    loose = deterministic_root_groups(_clusters_with_similarity(topics, 0.58), 0.75)
+    assert tight == loose
+    assert [len(g) for g in loose] == [3, 3, 2, 4]  # topics 0, 1, 2 and 6; the single-heading topics stay alone
+
+
+def test_without_a_clear_gap_the_fixed_threshold_decides() -> None:
+    rng = np.random.default_rng(5)
+    vectors = [list(v) for v in rng.normal(0, 1, (12, 256))]  # unrelated headings in a real-sized space: similarities near 0
+    assert deterministic_root_groups(vectors, 0.75) == []
+
+
+def test_a_group_never_grows_past_the_size_cap() -> None:
+    vectors = _clusters_with_similarity([0] * 30, 0.95)
+    groups = deterministic_root_groups(vectors, 0.75, max_group_size=8)
+    assert groups and max(len(g) for g in groups) <= 8
+    assert sorted(i for g in groups for i in g) == sorted(set(i for g in groups for i in g))  # no root in two groups

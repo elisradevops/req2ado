@@ -331,3 +331,28 @@ async def test_run_chat_turn_publishes_error_on_llm_failure_never_raises() -> No
 
     assert publisher.done is None
     assert publisher.errors == ["LLM unreachable"]
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_aims_the_rewrite_at_the_weakest_category_using_the_stored_profile() -> None:
+    from app.kb.profile import build_profile
+    from tests.test_kb_profile import DOCS, FakeProfileClient
+
+    seen: list[list[dict]] = []
+
+    class RecordingClient(_FakeChatClient):
+        async def stream_reply(self, messages, model, user_id=None):  # noqa: ANN001, ARG002
+            seen.append(messages)
+            yield "ok", ""
+
+    item = {"type": "Requirement", "title": "T", "description": "D", "childType": None, "qualityIssues": [],
+            "qualityCategoryScores": {"Clear and unambiguous": 40, "Testable": 90}}
+    profile = build_profile(DOCS, FakeProfileClient(), model="m1")
+    await run_chat_turn("job-1", "n0", item, [], "rewrite it", "llama3.1", None, None, None, RecordingClient([]), _FakePublisher(), profile=profile)
+
+    system = seen[0][0]["content"]
+    assert "Clear and unambiguous (40)" in system and "One reading only" in system and "Testable" not in system
+
+    seen.clear()
+    await run_chat_turn("job-1", "n0", {**item, "qualityCategoryScores": None}, [], "why?", "llama3.1", None, None, None, RecordingClient([]), _FakePublisher())
+    assert "weakest" not in seen[0][0]["content"]

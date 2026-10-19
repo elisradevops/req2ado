@@ -159,8 +159,10 @@ export function ChatPanel({
       .then((m) => {
         if (!cancelled) setModels(m);
       })
-      .catch(() => {
-        if (!cancelled) setModels([]);
+      .catch((err) => {
+        if (cancelled) return;
+        setModels([]);
+        showErrorToast('Could not load the model list; the default model is used.', err);
       })
       .finally(() => {
         if (!cancelled) setModelsLoading(false);

@@ -1150,22 +1150,11 @@ def test_assign_leftover_roots_still_accepts_the_older_map_answer() -> None:
     assert result["assignments"] == {"n2": "regroup_synth_group_0"}
 
 
-def _strict_violations(node: object, path: str = "") -> list[str]:
-    """Vendor strict-mode rules: every object closed and fully required, no free-form object."""
-    found: list[str] = []
-    if isinstance(node, dict):
-        if node.get("type") == "object":
-            props = node.get("properties")
-            if props is None or node.get("additionalProperties") is not False:
-                found.append(f"{path}: object not closed")
-            elif set(node.get("required", [])) != set(props):
-                found.append(f"{path}: not every property required")
-        for key, child in node.items():
-            found += _strict_violations(child, f"{path}/{key}")
-    elif isinstance(node, list):
-        for i, child in enumerate(node):
-            found += _strict_violations(child, f"{path}[{i}]")
-    return found
+def _strict_violations(schema: dict) -> list[str]:
+    """The shared portable-schema rules (app.survey.portable_schema), one definition for every schema test."""
+    from app.survey.portable_schema import portable_schema_violations
+
+    return portable_schema_violations(schema)
 
 
 def test_post_scoring_schemas_follow_the_strict_vendor_rules() -> None:
@@ -3935,3 +3924,98 @@ def test_the_group_naming_schema_follows_the_strict_vendor_rules() -> None:
     from app.survey._response_schemas import root_group_names_schema
 
     assert _strict_violations(root_group_names_schema()["schema"]) == []
+
+
+def test_judge_kb_document_relevance_sends_the_name_and_excerpt_and_reads_the_verdict() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps({"relevant": False, "reason": "A recipe."})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    verdict = client.judge_kb_document_relevance("recipe.pdf", "Mix flour and water.")
+
+    assert verdict == {"relevant": False, "reason": "A recipe."}
+    user = json.loads(captured["body"]["messages"][1]["content"])
+    assert user == {"file_name": "recipe.pdf", "excerpt": "Mix flour and water."}
+    assert captured["body"]["responseSchema"]["name"] == "kb_document_relevance"
+
+
+def test_judge_kb_document_relevance_rejects_a_malformed_answer() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"relevant": "maybe"})})
+    with pytest.raises(ValueError):
+        client.judge_kb_document_relevance("a.pdf", "text")
+
+
+def test_extract_kb_document_profile_keeps_only_well_formed_entries() -> None:
+    answer = {
+        "categories": [{"name": "Testable", "pass_condition": "Can be verified"}, {"name": "", "pass_condition": "x"}, "junk"],
+        "type_definitions": [{"item_type": "requirement", "text": "A statement of need"}, {"item_type": "story", "text": "no"}],
+        "rules": ["One requirement per statement", "", 7],
+        "glossary": [{"term": "SRS", "definition": "software requirements specification"}, {"term": "", "definition": "x"}],
+    }
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(answer)})
+    result = client.extract_kb_document_profile("HowTo.pptx", "window text")
+
+    assert result["categories"] == [{"name": "Testable", "pass_condition": "Can be verified"}]
+    assert result["type_definitions"] == [{"item_type": "requirement", "text": "A statement of need"}]
+    assert result["rules"] == ["One requirement per statement"]
+    assert result["glossary"] == [{"term": "SRS", "definition": "software requirements specification"}]
+
+
+def test_extract_kb_document_profile_accepts_nothing_found_and_raises_on_a_non_object() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"categories": [], "type_definitions": [], "rules": [], "glossary": []})})
+    assert client.extract_kb_document_profile("a.pptx", "t") == {"categories": [], "type_definitions": [], "rules": [], "glossary": []}
+    client._transport = _mock_transport({"content": json.dumps(["x"])})
+    with pytest.raises(ValueError):
+        client.extract_kb_document_profile("a.pptx", "t")
+
+
+def _system_prompts(call) -> list[str]:
+    prompts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        prompts.append(body["messages"][0]["content"])
+        return httpx.Response(200, json={"content": json.dumps({"rows": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    call(client)
+    return prompts
+
+
+_WRITING_CALLS = {
+    "title_and_tags_for_rows": lambda c: c.title_and_tags_for_rows({"r1": "The receiver shall lock."}),
+    "summarize_parent_nodes": lambda c: c.summarize_parent_nodes({"p1": {"title": "T", "type": "Feature", "children": ["The receiver shall lock."]}}),
+    "synthesize_leaf_requirements": lambda c: c.synthesize_leaf_requirements({"s1": {"label": "Size: 3U", "context": ""}}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_WRITING_CALLS))
+def test_the_authoring_standard_leads_every_item_writing_prompt_once_and_changes_nothing_without_it(name: str) -> None:
+    plain = _system_prompts(_WRITING_CALLS[name])
+    assert plain and all("authoring standard" not in p for p in plain)
+
+    def with_standard(client: OrchestratorLlmClient) -> None:
+        client.authoring_standard = "Requirement: A verifiable statement of need"
+        _WRITING_CALLS[name](client)
+
+    standard = _system_prompts(with_standard)
+    assert standard and all(p.count("Requirement: A verifiable statement of need") == 1 for p in standard)
+    assert all(p.endswith(plain[0]) for p in standard)  # the original prompt is intact, the standard is only prepended
+
+
+def test_judge_rule_conformance_returns_verdicts_for_the_given_items_only() -> None:
+    answer = {"verdicts": [{"id": "n1", "conforms": True}, {"id": "n2", "conforms": False}, {"id": "ghost", "conforms": True}, {"id": "n3", "conforms": "yes"}]}
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps(answer)})
+    assert client.judge_rule_conformance("One shall per sentence", {"n1": "a", "n2": "b", "n3": "c"}) == {"n1": True, "n2": False}
+    client._transport = _mock_transport({"content": json.dumps({"verdicts": "no"})})
+    with pytest.raises(ValueError):
+        client.judge_rule_conformance("r", {"n1": "a"})

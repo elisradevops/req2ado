@@ -1196,6 +1196,7 @@ def build_hierarchy_subtree(
             type=node_type_enum,
             parent_local_id=None,  # resolved in the second pass, once every row has a local_id
             title=title,
+            source_title=title,
             description=description,
             customer_id=customer_id,
             source_ref=row.source_ref.model_copy(update={"section_path": section_path}),

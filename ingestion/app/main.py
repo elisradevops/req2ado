@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
 import redis
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -20,6 +20,7 @@ from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
 from app.chat.redis_publisher import RedisChatPublisher
+from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id
 from app.config import settings
 from app.debug_capture import DebugCapture
 from app.dedup.check_for_duplicates import DuplicateCheckResult, check_for_duplicates
@@ -32,6 +33,7 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
+from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard
 from app.kb.retrieval import retrieve_context
 from app.leveling.document_map import publish_document_map
 from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
@@ -194,6 +196,41 @@ _kb_vector_store = KbVectorStore(
     host=settings.chroma_host,
     port=settings.chroma_port,
 )
+# The per-user KB profile (what the whole knowledge base says about defining, writing and judging work items), stored
+# beside the user's KB chunks.
+_kb_profile_store = ChromaProfileStore(_kb_vector_store)
+
+
+def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | None:
+    """The KB profile this job scores with, or None (no user, no KB, switched off, or any failure: the job then scores as it
+    did before profiles). Builds it when stale; pinned to the configured model, else to the model that built the stored one."""
+    if not user_id or not settings.kb_profile_scoring:
+        return None
+    try:
+        stored = _kb_profile_store.get(user_id)
+        model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
+        if not model:
+            return None
+        return ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+    except Exception:  # noqa: BLE001 -- the profile improves scoring; it must never fail a job
+        logger.warning("KB profile unavailable for this job; scoring without it", exc_info=True)
+        return None
+
+
+def _stored_profile_or_none(user_id: str | None) -> KbProfile | None:
+    """The user's stored KB profile for a chat turn (never built here), or None."""
+    if not user_id:
+        return None
+    try:
+        return _kb_profile_store.get(user_id)
+    except Exception:  # noqa: BLE001 -- the profile only sharpens a rewrite
+        return None
+
+
+def _make_profile_client(model: str) -> OrchestratorLlmClient:
+    return OrchestratorLlmClient(settings.orchestrator_url, settings.llm_proxy_bearer, model=model)
+
+
 # Gemma4 repetition-collapse mitigation (confirmed upstream bug,
 # ollama/ollama#15502) -- these are the Gemma4 team's own release-note-
 # recommended sampler settings, confirmed in ollama/ollama#15502 to reduce
@@ -718,16 +755,27 @@ _criteria_retrievers: dict[str | None, CriteriaRetriever | None] = {}
 _criteria_retrievers_build_attempted: set[str | None] = set()
 
 
+# One lock per user id (and one to hand them out): two jobs of the same user can start together, and the second must wait
+# for the first one's build instead of reading a cache entry that does not exist yet (that raced into a KeyError and
+# failed the job after 9 s). Different users never wait for each other. The user id is only marked "attempted" once its
+# entry (a retriever, or None for "ungrounded") is stored.
+_criteria_retriever_locks: dict[str | None, threading.Lock] = {}
+_criteria_retriever_locks_guard = threading.Lock()
+
+
 def _get_criteria_retriever(user_id: str | None) -> CriteriaRetriever | None:
-    if user_id in _criteria_retrievers_build_attempted:
+    with _criteria_retriever_locks_guard:
+        build_lock = _criteria_retriever_locks.setdefault(user_id, threading.Lock())
+    with build_lock:
+        if user_id in _criteria_retrievers_build_attempted and user_id in _criteria_retrievers:
+            return _criteria_retrievers[user_id]
+        try:
+            _criteria_retrievers[user_id] = CriteriaRetriever(_embed_client, user_id=user_id)
+        except Exception:
+            logger.warning("Failed to build CriteriaRetriever for user_id=%s -- SURVEY quality scoring will run ungrounded", user_id, exc_info=True)
+            _criteria_retrievers[user_id] = None
+        _criteria_retrievers_build_attempted.add(user_id)
         return _criteria_retrievers[user_id]
-    _criteria_retrievers_build_attempted.add(user_id)
-    try:
-        _criteria_retrievers[user_id] = CriteriaRetriever(_embed_client, user_id=user_id)
-    except Exception:
-        logger.warning("Failed to build CriteriaRetriever for user_id=%s -- SURVEY quality scoring will run ungrounded", user_id, exc_info=True)
-        _criteria_retrievers[user_id] = None
-    return _criteria_retrievers[user_id]
 
 
 def _build_survey_tree_with_scoring(
@@ -780,12 +828,18 @@ def _build_survey_tree_with_scoring(
         # from deep inside the build; it is a no-op unless LIVE_PROGRESS is on.
         if settings.live_progress and job_id is not None:
             publish_document_map(_narration_redis, job_id, doc)
+        profile = _profile_for_job(user_id, model)
+        try:
+            client.authoring_standard = render_authoring_standard(profile) if settings.kb_profile_generation else None
+        except AttributeError:  # a client double that is not an OrchestratorLlmClient has nowhere to put it
+            pass
         return build_survey_tree(
             doc,
             analysis_client=client,
             scoring_client=client,
             criteria_retriever=_get_criteria_retriever(user_id),
             user_id=user_id,
+            kb_profile=profile,
             embed_client=_embed_client,
             vector_store=_kb_vector_store,
             link_type_client=client if link_type_catalog else None,
@@ -836,6 +890,7 @@ def _build_survey_tree_with_scoring(
             # behavior for all five chunked enhancement passes.
             chunk_concurrency=settings.survey_chunk_concurrency,
             root_regroup_mode=settings.root_regroup_mode,
+            structure_mode=settings.structure_mode,
             root_regroup_cosine_threshold=settings.root_regroup_cosine_threshold,
             primer_context=primer_context,
             # Same client, implements TitleDistillationClient directly --
@@ -950,6 +1005,8 @@ class ChatTurnItem(BaseModel):
     description: str
     childType: str | None = None
     qualityIssues: list[str] = []
+    # The item's score per quality category (from its scoring pass); used to aim a rewrite at the weakest one.
+    qualityCategoryScores: dict[str, float] | None = None
 
 
 class ChatTurnMessage(BaseModel):
@@ -1059,7 +1116,11 @@ async def ingest(
     # model catalog check). Only meaningful together with skip_vision=true;
     # surfaced on CanonicalDoc.vision_skip_reason for the job warning.
     vision_skip_reason: str | None = None,
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+    x_primer_context: str | None = Header(default=None, alias=PRIMER_HEADER),
 ) -> CanonicalDoc:
+    user_id = resolve_user_id(user_id, x_user_id)
+    primer_context = resolve_primer_context(primer_context, x_primer_context)
     # skip_vision: /jobs/preview (orchestrator) only needs blockCount/
     # sectionCount/fileType to show the user before they even pick a mode --
     # it never reads figure captions. Without this, every embedded image in
@@ -1597,7 +1658,13 @@ async def level(
     model: str | None = None,
     job_id: str | None = None,
     primer_context: str | None = None,
+    # Identity and the document overview travel in headers (see app.request_identity); the query form above is kept
+    # for one release so an older orchestrator still works.
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+    x_primer_context: str | None = Header(default=None, alias=PRIMER_HEADER),
 ) -> WorkItemTree:
+    user_id = resolve_user_id(user_id, x_user_id)
+    primer_context = resolve_primer_context(primer_context, x_primer_context)
     if mode == "survey":
         # One real client instance satisfies SectionAnalysisClient (and every
         # other build_survey_tree Protocol). run_in_threadpool:
@@ -1989,6 +2056,43 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     return {"ok": True}
 
 
+class KbProfileRequest(BaseModel):
+    user_id: str
+    # The model that reads the documents; recorded in the profile (built_with) and part of its version, so changing the
+    # model rebuilds it and a rerun with the same model does not.
+    model: str
+
+
+def _profile_response(profile: KbProfile) -> dict:
+    return {
+        "version": profile.version,
+        "builtWith": profile.built_with,
+        "docsInKb": profile.docs_in_kb,
+        "docsContributing": profile.docs_contributing,
+        "profile": profile.model_dump(mode="json"),
+    }
+
+
+@app.post("/kb/profile")
+async def kb_build_profile(body: KbProfileRequest) -> dict:
+    """The user's KB profile: the stored one while their documents and the model are unchanged, otherwise rebuilt from
+    every document and stored. 404 when the user has no KB documents."""
+    profile = await run_in_threadpool(
+        ensure_profile, body.user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(body.model), model=body.model,
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No knowledge-base documents for this user")
+    return _profile_response(profile)
+
+
+@app.get("/kb/profile")
+async def kb_get_profile(user_id: str) -> dict:
+    profile = await run_in_threadpool(_kb_profile_store.get, user_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No stored KB profile for this user")
+    return _profile_response(profile)
+
+
 @app.post("/kb/ingest-url", response_model=IngestResult)
 async def kb_ingest_url(body: KbIngestUrlRequest) -> IngestResult:
     # Token from env (SHAREPOINT_TOKEN / GRAPH_TOKEN). GraphClient raises
@@ -2115,11 +2219,20 @@ async def kb_delete_document(user_id: str, source_file: str, source_id: str) -> 
     # remove. run_in_threadpool: same reasoning as every other route here --
     # Chroma's client is synchronous I/O, must not block the event loop.
     await run_in_threadpool(_kb_vector_store.delete_file_chunks, user_id, source_file, source_id)
+    # An audit line for a destructive action (a KB once vanished with no trace of what removed it). The user is shown as a
+    # short hash: the line is for correlating events, not for identifying a person.
+    logger.info("KB document removed: user=%s file=%r source_id=%s", _audit_user(user_id), source_file, source_id)
     return {"ok": True}
 
 
+def _audit_user(user_id: str) -> str:
+    return hashlib.sha256(user_id.encode()).hexdigest()[:10]
+
+
 @app.delete("/kb/collection")
-async def kb_purge_collection(user_id: str) -> dict[str, bool]:
+async def kb_purge_collection(
+    user_id: str, x_confirm_purge: str | None = Header(default=None, alias="X-Req2Ado-Confirm-Purge"),
+) -> dict[str, bool]:
     # Admin/CLI-only remediation (see docs/runbook.md) for a deleted-and-
     # recreated ADO account whose new session resolves to the same
     # descriptor-derived user_id as the old one -- KbVectorStore.purge_user
@@ -2133,7 +2246,13 @@ async def kb_purge_collection(user_id: str) -> dict[str, bool]:
     # collided with a real descriptor) drop the wrong user's KB.
     if not user_id.strip():
         raise HTTPException(status_code=400, detail="user_id is required")
+    # The whole collection is dropped, irreversibly: the caller must repeat the exact user id in a confirmation header, so a
+    # bare or mistaken request (a script, a retry, a wrong URL) cannot delete a knowledge base.
+    if x_confirm_purge != user_id:
+        raise HTTPException(status_code=400, detail="Purging a KB needs X-Req2Ado-Confirm-Purge set to the user id")
+    chunks = await run_in_threadpool(_kb_vector_store.chunk_count, user_id)
     await run_in_threadpool(_kb_vector_store.purge_user, user_id)
+    logger.warning("KB collection purged: user=%s chunks=%d", _audit_user(user_id), chunks)
     return {"ok": True}
 
 
@@ -2213,5 +2332,6 @@ async def chat_turn(job_id: str, local_id: str, body: ChatTurnRequest) -> dict[s
         _kb_vector_store,
         chat_client,
         _chat_redis_publisher,
+        profile=await run_in_threadpool(_stored_profile_or_none, body.user_id),
     )
     return {"ok": True}

@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { Injectable, Logger } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
 import type { FolderChild, IngestionHttpClient, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CredentialVaultService, SHARED_OWNER_KEY } from '../auth/credential-vault.service';
@@ -69,12 +70,16 @@ export interface BrowseFolderEntry {
   downloadUrl: string | null;
 }
 
+const logger = new Logger('KbService');
+
 @Injectable()
 export class KbService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly ingestionClient: IngestionHttpClient,
     private readonly credentialVault: CredentialVaultService,
+    // Rebuilds the user's KB profile in the background after a change of their knowledge base (never fails the action).
+    private readonly profileScheduler?: { schedule(userId: string): Promise<void> },
   ) {}
 
   /**
@@ -144,6 +149,7 @@ export class KbService {
         ingestedAt: new Date(),
       },
     });
+    await this.profileScheduler?.schedule(userId);
     return result;
   }
 
@@ -171,6 +177,9 @@ export class KbService {
     }
     await this.ingestionClient.deleteDocument(document.userId, document.name, document.driveItemId);
     await this.prisma.ingestedDocument.delete({ where: { id } });
+    // An audit line for a destructive action: the file and a short hash of the user (for correlating events, not for identifying a person).
+    logger.log(`KB document removed: user=${createHash('sha256').update(document.userId).digest('hex').slice(0, 10)} file="${document.name}" id=${id}`);
+    await this.profileScheduler?.schedule(document.userId);
     return document;
   }
 
@@ -261,6 +270,7 @@ export class KbService {
     // remove action -- IngestUrlResult alone only carries the Graph
     // driveitemId, not the Prisma row's own id that DELETE
     // /kb/documents/:id needs.
+    await this.profileScheduler?.schedule(userId);
     return { ...result, ingestedDocumentId: row.id };
   }
 
@@ -305,6 +315,7 @@ export class KbService {
         file.reason = `KB store succeeded but database persistence failed: ${outcome.reason?.message ?? outcome.reason}`;
       }
     });
+    await this.profileScheduler?.schedule(userId);
     return result;
   }
 }
