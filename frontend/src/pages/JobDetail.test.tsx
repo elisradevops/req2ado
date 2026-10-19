@@ -40,6 +40,24 @@ async function openNodeDetails(
   );
 }
 
+/**
+ * Clicks an element until the call it should cause has been made. Same lost-click cause as openNodeDetails: a click
+ * that the page never saw cannot be waited for. Stops at the first processed click, so a checkbox is never toggled twice.
+ */
+async function clickUntilCalled(
+  userEvent: { click: (element: Element) => Promise<void> },
+  find: () => Element,
+  spy: { mock: { calls: unknown[] } },
+): Promise<void> {
+  await waitFor(
+    async () => {
+      if (spy.mock.calls.length === 0) await userEvent.click(find());
+      expect(spy.mock.calls.length).toBeGreaterThan(0);
+    },
+    { timeout: 8000 },
+  );
+}
+
 function renderAt(id: string) {
   // Wrapped in ToastProvider matching App.tsx's real composition -- the
   // diff tree's NodeDetailPanel renders ChatPanel (and, since Fix D, calls
@@ -1235,7 +1253,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(screen.getByText('Row one')).toBeInTheDocument());
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('checkbox', { name: /exclude row one/i }));
+    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /exclude row one/i }), jobsApi.setDiffEntryExcluded as never);
 
     // findByText's own timeout, not the global asyncUtilTimeout (setup.ts) --
     // that default is deliberately kept under ToastProvider's 4400ms
@@ -1290,7 +1308,7 @@ describe('JobDetail', () => {
     await waitFor(() => expect(newTileValue()).toBe('5'));
 
     const { default: userEvent } = await import('@testing-library/user-event');
-    await userEvent.click(screen.getByRole('checkbox', { name: /exclude row one/i }));
+    await clickUntilCalled(userEvent, () => screen.getByRole('checkbox', { name: /exclude row one/i }), jobsApi.setDiffEntryExcluded as never);
 
     // Post-exclusion count from the refetch -- proves handleToggleExclude
     // re-read getSummary rather than leaving the stale mount-time value.
