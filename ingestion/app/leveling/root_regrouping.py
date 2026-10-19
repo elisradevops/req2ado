@@ -16,6 +16,35 @@ from app.workitem.model import IntegrityWarning, WarningKind, WorkItemMode, Work
 logger = logging.getLogger(__name__)
 
 
+def _summarized(stage: str):
+    """Logs ONE line per structural stage with how many fixes it recorded. Each fix is kept as an integrity warning on the
+    job (and as debug detail in the log); logging every one at WARNING put 50-60 lines per job in the pod log."""
+    import functools
+    import inspect
+
+    def wrap(function):
+        signature = inspect.signature(function)
+
+        @functools.wraps(function)
+        def inner(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            warnings = bound.arguments["warnings"]
+            before = len(warnings)
+            try:
+                return function(*args, **kwargs)
+            finally:
+                recorded = len(warnings) - before
+                if recorded:
+                    logger.info("%s: %d structural fix(es) recorded as warnings on the job", stage, recorded)
+
+        return inner
+
+    return wrap
+
+
+
+
 class RootGroupingClient(Protocol):
     """Interface for topical root regrouping (see
     _regroup_disconnected_roots's own docstring for the real gap this
@@ -49,12 +78,25 @@ class RootGroupingClient(Protocol):
 _MAX_ROOTS_TO_CLUSTER = 1500
 
 
-def deterministic_root_groups(vectors: list[list[float]], threshold: float) -> list[list[int]]:
+# Merges below this similarity are never a topic, whatever the geometry of the other headings.
+_ABSOLUTE_SIMILARITY_FLOOR = 0.35
+# The biggest drop between consecutive merge similarities must be at least this to count as the natural cut.
+_MIN_NATURAL_GAP = 0.08
+# A topical group stays a group a reviewer can read: no cluster grows beyond this many roots.
+_MAX_GROUP_SIZE = 12
+
+
+def deterministic_root_groups(vectors: list[list[float]], threshold: float, max_group_size: int = _MAX_GROUP_SIZE) -> list[list[int]]:
     """Groups of indexes (>= 2 each) of vectors that belong together, by a FIXED rule: average-linkage agglomerative
-    clustering on cosine similarity, merging the most similar pair of clusters while their similarity is at least
-    `threshold`. Pure and order-stable: vectors are rounded to 6 decimals first, ties go to the first pair in index
-    order, groups come out ordered by their first member and members in input order, so the same vectors always give
-    the same groups and nothing about the chat model (or a shuffle-free rerun) can change them."""
+    clustering on cosine similarity. Embedding models place short headings at very different similarity levels (a fixed
+    0.75 grouped 8 of 77 headings in prod), so the cut is read from the vectors themselves: the merges happen at falling
+    similarities, and the natural cut is the largest drop between consecutive merge similarities (when that drop is at
+    least `_MIN_NATURAL_GAP` and the merges above it are real similarities, `_ABSOLUTE_SIMILARITY_FLOOR`). With no clear
+    drop, `threshold` decides. No cluster grows beyond `max_group_size`.
+
+    Pure and order-stable: vectors are rounded to 6 decimals first, ties go to the first pair in index order, groups come
+    out ordered by their first member and members in input order, so the same vectors always give the same groups and
+    nothing about the chat model can change them."""
     count = len(vectors)
     if count < 2:
         return []
@@ -62,27 +104,49 @@ def deterministic_root_groups(vectors: list[list[float]], threshold: float) -> l
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     matrix = matrix / np.where(norms == 0, 1.0, norms)
     similarity = matrix @ matrix.T
-    members: list[list[int] | None] = [[i] for i in range(count)]
     sizes = np.ones(count)
+    members: list[list[int] | None] = [[i] for i in range(count)]
     active = np.ones(count, dtype=bool)
     upper = np.triu(np.ones((count, count), dtype=bool), k=1)
+    performed: list[tuple[float, int, int]] = []  # (similarity, kept index, absorbed index), in order
     while True:
-        usable = upper & active[:, None] & active[None, :]
+        usable = upper & active[:, None] & active[None, :] & ((sizes[:, None] + sizes[None, :]) <= max_group_size)
         masked = np.where(usable, similarity, -np.inf)
         flat = int(np.argmax(masked))  # first maximum in row-major order: a deterministic tie-break
         i, j = divmod(flat, count)
-        if not np.isfinite(masked[i, j]) or masked[i, j] < threshold:
+        best = masked[i, j]
+        if not np.isfinite(best) or best < _ABSOLUTE_SIMILARITY_FLOOR:
             break
-        # Lance-Williams update for average linkage: the merged cluster lives at index i.
-        merged = (sizes[i] * similarity[i] + sizes[j] * similarity[j]) / (sizes[i] + sizes[j])
+        performed.append((float(best), i, j))
+        merged = (sizes[i] * similarity[i] + sizes[j] * similarity[j]) / (sizes[i] + sizes[j])  # Lance-Williams
         similarity[i, :] = merged
         similarity[:, i] = merged
         sizes[i] += sizes[j]
-        members[i] = sorted(members[i] + members[j])  # type: ignore[operator]
-        members[j] = None
         active[j] = False
-    groups = [sorted(m) for m in members if m is not None and len(m) >= 2]
+    cut = _natural_cut([s for s, _, _ in performed], threshold)
+    # Replay the merges above the cut on fresh singletons: the same order, so the same clusters.
+    for sim, i, j in performed:
+        if sim < cut:
+            break
+        members[i] = sorted((members[i] or []) + (members[j] or []))
+        members[j] = None
+    groups = [m for m in members if m is not None and len(m) >= 2]
     return sorted(groups, key=lambda group: group[0])
+
+
+def _natural_cut(similarities: list[float], threshold: float) -> float:
+    """The lowest merge similarity that is still applied."""
+    if not similarities:
+        return threshold
+    best_gap, cut_index = 0.0, None
+    for k in range(len(similarities)):
+        following = similarities[k + 1] if k + 1 < len(similarities) else _ABSOLUTE_SIMILARITY_FLOOR - _MIN_NATURAL_GAP
+        gap = similarities[k] - following
+        if gap > best_gap + 1e-12:
+            best_gap, cut_index = gap, k
+    if cut_index is not None and best_gap >= _MIN_NATURAL_GAP:
+        return similarities[cut_index]
+    return threshold
 
 
 def _fallback_group_title(member_titles: list[str]) -> str:
@@ -132,6 +196,7 @@ def _deterministic_raw_groups(
     ]
 
 
+@_summarized('root regrouping')
 def _regroup_disconnected_roots(
     nodes: list[WorkItemNode],
     node_id_prefix: str,
@@ -275,7 +340,7 @@ def _regroup_disconnected_roots(
             f"Grouped {len(members)} previously-disconnected root section(s) under a new topical "
             f"'{group_node.title}' {group_type.value} -- structure only, no content invented."
         )
-        logger.warning(message)
+        logger.debug(message)
         warnings.append(
             IntegrityWarning.make(
                 WarningKind.ROOTS_REGROUPED,
@@ -350,7 +415,7 @@ def _regroup_disconnected_roots(
                     f"'{group_node.title}' {group_node.type.value} -- re-parented there instead of "
                     "falling through to the generic catch-all, structure only, no content invented."
                 )
-                logger.warning(message)
+                logger.debug(message)
                 warnings.append(
                     IntegrityWarning.make(
                         WarningKind.ROOTS_REGROUPED,
@@ -361,6 +426,7 @@ def _regroup_disconnected_roots(
                 )
 
 
+@_summarized('catch-all Epic')
 def _ensure_root_features_have_epic_parent(
     nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[IntegrityWarning]
 ) -> None:
@@ -420,7 +486,7 @@ def _ensure_root_features_have_epic_parent(
         "under a new catch-all root Epic to keep every Feature traceable to an Epic, structure "
         "only, no content invented."
     )
-    logger.warning(message)
+    logger.debug(message)
     warnings.append(
         IntegrityWarning.make(
             WarningKind.CATCHALL_EPIC_WRAP,
@@ -431,6 +497,7 @@ def _ensure_root_features_have_epic_parent(
     )
 
 
+@_summarized('requirement hierarchy repair')
 def _repair_requirement_hierarchy(
     nodes: list[WorkItemNode], node_id_prefix: str, warnings: list[IntegrityWarning]
 ) -> None:
@@ -563,7 +630,7 @@ def _repair_requirement_hierarchy(
             f'Requirement(s) near "{requirement.title}" had no Feature ancestor -- inserted a '
             f"grouping Feature {location} to keep the Epic -> Feature -> Requirement chain intact."
         )
-        logger.warning(message)
+        logger.debug(message)
         warnings.append(
             IntegrityWarning.make(
                 WarningKind.BRIDGE_FEATURE_SYNTHESIZED,
@@ -650,7 +717,7 @@ def _repair_requirement_hierarchy(
             f'"{node.title}" had {original_parent_label} -- re-parented under Feature '
             f'"{target.title}" to keep the Epic -> Feature -> Requirement chain intact.'
         )
-        logger.warning(message)
+        logger.debug(message)
         warnings.append(
             IntegrityWarning.make(
                 WarningKind.REPARENTED_TO_FEATURE,

@@ -1560,3 +1560,24 @@ def test_nodes_remember_the_heading_text_they_were_built_from_even_after_a_title
     assert requirement.title.startswith("Rewritten")
     assert requirement.source_title == "The system shall control volume."
     assert next(n for n in nodes if n.type == WorkItemType.FEATURE).source_title == "Audio Control"
+
+
+def test_repairing_many_requirements_logs_one_summary_not_one_warning_each(caplog) -> None:
+    # Prod: 50-60 WARNING lines per job ("... re-parented under Feature ... to keep the chain intact"), one per repaired
+    # item, on top of the same facts being kept as integrity warnings on the job. The per-item text is debug detail now
+    # and the stage logs one line with the count.
+    import logging
+
+    rows = [_row("Mislabeled Epic", "Epic", None, "1")] + [
+        _row(f"The system shall do thing {i}.", "Requirement", 0, f"1.{i}", has_shall=True) for i in range(1, 31)
+    ]
+    nodes, warnings = build_hierarchy_subtree(rows, "det0_")
+    with caplog.at_level(logging.DEBUG, logger="app.leveling.root_regrouping"):
+        _repair_requirement_hierarchy(nodes, "det0_", warnings)
+
+    repaired = [w for w in warnings if w.kind.value in ("reparented_to_feature", "bridge_feature_synthesized")]
+    assert len(repaired) >= 30  # every fact still reaches the job's warnings
+    loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert loud == []
+    summaries = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(summaries) == 1 and any(count in summaries[0].getMessage() for count in ("30", "31"))
