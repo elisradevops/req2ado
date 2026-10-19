@@ -40,6 +40,16 @@ describe('ChatPanel', () => {
     vi.mocked(useChatSocket).mockImplementation(() => undefined);
   });
 
+  it('tells the user when the model list cannot be loaded instead of silently showing an empty picker', async () => {
+    vi.mocked(chatApi.listModels).mockRejectedValue(new Error('proxy down'));
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByText(/could not load the model list/i)).toBeInTheDocument();
+  });
+
   it('renders a disabled message when disabled=true, without calling any chat API', async () => {
     render(
       <ToastProvider>
