@@ -25,6 +25,8 @@ export interface BackfillResult {
   seeded: number;
   skipped: number;
   skippedReasons: Record<string, number>;
+  /** Set only when the embedding-similarity index could not be updated: the exact-hash seeding still stands. */
+  dedupUpsertFailed?: boolean;
 }
 
 // Only Epic/Feature/Requirement-CATEGORY items are ever created by req2ado's
@@ -106,7 +108,7 @@ export class BackfillService {
     private readonly concurrency: number = 8,
   ) {}
 
-  async backfillAreaPath(areaPath: string, credential?: AdoRequestCredential): Promise<BackfillResult> {
+  async backfillAreaPath(areaPath: string, credential?: AdoRequestCredential, userId?: string): Promise<BackfillResult> {
     const project = areaPath.split('\\')[0];
     const ids = await this.mcpClient.queryIds({ 'System.AreaPath': areaPath }, project, credential);
     const result: BackfillResult = { scanned: 0, seeded: 0, skipped: 0, skippedReasons: {} };
@@ -210,8 +212,11 @@ export class BackfillService {
 
     if (dedupUpsertItems.length > 0) {
       try {
-        await this.ingestionClient.upsertDedupEntriesBatch(dedupUpsertItems);
+        // The submitting user: ingestion embeds with that user's own Open WebUI connection, and without it the call is
+        // refused (401) every time.
+        await this.ingestionClient.upsertDedupEntriesBatch(dedupUpsertItems, ...(userId ? [userId] : []));
       } catch (error) {
+        result.dedupUpsertFailed = true;
         // Same fail-open philosophy as confirm()'s own dedup upsert: a
         // batch failure here only means these items won't be caught by
         // FUTURE embedding-similarity dedup checks -- it must not fail the

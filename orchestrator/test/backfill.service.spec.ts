@@ -60,6 +60,42 @@ describe('BackfillService.backfillAreaPath', () => {
     ]);
   });
 
+  it('sends the submitting user to the dedup upsert, so ingestion can embed with that user\'s own connection', async () => {
+    const upsertDedupEntriesBatch = jest.fn().mockResolvedValue(undefined);
+    const service = new BackfillService(
+      {
+        queryIds: jest.fn().mockResolvedValue([100]),
+        getWorkItemsBatch: jest.fn().mockResolvedValue([{ id: 100, type: 'Feature', fields: { 'System.Title': 'T1', 'System.Description': 'D1' }, parentId: null }]),
+        discoverWorkItemTypeCategories: jest.fn().mockResolvedValue(CMMI_CATEGORIES),
+      } as any,
+      { upsertDedupEntriesBatch } as any,
+      { lookup: jest.fn().mockResolvedValue(null), record: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+
+    await service.backfillAreaPath('Project\\Area1', undefined, 'user-1');
+
+    expect(upsertDedupEntriesBatch).toHaveBeenCalledWith(expect.any(Array), 'user-1');
+  });
+
+  it('reports a failed dedup upsert in the result (the exact-hash seeding still stands), and not otherwise', async () => {
+    const make = (upsert: jest.Mock) =>
+      new BackfillService(
+        {
+          queryIds: jest.fn().mockResolvedValue([100]),
+          getWorkItemsBatch: jest.fn().mockResolvedValue([{ id: 100, type: 'Feature', fields: { 'System.Title': 'T1', 'System.Description': 'D1' }, parentId: null }]),
+          discoverWorkItemTypeCategories: jest.fn().mockResolvedValue(CMMI_CATEGORIES),
+        } as any,
+        { upsertDedupEntriesBatch: upsert } as any,
+        { lookup: jest.fn().mockResolvedValue(null), record: jest.fn().mockResolvedValue(undefined) } as any,
+      );
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const failed = await make(jest.fn().mockRejectedValue(new Error('401'))).backfillAreaPath('Project\\Area1', undefined, 'user-1');
+    expect(failed).toMatchObject({ seeded: 1, dedupUpsertFailed: true });
+    const fine = await make(jest.fn().mockResolvedValue(undefined)).backfillAreaPath('Project\\Area1', undefined, 'user-1');
+    expect(fine.dedupUpsertFailed).toBeUndefined();
+  });
+
   it('strips ADO rich-text HTML from the description before sending it as dedup text, but hashes the raw HTML for the idempotency sourceHash', async () => {
     // Regression for a confirmed real gap: ADO's System.Description is rich-
     // text HTML ("<p>...</p>\n"), unlike req2ado's own always-plain
@@ -320,6 +356,7 @@ describe('BackfillService.backfillAreaPath', () => {
       seeded: 1,
       skipped: 0,
       skippedReasons: {},
+      dedupUpsertFailed: true, // reported, so the caller does not record the area path as backfilled
     });
     consoleErrorSpy.mockRestore();
   });

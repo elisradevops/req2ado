@@ -76,12 +76,19 @@ async function maybeBackfillAreaPath(
   backfillService: BackfillService,
   areaPath: string,
   credential: AdoRequestCredential | undefined,
+  userId?: string,
 ): Promise<void> {
   try {
     const existing = await prisma.areaPathBackfill.findUnique({ where: { areaPath } });
     const isStale = !existing || Date.now() - existing.lastBackfilledAt.getTime() > AREA_PATH_BACKFILL_STALE_AFTER_MS;
     if (!isStale) return;
-    await backfillService.backfillAreaPath(areaPath, credential);
+    const result = await backfillService.backfillAreaPath(areaPath, credential, userId);
+    if (result?.dedupUpsertFailed) {
+      // The similarity index was not updated: do not record the area path as done, the next job tries again.
+      // eslint-disable-next-line no-console -- worker process logging, not app logging
+      console.error(`Area-path backfill for ${areaPath} could not update the dedup index; it will be retried by the next job`);
+      return;
+    }
     await prisma.areaPathBackfill.upsert({
       where: { areaPath },
       create: { areaPath, lastBackfilledAt: new Date() },
@@ -680,7 +687,7 @@ export async function runPipelineJob(
             job.userId ?? undefined,
             ...(visionPlan ? [model, visionPlan.skipReason] : []),
           ),
-      maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential),
+      maybeBackfillAreaPath(deps.prisma, deps.backfillService, job.areaPath, credential, job.userId ?? undefined),
     ]);
 
     // Figure storage happens during /ingest, not /level -- a store()
