@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Literal, Protocol
@@ -31,7 +32,7 @@ from app.request_identity import redact_identity
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "kb-profile-3"
+SCHEMA_VERSION = "kb-profile-4"
 WINDOW_CHARS = 10_000
 WINDOW_OVERLAP = 500
 RELEVANCE_EXCERPT_CHARS = 1_500
@@ -58,6 +59,9 @@ class Category(BaseModel):
     name: str
     pass_condition: str | None = None
     sources: list[str]
+    # The document categories this entry stands for, as the documents wrote them (it is one of them). Lets a rebuild keep
+    # the groups it made; absent (empty) on profiles stored before it existed.
+    merged_from: list[str] = Field(default_factory=list)
 
 
 class TypeDefinition(BaseModel):
@@ -242,9 +246,7 @@ def build_profile(
             )
     profile = merge_document_profiles(extracted, model, version, statuses)
     stats: dict = {}
-    profile.categories, cut = consolidate_categories(
-        profile.categories, client, user_id, [c.name for c in previous.categories] if previous else None, stats,
-    )
+    profile.categories, cut = consolidate_categories(profile.categories, client, user_id, previous, stats)
     profile.truncated = profile.truncated or cut
     # Counts only: category names are the company's own material.
     logger.info(
@@ -257,20 +259,28 @@ def build_profile(
     return profile
 
 
+def _representative_key(member: Category, preferred: set[str]):
+    """Which member of a group speaks for it: the previous profile's name first (a rebuild keeps names), then the wording more
+    documents used, then a plainly written one (capitalised, shorter), then alphabetical. A rule over the documents' own
+    words: nothing the model wrote is used, so sampling cannot rename a quality."""
+    return (_key(member.name) not in preferred, -len(member.sources), 0 if member.name[:1].isupper() else 1, len(member.name), member.name.casefold(), member.name)
+
+
 def consolidate_categories(
-    categories: list[Category], client: object, user_id: str | None = None, preferred_names: list[str] | None = None,
+    categories: list[Category], client: object, user_id: str | None = None, previous: "KbProfile | None" = None,
     stats: dict | None = None,
 ) -> tuple[list[Category], bool]:
-    """The merged categories as a canonical list decided by the model and made stable by agreement.
+    """The merged categories as a canonical list: the model decides which categories judge the same quality, a rule names them.
 
-    The model says which names mean the same quality. It is asked CONSOLIDATION_RUNS times; two categories are merged only when
-    MORE THAN HALF of the answering runs placed them together, the merged entry takes the name most runs gave it (a previous
-    profile's name wins a tie, then alphabetical order), and its pass condition is the most common one under that name. The
-    outcome is a function of what the runs said, not of their order, and one odd answer cannot change it. Every entry keeps the
-    union of its sources, an entry no run grouped keeps its own name, and a list over MAX_SCORING_CATEGORIES is cut
-    (best-supported first) as a last safeguard. Without the model (not offered, or every run failing) the deterministic list is
-    only capped. Returns (categories, cut). `stats`, when given, receives runs_asked, runs_answered and contested_pairs (pairs
-    that some, but not all, answering runs grouped) for the build's log line."""
+    The model is asked CONSOLIDATION_RUNS times which input categories belong together. Two are merged when MORE THAN HALF of the
+    answering runs grouped them; pairs are joined transitively. A rebuild first re-applies the groups of the `previous` profile
+    (for members the documents still name), so what was decided stays decided. Each resulting entry is named, and given its pass
+    condition, by `_representative_key` from its members as the documents wrote them; it keeps the union of their sources and
+    lists them in `merged_from`. An entry no run grouped is its own. The outcome depends on what the runs said, not on their
+    order, and names are unique because members are. A list over MAX_SCORING_CATEGORIES is cut (best-supported first) as a last
+    safeguard. Without the model (not offered, or every run failing) the deterministic list is only capped. Returns
+    (categories, cut). `stats`, when given, receives runs_asked, runs_answered and contested_pairs (pairs that some, but not
+    all, answering runs grouped) for the build's log line."""
     def capped(entries: list[Category]) -> tuple[list[Category], bool]:
         ordered = sorted(entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name))
         return ordered[:MAX_SCORING_CATEGORIES], len(ordered) > MAX_SCORING_CATEGORIES
@@ -280,10 +290,12 @@ def consolidate_categories(
         return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
     by_key = {_key(c.name): c for c in categories}
     keys = list(by_key)
+    position = {k: i for i, k in enumerate(keys)}
     payload = [{"name": c.name, "pass_condition": c.pass_condition or ""} for c in categories]
-    extra = {"preferred_names": list(preferred_names)} if preferred_names else {}
+    previous_names = [c.name for c in previous.categories] if previous else []
+    extra = {"preferred_names": previous_names} if previous_names else {}
 
-    runs: list[list[tuple[str, str | None, list[str]]]] = []  # per run: (name, condition, member keys), every key exactly once
+    runs: list[list[list[str]]] = []  # per answering run: groups of member keys, every key exactly once
     for _ in range(CONSOLIDATION_RUNS):
         try:
             groups = consolidate(payload, MAX_SCORING_CATEGORIES, user_id=user_id, **extra)
@@ -291,15 +303,13 @@ def consolidate_categories(
             logger.warning("KB category consolidation run failed: %s", redact_identity(" ".join(str(exc).split()))[:200])
             continue
         placed: set[str] = set()
-        parsed: list[tuple[str, str | None, list[str]]] = []
+        parsed: list[list[str]] = []
         for group in groups or []:
             members = [k for k in dict.fromkeys(_key(m) for m in group.get("merged_from", [])) if k in by_key and k not in placed]
-            if not members:
-                continue
-            placed.update(members)
-            name = " ".join(str(group.get("name", "")).split()) or by_key[members[0]].name
-            parsed.append((name, (group.get("pass_condition") or None), members))
-        parsed += [(by_key[k].name, by_key[k].pass_condition, [k]) for k in keys if k not in placed]
+            if members:
+                placed.update(members)
+                parsed.append(members)
+        parsed += [[k] for k in keys if k not in placed]
         runs.append(parsed)
     if stats is not None:
         stats.update(runs_asked=CONSOLIDATION_RUNS, runs_answered=len(runs))
@@ -307,7 +317,6 @@ def consolidate_categories(
         logger.warning("KB category consolidation gave no usable answer; keeping the capped deterministic list")
         return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
 
-    # Merge a pair only when more than half of the runs put it together; connected pairs form one entry.
     parent = {k: k for k in keys}
 
     def find(k: str) -> str:
@@ -316,38 +325,46 @@ def consolidate_categories(
             k = parent[k]
         return k
 
+    def union(a: str, b: str) -> None:
+        root_a, root_b = find(a), find(b)
+        if root_a != root_b:  # the earlier input is the root, so the outcome never depends on call order
+            low, high = sorted((root_a, root_b), key=position.__getitem__)
+            parent[high] = low
+
+    # What the previous profile decided stays decided, for members the documents still name.
+    for earlier in previous.categories if previous else []:
+        still_named = [k for k in (_key(m) for m in earlier.merged_from) if k in by_key]
+        for other in still_named[1:]:
+            union(still_named[0], other)
+
     together: dict[tuple[str, str], int] = {}
     for run in runs:
-        for _name, _condition, members in run:
+        for members in run:
             for i, a in enumerate(members):
                 for b in members[i + 1:]:
-                    pair = (a, b) if keys.index(a) < keys.index(b) else (b, a)
+                    pair = (a, b) if position[a] < position[b] else (b, a)
                     together[pair] = together.get(pair, 0) + 1
     if stats is not None:
         stats["contested_pairs"] = sum(1 for count in together.values() if count < len(runs))
-    for (a, b), count in together.items():
+    for (a, b), count in sorted(together.items()):
         if count * 2 > len(runs):
-            parent[find(b)] = find(a)
+            union(a, b)
+
     components: dict[str, list[str]] = {}
     for k in keys:
         components.setdefault(find(k), []).append(k)
-
-    preferred = {_key(n) for n in preferred_names or []}
+    preferred = {_key(n) for n in previous_names}
     entries: list[Category] = []
-    for members in components.values():
-        member_set = set(members)
-        names: dict[str, int] = {}
-        conditions: dict[str, dict[str, int]] = {}
-        for run in runs:
-            best = max(run, key=lambda g: (len(member_set & set(g[2])), -run.index(g)))  # the run's group that overlaps this entry most
-            names[best[0]] = names.get(best[0], 0) + 1
-            if best[1]:
-                conditions.setdefault(best[0], {})
-                conditions[best[0]][best[1]] = conditions[best[0]].get(best[1], 0) + 1
-        name = min(names, key=lambda n: (-names[n], _key(n) not in preferred, n.casefold(), n))
-        said = conditions.get(name, {})
-        condition = min(said, key=lambda c: (-said[c], c)) if said else next((by_key[k].pass_condition for k in members if by_key[k].pass_condition), None)
-        entries.append(Category(name=name, pass_condition=condition, sources=sorted({src for k in members for src in by_key[k].sources})))
+    for member_keys in components.values():
+        members = [by_key[k] for k in member_keys]
+        ranked = sorted(members, key=lambda m: _representative_key(m, preferred))
+        condition = next((m.pass_condition for m in ranked if m.pass_condition), None)
+        entries.append(
+            Category(
+                name=ranked[0].name, pass_condition=condition,
+                sources=sorted({src for m in members for src in m.sources}), merged_from=[m.name for m in members],
+            )
+        )
     return capped(entries)
 
 
@@ -417,22 +434,35 @@ class KbDocuments(Protocol):
     def get_document(self, user_id: str, source_file: str) -> tuple[str | None, bool]: ...
 
 
+_build_locks: dict[str, threading.Lock] = {}
+_build_locks_guard = threading.Lock()
+
+
+def _lock_for(user_id: str) -> threading.Lock:
+    with _build_locks_guard:
+        return _build_locks.setdefault(user_id, threading.Lock())
+
+
 def ensure_profile(user_id: str, kb: KbDocuments, store: ProfileStore, client: KbProfileClient, *, model: str) -> KbProfile | None:
-    """The user's profile: the stored one while nothing changed, otherwise a rebuilt (and stored) one; None with no KB."""
-    texts: dict[str, str] = {}
-    for name in kb.list_documents(user_id):
-        text, _truncated = kb.get_document(user_id, name)
-        if text:
-            texts[name] = text
-    if not texts:
-        return None
-    existing = store.get(user_id)
-    if existing is not None and existing.version == profile_version(texts, model):
-        return existing
-    profile = build_profile(texts, client, model=model, user_id=user_id, previous=existing)
-    profile.built_at = datetime.now(timezone.utc).isoformat()
-    store.put(user_id, profile)
-    return profile
+    """The user's profile: the stored one while nothing changed, otherwise a rebuilt (and stored) one; None with no KB.
+
+    One build at a time per user: two jobs starting together used to build two different profiles (the model is sampled), each
+    scoring with its own, the last write winning. The second request now waits and reads the stored one."""
+    with _lock_for(user_id):
+        texts: dict[str, str] = {}
+        for name in kb.list_documents(user_id):
+            text, _truncated = kb.get_document(user_id, name)
+            if text:
+                texts[name] = text
+        if not texts:
+            return None
+        existing = store.get(user_id)
+        if existing is not None and existing.version == profile_version(texts, model):
+            return existing
+        profile = build_profile(texts, client, model=model, user_id=user_id, previous=existing)
+        profile.built_at = datetime.now(timezone.utc).isoformat()
+        store.put(user_id, profile)
+        return profile
 
 
 class ChromaProfileStore:
