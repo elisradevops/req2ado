@@ -29,11 +29,14 @@ from app.request_identity import redact_identity
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "kb-profile-1"
+SCHEMA_VERSION = "kb-profile-2"
 WINDOW_CHARS = 10_000
 WINDOW_OVERLAP = 500
 RELEVANCE_EXCERPT_CHARS = 1_500
 MAX_CATEGORIES = 40
+# What scoring and the authoring standard use: documents name the same quality differently, and every extra category
+# multiplies the size of each scoring answer (21 overlapping names made 50-requirement calls outlast the upstream's 300 s).
+MAX_SCORING_CATEGORIES = 8
 MAX_RULES = 60
 MAX_GLOSSARY = 80
 
@@ -109,6 +112,9 @@ class KbProfileClient(Protocol):
     def judge_kb_document_relevance(self, name: str, excerpt: str, user_id: str | None = None) -> dict: ...
 
     def extract_kb_document_profile(self, name: str, window_text: str, user_id: str | None = None) -> dict: ...
+
+    # Optional: consolidate_kb_categories(categories, max_categories, user_id=None) -> [{name, pass_condition, merged_from}].
+    # A client without it, or one that fails, leaves the deterministic list (capped).
 
 
 class ProfileStore(Protocol):
@@ -222,7 +228,47 @@ def build_profile(documents: dict[str, str], client: KbProfileClient, *, model: 
                     type_definitions=counts["type_definitions"], glossary=counts["glossary"],
                 )
             )
-    return merge_document_profiles(extracted, model, version, statuses)
+    profile = merge_document_profiles(extracted, model, version, statuses)
+    profile.categories, cut = consolidate_categories(profile.categories, client, user_id)
+    profile.truncated = profile.truncated or cut
+    return profile
+
+
+def consolidate_categories(categories: list[Category], client: object, user_id: str | None = None) -> tuple[list[Category], bool]:
+    """The merged categories as a short canonical list: qualities that several documents name differently become one entry
+    (the model decides which names mean the same), every entry keeps the union of its sources, an entry the model did not
+    place keeps its own name, and the list never exceeds MAX_SCORING_CATEGORIES (best-supported first). Without the model
+    (not offered, or failing) the deterministic list is only capped. Returns (categories, cut)."""
+    def capped(entries: list[Category]) -> tuple[list[Category], bool]:
+        ordered = sorted(entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name))
+        return ordered[:MAX_SCORING_CATEGORIES], len(ordered) > MAX_SCORING_CATEGORIES
+
+    consolidate = getattr(client, "consolidate_kb_categories", None)
+    if len(categories) < 2 or consolidate is None:
+        return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
+    try:
+        groups = consolidate([{"name": c.name, "pass_condition": c.pass_condition or ""} for c in categories], MAX_SCORING_CATEGORIES, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001 -- the merge only shortens the list; the profile is built either way
+        logger.warning("KB category consolidation failed; keeping the capped deterministic list: %s", redact_identity(" ".join(str(exc).split()))[:200])
+        return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
+    by_key = {_key(c.name): c for c in categories}
+    placed: set[str] = set()
+    merged: dict[str, Category] = {}
+    for group in groups or []:
+        members = [by_key[k] for k in (_key(m) for m in group.get("merged_from", [])) if k in by_key and k not in placed]
+        if not members:
+            continue
+        placed.update(_key(m.name) for m in members)
+        sources = sorted({s for m in members for s in m.sources})
+        name = " ".join(str(group.get("name", "")).split()) or members[0].name
+        condition = group.get("pass_condition") or next((m.pass_condition for m in members if m.pass_condition), None)
+        existing = merged.get(_key(name))
+        if existing is not None:
+            existing.sources = sorted(set(existing.sources) | set(sources))
+        else:
+            merged[_key(name)] = Category(name=name, pass_condition=condition or None, sources=sources)
+    entries = list(merged.values()) + [c for k, c in by_key.items() if k not in placed]
+    return capped(entries)
 
 
 def merge_document_profiles(extracted: dict[str, dict], model: str, version: str, statuses: list[DocumentStatus] | None = None) -> KbProfile:

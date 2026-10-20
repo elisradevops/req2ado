@@ -22,6 +22,7 @@ from app.survey._response_schemas import (
     duplicate_pair_verdict_schema,
     leftover_assignment_schema,
     kb_document_profile_schema,
+    kb_category_consolidation_schema,
     kb_document_relevance_schema,
     root_group_names_schema,
     rule_conformance_schema,
@@ -1955,6 +1956,26 @@ class OrchestratorLlmClient:
             "rules": [r for r in (parsed.get("rules") or []) if isinstance(r, str) and r.strip()],
             "glossary": [g for g in objects("glossary", "term", "definition") if g["term"].strip()],
         }
+
+    def consolidate_kb_categories(self, categories: list[dict], max_categories: int, user_id: str | None = None) -> list[dict]:
+        """Backs the KB profile's category merge (app.kb.profile): the same quality named differently by several documents
+        (Testable / Testability) becomes one entry. Returns [{name, pass_condition, merged_from}]; malformed entries are
+        dropped, an answer without a category list raises ValueError."""
+        system_prompt = load_prompt("consolidate_kb_categories")
+        parsed = self._chat_json(
+            system_prompt, json.dumps({"max_categories": max_categories, "categories": categories}, ensure_ascii=False),
+            schema=kb_category_consolidation_schema(), max_tokens=3000, user_id=user_id,
+        )
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("categories"), list):
+            raise ValueError(f"malformed JSON in LLM response content: {parsed!r}")
+        groups = []
+        for item in parsed["categories"]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip():
+                continue
+            members = [m for m in (item.get("merged_from") or []) if isinstance(m, str) and m.strip()]
+            if members:
+                groups.append({"name": " ".join(item["name"].split()), "pass_condition": " ".join(str(item.get("pass_condition") or "").split()), "merged_from": members})
+        return groups
 
     def judge_rule_conformance(self, rule: str, items: dict[str, str], user_id: str | None = None) -> dict[str, bool]:
         """Backs the KB conformance report (app.kb.conformance): does each item follow one stated writing rule? Returns

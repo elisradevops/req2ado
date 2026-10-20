@@ -11,6 +11,7 @@ import random
 import pytest
 
 from app.kb.profile import (
+    MAX_SCORING_CATEGORIES,
     SCHEMA_VERSION,
     InMemoryProfileStore,
     KbProfile,
@@ -151,8 +152,11 @@ def test_the_profile_is_capped_with_a_stable_ranking_and_says_so() -> None:
     many = "\n".join(f"CAT: Category {i:03d} | cond" for i in range(80))
     shared = "CAT: Category 079 | cond"
     profile = build_profile({"a.pptx": many, "b.pptx": shared}, FakeProfileClient(), model="m1")
-    assert profile.truncated is True and len(profile.categories) == 40
+    assert profile.truncated is True and len(profile.categories) == MAX_SCORING_CATEGORIES
     assert "Category 079" in {c.name for c in profile.categories}  # supported by two documents: ranks first
+    # The merge itself keeps at most 40 before the short list is made.
+    merged = merge_document_profiles({"a.pptx": {"categories": [{"name": f"Category {i:03d}", "pass_condition": None} for i in range(80)], "rules": [], "glossary": [], "type_definitions": []}}, "m1", "v")
+    assert merged.truncated is True and len(merged.categories) == 40
 
 
 def test_the_version_changes_with_the_documents_and_the_model_only() -> None:
