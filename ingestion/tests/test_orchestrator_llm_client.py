@@ -4051,3 +4051,18 @@ def test_consolidate_kb_categories_rejects_a_malformed_answer() -> None:
     client._transport = _mock_transport({"content": json.dumps({"nope": 1})})
     with pytest.raises(ValueError):
         client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 8)
+
+
+def test_consolidate_kb_categories_offers_the_previous_names_only_when_there_are_some() -> None:
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"content": json.dumps({"categories": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 16)
+    client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 16, preferred_names=["Testable"])
+    first, second = (json.loads(b["messages"][1]["content"]) for b in bodies)
+    assert "preferred_names" not in first and second["preferred_names"] == ["Testable"]

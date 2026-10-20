@@ -1960,13 +1960,18 @@ class OrchestratorLlmClient:
             "glossary": [g for g in objects("glossary", "term", "definition") if g["term"].strip()],
         }
 
-    def consolidate_kb_categories(self, categories: list[dict], max_categories: int, user_id: str | None = None) -> list[dict]:
+    def consolidate_kb_categories(
+        self, categories: list[dict], max_categories: int, user_id: str | None = None, preferred_names: list[str] | None = None,
+    ) -> list[dict]:
         """Backs the KB profile's category merge (app.kb.profile): the same quality named differently by several documents
         (Testable / Testability) becomes one entry. Returns [{name, pass_condition, merged_from}]; malformed entries are
         dropped, an answer without a category list raises ValueError."""
         system_prompt = load_prompt("consolidate_kb_categories")
         parsed = self._chat_json(
-            system_prompt, json.dumps({"max_categories": max_categories, "categories": categories}, ensure_ascii=False),
+            system_prompt, json.dumps(
+                {"max_categories": max_categories, "categories": categories, **({"preferred_names": preferred_names} if preferred_names else {})},
+                ensure_ascii=False,
+            ),
             schema=kb_category_consolidation_schema(), max_tokens=3000, user_id=user_id,
         )
         if not isinstance(parsed, dict) or not isinstance(parsed.get("categories"), list):
