@@ -271,15 +271,17 @@ def test_concurrent_calls_get_their_own_lanes_and_give_them_back(live) -> None: 
         assert DraftingDisplay(emitter, ROWS).lane == 0
 
 
-def test_worker_threads_see_the_job_only_when_live_progress_is_on(monkeypatch) -> None:  # noqa: ANN001
+def test_worker_threads_always_see_the_job(monkeypatch) -> None:  # noqa: ANN001
+    # Workers run under a copy of the caller's context whatever the live-progress flag says: the run's cancel token
+    # (app.job_cancel) must reach them, and log lines from a worker then carry the job id too.
     def seen_job(_chunk):  # noqa: ANN001, ANN202
         return current_job_id()
 
-    for flag, expected in ((True, JOB), (False, None)):
+    for flag in (True, False):
         monkeypatch.setattr(client_module.settings, "live_progress", flag)
         with job_id_scope(JOB):
             outcomes = list(run_chunks_bounded([1, 2, 3], seen_job, 2))
-        assert [o.value for o in outcomes] == [expected] * 3
+        assert [o.value for o in outcomes] == [JOB] * 3
 
 
 def test_streamed_items_move_the_pass_count_during_the_call(

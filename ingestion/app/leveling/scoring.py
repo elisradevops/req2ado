@@ -86,6 +86,19 @@ def _build_criteria_context(criteria_retriever: CriteriaRetriever, nodes: list[W
 # far under any gateway ceiling -- and a lost batch costs 50 nodes, not 150.
 # It also gives the screen real progress every minute or so.
 _SCORING_CHUNK_NODE_COUNT = 50
+# What one answer is worth: nodes x categories. 50 nodes x 7 categories (the built-in list) is the size known to finish in
+# well under a minute; a list of 21 overlapping categories tripled it and every call of a slow model outlasted the upstream's
+# 300 s. The batch therefore shrinks as the list grows (never below _SCORING_CHUNK_NODE_FLOOR).
+_SCORING_OUTPUT_BUDGET = 300
+_SCORING_CHUNK_NODE_FLOOR = 10
+
+
+def scoring_chunk_node_limit(category_count: int | None) -> int:
+    """How many requirements one scoring call may carry, given how many categories each is judged against."""
+    if not category_count or category_count <= 0:
+        return _SCORING_CHUNK_NODE_COUNT
+    return max(_SCORING_CHUNK_NODE_FLOOR, min(_SCORING_CHUNK_NODE_COUNT, _SCORING_OUTPUT_BUDGET // category_count))
+
 # A chunk also closes once its description text would exceed this many
 # characters (a lone oversized item still gets its own chunk): a few huge
 # descriptions make a call slow regardless of the node count. A typical chunk
@@ -100,7 +113,9 @@ _SCORING_CHUNK_CHAR_BUDGET = 20_000
 _T = TypeVar("_T")
 
 
-def _chunk_by_count_and_chars(items: Sequence[_T], size_of: Callable[[_T], int]) -> list[list[_T]]:
+def _chunk_by_count_and_chars(
+    items: Sequence[_T], size_of: Callable[[_T], int], node_limit: int = _SCORING_CHUNK_NODE_COUNT,
+) -> list[list[_T]]:
     """Splits `items` (document order preserved) into chunks of at most
     _SCORING_CHUNK_NODE_COUNT items AND at most _SCORING_CHUNK_CHAR_BUDGET
     total `size_of` characters; an item larger than the budget on its own
@@ -111,7 +126,7 @@ def _chunk_by_count_and_chars(items: Sequence[_T], size_of: Callable[[_T], int])
     for item in items:
         item_chars = size_of(item)
         if current and (
-            len(current) >= _SCORING_CHUNK_NODE_COUNT or current_chars + item_chars > _SCORING_CHUNK_CHAR_BUDGET
+            len(current) >= node_limit or current_chars + item_chars > _SCORING_CHUNK_CHAR_BUDGET
         ):
             chunks.append(current)
             current = []
@@ -285,7 +300,10 @@ def _score_all_requirements(
     # already in hand before this loop starts, so chunk_index/chunk_count
     # and nodes_done/nodes_total below are real progress, not a guess.
     total_nodes = len(representative_nodes)
-    chunks = _chunk_by_count_and_chars(representative_nodes, lambda node: len(node.description))
+    chunks = _chunk_by_count_and_chars(
+        representative_nodes, lambda node: len(node.description),
+        node_limit=scoring_chunk_node_limit(len(category_checklist) if category_checklist else None),
+    )
     total_chunks = len(chunks)
     # Chunks are no longer a fixed node count, so cumulative progress is the
     # running sum of earlier chunk sizes rather than index * chunk size.

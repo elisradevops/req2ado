@@ -33,3 +33,33 @@ def test_the_system_prompt_carries_the_note_and_is_unchanged_without_one() -> No
     assert _build_system_prompt(ITEM, None, None) == base
     with_note = _build_system_prompt(ITEM, None, "WEAKEST NOTE.")
     assert "WEAKEST NOTE." in with_note and with_note.startswith(base.split("Reply conversationally")[0])
+
+
+import logging
+
+import pytest
+
+from app.chat.chat_service import run_chat_turn
+from tests.chat.test_chat_service import _FakeChatClient, _FakePublisher
+
+
+@pytest.mark.asyncio
+async def test_a_chat_turn_logs_which_categories_it_targeted_without_any_item_text(caplog) -> None:
+    item = {**ITEM, "qualityCategoryScores": {"Clear and unambiguous": 42, "Testable": 88, "Implementable": 61}}
+    with caplog.at_level(logging.INFO, logger="app.chat.chat_service"):
+        await run_chat_turn(
+            "job-9", "n7", item, [], "make it clearer", "m", None, None, None, _FakeChatClient(["ok"]), _FakePublisher(), PROFILE,
+        )
+    line = next(r.getMessage() for r in caplog.records if "chat turn" in r.getMessage())
+    assert "job=job-9" in line and "node=n7" in line
+    assert "Clear and unambiguous=42" in line and "Implementable=61" in line and "Testable" not in line
+    assert "profile=yes" in line
+    assert "receiver shall lock" not in line and "make it clearer" not in line  # never the item's or the user's text
+
+
+@pytest.mark.asyncio
+async def test_a_chat_turn_without_weak_categories_says_so(caplog) -> None:
+    with caplog.at_level(logging.INFO, logger="app.chat.chat_service"):
+        await run_chat_turn("job-9", "n7", ITEM, [], "hi", "m", None, None, None, _FakeChatClient(["ok"]), _FakePublisher(), None)
+    line = next(r.getMessage() for r in caplog.records if "chat turn" in r.getMessage())
+    assert "weakest=none" in line and "profile=no" in line

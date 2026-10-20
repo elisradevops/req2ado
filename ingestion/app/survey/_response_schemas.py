@@ -693,3 +693,31 @@ def rule_conformance_schema() -> dict:
             "additionalProperties": False,
         },
     }
+
+
+def kb_category_consolidation_schema() -> dict:
+    """consolidate_kb_categories: the knowledge base's quality categories merged by meaning into a short list, each with
+    one pass condition and the names it replaces."""
+    return {
+        "name": "kb_category_consolidation",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "categories": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "pass_condition": {"type": "string"},
+                            "merged_from": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["name", "pass_condition", "merged_from"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["categories"],
+            "additionalProperties": False,
+        },
+    }

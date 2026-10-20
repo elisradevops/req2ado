@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Callable, NamedTuple, Protocol
 if TYPE_CHECKING:
     from app.debug_capture import DebugCapture
 
+from app.job_cancel import submit_in_context
 from app.canonical.model import Block, BlockKind, CanonicalDoc, Figure, SourceRef, Table, plain_text_rows
 from app.distillation.description import assemble_description
 from app.distillation.title import extract_baseline_title, title_is_low_quality
@@ -2437,7 +2438,7 @@ def build_survey_tree(
             # a sequential run would produce regardless of which branch's
             # LLM call happens to come back first.
             with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
-                futures = [executor.submit(_run_branch, i, branch_blocks) for i, branch_blocks in enumerate(branches)]
+                futures = [submit_in_context(executor, _run_branch, i, branch_blocks) for i, branch_blocks in enumerate(branches)]
                 branch_skeletons = [future.result() for future in futures]
         blocks_done = running_total
 
@@ -2559,8 +2560,8 @@ def build_survey_tree(
     else:
         with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
             content_futures = [
-                executor.submit(
-                    _author_branch_content, skeleton, analysis_client, figure_table_ids_by_local_id,
+                submit_in_context(
+                    executor, _author_branch_content, skeleton, analysis_client, figure_table_ids_by_local_id,
                     title_distillation_client, user_id=user_id,
                 )
                 for skeleton in branch_skeletons
@@ -3930,7 +3931,7 @@ def _map_figures_tables_to_nodes(
             return [_run_mapping_batch(batch, map_fn, user_id=user_id) for batch in batches]
         with ThreadPoolExecutor(max_workers=branch_concurrency) as executor:
             futures = [
-                executor.submit(_run_mapping_batch, batch, map_fn, user_id=user_id) for batch in batches
+                submit_in_context(executor, _run_mapping_batch, batch, map_fn, user_id=user_id) for batch in batches
             ]
             return [future.result() for future in futures]
 

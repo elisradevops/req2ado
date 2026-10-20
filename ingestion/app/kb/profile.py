@@ -29,11 +29,17 @@ from app.request_identity import redact_identity
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "kb-profile-1"
+SCHEMA_VERSION = "kb-profile-3"
 WINDOW_CHARS = 10_000
 WINDOW_OVERLAP = 500
 RELEVANCE_EXCERPT_CHARS = 1_500
 MAX_CATEGORIES = 40
+# The model decides which categories exist (it merges the ones that judge the same quality); this is only a safety ceiling for a
+# list that would make scoring answers too large. Scoring batches already shrink as the list grows (scoring_chunk_node_limit).
+MAX_SCORING_CATEGORIES = 16
+# The merge is asked this many times and only what most runs agree on is kept: Claude and GPT-5.x are forced to temperature 1 by the
+# proxy, so one answer is a sample, while the agreement of three is stable.
+CONSOLIDATION_RUNS = 3
 MAX_RULES = 60
 MAX_GLOSSARY = 80
 
@@ -110,6 +116,10 @@ class KbProfileClient(Protocol):
 
     def extract_kb_document_profile(self, name: str, window_text: str, user_id: str | None = None) -> dict: ...
 
+    # Optional: consolidate_kb_categories(categories, max_categories, user_id=None, preferred_names=None)
+    #   -> [{name, pass_condition, merged_from}].
+    # A client without it, or one that fails, leaves the deterministic list (capped).
+
 
 class ProfileStore(Protocol):
     def get(self, user_id: str) -> KbProfile | None: ...
@@ -184,8 +194,11 @@ def _union(into: dict, extracted: dict) -> None:
             into["type_definitions"].append({"item_type": kind, "text": text})
 
 
-def build_profile(documents: dict[str, str], client: KbProfileClient, *, model: str, user_id: str | None = None) -> KbProfile:
-    """Maps every document, then merges. Never raises for a document: each ends with a recorded status."""
+def build_profile(
+    documents: dict[str, str], client: KbProfileClient, *, model: str, user_id: str | None = None, previous: KbProfile | None = None,
+) -> KbProfile:
+    """Maps every document, then merges. Never raises for a document: each ends with a recorded status. `previous` (the profile
+    this one replaces) only lends its category names to the merge, so a rebuild keeps names unless the content changed."""
     version = profile_version(documents, model)
     extracted: dict[str, dict] = {}
     statuses: list[DocumentStatus] = []
@@ -222,7 +235,98 @@ def build_profile(documents: dict[str, str], client: KbProfileClient, *, model: 
                     type_definitions=counts["type_definitions"], glossary=counts["glossary"],
                 )
             )
-    return merge_document_profiles(extracted, model, version, statuses)
+    profile = merge_document_profiles(extracted, model, version, statuses)
+    profile.categories, cut = consolidate_categories(profile.categories, client, user_id, [c.name for c in previous.categories] if previous else None)
+    profile.truncated = profile.truncated or cut
+    return profile
+
+
+def consolidate_categories(
+    categories: list[Category], client: object, user_id: str | None = None, preferred_names: list[str] | None = None,
+) -> tuple[list[Category], bool]:
+    """The merged categories as a canonical list decided by the model and made stable by agreement.
+
+    The model says which names mean the same quality. It is asked CONSOLIDATION_RUNS times; two categories are merged only when
+    MORE THAN HALF of the answering runs placed them together, the merged entry takes the name most runs gave it (a previous
+    profile's name wins a tie, then alphabetical order), and its pass condition is the most common one under that name. The
+    outcome is a function of what the runs said, not of their order, and one odd answer cannot change it. Every entry keeps the
+    union of its sources, an entry no run grouped keeps its own name, and a list over MAX_SCORING_CATEGORIES is cut
+    (best-supported first) as a last safeguard. Without the model (not offered, or every run failing) the deterministic list is
+    only capped. Returns (categories, cut)."""
+    def capped(entries: list[Category]) -> tuple[list[Category], bool]:
+        ordered = sorted(entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name))
+        return ordered[:MAX_SCORING_CATEGORIES], len(ordered) > MAX_SCORING_CATEGORIES
+
+    consolidate = getattr(client, "consolidate_kb_categories", None)
+    if len(categories) < 2 or consolidate is None:
+        return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
+    by_key = {_key(c.name): c for c in categories}
+    keys = list(by_key)
+    payload = [{"name": c.name, "pass_condition": c.pass_condition or ""} for c in categories]
+    extra = {"preferred_names": list(preferred_names)} if preferred_names else {}
+
+    runs: list[list[tuple[str, str | None, list[str]]]] = []  # per run: (name, condition, member keys), every key exactly once
+    for _ in range(CONSOLIDATION_RUNS):
+        try:
+            groups = consolidate(payload, MAX_SCORING_CATEGORIES, user_id=user_id, **extra)
+        except Exception as exc:  # noqa: BLE001 -- the merge only shortens the list; the profile is built either way
+            logger.warning("KB category consolidation run failed: %s", redact_identity(" ".join(str(exc).split()))[:200])
+            continue
+        placed: set[str] = set()
+        parsed: list[tuple[str, str | None, list[str]]] = []
+        for group in groups or []:
+            members = [k for k in dict.fromkeys(_key(m) for m in group.get("merged_from", [])) if k in by_key and k not in placed]
+            if not members:
+                continue
+            placed.update(members)
+            name = " ".join(str(group.get("name", "")).split()) or by_key[members[0]].name
+            parsed.append((name, (group.get("pass_condition") or None), members))
+        parsed += [(by_key[k].name, by_key[k].pass_condition, [k]) for k in keys if k not in placed]
+        runs.append(parsed)
+    if not runs:
+        logger.warning("KB category consolidation gave no usable answer; keeping the capped deterministic list")
+        return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
+
+    # Merge a pair only when more than half of the runs put it together; connected pairs form one entry.
+    parent = {k: k for k in keys}
+
+    def find(k: str) -> str:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    together: dict[tuple[str, str], int] = {}
+    for run in runs:
+        for _name, _condition, members in run:
+            for i, a in enumerate(members):
+                for b in members[i + 1:]:
+                    pair = (a, b) if keys.index(a) < keys.index(b) else (b, a)
+                    together[pair] = together.get(pair, 0) + 1
+    for (a, b), count in together.items():
+        if count * 2 > len(runs):
+            parent[find(b)] = find(a)
+    components: dict[str, list[str]] = {}
+    for k in keys:
+        components.setdefault(find(k), []).append(k)
+
+    preferred = {_key(n) for n in preferred_names or []}
+    entries: list[Category] = []
+    for members in components.values():
+        member_set = set(members)
+        names: dict[str, int] = {}
+        conditions: dict[str, dict[str, int]] = {}
+        for run in runs:
+            best = max(run, key=lambda g: (len(member_set & set(g[2])), -run.index(g)))  # the run's group that overlaps this entry most
+            names[best[0]] = names.get(best[0], 0) + 1
+            if best[1]:
+                conditions.setdefault(best[0], {})
+                conditions[best[0]][best[1]] = conditions[best[0]].get(best[1], 0) + 1
+        name = min(names, key=lambda n: (-names[n], _key(n) not in preferred, n.casefold(), n))
+        said = conditions.get(name, {})
+        condition = min(said, key=lambda c: (-said[c], c)) if said else next((by_key[k].pass_condition for k in members if by_key[k].pass_condition), None)
+        entries.append(Category(name=name, pass_condition=condition, sources=sorted({src for k in members for src in by_key[k].sources})))
+    return capped(entries)
 
 
 def merge_document_profiles(extracted: dict[str, dict], model: str, version: str, statuses: list[DocumentStatus] | None = None) -> KbProfile:
@@ -303,7 +407,7 @@ def ensure_profile(user_id: str, kb: KbDocuments, store: ProfileStore, client: K
     existing = store.get(user_id)
     if existing is not None and existing.version == profile_version(texts, model):
         return existing
-    profile = build_profile(texts, client, model=model, user_id=user_id)
+    profile = build_profile(texts, client, model=model, user_id=user_id, previous=existing)
     store.put(user_id, profile)
     return profile
 

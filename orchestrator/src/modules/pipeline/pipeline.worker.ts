@@ -1,3 +1,4 @@
+import { describeFailure } from './failure-reason';
 import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import crypto from 'crypto';
 import type { PrismaClient } from '@prisma/client';
@@ -740,10 +741,15 @@ export async function runPipelineJob(
     // captionedFigureIds just below, which is a separate computation used
     // only for the prune-step guard and is unaffected by this filter.
     const figureDescriptions = ((doc.figures ?? []) as LeveledFigure[])
-      .map((figure, index) => ({ figureIndex: index + 1, figureId: figure.id, name: figure.name, caption: figure.caption }))
-      .filter((entry): entry is { figureIndex: number; figureId: string; name: string | null; caption: string | null } =>
-        Boolean(entry.caption) || Boolean(entry.name),
-      );
+      .map((figure, index) => ({
+        figureIndex: index + 1,
+        figureId: figure.id,
+        name: figure.name,
+        caption: figure.caption,
+        // Why there is no caption (vision failed vs. not worth describing); absent when there is a caption.
+        ...(figure.caption_status ? { captionStatus: figure.caption_status } : {}),
+      }))
+      .filter((entry) => Boolean(entry.caption) || Boolean(entry.name));
     // Every figure with a real caption, regardless of node attachment --
     // used below to keep the prune step from deleting a figure this SAME
     // panel still promises an image for (see that comment for the full
@@ -1254,13 +1260,13 @@ export async function runPipelineJob(
       await deps.prisma.auditEntry.create({
         data: {
           jobId: job.id,
-          message: `Pipeline error occurred after cancellation, job remains cancelled: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Pipeline error occurred after cancellation, job remains cancelled: ${describeFailure(error)}`,
         },
       });
       return [];
     }
     await deps.prisma.auditEntry.create({
-      data: { jobId: job.id, message: `Pipeline failed: ${error instanceof Error ? error.message : String(error)}` },
+      data: { jobId: job.id, message: `Pipeline failed: ${describeFailure(error)}` },
     });
     await deps.jobEventsPublisher.publish(job.id, 'failed');
     throw error;

@@ -4019,3 +4019,50 @@ def test_judge_rule_conformance_returns_verdicts_for_the_given_items_only() -> N
     client._transport = _mock_transport({"content": json.dumps({"verdicts": "no"})})
     with pytest.raises(ValueError):
         client.judge_rule_conformance("r", {"n1": "a"})
+
+
+def test_consolidate_kb_categories_sends_the_categories_and_keeps_only_well_formed_groups() -> None:
+    captured: dict = {}
+    answer = {
+        "categories": [
+            {"name": "Testable", "pass_condition": "Can be verified", "merged_from": ["Testable", "Testability"]},
+            {"name": "", "pass_condition": "x", "merged_from": ["Y"]},
+            {"name": "NoMembers", "pass_condition": "x", "merged_from": []},
+            "junk",
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": json.dumps(answer)})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    groups = client.consolidate_kb_categories([{"name": "Testable", "pass_condition": "a"}, {"name": "Testability", "pass_condition": "b"}], 8)
+
+    assert groups == [{"name": "Testable", "pass_condition": "Can be verified", "merged_from": ["Testable", "Testability"]}]
+    user = json.loads(captured["body"]["messages"][1]["content"])
+    assert user["max_categories"] == 8 and [c["name"] for c in user["categories"]] == ["Testable", "Testability"]
+    assert captured["body"]["responseSchema"]["name"] == "kb_category_consolidation"
+
+
+def test_consolidate_kb_categories_rejects_a_malformed_answer() -> None:
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = _mock_transport({"content": json.dumps({"nope": 1})})
+    with pytest.raises(ValueError):
+        client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 8)
+
+
+def test_consolidate_kb_categories_offers_the_previous_names_only_when_there_are_some() -> None:
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"content": json.dumps({"categories": []})})
+
+    client = OrchestratorLlmClient(base_url="http://orchestrator.internal", bearer_token="test-bearer")
+    client._transport = httpx.MockTransport(handler)
+    client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 16)
+    client.consolidate_kb_categories([{"name": "A", "pass_condition": "a"}], 16, preferred_names=["Testable"])
+    first, second = (json.loads(b["messages"][1]["content"]) for b in bodies)
+    assert "preferred_names" not in first and second["preferred_names"] == ["Testable"]
