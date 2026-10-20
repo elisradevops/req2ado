@@ -48,7 +48,8 @@ export interface RewriteComparison {
 export async function checkRewrite(
   jobId: string,
   localId: string,
-  proposal: { proposedTitle: string | null; proposedDescription: string },
+  // warningsOnly: only the checks that need no model, answered at once (the scored prediction can take as long as a model call).
+  proposal: { proposedTitle: string | null; proposedDescription: string; warningsOnly?: boolean },
 ): Promise<RewriteComparison> {
   const response = await httpClient.post<RewriteComparison>(`/jobs/${jobId}/diff/${localId}/rewrite-check`, proposal);
   return response.data;

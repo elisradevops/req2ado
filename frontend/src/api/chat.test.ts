@@ -14,4 +14,10 @@ describe('checkRewrite', () => {
     expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/rewrite-check', { proposedTitle: null, proposedDescription: 'New text.' });
     expect(result).toEqual(comparison);
   });
+
+  it('passes warningsOnly on when asked for the checks that need no model', async () => {
+    vi.mocked(httpClient.post).mockResolvedValue({ data: { warnings: [] } });
+    await checkRewrite('job-1', 'n0', { proposedTitle: 'T', proposedDescription: 'New text.', warningsOnly: true });
+    expect(httpClient.post).toHaveBeenCalledWith('/jobs/job-1/diff/n0/rewrite-check', { proposedTitle: 'T', proposedDescription: 'New text.', warningsOnly: true });
+  });
 });
