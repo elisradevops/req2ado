@@ -22,6 +22,7 @@ from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
 from app.chat.redis_publisher import RedisChatPublisher
+from app.chat.rewrite_check import check_rewrite
 from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id
 from app.config import settings
 from app.debug_capture import DebugCapture
@@ -35,7 +36,7 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
-from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard
+from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard, scoring_inputs
 from app.kb.retrieval import retrieve_context
 from app.leveling.document_map import publish_document_map
 from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
@@ -50,7 +51,7 @@ from app.leveling.id_tree_builder import (
 )
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
-from app.leveling.scoring import score_single_requirement_text
+from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
@@ -1009,6 +1010,9 @@ class ChatTurnItem(BaseModel):
     qualityIssues: list[str] = []
     # The item's score per quality category (from its scoring pass); used to aim a rewrite at the weakest one.
     qualityCategoryScores: dict[str, float] | None = None
+    # Where the item sits in its document (parents, siblings, linked items, captions), built by the orchestrator from the job's
+    # own data; see app.chat.context_pack.
+    context: dict | None = None
 
 
 class ChatTurnMessage(BaseModel):
@@ -1758,17 +1762,27 @@ class ScoreItemResponse(BaseModel):
     quality_confidence: str | None
 
 
+async def _rescoring_kb_context(user_id: str | None, text: str) -> str | None:
+    """The context a rescore is judged with: the same one the original scoring used (the user's KB profile: pass conditions and
+    mandatory rules, small and constant), so a new score is comparable with the old one. Only a user without a profile falls back
+    to chunks retrieved for the text (what every score used before profiles)."""
+    if not user_id:
+        return None
+    profile = await run_in_threadpool(_stored_profile_or_none, user_id)
+    if profile is not None:
+        _names, _definitions, context = scoring_inputs(profile)
+        if context:
+            return context
+    # Blocking embed + vector-store calls: off the event loop, like every other blocking call here (a blocked loop fails /health).
+    kb_context, _ = await run_in_threadpool(retrieve_context, user_id, text, _embed_client, _kb_vector_store)
+    return kb_context
+
+
 @app.post("/score-item", response_model=ScoreItemResponse)
 async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
     if not body.description.strip():
         raise HTTPException(status_code=400, detail="description must not be blank")
-    kb_context = None
-    if body.user_id:
-        # Blocking embed + vector-store calls: off the event loop, like every
-        # other blocking call in this route (a blocked loop fails /health).
-        kb_context, _ = await run_in_threadpool(
-            retrieve_context, body.user_id, body.description, _embed_client, _kb_vector_store,
-        )
+    kb_context = await _rescoring_kb_context(body.user_id, body.description)
     # Mirrors /level's own construct-probe-then-construct-real pattern (see
     # that route's comment for why _resolve_caps's optional live /api/show
     # lookup must be threadpool-dispatched, not run inline in an async
@@ -1803,6 +1817,63 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         quality_score=score, quality_issues=issues, quality_category_scores=category_scores,
         quality_confidence=confidence.value if confidence is not None else None,
     )
+
+
+class RewriteCompareRequest(BaseModel):
+    """A proposed rewrite of one requirement, to be judged against the original before the user applies it."""
+
+    original_title: str | None = None
+    original_description: str
+    proposed_title: str | None = None
+    proposed_description: str
+    # The item's own categories (its scored key-set), so both texts are judged against the rubric the job used.
+    category_checklist: list[str] | None = None
+    user_id: str | None = None
+    model: str | None = None
+
+
+def _score_view(scored: tuple) -> dict:
+    score, issues, categories, confidence = scored
+    return {"score": score, "issues": issues, "categoryScores": categories, "confidence": confidence.value if confidence is not None else None}
+
+
+@app.post("/rewrite/compare")
+async def rewrite_compare(body: RewriteCompareRequest) -> dict:
+    """Original and proposal scored in ONE call (one frame, one rubric, the profile's context), plus the deterministic checks of
+    app.chat.rewrite_check. The delta is only meaningful because of that: two separate scorings were never comparable."""
+    if not body.original_description.strip() or not body.proposed_description.strip():
+        raise HTTPException(status_code=400, detail="both descriptions must be non-blank")
+    kb_context = await _rescoring_kb_context(body.user_id, body.original_description)
+    checklist = body.category_checklist
+    if not checklist and body.user_id:
+        names, _definitions, _context = scoring_inputs(await run_in_threadpool(_stored_profile_or_none, body.user_id))
+        checklist = names
+    probe_client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    num_ctx = (await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)).context_budget_tokens
+    client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+
+    def _score() -> dict:
+        return score_texts_together(
+            {"before": body.original_description, "after": body.proposed_description}, client,
+            _get_criteria_retriever(body.user_id), kb_context, checklist, user_id=body.user_id,
+        )
+
+    scored = await run_in_threadpool(_score)
+    before, after = scored["before"], scored["after"]
+    if before is None or after is None or before[0] is None or after[0] is None:
+        raise HTTPException(status_code=502, detail="the model did not score both texts, so no comparison is offered")
+    shared = [name for name in (after[2] or {}) if name in (before[2] or {})]
+    return {
+        "before": _score_view(before),
+        "after": _score_view(after),
+        "delta": after[0] - before[0],
+        "categoryDeltas": {name: (after[2] or {})[name] - (before[2] or {})[name] for name in shared},
+        "warnings": check_rewrite(body.original_title, body.original_description, body.proposed_title, body.proposed_description),
+    }
 
 
 class EnhanceItem(BaseModel):

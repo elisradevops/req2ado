@@ -641,6 +641,47 @@ def _score_epics_and_features(
         _fire("score_requirements_done", chunk, nodes_done=nodes_done, chunk_index=chunk_index)
 
 
+def score_texts_together(
+    texts: dict[str, str],
+    scoring_client: BatchedScoringClient,
+    criteria_retriever: CriteriaRetriever | None,
+    kb_context: str | None,
+    category_checklist: list[str] | None,
+    user_id: str | None = None,
+) -> dict[str, tuple[int | None, list[str], "QualityCategoryScores | None", "QualityConfidence | None"] | None]:
+    """Scores several texts in ONE model call, so they are judged in the same frame and against the same rubric (`None` for a
+    text the model gave no usable entry for). Used for a single rescore (one text) and for before/after of a rewrite (two): the
+    scores of the two are then comparable, which two separate calls never were. The criteria context is retrieved for the FIRST
+    text and shared by all of them. A fixed `category_checklist` is enforced on the answer like everywhere else."""
+    criteria_context = None
+    first = next(iter(texts.values()), "")
+    if criteria_retriever is not None and first.strip():
+        criteria = criteria_retriever.retrieve(first)
+        criteria_context = "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
+    scores_by_id = scoring_client.score_requirements_for_document(
+        dict(texts), criteria_context, kb_context, category_checklist, user_id=user_id,
+    )
+    valid_issue_values = {i.value for i in RequirementQualityIssue}
+    out: dict = {}
+    for text_id in texts:
+        entry = scores_by_id.get(text_id)
+        if not isinstance(entry, dict):
+            out[text_id] = None
+            continue
+        raw_score = entry.get("score")
+        score = (
+            raw_score
+            if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100
+            else None
+        )
+        issues = sorted({issue for issue in entry.get("issues", []) if issue in valid_issue_values})
+        category_scores = _parse_category_scores(entry.get("categoryScores"))
+        if category_checklist:
+            category_scores, _left_out = _conform_category_scores(category_scores, category_checklist)
+        out[text_id] = (score, issues, category_scores, _parse_confidence(entry.get("confidence")))
+    return out
+
+
 def score_single_requirement_text(
     description: str,
     scoring_client: BatchedScoringClient,
@@ -668,28 +709,12 @@ def score_single_requirement_text(
     is SWEEP.md section 7's abstain channel (see QualityConfidence,
     app.workitem.model), parsed with the same tolerance as everything else
     here: a missing/malformed value is None, never a crash."""
-    criteria_context = None
-    if criteria_retriever is not None and description.strip():
-        criteria = criteria_retriever.retrieve(description)
-        criteria_context = "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
-    scores_by_id = scoring_client.score_requirements_for_document(
-        {"adhoc": description}, criteria_context, kb_context, category_checklist, user_id=user_id,
-    )
-    entry = scores_by_id.get("adhoc")
-    if not isinstance(entry, dict):
+    scored = score_texts_together(
+        {"adhoc": description}, scoring_client, criteria_retriever, kb_context, category_checklist, user_id=user_id,
+    )["adhoc"]
+    if scored is None:
         return None, [], None, None
-    valid_issue_values = {i.value for i in RequirementQualityIssue}
-    raw_score = entry.get("score")
-    score = (
-        raw_score
-        if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100
-        else None
-    )
-    issues = sorted({issue for issue in entry.get("issues", []) if issue in valid_issue_values})
-    category_scores = _parse_category_scores(entry.get("categoryScores"))
-    if category_checklist:
-        category_scores, _left_out = _conform_category_scores(category_scores, category_checklist)
-    return score, issues, category_scores, _parse_confidence(entry.get("confidence"))
+    return scored
 
 
 def _parse_category_scores(raw: object) -> QualityCategoryScores | None:

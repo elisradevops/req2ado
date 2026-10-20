@@ -5,9 +5,11 @@ import logging
 from starlette.concurrency import run_in_threadpool
 
 from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, split_message_and_proposal
+from app.chat.context_pack import render_context_pack
 from app.chat.redis_publisher import RedisChatPublisher
 from app.config import settings
 from app.http_errors import describe_exception, exception_details
+from app.kb.profile import render_authoring_standard
 from app.kb.retrieval import retrieve_context
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,14 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "You are refining ONE requirement item in a document review tool. The user "
     "may ask a question or ask you to rewrite the item. Item type: {item_type}. "
     "Item title: {title}. Item description: {description}. {quality_note}"
+    "Rules for any rewrite: keep it ONE requirement statement (one shall/should/must); "
+    "keep the title unless the user asked to change it; keep every number, unit, identifier "
+    "and named entity of the current description; do not make it longer than about two times "
+    "the length of the current description unless the user asked for more; use the "
+    "organization's definitions, rules and terms given above and stay consistent with the document context. "
+    "Do not invent facts: if an improvement needs information that is neither in the item nor in "
+    "the material above (a value, a unit, an actor, a condition), ask the user for it instead of "
+    "proposing a rewrite. "
     "Reply conversationally first. If — and only if — the user asked for a "
     "rewrite of the title and/or description, end your reply with a new line "
     f"containing exactly '{PROPOSAL_SENTINEL}' followed by a single-line JSON "
@@ -101,7 +111,11 @@ def weakest_category_note(scores: dict | None, profile) -> str | None:
     )
 
 
-def _build_system_prompt(item: dict, kb_context: str | None, weakest_note: str | None = None) -> str:
+def _build_system_prompt(
+    item: dict, kb_context: str | None, weakest_note: str | None = None, context: dict | None = None, standard: str | None = None,
+) -> str:
+    """The organization's standard first (what an Epic, Feature and Requirement are, its rules, terms and every category's pass
+    condition), then reference chunks from the knowledge base, then where the item sits in the document, then the item."""
     quality_note = ""
     if item.get("qualityIssues"):
         quality_note = f"Known quality issues: {', '.join(item['qualityIssues'])}. "
@@ -113,12 +127,18 @@ def _build_system_prompt(item: dict, kb_context: str | None, weakest_note: str |
         description=item["description"],
         quality_note=quality_note,
     )
+    sections: list[str] = []
+    if standard:
+        sections.append(f"The organization's own standard for requirements (authoritative; follow it):\n\n{standard}")
     if kb_context:
-        prompt = (
-            "Reference material from the knowledge base (may be incomplete or "
-            f"irrelevant — use only what's genuinely helpful):\n\n{kb_context}\n\n{prompt}"
+        sections.append(
+            "Reference material from the knowledge base (may be incomplete or irrelevant — use only what's genuinely "
+            f"helpful):\n\n{kb_context}"
         )
-    return prompt
+    pack = render_context_pack(context)
+    if pack:
+        sections.append(pack)
+    return "\n\n".join([*sections, prompt])
 
 
 async def run_chat_turn(
@@ -147,8 +167,10 @@ async def run_chat_turn(
             # vector store I/O) — run in the threadpool so it doesn't stall the
             # single-worker event loop, matching /level and /kb/ingest-* in
             # main.py.
+            # Retrieved by what the item says (and what was asked): "improve this" alone retrieves near-random chunks.
+            retrieval_query = "\n".join(part for part in (item.get("title"), item.get("description"), user_message) if part)
             kb_context, _ = await run_in_threadpool(
-                retrieve_context, user_id, user_message, embed_client, vector_store
+                retrieve_context, user_id, retrieval_query, embed_client, vector_store
             )
 
         weakest = _weakest_categories(item.get("qualityCategoryScores"))
@@ -157,7 +179,10 @@ async def run_chat_turn(
             "chat turn: job=%s node=%s weakest=%s profile=%s", job_id, local_id,
             ", ".join(f"{name}={value:g}" for name, value in weakest) or "none", "yes" if profile is not None else "no",
         )
-        system_prompt = _build_system_prompt(item, kb_context, weakest_category_note(item.get("qualityCategoryScores"), profile))
+        system_prompt = _build_system_prompt(
+            item, kb_context, weakest_category_note(item.get("qualityCategoryScores"), profile),
+            context=item.get("context"), standard=render_authoring_standard(profile),
+        )
         capped_history = history[-_MAX_HISTORY_TURNS:]
         messages = (
             [{"role": "system", "content": system_prompt}]
