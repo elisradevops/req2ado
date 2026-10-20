@@ -175,7 +175,8 @@ def test_the_default_array_prompt_names_all_six_categories_and_says_none_may_be_
 
 def test_the_checklist_names_still_reach_the_model_in_array_mode(array_mode) -> None:
     body = _first_body(lambda c: c.score_requirements_for_document(DESCRIPTIONS, category_checklist=["Necessary", "Verifiable"]))
-    assert '["Necessary", "Verifiable"]' in body["messages"][0]["content"]
+    # The built-in completeness check is part of the explicit list (it used to be prose only, and was dropped on 152 of 428 items).
+    assert '["Necessary", "Verifiable", "completeness_as_requirement"]' in body["messages"][0]["content"]
 
 
 def test_epic_and_feature_scoring_in_array_mode(array_mode) -> None:

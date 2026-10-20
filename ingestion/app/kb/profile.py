@@ -21,6 +21,8 @@ import hashlib
 import json
 import logging
 import re
+import time
+from datetime import datetime, timezone
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -101,6 +103,8 @@ class KbProfile(BaseModel):
     glossary: list[GlossaryTerm] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)
     truncated: bool = False
+    # When it was built (UTC, ISO). Informational only: never part of `version`, absent on profiles stored before it existed.
+    built_at: str | None = None
 
     @property
     def docs_in_kb(self) -> int:
@@ -199,6 +203,7 @@ def build_profile(
 ) -> KbProfile:
     """Maps every document, then merges. Never raises for a document: each ends with a recorded status. `previous` (the profile
     this one replaces) only lends its category names to the merge, so a rebuild keeps names unless the content changed."""
+    started = time.monotonic()
     version = profile_version(documents, model)
     extracted: dict[str, dict] = {}
     statuses: list[DocumentStatus] = []
@@ -236,13 +241,25 @@ def build_profile(
                 )
             )
     profile = merge_document_profiles(extracted, model, version, statuses)
-    profile.categories, cut = consolidate_categories(profile.categories, client, user_id, [c.name for c in previous.categories] if previous else None)
+    stats: dict = {}
+    profile.categories, cut = consolidate_categories(
+        profile.categories, client, user_id, [c.name for c in previous.categories] if previous else None, stats,
+    )
     profile.truncated = profile.truncated or cut
+    # Counts only: category names are the company's own material.
+    logger.info(
+        "KB profile built: documents=%d contributing=%d categories=%d rules=%d conflicts=%d runs=%s/%s contested_pairs=%s "
+        "duration=%.1fs model=%s",
+        profile.docs_in_kb, profile.docs_contributing, len(profile.categories), len(profile.rules), len(profile.conflicts),
+        stats.get("runs_answered", "-"), stats.get("runs_asked", "-"), stats.get("contested_pairs", "-"),
+        time.monotonic() - started, model,
+    )
     return profile
 
 
 def consolidate_categories(
     categories: list[Category], client: object, user_id: str | None = None, preferred_names: list[str] | None = None,
+    stats: dict | None = None,
 ) -> tuple[list[Category], bool]:
     """The merged categories as a canonical list decided by the model and made stable by agreement.
 
@@ -252,7 +269,8 @@ def consolidate_categories(
     outcome is a function of what the runs said, not of their order, and one odd answer cannot change it. Every entry keeps the
     union of its sources, an entry no run grouped keeps its own name, and a list over MAX_SCORING_CATEGORIES is cut
     (best-supported first) as a last safeguard. Without the model (not offered, or every run failing) the deterministic list is
-    only capped. Returns (categories, cut)."""
+    only capped. Returns (categories, cut). `stats`, when given, receives runs_asked, runs_answered and contested_pairs (pairs
+    that some, but not all, answering runs grouped) for the build's log line."""
     def capped(entries: list[Category]) -> tuple[list[Category], bool]:
         ordered = sorted(entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name))
         return ordered[:MAX_SCORING_CATEGORIES], len(ordered) > MAX_SCORING_CATEGORIES
@@ -283,6 +301,8 @@ def consolidate_categories(
             parsed.append((name, (group.get("pass_condition") or None), members))
         parsed += [(by_key[k].name, by_key[k].pass_condition, [k]) for k in keys if k not in placed]
         runs.append(parsed)
+    if stats is not None:
+        stats.update(runs_asked=CONSOLIDATION_RUNS, runs_answered=len(runs))
     if not runs:
         logger.warning("KB category consolidation gave no usable answer; keeping the capped deterministic list")
         return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
@@ -303,6 +323,8 @@ def consolidate_categories(
                 for b in members[i + 1:]:
                     pair = (a, b) if keys.index(a) < keys.index(b) else (b, a)
                     together[pair] = together.get(pair, 0) + 1
+    if stats is not None:
+        stats["contested_pairs"] = sum(1 for count in together.values() if count < len(runs))
     for (a, b), count in together.items():
         if count * 2 > len(runs):
             parent[find(b)] = find(a)
@@ -408,6 +430,7 @@ def ensure_profile(user_id: str, kb: KbDocuments, store: ProfileStore, client: K
     if existing is not None and existing.version == profile_version(texts, model):
         return existing
     profile = build_profile(texts, client, model=model, user_id=user_id, previous=existing)
+    profile.built_at = datetime.now(timezone.utc).isoformat()
     store.put(user_id, profile)
     return profile
 

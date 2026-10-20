@@ -434,3 +434,51 @@ def test_dedup_check_publishes_a_real_comparison_frame_through_the_real_emitter(
     assert frames[0]["kind"] == "compare" and compare["kind"] == "duplicate"
     assert compare["a"]["ref"] == "proposed" and compare["b"]["ref"] == "item-1"
     assert compare["a"]["text"] == compare["b"]["text"] == "The unit shall survive a drop."
+
+
+_UPSERT_BODY = {"items": [{"item_id": "item-1", "text": "The unit shall survive a drop.", "title": "Drop", "area_path": "Project\\Area1"}]}
+
+
+def test_an_embedding_refusal_reaches_the_caller_as_a_502_with_the_upstream_status_not_a_bare_500(tmp_path, monkeypatch) -> None:
+    # A 401 here means the user has no usable model connection (or the call carried no user): the caller must be able to
+    # tell that from a crash, and retrying it cannot help.
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls = []
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(401, json={"message": "No Open WebUI connection configured"})
+
+    main._embed_client._transport = httpx.MockTransport(refuse)
+    response = client.post("/dedup/upsert-batch", json=_UPSERT_BODY)
+    assert response.status_code == 502
+    assert "401" in response.json()["detail"]
+    assert len(calls) == 1  # an authorization failure is never retried
+
+
+def test_a_transient_embedding_failure_is_retried_once(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"message": "busy"})
+        return _mock_embed_handler(request)
+
+    main._embed_client._transport = httpx.MockTransport(flaky)
+    response = client.post("/dedup/upsert-batch", json=_UPSERT_BODY)
+    assert response.status_code == 200 and len(calls) == 2
+
+
+def test_a_persistent_embedding_server_failure_is_a_502_after_one_retry(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls = []
+
+    def down(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503, json={"message": "busy"})
+
+    main._embed_client._transport = httpx.MockTransport(down)
+    response = client.post("/dedup/upsert-batch", json=_UPSERT_BODY)
+    assert response.status_code == 502 and "503" in response.json()["detail"] and len(calls) == 2

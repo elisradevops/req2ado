@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
+import httpx
 import redis
 from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -2007,7 +2008,7 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
 
 @app.post("/dedup/upsert")
 def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
-    title_embedding, description_embedding = _embed_client.embed([body.title, body.text], user_id=body.user_id)
+    title_embedding, description_embedding = _embed_for_dedup([body.title, body.text], body.user_id)
     embedding = blend_embeddings(title_embedding, description_embedding)
     # document=body.text: stores the item's original text alongside its
     # embedding, so a future check_for_duplicates call can run its
@@ -2026,6 +2027,26 @@ def dedup_delete(body: DedupDeleteRequest) -> dict[str, bool]:
     return {"ok": True}
 
 
+def _embed_for_dedup(texts: list[str], user_id: str | None) -> list[list[float]]:
+    """Embeds for the dedup index. A refusal by the embedding service (401: the user has no usable model connection, or the call
+    carried no user) used to surface as a bare 500 indistinguishable from a crash. It is now a 502 that names the upstream status,
+    so the caller can tell a refusal (retrying cannot help) from a transient fault. A server error or an unreachable service is
+    retried once."""
+    last: Exception | None = None
+    for attempt in range(2):
+        try:
+            return _embed_client.embed(texts, user_id=user_id)
+        except httpx.HTTPStatusError as exc:
+            last = exc
+            if exc.response.status_code < 500:
+                break
+        except httpx.TransportError as exc:
+            last = exc
+    if isinstance(last, httpx.HTTPStatusError):
+        raise HTTPException(status_code=502, detail=f"the embedding service answered {last.response.status_code}") from last
+    raise HTTPException(status_code=502, detail="the embedding service is unreachable") from last
+
+
 @app.post("/dedup/upsert-batch")
 def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     # Previously every confirmed work item triggered its own single-item
@@ -2036,9 +2057,7 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     if not body.items:
         return {"ok": True}
     n = len(body.items)
-    embeddings = _embed_client.embed(
-        [item.title for item in body.items] + [item.text for item in body.items], user_id=body.user_id,
-    )
+    embeddings = _embed_for_dedup([item.title for item in body.items] + [item.text for item in body.items], body.user_id)
     title_embeddings, description_embeddings = embeddings[:n], embeddings[n:]
     blended_embeddings = [
         blend_embeddings(title_embedding, description_embedding)

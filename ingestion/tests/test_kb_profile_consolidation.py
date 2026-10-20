@@ -144,3 +144,50 @@ def test_the_previous_category_names_are_offered_on_a_rebuild_so_names_stay_stab
     fresh = Consolidating()
     build_profile(OVERLAPPING, fresh, model="m1")
     assert all(not p for p in fresh.preferred)
+
+
+# ---- a build is visible: one log line with numbers, and a build time on the stored profile ----
+
+def test_a_build_logs_one_line_with_the_numbers_and_never_the_names(caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="app.kb.profile"):
+        build_profile(OVERLAPPING, Consolidating(runs=[MERGED, SEPARATE, MERGED]), model="m1")
+    line = next(r.getMessage() for r in caplog.records if "KB profile built" in r.getMessage())
+    assert "documents=2" in line and "contributing=2" in line and "model=m1" in line
+    assert "runs=3/3" in line and "contested_pairs=" in line and "duration=" in line
+    assert "Testable" not in line and "Unambiguity" not in line  # counts only
+
+
+def test_the_consolidation_log_counts_the_runs_that_answered_and_the_pairs_they_disagreed_on(caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="app.kb.profile"):
+        build_profile(OVERLAPPING, Consolidating(runs=[MERGED, None, SEPARATE]), model="m1")
+    line = next(r.getMessage() for r in caplog.records if "KB profile built" in r.getMessage())
+    assert "runs=2/3" in line and "contested_pairs=1" in line  # Testable/Testability: one run merged them, one did not
+
+
+def test_the_stored_profile_has_a_build_time_that_is_not_part_of_the_version() -> None:
+    from app.kb.profile import InMemoryProfileStore, ensure_profile, profile_version
+
+    class Kb:
+        def list_documents(self, user_id):
+            return sorted(OVERLAPPING)
+
+        def get_document(self, user_id, name):
+            return OVERLAPPING[name], False
+
+    store = InMemoryProfileStore()
+    profile = ensure_profile("u1", Kb(), store, Consolidating(), model="m1")
+    assert profile.built_at and profile.built_at.endswith("+00:00")
+    assert profile.version == profile_version(OVERLAPPING, "m1")
+    assert store.get("u1").built_at == profile.built_at
+
+
+def test_a_profile_stored_before_the_build_time_existed_still_reads() -> None:
+    from app.kb.profile import KbProfile
+
+    old = build_profile(OVERLAPPING, Consolidating(), model="m1").model_dump()
+    old.pop("built_at", None)
+    assert KbProfile.model_validate(old).built_at is None
