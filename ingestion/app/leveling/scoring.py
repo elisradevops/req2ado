@@ -459,6 +459,22 @@ def _score_all_requirements(
             chunk_index=chunk_index, issues_found=issues_found,
         )
 
+    # Across the whole job: each chunk can be consistent while the chunks differ from one another (names derived live per call).
+    # Nothing compared them before. Skipped when a chunk's own warning already reports the difference.
+    job_key_sets = {frozenset(node.quality_category_scores) for node in nodes if node.quality_category_scores}
+    if len(job_key_sets) > 1 and not any(w.kind == WarningKind.SCORING_INCONSISTENT_CATEGORIES for w in warnings):
+        message = (
+            f"Quality scoring used {len(job_key_sets)} different sets of category names across the document -- the chunks did "
+            "not agree, so quality breakdowns may not line up for comparison."
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.SCORING_INCONSISTENT_CATEGORIES, message,
+                detail={"scope": "job", "distinctKeySetCount": len(job_key_sets)},
+            )
+        )
+
 
 def _score_epics_and_features(
     nodes: list[WorkItemNode],
@@ -671,6 +687,8 @@ def score_single_requirement_text(
     )
     issues = sorted({issue for issue in entry.get("issues", []) if issue in valid_issue_values})
     category_scores = _parse_category_scores(entry.get("categoryScores"))
+    if category_checklist:
+        category_scores, _left_out = _conform_category_scores(category_scores, category_checklist)
     return score, issues, category_scores, _parse_confidence(entry.get("confidence"))
 
 
@@ -698,6 +716,28 @@ def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
             return None
         values[key] = value
     return values
+
+
+_COMPLETENESS_KEY = "completeness_as_requirement"
+
+
+def _conform_category_scores(scores: dict[str, int] | None, category_checklist: list[str]) -> tuple[dict[str, int] | None, list[str]]:
+    """Holds one node's category scores to the fixed list. Names are matched without regard to case or surrounding spaces and
+    returned in the list's own spelling and order; names outside the list (the built-in completeness check apart) are dropped;
+    a category the model left out is reported, never invented. `(None, [])` when nothing was scored."""
+    if scores is None:
+        return None, []
+    required = list(category_checklist)
+    if not any(name.strip().casefold() == _COMPLETENESS_KEY for name in required):
+        required.append(_COMPLETENESS_KEY)
+    by_key = {name.strip().casefold(): name for name in required}
+    kept: dict[str, int] = {}
+    for key, value in scores.items():
+        canonical = by_key.get(key.strip().casefold())
+        if canonical is not None and canonical not in kept:
+            kept[canonical] = value
+    ordered = {name: kept[name] for name in required if name in kept}
+    return ordered, [name for name in required if name not in kept]
 
 
 def _parse_confidence(raw: object) -> QualityConfidence | None:
@@ -882,6 +922,7 @@ def _apply_quality_scores(
     if inject_canary:
         _check_scoring_canary(scores_by_node_id.pop(_CANARY_NODE_ID, None))
     valid_issue_values = {i.value for i in RequirementQualityIssue}
+    nodes_missing_categories: dict[str, list[str]] = {}
 
     for node in nodes:
         entry = scores_by_node_id.get(node.local_id)
@@ -899,6 +940,11 @@ def _apply_quality_scores(
             key=lambda i: i.value,
         )
         node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
+        if category_checklist:
+            # A fixed list is enforced in code: the prompt asks for it and the schema only checks the shape.
+            node.quality_category_scores, left_out = _conform_category_scores(node.quality_category_scores, category_checklist)
+            if left_out:
+                nodes_missing_categories[node.local_id] = left_out
         node.quality_category_checklist = _match_category_checklist(
             node.quality_category_scores, category_checklist_definitions,
         )
@@ -936,6 +982,30 @@ def _apply_quality_scores(
                 )
             )
 
+    if nodes_missing_categories:
+        left_out_names = sorted({name for names in nodes_missing_categories.values() for name in names})
+        message = (
+            f"Quality scoring left out {len(left_out_names)} required category name(s) ({', '.join(left_out_names)}) for "
+            f"{len(nodes_missing_categories)} item(s); their breakdowns are incomplete."
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.SCORING_INCONSISTENT_CATEGORIES,
+                message,
+                node_ids=list(nodes_missing_categories),
+                detail={"branch": node_id_prefix or "(root)", "missingCategories": left_out_names},
+            )
+        )
+        if progress_callback is not None:
+            progress_callback(
+                LevelingProgress(
+                    phase="chunk_warning", branch_index=None, branch_count=0,
+                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    warning_message=message,
+                )
+            )
+
     # Determinism guard (user-reported concern): categoryScores keys are now
     # dynamic (see QualityCategoryScores' own docstring) -- the model is
     # instructed to fix its category names ONCE from the KB material and
@@ -950,7 +1020,8 @@ def _apply_quality_scores(
         for node in nodes
         if node.quality_category_scores
     }
-    if len(scored_key_sets) > 1:
+    # With a fixed list a difference can only be a missing category, which is reported (with its names) above.
+    if len(scored_key_sets) > 1 and not nodes_missing_categories:
         message = (
             f"Quality scoring used {len(scored_key_sets)} different sets of category names across items in "
             "the same batch -- the model did not stay consistent, so quality breakdowns may not line up "
