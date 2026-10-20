@@ -137,3 +137,33 @@ def test_score_item_without_a_profile_keeps_retrieving(monkeypatch) -> None:
     monkeypatch.setattr("app.main.retrieve_context", lambda *a, **k: ("RETRIEVED CHUNK", []))
     client.post("/score-item", json={"description": "The system shall be fast.", "user_id": "u1"})
     assert "RETRIEVED CHUNK" in seen[0]
+
+
+def test_the_off_switch_for_profile_scoring_also_governs_a_rescore_and_a_comparison(monkeypatch) -> None:
+    # With KB_PROFILE_SCORING off a job scores with retrieved chunks; a rescore must use the same frame, not the profile.
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.dumps(json.loads(request.content)))
+        return _scores(_entry(64, Testable=60), _entry(71, Testable=70))
+
+    _patch(monkeypatch, handler)
+    monkeypatch.setattr("app.main.settings.kb_profile_scoring", False)
+    monkeypatch.setattr("app.main.retrieve_context", lambda *a, **k: ("RETRIEVED CHUNK", []))
+    client.post("/rewrite/compare", json={**BODY, "category_checklist": None})
+    client.post("/score-item", json={"description": "The system shall be fast.", "user_id": "u1"})
+    assert all("RETRIEVED CHUNK" in text and "One reading only" not in text for text in seen)
+
+
+def test_warnings_only_answers_at_once_without_calling_the_model(monkeypatch) -> None:
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return _scores(_entry(1), _entry(2))
+
+    _patch(monkeypatch, handler)
+    body = client.post("/rewrite/compare", json={**BODY, "proposed_title": "Other", "proposed_description": "The receiver shall lock quickly.", "warnings_only": True}).json()
+    assert calls == []
+    assert body["delta"] is None and body["before"]["score"] is None
+    assert {"title_changed", "dropped_numbers"} <= {w["code"] for w in body["warnings"]}

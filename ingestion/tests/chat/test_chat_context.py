@@ -121,3 +121,12 @@ async def test_a_turn_without_context_or_profile_still_works(caplog) -> None:
     with caplog.at_level(logging.INFO, logger="app.chat.chat_service"):
         await run_chat_turn("job-1", "n1", dict(ITEM), [], "why?", "m", None, None, None, client, _FakePublisher(), None)
     assert "Receiver lock time" in client.messages[0]["content"]
+
+
+def test_the_one_statement_rule_is_for_requirements_only() -> None:
+    requirement = _build_system_prompt(ITEM, None, None).lower()
+    assert "one requirement statement" in requirement
+    for kind in ("Epic", "Feature"):
+        other = _build_system_prompt({**ITEM, "type": kind}, None, None).lower()
+        assert "one requirement statement" not in other and "shall/should/must" not in other
+        assert "keep the title" in other and "number" in other and "invent" in other  # the other rules still apply

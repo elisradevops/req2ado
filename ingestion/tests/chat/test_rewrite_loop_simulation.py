@@ -133,6 +133,7 @@ def test_the_request_fields_are_the_ones_the_orchestrator_client_sends() -> None
     # orchestrator/test/ingestion-http.client.spec.ts pins the same list from the other side.
     assert set(RewriteCompareRequest.model_fields) == {
         "original_title", "original_description", "proposed_title", "proposed_description", "category_checklist", "user_id", "model",
+        "warnings_only",
     }
 
 

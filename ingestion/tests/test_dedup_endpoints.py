@@ -482,3 +482,33 @@ def test_a_persistent_embedding_server_failure_is_a_502_after_one_retry(tmp_path
     main._embed_client._transport = httpx.MockTransport(down)
     response = client.post("/dedup/upsert-batch", json=_UPSERT_BODY)
     assert response.status_code == 502 and "503" in response.json()["detail"] and len(calls) == 2
+
+
+_CHECK_BODY = {"text": "The unit shall survive a drop.", "title": "Drop", "area_path": "Project\\Area1"}
+
+
+def test_the_duplicate_check_also_reports_an_embedding_refusal_as_a_502_not_a_bare_500(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls = []
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(401, json={"message": "No Open WebUI connection configured"})
+
+    main._embed_client._transport = httpx.MockTransport(refuse)
+    response = client.post("/dedup/check", json=_CHECK_BODY)
+    assert response.status_code == 502 and "401" in response.json()["detail"] and len(calls) == 1
+
+
+def test_the_duplicate_check_retries_a_transient_embedding_failure_once(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "_vector_store", ChromaVectorStore(str(tmp_path)))
+    calls = []
+
+    def flaky(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"message": "busy"})
+        return _mock_embed_handler(request)
+
+    main._embed_client._transport = httpx.MockTransport(flaky)
+    assert client.post("/dedup/check", json=_CHECK_BODY).status_code == 200 and len(calls) == 2

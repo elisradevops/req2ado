@@ -214,7 +214,12 @@ def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | 
         model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
         if not model:
             return None
-        return ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+        profile = ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+        if profile is not None and profile.degraded:
+            # Half a profile would give this job categories that no later job has: keep the last good one (or none).
+            logger.warning("KB profile build was incomplete; scoring with the last stored profile, if any")
+            return stored
+        return profile
     except Exception:  # noqa: BLE001 -- the profile improves scoring; it must never fail a job
         logger.warning("KB profile unavailable for this job; scoring without it", exc_info=True)
         return None
@@ -1768,7 +1773,8 @@ async def _rescoring_kb_context(user_id: str | None, text: str) -> str | None:
     to chunks retrieved for the text (what every score used before profiles)."""
     if not user_id:
         return None
-    profile = await run_in_threadpool(_stored_profile_or_none, user_id)
+    # Same switch as the job's own scoring (_profile_for_job): a rescore must be judged in the frame the job was.
+    profile = await run_in_threadpool(_stored_profile_or_none, user_id) if settings.kb_profile_scoring else None
     if profile is not None:
         _names, _definitions, context = scoring_inputs(profile)
         if context:
@@ -1830,6 +1836,8 @@ class RewriteCompareRequest(BaseModel):
     category_checklist: list[str] | None = None
     user_id: str | None = None
     model: str | None = None
+    # Only the checks that need no model, answered at once: the prediction can take as long as a model call does.
+    warnings_only: bool = False
 
 
 def _score_view(scored: tuple) -> dict:
@@ -1843,9 +1851,13 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
     app.chat.rewrite_check. The delta is only meaningful because of that: two separate scorings were never comparable."""
     if not body.original_description.strip() or not body.proposed_description.strip():
         raise HTTPException(status_code=400, detail="both descriptions must be non-blank")
+    warnings = check_rewrite(body.original_title, body.original_description, body.proposed_title, body.proposed_description)
+    nothing = {"score": None, "issues": [], "categoryScores": None, "confidence": None}
+    if body.warnings_only:
+        return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
     kb_context = await _rescoring_kb_context(body.user_id, body.original_description)
     checklist = body.category_checklist
-    if not checklist and body.user_id:
+    if not checklist and body.user_id and settings.kb_profile_scoring:
         names, _definitions, _context = scoring_inputs(await run_in_threadpool(_stored_profile_or_none, body.user_id))
         checklist = names
     probe_client = OrchestratorLlmClient(
@@ -1862,8 +1874,6 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
             _get_criteria_retriever(body.user_id), kb_context, checklist, user_id=body.user_id,
         )
 
-    warnings = check_rewrite(body.original_title, body.original_description, body.proposed_title, body.proposed_description)
-    nothing = {"score": None, "issues": [], "categoryScores": None, "confidence": None}
     try:
         scored = await run_in_threadpool(_score)
     except Exception as exc:  # noqa: BLE001 -- the checks of the two texts need no model; only the prediction is lost
@@ -2063,16 +2073,18 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
     # check_for_duplicates's own default (0.90) governs otherwise, exactly
     # as before this field existed.
     kwargs = {"threshold": body.threshold} if body.threshold is not None else {}
-    result = check_for_duplicates(
-        body.text,
-        body.title,
-        item_id="",
-        area_path=body.area_path,
-        embed_client=_embed_client,
-        vector_store=_vector_store,
-        judge_client=_dedup_judge_client,
-        user_id=body.user_id,
-        **kwargs,
+    result = _with_embedding_retry(
+        lambda: check_for_duplicates(
+            body.text,
+            body.title,
+            item_id="",
+            area_path=body.area_path,
+            embed_client=_embed_client,
+            vector_store=_vector_store,
+            judge_client=_dedup_judge_client,
+            user_id=body.user_id,
+            **kwargs,
+        )
     )
     if body.job_id and result.is_duplicate and result.matched_text is not None:
         # Display only: a no-op unless LIVE_PROGRESS is on, and never raises.
@@ -2108,15 +2120,15 @@ def dedup_delete(body: DedupDeleteRequest) -> dict[str, bool]:
     return {"ok": True}
 
 
-def _embed_for_dedup(texts: list[str], user_id: str | None) -> list[list[float]]:
-    """Embeds for the dedup index. A refusal by the embedding service (401: the user has no usable model connection, or the call
-    carried no user) used to surface as a bare 500 indistinguishable from a crash. It is now a 502 that names the upstream status,
-    so the caller can tell a refusal (retrying cannot help) from a transient fault. A server error or an unreachable service is
-    retried once."""
+def _with_embedding_retry(call):
+    """Runs `call` (which embeds through the orchestrator). A refusal by the embedding service (401: the user has no usable model
+    connection, or the call carried no user) used to surface as a bare 500 indistinguishable from a crash. It is now a 502 that names
+    the upstream status, so the caller can tell a refusal (retrying cannot help) from a transient fault. A server error or an
+    unreachable service is retried once."""
     last: Exception | None = None
-    for attempt in range(2):
+    for _attempt in range(2):
         try:
-            return _embed_client.embed(texts, user_id=user_id)
+            return call()
         except httpx.HTTPStatusError as exc:
             last = exc
             if exc.response.status_code < 500:
@@ -2126,6 +2138,10 @@ def _embed_for_dedup(texts: list[str], user_id: str | None) -> list[list[float]]
     if isinstance(last, httpx.HTTPStatusError):
         raise HTTPException(status_code=502, detail=f"the embedding service answered {last.response.status_code}") from last
     raise HTTPException(status_code=502, detail="the embedding service is unreachable") from last
+
+
+def _embed_for_dedup(texts: list[str], user_id: str | None) -> list[list[float]]:
+    return _with_embedding_retry(lambda: _embed_client.embed(texts, user_id=user_id))
 
 
 @app.post("/dedup/upsert-batch")

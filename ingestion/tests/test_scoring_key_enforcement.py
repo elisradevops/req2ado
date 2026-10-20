@@ -45,6 +45,9 @@ def test_the_apply_step_enforces_the_list_and_warns_once_with_the_missing_catego
     gaps = [w for w in warnings if w.kind == WarningKind.SCORING_INCONSISTENT_CATEGORIES]
     assert len(gaps) == 1
     assert gaps[0].node_ids == ["b"] and gaps[0].detail["missingCategories"] == [KEY]
+    # Category names are the company's own material: they stay in the warning's detail, never in the log or narration message.
+    assert KEY not in gaps[0].raw and "Clarity" not in gaps[0].raw
+    assert "1 required category" in gaps[0].raw and "1 item" in gaps[0].raw
 
 
 def test_a_complete_answer_gives_no_warning() -> None:
@@ -105,3 +108,22 @@ def test_a_rescore_after_an_edit_keeps_to_the_items_own_categories() -> None:
         "The system shall do A.", client, None, None, ["Clarity", "Testable"],
     )
     assert score == 80 and categories == {"Clarity": 80, "Testable": 70, KEY: 60}
+
+
+def test_a_job_level_drift_is_reported_even_when_an_earlier_stage_already_warned_about_something_similar() -> None:
+    from app.leveling import scoring
+    from app.workitem.model import IntegrityWarning
+    from tests.test_scoring import _requirement_nodes
+
+    class DriftingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def score_requirements_for_document(self, descriptions_by_node_id, criteria_context=None, kb_context=None, category_checklist=None, user_id=None):
+            self.calls += 1
+            names = {"Clarity": 50} if self.calls == 1 else {"Testable": 50}
+            return {node_id: {"score": 70, "issues": [], "categoryScores": dict(names)} for node_id in descriptions_by_node_id}
+
+    warnings = [IntegrityWarning.make(WarningKind.SCORING_INCONSISTENT_CATEGORIES, "from an earlier stage", detail={})]
+    scoring._score_all_requirements(_requirement_nodes(scoring._SCORING_CHUNK_NODE_COUNT + 5), DriftingClient(), warnings, None, None, [], None, None, 0, 1)
+    assert [w.detail.get("scope") for w in warnings if w.kind == WarningKind.SCORING_INCONSISTENT_CATEGORIES].count("job") == 1

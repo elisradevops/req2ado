@@ -110,6 +110,9 @@ class KbProfile(BaseModel):
     truncated: bool = False
     # When it was built (UTC, ISO). Informational only: never part of `version`, absent on profiles stored before it existed.
     built_at: str | None = None
+    # True when the build could not be done properly (a document failed in whole or part, a relevance judgement failed, the merge pass got
+    # no answer). Never persisted: such a profile is used for the job at hand but not stored as current, so the next job rebuilds.
+    degraded: bool = Field(default=False, exclude=True)
 
     @property
     def docs_in_kb(self) -> int:
@@ -249,6 +252,29 @@ def _union(into: dict, extracted: dict) -> None:
             into["type_definitions"].append({"item_type": kind, "text": text})
 
 
+def _cache_get(cache: DocumentCache, file: str, fingerprint: str) -> dict | None:
+    """The cache only saves work: a store error is a miss, never a failed build (the model calls were already paid for)."""
+    try:
+        return cache.get(file, fingerprint)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("KB extraction cache read failed (extracting again): %s", redact_identity(" ".join(str(exc).split()))[:200])
+        return None
+
+
+def _cache_put(cache: DocumentCache, file: str, fingerprint: str, result: dict) -> None:
+    try:
+        cache.put(file, fingerprint, result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("KB extraction cache write failed (not stored): %s", redact_identity(" ".join(str(exc).split()))[:200])
+
+
+def _cache_keep_only(cache: DocumentCache, files: set[str]) -> None:
+    try:
+        cache.keep_only(files)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("KB extraction cache cleanup failed: %s", redact_identity(" ".join(str(exc).split()))[:200])
+
+
 def build_profile(
     documents: dict[str, str], client: KbProfileClient, *, model: str, user_id: str | None = None, previous: KbProfile | None = None,
     cache: DocumentCache | None = None, read_cache: bool = True,
@@ -262,10 +288,11 @@ def build_profile(
     extracted: dict[str, dict] = {}
     statuses: list[DocumentStatus] = []
     cached_documents = 0
+    degraded = False
     for name in sorted(documents):
         text = documents[name]
         fingerprint = _fingerprint(text, model) if cache is not None else ""
-        remembered = cache.get(name, fingerprint) if cache is not None and read_cache else None
+        remembered = _cache_get(cache, name, fingerprint) if cache is not None and read_cache else None
         if remembered is not None:
             cached_documents += 1
             if remembered.get("status") == "not_relevant":
@@ -288,10 +315,11 @@ def build_profile(
         except Exception as exc:  # noqa: BLE001 -- relevant unless clearly not: a failed judgement never drops a document
             logger.warning("KB relevance judgement failed for %s: %s", name, exc)
             relevant, reason, verdict_ok = True, "", False
+            degraded = True
         if not relevant:
             statuses.append(DocumentStatus(file=name, status="not_relevant", reason=reason or "judged not relevant"))
             if cache is not None and verdict_ok:
-                cache.put(name, fingerprint, {"status": "not_relevant", "reason": reason})
+                _cache_put(cache, name, fingerprint, {"status": "not_relevant", "reason": reason})
             continue
         combined, errors, windows = _empty(), [], windows_of(text)
         for window in windows:
@@ -300,6 +328,7 @@ def build_profile(
             except Exception as exc:  # noqa: BLE001
                 errors.append(redact_identity(" ".join(str(exc).split()))[:200])
         counts = {k: len(v) for k, v in combined.items()}
+        degraded = degraded or bool(errors)
         if errors and len(errors) == len(windows):
             statuses.append(DocumentStatus(file=name, status="failed", reason=errors[0]))
         elif sum(counts.values()) == 0:
@@ -315,13 +344,15 @@ def build_profile(
                 )
             )
             if cache is not None and verdict_ok and not errors:
-                cache.put(name, fingerprint, {"status": "contributed", "extracted": combined})
+                _cache_put(cache, name, fingerprint, {"status": "contributed", "extracted": combined})
     if cache is not None:
-        cache.keep_only(set(documents))
+        _cache_keep_only(cache, set(documents))
     profile = merge_document_profiles(extracted, model, version, statuses)
     stats: dict = {}
     profile.categories, cut = consolidate_categories(profile.categories, client, user_id, previous, stats)
     profile.truncated = profile.truncated or cut
+    # A build that could not read every document, or whose merge pass got no answer at all, is used but never stored as current.
+    profile.degraded = degraded or (stats.get("runs_asked", 0) > 0 and stats.get("runs_answered", 0) == 0)
     # Counts only: category names are the company's own material.
     logger.info(
         "KB profile built: documents=%d contributing=%d cached_documents=%d categories=%d rules=%d conflicts=%d runs=%s/%s "
@@ -347,30 +378,37 @@ def consolidate_categories(
     """The merged categories as a canonical list: the model decides which categories judge the same quality, a rule names them.
 
     The model is asked CONSOLIDATION_RUNS times which input categories belong together. Two are merged when MORE THAN HALF of the
-    answering runs grouped them; pairs are joined transitively. A rebuild first re-applies the groups of the `previous` profile
-    (for members the documents still name), so what was decided stays decided. Each resulting entry is named, and given its pass
-    condition, by `_representative_key` from its members as the documents wrote them; it keeps the union of their sources and
-    lists them in `merged_from`. An entry no run grouped is its own. The outcome depends on what the runs said, not on their
-    order, and names are unique because members are. A list over MAX_SCORING_CATEGORIES is cut (best-supported first) as a last
-    safeguard. Without the model (not offered, or every run failing) the deterministic list is only capped. Returns
-    (categories, cut). `stats`, when given, receives runs_asked, runs_answered and contested_pairs (pairs that some, but not
-    all, answering runs grouped) for the build's log line."""
+    answering runs grouped them; pairs are joined transitively. The groups of the `previous` profile (for members the documents
+    still name) are applied first and ALWAYS, also when the model is absent or every run fails, so what was decided stays decided.
+    Each resulting entry is named, and given its pass condition, by `_representative_key` from its members as the documents wrote
+    them; it keeps the union of their sources and lists them in `merged_from`. An entry nobody grouped is its own. The outcome depends
+    on what the runs said, not on their order, and names are unique because members are. A list over MAX_SCORING_CATEGORIES is cut
+    (best-supported first) as a last safeguard. Returns (categories, cut). `stats`, when given, receives runs_asked, runs_answered and
+    contested_pairs (pairs that some, but not all, answering runs grouped) for the build's log line."""
     def capped(entries: list[Category]) -> tuple[list[Category], bool]:
         ordered = sorted(entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name))
         return ordered[:MAX_SCORING_CATEGORIES], len(ordered) > MAX_SCORING_CATEGORIES
 
-    consolidate = getattr(client, "consolidate_kb_categories", None)
-    if len(categories) < 2 or consolidate is None:
-        return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
+    def unmerged() -> tuple[list[Category], bool]:
+        return [c.model_copy(update={"merged_from": [c.name]}) for c in categories[:MAX_SCORING_CATEGORIES]], len(categories) > MAX_SCORING_CATEGORIES
+
     by_key = {_key(c.name): c for c in categories}
     keys = list(by_key)
     position = {k: i for i, k in enumerate(keys)}
+    previous_groups = [
+        still_named
+        for earlier in (previous.categories if previous else [])
+        if len(still_named := [k for k in dict.fromkeys(_key(m) for m in earlier.merged_from) if k in by_key]) > 1
+    ]
+    consolidate = getattr(client, "consolidate_kb_categories", None)
+    if len(categories) < 2 or (consolidate is None and not previous_groups):
+        return unmerged()
     payload = [{"name": c.name, "pass_condition": c.pass_condition or ""} for c in categories]
     previous_names = [c.name for c in previous.categories] if previous else []
     extra = {"preferred_names": previous_names} if previous_names else {}
 
     runs: list[list[list[str]]] = []  # per answering run: groups of member keys, every key exactly once
-    for _ in range(CONSOLIDATION_RUNS):
+    for _ in range(CONSOLIDATION_RUNS if consolidate is not None else 0):
         try:
             groups = consolidate(payload, MAX_SCORING_CATEGORIES, user_id=user_id, **extra)
         except Exception as exc:  # noqa: BLE001 -- the merge only shortens the list; the profile is built either way
@@ -385,11 +423,11 @@ def consolidate_categories(
                 parsed.append(members)
         parsed += [[k] for k in keys if k not in placed]
         runs.append(parsed)
-    if stats is not None:
+    if stats is not None and consolidate is not None:
         stats.update(runs_asked=CONSOLIDATION_RUNS, runs_answered=len(runs))
-    if not runs:
+    if not runs and not previous_groups:
         logger.warning("KB category consolidation gave no usable answer; keeping the capped deterministic list")
-        return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
+        return unmerged()
 
     parent = {k: k for k in keys}
 
@@ -405,11 +443,9 @@ def consolidate_categories(
             low, high = sorted((root_a, root_b), key=position.__getitem__)
             parent[high] = low
 
-    # What the previous profile decided stays decided, for members the documents still name.
-    for earlier in previous.categories if previous else []:
-        still_named = [k for k in (_key(m) for m in earlier.merged_from) if k in by_key]
-        for other in still_named[1:]:
-            union(still_named[0], other)
+    for group in previous_groups:  # what the previous profile decided stays decided
+        for other in group[1:]:
+            union(group[0], other)
 
     together: dict[tuple[str, str], int] = {}
     for run in runs:
@@ -539,10 +575,17 @@ def ensure_profile(
             return existing
         make_cache = getattr(store, "document_cache", None)
         profile = build_profile(
-            texts, client, model=model, user_id=user_id, previous=existing,
+            texts, client, model=model, user_id=user_id,
+            # A refresh starts from the documents: earlier merges (which only ever grow) are not carried over.
+            previous=None if refresh else existing,
             cache=make_cache(user_id) if make_cache else None, read_cache=not refresh,
         )
         profile.built_at = datetime.now(timezone.utc).isoformat()
+        if profile.degraded:
+            # Used for the job at hand, never stored as current: the next job rebuilds (the documents that did succeed come from the
+            # cache), instead of every later job scoring without the knowledge base's standard until a document changes.
+            logger.warning("KB profile build was incomplete; it is used for this request and not stored")
+            return profile
         store.put(user_id, profile)
         return profile
 

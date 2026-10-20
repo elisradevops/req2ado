@@ -283,6 +283,7 @@ def _score_all_requirements(
     unchanged."""
     if not nodes:
         return
+    warnings_before = len(warnings)  # this pass's own warnings: an earlier stage's must not hide a drift found here
     criteria_context = (
         _build_criteria_context(criteria_retriever, nodes)
         if criteria_retriever is not None
@@ -462,7 +463,7 @@ def _score_all_requirements(
     # Across the whole job: each chunk can be consistent while the chunks differ from one another (names derived live per call).
     # Nothing compared them before. Skipped when a chunk's own warning already reports the difference.
     job_key_sets = {frozenset(node.quality_category_scores) for node in nodes if node.quality_category_scores}
-    if len(job_key_sets) > 1 and not any(w.kind == WarningKind.SCORING_INCONSISTENT_CATEGORIES for w in warnings):
+    if len(job_key_sets) > 1 and not any(w.kind == WarningKind.SCORING_INCONSISTENT_CATEGORIES for w in warnings[warnings_before:]):
         message = (
             f"Quality scoring used {len(job_key_sets)} different sets of category names across the document -- the chunks did "
             "not agree, so quality breakdowns may not line up for comparison."
@@ -1009,8 +1010,9 @@ def _apply_quality_scores(
 
     if nodes_missing_categories:
         left_out_names = sorted({name for names in nodes_missing_categories.values() for name in names})
+        # Counts only: the names are the company's own material and stay in the warning's detail, not in the log or the narration.
         message = (
-            f"Quality scoring left out {len(left_out_names)} required category name(s) ({', '.join(left_out_names)}) for "
+            f"Quality scoring left out {len(left_out_names)} required category(ies) for "
             f"{len(nodes_missing_categories)} item(s); their breakdowns are incomplete."
         )
         logger.warning(message)

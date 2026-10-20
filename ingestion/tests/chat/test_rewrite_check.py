@@ -69,3 +69,25 @@ def test_it_never_raises_and_is_deterministic() -> None:
     assert check_rewrite(None, None, None, None) == []  # type: ignore[arg-type]
     first = check_rewrite(TITLE, ORIGINAL, "Other", "no numbers here")
     assert first == check_rewrite(TITLE, ORIGINAL, "Other", "no numbers here")
+
+
+TABLE = (
+    '<table style="border:1px solid #000"><colgroup><col style="width:40%"><col style="width:60%"></colgroup>'
+    '<tr><th colspan="2" style="background-color:#1F3864">Limits</th></tr><tr><td>Lock time</td><td>5 ms</td></tr></table>'
+)
+
+
+def test_markup_is_not_content_css_values_and_colours_are_not_numbers_or_identifiers() -> None:
+    original = "The receiver shall lock within 5 ms. " + TABLE
+    proposal = "The receiver shall acquire lock within 5 ms. <table><tr><th>Limits</th></tr><tr><td>Lock time</td><td>5 ms</td></tr></table>"
+    assert check_rewrite(TITLE, original, None, proposal) == []
+
+
+def test_a_number_inside_a_table_cell_is_still_a_number_that_can_be_lost() -> None:
+    original = "The receiver shall lock. " + TABLE
+    lost = {w["code"]: w for w in check_rewrite(TITLE, original, None, "The receiver shall lock. <table><tr><td>Lock time</td><td>quick</td></tr></table>")}
+    assert lost["dropped_numbers"]["detail"] == "5"
+
+
+def test_entities_are_read_as_text_and_thousands_separators_do_not_count_as_a_change() -> None:
+    assert check_rewrite(TITLE, "The unit shall hold 1,000 &amp; 2 items.", None, "The unit shall hold 1000 & 2 items.") == []

@@ -5,6 +5,7 @@ Each warning is {"code", "severity", "detail"}. `high` means content was probabl
 asked for (the title). The caller shows them and asks for confirmation when any is `high`."""
 from __future__ import annotations
 
+import html
 import re
 
 _MAX_GROWTH = 2.5  # a rewrite longer than this many times the original ...
@@ -15,8 +16,15 @@ _IDENTIFIER = re.compile(r"\b(?=[A-Za-z0-9/_.-]*\d)(?=[A-Za-z0-9/_.-]*[A-Za-z])[
 _MODAL = re.compile(r"\b(?:shall|must|should)\b", re.IGNORECASE)
 
 
+_TAG = re.compile(r"<[^>]+>")
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+
+
 def _norm(text: str | None) -> str:
-    return " ".join((text or "").split())
+    """Readable text of a description: a requirement can carry an HTML table, whose attributes (widths, colours, spans) are not
+    content; entities are decoded and thousands separators removed so 1,000 and 1000 are the same number."""
+    plain = html.unescape(_TAG.sub(" ", text or ""))
+    return _THOUSANDS.sub("", " ".join(plain.split()))
 
 
 def _numbers(text: str) -> list[str]:

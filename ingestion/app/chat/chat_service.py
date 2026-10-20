@@ -60,14 +60,7 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "You are refining ONE requirement item in a document review tool. The user "
     "may ask a question or ask you to rewrite the item. Item type: {item_type}. "
     "Item title: {title}. Item description: {description}. {quality_note}"
-    "Rules for any rewrite: keep it ONE requirement statement (one shall/should/must); "
-    "keep the title unless the user asked to change it; keep every number, unit, identifier "
-    "and named entity of the current description; do not make it longer than about two times "
-    "the length of the current description unless the user asked for more; use the "
-    "organization's definitions, rules and terms given above and stay consistent with the document context. "
-    "Do not invent facts: if an improvement needs information that is neither in the item nor in "
-    "the material above (a value, a unit, an actor, a condition), ask the user for it instead of "
-    "proposing a rewrite. "
+    "{rewrite_rules}"
     "Reply conversationally first. If — and only if — the user asked for a "
     "rewrite of the title and/or description, end your reply with a new line "
     f"containing exactly '{PROPOSAL_SENTINEL}' followed by a single-line JSON "
@@ -75,6 +68,20 @@ _SYSTEM_PROMPT_TEMPLATE = (
     '<string or null>}}. If no rewrite was requested, omit the sentinel line '
     "entirely."
 )
+
+
+_REWRITE_RULES = (
+    "Rules for any rewrite: {shape}"
+    "keep the title unless the user asked to change it; keep every number, unit, identifier "
+    "and named entity of the current description; do not make it longer than about two times "
+    "the length of the current description unless the user asked for more; use the "
+    "organization's definitions, rules and terms given above and stay consistent with the document context. "
+    "Do not invent facts: if an improvement needs information that is neither in the item nor in "
+    "the material above (a value, a unit, an actor, a condition), ask the user for it instead of "
+    "proposing a rewrite. "
+)
+_SHAPE_REQUIREMENT = "keep it ONE requirement statement (one shall/should/must); "
+_SHAPE_OTHER = "keep it a concise description of the scope of the {kind}, not a requirement statement; "
 
 
 _WEAK_CATEGORY_SCORE = 70
@@ -121,8 +128,11 @@ def _build_system_prompt(
         quality_note = f"Known quality issues: {', '.join(item['qualityIssues'])}. "
     if weakest_note:
         quality_note += weakest_note
+    item_type = item.get("childType") or item.get("type") or "Requirement"
+    shape = _SHAPE_REQUIREMENT if item_type == "Requirement" else _SHAPE_OTHER.format(kind=item_type)
     prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        item_type=item.get("childType") or item.get("type") or "Requirement",
+        rewrite_rules=_REWRITE_RULES.format(shape=shape),
+        item_type=item_type,
         title=item["title"],
         description=item["description"],
         quality_note=quality_note,
