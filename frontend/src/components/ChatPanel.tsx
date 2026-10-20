@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
 import { MessageSquareText, SendHorizontal, ChevronRight } from 'lucide-react';
-import { getChatHistory, listModels, sendChatTurn, stopChatTurn, type ChatMessage } from '../api/chat';
+import { checkRewrite, getChatHistory, listModels, sendChatTurn, stopChatTurn, type ChatMessage, type RewriteComparison, type RewriteWarning } from '../api/chat';
 import { useChatSocket, type StreamEvent } from '../hooks/useChatSocket';
 import { useToast } from './ToastProvider';
 import { ElapsedTimer } from './ElapsedTimer';
@@ -10,6 +10,7 @@ import { Select } from '../ui/Select';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Chip } from '../ui/Chip';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { InfoTip } from '../ui/Tooltip';
 import { Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
@@ -21,6 +22,31 @@ interface Proposal {
 }
 
 const HISTORY_DISPLAY_LIMIT = 50;
+
+// The check of a proposal is one model call; past this the proposal can be accepted without it (it is then marked unchecked).
+const CHECK_TIMEOUT_MS = 45_000;
+
+type ProposalCheck = { status: 'idle' } | { status: 'loading' } | { status: 'unavailable' } | { status: 'ready'; data: RewriteComparison };
+
+const WARNING_LABEL: Record<string, string> = {
+  empty_description: 'Empty description',
+  title_changed: 'Title changed',
+  much_longer: 'Much longer',
+  more_statements: 'More statements',
+  dropped_numbers: 'Numbers dropped',
+  dropped_identifiers: 'Identifiers dropped',
+};
+
+function warningText(warning: RewriteWarning): string {
+  const label = WARNING_LABEL[warning.code] ?? warning.code;
+  return warning.code === 'title_changed' || warning.code === 'empty_description' ? label : `${label}: ${warning.detail}`;
+}
+
+function predictedLine(data: RewriteComparison): string {
+  if (data.delta === null || data.before.score === null || data.after.score === null) return 'The predicted score is unavailable.';
+  const sign = data.delta > 0 ? '+' : '';
+  return `Predicted score: ${data.before.score} → ${data.after.score} (${sign}${data.delta})`;
+}
 
 // Fixed, non-editable prompt for the "Suggest a better title" chip -- title
 // distillation beyond the first-sentence rule (a shorter label, or a fully
@@ -125,6 +151,9 @@ export function ChatPanel({
   // stronger than a static "can take a couple of minutes" sentence.
   const [streamStartedAt, setStreamStartedAt] = useState<string | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [check, setCheck] = useState<ProposalCheck>({ status: 'idle' });
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const checkRequestRef = useRef(0);
   const historyEndRef = useRef<HTMLDivElement>(null);
 
   // Reset chat state whenever the selected node changes so a stale
@@ -172,6 +201,28 @@ export function ChatPanel({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, localId, disabled]);
+
+  // A proposal with a description is checked before it can be applied (the original and the proposal scored together, plus the
+  // warnings). A result that arrives after the proposal or the node changed is discarded.
+  useEffect(() => {
+    const request = ++checkRequestRef.current;
+    setConfirmOpen(false);
+    if (!proposal?.proposedDescription) {
+      setCheck({ status: 'idle' });
+      return;
+    }
+    setCheck({ status: 'loading' });
+    const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), CHECK_TIMEOUT_MS));
+    Promise.race([checkRewrite(jobId, localId, { proposedTitle: proposal.proposedTitle, proposedDescription: proposal.proposedDescription }), timeout])
+      .then((data) => {
+        if (request !== checkRequestRef.current) return;
+        setCheck(data && Array.isArray(data.warnings) ? { status: 'ready', data } : { status: 'unavailable' });
+      })
+      .catch(() => {
+        if (request === checkRequestRef.current) setCheck({ status: 'unavailable' });
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposal, jobId, localId]);
 
   useChatSocket(
     jobId,
@@ -298,8 +349,18 @@ export function ChatPanel({
     }
   }
 
+  // Applying asks first when the check predicts a lower score or found something that probably lost content.
+  const needsConfirmation =
+    check.status === 'ready' && ((check.data.delta !== null && check.data.delta < 0) || check.data.warnings.some((w) => w.severity === 'high'));
+
+  function onAcceptClick(): void {
+    if (needsConfirmation) setConfirmOpen(true);
+    else acceptProposal();
+  }
+
   function acceptProposal(): void {
     if (!proposal) return;
+    setConfirmOpen(false);
     onAcceptProposal({
       title: proposal.proposedTitle ?? undefined,
       description: proposal.proposedDescription ?? undefined,
@@ -447,8 +508,24 @@ export function ChatPanel({
               <strong>Description:</strong> {proposal.proposedDescription}
             </p>
           )}
+          {check.status === 'loading' && <p className="mt-1 text-xs text-ink-3">Checking this rewrite…</p>}
+          {check.status === 'unavailable' && <p className="mt-1 text-xs text-ink-3">This rewrite could not be checked.</p>}
+          {check.status === 'ready' && (
+            <div className="mt-1 flex flex-col gap-1">
+              {check.data.warnings.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {check.data.warnings.map((w) => (
+                    <Chip key={w.code} className={w.severity === 'high' ? 'bg-danger-soft text-danger-ink' : 'bg-canvas text-ink-2'}>
+                      {warningText(w)}
+                    </Chip>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-ink-2">{predictedLine(check.data)}</p>
+            </div>
+          )}
           <div className="mt-1.5 flex gap-2">
-            <Button size="sm" onClick={acceptProposal}>
+            <Button size="sm" onClick={onAcceptClick} disabled={check.status === 'loading'}>
               Accept
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setProposal(null)}>
@@ -457,6 +534,25 @@ export function ChatPanel({
           </div>
         </Card>
       )}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Apply this rewrite anyway?"
+        description="The check found something you may want to look at first."
+        confirmLabel="Apply anyway"
+        onConfirm={acceptProposal}
+      >
+        {check.status === 'ready' && (
+          <div className="flex flex-col gap-1 text-sm">
+            <p>{predictedLine(check.data)}</p>
+            <ul className="list-disc pl-5">
+              {check.data.warnings.map((w) => (
+                <li key={w.code}>{warningText(w)}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </ConfirmDialog>
       <div className="flex flex-col gap-2 border-t border-hairline pt-3">
         {/* Model picker is a secondary control (most turns leave it on
             Default) -- kept narrow so it doesn't compete with the input for
