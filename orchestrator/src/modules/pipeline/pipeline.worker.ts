@@ -1,3 +1,4 @@
+import { describeFailure } from './failure-reason';
 import { JobResultCache, hashCatalog, isDegradedResult, kbVersionFor, type CachedResult } from './result-cache';
 import crypto from 'crypto';
 import type { PrismaClient } from '@prisma/client';
@@ -1254,13 +1255,13 @@ export async function runPipelineJob(
       await deps.prisma.auditEntry.create({
         data: {
           jobId: job.id,
-          message: `Pipeline error occurred after cancellation, job remains cancelled: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Pipeline error occurred after cancellation, job remains cancelled: ${describeFailure(error)}`,
         },
       });
       return [];
     }
     await deps.prisma.auditEntry.create({
-      data: { jobId: job.id, message: `Pipeline failed: ${error instanceof Error ? error.message : String(error)}` },
+      data: { jobId: job.id, message: `Pipeline failed: ${describeFailure(error)}` },
     });
     await deps.jobEventsPublisher.publish(job.id, 'failed');
     throw error;

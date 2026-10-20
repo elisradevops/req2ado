@@ -397,6 +397,32 @@ describe('runPipelineJob', () => {
     });
   });
 
+  it('stores the network cause of a failure, not only "fetch failed"', async () => {
+    const cause = Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' });
+    fakeIngestionClient.ingest.mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause }));
+
+    await expect(
+      runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      ),
+    ).rejects.toThrow('fetch failed');
+
+    expect(fakePrisma.auditEntry.create).toHaveBeenCalledWith({
+      data: { jobId: 'job-1', message: 'Pipeline failed: fetch failed (UND_ERR_HEADERS_TIMEOUT: Headers Timeout Error)' },
+    });
+  });
+
   it("passes each node's source_hash/customer_id/areaPath to the dry-run diff, not the whole tree blindly", async () => {
     fakeIngestionClient.ingest.mockResolvedValue({ blocks: [] });
     fakeIngestionClient.level.mockResolvedValue({
