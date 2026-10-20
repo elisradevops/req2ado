@@ -10,6 +10,7 @@ from typing import Any, Callable
 import httpx
 from json_repair import repair_json
 
+from app.job_cancel import raise_if_cancelled
 from app.otel import get_tracer
 from app.prompts import load_prompt
 from app.section_analysis_options import DEFAULT_SECTION_ANALYSIS_OPTIONS, SectionAnalysisOptions
@@ -1077,6 +1078,7 @@ class OrchestratorLlmClient:
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
         for attempt in range(_MAX_CHAT_RETRY_ATTEMPTS):
+            raise_if_cancelled()  # a job whose caller is gone makes no further model calls
             started = time.monotonic()
             with httpx.Client(transport=self._transport, timeout=_LLM_REQUEST_TIMEOUT_SECONDS) as client:
                 response = client.post(
@@ -1118,6 +1120,7 @@ class OrchestratorLlmClient:
         failed or was refused before any output arrived, the stream broke part
         way (the lane is cleared first), or it ended without the terminal line
         that proves the answer is complete."""
+        raise_if_cancelled()
         headers = {"Authorization": f"Bearer {self._bearer_token}"}
         if user_id:
             headers["X-Req2Ado-User-Id"] = user_id
