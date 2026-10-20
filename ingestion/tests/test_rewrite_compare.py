@@ -82,10 +82,24 @@ def test_the_deterministic_warnings_come_with_the_comparison(monkeypatch) -> Non
     assert body["delta"] == -24
 
 
-def test_a_missing_score_for_either_text_is_a_502_not_a_made_up_comparison(monkeypatch) -> None:
+def test_when_the_model_cannot_score_both_texts_the_warnings_still_come_back_and_no_delta_is_made_up(monkeypatch) -> None:
     _patch(monkeypatch, lambda r: _scores(_entry(64, Testable=60), _entry(71, Testable=70), drop="after"))
-    response = client.post("/rewrite/compare", json=BODY)
-    assert response.status_code == 502
+    bad = {**BODY, "proposed_description": "The receiver shall lock quickly."}
+    response = client.post("/rewrite/compare", json=bad)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["delta"] is None and body["categoryDeltas"] == {} and body["after"]["score"] is None
+    assert "dropped_numbers" in {w["code"] for w in body["warnings"]}  # what can be seen in the texts needs no model
+
+
+def test_a_failing_model_call_is_the_same_unavailable_comparison_not_an_error(monkeypatch) -> None:
+    monkeypatch.setattr("app.survey.orchestrator_llm_client.time.sleep", lambda seconds: None)  # the client's retry backoff
+    _patch(monkeypatch, lambda r: httpx.Response(502, json={"detail": "upstream"}))
+    response = client.post("/rewrite/compare", json={**BODY, "proposed_title": "Other title"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["delta"] is None and body["before"]["score"] is None and body["after"]["score"] is None
+    assert "title_changed" in {w["code"] for w in body["warnings"]}
 
 
 def test_blank_texts_are_refused(monkeypatch) -> None:

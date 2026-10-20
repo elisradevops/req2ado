@@ -1862,17 +1862,27 @@ async def rewrite_compare(body: RewriteCompareRequest) -> dict:
             _get_criteria_retriever(body.user_id), kb_context, checklist, user_id=body.user_id,
         )
 
-    scored = await run_in_threadpool(_score)
+    warnings = check_rewrite(body.original_title, body.original_description, body.proposed_title, body.proposed_description)
+    nothing = {"score": None, "issues": [], "categoryScores": None, "confidence": None}
+    try:
+        scored = await run_in_threadpool(_score)
+    except Exception as exc:  # noqa: BLE001 -- the checks of the two texts need no model; only the prediction is lost
+        logger.warning("Rewrite comparison could not be scored: %s", describe_exception(exc))
+        return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
     before, after = scored["before"], scored["after"]
     if before is None or after is None or before[0] is None or after[0] is None:
-        raise HTTPException(status_code=502, detail="the model did not score both texts, so no comparison is offered")
+        # Never a made-up comparison: without both scores there is no delta, but the warnings stand.
+        return {
+            "before": _score_view(before) if before else nothing, "after": _score_view(after) if after else nothing,
+            "delta": None, "categoryDeltas": {}, "warnings": warnings,
+        }
     shared = [name for name in (after[2] or {}) if name in (before[2] or {})]
     return {
         "before": _score_view(before),
         "after": _score_view(after),
         "delta": after[0] - before[0],
         "categoryDeltas": {name: (after[2] or {})[name] - (before[2] or {})[name] for name in shared},
-        "warnings": check_rewrite(body.original_title, body.original_description, body.proposed_title, body.proposed_description),
+        "warnings": warnings,
     }
 
 
