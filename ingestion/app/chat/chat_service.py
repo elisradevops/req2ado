@@ -71,17 +71,22 @@ _WEAK_CATEGORY_SCORE = 70
 _WEAKEST_SHOWN = 2
 
 
-def weakest_category_note(scores: dict | None, profile) -> str | None:
-    """A note for the chat prompt naming the item's weakest quality categories (score below 70, at most two, weakest first)
-    with the organization's pass condition from its KB profile when it has one, so a rewrite is aimed at what actually
-    lowers the item's score. None when there are no usable scores or every category is good."""
+def _weakest_categories(scores: dict | None) -> list[tuple[str, float]]:
+    """The item's weakest quality categories: score below the bar, at most _WEAKEST_SHOWN, weakest first."""
     if not isinstance(scores, dict):
-        return None
+        return []
     usable = sorted(
         ((name, float(value)) for name, value in scores.items() if isinstance(name, str) and isinstance(value, (int, float)) and not isinstance(value, bool)),
         key=lambda pair: (pair[1], pair[0]),
     )
-    weak = [(name, value) for name, value in usable if value < _WEAK_CATEGORY_SCORE][:_WEAKEST_SHOWN]
+    return [(name, value) for name, value in usable if value < _WEAK_CATEGORY_SCORE][:_WEAKEST_SHOWN]
+
+
+def weakest_category_note(scores: dict | None, profile) -> str | None:
+    """A note for the chat prompt naming the item's weakest quality categories (score below 70, at most two, weakest first)
+    with the organization's pass condition from its KB profile when it has one, so a rewrite is aimed at what actually
+    lowers the item's score. None when there are no usable scores or every category is good."""
+    weak = _weakest_categories(scores)
     if not weak:
         return None
     conditions = {c.name.casefold(): c.pass_condition for c in (profile.categories if profile else []) if c.pass_condition}
@@ -146,6 +151,12 @@ async def run_chat_turn(
                 retrieve_context, user_id, user_message, embed_client, vector_store
             )
 
+        weakest = _weakest_categories(item.get("qualityCategoryScores"))
+        # Category names and scores only, never the item's or the user's text: shows which category a turn aimed at.
+        logger.info(
+            "chat turn: job=%s node=%s weakest=%s profile=%s", job_id, local_id,
+            ", ".join(f"{name}={value:g}" for name, value in weakest) or "none", "yes" if profile is not None else "no",
+        )
         system_prompt = _build_system_prompt(item, kb_context, weakest_category_note(item.get("qualityCategoryScores"), profile))
         capped_history = history[-_MAX_HISTORY_TURNS:]
         messages = (

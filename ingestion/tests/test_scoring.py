@@ -707,3 +707,26 @@ def test_epic_feature_scoring_also_splits_on_a_5xx() -> None:
     _score_epics_and_features(nodes, Fails500OnFullChunkClient(), warnings, None, None, 0, 1)
     assert len(calls) == 3
     assert not any(w.kind.value == "scoring_failed" for w in warnings)
+
+
+def test_the_scoring_batch_shrinks_as_the_category_list_grows_so_one_answer_stays_the_same_size() -> None:
+    from app.leveling import scoring
+
+    limit = scoring.scoring_chunk_node_limit
+    assert limit(None) == scoring._SCORING_CHUNK_NODE_COUNT  # the built-in list: unchanged
+    assert limit(6) == scoring._SCORING_CHUNK_NODE_COUNT
+    assert limit(8) < limit(6) or limit(8) == scoring._SCORING_CHUNK_NODE_COUNT
+    assert limit(21) < limit(8)  # 21 overlapping names made 50-requirement answers outlast the upstream's 300 s
+    assert limit(500) >= 10  # never a batch of one
+    assert limit(8) * 8 <= scoring._SCORING_OUTPUT_BUDGET and limit(21) * 21 <= scoring._SCORING_OUTPUT_BUDGET + 21
+
+
+def test_chunks_follow_the_node_limit_for_the_categories_in_use() -> None:
+    from app.leveling import scoring
+
+    items = [f"r{i}" for i in range(60)]
+    wide = scoring._chunk_by_count_and_chars(items, len, node_limit=scoring.scoring_chunk_node_limit(21))
+    narrow = scoring._chunk_by_count_and_chars(items, len)
+    assert max(len(c) for c in wide) == scoring.scoring_chunk_node_limit(21)
+    assert max(len(c) for c in narrow) == scoring._SCORING_CHUNK_NODE_COUNT
+    assert [i for c in wide for i in c] == items  # document order preserved
