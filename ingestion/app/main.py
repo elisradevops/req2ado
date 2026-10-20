@@ -1412,7 +1412,7 @@ async def ingest(
         else:
             with ThreadPoolExecutor(max_workers=caption_concurrency) as executor:
                 futures = [
-                    executor.submit(_caption_one, figure_position)
+                    job_cancel.submit_in_context(executor, _caption_one, figure_position)
                     for figure_position in range(len(collected_figure_bytes))
                 ]
                 # Consumed by INDEX (list position of the future), never by
@@ -1718,17 +1718,14 @@ async def level(
             top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P, cache=_llm_response_cache,
         )
         catalog = json.loads(link_type_catalog) if link_type_catalog else None
-        # The caller (the orchestrator's request) going away cancels the job: its remaining model calls are not made.
-        try:
-            async with job_cancel.watch_for_disconnect(request, job_id):
+        # The caller (the orchestrator's request) going away cancels this run: its remaining model calls are not made.
+        with job_cancel.cancellation_scope() as cancel_token:
+            async with job_cancel.watch_for_disconnect(request, cancel_token):
                 tree = await run_in_threadpool(
                     _build_survey_tree_with_scoring, doc, client, user_id, catalog, job_id, model, primer_context
                 )
-            if job_cancel.is_cancelled(job_id):
-                raise HTTPException(status_code=499, detail="the caller disconnected; the job was cancelled")
-        finally:
-            if job_id:
-                job_cancel.clear(job_id)
+            if cancel_token.cancelled:
+                raise HTTPException(status_code=499, detail="the caller disconnected; the run was cancelled")
         return _enforce_requirement_only_fields(_append_vision_disabled_warning(tree, doc, mode))
     return _enforce_requirement_only_fields(
         _append_vision_disabled_warning(build_baseline_tree(doc), doc, mode)
