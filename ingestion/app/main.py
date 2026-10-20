@@ -2087,6 +2087,8 @@ class KbProfileRequest(BaseModel):
     # The model that reads the documents; recorded in the profile (built_with) and part of its version, so changing the
     # model rebuilds it and a rerun with the same model does not.
     model: str
+    # Re-read every document and rebuild even though nothing changed (a stored extraction is otherwise reused for good).
+    refresh: bool = False
 
 
 def _profile_response(profile: KbProfile) -> dict:
@@ -2105,6 +2107,7 @@ async def kb_build_profile(body: KbProfileRequest) -> dict:
     every document and stored. 404 when the user has no KB documents."""
     profile = await run_in_threadpool(
         ensure_profile, body.user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(body.model), model=body.model,
+        refresh=body.refresh,
     )
     if profile is None:
         raise HTTPException(status_code=404, detail="No knowledge-base documents for this user")

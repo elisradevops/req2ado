@@ -28,6 +28,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from app.prompts import load_prompt
 from app.request_identity import redact_identity
 
 logger = logging.getLogger(__name__)
@@ -135,9 +136,55 @@ class ProfileStore(Protocol):
     def put(self, user_id: str, profile: KbProfile) -> None: ...
 
 
+class DocumentCache(Protocol):
+    """One user's stored extractions, one per KB document: the document's relevance verdict and what was extracted from it, valid for
+    the exact text, model and extraction (prompts, windows) it was made with."""
+
+    def get(self, file: str, fingerprint: str) -> dict | None: ...
+
+    def put(self, file: str, fingerprint: str, result: dict) -> None: ...
+
+    def files(self) -> list[str]: ...
+
+    def keep_only(self, files: set[str]) -> None: ...
+
+
+def extraction_version() -> str:
+    """Identifies how a document is read: change a prompt, the window size or the schema and stored extractions no longer apply."""
+    parts = [SCHEMA_VERSION, load_prompt("kb_document_relevance"), load_prompt("extract_kb_document_profile"), WINDOW_CHARS, WINDOW_OVERLAP, RELEVANCE_EXCERPT_CHARS]
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
+
+
+def _fingerprint(text: str, model: str) -> str:
+    return hashlib.sha256(json.dumps([extraction_version(), model, text]).encode()).hexdigest()
+
+
+class _MemoryDocumentCache:
+    def __init__(self, entries: dict[str, tuple[str, dict]]) -> None:
+        self._entries = entries
+
+    def get(self, file: str, fingerprint: str) -> dict | None:
+        found = self._entries.get(file)
+        return found[1] if found and found[0] == fingerprint else None
+
+    def put(self, file: str, fingerprint: str, result: dict) -> None:
+        self._entries[file] = (fingerprint, result)
+
+    def files(self) -> list[str]:
+        return sorted(self._entries)
+
+    def keep_only(self, files: set[str]) -> None:
+        for gone in [f for f in self._entries if f not in files]:
+            del self._entries[gone]
+
+
 class InMemoryProfileStore:
     def __init__(self) -> None:
         self._profiles: dict[str, str] = {}
+        self._documents: dict[str, dict[str, tuple[str, dict]]] = {}
+
+    def document_cache(self, user_id: str) -> DocumentCache:
+        return _MemoryDocumentCache(self._documents.setdefault(user_id, {}))
 
     def get(self, user_id: str) -> KbProfile | None:
         raw = self._profiles.get(user_id)
@@ -204,24 +251,47 @@ def _union(into: dict, extracted: dict) -> None:
 
 def build_profile(
     documents: dict[str, str], client: KbProfileClient, *, model: str, user_id: str | None = None, previous: KbProfile | None = None,
+    cache: DocumentCache | None = None, read_cache: bool = True,
 ) -> KbProfile:
     """Maps every document, then merges. Never raises for a document: each ends with a recorded status. `previous` (the profile
-    this one replaces) only lends its category names to the merge, so a rebuild keeps names unless the content changed."""
+    this one replaces) only lends its category names and groups to the merge. `cache` holds each document's earlier extraction: a
+    document whose text, the model and the extraction are unchanged is not read again (`read_cache=False` re-reads everything and
+    replaces what was stored), so a rebuild keeps what its unchanged documents said. Only complete results are stored."""
     started = time.monotonic()
     version = profile_version(documents, model)
     extracted: dict[str, dict] = {}
     statuses: list[DocumentStatus] = []
+    cached_documents = 0
     for name in sorted(documents):
         text = documents[name]
+        fingerprint = _fingerprint(text, model) if cache is not None else ""
+        remembered = cache.get(name, fingerprint) if cache is not None and read_cache else None
+        if remembered is not None:
+            cached_documents += 1
+            if remembered.get("status") == "not_relevant":
+                statuses.append(DocumentStatus(file=name, status="not_relevant", reason=remembered.get("reason") or "judged not relevant"))
+            else:
+                counts = {k: len(v) for k, v in remembered["extracted"].items()}
+                extracted[name] = remembered["extracted"]
+                statuses.append(
+                    DocumentStatus(
+                        file=name, status="contributed", categories=counts["categories"], rules=counts["rules"],
+                        type_definitions=counts["type_definitions"], glossary=counts["glossary"],
+                    )
+                )
+            continue
+        verdict_ok = True
         try:
             verdict = client.judge_kb_document_relevance(name, text[:RELEVANCE_EXCERPT_CHARS], user_id=user_id)
             relevant = bool(verdict.get("relevant", True)) if isinstance(verdict, dict) else True
             reason = str(verdict.get("reason") or "")[:300] if isinstance(verdict, dict) else ""
         except Exception as exc:  # noqa: BLE001 -- relevant unless clearly not: a failed judgement never drops a document
             logger.warning("KB relevance judgement failed for %s: %s", name, exc)
-            relevant, reason = True, ""
+            relevant, reason, verdict_ok = True, "", False
         if not relevant:
             statuses.append(DocumentStatus(file=name, status="not_relevant", reason=reason or "judged not relevant"))
+            if cache is not None and verdict_ok:
+                cache.put(name, fingerprint, {"status": "not_relevant", "reason": reason})
             continue
         combined, errors, windows = _empty(), [], windows_of(text)
         for window in windows:
@@ -244,15 +314,19 @@ def build_profile(
                     type_definitions=counts["type_definitions"], glossary=counts["glossary"],
                 )
             )
+            if cache is not None and verdict_ok and not errors:
+                cache.put(name, fingerprint, {"status": "contributed", "extracted": combined})
+    if cache is not None:
+        cache.keep_only(set(documents))
     profile = merge_document_profiles(extracted, model, version, statuses)
     stats: dict = {}
     profile.categories, cut = consolidate_categories(profile.categories, client, user_id, previous, stats)
     profile.truncated = profile.truncated or cut
     # Counts only: category names are the company's own material.
     logger.info(
-        "KB profile built: documents=%d contributing=%d categories=%d rules=%d conflicts=%d runs=%s/%s contested_pairs=%s "
-        "duration=%.1fs model=%s",
-        profile.docs_in_kb, profile.docs_contributing, len(profile.categories), len(profile.rules), len(profile.conflicts),
+        "KB profile built: documents=%d contributing=%d cached_documents=%d categories=%d rules=%d conflicts=%d runs=%s/%s "
+        "contested_pairs=%s duration=%.1fs model=%s",
+        profile.docs_in_kb, profile.docs_contributing, cached_documents, len(profile.categories), len(profile.rules), len(profile.conflicts),
         stats.get("runs_answered", "-"), stats.get("runs_asked", "-"), stats.get("contested_pairs", "-"),
         time.monotonic() - started, model,
     )
@@ -443,11 +517,15 @@ def _lock_for(user_id: str) -> threading.Lock:
         return _build_locks.setdefault(user_id, threading.Lock())
 
 
-def ensure_profile(user_id: str, kb: KbDocuments, store: ProfileStore, client: KbProfileClient, *, model: str) -> KbProfile | None:
+def ensure_profile(
+    user_id: str, kb: KbDocuments, store: ProfileStore, client: KbProfileClient, *, model: str, refresh: bool = False,
+) -> KbProfile | None:
     """The user's profile: the stored one while nothing changed, otherwise a rebuilt (and stored) one; None with no KB.
 
     One build at a time per user: two jobs starting together used to build two different profiles (the model is sampled), each
-    scoring with its own, the last write winning. The second request now waits and reads the stored one."""
+    scoring with its own, the last write winning. The second request now waits and reads the stored one.
+
+    A rebuild reuses the stored extraction of every unchanged document (see DocumentCache); `refresh=True` re-reads all of them."""
     with _lock_for(user_id):
         texts: dict[str, str] = {}
         for name in kb.list_documents(user_id):
@@ -457,9 +535,13 @@ def ensure_profile(user_id: str, kb: KbDocuments, store: ProfileStore, client: K
         if not texts:
             return None
         existing = store.get(user_id)
-        if existing is not None and existing.version == profile_version(texts, model):
+        if existing is not None and not refresh and existing.version == profile_version(texts, model):
             return existing
-        profile = build_profile(texts, client, model=model, user_id=user_id, previous=existing)
+        make_cache = getattr(store, "document_cache", None)
+        profile = build_profile(
+            texts, client, model=model, user_id=user_id, previous=existing,
+            cache=make_cache(user_id) if make_cache else None, read_cache=not refresh,
+        )
         profile.built_at = datetime.now(timezone.utc).isoformat()
         store.put(user_id, profile)
         return profile
@@ -483,6 +565,44 @@ class ChromaProfileStore:
 
     def put(self, user_id: str, profile: KbProfile) -> None:
         self._kb_store.put_profile_json(user_id, profile.model_dump_json(), profile.version)
+
+    def document_cache(self, user_id: str) -> DocumentCache:
+        return _ChromaDocumentCache(self._kb_store, user_id)
+
+
+_DOC_PREFIX = "doc:"
+
+
+def _doc_part_id(file: str) -> str:
+    return _DOC_PREFIX + hashlib.sha256(file.encode()).hexdigest()[:24]
+
+
+class _ChromaDocumentCache:
+    """Per-document extractions kept in the user's profile collection, beside the profile (so a purge drops them too)."""
+
+    def __init__(self, kb_store, user_id: str) -> None:
+        self._kb_store, self._user_id = kb_store, user_id
+
+    def _read(self, part_id: str) -> dict | None:
+        raw = self._kb_store.get_profile_part(self._user_id, part_id)
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            return None
+
+    def get(self, file: str, fingerprint: str) -> dict | None:
+        entry = self._read(_doc_part_id(file))
+        return entry["result"] if entry and entry.get("fingerprint") == fingerprint and entry.get("file") == file else None
+
+    def put(self, file: str, fingerprint: str, result: dict) -> None:
+        self._kb_store.put_profile_part(self._user_id, _doc_part_id(file), json.dumps({"file": file, "fingerprint": fingerprint, "result": result}))
+
+    def files(self) -> list[str]:
+        return sorted(e["file"] for e in (self._read(i) for i in self._kb_store.list_profile_part_ids(self._user_id, _DOC_PREFIX)) if e)
+
+    def keep_only(self, files: set[str]) -> None:
+        keep = {_doc_part_id(f) for f in files}
+        self._kb_store.delete_profile_parts(self._user_id, [i for i in self._kb_store.list_profile_part_ids(self._user_id, _DOC_PREFIX) if i not in keep])
 
 
 SCORING_CONTEXT_MAX_CHARS = 7_500
