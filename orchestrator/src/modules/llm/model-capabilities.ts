@@ -57,8 +57,19 @@ export const MODEL_CAPABILITIES: readonly ModelCapability[] = [
     ],
   },
   {
+    family: 'gpt-chat-latest',
+    match: '(^|/)gpt-chat-latest$',
+    tokenParam: 'none',
+    temperature: { mode: 'fixed', value: 1 },
+    structuredOutput: 'strict-portable',
+    sources: [
+      { url: 'prod: OpenAI/gpt-chat-latest: the proxy turns max_completion_tokens back into max_tokens, which Azure refuses', checked: '2026-10-11' },
+      { url: 'prod: OpenAI/gpt-chat-latest refused temperature 0 ("requires temperature=1") in the RC5 check', checked: '2026-10-20' },
+    ],
+  },
+  {
     family: 'gpt-chat-alias',
-    match: '(^|/)(gpt-chat-latest$|gpt-\\d+(\\.\\d+)?-chat)',
+    match: '(^|/)gpt-\\d+(\\.\\d+)?-chat',
     tokenParam: 'none',
     temperature: { mode: 'any' },
     structuredOutput: 'strict-portable',

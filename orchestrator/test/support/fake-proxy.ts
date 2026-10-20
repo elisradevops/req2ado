@@ -44,7 +44,7 @@ export const BEHAVIORS = {
   claudeOpus: { tokenParam: 'max_tokens', temperature: 'fixed-1', temperatureWording: 'litellm-unsupported-params', maxOutput: 128_000, schema: 'ok' },
   claudeSonnetSchemaFlaky: { tokenParam: 'max_tokens', temperature: 'fixed-1', temperatureWording: 'litellm-unsupported-params', maxOutput: 64_000, schema: 'reject-without-body' },
   gpt56Reasoning: { tokenParam: 'max_completion_tokens', temperature: 'fixed-1', temperatureWording: 'azure-unsupported-value', maxOutput: 128_000, schema: 'ok', toolsNeedReasoningNone: true },
-  gptChatLatestProxyConverts: { tokenParam: 'neither', temperature: 'any', schema: 'ok' },
+  gptChatLatestProxyConverts: { tokenParam: 'neither', temperature: 'fixed-1', temperatureWording: 'azure-unsupported-value', schema: 'ok' },
   gptOss: { tokenParam: 'max_completion_tokens', temperature: 'any', contextWindow: 131_072, schema: 'ok' },
 } satisfies Record<string, ProxyBehavior>;
 

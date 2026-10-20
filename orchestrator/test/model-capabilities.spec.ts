@@ -14,11 +14,16 @@ describe('model capability table', () => {
     ['claude-haiku-4-5', 'claude-4-and-5'],
     ['OpenAI/gpt-5.6-terra', 'gpt-5-reasoning'],
     ['OpenAI/gpt-5.5', 'gpt-5-reasoning'],
-    ['OpenAI/gpt-chat-latest', 'gpt-chat-alias'],
+    ['OpenAI/gpt-chat-latest', 'gpt-chat-latest'],
     ['OpenAI/gpt-5.1-chat', 'gpt-chat-alias'],
     ['OpenAI/gpt-oss-120b', 'gpt-oss'],
   ])('%s belongs to the %s family', (model, family) => {
     expect(capabilitiesFor(model)?.family).toBe(family);
+  });
+
+  it('gpt-chat-latest takes only temperature 1 (the proxy refused 0 in prod), and the table seeds it', () => {
+    expect(seedConstraints('OpenAI/gpt-chat-latest')?.temperature).toBe(1);
+    expect(seedConstraints('OpenAI/gpt-chat-latest')?.omitTokenLimit).toBe(true);
   });
 
   it('says nothing about a model it does not know (it is learned from the upstream instead)', () => {

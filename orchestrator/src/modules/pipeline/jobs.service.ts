@@ -160,7 +160,7 @@ export interface JobDetail {
   // column), same convention as warnings above. `name` is the document's
   // own figure title (Task 5); a historical job's entries predate this
   // field and will simply have it undefined, read as absent by callers.
-  figureDescriptions: { figureIndex: number; figureId: string; name: string | null; caption: string | null }[];
+  figureDescriptions: { figureIndex: number; figureId: string; name: string | null; caption: string | null; captionStatus?: 'insignificant' | 'vision_failed' }[];
   // {tableId, caption}[] -- see Job.tableDescriptions' schema.prisma doc
   // comment. Defaults to [] for a historical job (null column), same
   // convention as figureDescriptions above.
@@ -610,7 +610,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       warnings: (job.warnings as (WarningRecord | string)[] | null) ?? [],
       kbCitations: job.kbCitations,
       figureDescriptions:
-        (job.figureDescriptions as { figureIndex: number; figureId: string; name: string | null; caption: string | null }[] | null) ?? [],
+        (job.figureDescriptions as { figureIndex: number; figureId: string; name: string | null; caption: string | null; captionStatus?: 'insignificant' | 'vision_failed' }[] | null) ?? [],
       tableDescriptions: (job.tableDescriptions as { tableId: string; caption: string }[] | null) ?? [],
       excludedFigureIds: (job.excludedFigureIds as string[] | null) ?? [],
       excludedTableIds: (job.excludedTableIds as string[] | null) ?? [],

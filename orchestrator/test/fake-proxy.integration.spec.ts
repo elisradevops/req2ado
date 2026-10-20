@@ -75,6 +75,12 @@ describe('OpenWebUiClient against the fake proxy', () => {
     expect('max_tokens' in last.body || 'max_completion_tokens' in last.body).toBe(false);
   });
 
+  it('gpt-chat-latest takes only temperature 1: the very first call goes out at 1, no wasted attempt', async () => {
+    const client = clientFor('OpenAI/gpt-chat-latest');
+    expect((await client.chat(user, { model: 'OpenAI/gpt-chat-latest', temperature: 0, maxTokens: 500 })).content).toBe('OK');
+    expect(hits('OpenAI/gpt-chat-latest').map((r) => r.body.temperature)).toEqual([1]);
+  });
+
   it('gpt-oss: 200000 output tokens is clamped to what fits beside the input (context window counts the output)', async () => {
     const client = clientFor('OpenAI/gpt-oss-120b');
     expect((await client.chat(user, { model: 'OpenAI/gpt-oss-120b', maxTokens: 200_000 })).content).toBe('OK');

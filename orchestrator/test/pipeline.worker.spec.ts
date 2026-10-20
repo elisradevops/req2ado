@@ -1632,6 +1632,45 @@ describe('runPipelineJob', () => {
     });
   });
 
+  it('keeps the reason a named figure has no caption, so a failed vision call can be counted from the stored descriptions', async () => {
+    fakeIngestionClient.ingest.mockResolvedValue({
+      blocks: [],
+      figures: [
+        { id: 'fig-a', caption: 'A block diagram.', name: null },
+        { id: 'fig-b', caption: null, name: 'Wiring', caption_status: 'vision_failed' },
+        { id: 'fig-c', caption: null, name: 'Logo', caption_status: 'insignificant' },
+      ],
+    });
+    fakeIngestionClient.level.mockResolvedValue({ nodes: [] });
+    fakeDryRunService.diff.mockResolvedValue([]);
+
+    await runPipelineJob(
+      { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: null, mode: 'survey', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+      {
+        ingestionClient: fakeIngestionClient as any,
+        dryRunService: fakeDryRunService as any,
+        idempotencyService: fakeIdempotencyService as any,
+        prisma: fakePrisma as any,
+        jobEventsPublisher: fakeJobEventsPublisher as any,
+        mcpClient: fakeMcpClient as any,
+        backfillService: fakeBackfillService as any,
+        adoCredentialResolver: fakeAdoCredentialResolver as any,
+        defaultLlmModel: 'gemma4:12b',
+      },
+    );
+
+    expect(fakePrisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: expect.objectContaining({
+        figureDescriptions: [
+          { figureIndex: 1, figureId: 'fig-a', name: null, caption: 'A block diagram.' },
+          { figureIndex: 2, figureId: 'fig-b', name: 'Wiring', caption: null, captionStatus: 'vision_failed' },
+          { figureIndex: 3, figureId: 'fig-c', name: 'Logo', caption: null, captionStatus: 'insignificant' },
+        ],
+      }),
+    });
+  });
+
   it("extracts tables with a real caption from ingestion's /ingest response, keyed by the table's own id", async () => {
     fakeIngestionClient.ingest.mockResolvedValue({
       blocks: [],
