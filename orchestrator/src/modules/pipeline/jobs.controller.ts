@@ -639,12 +639,13 @@ export class JobsController {
     @Param('id') id: string,
     @Param('localId') localId: string,
     @CurrentUser() user: SessionUser,
-    @Body() body: { proposedTitle?: string | null; proposedDescription?: string },
+    @Body() body: { proposedTitle?: string | null; proposedDescription?: string; warningsOnly?: boolean },
   ): Promise<RewriteComparison> {
     await this.ownedJob(id, user);
     return this.jobsService.checkRewrite(id, localId, {
       proposedTitle: body?.proposedTitle ?? null,
       proposedDescription: typeof body?.proposedDescription === 'string' ? body.proposedDescription : '',
+      ...(body?.warningsOnly === true ? { warningsOnly: true } : {}),
     });
   }
 

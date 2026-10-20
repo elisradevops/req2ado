@@ -1271,7 +1271,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   async checkRewrite(
     id: string,
     localId: string,
-    proposal: { proposedTitle?: string | null; proposedDescription: string },
+    proposal: { proposedTitle?: string | null; proposedDescription: string; warningsOnly?: boolean },
   ): Promise<RewriteComparison> {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) throw new NotFoundException(`Job ${id} not found`);
@@ -1288,6 +1288,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         this.resolveCategoryChecklist(diff, index),
         job.userId ?? undefined,
         job.model ?? undefined,
+        ...(proposal.warningsOnly ? [{ warningsOnly: true }] : []),
       );
     } catch (err) {
       if (err instanceof IngestionHttpError) {

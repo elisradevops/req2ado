@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { BackfillService } from '../src/modules/writeback/backfill.service';
+import { IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
 
 function sourceHashFor(text: string): string {
   return createHash('sha256').update(text).digest('hex');
@@ -94,6 +95,39 @@ describe('BackfillService.backfillAreaPath', () => {
     expect(failed).toMatchObject({ seeded: 1, dedupUpsertFailed: true });
     const fine = await make(jest.fn().mockResolvedValue(undefined)).backfillAreaPath('Project\\Area1', undefined, 'user-1');
     expect(fine.dedupUpsertFailed).toBeUndefined();
+  });
+
+  it('treats a refusal by the embedding service as permanent: the area path is not scanned again for nothing', async () => {
+    const service = new BackfillService(
+      {
+        queryIds: jest.fn().mockResolvedValue([100]),
+        getWorkItemsBatch: jest.fn().mockResolvedValue([{ id: 100, type: 'Feature', fields: { 'System.Title': 'T1', 'System.Description': 'D1' }, parentId: null }]),
+        discoverWorkItemTypeCategories: jest.fn().mockResolvedValue(CMMI_CATEGORIES),
+      } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockRejectedValue(new IngestionHttpError(502, 'the embedding service answered 401')) } as any,
+      { lookup: jest.fn().mockResolvedValue(null), record: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = await service.backfillAreaPath('Project\\Area1', undefined, 'user-1');
+
+    expect(result.dedupUpsertFailed).toBeUndefined(); // retrying cannot help, so the caller may record the area path as done
+    expect(result.dedupUpsertRefused).toBe(true);
+    expect(result.seeded).toBe(1);
+  });
+
+  it('keeps retrying (reports a failure) when the embedding service was merely unavailable', async () => {
+    const service = new BackfillService(
+      {
+        queryIds: jest.fn().mockResolvedValue([100]),
+        getWorkItemsBatch: jest.fn().mockResolvedValue([{ id: 100, type: 'Feature', fields: { 'System.Title': 'T1', 'System.Description': 'D1' }, parentId: null }]),
+        discoverWorkItemTypeCategories: jest.fn().mockResolvedValue(CMMI_CATEGORIES),
+      } as any,
+      { upsertDedupEntriesBatch: jest.fn().mockRejectedValue(new IngestionHttpError(502, 'the embedding service answered 503')) } as any,
+      { lookup: jest.fn().mockResolvedValue(null), record: jest.fn().mockResolvedValue(undefined) } as any,
+    );
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect((await service.backfillAreaPath('Project\\Area1', undefined, 'user-1')).dedupUpsertFailed).toBe(true);
   });
 
   it('strips ADO rich-text HTML from the description before sending it as dedup text, but hashes the raw HTML for the idempotency sourceHash', async () => {

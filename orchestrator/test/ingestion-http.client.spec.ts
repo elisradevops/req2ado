@@ -665,6 +665,19 @@ describe('IngestionHttpClient.compareRewrite', () => {
     });
   });
 
+  it('asks for the warnings only when told to, so they come back without waiting for a model call', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => comparison });
+    await new IngestionHttpClient('http://ingestion.internal').compareRewrite(
+      { title: 'T', description: 'old' },
+      { title: null, description: 'new' },
+      null,
+      'user-1',
+      undefined,
+      { warningsOnly: true },
+    );
+    expect(JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body).warnings_only).toBe(true);
+  });
+
   it('throws the ingestion error on a non-2xx answer (the 502 for "the model did not score both texts")', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       ok: false,

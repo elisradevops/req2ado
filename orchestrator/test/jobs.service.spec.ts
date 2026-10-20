@@ -5678,6 +5678,12 @@ describe('JobsService.checkRewrite', () => {
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
 
+  it('passes warningsOnly on, so the cheap answer does not wait for the model', async () => {
+    const compareRewrite = jest.fn().mockResolvedValue(comparison);
+    await make(compareRewrite).service.checkRewrite('job-1', 'n0', { proposedDescription: 'x', warningsOnly: true });
+    expect(compareRewrite).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'user-1', 'claude-opus-4-8', { warningsOnly: true });
+  });
+
   it('refuses a missing entry, a non-Requirement, a job that is not reviewable and a blank proposal', async () => {
     const compareRewrite = jest.fn().mockResolvedValue(comparison);
     await expect(make(compareRewrite, null).service.checkRewrite('job-1', 'n0', { proposedDescription: 'x' })).rejects.toThrow(NotFoundException);

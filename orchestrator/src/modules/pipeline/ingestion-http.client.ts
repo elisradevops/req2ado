@@ -306,6 +306,8 @@ export class IngestionHttpClient {
     categoryChecklist: string[] | null,
     userId?: string | null,
     model?: string | null,
+    // warningsOnly: only the checks that need no model, answered at once (the prediction can take as long as a model call).
+    options?: { warningsOnly?: boolean },
   ): Promise<RewriteComparison> {
     const response = await fetch(`${this.baseUrl}/rewrite/compare`, {
       method: 'POST',
@@ -318,6 +320,7 @@ export class IngestionHttpClient {
         category_checklist: categoryChecklist,
         user_id: userId ?? null,
         model: model ?? null,
+        ...(options?.warningsOnly ? { warnings_only: true } : {}),
       }),
     });
     if (!response.ok) {
