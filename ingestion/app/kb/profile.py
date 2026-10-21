@@ -220,9 +220,17 @@ def windows_of(text: str, size: int = WINDOW_CHARS, overlap: int = WINDOW_OVERLA
     return windows
 
 
+def build_version() -> str:
+    """How a profile is built: the extraction (prompts, windows, runs, schema) and the merge (its prompt, runs, ceiling). A change to any
+    of them makes a stored profile stale, so an improvement reaches jobs by itself instead of waiting for a document to change."""
+    parts = [extraction_version(), load_prompt("consolidate_kb_categories"), CONSOLIDATION_RUNS, MAX_SCORING_CATEGORIES]
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
+
+
 def profile_version(documents: dict[str, str], model: str) -> str:
-    """Changes with any document's text, the set of documents, the building model or the schema; nothing else."""
-    parts = [SCHEMA_VERSION, model, sorted((name, hashlib.sha256(text.encode()).hexdigest()) for name, text in documents.items())]
+    """Changes with any document's text, the set of documents, the building model, or how a profile is built (build_version); nothing
+    else."""
+    parts = [SCHEMA_VERSION, build_version(), model, sorted((name, hashlib.sha256(text.encode()).hexdigest()) for name, text in documents.items())]
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
 

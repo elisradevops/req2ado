@@ -4,7 +4,7 @@ import logging
 
 from starlette.concurrency import run_in_threadpool
 
-from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, split_message_and_proposal
+from app.chat.chat_client import PROPOSAL_SENTINEL, ChatLlmClient, proposal_failure_reason, split_message_and_proposal
 from app.chat.context_pack import render_context_pack
 from app.chat.redis_publisher import RedisChatPublisher
 from app.config import settings
@@ -78,7 +78,8 @@ _REWRITE_RULES = (
     "organization's definitions, rules and terms given above and stay consistent with the document context. "
     "Do not invent facts: if an improvement needs information that is neither in the item nor in "
     "the material above (a value, a unit, an actor, a condition), ask the user for it instead of "
-    "proposing a rewrite. "
+    "proposing a rewrite. Either ask your question and propose nothing, or propose the rewrite: never announce a rewrite "
+    "('here is a rewrite') unless the marker line and the JSON follow in the same reply. "
 )
 _SHAPE_REQUIREMENT = "keep it ONE requirement statement (one shall/should/must); "
 _SHAPE_OTHER = "keep it a concise description of the scope of the {kind}, not a requirement statement; "
@@ -225,6 +226,14 @@ async def run_chat_turn(
             await publisher.publish_chunk(job_id, local_id, trailing)
 
         message, proposed_title, proposed_description = split_message_and_proposal(full_text)
+        # Why a turn has no proposal, with no text: a reply that announces a rewrite ("...rewrite:") and delivers none looks the same to the
+        # user whether the model wrote no marker or an unreadable one.
+        reason = proposal_failure_reason(full_text)
+        last_line = message.strip().splitlines()[-1].strip() if message.strip() else ""
+        logger.info(
+            "chat turn result: job=%s node=%s %s", job_id, local_id,
+            "proposal=yes" if reason is None else f"proposal=none reason={reason} announced={'yes' if reason == 'no_marker' and last_line.endswith(':') else 'no'}",
+        )
         await publisher.publish_done(
             job_id, local_id, message, proposed_title, proposed_description, model or ""
         )

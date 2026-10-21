@@ -159,13 +159,37 @@ def test_the_profile_is_capped_with_a_stable_ranking_and_says_so() -> None:
     assert merged.truncated is True and len(merged.categories) == 40
 
 
-def test_the_version_changes_with_the_documents_and_the_model_only() -> None:
+def test_the_version_changes_with_the_documents_the_model_and_how_the_profile_is_built() -> None:
     base = profile_version(DOCS, "m1")
     assert base == profile_version(dict(reversed(list(DOCS.items()))), "m1")
     assert base != profile_version({**DOCS, "ALM.pptx": DOCS["ALM.pptx"] + "\nRULE: new"}, "m1")
     assert base != profile_version({k: v for k, v in DOCS.items() if k != "ALM.pptx"}, "m1")
     assert base != profile_version(DOCS, "m2")
     assert SCHEMA_VERSION in json.dumps([SCHEMA_VERSION])  # the schema version is part of the version input
+
+
+def test_a_change_in_how_the_profile_is_built_makes_a_stored_profile_stale(monkeypatch) -> None:
+    # Stored profiles used to stay 'current' after an improvement to the extraction or the merge, because the version only knew the
+    # documents, the model and the schema: the better categories never reached a job until a document changed.
+    from app.kb import profile as profile_module
+
+    base = profile_version(DOCS, "m1")
+    assert base == profile_version(DOCS, "m1")
+    for name, value in (("EXTRACTION_RUNS", profile_module.EXTRACTION_RUNS + 1), ("WINDOW_CHARS", profile_module.WINDOW_CHARS + 1),
+                        ("CONSOLIDATION_RUNS", profile_module.CONSOLIDATION_RUNS + 1), ("MAX_SCORING_CATEGORIES", profile_module.MAX_SCORING_CATEGORIES + 1)):
+        with monkeypatch.context() as patched:
+            patched.setattr(profile_module, name, value)
+            assert profile_version(DOCS, "m1") != base, name
+
+
+def test_a_change_to_a_prompt_the_build_uses_makes_a_stored_profile_stale(monkeypatch) -> None:
+    from app.kb import profile as profile_module
+
+    base = profile_version(DOCS, "m1")
+    real = profile_module.load_prompt
+    for changed in ("kb_document_relevance", "extract_kb_document_profile", "consolidate_kb_categories"):
+        monkeypatch.setattr(profile_module, "load_prompt", lambda n, *a, _c=changed, **k: real(n, *a, **k) + (" changed" if n == _c else ""))
+        assert profile_version(DOCS, "m1") != base, changed
 
 
 class _Kb:
