@@ -902,17 +902,25 @@ def _with_category_dict(entry: object) -> object:
     return {**entry, "categoryScores": categories}
 
 
+_COMPLETENESS_KEY = "completeness_as_requirement"
+
+
 def _array_category_instruction(category_checklist: list[str] | None, kb_context: str | None) -> str:
     """The `categoryScores` paragraph for the array wire format -- the same three sources of category
     names as the map form (a stored checklist, names derived from KB material, the five generic
     dimensions), phrased for a list of {"name", "score"} entries instead of an object keyed by name."""
     entry = '{"name": <category>, "score": <integer 0-100>}'
     if category_checklist:
+        # The completeness check is part of the explicit list (described below it): a model that follows the list literally
+        # used to drop a key that was only mentioned in prose. An item's own list may already carry it: never twice.
+        required = list(category_checklist)
+        if not any(name.strip().casefold() == _COMPLETENESS_KEY for name in required):
+            required.append(_COMPLETENESS_KEY)
         instruction = (
             f"'categoryScores' -- an array with EXACTLY one {entry} object for each of these categories "
-            "(this organization's own ingested quality-checklist category names, fixed for this document -- "
-            f"do not add, omit, rename, or reorder any): {json.dumps(category_checklist)}, plus the "
-            f"completeness_as_requirement entry described below -- {len(category_checklist) + 1} entries in "
+            "(this organization's own ingested quality-checklist category names plus the built-in "
+            "completeness_as_requirement check described below, fixed for this document -- "
+            f"do not add, omit, rename, or reorder any): {json.dumps(required)} -- {len(required)} entries in "
             "total, never fewer. Each score is an independent integer 0-100 judgment (100 = fully compliant "
             "on that dimension alone); when a category does not seem to apply, still include it and give it "
             "your best-effort score instead of leaving it out.\n"

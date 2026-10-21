@@ -283,6 +283,7 @@ def _score_all_requirements(
     unchanged."""
     if not nodes:
         return
+    warnings_before = len(warnings)  # this pass's own warnings: an earlier stage's must not hide a drift found here
     criteria_context = (
         _build_criteria_context(criteria_retriever, nodes)
         if criteria_retriever is not None
@@ -459,6 +460,22 @@ def _score_all_requirements(
             chunk_index=chunk_index, issues_found=issues_found,
         )
 
+    # Across the whole job: each chunk can be consistent while the chunks differ from one another (names derived live per call).
+    # Nothing compared them before. Skipped when a chunk's own warning already reports the difference.
+    job_key_sets = {frozenset(node.quality_category_scores) for node in nodes if node.quality_category_scores}
+    if len(job_key_sets) > 1 and not any(w.kind == WarningKind.SCORING_INCONSISTENT_CATEGORIES for w in warnings[warnings_before:]):
+        message = (
+            f"Quality scoring used {len(job_key_sets)} different sets of category names across the document -- the chunks did "
+            "not agree, so quality breakdowns may not line up for comparison."
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.SCORING_INCONSISTENT_CATEGORIES, message,
+                detail={"scope": "job", "distinctKeySetCount": len(job_key_sets)},
+            )
+        )
+
 
 def _score_epics_and_features(
     nodes: list[WorkItemNode],
@@ -625,6 +642,47 @@ def _score_epics_and_features(
         _fire("score_requirements_done", chunk, nodes_done=nodes_done, chunk_index=chunk_index)
 
 
+def score_texts_together(
+    texts: dict[str, str],
+    scoring_client: BatchedScoringClient,
+    criteria_retriever: CriteriaRetriever | None,
+    kb_context: str | None,
+    category_checklist: list[str] | None,
+    user_id: str | None = None,
+) -> dict[str, tuple[int | None, list[str], "QualityCategoryScores | None", "QualityConfidence | None"] | None]:
+    """Scores several texts in ONE model call, so they are judged in the same frame and against the same rubric (`None` for a
+    text the model gave no usable entry for). Used for a single rescore (one text) and for before/after of a rewrite (two): the
+    scores of the two are then comparable, which two separate calls never were. The criteria context is retrieved for the FIRST
+    text and shared by all of them. A fixed `category_checklist` is enforced on the answer like everywhere else."""
+    criteria_context = None
+    first = next(iter(texts.values()), "")
+    if criteria_retriever is not None and first.strip():
+        criteria = criteria_retriever.retrieve(first)
+        criteria_context = "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
+    scores_by_id = scoring_client.score_requirements_for_document(
+        dict(texts), criteria_context, kb_context, category_checklist, user_id=user_id,
+    )
+    valid_issue_values = {i.value for i in RequirementQualityIssue}
+    out: dict = {}
+    for text_id in texts:
+        entry = scores_by_id.get(text_id)
+        if not isinstance(entry, dict):
+            out[text_id] = None
+            continue
+        raw_score = entry.get("score")
+        score = (
+            raw_score
+            if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100
+            else None
+        )
+        issues = sorted({issue for issue in entry.get("issues", []) if issue in valid_issue_values})
+        category_scores = _parse_category_scores(entry.get("categoryScores"))
+        if category_checklist:
+            category_scores, _left_out = _conform_category_scores(category_scores, category_checklist)
+        out[text_id] = (score, issues, category_scores, _parse_confidence(entry.get("confidence")))
+    return out
+
+
 def score_single_requirement_text(
     description: str,
     scoring_client: BatchedScoringClient,
@@ -652,26 +710,12 @@ def score_single_requirement_text(
     is SWEEP.md section 7's abstain channel (see QualityConfidence,
     app.workitem.model), parsed with the same tolerance as everything else
     here: a missing/malformed value is None, never a crash."""
-    criteria_context = None
-    if criteria_retriever is not None and description.strip():
-        criteria = criteria_retriever.retrieve(description)
-        criteria_context = "\n".join(f"- {c.issue.value}: {c.text}" for c in criteria)
-    scores_by_id = scoring_client.score_requirements_for_document(
-        {"adhoc": description}, criteria_context, kb_context, category_checklist, user_id=user_id,
-    )
-    entry = scores_by_id.get("adhoc")
-    if not isinstance(entry, dict):
+    scored = score_texts_together(
+        {"adhoc": description}, scoring_client, criteria_retriever, kb_context, category_checklist, user_id=user_id,
+    )["adhoc"]
+    if scored is None:
         return None, [], None, None
-    valid_issue_values = {i.value for i in RequirementQualityIssue}
-    raw_score = entry.get("score")
-    score = (
-        raw_score
-        if isinstance(raw_score, int) and not isinstance(raw_score, bool) and 0 <= raw_score <= 100
-        else None
-    )
-    issues = sorted({issue for issue in entry.get("issues", []) if issue in valid_issue_values})
-    category_scores = _parse_category_scores(entry.get("categoryScores"))
-    return score, issues, category_scores, _parse_confidence(entry.get("confidence"))
+    return scored
 
 
 def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
@@ -698,6 +742,28 @@ def _parse_category_scores(raw: object) -> QualityCategoryScores | None:
             return None
         values[key] = value
     return values
+
+
+_COMPLETENESS_KEY = "completeness_as_requirement"
+
+
+def _conform_category_scores(scores: dict[str, int] | None, category_checklist: list[str]) -> tuple[dict[str, int] | None, list[str]]:
+    """Holds one node's category scores to the fixed list. Names are matched without regard to case or surrounding spaces and
+    returned in the list's own spelling and order; names outside the list (the built-in completeness check apart) are dropped;
+    a category the model left out is reported, never invented. `(None, [])` when nothing was scored."""
+    if scores is None:
+        return None, []
+    required = list(category_checklist)
+    if not any(name.strip().casefold() == _COMPLETENESS_KEY for name in required):
+        required.append(_COMPLETENESS_KEY)
+    by_key = {name.strip().casefold(): name for name in required}
+    kept: dict[str, int] = {}
+    for key, value in scores.items():
+        canonical = by_key.get(key.strip().casefold())
+        if canonical is not None and canonical not in kept:
+            kept[canonical] = value
+    ordered = {name: kept[name] for name in required if name in kept}
+    return ordered, [name for name in required if name not in kept]
 
 
 def _parse_confidence(raw: object) -> QualityConfidence | None:
@@ -882,6 +948,7 @@ def _apply_quality_scores(
     if inject_canary:
         _check_scoring_canary(scores_by_node_id.pop(_CANARY_NODE_ID, None))
     valid_issue_values = {i.value for i in RequirementQualityIssue}
+    nodes_missing_categories: dict[str, list[str]] = {}
 
     for node in nodes:
         entry = scores_by_node_id.get(node.local_id)
@@ -899,6 +966,11 @@ def _apply_quality_scores(
             key=lambda i: i.value,
         )
         node.quality_category_scores = _parse_category_scores(entry.get("categoryScores"))
+        if category_checklist:
+            # A fixed list is enforced in code: the prompt asks for it and the schema only checks the shape.
+            node.quality_category_scores, left_out = _conform_category_scores(node.quality_category_scores, category_checklist)
+            if left_out:
+                nodes_missing_categories[node.local_id] = left_out
         node.quality_category_checklist = _match_category_checklist(
             node.quality_category_scores, category_checklist_definitions,
         )
@@ -936,6 +1008,31 @@ def _apply_quality_scores(
                 )
             )
 
+    if nodes_missing_categories:
+        left_out_names = sorted({name for names in nodes_missing_categories.values() for name in names})
+        # Counts only: the names are the company's own material and stay in the warning's detail, not in the log or the narration.
+        message = (
+            f"Quality scoring left out {len(left_out_names)} required category(ies) for "
+            f"{len(nodes_missing_categories)} item(s); their breakdowns are incomplete."
+        )
+        logger.warning(message)
+        warnings.append(
+            IntegrityWarning.make(
+                WarningKind.SCORING_INCONSISTENT_CATEGORIES,
+                message,
+                node_ids=list(nodes_missing_categories),
+                detail={"branch": node_id_prefix or "(root)", "missingCategories": left_out_names},
+            )
+        )
+        if progress_callback is not None:
+            progress_callback(
+                LevelingProgress(
+                    phase="chunk_warning", branch_index=None, branch_count=0,
+                    blocks_done=0, blocks_total=0, kb_grounded=False, kb_citations=[],
+                    warning_message=message,
+                )
+            )
+
     # Determinism guard (user-reported concern): categoryScores keys are now
     # dynamic (see QualityCategoryScores' own docstring) -- the model is
     # instructed to fix its category names ONCE from the KB material and
@@ -950,7 +1047,8 @@ def _apply_quality_scores(
         for node in nodes
         if node.quality_category_scores
     }
-    if len(scored_key_sets) > 1:
+    # With a fixed list a difference can only be a missing category, which is reported (with its names) above.
+    if len(scored_key_sets) > 1 and not nodes_missing_categories:
         message = (
             f"Quality scoring used {len(scored_key_sets)} different sets of category names across items in "
             "the same batch -- the model did not stay consistent, so quality breakdowns may not line up "

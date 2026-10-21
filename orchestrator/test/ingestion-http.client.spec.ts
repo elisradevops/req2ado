@@ -629,3 +629,65 @@ describe('IngestionHttpClient.getSharePointStatus', () => {
     await expect(client.getSharePointStatus()).rejects.toThrow(IngestionHttpError);
   });
 });
+
+describe('IngestionHttpClient.compareRewrite', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+  const comparison = {
+    before: { score: 64, issues: [], categoryScores: { Testable: 60 }, confidence: 'high' },
+    after: { score: 71, issues: [], categoryScores: { Testable: 80 }, confidence: 'high' },
+    delta: 7,
+    categoryDeltas: { Testable: 20 },
+    warnings: [{ code: 'title_changed', severity: 'notice', detail: 'x' }],
+  };
+
+  it('posts both texts with the item categories and the user, and returns the comparison as ingestion answers it', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => comparison });
+    const result = await new IngestionHttpClient('http://ingestion.internal').compareRewrite(
+      { title: 'T', description: 'old' },
+      { title: null, description: 'new' },
+      ['Testable'],
+      'user-1',
+      'claude-opus-4-8',
+    );
+    expect(result).toEqual(comparison);
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/rewrite/compare');
+    expect(JSON.parse(options.body)).toEqual({
+      original_title: 'T',
+      original_description: 'old',
+      proposed_title: null,
+      proposed_description: 'new',
+      category_checklist: ['Testable'],
+      user_id: 'user-1',
+      model: 'claude-opus-4-8',
+    });
+  });
+
+  it('asks for the warnings only when told to, so they come back without waiting for a model call', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => comparison });
+    await new IngestionHttpClient('http://ingestion.internal').compareRewrite(
+      { title: 'T', description: 'old' },
+      { title: null, description: 'new' },
+      null,
+      'user-1',
+      undefined,
+      { warningsOnly: true },
+    );
+    expect(JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body).warnings_only).toBe(true);
+  });
+
+  it('throws the ingestion error on a non-2xx answer (the 502 for "the model did not score both texts")', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 502,
+      statusText: 'Bad Gateway',
+      text: async () => JSON.stringify({ detail: 'the model did not score both texts' }),
+      json: async () => ({ detail: 'the model did not score both texts' }),
+    });
+    await expect(
+      new IngestionHttpClient('http://ingestion.internal').compareRewrite({ title: 'T', description: 'a' }, { title: null, description: 'b' }, null),
+    ).rejects.toBeInstanceOf(IngestionHttpError);
+  });
+});

@@ -2255,7 +2255,7 @@ describe('runPipelineJob', () => {
         },
       );
 
-      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', undefined);
+      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', undefined, 'user-1');
       expect(fakePrisma.areaPathBackfill.upsert).toHaveBeenCalledWith(
         expect.objectContaining({ where: { areaPath: 'Project\\Area1' } }),
       );
@@ -2307,7 +2307,30 @@ describe('runPipelineJob', () => {
         },
       );
 
-      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', undefined);
+      expect(fakeBackfillService.backfillAreaPath).toHaveBeenCalledWith('Project\\Area1', undefined, 'user-1');
+    });
+
+    it('does not mark the area path as backfilled when the dedup index could not be updated, so the next job tries again', async () => {
+      fakePrisma.areaPathBackfill.findUnique.mockResolvedValue(null);
+      fakeBackfillService.backfillAreaPath.mockResolvedValueOnce({ scanned: 3, seeded: 3, skipped: 0, skippedReasons: {}, dedupUpsertFailed: true });
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      await runPipelineJob(
+        { id: 'job-1', areaPath: 'Project\\Area1', adoProject: 'Project', userId: 'user-1', mode: 'baseline', fileBuffer: Buffer.from(''), filename: 'x.txt' },
+        {
+          ingestionClient: fakeIngestionClient as any,
+          dryRunService: fakeDryRunService as any,
+          idempotencyService: fakeIdempotencyService as any,
+          prisma: fakePrisma as any,
+          jobEventsPublisher: fakeJobEventsPublisher as any,
+          mcpClient: fakeMcpClient as any,
+          backfillService: fakeBackfillService as any,
+          adoCredentialResolver: fakeAdoCredentialResolver as any,
+          defaultLlmModel: 'gemma4:12b',
+        },
+      );
+
+      expect(fakePrisma.areaPathBackfill.upsert).not.toHaveBeenCalled();
     });
 
     it("never fails the job when the backfill call throws -- fail-open, same philosophy as every other optional enrichment", async () => {

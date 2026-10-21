@@ -99,6 +99,38 @@ describe('ChatService.sendTurn: what ingestion is told about the item', () => {
   });
 });
 
+describe('ChatService.sendTurn: where the item sits', () => {
+  it('sends the item its parents, neighbours, linked items and captions, built from the job itself', async () => {
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({ data: {} } as never);
+    const job = {
+      id: 'job-1',
+      status: 'diff_ready',
+      userId: 'user-1',
+      filename: 'AirPro.docx',
+      figureDescriptions: [{ figureIndex: 1, figureId: 'fig-1', name: 'State machine', caption: 'Idle to locked.' }],
+      tableDescriptions: [],
+      dryRunDiff: [
+        { localId: 'f1', parentLocalId: null, type: 'Feature', title: 'Carrier acquisition', description: 'How lock is found.', action: 'create' },
+        { localId: 'n0', parentLocalId: 'f1', type: 'Requirement', title: 'T', description: 'D', action: 'create', figureIds: ['fig-1'] },
+        { localId: 'n1', parentLocalId: 'f1', type: 'Requirement', title: 'Neighbour', description: 'N', action: 'create' },
+      ],
+    };
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(job) }, chatMessage: { create: jest.fn(), findMany: jest.fn().mockResolvedValue([]) } };
+    await new ChatService(prisma as any, 'http://ingestion:8000', { set: jest.fn() } as any).sendTurn('job-1', 'n0', 'improve this', undefined);
+
+    const context = (post.mock.calls[0][1] as { item: { context: Record<string, unknown> } }).item.context;
+    expect(context).toEqual({
+      documentName: 'AirPro.docx',
+      parents: [{ type: 'Feature', title: 'Carrier acquisition', description: 'How lock is found.' }],
+      siblings: [{ title: 'Neighbour' }],
+      linked: [],
+      figures: [{ name: 'State machine', caption: 'Idle to locked.' }],
+      tables: [],
+    });
+    post.mockRestore();
+  });
+});
+
 describe('ChatService.getHistory', () => {
   it('returns the last 50 turns ordered oldest-first', async () => {
     const rows = [{ id: '1', jobId: 'job-1', localId: 'n0', role: 'user', content: 'hi', proposedTitle: null, proposedDescription: null, model: null, createdAt: new Date('2026-01-01') }];

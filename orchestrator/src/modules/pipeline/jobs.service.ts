@@ -11,7 +11,7 @@ import { Prisma, type Job, type PrismaClient } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
 import type { McpClient } from './mcp.client';
-import { IngestionHttpError, type IngestionHttpClient } from './ingestion-http.client';
+import { IngestionHttpError, type IngestionHttpClient, type RewriteComparison } from './ingestion-http.client';
 import type { IdempotencyService } from '../writeback/idempotency.service';
 import type { DryRunDiffEntry, WarningRecord } from '../writeback/dry-run.service';
 import { mapWithConcurrency, type SettledResult } from './map-with-concurrency';
@@ -1261,6 +1261,46 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       };
       return freshDiff;
     });
+  }
+
+  /**
+   * Judges a proposed rewrite of one Requirement against the entry as it is now, before the user applies it: both texts are scored
+   * in one model call under the entry's own categories, and the deterministic warnings come with it. Read-only: the diff is not
+   * touched, so nothing here can launder a score into the entry.
+   */
+  async checkRewrite(
+    id: string,
+    localId: string,
+    proposal: { proposedTitle?: string | null; proposedDescription: string; warningsOnly?: boolean },
+  ): Promise<RewriteComparison> {
+    const job = await this.prisma.job.findUnique({ where: { id } });
+    if (!job) throw new NotFoundException(`Job ${id} not found`);
+    if (job.status !== 'diff_ready') throw new ConflictException(`Job ${id} is not in a diff-editable state`);
+    const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
+    const index = diff.findIndex((entry) => entry.localId === localId);
+    if (index === -1) throw new NotFoundException(`Diff entry ${localId} not found`);
+    if (diff[index].type !== 'Requirement') throw new BadRequestException('only Requirement entries can be checked');
+    if (!proposal.proposedDescription?.trim()) throw new BadRequestException('the proposed description must not be blank');
+    try {
+      return await this.ingestionClient.compareRewrite(
+        { title: diff[index].title, description: diff[index].description },
+        { title: proposal.proposedTitle ?? null, description: proposal.proposedDescription },
+        this.resolveCategoryChecklist(diff, index),
+        job.userId ?? undefined,
+        job.model ?? undefined,
+        ...(proposal.warningsOnly ? [{ warningsOnly: true }] : []),
+      );
+    } catch (err) {
+      if (err instanceof IngestionHttpError) {
+        throw new BadGatewayException({
+          statusCode: 502,
+          message: err.message,
+          error: 'Bad Gateway',
+          ...(err.traceback ? { upstreamTraceback: err.traceback } : {}),
+        });
+      }
+      throw err;
+    }
   }
 
   private resolveCategoryChecklist(diff: DryRunDiffEntry[], index: number): string[] | null {

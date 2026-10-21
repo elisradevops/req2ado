@@ -27,6 +27,23 @@ import type { FolderIngestFile } from '../kb/kb.service';
 // the ladder's ordering can be verified/tuned without a code change.
 const DEFAULT_INGESTION_REQUEST_TIMEOUT_MS = 3_600_000;
 
+export interface RewriteScore {
+  score: number | null;
+  issues: string[];
+  categoryScores: Record<string, number> | null;
+  confidence: string | null;
+}
+
+/** What POST /rewrite/compare answers: the original and the proposal scored together, and what can be seen in the two texts. */
+export interface RewriteComparison {
+  before: RewriteScore;
+  after: RewriteScore;
+  /** after - before; null when the model could not score both texts (the warnings still stand). */
+  delta: number | null;
+  categoryDeltas: Record<string, number>;
+  warnings: { code: string; severity: 'high' | 'notice'; detail: string }[];
+}
+
 export class IngestionHttpError extends Error {
   // traceback: ingestion's own Python traceback, present only when ingestion
   // runs with EXPOSE_ERROR_DETAILS on. Kept off `message` so audit trails and
@@ -279,6 +296,37 @@ export class IngestionHttpClient {
       qualityCategoryScores: body.quality_category_scores,
       qualityConfidence: body.quality_confidence ?? null,
     };
+  }
+
+  // A proposed rewrite judged against the original in ONE model call (same frame, same rubric, the user's KB profile context), plus
+  // ingestion's deterministic checks of the proposal. Ingestion's /rewrite/compare answers camelCase already.
+  async compareRewrite(
+    original: { title: string | null; description: string },
+    proposed: { title: string | null; description: string },
+    categoryChecklist: string[] | null,
+    userId?: string | null,
+    model?: string | null,
+    // warningsOnly: only the checks that need no model, answered at once (the prediction can take as long as a model call).
+    options?: { warningsOnly?: boolean },
+  ): Promise<RewriteComparison> {
+    const response = await fetch(`${this.baseUrl}/rewrite/compare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        original_title: original.title,
+        original_description: original.description,
+        proposed_title: proposed.title,
+        proposed_description: proposed.description,
+        category_checklist: categoryChecklist,
+        user_id: userId ?? null,
+        model: model ?? null,
+        ...(options?.warningsOnly ? { warnings_only: true } : {}),
+      }),
+    });
+    if (!response.ok) {
+      throw await _ingestionError(response, `Ingestion /rewrite/compare request failed: `);
+    }
+    return (await response.json()) as RewriteComparison;
   }
 
   // Post-hoc retry of one optional enhancement pass for a handful of items

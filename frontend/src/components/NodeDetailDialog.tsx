@@ -282,6 +282,7 @@ export function NodeDetailDialog({
     <ChatPanel
       jobId={jobId}
       localId={entry.localId}
+      itemType={entry.type}
       disabled={!canEdit}
       disabledReason={chatDisabledReason}
       onAcceptProposal={(patch) =>

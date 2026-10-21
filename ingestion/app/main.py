@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal, NamedTuple, cast
 
+import httpx
 import redis
 from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -21,6 +22,7 @@ from app.canonical.model import CanonicalDoc
 from app.chat.chat_client import ChatLlmClient
 from app.chat.chat_service import run_chat_turn
 from app.chat.redis_publisher import RedisChatPublisher
+from app.chat.rewrite_check import check_rewrite
 from app.request_identity import PRIMER_HEADER, USER_ID_HEADER, resolve_primer_context, resolve_user_id
 from app.config import settings
 from app.debug_capture import DebugCapture
@@ -34,7 +36,7 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
-from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard
+from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard, scoring_inputs
 from app.kb.retrieval import retrieve_context
 from app.leveling.document_map import publish_document_map
 from app.leveling.live_context import live_emitter_scope, ocr_progress_callback
@@ -49,7 +51,7 @@ from app.leveling.id_tree_builder import (
 )
 from app.leveling.model_caps import _resolve_caps
 from app.leveling.narration_publisher import LevelingProgress, NarrationPublisher, last_known_phase
-from app.leveling.scoring import score_single_requirement_text
+from app.leveling.scoring import score_single_requirement_text, score_texts_together
 from app.leveling.tree_builder import build_baseline_tree, figure_id_by_block_id
 from app.loaders.docx_pagination import annotate_docx_pages
 from app.logging_context import JobIdLogFilter, job_id_scope
@@ -212,7 +214,12 @@ def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | 
         model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
         if not model:
             return None
-        return ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+        profile = ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
+        if profile is not None and profile.degraded:
+            # Half a profile would give this job categories that no later job has: keep the last good one (or none).
+            logger.warning("KB profile build was incomplete; scoring with the last stored profile, if any")
+            return stored
+        return profile
     except Exception:  # noqa: BLE001 -- the profile improves scoring; it must never fail a job
         logger.warning("KB profile unavailable for this job; scoring without it", exc_info=True)
         return None
@@ -1008,6 +1015,9 @@ class ChatTurnItem(BaseModel):
     qualityIssues: list[str] = []
     # The item's score per quality category (from its scoring pass); used to aim a rewrite at the weakest one.
     qualityCategoryScores: dict[str, float] | None = None
+    # Where the item sits in its document (parents, siblings, linked items, captions), built by the orchestrator from the job's
+    # own data; see app.chat.context_pack.
+    context: dict | None = None
 
 
 class ChatTurnMessage(BaseModel):
@@ -1757,17 +1767,28 @@ class ScoreItemResponse(BaseModel):
     quality_confidence: str | None
 
 
+async def _rescoring_kb_context(user_id: str | None, text: str) -> str | None:
+    """The context a rescore is judged with: the same one the original scoring used (the user's KB profile: pass conditions and
+    mandatory rules, small and constant), so a new score is comparable with the old one. Only a user without a profile falls back
+    to chunks retrieved for the text (what every score used before profiles)."""
+    if not user_id:
+        return None
+    # Same switch as the job's own scoring (_profile_for_job): a rescore must be judged in the frame the job was.
+    profile = await run_in_threadpool(_stored_profile_or_none, user_id) if settings.kb_profile_scoring else None
+    if profile is not None:
+        _names, _definitions, context = scoring_inputs(profile)
+        if context:
+            return context
+    # Blocking embed + vector-store calls: off the event loop, like every other blocking call here (a blocked loop fails /health).
+    kb_context, _ = await run_in_threadpool(retrieve_context, user_id, text, _embed_client, _kb_vector_store)
+    return kb_context
+
+
 @app.post("/score-item", response_model=ScoreItemResponse)
 async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
     if not body.description.strip():
         raise HTTPException(status_code=400, detail="description must not be blank")
-    kb_context = None
-    if body.user_id:
-        # Blocking embed + vector-store calls: off the event loop, like every
-        # other blocking call in this route (a blocked loop fails /health).
-        kb_context, _ = await run_in_threadpool(
-            retrieve_context, body.user_id, body.description, _embed_client, _kb_vector_store,
-        )
+    kb_context = await _rescoring_kb_context(body.user_id, body.description)
     # Mirrors /level's own construct-probe-then-construct-real pattern (see
     # that route's comment for why _resolve_caps's optional live /api/show
     # lookup must be threadpool-dispatched, not run inline in an async
@@ -1802,6 +1823,77 @@ async def score_item(body: ScoreItemRequest) -> ScoreItemResponse:
         quality_score=score, quality_issues=issues, quality_category_scores=category_scores,
         quality_confidence=confidence.value if confidence is not None else None,
     )
+
+
+class RewriteCompareRequest(BaseModel):
+    """A proposed rewrite of one requirement, to be judged against the original before the user applies it."""
+
+    original_title: str | None = None
+    original_description: str
+    proposed_title: str | None = None
+    proposed_description: str
+    # The item's own categories (its scored key-set), so both texts are judged against the rubric the job used.
+    category_checklist: list[str] | None = None
+    user_id: str | None = None
+    model: str | None = None
+    # Only the checks that need no model, answered at once: the prediction can take as long as a model call does.
+    warnings_only: bool = False
+
+
+def _score_view(scored: tuple) -> dict:
+    score, issues, categories, confidence = scored
+    return {"score": score, "issues": issues, "categoryScores": categories, "confidence": confidence.value if confidence is not None else None}
+
+
+@app.post("/rewrite/compare")
+async def rewrite_compare(body: RewriteCompareRequest) -> dict:
+    """Original and proposal scored in ONE call (one frame, one rubric, the profile's context), plus the deterministic checks of
+    app.chat.rewrite_check. The delta is only meaningful because of that: two separate scorings were never comparable."""
+    if not body.original_description.strip() or not body.proposed_description.strip():
+        raise HTTPException(status_code=400, detail="both descriptions must be non-blank")
+    warnings = check_rewrite(body.original_title, body.original_description, body.proposed_title, body.proposed_description)
+    nothing = {"score": None, "issues": [], "categoryScores": None, "confidence": None}
+    if body.warnings_only:
+        return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
+    kb_context = await _rescoring_kb_context(body.user_id, body.original_description)
+    checklist = body.category_checklist
+    if not checklist and body.user_id and settings.kb_profile_scoring:
+        names, _definitions, _context = scoring_inputs(await run_in_threadpool(_stored_profile_or_none, body.user_id))
+        checklist = names
+    probe_client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+    num_ctx = (await run_in_threadpool(_resolve_caps, body.model, probe_client, body.user_id)).context_budget_tokens
+    client = OrchestratorLlmClient(
+        settings.orchestrator_url, settings.llm_proxy_bearer, model=body.model, num_ctx=num_ctx, top_k=_SURVEY_TOP_K, min_p=_SURVEY_MIN_P,
+    )
+
+    def _score() -> dict:
+        return score_texts_together(
+            {"before": body.original_description, "after": body.proposed_description}, client,
+            _get_criteria_retriever(body.user_id), kb_context, checklist, user_id=body.user_id,
+        )
+
+    try:
+        scored = await run_in_threadpool(_score)
+    except Exception as exc:  # noqa: BLE001 -- the checks of the two texts need no model; only the prediction is lost
+        logger.warning("Rewrite comparison could not be scored: %s", describe_exception(exc))
+        return {"before": nothing, "after": nothing, "delta": None, "categoryDeltas": {}, "warnings": warnings}
+    before, after = scored["before"], scored["after"]
+    if before is None or after is None or before[0] is None or after[0] is None:
+        # Never a made-up comparison: without both scores there is no delta, but the warnings stand.
+        return {
+            "before": _score_view(before) if before else nothing, "after": _score_view(after) if after else nothing,
+            "delta": None, "categoryDeltas": {}, "warnings": warnings,
+        }
+    shared = [name for name in (after[2] or {}) if name in (before[2] or {})]
+    return {
+        "before": _score_view(before),
+        "after": _score_view(after),
+        "delta": after[0] - before[0],
+        "categoryDeltas": {name: (after[2] or {})[name] - (before[2] or {})[name] for name in shared},
+        "warnings": warnings,
+    }
 
 
 class EnhanceItem(BaseModel):
@@ -1981,16 +2073,18 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
     # check_for_duplicates's own default (0.90) governs otherwise, exactly
     # as before this field existed.
     kwargs = {"threshold": body.threshold} if body.threshold is not None else {}
-    result = check_for_duplicates(
-        body.text,
-        body.title,
-        item_id="",
-        area_path=body.area_path,
-        embed_client=_embed_client,
-        vector_store=_vector_store,
-        judge_client=_dedup_judge_client,
-        user_id=body.user_id,
-        **kwargs,
+    result = _with_embedding_retry(
+        lambda: check_for_duplicates(
+            body.text,
+            body.title,
+            item_id="",
+            area_path=body.area_path,
+            embed_client=_embed_client,
+            vector_store=_vector_store,
+            judge_client=_dedup_judge_client,
+            user_id=body.user_id,
+            **kwargs,
+        )
     )
     if body.job_id and result.is_duplicate and result.matched_text is not None:
         # Display only: a no-op unless LIVE_PROGRESS is on, and never raises.
@@ -2007,7 +2101,7 @@ def dedup_check(body: DedupCheckRequest) -> DuplicateCheckResult:
 
 @app.post("/dedup/upsert")
 def dedup_upsert(body: DedupUpsertRequest) -> dict[str, bool]:
-    title_embedding, description_embedding = _embed_client.embed([body.title, body.text], user_id=body.user_id)
+    title_embedding, description_embedding = _embed_for_dedup([body.title, body.text], body.user_id)
     embedding = blend_embeddings(title_embedding, description_embedding)
     # document=body.text: stores the item's original text alongside its
     # embedding, so a future check_for_duplicates call can run its
@@ -2026,6 +2120,30 @@ def dedup_delete(body: DedupDeleteRequest) -> dict[str, bool]:
     return {"ok": True}
 
 
+def _with_embedding_retry(call):
+    """Runs `call` (which embeds through the orchestrator). A refusal by the embedding service (401: the user has no usable model
+    connection, or the call carried no user) used to surface as a bare 500 indistinguishable from a crash. It is now a 502 that names
+    the upstream status, so the caller can tell a refusal (retrying cannot help) from a transient fault. A server error or an
+    unreachable service is retried once."""
+    last: Exception | None = None
+    for _attempt in range(2):
+        try:
+            return call()
+        except httpx.HTTPStatusError as exc:
+            last = exc
+            if exc.response.status_code < 500:
+                break
+        except httpx.TransportError as exc:
+            last = exc
+    if isinstance(last, httpx.HTTPStatusError):
+        raise HTTPException(status_code=502, detail=f"the embedding service answered {last.response.status_code}") from last
+    raise HTTPException(status_code=502, detail="the embedding service is unreachable") from last
+
+
+def _embed_for_dedup(texts: list[str], user_id: str | None) -> list[list[float]]:
+    return _with_embedding_retry(lambda: _embed_client.embed(texts, user_id=user_id))
+
+
 @app.post("/dedup/upsert-batch")
 def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     # Previously every confirmed work item triggered its own single-item
@@ -2036,9 +2154,7 @@ def dedup_upsert_batch(body: DedupUpsertBatchRequest) -> dict[str, bool]:
     if not body.items:
         return {"ok": True}
     n = len(body.items)
-    embeddings = _embed_client.embed(
-        [item.title for item in body.items] + [item.text for item in body.items], user_id=body.user_id,
-    )
+    embeddings = _embed_for_dedup([item.title for item in body.items] + [item.text for item in body.items], body.user_id)
     title_embeddings, description_embeddings = embeddings[:n], embeddings[n:]
     blended_embeddings = [
         blend_embeddings(title_embedding, description_embedding)
@@ -2068,6 +2184,8 @@ class KbProfileRequest(BaseModel):
     # The model that reads the documents; recorded in the profile (built_with) and part of its version, so changing the
     # model rebuilds it and a rerun with the same model does not.
     model: str
+    # Re-read every document and rebuild even though nothing changed (a stored extraction is otherwise reused for good).
+    refresh: bool = False
 
 
 def _profile_response(profile: KbProfile) -> dict:
@@ -2086,6 +2204,7 @@ async def kb_build_profile(body: KbProfileRequest) -> dict:
     every document and stored. 404 when the user has no KB documents."""
     profile = await run_in_threadpool(
         ensure_profile, body.user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(body.model), model=body.model,
+        refresh=body.refresh,
     )
     if profile is None:
         raise HTTPException(status_code=404, detail="No knowledge-base documents for this user")

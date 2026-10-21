@@ -25,6 +25,10 @@ export interface BackfillResult {
   seeded: number;
   skipped: number;
   skippedReasons: Record<string, number>;
+  /** Set only when the embedding-similarity index could not be updated: the exact-hash seeding still stands. */
+  dedupUpsertFailed?: boolean;
+  /** Set when the embedding service REFUSED the upsert (4xx: no usable connection for the user): retrying cannot help. */
+  dedupUpsertRefused?: boolean;
 }
 
 // Only Epic/Feature/Requirement-CATEGORY items are ever created by req2ado's
@@ -64,6 +68,12 @@ async function resolveBackfillableRealTypes(
     console.error(`Backfill: discoverWorkItemTypeCategories failed for project ${project}, falling back to CMMI-shaped defaults:`, error);
     return new Set(['Epic', 'Feature', 'Requirement']);
   }
+}
+
+// Ingestion answers 502 'the embedding service answered <status>' when the embedding service refuses or fails; 4xx is a refusal.
+function isEmbeddingRefusal(error: unknown): boolean {
+  const status = /answered (\d{3})/.exec(error instanceof Error ? error.message : '')?.[1];
+  return status !== undefined && Number(status) >= 400 && Number(status) < 500;
 }
 
 // ADO's System.Description is rich-text HTML (e.g. "<p>...</p>\n"), unlike
@@ -106,7 +116,7 @@ export class BackfillService {
     private readonly concurrency: number = 8,
   ) {}
 
-  async backfillAreaPath(areaPath: string, credential?: AdoRequestCredential): Promise<BackfillResult> {
+  async backfillAreaPath(areaPath: string, credential?: AdoRequestCredential, userId?: string): Promise<BackfillResult> {
     const project = areaPath.split('\\')[0];
     const ids = await this.mcpClient.queryIds({ 'System.AreaPath': areaPath }, project, credential);
     const result: BackfillResult = { scanned: 0, seeded: 0, skipped: 0, skippedReasons: {} };
@@ -210,8 +220,14 @@ export class BackfillService {
 
     if (dedupUpsertItems.length > 0) {
       try {
-        await this.ingestionClient.upsertDedupEntriesBatch(dedupUpsertItems);
+        // The submitting user: ingestion embeds with that user's own Open WebUI connection, and without it the call is
+        // refused (401) every time.
+        await this.ingestionClient.upsertDedupEntriesBatch(dedupUpsertItems, ...(userId ? [userId] : []));
       } catch (error) {
+        // A refusal (the user has no usable model connection) is permanent: reporting it as a failure to retry would make every
+        // job re-scan the whole area path for nothing. Anything else (unavailable, timed out) is worth another try.
+        if (isEmbeddingRefusal(error)) result.dedupUpsertRefused = true;
+        else result.dedupUpsertFailed = true;
         // Same fail-open philosophy as confirm()'s own dedup upsert: a
         // batch failure here only means these items won't be caught by
         // FUTURE embedding-similarity dedup checks -- it must not fail the

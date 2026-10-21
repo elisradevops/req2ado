@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AxiosError } from 'axios';
 import { toWsUrl } from '../hooks/useChatSocket';
@@ -470,5 +470,240 @@ describe('ChatPanel', () => {
 
     expect(chatApi.sendChatTurn).toHaveBeenCalledTimes(1);
     resolveTurn();
+  });
+});
+
+
+describe('ChatPanel: checking a proposal before it is applied', () => {
+  type OnEvent = (event: import('../hooks/useChatSocket').StreamEvent) => void;
+  let capturedOnEvent: OnEvent | undefined;
+
+  const comparison = (overrides: Record<string, unknown> = {}) => ({
+    before: { score: 64, issues: [], categoryScores: { Testable: 60 }, confidence: 'high' },
+    after: { score: 71, issues: [], categoryScores: { Testable: 80 }, confidence: 'high' },
+    delta: 7,
+    categoryDeltas: { Testable: 20 },
+    warnings: [],
+    ...overrides,
+  });
+  // What the warnings-only call answers: no scores, same warnings.
+  const warningsOf = (warnings: unknown[] = []) => ({ before: { score: null }, after: { score: null }, delta: null, categoryDeltas: {}, warnings });
+  const high = { code: 'dropped_numbers', severity: 'high', detail: '5, 3.3' };
+
+  // The first checkRewrite call is the warnings-only one (answers at once); the second is the scored comparison.
+  function mockCheck(warnings: unknown[], full: unknown): void {
+    vi.mocked(chatApi.checkRewrite).mockImplementation(async (_job, _node, proposal) =>
+      (proposal.warningsOnly ? warningsOf(warnings) : full) as never,
+    );
+  }
+
+  async function renderWithProposal(
+    proposal: { proposedTitle: string | null; proposedDescription: string | null },
+    onAccept = vi.fn(),
+    itemType: string | undefined = 'Requirement',
+  ) {
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" itemType={itemType} disabled={false} onAcceptProposal={onAccept} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    act(() => capturedOnEvent?.({ type: 'done', message: 'Here you go', model: 'llama3.1', ...proposal }));
+    return onAccept;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(chatApi.getChatHistory).mockResolvedValue([]);
+    vi.mocked(chatApi.listModels).mockResolvedValue(['llama3.1']);
+  });
+
+  it('asks twice, the warnings (no model) and the scored comparison, shows the predicted score, and Accept applies a clean proposal without a question', async () => {
+    mockCheck([], comparison());
+    const onAccept = await renderWithProposal({ proposedTitle: null, proposedDescription: 'The receiver shall acquire lock.' });
+
+    expect(await screen.findByText(/64\s*→\s*71/)).toBeInTheDocument();
+    const proposal = { proposedTitle: null, proposedDescription: 'The receiver shall acquire lock.' };
+    expect(chatApi.checkRewrite).toHaveBeenCalledWith('job-1', 'n0', { ...proposal, warningsOnly: true });
+    expect(chatApi.checkRewrite).toHaveBeenCalledWith('job-1', 'n0', proposal);
+    await userEvent.setup().click(screen.getByRole('button', { name: /^accept$/i }));
+    expect(onAccept).toHaveBeenCalledWith({ title: undefined, description: 'The receiver shall acquire lock.' });
+  });
+
+  it('cannot be accepted while the prediction is still being made, but the warnings are already there', async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    vi.mocked(chatApi.checkRewrite).mockImplementation((_job, _node, proposal) =>
+      (proposal.warningsOnly ? Promise.resolve(warningsOf([high])) : new Promise((resolve) => (finish = resolve))) as never,
+    );
+    await renderWithProposal({ proposedTitle: null, proposedDescription: 'New text.' });
+
+    expect(await screen.findByText(/numbers dropped.*5, 3\.3/i)).toBeInTheDocument(); // instant, no model involved
+    expect(screen.getByText(/predicting the score/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^accept$/i })).toBeDisabled();
+    await act(async () => finish(comparison({ warnings: [high] })));
+    expect(await screen.findByRole('button', { name: /^accept$/i })).toBeEnabled();
+  });
+
+  it('when the prediction takes too long, Accept opens up again but a warning still asks for confirmation', async () => {
+    vi.mocked(chatApi.checkRewrite).mockImplementation((_job, _node, proposal) =>
+      (proposal.warningsOnly ? Promise.resolve(warningsOf([high])) : new Promise(() => undefined)) as never,
+    );
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    const onAccept = vi.fn();
+    render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" itemType="Requirement" disabled={false} onAcceptProposal={onAccept} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i); // real timers: findBy polls with them
+    vi.useFakeTimers(); // from here on the 45 s limit is the fake clock's
+    try {
+      act(() => capturedOnEvent?.({ type: 'done', message: 'x', model: 'm', proposedTitle: null, proposedDescription: 'The receiver shall lock quickly.' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(46_000);
+      });
+      const accept = screen.getByRole('button', { name: /^accept$/i });
+      expect(accept).toBeEnabled();
+      expect(screen.getByText(/predicted score is unavailable/i)).toBeInTheDocument();
+      expect(screen.getByText(/numbers dropped/i)).toBeInTheDocument();
+      await act(async () => {
+        accept.click();
+      });
+      expect(onAccept).not.toHaveBeenCalled();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks for confirmation when the predicted score drops, and applies only after "Apply anyway"', async () => {
+    mockCheck([], comparison({ delta: -22, before: { score: 64 }, after: { score: 42 } }));
+    const onAccept = await renderWithProposal({ proposedTitle: null, proposedDescription: 'A much worse text.' });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /^accept$/i }));
+    expect(onAccept).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/64\s*→\s*42/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: /apply anyway/i }));
+    expect(onAccept).toHaveBeenCalledWith({ title: undefined, description: 'A much worse text.' });
+  });
+
+  it('keeps the proposal when the confirmation is declined', async () => {
+    mockCheck([], comparison({ delta: -5 }));
+    const onAccept = await renderWithProposal({ proposedTitle: null, proposedDescription: 'A worse text.' });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /^accept$/i }));
+    await user.click(await screen.findByRole('button', { name: /cancel|keep/i }));
+    expect(onAccept).not.toHaveBeenCalled();
+    expect(screen.getByText('A worse text.')).toBeInTheDocument();
+  });
+
+  it('a high warning asks for confirmation even when the score would rise', async () => {
+    mockCheck([high, { code: 'title_changed', severity: 'notice', detail: 'x' }], comparison({ warnings: [high, { code: 'title_changed', severity: 'notice', detail: 'x' }] }));
+    const onAccept = await renderWithProposal({ proposedTitle: 'Another title', proposedDescription: 'The receiver shall lock quickly.' });
+    const user = userEvent.setup();
+
+    expect(await screen.findByText(/numbers dropped.*5, 3\.3/i)).toBeInTheDocument();
+    expect(screen.getByText(/title changed/i)).toBeInTheDocument();
+    await screen.findByText(/64\s*→\s*71/);
+    await user.click(screen.getByRole('button', { name: /^accept$/i }));
+    expect(onAccept).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole('button', { name: /apply anyway/i }));
+    expect(onAccept).toHaveBeenCalled();
+  });
+
+  it('a notice alone (a new title) does not ask for confirmation', async () => {
+    const notice = { code: 'title_changed', severity: 'notice', detail: 'x' };
+    mockCheck([notice], comparison({ warnings: [notice] }));
+    const onAccept = await renderWithProposal({ proposedTitle: 'Another title', proposedDescription: 'The receiver shall acquire lock.' });
+    await screen.findByText(/64\s*→\s*71/);
+    await userEvent.setup().click(screen.getByRole('button', { name: /^accept$/i }));
+    expect(onAccept).toHaveBeenCalled();
+  });
+
+  it('says so when the prediction is unavailable but still shows the warnings, and does not invent a score', async () => {
+    const longer = { code: 'much_longer', severity: 'high', detail: '115 -> 741 characters (6.4x)' };
+    mockCheck([longer], comparison({ delta: null, before: { score: null }, after: { score: null }, categoryDeltas: {}, warnings: [longer] }));
+    await renderWithProposal({ proposedTitle: null, proposedDescription: 'A very long text.' });
+    expect(await screen.findByText(/much longer.*6\.4x/i)).toBeInTheDocument();
+    expect(await screen.findByText(/predicted score is unavailable/i)).toBeInTheDocument();
+  });
+
+  it('when nothing could be checked, unchecked is not treated as fine: applying asks first, and says it was not checked', async () => {
+    vi.mocked(chatApi.checkRewrite).mockRejectedValue(new Error('down'));
+    const onAccept = await renderWithProposal({ proposedTitle: null, proposedDescription: 'New text.' });
+    expect(await screen.findByText(/could not be checked/i)).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /^accept$/i }));
+    expect(onAccept).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole('button', { name: /apply anyway/i }));
+    expect(onAccept).toHaveBeenCalled();
+  });
+
+  it('does not check a title-only proposal', async () => {
+    await renderWithProposal({ proposedTitle: 'Only a title', proposedDescription: null });
+    await screen.findByText('Only a title');
+    expect(chatApi.checkRewrite).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /^accept$/i })).toBeEnabled();
+  });
+
+  it.each(['Epic', 'Feature'])('does not check a proposal for a %s (only requirements are checked) and does not claim it could not', async (type) => {
+    const onAccept = await renderWithProposal({ proposedTitle: null, proposedDescription: 'A scope description.' }, vi.fn(), type);
+    await screen.findByText('A scope description.');
+    expect(chatApi.checkRewrite).not.toHaveBeenCalled();
+    expect(screen.queryByText(/could not be checked/i)).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: /^accept$/i }));
+    expect(onAccept).toHaveBeenCalled();
+  });
+
+  it('a check that finishes after a NEWER proposal arrived is not shown against it', async () => {
+    const resolvers: ((value: unknown) => void)[] = [];
+    vi.mocked(chatApi.checkRewrite).mockImplementation((_job, _node, proposal) =>
+      (proposal.warningsOnly ? Promise.resolve(warningsOf([])) : new Promise((resolve) => resolvers.push(resolve))) as never,
+    );
+    await renderWithProposal({ proposedTitle: null, proposedDescription: 'First proposal.' });
+    await screen.findByText('First proposal.');
+    act(() => capturedOnEvent?.({ type: 'done', message: 'again', model: 'm', proposedTitle: null, proposedDescription: 'Second proposal.' }));
+    await screen.findByText('Second proposal.');
+
+    await act(async () => resolvers[0](comparison({ delta: -30, before: { score: 90 }, after: { score: 60 } }))); // the FIRST one, late
+    expect(screen.queryByText(/90\s*→\s*60/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^accept$/i })).toBeDisabled(); // the second is still being predicted
+    await act(async () => resolvers[1](comparison()));
+    expect(await screen.findByText(/64\s*→\s*71/)).toBeInTheDocument();
+  });
+
+  it('discards a check that comes back after the node changed', async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    vi.mocked(chatApi.checkRewrite).mockImplementation((_job, _node, proposal) =>
+      (proposal.warningsOnly ? Promise.resolve(warningsOf([])) : new Promise((resolve) => (finish = resolve))) as never,
+    );
+    vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
+      capturedOnEvent = onEvent;
+    });
+    const view = render(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n0" itemType="Requirement" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await screen.findByPlaceholderText(/ask the assistant/i);
+    act(() => capturedOnEvent?.({ type: 'done', message: 'x', model: 'm', proposedTitle: null, proposedDescription: 'Old node text.' }));
+    await screen.findByText(/predicting the score/i);
+
+    view.rerender(
+      <ToastProvider>
+        <ChatPanel jobId="job-1" localId="n1" itemType="Requirement" disabled={false} onAcceptProposal={vi.fn()} />
+      </ToastProvider>,
+    );
+    await act(async () => finish(comparison({ delta: -30 })));
+    expect(screen.queryByText(/Old node text/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/64\s*→/)).not.toBeInTheDocument();
   });
 });

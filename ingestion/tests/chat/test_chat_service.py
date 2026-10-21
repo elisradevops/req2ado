@@ -351,7 +351,9 @@ async def test_run_chat_turn_aims_the_rewrite_at_the_weakest_category_using_the_
     await run_chat_turn("job-1", "n0", item, [], "rewrite it", "llama3.1", None, None, None, RecordingClient([]), _FakePublisher(), profile=profile)
 
     system = seen[0][0]["content"]
-    assert "Clear and unambiguous (40)" in system and "One reading only" in system and "Testable" not in system
+    # The note names only what is weak, with its score; the standard in the prompt lists every category.
+    assert "Clear and unambiguous (40)" in system and "One reading only" in system
+    assert "Testable (90)" not in system and "weakest quality categories are Clear and unambiguous (40)" in system
 
     seen.clear()
     await run_chat_turn("job-1", "n0", {**item, "qualityCategoryScores": None}, [], "why?", "llama3.1", None, None, None, RecordingClient([]), _FakePublisher())

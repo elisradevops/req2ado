@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
 import { MessageSquareText, SendHorizontal, ChevronRight } from 'lucide-react';
-import { getChatHistory, listModels, sendChatTurn, stopChatTurn, type ChatMessage } from '../api/chat';
+import { checkRewrite, getChatHistory, listModels, sendChatTurn, stopChatTurn, type ChatMessage, type RewriteComparison, type RewriteWarning } from '../api/chat';
 import { useChatSocket, type StreamEvent } from '../hooks/useChatSocket';
 import { useToast } from './ToastProvider';
 import { ElapsedTimer } from './ElapsedTimer';
@@ -10,6 +10,7 @@ import { Select } from '../ui/Select';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Chip } from '../ui/Chip';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { InfoTip } from '../ui/Tooltip';
 import { Markdown } from '../ui/Markdown';
 import { cn } from '../lib/cn';
@@ -21,6 +22,40 @@ interface Proposal {
 }
 
 const HISTORY_DISPLAY_LIMIT = 50;
+
+// The prediction is a model call and can be slow; past this the proposal can be applied without it. The warnings do not wait for it
+// (they need no model), and a warning still asks for confirmation.
+const CHECK_TIMEOUT_MS = 45_000;
+
+/**
+ * What is known about ONE proposal. `warnings` come back at once; `prediction` (the original and the proposal scored together)
+ * takes a model call. Kept with the proposal it belongs to, so a state left over from an earlier proposal is never read for a newer one.
+ */
+interface ProposalCheck {
+  proposal: Proposal;
+  warnings: { status: 'loading' } | { status: 'unavailable' } | { status: 'ready'; items: RewriteWarning[] };
+  prediction: { status: 'loading' } | { status: 'unavailable' } | { status: 'ready'; data: RewriteComparison };
+}
+
+const WARNING_LABEL: Record<string, string> = {
+  empty_description: 'Empty description',
+  title_changed: 'Title changed',
+  much_longer: 'Much longer',
+  more_statements: 'More statements',
+  dropped_numbers: 'Numbers dropped',
+  dropped_identifiers: 'Identifiers dropped',
+};
+
+function warningText(warning: RewriteWarning): string {
+  const label = WARNING_LABEL[warning.code] ?? warning.code;
+  return warning.code === 'title_changed' || warning.code === 'empty_description' ? label : `${label}: ${warning.detail}`;
+}
+
+function predictedLine(data: RewriteComparison | null): string {
+  if (!data || data.delta === null || data.before.score === null || data.after.score === null) return 'The predicted score is unavailable.';
+  const sign = data.delta > 0 ? '+' : '';
+  return `Predicted score: ${data.before.score} → ${data.after.score} (${sign}${data.delta})`;
+}
 
 // Fixed, non-editable prompt for the "Suggest a better title" chip -- title
 // distillation beyond the first-sentence rule (a shorter label, or a fully
@@ -69,12 +104,15 @@ const SUGGESTED_PROMPTS: { label: string; effect: string; prompt: string }[] = [
 export function ChatPanel({
   jobId,
   localId,
+  itemType,
   disabled,
   disabledReason,
   onAcceptProposal,
 }: {
   jobId: string;
   localId: string;
+  // Only requirements are checked (the check judges a requirement's description); an Epic or Feature proposal is applied as before.
+  itemType?: string;
   disabled: boolean;
   // Shown in place of the composer when disabled -- callers pass a
   // specific reason (e.g. "this job's review is closed") rather than
@@ -125,6 +163,9 @@ export function ChatPanel({
   // stronger than a static "can take a couple of minutes" sentence.
   const [streamStartedAt, setStreamStartedAt] = useState<string | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [checkState, setCheckState] = useState<ProposalCheck | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const checkRequestRef = useRef(0);
   const historyEndRef = useRef<HTMLDivElement>(null);
 
   // Reset chat state whenever the selected node changes so a stale
@@ -172,6 +213,57 @@ export function ChatPanel({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, localId, disabled]);
+
+  // A proposal with a description is checked before it can be applied: the warnings come back at once (no model), the predicted score
+  // (the original and the proposal scored together) when the model has answered. A result that arrives after the proposal or the node
+  // changed is discarded.
+  const checkedKind = itemType === undefined || itemType === 'Requirement';
+  useEffect(() => {
+    const request = ++checkRequestRef.current;
+    setConfirmOpen(false);
+    if (!checkedKind || !proposal?.proposedDescription) {
+      setCheckState(null);
+      return;
+    }
+    const target = { proposedTitle: proposal.proposedTitle, proposedDescription: proposal.proposedDescription };
+    const fresh = () => request === checkRequestRef.current;
+    const update = (patch: Partial<Pick<ProposalCheck, 'warnings' | 'prediction'>>) =>
+      setCheckState((prev) => (prev && prev.proposal === proposal ? { ...prev, ...patch } : prev));
+    setCheckState({ proposal, warnings: { status: 'loading' }, prediction: { status: 'loading' } });
+
+    checkRewrite(jobId, localId, { ...target, warningsOnly: true })
+      .then((data) => {
+        if (fresh()) update(data && Array.isArray(data.warnings) ? { warnings: { status: 'ready', items: data.warnings } } : { warnings: { status: 'unavailable' } });
+      })
+      .catch(() => {
+        if (fresh()) update({ warnings: { status: 'unavailable' } });
+      });
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('timeout')), CHECK_TIMEOUT_MS);
+    });
+    Promise.race([checkRewrite(jobId, localId, target), timeout])
+      .then((data) => {
+        if (!fresh()) return;
+        if (data && Array.isArray(data.warnings)) update({ prediction: { status: 'ready', data }, warnings: { status: 'ready', items: data.warnings } });
+        else update({ prediction: { status: 'unavailable' } });
+      })
+      .catch(() => {
+        if (fresh()) update({ prediction: { status: 'unavailable' } });
+      })
+      .finally(() => clearTimeout(timer));
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposal, jobId, localId, checkedKind]);
+
+  // Only the state that belongs to the proposal on screen counts (the render before the effect runs would otherwise see the last one's).
+  const check = checkState && checkState.proposal === proposal ? checkState : null;
+  const checking = checkedKind && !!proposal?.proposedDescription;
+  const loading = checking && (!check || check.warnings.status === 'loading' || check.prediction.status === 'loading');
+  const warningItems = check?.warnings.status === 'ready' ? check.warnings.items : [];
+  const comparison = check?.prediction.status === 'ready' ? check.prediction.data : null;
+  const notChecked = checking && check?.warnings.status === 'unavailable';
 
   useChatSocket(
     jobId,
@@ -298,8 +390,19 @@ export function ChatPanel({
     }
   }
 
+  // Applying asks first when the check predicts a lower score, found something that probably lost content, or could not check at all
+  // ("unchecked" is not "fine").
+  const needsConfirmation =
+    !loading && (notChecked || warningItems.some((w) => w.severity === 'high') || (comparison?.delta != null && comparison.delta < 0));
+
+  function onAcceptClick(): void {
+    if (needsConfirmation) setConfirmOpen(true);
+    else acceptProposal();
+  }
+
   function acceptProposal(): void {
     if (!proposal) return;
+    setConfirmOpen(false);
     onAcceptProposal({
       title: proposal.proposedTitle ?? undefined,
       description: proposal.proposedDescription ?? undefined,
@@ -447,8 +550,22 @@ export function ChatPanel({
               <strong>Description:</strong> {proposal.proposedDescription}
             </p>
           )}
+          {notChecked && <p className="mt-1 text-xs text-ink-3">This rewrite could not be checked.</p>}
+          {warningItems.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {warningItems.map((w) => (
+                <Chip key={w.code} className={w.severity === 'high' ? 'bg-danger-soft text-danger-ink' : 'bg-canvas text-ink-2'}>
+                  {warningText(w)}
+                </Chip>
+              ))}
+            </div>
+          )}
+          {checking && check && check.prediction.status === 'loading' && <p className="mt-1 text-xs text-ink-3">Predicting the score…</p>}
+          {checking && check && check.prediction.status !== 'loading' && !notChecked && (
+            <p className="mt-1 text-xs text-ink-2">{predictedLine(comparison)}</p>
+          )}
           <div className="mt-1.5 flex gap-2">
-            <Button size="sm" onClick={acceptProposal}>
+            <Button size="sm" onClick={onAcceptClick} disabled={loading}>
               Accept
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setProposal(null)}>
@@ -457,6 +574,25 @@ export function ChatPanel({
           </div>
         </Card>
       )}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Apply this rewrite anyway?"
+        description="The check found something you may want to look at first."
+        confirmLabel="Apply anyway"
+        onConfirm={acceptProposal}
+      >
+        <div className="flex flex-col gap-1 text-sm">
+          {notChecked ? <p>This rewrite could not be checked.</p> : <p>{predictedLine(comparison)}</p>}
+          {warningItems.length > 0 && (
+            <ul className="list-disc pl-5">
+              {warningItems.map((w) => (
+                <li key={w.code}>{warningText(w)}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </ConfirmDialog>
       <div className="flex flex-col gap-2 border-t border-hairline pt-3">
         {/* Model picker is a secondary control (most turns leave it on
             Default) -- kept narrow so it doesn't compete with the input for

@@ -2,6 +2,7 @@ import { ConflictException, Injectable, Logger, NotFoundException, type OnModule
 import type { PrismaClient } from '@prisma/client';
 import type Redis from 'ioredis';
 import axios from 'axios';
+import { buildChatContext } from './chat-context';
 
 const CHAT_HISTORY_LIMIT = 50;
 
@@ -78,6 +79,8 @@ export class ChatService implements OnModuleDestroy {
         qualityIssues: entry.qualityIssues ?? [],
         // The item's score per quality category, so ingestion can aim a rewrite at the weakest one.
         qualityCategoryScores: entry.qualityCategoryScores ?? null,
+        // Where the item sits in the document (parents, neighbours, linked items, captions), from the job's own data.
+        context: buildChatContext(diff, entry, job as never),
       },
       history: history.map((h: { role: string; content: string }) => ({ role: h.role, content: h.content })),
       message,

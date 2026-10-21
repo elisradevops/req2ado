@@ -260,19 +260,35 @@ class KbVectorStore:
     def _profile_collection(self, user_id: str):
         return self._client.get_or_create_collection(name=_profile_collection_name_for_user(user_id, self._embed_model))
 
-    def get_profile_json(self, user_id: str) -> str | None:
-        """The stored KB profile document of this user, or None when none is stored. A store failure is raised, not
-        reported as "missing": callers decide (a job scores without it; a build must not overwrite a good profile)."""
-        found = self._profile_collection(user_id).get(ids=["profile"], include=["documents"])
+    def get_profile_part(self, user_id: str, part_id: str) -> str | None:
+        """One stored document of this user's profile collection (the profile itself, a document's cached extraction), or None
+        when it is not stored. A store failure is raised, not reported as "missing": callers decide (a job scores without it; a
+        build must not overwrite a good profile)."""
+        found = self._profile_collection(user_id).get(ids=[part_id], include=["documents"])
         documents = found.get("documents") or []
         return documents[0] if documents else None
 
-    def put_profile_json(self, user_id: str, profile_json: str, version: str) -> None:
-        """Stores (replaces) the user's KB profile. Chroma needs an embedding; the profile is not searched, so it is a
-        constant placeholder."""
+    def put_profile_part(self, user_id: str, part_id: str, text: str, version: str = "") -> None:
+        """Stores (replaces) one document of the profile collection. Chroma needs an embedding; these are not searched, so it
+        is a constant placeholder."""
         self._profile_collection(user_id).upsert(
-            ids=["profile"], documents=[profile_json], embeddings=[[0.0]], metadatas=[{"profile_version": version}],
+            ids=[part_id], documents=[text], embeddings=[[0.0]], metadatas=[{"profile_version": version}],
         )
+
+    def list_profile_part_ids(self, user_id: str, prefix: str) -> list[str]:
+        return [i for i in self._profile_collection(user_id).get(include=[]).get("ids", []) if i.startswith(prefix)]
+
+    def delete_profile_parts(self, user_id: str, part_ids: list[str]) -> None:
+        if part_ids:
+            self._profile_collection(user_id).delete(ids=part_ids)
+
+    def get_profile_json(self, user_id: str) -> str | None:
+        """The stored KB profile document of this user, or None when none is stored."""
+        return self.get_profile_part(user_id, "profile")
+
+    def put_profile_json(self, user_id: str, profile_json: str, version: str) -> None:
+        """Stores (replaces) the user's KB profile."""
+        self.put_profile_part(user_id, "profile", profile_json, version)
 
     def chunk_count(self, user_id: str) -> int:
         """How many chunks this user's KB holds (0 when there is none); for the audit line of a destructive action."""

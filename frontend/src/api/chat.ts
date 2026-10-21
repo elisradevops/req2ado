@@ -27,3 +27,30 @@ export async function sendChatTurn(jobId: string, localId: string, message: stri
 export async function stopChatTurn(jobId: string, localId: string): Promise<void> {
   await httpClient.post(`/jobs/${jobId}/diff/${localId}/chat/stop`);
 }
+
+export interface RewriteWarning {
+  code: string;
+  // `high`: content was probably lost or the item became several items; `notice`: something changed that was not necessarily asked for.
+  severity: 'high' | 'notice';
+  detail: string;
+}
+
+/** A proposed rewrite judged against the current item: both texts scored together, plus what can be seen in the two texts. */
+export interface RewriteComparison {
+  before: { score: number | null };
+  after: { score: number | null };
+  // after - before; null when the model could not score both texts (the warnings still stand).
+  delta: number | null;
+  warnings: RewriteWarning[];
+}
+
+// Read-only: nothing in the job changes. Throws on failure; the caller treats that as "not checked", never as "fine".
+export async function checkRewrite(
+  jobId: string,
+  localId: string,
+  // warningsOnly: only the checks that need no model, answered at once (the scored prediction can take as long as a model call).
+  proposal: { proposedTitle: string | null; proposedDescription: string; warningsOnly?: boolean },
+): Promise<RewriteComparison> {
+  const response = await httpClient.post<RewriteComparison>(`/jobs/${jobId}/diff/${localId}/rewrite-check`, proposal);
+  return response.data;
+}

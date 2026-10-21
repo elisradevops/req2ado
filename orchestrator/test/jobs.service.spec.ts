@@ -1,4 +1,4 @@
-import { BadGatewayException, ConflictException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { JobsService, buildFigureAttachmentFilename } from '../src/modules/pipeline/jobs.service';
@@ -5643,5 +5643,59 @@ describe('JobsService.retryEnhancement (parent_summary)', () => {
 
     expect(enhanceItems).not.toHaveBeenCalled();
     expect(result.skipped.sort()).toEqual(['e', 'r']);
+  });
+});
+
+
+describe('JobsService.checkRewrite', () => {
+  const entry = {
+    localId: 'n0', parentLocalId: null, type: 'Requirement', title: 'Lock time', description: 'The receiver shall lock within 5 ms.',
+    action: 'create', existingAdoId: null, sourceHash: 'h0', customerId: null,
+    qualityScore: 64, qualityIssues: [], qualityCategoryScores: { Testable: 60, Clear: 70 },
+  };
+  const job = { id: 'job-1', status: 'diff_ready', userId: 'user-1', model: 'claude-opus-4-8', dryRunDiff: [entry] };
+  const comparison = { before: { score: 64 }, after: { score: 71 }, delta: 7, categoryDeltas: {}, warnings: [] };
+  const make = (compareRewrite: jest.Mock, jobRow: unknown = job) => {
+    const prisma = { job: { findUnique: jest.fn().mockResolvedValue(jobRow), updateMany: jest.fn(), update: jest.fn() } };
+    return { prisma, service: new JobsService(prisma as any, {} as any, {} as any, { compareRewrite } as any, 'redis://unused') };
+  };
+
+  it('compares the proposal with the entry as it is now, under the entry\'s own categories, and changes nothing', async () => {
+    const compareRewrite = jest.fn().mockResolvedValue(comparison);
+    const { prisma, service } = make(compareRewrite);
+
+    const result = await service.checkRewrite('job-1', 'n0', { proposedTitle: null, proposedDescription: 'The receiver shall acquire lock within 5 ms.' });
+
+    expect(result).toEqual(comparison);
+    expect(compareRewrite).toHaveBeenCalledWith(
+      { title: 'Lock time', description: 'The receiver shall lock within 5 ms.' },
+      { title: null, description: 'The receiver shall acquire lock within 5 ms.' },
+      ['Testable', 'Clear'],
+      'user-1',
+      'claude-opus-4-8',
+    );
+    expect(prisma.job.updateMany).not.toHaveBeenCalled();
+    expect(prisma.job.update).not.toHaveBeenCalled();
+  });
+
+  it('passes warningsOnly on, so the cheap answer does not wait for the model', async () => {
+    const compareRewrite = jest.fn().mockResolvedValue(comparison);
+    await make(compareRewrite).service.checkRewrite('job-1', 'n0', { proposedDescription: 'x', warningsOnly: true });
+    expect(compareRewrite).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), 'user-1', 'claude-opus-4-8', { warningsOnly: true });
+  });
+
+  it('refuses a missing entry, a non-Requirement, a job that is not reviewable and a blank proposal', async () => {
+    const compareRewrite = jest.fn().mockResolvedValue(comparison);
+    await expect(make(compareRewrite, null).service.checkRewrite('job-1', 'n0', { proposedDescription: 'x' })).rejects.toThrow(NotFoundException);
+    await expect(make(compareRewrite).service.checkRewrite('job-1', 'zz', { proposedDescription: 'x' })).rejects.toThrow(NotFoundException);
+    await expect(make(compareRewrite, { ...job, status: 'running' }).service.checkRewrite('job-1', 'n0', { proposedDescription: 'x' })).rejects.toThrow(ConflictException);
+    await expect(make(compareRewrite, { ...job, dryRunDiff: [{ ...entry, type: 'Feature' }] }).service.checkRewrite('job-1', 'n0', { proposedDescription: 'x' })).rejects.toThrow(BadRequestException);
+    await expect(make(compareRewrite).service.checkRewrite('job-1', 'n0', { proposedDescription: '   ' })).rejects.toThrow(BadRequestException);
+    expect(compareRewrite).not.toHaveBeenCalled();
+  });
+
+  it('turns an ingestion failure into a 502 that keeps the reason', async () => {
+    const compareRewrite = jest.fn().mockRejectedValue(new IngestionHttpError(502, 'the model did not score both texts'));
+    await expect(make(compareRewrite).service.checkRewrite('job-1', 'n0', { proposedDescription: 'x' })).rejects.toThrow(BadGatewayException);
   });
 });

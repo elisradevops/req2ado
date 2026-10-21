@@ -21,15 +21,19 @@ import hashlib
 import json
 import logging
 import re
+import threading
+import time
+from datetime import datetime, timezone
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from app.prompts import load_prompt
 from app.request_identity import redact_identity
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "kb-profile-3"
+SCHEMA_VERSION = "kb-profile-4"
 WINDOW_CHARS = 10_000
 WINDOW_OVERLAP = 500
 RELEVANCE_EXCERPT_CHARS = 1_500
@@ -56,6 +60,9 @@ class Category(BaseModel):
     name: str
     pass_condition: str | None = None
     sources: list[str]
+    # The document categories this entry stands for, as the documents wrote them (it is one of them). Lets a rebuild keep
+    # the groups it made; absent (empty) on profiles stored before it existed.
+    merged_from: list[str] = Field(default_factory=list)
 
 
 class TypeDefinition(BaseModel):
@@ -101,6 +108,11 @@ class KbProfile(BaseModel):
     glossary: list[GlossaryTerm] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)
     truncated: bool = False
+    # When it was built (UTC, ISO). Informational only: never part of `version`, absent on profiles stored before it existed.
+    built_at: str | None = None
+    # True when the build could not be done properly (a document failed in whole or part, a relevance judgement failed, the merge pass got
+    # no answer). Never persisted: such a profile is used for the job at hand but not stored as current, so the next job rebuilds.
+    degraded: bool = Field(default=False, exclude=True)
 
     @property
     def docs_in_kb(self) -> int:
@@ -127,9 +139,55 @@ class ProfileStore(Protocol):
     def put(self, user_id: str, profile: KbProfile) -> None: ...
 
 
+class DocumentCache(Protocol):
+    """One user's stored extractions, one per KB document: the document's relevance verdict and what was extracted from it, valid for
+    the exact text, model and extraction (prompts, windows) it was made with."""
+
+    def get(self, file: str, fingerprint: str) -> dict | None: ...
+
+    def put(self, file: str, fingerprint: str, result: dict) -> None: ...
+
+    def files(self) -> list[str]: ...
+
+    def keep_only(self, files: set[str]) -> None: ...
+
+
+def extraction_version() -> str:
+    """Identifies how a document is read: change a prompt, the window size or the schema and stored extractions no longer apply."""
+    parts = [SCHEMA_VERSION, load_prompt("kb_document_relevance"), load_prompt("extract_kb_document_profile"), WINDOW_CHARS, WINDOW_OVERLAP, RELEVANCE_EXCERPT_CHARS]
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
+
+
+def _fingerprint(text: str, model: str) -> str:
+    return hashlib.sha256(json.dumps([extraction_version(), model, text]).encode()).hexdigest()
+
+
+class _MemoryDocumentCache:
+    def __init__(self, entries: dict[str, tuple[str, dict]]) -> None:
+        self._entries = entries
+
+    def get(self, file: str, fingerprint: str) -> dict | None:
+        found = self._entries.get(file)
+        return found[1] if found and found[0] == fingerprint else None
+
+    def put(self, file: str, fingerprint: str, result: dict) -> None:
+        self._entries[file] = (fingerprint, result)
+
+    def files(self) -> list[str]:
+        return sorted(self._entries)
+
+    def keep_only(self, files: set[str]) -> None:
+        for gone in [f for f in self._entries if f not in files]:
+            del self._entries[gone]
+
+
 class InMemoryProfileStore:
     def __init__(self) -> None:
         self._profiles: dict[str, str] = {}
+        self._documents: dict[str, dict[str, tuple[str, dict]]] = {}
+
+    def document_cache(self, user_id: str) -> DocumentCache:
+        return _MemoryDocumentCache(self._documents.setdefault(user_id, {}))
 
     def get(self, user_id: str) -> KbProfile | None:
         raw = self._profiles.get(user_id)
@@ -194,25 +252,74 @@ def _union(into: dict, extracted: dict) -> None:
             into["type_definitions"].append({"item_type": kind, "text": text})
 
 
+def _cache_get(cache: DocumentCache, file: str, fingerprint: str) -> dict | None:
+    """The cache only saves work: a store error is a miss, never a failed build (the model calls were already paid for)."""
+    try:
+        return cache.get(file, fingerprint)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("KB extraction cache read failed (extracting again): %s", redact_identity(" ".join(str(exc).split()))[:200])
+        return None
+
+
+def _cache_put(cache: DocumentCache, file: str, fingerprint: str, result: dict) -> None:
+    try:
+        cache.put(file, fingerprint, result)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("KB extraction cache write failed (not stored): %s", redact_identity(" ".join(str(exc).split()))[:200])
+
+
+def _cache_keep_only(cache: DocumentCache, files: set[str]) -> None:
+    try:
+        cache.keep_only(files)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("KB extraction cache cleanup failed: %s", redact_identity(" ".join(str(exc).split()))[:200])
+
+
 def build_profile(
     documents: dict[str, str], client: KbProfileClient, *, model: str, user_id: str | None = None, previous: KbProfile | None = None,
+    cache: DocumentCache | None = None, read_cache: bool = True,
 ) -> KbProfile:
     """Maps every document, then merges. Never raises for a document: each ends with a recorded status. `previous` (the profile
-    this one replaces) only lends its category names to the merge, so a rebuild keeps names unless the content changed."""
+    this one replaces) only lends its category names and groups to the merge. `cache` holds each document's earlier extraction: a
+    document whose text, the model and the extraction are unchanged is not read again (`read_cache=False` re-reads everything and
+    replaces what was stored), so a rebuild keeps what its unchanged documents said. Only complete results are stored."""
+    started = time.monotonic()
     version = profile_version(documents, model)
     extracted: dict[str, dict] = {}
     statuses: list[DocumentStatus] = []
+    cached_documents = 0
+    degraded = False
     for name in sorted(documents):
         text = documents[name]
+        fingerprint = _fingerprint(text, model) if cache is not None else ""
+        remembered = _cache_get(cache, name, fingerprint) if cache is not None and read_cache else None
+        if remembered is not None:
+            cached_documents += 1
+            if remembered.get("status") == "not_relevant":
+                statuses.append(DocumentStatus(file=name, status="not_relevant", reason=remembered.get("reason") or "judged not relevant"))
+            else:
+                counts = {k: len(v) for k, v in remembered["extracted"].items()}
+                extracted[name] = remembered["extracted"]
+                statuses.append(
+                    DocumentStatus(
+                        file=name, status="contributed", categories=counts["categories"], rules=counts["rules"],
+                        type_definitions=counts["type_definitions"], glossary=counts["glossary"],
+                    )
+                )
+            continue
+        verdict_ok = True
         try:
             verdict = client.judge_kb_document_relevance(name, text[:RELEVANCE_EXCERPT_CHARS], user_id=user_id)
             relevant = bool(verdict.get("relevant", True)) if isinstance(verdict, dict) else True
             reason = str(verdict.get("reason") or "")[:300] if isinstance(verdict, dict) else ""
         except Exception as exc:  # noqa: BLE001 -- relevant unless clearly not: a failed judgement never drops a document
             logger.warning("KB relevance judgement failed for %s: %s", name, exc)
-            relevant, reason = True, ""
+            relevant, reason, verdict_ok = True, "", False
+            degraded = True
         if not relevant:
             statuses.append(DocumentStatus(file=name, status="not_relevant", reason=reason or "judged not relevant"))
+            if cache is not None and verdict_ok:
+                _cache_put(cache, name, fingerprint, {"status": "not_relevant", "reason": reason})
             continue
         combined, errors, windows = _empty(), [], windows_of(text)
         for window in windows:
@@ -221,6 +328,7 @@ def build_profile(
             except Exception as exc:  # noqa: BLE001
                 errors.append(redact_identity(" ".join(str(exc).split()))[:200])
         counts = {k: len(v) for k, v in combined.items()}
+        degraded = degraded or bool(errors)
         if errors and len(errors) == len(windows):
             statuses.append(DocumentStatus(file=name, status="failed", reason=errors[0]))
         elif sum(counts.values()) == 0:
@@ -235,59 +343,92 @@ def build_profile(
                     type_definitions=counts["type_definitions"], glossary=counts["glossary"],
                 )
             )
+            if cache is not None and verdict_ok and not errors:
+                _cache_put(cache, name, fingerprint, {"status": "contributed", "extracted": combined})
+    if cache is not None:
+        _cache_keep_only(cache, set(documents))
     profile = merge_document_profiles(extracted, model, version, statuses)
-    profile.categories, cut = consolidate_categories(profile.categories, client, user_id, [c.name for c in previous.categories] if previous else None)
+    stats: dict = {}
+    profile.categories, cut = consolidate_categories(profile.categories, client, user_id, previous, stats)
     profile.truncated = profile.truncated or cut
+    # A build that could not read every document, or whose merge pass got no answer at all, is used but never stored as current.
+    profile.degraded = degraded or (stats.get("runs_asked", 0) > 0 and stats.get("runs_answered", 0) == 0)
+    # Counts only: category names are the company's own material.
+    logger.info(
+        "KB profile built: documents=%d contributing=%d cached_documents=%d categories=%d rules=%d conflicts=%d runs=%s/%s "
+        "contested_pairs=%s duration=%.1fs model=%s",
+        profile.docs_in_kb, profile.docs_contributing, cached_documents, len(profile.categories), len(profile.rules), len(profile.conflicts),
+        stats.get("runs_answered", "-"), stats.get("runs_asked", "-"), stats.get("contested_pairs", "-"),
+        time.monotonic() - started, model,
+    )
     return profile
 
 
-def consolidate_categories(
-    categories: list[Category], client: object, user_id: str | None = None, preferred_names: list[str] | None = None,
-) -> tuple[list[Category], bool]:
-    """The merged categories as a canonical list decided by the model and made stable by agreement.
+def _representative_key(member: Category, preferred: set[str]):
+    """Which member of a group speaks for it: the previous profile's name first (a rebuild keeps names), then the wording more
+    documents used, then a plainly written one (capitalised, shorter), then alphabetical. A rule over the documents' own
+    words: nothing the model wrote is used, so sampling cannot rename a quality."""
+    return (_key(member.name) not in preferred, -len(member.sources), 0 if member.name[:1].isupper() else 1, len(member.name), member.name.casefold(), member.name)
 
-    The model says which names mean the same quality. It is asked CONSOLIDATION_RUNS times; two categories are merged only when
-    MORE THAN HALF of the answering runs placed them together, the merged entry takes the name most runs gave it (a previous
-    profile's name wins a tie, then alphabetical order), and its pass condition is the most common one under that name. The
-    outcome is a function of what the runs said, not of their order, and one odd answer cannot change it. Every entry keeps the
-    union of its sources, an entry no run grouped keeps its own name, and a list over MAX_SCORING_CATEGORIES is cut
-    (best-supported first) as a last safeguard. Without the model (not offered, or every run failing) the deterministic list is
-    only capped. Returns (categories, cut)."""
+
+def consolidate_categories(
+    categories: list[Category], client: object, user_id: str | None = None, previous: "KbProfile | None" = None,
+    stats: dict | None = None,
+) -> tuple[list[Category], bool]:
+    """The merged categories as a canonical list: the model decides which categories judge the same quality, a rule names them.
+
+    The model is asked CONSOLIDATION_RUNS times which input categories belong together. Two are merged when MORE THAN HALF of the
+    answering runs grouped them; pairs are joined transitively. The groups of the `previous` profile (for members the documents
+    still name) are applied first and ALWAYS, also when the model is absent or every run fails, so what was decided stays decided.
+    Each resulting entry is named, and given its pass condition, by `_representative_key` from its members as the documents wrote
+    them; it keeps the union of their sources and lists them in `merged_from`. An entry nobody grouped is its own. The outcome depends
+    on what the runs said, not on their order, and names are unique because members are. A list over MAX_SCORING_CATEGORIES is cut
+    (best-supported first) as a last safeguard. Returns (categories, cut). `stats`, when given, receives runs_asked, runs_answered and
+    contested_pairs (pairs that some, but not all, answering runs grouped) for the build's log line."""
     def capped(entries: list[Category]) -> tuple[list[Category], bool]:
         ordered = sorted(entries, key=lambda c: (-len(c.sources), c.sources[0] if c.sources else "", c.name))
         return ordered[:MAX_SCORING_CATEGORIES], len(ordered) > MAX_SCORING_CATEGORIES
 
-    consolidate = getattr(client, "consolidate_kb_categories", None)
-    if len(categories) < 2 or consolidate is None:
-        return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
+    def unmerged() -> tuple[list[Category], bool]:
+        return [c.model_copy(update={"merged_from": [c.name]}) for c in categories[:MAX_SCORING_CATEGORIES]], len(categories) > MAX_SCORING_CATEGORIES
+
     by_key = {_key(c.name): c for c in categories}
     keys = list(by_key)
+    position = {k: i for i, k in enumerate(keys)}
+    previous_groups = [
+        still_named
+        for earlier in (previous.categories if previous else [])
+        if len(still_named := [k for k in dict.fromkeys(_key(m) for m in earlier.merged_from) if k in by_key]) > 1
+    ]
+    consolidate = getattr(client, "consolidate_kb_categories", None)
+    if len(categories) < 2 or (consolidate is None and not previous_groups):
+        return unmerged()
     payload = [{"name": c.name, "pass_condition": c.pass_condition or ""} for c in categories]
-    extra = {"preferred_names": list(preferred_names)} if preferred_names else {}
+    previous_names = [c.name for c in previous.categories] if previous else []
+    extra = {"preferred_names": previous_names} if previous_names else {}
 
-    runs: list[list[tuple[str, str | None, list[str]]]] = []  # per run: (name, condition, member keys), every key exactly once
-    for _ in range(CONSOLIDATION_RUNS):
+    runs: list[list[list[str]]] = []  # per answering run: groups of member keys, every key exactly once
+    for _ in range(CONSOLIDATION_RUNS if consolidate is not None else 0):
         try:
             groups = consolidate(payload, MAX_SCORING_CATEGORIES, user_id=user_id, **extra)
         except Exception as exc:  # noqa: BLE001 -- the merge only shortens the list; the profile is built either way
             logger.warning("KB category consolidation run failed: %s", redact_identity(" ".join(str(exc).split()))[:200])
             continue
         placed: set[str] = set()
-        parsed: list[tuple[str, str | None, list[str]]] = []
+        parsed: list[list[str]] = []
         for group in groups or []:
             members = [k for k in dict.fromkeys(_key(m) for m in group.get("merged_from", [])) if k in by_key and k not in placed]
-            if not members:
-                continue
-            placed.update(members)
-            name = " ".join(str(group.get("name", "")).split()) or by_key[members[0]].name
-            parsed.append((name, (group.get("pass_condition") or None), members))
-        parsed += [(by_key[k].name, by_key[k].pass_condition, [k]) for k in keys if k not in placed]
+            if members:
+                placed.update(members)
+                parsed.append(members)
+        parsed += [[k] for k in keys if k not in placed]
         runs.append(parsed)
-    if not runs:
+    if stats is not None and consolidate is not None:
+        stats.update(runs_asked=CONSOLIDATION_RUNS, runs_answered=len(runs))
+    if not runs and not previous_groups:
         logger.warning("KB category consolidation gave no usable answer; keeping the capped deterministic list")
-        return categories[:MAX_SCORING_CATEGORIES], len(categories) > MAX_SCORING_CATEGORIES
+        return unmerged()
 
-    # Merge a pair only when more than half of the runs put it together; connected pairs form one entry.
     parent = {k: k for k in keys}
 
     def find(k: str) -> str:
@@ -296,36 +437,44 @@ def consolidate_categories(
             k = parent[k]
         return k
 
+    def union(a: str, b: str) -> None:
+        root_a, root_b = find(a), find(b)
+        if root_a != root_b:  # the earlier input is the root, so the outcome never depends on call order
+            low, high = sorted((root_a, root_b), key=position.__getitem__)
+            parent[high] = low
+
+    for group in previous_groups:  # what the previous profile decided stays decided
+        for other in group[1:]:
+            union(group[0], other)
+
     together: dict[tuple[str, str], int] = {}
     for run in runs:
-        for _name, _condition, members in run:
+        for members in run:
             for i, a in enumerate(members):
                 for b in members[i + 1:]:
-                    pair = (a, b) if keys.index(a) < keys.index(b) else (b, a)
+                    pair = (a, b) if position[a] < position[b] else (b, a)
                     together[pair] = together.get(pair, 0) + 1
-    for (a, b), count in together.items():
+    if stats is not None:
+        stats["contested_pairs"] = sum(1 for count in together.values() if count < len(runs))
+    for (a, b), count in sorted(together.items()):
         if count * 2 > len(runs):
-            parent[find(b)] = find(a)
+            union(a, b)
+
     components: dict[str, list[str]] = {}
     for k in keys:
         components.setdefault(find(k), []).append(k)
-
-    preferred = {_key(n) for n in preferred_names or []}
+    preferred = {_key(n) for n in previous_names}
     entries: list[Category] = []
-    for members in components.values():
-        member_set = set(members)
-        names: dict[str, int] = {}
-        conditions: dict[str, dict[str, int]] = {}
-        for run in runs:
-            best = max(run, key=lambda g: (len(member_set & set(g[2])), -run.index(g)))  # the run's group that overlaps this entry most
-            names[best[0]] = names.get(best[0], 0) + 1
-            if best[1]:
-                conditions.setdefault(best[0], {})
-                conditions[best[0]][best[1]] = conditions[best[0]].get(best[1], 0) + 1
-        name = min(names, key=lambda n: (-names[n], _key(n) not in preferred, n.casefold(), n))
-        said = conditions.get(name, {})
-        condition = min(said, key=lambda c: (-said[c], c)) if said else next((by_key[k].pass_condition for k in members if by_key[k].pass_condition), None)
-        entries.append(Category(name=name, pass_condition=condition, sources=sorted({src for k in members for src in by_key[k].sources})))
+    for member_keys in components.values():
+        members = [by_key[k] for k in member_keys]
+        ranked = sorted(members, key=lambda m: _representative_key(m, preferred))
+        condition = next((m.pass_condition for m in ranked if m.pass_condition), None)
+        entries.append(
+            Category(
+                name=ranked[0].name, pass_condition=condition,
+                sources=sorted({src for m in members for src in m.sources}), merged_from=[m.name for m in members],
+            )
+        )
     return capped(entries)
 
 
@@ -395,21 +544,50 @@ class KbDocuments(Protocol):
     def get_document(self, user_id: str, source_file: str) -> tuple[str | None, bool]: ...
 
 
-def ensure_profile(user_id: str, kb: KbDocuments, store: ProfileStore, client: KbProfileClient, *, model: str) -> KbProfile | None:
-    """The user's profile: the stored one while nothing changed, otherwise a rebuilt (and stored) one; None with no KB."""
-    texts: dict[str, str] = {}
-    for name in kb.list_documents(user_id):
-        text, _truncated = kb.get_document(user_id, name)
-        if text:
-            texts[name] = text
-    if not texts:
-        return None
-    existing = store.get(user_id)
-    if existing is not None and existing.version == profile_version(texts, model):
-        return existing
-    profile = build_profile(texts, client, model=model, user_id=user_id, previous=existing)
-    store.put(user_id, profile)
-    return profile
+_build_locks: dict[str, threading.Lock] = {}
+_build_locks_guard = threading.Lock()
+
+
+def _lock_for(user_id: str) -> threading.Lock:
+    with _build_locks_guard:
+        return _build_locks.setdefault(user_id, threading.Lock())
+
+
+def ensure_profile(
+    user_id: str, kb: KbDocuments, store: ProfileStore, client: KbProfileClient, *, model: str, refresh: bool = False,
+) -> KbProfile | None:
+    """The user's profile: the stored one while nothing changed, otherwise a rebuilt (and stored) one; None with no KB.
+
+    One build at a time per user: two jobs starting together used to build two different profiles (the model is sampled), each
+    scoring with its own, the last write winning. The second request now waits and reads the stored one.
+
+    A rebuild reuses the stored extraction of every unchanged document (see DocumentCache); `refresh=True` re-reads all of them."""
+    with _lock_for(user_id):
+        texts: dict[str, str] = {}
+        for name in kb.list_documents(user_id):
+            text, _truncated = kb.get_document(user_id, name)
+            if text:
+                texts[name] = text
+        if not texts:
+            return None
+        existing = store.get(user_id)
+        if existing is not None and not refresh and existing.version == profile_version(texts, model):
+            return existing
+        make_cache = getattr(store, "document_cache", None)
+        profile = build_profile(
+            texts, client, model=model, user_id=user_id,
+            # A refresh starts from the documents: earlier merges (which only ever grow) are not carried over.
+            previous=None if refresh else existing,
+            cache=make_cache(user_id) if make_cache else None, read_cache=not refresh,
+        )
+        profile.built_at = datetime.now(timezone.utc).isoformat()
+        if profile.degraded:
+            # Used for the job at hand, never stored as current: the next job rebuilds (the documents that did succeed come from the
+            # cache), instead of every later job scoring without the knowledge base's standard until a document changes.
+            logger.warning("KB profile build was incomplete; it is used for this request and not stored")
+            return profile
+        store.put(user_id, profile)
+        return profile
 
 
 class ChromaProfileStore:
@@ -430,6 +608,44 @@ class ChromaProfileStore:
 
     def put(self, user_id: str, profile: KbProfile) -> None:
         self._kb_store.put_profile_json(user_id, profile.model_dump_json(), profile.version)
+
+    def document_cache(self, user_id: str) -> DocumentCache:
+        return _ChromaDocumentCache(self._kb_store, user_id)
+
+
+_DOC_PREFIX = "doc:"
+
+
+def _doc_part_id(file: str) -> str:
+    return _DOC_PREFIX + hashlib.sha256(file.encode()).hexdigest()[:24]
+
+
+class _ChromaDocumentCache:
+    """Per-document extractions kept in the user's profile collection, beside the profile (so a purge drops them too)."""
+
+    def __init__(self, kb_store, user_id: str) -> None:
+        self._kb_store, self._user_id = kb_store, user_id
+
+    def _read(self, part_id: str) -> dict | None:
+        raw = self._kb_store.get_profile_part(self._user_id, part_id)
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            return None
+
+    def get(self, file: str, fingerprint: str) -> dict | None:
+        entry = self._read(_doc_part_id(file))
+        return entry["result"] if entry and entry.get("fingerprint") == fingerprint and entry.get("file") == file else None
+
+    def put(self, file: str, fingerprint: str, result: dict) -> None:
+        self._kb_store.put_profile_part(self._user_id, _doc_part_id(file), json.dumps({"file": file, "fingerprint": fingerprint, "result": result}))
+
+    def files(self) -> list[str]:
+        return sorted(e["file"] for e in (self._read(i) for i in self._kb_store.list_profile_part_ids(self._user_id, _DOC_PREFIX)) if e)
+
+    def keep_only(self, files: set[str]) -> None:
+        keep = {_doc_part_id(f) for f in files}
+        self._kb_store.delete_profile_parts(self._user_id, [i for i in self._kb_store.list_profile_part_ids(self._user_id, _DOC_PREFIX) if i not in keep])
 
 
 SCORING_CONTEXT_MAX_CHARS = 7_500

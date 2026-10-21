@@ -32,7 +32,7 @@ def test_the_system_prompt_carries_the_note_and_is_unchanged_without_one() -> No
     base = _build_system_prompt(ITEM, None)
     assert _build_system_prompt(ITEM, None, None) == base
     with_note = _build_system_prompt(ITEM, None, "WEAKEST NOTE.")
-    assert "WEAKEST NOTE." in with_note and with_note.startswith(base.split("Reply conversationally")[0])
+    assert "WEAKEST NOTE." in with_note and with_note.startswith(base.split("Rules for any rewrite")[0])
 
 
 import logging

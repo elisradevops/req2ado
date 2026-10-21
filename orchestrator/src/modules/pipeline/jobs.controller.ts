@@ -20,7 +20,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
 import type { Response } from 'express';
 import { JobsService, JobSummary, type JobDetail } from './jobs.service';
-import { IngestionHttpClient } from './ingestion-http.client';
+import { IngestionHttpClient, type RewriteComparison } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
 import { etaEstimateQuerySchema } from './eta-estimate.dto';
@@ -628,6 +628,25 @@ export class JobsController {
     await this.ownedJob(id, user);
     const dryRunDiff = await this.jobsService.rescoreDiffEntry(id, localId);
     return { dryRunDiff };
+  }
+
+  /**
+   * Judges a proposed rewrite (typically a chat proposal) against the entry before it is applied: both texts scored together under
+   * the entry's own categories, plus the deterministic warnings. Read-only: nothing in the job changes.
+   */
+  @Post(':id/diff/:localId/rewrite-check')
+  async checkRewrite(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body() body: { proposedTitle?: string | null; proposedDescription?: string; warningsOnly?: boolean },
+  ): Promise<RewriteComparison> {
+    await this.ownedJob(id, user);
+    return this.jobsService.checkRewrite(id, localId, {
+      proposedTitle: body?.proposedTitle ?? null,
+      proposedDescription: typeof body?.proposedDescription === 'string' ? body.proposedDescription : '',
+      ...(body?.warningsOnly === true ? { warningsOnly: true } : {}),
+    });
   }
 
   @Post(':id/confirm')
