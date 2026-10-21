@@ -195,9 +195,19 @@ class InMemoryProfileStore:
     def __init__(self) -> None:
         self._profiles: dict[str, str] = {}
         self._documents: dict[str, dict[str, tuple[str, dict]]] = {}
+        self._overrides: dict[str, str] = {}
 
     def document_cache(self, user_id: str) -> DocumentCache:
         return _MemoryDocumentCache(self._documents.setdefault(user_id, {}))
+
+    def get_overrides(self, user_id: str):
+        from app.kb.rubric import RubricOverrides
+
+        raw = self._overrides.get(user_id)
+        return RubricOverrides.model_validate_json(raw) if raw else RubricOverrides()
+
+    def put_overrides(self, user_id: str, overrides) -> None:
+        self._overrides[user_id] = overrides.model_dump_json()
 
     def get(self, user_id: str) -> KbProfile | None:
         raw = self._profiles.get(user_id)
@@ -673,6 +683,20 @@ class ChromaProfileStore:
 
     def document_cache(self, user_id: str) -> DocumentCache:
         return _ChromaDocumentCache(self._kb_store, user_id)
+
+    def get_overrides(self, user_id: str):
+        """The user's pins and removals (app.kb.rubric); empty when there are none or they cannot be read."""
+        from app.kb.rubric import RubricOverrides
+
+        raw = self._kb_store.get_profile_part(user_id, "rubric-overrides")
+        try:
+            return RubricOverrides.model_validate_json(raw) if raw else RubricOverrides()
+        except ValueError:
+            logger.warning("Stored rubric overrides could not be read; ignoring them")
+            return RubricOverrides()
+
+    def put_overrides(self, user_id: str, overrides) -> None:
+        self._kb_store.put_profile_part(user_id, "rubric-overrides", overrides.model_dump_json(), "rubric-overrides")
 
 
 _DOC_PREFIX = "doc:"

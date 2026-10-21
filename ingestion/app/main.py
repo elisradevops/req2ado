@@ -38,6 +38,7 @@ from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_se
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
 from app.kb.default_rubric import default_profile
+from app.kb.rubric import RubricOverrides, apply_overrides, rubric_view, validate_overrides
 from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard, scoring_inputs
 from app.kb.retrieval import retrieve_context
 from app.leveling.document_map import publish_document_map
@@ -206,6 +207,20 @@ _kb_vector_store = KbVectorStore(
 _kb_profile_store = ChromaProfileStore(_kb_vector_store)
 
 
+def _overrides_of(user_id: str) -> RubricOverrides:
+    try:
+        return _kb_profile_store.get_overrides(user_id)
+    except Exception:  # noqa: BLE001 -- a pin that cannot be read must not fail a job: the rubric is then the model's own
+        logger.warning("The user's rubric overrides could not be read; using the rubric without them", exc_info=True)
+        return RubricOverrides()
+
+
+def _effective_rubric(user_id: str, base: KbProfile) -> KbProfile:
+    """The base rubric with the user's pins and removals applied; the built-in default if nothing is left."""
+    effective = apply_overrides(base, _overrides_of(user_id))
+    return effective if effective.categories else default_profile()
+
+
 def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | None:
     """The rubric this job is scored with: the user's KB profile, built when stale (pinned to the configured model, else to the model that
     built the stored one); with no KB, a KB that yields no categories, or a build that failed with nothing stored, the built-in default
@@ -216,13 +231,13 @@ def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | 
         stored = _kb_profile_store.get(user_id)
         model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
         if not model:
-            return default_profile()
+            return _effective_rubric(user_id, default_profile())
         profile = ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
         if profile is not None and profile.degraded:
             # Half a profile would give this job categories that no later job has: keep the last good one (or the default).
             logger.warning("KB profile build was incomplete; scoring with the last stored profile, if any")
             profile = stored
-        return profile if profile is not None and profile.categories else default_profile()
+        return _effective_rubric(user_id, profile if profile is not None and profile.categories else default_profile())
     except Exception:  # noqa: BLE001 -- the rubric improves scoring; it must never fail a job
         logger.warning("KB profile unavailable for this job; scoring with the built-in rubric", exc_info=True)
         return default_profile()
@@ -237,7 +252,7 @@ def _stored_profile_or_none(user_id: str | None) -> KbProfile | None:
         stored = _kb_profile_store.get(user_id)
     except Exception:  # noqa: BLE001 -- the rubric only sharpens a rewrite
         stored = None
-    return stored if stored is not None and stored.categories else default_profile()
+    return _effective_rubric(user_id, stored if stored is not None and stored.categories else default_profile())
 
 
 def _make_profile_client(model: str) -> OrchestratorLlmClient:
@@ -2243,6 +2258,46 @@ async def cache_scope(user_id: str | None = None) -> dict:
     with (null without one). The orchestrator puts both in its result-cache key, so a new build or a rebuilt profile never serves old results."""
     profile = await run_in_threadpool(_stored_profile_or_none, user_id) if user_id else None
     return {"ingestion": _ingestion_version(), "profile": profile.version if profile is not None else None}
+
+
+class RubricPinBody(BaseModel):
+    name: str
+    passCondition: str
+
+
+class RubricPutRequest(BaseModel):
+    user_id: str
+    # The user's whole set of pins (a category to fix, or one of their own) and removals; sending empty lists returns to the derived rubric.
+    pinned: list[RubricPinBody] = []
+    removed: list[str] = []
+
+
+def _rubric_view_for(user_id: str) -> dict:
+    stored = _kb_profile_store.get(user_id)
+    base = stored if stored is not None and stored.categories else default_profile()
+    overrides = _kb_profile_store.get_overrides(user_id)
+    return rubric_view(apply_overrides(base, overrides), base, overrides)
+
+
+@app.get("/kb/rubric")
+async def kb_get_rubric(user_id: str) -> dict:
+    """The rubric the user's jobs are graded against: every category with its pass condition, whether it is pinned, where it comes from (the
+    knowledge base, the built-in default, or the user's own) and what was removed. Never builds anything."""
+    return await run_in_threadpool(_rubric_view_for, user_id)
+
+
+@app.put("/kb/rubric")
+async def kb_put_rubric(body: RubricPutRequest) -> dict:
+    try:
+        overrides = validate_overrides([{"name": p.name, "pass_condition": p.passCondition} for p in body.pinned], body.removed)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def store() -> dict:
+        _kb_profile_store.put_overrides(body.user_id, overrides)
+        return _rubric_view_for(body.user_id)
+
+    return await run_in_threadpool(store)
 
 
 @app.get("/kb/profile")
