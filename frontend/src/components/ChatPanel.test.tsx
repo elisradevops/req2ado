@@ -547,32 +547,69 @@ describe('ChatPanel: checking a proposal before it is applied', () => {
     expect(await screen.findByRole('button', { name: /^accept$/i })).toBeEnabled();
   });
 
-  it('when the prediction takes too long, Accept opens up again but a warning still asks for confirmation', async () => {
+  // The prediction can take a model call (the server gives up at 60 s); Accept opens up after 75 s but the card keeps listening.
+  async function renderLatePrediction(warnings: unknown[], onAccept = vi.fn()) {
+    let finish: (value: unknown) => void = () => undefined;
     vi.mocked(chatApi.checkRewrite).mockImplementation((_job, _node, proposal) =>
-      (proposal.warningsOnly ? Promise.resolve(warningsOf([high])) : new Promise(() => undefined)) as never,
+      (proposal.warningsOnly ? Promise.resolve(warningsOf(warnings)) : new Promise((resolve) => (finish = resolve))) as never,
     );
     vi.mocked(useChatSocket).mockImplementation((_jobId, _localId, onEvent) => {
       capturedOnEvent = onEvent;
     });
-    const onAccept = vi.fn();
     render(
       <ToastProvider>
         <ChatPanel jobId="job-1" localId="n0" itemType="Requirement" disabled={false} onAcceptProposal={onAccept} />
       </ToastProvider>,
     );
     await screen.findByPlaceholderText(/ask the assistant/i); // real timers: findBy polls with them
-    vi.useFakeTimers(); // from here on the 45 s limit is the fake clock's
+    vi.useFakeTimers(); // from here on the clock is the fake one
+    act(() => capturedOnEvent?.({ type: 'done', message: 'x', model: 'm', proposedTitle: null, proposedDescription: 'The receiver shall lock quickly.' }));
+    return { onAccept, resolve: (value: unknown) => finish(value) };
+  }
+
+  it('shows how long the prediction has been running', async () => {
     try {
-      act(() => capturedOnEvent?.({ type: 'done', message: 'x', model: 'm', proposedTitle: null, proposedDescription: 'The receiver shall lock quickly.' }));
+      await renderLatePrediction([]);
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(46_000);
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+      expect(screen.getByText(/predicting the score.*3 s/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('when the prediction takes too long Accept opens up, a warning still asks for confirmation, and the card says it is still waiting', async () => {
+    try {
+      const { onAccept } = await renderLatePrediction([high]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(76_000);
       });
       const accept = screen.getByRole('button', { name: /^accept$/i });
       expect(accept).toBeEnabled();
-      expect(screen.getByText(/predicted score is unavailable/i)).toBeInTheDocument();
+      expect(screen.getByText(/still being predicted/i)).toBeInTheDocument();
       expect(screen.getByText(/numbers dropped/i)).toBeInTheDocument();
       await act(async () => {
         accept.click();
+      });
+      expect(onAccept).not.toHaveBeenCalled();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an answer that arrives after the cap still updates the card, and a predicted drop then asks for confirmation', async () => {
+    try {
+      const { onAccept, resolve } = await renderLatePrediction([]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(80_000);
+      });
+      await act(async () => resolve(comparison({ delta: -22, before: { score: 64 }, after: { score: 42 } })));
+      expect(screen.getByText(/64\s*→\s*42/)).toBeInTheDocument();
+      expect(screen.queryByText(/still being predicted/i)).not.toBeInTheDocument();
+      await act(async () => {
+        screen.getByRole('button', { name: /^accept$/i }).click();
       });
       expect(onAccept).not.toHaveBeenCalled();
       expect(screen.getByRole('dialog')).toBeInTheDocument();
@@ -595,7 +632,7 @@ describe('ChatPanel: checking a proposal before it is applied', () => {
   });
 
   it('keeps the proposal when the confirmation is declined', async () => {
-    mockCheck([], comparison({ delta: -5 }));
+    mockCheck([], comparison({ delta: -8, after: { score: 56 } }));
     const onAccept = await renderWithProposal({ proposedTitle: null, proposedDescription: 'A worse text.' });
     const user = userEvent.setup();
 
@@ -705,5 +742,19 @@ describe('ChatPanel: checking a proposal before it is applied', () => {
     await act(async () => finish(comparison({ delta: -30 })));
     expect(screen.queryByText(/Old node text/)).not.toBeInTheDocument();
     expect(screen.queryByText(/64\s*→/)).not.toBeInTheDocument();
+  });
+
+  it('a change within the noise of the scorer is called about the same, and a small dip does not ask for confirmation', async () => {
+    mockCheck([], comparison({ delta: -3, before: { score: 64 }, after: { score: 61 } }));
+    const onAccept = await renderWithProposal({ proposedTitle: null, proposedDescription: 'Nearly the same text.' });
+    expect(await screen.findByText(/64\s*→\s*61.*about the same/i)).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: /^accept$/i }));
+    expect(onAccept).toHaveBeenCalled();
+  });
+
+  it('a gain within the noise is also called about the same', async () => {
+    mockCheck([], comparison({ delta: 4, before: { score: 64 }, after: { score: 68 } }));
+    await renderWithProposal({ proposedTitle: null, proposedDescription: 'Nearly the same text.' });
+    expect(await screen.findByText(/64\s*→\s*68.*about the same/i)).toBeInTheDocument();
   });
 });
