@@ -20,7 +20,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Body } from '@nestjs/common';
 import type { Response } from 'express';
 import { JobsService, JobSummary, type JobDetail } from './jobs.service';
-import { IngestionHttpClient, type RewriteComparison } from './ingestion-http.client';
+import { IngestionHttpClient, type RewriteComparison, type ScoreExplanation } from './ingestion-http.client';
 import { WorkItemTypeCatalogService, type WorkItemTypeCatalogEntry } from './work-item-type-catalog.service';
 import { jobFigureFileUploadSchema } from './job-figure-file.dto';
 import { etaEstimateQuerySchema } from './eta-estimate.dto';
@@ -647,6 +647,19 @@ export class JobsController {
       proposedDescription: typeof body?.proposedDescription === 'string' ? body.proposedDescription : '',
       ...(body?.warningsOnly === true ? { warningsOnly: true } : {}),
     });
+  }
+
+  /** Why an item got the scores it did, on demand (one short call). Read-only. Optional `categories` chooses which to explain. */
+  @Post(':id/diff/:localId/score-explain')
+  async explainScore(
+    @Param('id') id: string,
+    @Param('localId') localId: string,
+    @CurrentUser() user: SessionUser,
+    @Body() body: { categories?: string[] },
+  ): Promise<ScoreExplanation> {
+    await this.ownedJob(id, user);
+    const categories = Array.isArray(body?.categories) ? body.categories.filter((c): c is string => typeof c === 'string' && c.trim() !== '') : undefined;
+    return this.jobsService.explainScore(id, localId, { categories });
   }
 
   @Post(':id/confirm')

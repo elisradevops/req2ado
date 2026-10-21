@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import type { PrismaClient } from '@prisma/client';
-import type { FolderChild, IngestionHttpClient, SharePointStatus } from '../pipeline/ingestion-http.client';
+import type { FolderChild, IngestionHttpClient, Rubric, SharePointStatus } from '../pipeline/ingestion-http.client';
 import { CredentialVaultService, SHARED_OWNER_KEY } from '../auth/credential-vault.service';
 
 interface VaultedSharePointToken {
@@ -151,6 +151,15 @@ export class KbService {
     });
     await this.profileScheduler?.schedule(userId);
     return result;
+  }
+
+  /** The rubric the user's jobs are graded against (the KB's or the built-in one), with their pins and removals. */
+  async getRubric(userId: string): Promise<Rubric> {
+    return this.ingestionClient.getRubric(userId);
+  }
+
+  async putRubric(userId: string, input: { pinned: { name: string; passCondition: string }[]; removed: string[] }): Promise<Rubric> {
+    return this.ingestionClient.putRubric(userId, input);
   }
 
   async listDocuments(userId?: string): Promise<IngestedDocumentSummary[]> {
