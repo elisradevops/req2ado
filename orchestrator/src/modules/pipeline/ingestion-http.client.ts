@@ -250,6 +250,9 @@ export class IngestionHttpClient {
     // /level route). Optional/omitted for every call site predating this
     // field, matching model/jobId's own backward-compat convention above.
     primerContext?: string,
+    // Out parameter: which rubric ingestion scored this job with (`rubricVersion`: null when none, left undefined by an ingestion that does not
+    // report it) and whether it did not get the one it should have (`degraded`). The result cache stores under the rubric the job really used.
+    scored?: { rubricVersion?: string | null; degraded?: boolean },
   ): Promise<WorkItemTree> {
     const params = new URLSearchParams({ mode });
     if (model) params.set('model', model);
@@ -277,6 +280,11 @@ export class IngestionHttpClient {
     });
     if (!response.ok) {
       throw await _ingestionError(response, `Ingestion /level request failed: `);
+    }
+    if (scored) {
+      const version = response.headers?.get?.('x-req2ado-rubric-version');
+      if (version !== null && version !== undefined) scored.rubricVersion = version === '' ? null : version;
+      scored.degraded = response.headers?.get?.('x-req2ado-rubric-degraded') === '1';
     }
     return (await response.json()) as WorkItemTree;
   }
@@ -325,7 +333,8 @@ export class IngestionHttpClient {
   }
 
   async getRubric(userId: string): Promise<Rubric> {
-    const response = await fetch(`${this.baseUrl}/kb/rubric?user_id=${encodeURIComponent(userId)}`);
+    // The user is identified by a header, not in the URL: ingestion's access log records URLs.
+    const response = await fetch(`${this.baseUrl}/kb/rubric`, { headers: identityHeaders(userId) });
     if (!response.ok) throw await _ingestionError(response, `Ingestion /kb/rubric request failed: `);
     return (await response.json()) as Rubric;
   }
@@ -374,7 +383,7 @@ export class IngestionHttpClient {
   // scored with (null without one). null when it cannot be read: the caller then caches nothing rather than guess.
   async cacheScope(userId: string): Promise<{ ingestion: string; profile: string | null } | null> {
     try {
-      const response = await fetch(`${this.baseUrl}/cache-scope?user_id=${encodeURIComponent(userId)}`);
+      const response = await fetch(`${this.baseUrl}/cache-scope`, { headers: identityHeaders(userId) });
       if (!response.ok) return null;
       const body = (await response.json()) as { ingestion?: unknown; profile?: unknown };
       if (typeof body?.ingestion !== 'string') return null;

@@ -1,7 +1,7 @@
 // JobsService opens a bullmq Queue (a real ioredis connection) in its constructor: inert here, as in jobs.service.spec.ts.
 jest.mock('bullmq');
 
-import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, GatewayTimeoutException, NotFoundException } from '@nestjs/common';
 import { KbController } from '../src/modules/kb/kb.controller';
 import { KbService } from '../src/modules/kb/kb.service';
 import { IngestionHttpClient, IngestionHttpError } from '../src/modules/pipeline/ingestion-http.client';
@@ -20,7 +20,9 @@ describe('IngestionHttpClient: the rubric and the explanation', () => {
   it('reads the rubric of a user', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => rubric });
     expect(await client().getRubric('user-1')).toEqual(rubric);
-    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://ingestion.internal/kb/rubric?user_id=user-1');
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/kb/rubric'); // identity travels in a header, never in the URL
+    expect(options.headers['X-Req2Ado-User-Id']).toBe('user-1');
   });
 
   it('stores the pins and removals of a user and returns the rubric that results', async () => {
@@ -64,12 +66,21 @@ describe('KbController: the rubric', () => {
     expect(kbService.putRubric).toHaveBeenCalledWith('user-1', { pinned: [{ name: 'Testable', passCondition: 'Pinned' }], removed: ['X'] });
   });
 
-  it('refuses a malformed body without calling the service, and turns ingestion\'s refusal into a 400 with its reason', async () => {
-    const kbService = { putRubric: jest.fn().mockRejectedValue(new IngestionHttpError(400, 'category \'A\' is listed twice')) };
+  it('refuses a malformed body without calling the service', async () => {
+    const kbService = { putRubric: jest.fn() };
     const controller = new KbController(kbService as any);
     await expect(controller.putRubric(USER, { pinned: 'nope' as never, removed: [] })).rejects.toThrow(BadRequestException);
+    await expect(controller.putRubric(USER, { pinned: [{ name: 'A' }] as never, removed: [] })).rejects.toThrow(BadRequestException);
+    await expect(controller.putRubric(USER, { pinned: [], removed: [5] as never })).rejects.toThrow(BadRequestException);
     expect(kbService.putRubric).not.toHaveBeenCalled();
-    await expect(controller.putRubric(USER, { pinned: [], removed: [] })).rejects.toThrow(/listed twice/);
+  });
+
+  it('turns ingestion\'s refusal of a list into a 400 with its reason (and passes other failures on)', async () => {
+    const refused = new KbController({ putRubric: jest.fn().mockRejectedValue(new IngestionHttpError(400, 'category \'A\' is listed twice')) } as any);
+    await expect(refused.putRubric(USER, { pinned: [{ name: 'A', passCondition: 'x' }], removed: [] })).rejects.toThrow(/listed twice/);
+    await expect(refused.putRubric(USER, { pinned: [{ name: 'A', passCondition: 'x' }], removed: [] })).rejects.toBeInstanceOf(BadRequestException);
+    const down = new KbController({ putRubric: jest.fn().mockRejectedValue(new IngestionHttpError(502, 'down')) } as any);
+    await expect(down.putRubric(USER, { pinned: [], removed: [] })).rejects.toBeInstanceOf(IngestionHttpError);
   });
 });
 
@@ -118,10 +129,18 @@ describe('JobsService.explainScore', () => {
     expect(explainScores).not.toHaveBeenCalled();
   });
 
-  it('turns an ingestion failure into a 502 that keeps the reason (and a timeout into a 504-like message)', async () => {
-    const explainScores = jest.fn().mockRejectedValue(new IngestionHttpError(504, 'the explanation is taking too long; try again'));
-    await expect(make(explainScores).explainScore('job-1', 'n0', {})).rejects.toThrow(BadGatewayException);
-    await expect(make(explainScores).explainScore('job-1', 'n0', {})).rejects.toThrow(/taking too long/);
+  it('keeps the kind of ingestion failure: a refusal is a 400, a timeout a 504, anything else a 502, each with the reason', async () => {
+    const failing = (status: number, message: string) => make(jest.fn().mockRejectedValue(new IngestionHttpError(status, message)));
+    await expect(failing(400, 'the item has no category scores to explain').explainScore('job-1', 'n0', {})).rejects.toBeInstanceOf(BadRequestException);
+    await expect(failing(504, 'the explanation is taking too long; try again').explainScore('job-1', 'n0', {})).rejects.toBeInstanceOf(GatewayTimeoutException);
+    await expect(failing(504, 'the explanation is taking too long; try again').explainScore('job-1', 'n0', {})).rejects.toThrow(/taking too long/);
+    await expect(failing(502, 'the explanation could not be made').explainScore('job-1', 'n0', {})).rejects.toBeInstanceOf(BadGatewayException);
+  });
+
+  it('an entry whose scores are an empty object has nothing to explain either', async () => {
+    const explainScores = jest.fn();
+    await expect(make(explainScores, { ...job, dryRunDiff: [{ ...entry, qualityCategoryScores: {} }] }).explainScore('job-1', 'n0', {})).rejects.toThrow(BadRequestException);
+    expect(explainScores).not.toHaveBeenCalled();
   });
 
   it('does not need the job to be reviewable: a finished job\'s scores can still be explained', async () => {

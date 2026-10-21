@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  GatewayTimeoutException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -1275,7 +1276,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     const diff = (job.dryRunDiff as unknown as DryRunDiffEntry[]) ?? [];
     const entry = diff.find((e) => e.localId === localId);
     if (!entry) throw new NotFoundException(`Diff entry ${localId} not found`);
-    if (!entry.qualityCategoryScores) throw new BadRequestException('this entry has no category scores to explain');
+    if (!entry.qualityCategoryScores || Object.keys(entry.qualityCategoryScores).length === 0) {
+      throw new BadRequestException('this entry has no category scores to explain');
+    }
     try {
       return await this.ingestionClient.explainScores({
         title: entry.title,
@@ -1289,6 +1292,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       });
     } catch (err) {
       if (err instanceof IngestionHttpError) {
+        // Keep the kind of failure: a refusal is the caller's (400), a timeout is a timeout (504), anything else a bad gateway (502).
+        if (err.status === 400) throw new BadRequestException(err.message);
+        if (err.status === 504) throw new GatewayTimeoutException(err.message);
         throw new BadGatewayException({ statusCode: 502, message: err.message, error: 'Bad Gateway', ...(err.traceback ? { upstreamTraceback: err.traceback } : {}) });
       }
       throw err;

@@ -658,25 +658,27 @@ export async function runPipelineJob(
     // stored: reuse them instead of asking the models again, so the result is identical. Any problem reading it is a miss.
     let cacheKey: string | null = null;
     let cached: CachedResult | undefined;
-    // What the stored result depends on, besides the file: the KB documents, the ingestion build and the KB profile. Read twice: before
-    // (to look up) and after the job (to store), because a profile built DURING the first job belongs in the key the result is stored under.
-    const cacheKeyFor = async (): Promise<string | null> => {
-      if (!deps.resultCache || job.mode !== 'survey' || !job.userId) return null;
-      const kbVersion = await kbVersionFor(deps.prisma as never, job.userId);
-      const scope = await deps.ingestionClient.cacheScope?.(job.userId);
-      if (kbVersion === null || !scope) return null; // not readable: nothing is cached on a guess
-      return deps.resultCache.keyFor({
-        fileHash: crypto.createHash('sha256').update(job.fileBuffer).digest('hex'),
-        userId: job.userId,
-        model,
-        mode: job.mode,
-        kbVersion,
-        ingestionVersion: scope.ingestion,
-        profileVersion: scope.profile,
-      });
-    };
+    // What the stored result depends on, besides the file: the KB documents, the ingestion build and the rubric (the KB profile with the user's
+    // pins). Read once before the lookup; the result is STORED under the rubric ingestion reports it was scored with, which can differ from
+    // this scope (a profile built by this very job; or a pin the user saved while it ran: that result must not be served for the new rubric).
+    let cacheScope: { ingestion: string; profile: string | null } | null = null;
+    let cacheKbVersion: string | null = null;
+    const keyFor = (profileVersion: string | null): string | null =>
+      deps.resultCache && cacheScope && cacheKbVersion !== null && job.userId
+        ? deps.resultCache.keyFor({
+            fileHash: crypto.createHash('sha256').update(job.fileBuffer).digest('hex'),
+            userId: job.userId,
+            model,
+            mode: job.mode,
+            kbVersion: cacheKbVersion,
+            ingestionVersion: cacheScope.ingestion,
+            profileVersion,
+          })
+        : null;
     if (deps.resultCache && job.mode === 'survey' && job.userId) {
-      cacheKey = await cacheKeyFor();
+      cacheKbVersion = await kbVersionFor(deps.prisma as never, job.userId);
+      cacheScope = (await deps.ingestionClient.cacheScope?.(job.userId)) ?? null; // not readable: nothing is cached on a guess
+      cacheKey = keyFor(cacheScope?.profile ?? null);
       if (cacheKey !== null) {
         cached = await deps.resultCache.lookup(cacheKey);
         // eslint-disable-next-line no-console -- worker process logging
@@ -845,11 +847,17 @@ export async function runPipelineJob(
       if (cached && cached.catalogHash === catalogHash) {
         levelResult = cached.tree;
       } else {
-        levelResult = await deps.ingestionClient.level(doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext);
+        // Only when the result cache is in use is the rubric the job was scored with needed (the out parameter): every other call keeps its shape.
+        const scored: { rubricVersion?: string | null; degraded?: boolean } = {};
+        levelResult = await deps.ingestionClient.level(
+          doc, job.mode, job.userId ?? undefined, linkTypeCatalog, model, job.id, primerContext, ...(deps.resultCache ? [scored] : []),
+        );
         const leveled = levelResult as { warnings?: { kind: string }[] };
-        const degraded = primerWarnings.length > 0 || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
+        const degraded =
+          primerWarnings.length > 0 || scored.degraded === true || isDegradedResult(leveled?.warnings, doc.figures as { caption_status?: string }[] | undefined);
         if (deps.resultCache && cacheKey && !degraded) {
-          const storeKey = (await cacheKeyFor()) ?? null; // after the job: a profile it built is now part of the scope
+          // Under the rubric the job was scored with (an older ingestion that does not say: the scope read before the job).
+          const storeKey = keyFor(scored.rubricVersion !== undefined ? scored.rubricVersion : (cacheScope?.profile ?? null));
           if (storeKey) await deps.resultCache.save(storeKey, { doc, tree: levelResult, catalogHash });
         }
       }

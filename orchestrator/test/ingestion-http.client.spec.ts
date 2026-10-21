@@ -701,7 +701,9 @@ describe('IngestionHttpClient.cacheScope', () => {
   it('reads the ingestion build and the user\'s stored profile version', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ ingestion: '0.3.15', profile: 'p1' }) });
     expect(await new IngestionHttpClient('http://ingestion.internal').cacheScope('user-1')).toEqual({ ingestion: '0.3.15', profile: 'p1' });
-    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://ingestion.internal/cache-scope?user_id=user-1');
+    const [url, options] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('http://ingestion.internal/cache-scope'); // the user is not in the URL (access logs record URLs)
+    expect(options.headers['X-Req2Ado-User-Id']).toBe('user-1');
   });
 
   it('is null when it cannot be read, so nothing is cached on a guess', async () => {
@@ -711,5 +713,37 @@ describe('IngestionHttpClient.cacheScope', () => {
     expect(await new IngestionHttpClient('http://ingestion.internal').cacheScope('user-1')).toBeNull();
     (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nonsense: true }) });
     expect(await new IngestionHttpClient('http://ingestion.internal').cacheScope('user-1')).toBeNull();
+  });
+});
+
+
+describe('IngestionHttpClient.level: which rubric the job was scored with', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+  const call = (headers: Record<string, string>, scored?: { rubricVersion?: string | null; degraded?: boolean }) => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, headers: { get: (name: string) => headers[name.toLowerCase()] ?? null }, json: async () => ({ nodes: [] }) });
+    return new IngestionHttpClient('http://ingestion.internal').level(MINIMAL_DOC, 'survey', 'user-1', undefined, 'm', 'job-1', undefined, scored);
+  };
+
+  it('reads the rubric version and the degraded flag from the response headers into the out parameter', async () => {
+    const scored: { rubricVersion?: string | null; degraded?: boolean } = {};
+    await call({ 'x-req2ado-rubric-version': 'p-built', 'x-req2ado-rubric-degraded': '1' }, scored);
+    expect(scored).toEqual({ rubricVersion: 'p-built', degraded: true });
+  });
+
+  it('an empty version (no rubric: profile scoring is off) is null, and an older ingestion without the headers leaves it unknown', async () => {
+    const empty: { rubricVersion?: string | null; degraded?: boolean } = {};
+    await call({ 'x-req2ado-rubric-version': '' }, empty);
+    expect(empty).toEqual({ rubricVersion: null, degraded: false });
+    const unknown: { rubricVersion?: string | null; degraded?: boolean } = {};
+    await call({}, unknown);
+    expect(unknown.rubricVersion).toBeUndefined();
+  });
+
+  it('works without the out parameter and with a response that has no headers object (every older caller and test)', async () => {
+    await expect(call({})).resolves.toEqual({ nodes: [] });
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ nodes: [] }) });
+    await expect(new IngestionHttpClient('http://ingestion.internal').level(MINIMAL_DOC, 'survey')).resolves.toEqual({ nodes: [] });
   });
 });
