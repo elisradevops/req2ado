@@ -69,6 +69,8 @@ class Category(BaseModel):
     # Per source document, the extraction runs (0-based) that produced this category (pooled over the wordings merged into it). Used to keep
     # only what most runs agree on; empty on profiles stored before it existed (then nothing is dropped for lack of support).
     seen_in: dict[str, list[int]] = Field(default_factory=dict)
+    # How to improve an item that misses this category (the built-in rubric states it; a knowledge-base category usually does not).
+    guidance: str | None = None
 
 
 class TypeDefinition(BaseModel):
@@ -107,6 +109,8 @@ class DocumentStatus(BaseModel):
 class KbProfile(BaseModel):
     version: str
     built_with: str
+    # `kb`: derived from the user's knowledge-base documents; `default`: the built-in rubric (app.kb.default_rubric).
+    source: Literal["kb", "default"] = "kb"
     docs: list[DocumentStatus] = Field(default_factory=list)
     categories: list[Category] = Field(default_factory=list)
     type_definitions: list[TypeDefinition] = Field(default_factory=list)
@@ -718,7 +722,12 @@ def scoring_inputs(profile: KbProfile | None) -> tuple[list[str] | None, dict[st
         return None, None, None
     names = [c.name for c in profile.categories]
     definitions = {c.name: c.pass_condition for c in profile.categories if c.pass_condition}
-    lines = ["The organization's own standard for judging a requirement (from its knowledge base):"]
+    header = (
+        "The standard used to judge a requirement (the built-in rubric; the organization has no knowledge base):"
+        if profile.source == "default"
+        else "The organization's own standard for judging a requirement (from its knowledge base):"
+    )
+    lines = [header]
     lines += [f"- {c.name}: {c.pass_condition}" if c.pass_condition else f"- {c.name}" for c in profile.categories]
     if profile.rules:
         lines.append("Mandatory writing rules:")
@@ -735,7 +744,7 @@ def render_authoring_standard(profile: KbProfile | None) -> str | None:
     organization's own knowledge base says an Epic, Feature and Requirement are, the rules that make a way of writing
     mandatory, its defined terms, and the quality bar a requirement is judged against. None when the profile has none of
     these, so prompts are then byte-identical to what they were before profiles."""
-    if profile is None:
+    if profile is None or profile.source == "default":  # the built-in rubric judges and explains; it is not an authoring standard
         return None
     sections: list[str] = []
     if profile.type_definitions:

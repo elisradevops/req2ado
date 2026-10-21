@@ -131,7 +131,7 @@ def test_a_failing_cache_store_costs_the_cache_not_the_build() -> None:
     assert profile.docs_contributing == 2 and profile.categories
 
 
-def test_a_job_never_scores_with_a_half_built_profile_it_keeps_the_last_good_one_or_none(monkeypatch) -> None:
+def test_a_job_never_scores_with_a_half_built_profile_it_keeps_the_last_good_one_or_the_default(monkeypatch) -> None:
     from app import main
 
     good = KbProfile(version="v-good", built_with="m1", categories=[Category(name="Testable", sources=["A"], merged_from=["Testable"])])
@@ -142,7 +142,7 @@ def test_a_job_never_scores_with_a_half_built_profile_it_keeps_the_last_good_one
     monkeypatch.setattr(main.settings, "kb_profile_scoring", True)
     monkeypatch.setattr(main, "_make_profile_client", lambda model: object())
 
-    assert main._profile_for_job("u1", "m1") is None  # nothing good stored: score as before profiles
+    assert main._profile_for_job("u1", "m1").source == "default"  # nothing good stored: the built-in rubric, not a half-built one
     store.put("u1", good)
     assert main._profile_for_job("u1", "m1") == good  # a good one is stored: keep scoring with it
     monkeypatch.setattr(main, "ensure_profile", lambda *a, **k: KbProfile(version="v2", built_with="m1", categories=[Category(name="Full", sources=["A"], merged_from=["Full"])]))

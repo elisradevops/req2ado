@@ -37,6 +37,7 @@ from app.kb.browse_service import FolderChildSummary, browse_shared_folder, brow
 from app.kb.graph_client import GraphApiError, GraphClient, decode_jwt_expiry_seconds
 from app.kb.ingest_service import FolderIngestResult, IngestResult, ingest_document_from_url, ingest_folder_child, ingest_folder_from_url
 from app.kb.kb_vector_store import KbVectorStore
+from app.kb.default_rubric import default_profile
 from app.kb.profile import ChromaProfileStore, KbProfile, ensure_profile, render_authoring_standard, scoring_inputs
 from app.kb.retrieval import retrieve_context
 from app.leveling.document_map import publish_document_map
@@ -206,34 +207,37 @@ _kb_profile_store = ChromaProfileStore(_kb_vector_store)
 
 
 def _profile_for_job(user_id: str | None, job_model: str | None) -> KbProfile | None:
-    """The KB profile this job scores with, or None (no user, no KB, switched off, or any failure: the job then scores as it
-    did before profiles). Builds it when stale; pinned to the configured model, else to the model that built the stored one."""
+    """The rubric this job is scored with: the user's KB profile, built when stale (pinned to the configured model, else to the model that
+    built the stored one); with no KB, a KB that yields no categories, or a build that failed with nothing stored, the built-in default
+    rubric. None only without a user or with profile scoring switched off (scoring then behaves as it did before rubrics)."""
     if not user_id or not settings.kb_profile_scoring:
         return None
     try:
         stored = _kb_profile_store.get(user_id)
         model = settings.kb_profile_model or (stored.built_with if stored else None) or job_model
         if not model:
-            return None
+            return default_profile()
         profile = ensure_profile(user_id, _kb_vector_store, _kb_profile_store, _make_profile_client(model), model=model)
         if profile is not None and profile.degraded:
-            # Half a profile would give this job categories that no later job has: keep the last good one (or none).
+            # Half a profile would give this job categories that no later job has: keep the last good one (or the default).
             logger.warning("KB profile build was incomplete; scoring with the last stored profile, if any")
-            return stored
-        return profile
-    except Exception:  # noqa: BLE001 -- the profile improves scoring; it must never fail a job
-        logger.warning("KB profile unavailable for this job; scoring without it", exc_info=True)
-        return None
+            profile = stored
+        return profile if profile is not None and profile.categories else default_profile()
+    except Exception:  # noqa: BLE001 -- the rubric improves scoring; it must never fail a job
+        logger.warning("KB profile unavailable for this job; scoring with the built-in rubric", exc_info=True)
+        return default_profile()
 
 
 def _stored_profile_or_none(user_id: str | None) -> KbProfile | None:
-    """The user's stored KB profile for a chat turn (never built here), or None."""
+    """The rubric for a chat turn, a rescore, a rewrite check and the cache scope (never built here): the user's stored KB profile, else the
+    built-in default rubric. None without a user."""
     if not user_id:
         return None
     try:
-        return _kb_profile_store.get(user_id)
-    except Exception:  # noqa: BLE001 -- the profile only sharpens a rewrite
-        return None
+        stored = _kb_profile_store.get(user_id)
+    except Exception:  # noqa: BLE001 -- the rubric only sharpens a rewrite
+        stored = None
+    return stored if stored is not None and stored.categories else default_profile()
 
 
 def _make_profile_client(model: str) -> OrchestratorLlmClient:
